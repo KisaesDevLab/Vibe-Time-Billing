@@ -1,0 +1,57 @@
+# Caddy config — LAN deployment mode
+# Both staff and portal served on the local network via Tailscale or LAN IP.
+# Caddy generates self-signed certs or uses Tailscale's serve mode.
+# Replace {{LAN_HOST}} during install (e.g., 192.168.1.50 or vibe.lan).
+
+{
+  local_certs
+  email {{ADMIN_EMAIL}}
+}
+
+# =============================================================================
+# Staff app: https://{{LAN_HOST}}/
+# Path-based split since LAN deployment typically has one hostname.
+# =============================================================================
+{{LAN_HOST}} {
+  header {
+    -Server
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+
+  # Staff API
+  @api path /api/*
+  reverse_proxy @api localhost:3001 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Vibe-Realm app
+  }
+
+  # Portal API — explicitly distinct path so cookies don't bleed
+  @portal_api path /portal-api/*
+  reverse_proxy @portal_api localhost:3001 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Vibe-Realm portal
+  }
+
+  # Portal SPA — served at /portal/*
+  handle_path /portal/* {
+    root * /app/apps/portal/dist
+    encode gzip zstd
+    try_files {path} /portal/index.html
+    file_server
+  }
+
+  # Staff SPA — served at /
+  root * /app/apps/web/dist
+  encode gzip zstd
+  try_files {path} /index.html
+  file_server
+}
+
+# =============================================================================
+# Health check (internal only)
+# =============================================================================
+:8080 {
+  respond /health "OK" 200
+}

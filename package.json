@@ -1,0 +1,53 @@
+{
+  "name": "vibe-time-billing",
+  "version": "0.1.0",
+  "private": true,
+  "license": "PolyForm-Internal-Use-1.0.0",
+  "description": "Self-hosted time tracking, recurring billing, and adjustment allocation for CPA firms",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter='./apps/*' dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint . --ext .ts,.tsx --cache",
+    "lint:fix": "pnpm lint --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml,yaml}\"",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm -r test:unit",
+    "test:integration": "pnpm -r test:integration",
+    "test:e2e": "pnpm --filter @vibe/web test:e2e && pnpm --filter @vibe/portal test:e2e",
+    "db:migrate": "pnpm --filter @vibe/db migrate",
+    "db:seed": "pnpm --filter @vibe/db seed",
+    "db:studio": "pnpm --filter @vibe/db studio",
+    "docker:up": "docker compose -f ops/docker/docker-compose.dev.yml up -d",
+    "docker:down": "docker compose -f ops/docker/docker-compose.dev.yml down",
+    "docker:logs": "docker compose -f ops/docker/docker-compose.dev.yml logs -f",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.34.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.4.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{md,json,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}

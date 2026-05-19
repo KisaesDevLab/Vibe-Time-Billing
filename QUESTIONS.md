@@ -1,0 +1,248 @@
+# QUESTIONS.md — Vibe Time & Billing
+
+This file is a structured log of architectural and policy decisions. **Locked decisions are above the line**; they were resolved before the autonomous build began and cannot be changed without the explicit consent of the maintainer. **Open questions are below the line**; they may be added during the build when Claude Code encounters a decision not covered by locked answers.
+
+## How Claude Code uses this file
+
+1. Read every locked decision at session start. Treat as architectural law.
+2. When encountering a decision not covered: pick the most conservative default consistent with `CLAUDE.md` principles, add to the Open section below with phase + item context, keep building.
+3. Never modify locked decisions. If a locked decision turns out to be wrong, write a `WIP` commit and `STOPPED_BECAUSE.md` describing the conflict.
+
+---
+
+# LOCKED DECISIONS
+
+## Section A · Schema foundations
+
+### Q1 — Appliance scope
+**Decided:** Single-firm per appliance.
+
+Every appliance instance hosts exactly one CPA firm's data. Schema includes `firm_id` columns on top-level tables but there is no tenant resolver middleware in the API. No support for hosting multiple firms on one box. This matches the rest of the Vibe product family.
+
+### Q2 — Currency
+**Decided:** USD only for v1.
+
+No `currency` column on monetary tables. All amounts in cents (integer). No FX logic, no conversion at report time. Multi-currency may come in v2; schema migration cost is acceptable then.
+
+### Q3 — Delete strategy
+**Decided:** Soft delete always for clients, engagements, and time entries.
+
+`status` enum on each of these tables includes an `ARCHIVED` value. Code never executes `DELETE FROM`. Archive action is itself audit-logged. Background reaper job not in v1; rows accumulate (acceptable through 100K+ entries per benchmark).
+
+---
+
+## Section B · Authentication & sessions
+
+### Q4 — Step-up TOTP timeout
+**Decided:** 30 minutes after last verification.
+
+Sensitive actions (large adjustment, invoice send, payment-method change, rate change) require TOTP re-verification only after 30 minutes have elapsed since the last successful step-up. Stored as `last_step_up_at` on `app_session`. Configurable in firm settings for v1.1.
+
+### Q5 — TOTP enrollment scope
+**Decided:** Required for all staff.
+
+Every `app_user` must enroll TOTP at first login. No magic-link-only paths. Recovery codes generated and shown once; user confirms storage before proceeding. Skipping enrollment is impossible.
+
+### Q6 — Phone re-verification cadence (portal_identity)
+**Decided:** On every new device.
+
+Device fingerprint = SHA-256 of (normalized user-agent ‖ /24 IP prefix). On unrecognized fingerprint at SMS login attempt, send an additional confirmation SMS to the recorded phone before issuing the session. This catches recycled-number takeover where the attacker is on a different device than the legitimate user historically was.
+
+---
+
+## Section C · Payments
+
+### Q7 — Stripe charge model
+**Decided:** Firm owns the Stripe account (BYO API keys).
+
+Firm creates their own Stripe account, generates restricted API keys, pastes them into appliance admin settings. Stripe pays the firm directly. No Stripe Connect, no Kisaes-owned platform account, no money-transmission compliance surface for us.
+
+### Q8 — Trust account / IOLTA
+**Decided:** Out of scope for v1.
+
+No trust account schema, no IOLTA-specific UI or reporting. Firms doing fiduciary work need a separate tool for that.
+
+### Q9 — Payment processor fee handling
+**Decided:** Firm-configurable per engagement.
+
+Engagement table has `fee_passthrough_enabled: boolean` (default false). When true, invoice generation auto-adds a "Payment processing fee" line item calculated from the payment method used (or from card rates as the default until paid). When false, firm absorbs.
+
+---
+
+## Section D · Infrastructure
+
+### Q10 — Portal vs staff app routing
+**Decided:** Subdomain split.
+
+`app.firm.com` for staff (`apps/web`), `portal.firm.com` for portal (`apps/portal`). Caddy templates support both hosts. Cookies use `__vibe_app_session` (path=/, domain=app.firm.com) and `__vibe_portal_session` (path=/, domain=portal.firm.com). Distinct JWT signing keys: `STAFF_JWT_SECRET` and `PORTAL_JWT_SECRET`. Setup docs explain DNS requirements and Cloudflare Tunnel hostnames.
+
+### Q11 — Email delivery
+**Decided:** Pluggable provider abstraction.
+
+Providers: SMTP, Postmark, Resend, AWS SES. Env vars:
+- `MAIL_PROVIDER` = smtp | postmark | resend | ses
+- `MAIL_FROM` = e.g. "Granite Peak CPAs <[email protected]>"
+- Provider-specific keys (e.g. `MAIL_SMTP_HOST`, `MAIL_POSTMARK_TOKEN`, etc.)
+
+Dev defaults to SMTP pointed at a MailHog container in `docker-compose.dev.yml`.
+
+### Q12 — Database backup strategy
+**Decided:** pg_dump nightly cron.
+
+`ops/scripts/backup.sh` runs daily at firm-local 02:00 via container-side cron. Output to `/backups/vibe-tb-YYYY-MM-DD.sql.gz`. Default 30-day retention. Restore procedure documented in `ops/docs/restore.md`. WAL archiving and streaming replication considered out-of-scope for v1.
+
+---
+
+## Section E · AI & MCP
+
+### Q13 — MCP server mutation scope
+**Decided:** Read + write (full mutation) with per-tool permission scoping.
+
+Tools include mutating operations: `create_time_entry`, `generate_pre_bill`, `suggest_adjustment` (advisory result), and write actions on engagements/invoices in v1.1+. Each MCP token has a JSON-encoded list of allowed tool names; tools not in the list reject with 403. Every mutating tool call audit-logs with the token identifier as actor. Token issuance UI is part of Phase 22.
+
+### Q14 — AI cost cap
+**Decided:** Hybrid — warn then cap.
+
+Per-firm monthly budget in `firm_settings.ai_monthly_budget_cents`. Default warn threshold: 80%. Default hard-cap: 100%. When budget exhausted, AI features return a clear error message ("AI budget exhausted for this month, will reset on the 1st"). Tracked in `ai_request_log` with cost computed per provider's rate sheet.
+
+### Q15 — Local LLM default model
+**Decided:** Hardware-adaptive at install time.
+
+`ops/scripts/install-detect-llm.sh` runs at first boot:
+- ≥24GB RAM + AVX2 → Mistral Small 24B Q4_K_M
+- ≥16GB RAM → Qwen3-8B Q4_K_M (default for the GMKtec M6 spec)
+- ≥8GB RAM → Phi-3-mini Q4_K_M
+- <8GB → AI features disabled, prompt firm to upgrade or enable cloud LLM
+
+Firm can override post-install in admin settings.
+
+---
+
+## Section F · SMS & notifications
+
+### Q16 — SMS provider
+**Decided:** Pluggable provider abstraction.
+
+Providers: TextLink (default — already in Vibe stack), Twilio, AWS SNS. Env vars mirror the email pattern:
+- `SMS_PROVIDER` = textlink | twilio | sns
+- Provider-specific keys
+
+### Q17 — SMS cost cap
+**Decided:** Visibility only.
+
+No hard cap. Surface monthly SMS spend and per-event volume in admin dashboard. Document budget guidance and a "danger zone" threshold in admin tooltips. If a firm wants a hard cap they can add one in v1.1.
+
+---
+
+## Section G · PDF generation
+
+### Q18 — PDF rendering library
+**Decided:** Puppeteer (headless Chrome, HTML→PDF).
+
+Templates are HTML+CSS served from `apps/api/src/pdf-templates/`. Chrome bundled in the production Docker image. Image bloat (~300MB) accepted for the design flexibility. Document the size in `ops/docs/image-size.md`. Concurrent PDF generation worker count = CPU cores / 2.
+
+---
+
+## Section H · Billing UX defaults
+
+### Q19 — Time entry rounding increment
+**Decided:** 0.25 hour (15-minute increments) by default.
+
+Firm-configurable in admin: 0.1, 0.25, or free decimal. Time entry form's hours input snaps to the configured increment on blur.
+
+### Q20 — Mixed-mode billing scope evaluation
+**Decided:** Per-entry, real-time tagging.
+
+`engagement.in_scope_work_code_ids: uuid[]` array. When a time entry is created and its work_code_id is in this array (or it's the engagement's default scope), `in_scope_flag = true`; otherwise false. Stored on the entry row, never recomputed. Scope definition changes mid-period only affect entries created after the change.
+
+### Q21 — Custom-weighted allocation input type
+**Decided:** Either, user picks per adjustment.
+
+Allocation dialog has a segmented control: [Percentages] [Dollar amounts]. Server validates whichever was submitted. Percentage path requires sum to 100.00 (with 0.01 tolerance). Dollar path requires sum to equal `adjustment.total_amount`.
+
+---
+
+## Section I · Engagement lifecycle
+
+### Q22 — Hour bank residual at engagement close
+**Decided:** Forfeit at engagement close.
+
+No refund, no credit. The engagement-letter template starter pack must include clear forfeit-disclosure language ("Unused hours are forfeited at engagement termination"). Admin UI shows a hard warning when closing an engagement with remaining hour bank balance.
+
+### Q23 — Auto-rollover collision behavior
+**Decided:** Notify partner, partner decides.
+
+When the rollover scheduler is about to create next year's engagement but the prior year is still `ACTIVE`, the system queues a notification in the partner-in-charge's approval queue with three actions:
+- **Create new and leave old open** (both run in parallel; manual close of old)
+- **Defer rollover** (postpone to a specified date)
+- **Force-close old with WIP carry-forward** (audit-log the close, carry remaining WIP to new)
+
+### Q24 — Engagement template library
+**Decided:** Ship with starter pack.
+
+`seed/engagement-templates.json` contains pre-built templates:
+1. Individual 1040
+2. 1120-S Tax Return
+3. 1065 Partnership Tax Return
+4. Audit Engagement (GAAS)
+5. Review Engagement (SSARS)
+6. Compilation Engagement (SSARS)
+7. Monthly Bookkeeping
+8. Payroll Services
+
+Each template defines: default fee structure, default work codes, default in-scope codes, default budget hours, default engagement-letter content with all required disclosures. Phase 5 loads these at firm initialization unless suppressed.
+
+---
+
+## Section J · Business model & invoice composition
+
+### Q25 — License model
+**Decided:** Per-firm unlimited annual.
+
+One annual fee per firm. No user counting, no client-entity counting. License token is checked at boot and on critical portal routes. Token absence disables the portal cleanly with a clear admin message. Pricing TBD pre-launch (capture in `LICENSING.md` close to release).
+
+### Q26 — Multi-engagement consolidated invoice default
+**Decided:** Per-client preference.
+
+`client.invoice_consolidation_preference: enum('CONSOLIDATED' | 'SEPARATE')`, default `SEPARATE`. Pre-bill UI honors this when generating invoices for clients with multiple active engagements. Override available per billing batch.
+
+### Q27 — Adjustment approval threshold
+**Decided:** Configurable per firm with $1,000 default.
+
+`firm_settings.adjustment_approval_threshold_cents = 100000` at seed. Approval workflow (Phase 18) routes adjustments above this amount to partner-in-charge approval. Percentage-based thresholds (e.g., 5% of engagement total) deferred to v1.1.
+
+---
+
+## Section K · Operational
+
+### Q28 — Email & SMS template customization
+**Decided:** Variable insertion only.
+
+Templates are text with Handlebars-style markers: `{{client.name}}`, `{{invoice.total}}`, `{{invoice.due_date}}`, `{{firm.name}}`, etc. Admin UI shows a variable picker. No HTML editor, no Markdown rendering. Templates rendered server-side. Predefined variable catalog documented in `ops/docs/template-variables.md`.
+
+### Q29 — Account enumeration mitigation
+**Decided:** Standard mitigation.
+
+Same HTTP response status and body whether the contact exists or not. Generic message: "If your account exists, a sign-in code has been sent." Redis-backed sliding-window rate limits:
+- 5 requests per contact per 15 minutes
+- 20 requests per IP per 15 minutes
+- 100 requests per firm per 15 minutes (firm-level circuit breaker)
+
+No timing delays, no IP bans. Limits configurable but defaults shipped.
+
+### Q30 — Invoice read receipts
+**Decided:** Portal-view only, no tracking pixels.
+
+Read-receipt fires only when the client opens the invoice within the portal (sets `invoice.first_viewed_at`). No tracking pixel in invoice emails. Firms see "Viewed in portal Mon May 18" vs "Not yet viewed" in the invoice list. Portal-view events also stream into the audit log.
+
+---
+
+# OPEN QUESTIONS
+
+*Append questions encountered during the build here. Format: phase, item, question, options considered, default chosen, why. Decisions accumulate over time; this is the running deferral log, not a blocker.*
+
+---
+
+# CHANGE LOG
+
+- 2026-05-19 — Initial 30 decisions locked at build kickoff.

@@ -1,0 +1,56 @@
+# Caddy config — Tailscale-only deployment mode
+# All access gated through Tailscale. Caddy serves on the Tailscale interface.
+# Tailscale provides TLS via tailscale-cert; Caddy proxies internally.
+# Replace {{TS_HOSTNAME}} with the Tailscale machine name (e.g., vibe-tb-firm.tail-net.ts.net).
+
+{
+  email {{ADMIN_EMAIL}}
+  auto_https off
+  # Tailscale provides TLS at the network layer
+}
+
+# =============================================================================
+# Staff app + portal — single host with path split
+# Tailscale ACLs control who reaches this endpoint at all.
+# =============================================================================
+{{TS_HOSTNAME}}:443, {{TS_HOSTNAME}}:80 {
+  header {
+    -Server
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+
+  # Staff API
+  @api path /api/*
+  reverse_proxy @api localhost:3001 {
+    header_up X-Vibe-Realm app
+  }
+
+  # Portal API
+  @portal_api path /portal-api/*
+  reverse_proxy @portal_api localhost:3001 {
+    header_up X-Vibe-Realm portal
+  }
+
+  # Portal SPA at /portal/*
+  handle_path /portal/* {
+    root * /app/apps/portal/dist
+    encode gzip zstd
+    try_files {path} /portal/index.html
+    file_server
+  }
+
+  # Staff SPA at /
+  root * /app/apps/web/dist
+  encode gzip zstd
+  try_files {path} /index.html
+  file_server
+}
+
+# =============================================================================
+# Health check (internal only)
+# =============================================================================
+:8080 {
+  respond /health "OK" 200
+}

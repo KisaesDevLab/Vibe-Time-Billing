@@ -1,0 +1,189 @@
+{
+  "version": "1.0.0",
+  "description": "Starter pack of engagement templates loaded at firm initialization. Reference Q24 in QUESTIONS.md.",
+  "templates": [
+    {
+      "key": "individual_1040",
+      "name": "Individual 1040 Tax Return",
+      "service_line_category": "tax",
+      "default_fee_structure": "FIXED_FEE",
+      "default_fee_amount_cents": 75000,
+      "default_budget_hours": 6.0,
+      "default_partner_review_required": true,
+      "work_codes": [
+        {"key": "tax_prep", "name": "Tax preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "tax_review", "name": "Tax review", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true},
+        {"key": "data_entry", "name": "Document collection & data entry", "billable_default": true, "in_scope_default": true},
+        {"key": "amendments", "name": "Amended return", "billable_default": true, "in_scope_default": false}
+      ],
+      "engagement_letter_template_key": "el_individual_1040",
+      "auto_rollover_default": true,
+      "auto_rollover_price_increase_pct": 5
+    },
+    {
+      "key": "1120s_tax_return",
+      "name": "1120-S Tax Return",
+      "service_line_category": "tax",
+      "default_fee_structure": "FIXED_FEE_WITH_MILESTONES",
+      "default_fee_amount_cents": 325000,
+      "default_budget_hours": 24.0,
+      "default_milestones": [
+        {"name": "Engagement letter signed & 50% deposit", "percent_of_fee": 50, "trigger_type": "EVENT", "trigger_event_key": "engagement_letter_signed"},
+        {"name": "Final return filed", "percent_of_fee": 50, "trigger_type": "EVENT", "trigger_event_key": "return_filed"}
+      ],
+      "default_partner_review_required": true,
+      "work_codes": [
+        {"key": "tax_prep", "name": "Tax preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "tax_review", "name": "Tax review", "billable_default": true, "in_scope_default": true},
+        {"key": "tax_planning", "name": "Tax planning", "billable_default": true, "in_scope_default": false},
+        {"key": "k1_prep", "name": "K-1 preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true},
+        {"key": "data_entry", "name": "Document collection & data entry", "billable_default": true, "in_scope_default": true}
+      ],
+      "engagement_letter_template_key": "el_1120s",
+      "auto_rollover_default": true,
+      "auto_rollover_price_increase_pct": 5
+    },
+    {
+      "key": "1065_partnership_tax_return",
+      "name": "1065 Partnership Tax Return",
+      "service_line_category": "tax",
+      "default_fee_structure": "FIXED_FEE_WITH_MILESTONES",
+      "default_fee_amount_cents": 350000,
+      "default_budget_hours": 26.0,
+      "default_milestones": [
+        {"name": "Engagement letter signed & 50% deposit", "percent_of_fee": 50, "trigger_type": "EVENT", "trigger_event_key": "engagement_letter_signed"},
+        {"name": "Final return filed", "percent_of_fee": 50, "trigger_type": "EVENT", "trigger_event_key": "return_filed"}
+      ],
+      "default_partner_review_required": true,
+      "work_codes": [
+        {"key": "tax_prep", "name": "Tax preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "tax_review", "name": "Tax review", "billable_default": true, "in_scope_default": true},
+        {"key": "k1_prep", "name": "K-1 preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "partner_capital_accounts", "name": "Partner capital accounts", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true},
+        {"key": "data_entry", "name": "Document collection & data entry", "billable_default": true, "in_scope_default": true}
+      ],
+      "engagement_letter_template_key": "el_1065",
+      "auto_rollover_default": true,
+      "auto_rollover_price_increase_pct": 5
+    },
+    {
+      "key": "audit_gaas",
+      "name": "Audit Engagement (GAAS)",
+      "service_line_category": "audit",
+      "default_fee_structure": "FIXED_FEE_WITH_MILESTONES",
+      "default_fee_amount_cents": 2500000,
+      "default_budget_hours": 180.0,
+      "default_milestones": [
+        {"name": "Engagement letter signed & retainer", "percent_of_fee": 25, "trigger_type": "EVENT", "trigger_event_key": "engagement_letter_signed"},
+        {"name": "Planning complete", "percent_of_fee": 25, "trigger_type": "EVENT", "trigger_event_key": "planning_complete"},
+        {"name": "Fieldwork complete", "percent_of_fee": 25, "trigger_type": "EVENT", "trigger_event_key": "fieldwork_complete"},
+        {"name": "Audit report issued", "percent_of_fee": 25, "trigger_type": "EVENT", "trigger_event_key": "audit_report_issued"}
+      ],
+      "default_partner_review_required": true,
+      "work_codes": [
+        {"key": "audit_planning", "name": "Audit planning & risk assessment", "billable_default": true, "in_scope_default": true},
+        {"key": "audit_fieldwork", "name": "Audit fieldwork", "billable_default": true, "in_scope_default": true},
+        {"key": "internal_controls_testing", "name": "Internal controls testing", "billable_default": true, "in_scope_default": true},
+        {"key": "substantive_procedures", "name": "Substantive procedures", "billable_default": true, "in_scope_default": true},
+        {"key": "audit_review", "name": "Audit review", "billable_default": true, "in_scope_default": true},
+        {"key": "audit_report", "name": "Audit report preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true}
+      ],
+      "engagement_letter_template_key": "el_audit_gaas",
+      "auto_rollover_default": true,
+      "auto_rollover_price_increase_pct": 5
+    },
+    {
+      "key": "review_ssars",
+      "name": "Review Engagement (SSARS)",
+      "service_line_category": "audit",
+      "default_fee_structure": "FIXED_FEE",
+      "default_fee_amount_cents": 950000,
+      "default_budget_hours": 60.0,
+      "default_partner_review_required": true,
+      "work_codes": [
+        {"key": "review_planning", "name": "Review planning", "billable_default": true, "in_scope_default": true},
+        {"key": "analytical_procedures", "name": "Analytical procedures", "billable_default": true, "in_scope_default": true},
+        {"key": "inquiry_procedures", "name": "Inquiry procedures", "billable_default": true, "in_scope_default": true},
+        {"key": "review_review", "name": "Review of work performed", "billable_default": true, "in_scope_default": true},
+        {"key": "review_report", "name": "Review report preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true}
+      ],
+      "engagement_letter_template_key": "el_review_ssars",
+      "auto_rollover_default": true,
+      "auto_rollover_price_increase_pct": 5
+    },
+    {
+      "key": "compilation_ssars",
+      "name": "Compilation Engagement (SSARS)",
+      "service_line_category": "audit",
+      "default_fee_structure": "FIXED_FEE",
+      "default_fee_amount_cents": 350000,
+      "default_budget_hours": 20.0,
+      "default_partner_review_required": true,
+      "work_codes": [
+        {"key": "compilation_prep", "name": "Compilation preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "compilation_review", "name": "Compilation review", "billable_default": true, "in_scope_default": true},
+        {"key": "compilation_report", "name": "Compilation report preparation", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true}
+      ],
+      "engagement_letter_template_key": "el_compilation_ssars",
+      "auto_rollover_default": true,
+      "auto_rollover_price_increase_pct": 5
+    },
+    {
+      "key": "monthly_bookkeeping",
+      "name": "Monthly Bookkeeping",
+      "service_line_category": "bookkeeping",
+      "default_fee_structure": "RECURRING_SUBSCRIPTION",
+      "default_recurring_amount_cents": 75000,
+      "default_recurring_frequency": "MONTHLY",
+      "default_included_hours": 8.0,
+      "default_mixed_mode_enabled": true,
+      "default_overage_rate_cents": 12500,
+      "default_partner_review_required": false,
+      "work_codes": [
+        {"key": "transaction_entry", "name": "Transaction entry", "billable_default": true, "in_scope_default": true},
+        {"key": "bank_reconciliation", "name": "Bank reconciliation", "billable_default": true, "in_scope_default": true},
+        {"key": "monthly_close", "name": "Monthly close", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true},
+        {"key": "cleanup", "name": "Bookkeeping cleanup", "billable_default": true, "in_scope_default": false},
+        {"key": "special_project", "name": "Special project / advisory", "billable_default": true, "in_scope_default": false}
+      ],
+      "engagement_letter_template_key": "el_monthly_bookkeeping",
+      "auto_rollover_default": false
+    },
+    {
+      "key": "payroll_services",
+      "name": "Payroll Services",
+      "service_line_category": "payroll",
+      "default_fee_structure": "RECURRING_SUBSCRIPTION",
+      "default_recurring_amount_cents": 25000,
+      "default_recurring_frequency": "MONTHLY",
+      "default_included_employee_count": 10,
+      "default_per_employee_overage_cents": 1500,
+      "default_partner_review_required": false,
+      "work_codes": [
+        {"key": "payroll_processing", "name": "Payroll processing", "billable_default": true, "in_scope_default": true},
+        {"key": "tax_filings", "name": "Payroll tax filings", "billable_default": true, "in_scope_default": true},
+        {"key": "new_hire_setup", "name": "New hire setup", "billable_default": true, "in_scope_default": true},
+        {"key": "garnishments", "name": "Garnishments & deductions", "billable_default": true, "in_scope_default": true},
+        {"key": "year_end_w2_1099", "name": "Year-end W-2/1099 processing", "billable_default": true, "in_scope_default": true},
+        {"key": "client_communication", "name": "Client communication", "billable_default": true, "in_scope_default": true},
+        {"key": "special_project", "name": "Special project / advisory", "billable_default": true, "in_scope_default": false}
+      ],
+      "engagement_letter_template_key": "el_payroll_services",
+      "auto_rollover_default": false
+    }
+  ],
+  "shared_disclosures": {
+    "hour_bank_forfeiture": "Unused hours in any prepaid hour bank are forfeited at engagement termination. Hours do not roll over to subsequent engagements unless explicitly stated in writing. There is no refund of unused hour bank balances.",
+    "scope_creep": "Work outside the agreed scope of this engagement will be billed separately at our standard hourly rates. Examples include responding to IRS notices, amended returns, and any work arising from client-provided information that proves materially incorrect.",
+    "termination": "Either party may terminate this engagement upon 30 days written notice. Termination does not relieve the client of obligations for services rendered through the termination date.",
+    "data_retention": "We retain client records in accordance with applicable professional standards and our Written Information Security Plan (WISP). Records may be destroyed after the retention period unless legal hold applies.",
+    "third_party_data": "We rely on information provided by the client. We do not audit or verify this information unless specifically engaged to do so. Information that proves materially incorrect may require additional work, billed separately."
+  }
+}

@@ -1,0 +1,74 @@
+# Caddy config — domain deployment mode
+# Two hosts: app.firm.com (staff) and portal.firm.com (client portal).
+# Assumes Cloudflare Tunnel is fronting this Caddy instance and providing TLS.
+# Replace {{APP_HOSTNAME}} and {{PORTAL_HOSTNAME}} during install.
+
+{
+  email {{ADMIN_EMAIL}}
+  # When using Cloudflare Tunnel, certs are provided by Cloudflare upstream.
+  # Caddy still needs to handle internal routing.
+}
+
+# =============================================================================
+# Staff app: {{APP_HOSTNAME}}
+# =============================================================================
+{{APP_HOSTNAME}} {
+  # Strip cross-origin headers to keep the realm isolated
+  header {
+    -Server
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+
+  # API routes
+  @api path /api/*
+  reverse_proxy @api localhost:3001 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto https
+  }
+
+  # Static SPA — staff app
+  root * /app/apps/web/dist
+  encode gzip zstd
+  try_files {path} /index.html
+  file_server
+}
+
+# =============================================================================
+# Client portal: {{PORTAL_HOSTNAME}}
+# =============================================================================
+{{PORTAL_HOSTNAME}} {
+  header {
+    -Server
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+  }
+
+  # Portal API — explicitly distinct path
+  @portal_api path /portal-api/*
+  reverse_proxy @portal_api localhost:3001 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto https
+    header_up X-Vibe-Realm portal
+  }
+
+  # Static SPA — client portal
+  root * /app/apps/portal/dist
+  encode gzip zstd
+  try_files {path} /index.html
+  file_server
+}
+
+# =============================================================================
+# Health check (internal only)
+# =============================================================================
+:8080 {
+  respond /health "OK" 200
+}

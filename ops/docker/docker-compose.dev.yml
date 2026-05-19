@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vibe-tb-postgres
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: vibe
+      POSTGRES_PASSWORD: vibe
+      POSTGRES_DB: vibe_tb
+    volumes:
+      - vibe-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vibe -d vibe_tb']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vibe-tb-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - vibe-redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  mailhog:
+    image: mailhog/mailhog
+    container_name: vibe-tb-mailhog
+    ports:
+      - '1025:1025' # SMTP server
+      - '8025:8025' # Web UI
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: vibe-tb-ollama
+    ports:
+      - '11434:11434'
+    volumes:
+      - vibe-ollama-data:/root/.ollama
+    restart: unless-stopped
+    profiles: ['ai']
+
+volumes:
+  vibe-pg-data:
+  vibe-redis-data:
+  vibe-ollama-data:
