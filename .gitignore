@@ -47,3 +47,4 @@ ollama-models/
 
 # Stop-state markers (these belong at repo root when present, gitignored otherwise)
 STOPPED_BECAUSE.md
+.eslintcache
