@@ -1,12 +1,357 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Seed orchestrator. Phase 2/Phase 5 populate this with firm + offices,
-// taxonomy, sample clients, engagement-template starter pack, and three
-// portal identities (one with multi-client access).
+// Seed orchestrator for the appliance. Produces a usable baseline for
+// development and the Phase 2 acceptance smoke test:
+//
+//   - 1 firm (Granite Peak CPAs) with firm_settings
+//   - 2 offices (Headquarters + Denver Branch)
+//   - 7 staff users across PARTNER / MANAGER / SENIOR / STAFF roles
+//   - Base taxonomy: 4 service lines, 12 work codes, 8 engagement types,
+//     standard reason codes
+//   - 5 sample clients (each with a partner-in-charge)
+//   - 3 portal identities — one of which has client_portal_access to
+//     three different clients (the multi-entity scenario)
+//
+// Idempotent at the firm level: re-running won't duplicate the seed firm
+// (matched by firm name). Inserting on a populated DB is a no-op.
+
+import postgres from 'postgres';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import { eq, and, sql } from 'drizzle-orm';
+
+import {
+  firms,
+  firmSettings,
+  offices,
+  appUsers,
+  serviceLines,
+  workCodes,
+  engagementTypes,
+  reasonCodes,
+  clients,
+} from '../schema/core';
+import { portalIdentity, clientPortalAccess } from '../schema/portal';
+
+const FIRM_NAME = 'Granite Peak CPAs';
 
 async function main(): Promise<void> {
+  const url = process.env['DATABASE_URL'];
+  if (!url) throw new Error('DATABASE_URL is required');
+
+  const client = postgres(url, { max: 1 });
+  const db = drizzle(client);
+
+  try {
+    const existing = await db.select().from(firms).where(eq(firms.name, FIRM_NAME)).limit(1);
+    if (existing.length > 0) {
+      log(`firm '${FIRM_NAME}' already seeded — exiting cleanly`);
+      return;
+    }
+
+    await db.transaction(async (tx) => {
+      const firmId = await seedFirm(tx);
+      const officeIds = await seedOffices(tx, firmId);
+      const userIds = await seedUsers(tx, firmId, officeIds);
+      const serviceLineIds = await seedServiceLines(tx, firmId);
+      await seedWorkCodes(tx, firmId, serviceLineIds);
+      await seedEngagementTypes(tx, firmId, serviceLineIds);
+      await seedReasonCodes(tx, firmId);
+      const clientIds = await seedClients(tx, firmId, userIds);
+      await seedPortalIdentities(tx, firmId, clientIds, userIds);
+    });
+
+    log(`seeded firm '${FIRM_NAME}'`);
+  } finally {
+    await client.end({ timeout: 5 });
+  }
+}
+
+type Tx = Parameters<Parameters<PostgresJsDatabase['transaction']>[0]>[0];
+
+async function seedFirm(tx: Tx): Promise<string> {
+  const [row] = await tx
+    .insert(firms)
+    .values({ name: FIRM_NAME, fiscalYearStartMonth: 1, defaultTermsDays: 30 })
+    .returning({ id: firms.id });
+  if (!row) throw new Error('failed to insert firm');
+  await tx.insert(firmSettings).values({ firmId: row.id });
+  return row.id;
+}
+
+async function seedOffices(tx: Tx, firmId: string): Promise<string[]> {
+  const rows = await tx
+    .insert(offices)
+    .values([
+      { firmId, name: 'Headquarters', timezone: 'America/Chicago', isDefault: true },
+      { firmId, name: 'Denver Branch', timezone: 'America/Denver', isDefault: false },
+    ])
+    .returning({ id: offices.id });
+  return rows.map((r) => r.id);
+}
+
+const STAFF_SEED = [
+  { email: '[email protected]', fullName: 'Sarah Chen' },
+  { email: '[email protected]', fullName: 'Mike Davis' },
+  { email: '[email protected]', fullName: 'Rachel Kim' },
+  { email: '[email protected]', fullName: 'Jenny Park' },
+  { email: '[email protected]', fullName: 'David Park' },
+  { email: '[email protected]', fullName: 'Linda Hayes' },
+  { email: '[email protected]', fullName: 'Tom Vance' },
+];
+
+async function seedUsers(tx: Tx, firmId: string, officeIds: string[]): Promise<string[]> {
+  const defaultOffice = officeIds[0];
+  const rows = await tx
+    .insert(appUsers)
+    .values(
+      STAFF_SEED.map((u) => ({
+        firmId,
+        email: u.email,
+        fullName: u.fullName,
+        defaultOfficeId: defaultOffice,
+      })),
+    )
+    .returning({ id: appUsers.id });
+  return rows.map((r) => r.id);
+}
+
+const SERVICE_LINES = [
+  { name: 'Tax', category: 'tax' as const, color: '#3b82f6' },
+  { name: 'Audit', category: 'audit' as const, color: '#ef4444' },
+  { name: 'Advisory', category: 'advisory' as const, color: '#22c55e' },
+  { name: 'Bookkeeping', category: 'bookkeeping' as const, color: '#f59e0b' },
+];
+
+async function seedServiceLines(tx: Tx, firmId: string): Promise<Record<string, string>> {
+  const rows = await tx
+    .insert(serviceLines)
+    .values(SERVICE_LINES.map((s) => ({ firmId, ...s })))
+    .returning({ id: serviceLines.id, name: serviceLines.name });
+  return Object.fromEntries(rows.map((r) => [r.name, r.id]));
+}
+
+async function seedWorkCodes(tx: Tx, firmId: string, sl: Record<string, string>): Promise<void> {
+  const codes = [
+    { key: 'tax_prep', name: 'Tax Preparation', line: 'Tax' },
+    { key: 'tax_review', name: 'Tax Review', line: 'Tax' },
+    { key: 'tax_planning', name: 'Tax Planning', line: 'Tax' },
+    { key: 'audit_fieldwork', name: 'Audit Fieldwork', line: 'Audit' },
+    { key: 'audit_review', name: 'Audit Review', line: 'Audit' },
+    { key: 'audit_planning', name: 'Audit Planning', line: 'Audit' },
+    { key: 'advisory_meeting', name: 'Advisory Meeting', line: 'Advisory' },
+    { key: 'advisory_research', name: 'Advisory Research', line: 'Advisory' },
+    { key: 'bookkeeping_entry', name: 'Bookkeeping Entry', line: 'Bookkeeping' },
+    { key: 'bookkeeping_reconcile', name: 'Bookkeeping Reconcile', line: 'Bookkeeping' },
+    { key: 'admin', name: 'Internal / Administrative', line: 'Tax', billable: false },
+    { key: 'cpe', name: 'Continuing Education', line: 'Tax', billable: false },
+  ];
+
+  await tx.insert(workCodes).values(
+    codes.map((c) => ({
+      firmId,
+      serviceLineId: sl[c.line],
+      key: c.key,
+      name: c.name,
+      billableDefault: c.billable ?? true,
+    })),
+  );
+}
+
+async function seedEngagementTypes(
+  tx: Tx,
+  firmId: string,
+  sl: Record<string, string>,
+): Promise<void> {
+  const types = [
+    { key: 'individual_1040', name: 'Individual 1040', line: 'Tax', fee: 'FIXED_FEE' as const },
+    { key: '1120s', name: '1120-S Tax Return', line: 'Tax', fee: 'FIXED_FEE' as const },
+    { key: '1065', name: '1065 Partnership Return', line: 'Tax', fee: 'FIXED_FEE' as const },
+    {
+      key: 'audit_gaas',
+      name: 'Audit Engagement (GAAS)',
+      line: 'Audit',
+      fee: 'HOURLY_NTE' as const,
+    },
+    {
+      key: 'review_ssars',
+      name: 'Review Engagement (SSARS)',
+      line: 'Audit',
+      fee: 'FIXED_FEE' as const,
+    },
+    {
+      key: 'compilation_ssars',
+      name: 'Compilation Engagement (SSARS)',
+      line: 'Audit',
+      fee: 'FIXED_FEE' as const,
+    },
+    {
+      key: 'monthly_bookkeeping',
+      name: 'Monthly Bookkeeping',
+      line: 'Bookkeeping',
+      fee: 'RECURRING_SUBSCRIPTION' as const,
+    },
+    {
+      key: 'payroll_services',
+      name: 'Payroll Services',
+      line: 'Bookkeeping',
+      fee: 'RECURRING_SUBSCRIPTION' as const,
+    },
+  ];
+
+  await tx.insert(engagementTypes).values(
+    types.map((t) => ({
+      firmId,
+      serviceLineId: sl[t.line],
+      key: t.key,
+      name: t.name,
+      defaultFeeStructure: t.fee,
+    })),
+  );
+}
+
+async function seedReasonCodes(tx: Tx, firmId: string): Promise<void> {
+  await tx.insert(reasonCodes).values([
+    { firmId, category: 'WRITE_DOWN', label: 'Scope creep' },
+    { firmId, category: 'WRITE_DOWN', label: 'Client relationship' },
+    { firmId, category: 'WRITE_DOWN', label: 'Inefficiency' },
+    { firmId, category: 'WRITE_DOWN', label: 'Estimating error' },
+    { firmId, category: 'WRITE_UP', label: 'Premium service' },
+    { firmId, category: 'WRITE_UP', label: 'Rush delivery' },
+    { firmId, category: 'TRANSFER', label: 'Cost transfer between engagements' },
+  ]);
+}
+
+const CLIENT_SEED = [
+  { name: 'Holland Manufacturing LLC', terms: 30 },
+  { name: 'Vance Holdings Inc', terms: 30 },
+  { name: 'Holland Family Trust', terms: 30 },
+  { name: 'Vance Realty Partners', terms: 30 },
+  { name: 'Polson Bakery', terms: 15 },
+];
+
+async function seedClients(tx: Tx, firmId: string, userIds: string[]): Promise<string[]> {
+  const partnerId = userIds[0];
+  if (!partnerId) throw new Error('no partner user seeded');
+  const rows = await tx
+    .insert(clients)
+    .values(
+      CLIENT_SEED.map((c, idx) => ({
+        firmId,
+        name: c.name,
+        partnerInChargeId: userIds[idx % userIds.length] ?? partnerId,
+        billingContactEmail: `billing@${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.example`,
+        termsDays: c.terms,
+      })),
+    )
+    .returning({ id: clients.id, name: clients.name });
+  return rows.map((r) => r.id);
+}
+
+async function seedPortalIdentities(
+  tx: Tx,
+  firmId: string,
+  clientIds: string[],
+  userIds: string[],
+): Promise<void> {
+  const inviter = userIds[0]!;
+  const [holland, vance, _holland2, vanceRealty, polson] = clientIds;
+  if (!holland || !vance || !vanceRealty || !polson) {
+    throw new Error('expected at least 4 seeded clients');
+  }
+
+  // Identity 1: Tom Vance — three client accesses (the multi-entity demo).
+  const [tom] = await tx
+    .insert(portalIdentity)
+    .values({
+      firmId,
+      fullName: 'Tom Vance',
+      primaryEmail: '[email protected]',
+      primaryPhone: '+13125550148',
+      preferredMethod: 'EMAIL',
+    })
+    .returning({ id: portalIdentity.id });
+  if (!tom) throw new Error('failed to insert portal_identity Tom');
+
+  await tx.insert(clientPortalAccess).values([
+    {
+      portalIdentityId: tom.id,
+      clientId: vance,
+      role: 'FULL',
+      invitedBy: inviter,
+      invitedAt: new Date(),
+      acceptedAt: new Date(),
+      status: 'ACTIVE',
+    },
+    {
+      portalIdentityId: tom.id,
+      clientId: vanceRealty,
+      role: 'PAY_ONLY',
+      invitedBy: inviter,
+      invitedAt: new Date(),
+      acceptedAt: new Date(),
+      status: 'ACTIVE',
+    },
+    {
+      portalIdentityId: tom.id,
+      clientId: holland,
+      role: 'VIEW_ONLY',
+      invitedBy: inviter,
+      invitedAt: new Date(),
+      acceptedAt: new Date(),
+      status: 'ACTIVE',
+    },
+  ]);
+
+  // Identity 2: Lisa Holland — single access to Holland Manufacturing.
+  const [lisa] = await tx
+    .insert(portalIdentity)
+    .values({
+      firmId,
+      fullName: 'Lisa Holland',
+      primaryEmail: '[email protected]',
+      preferredMethod: 'EMAIL',
+    })
+    .returning({ id: portalIdentity.id });
+  if (!lisa) throw new Error('failed to insert portal_identity Lisa');
+  await tx.insert(clientPortalAccess).values({
+    portalIdentityId: lisa.id,
+    clientId: holland,
+    role: 'FULL',
+    invitedBy: inviter,
+    invitedAt: new Date(),
+    acceptedAt: new Date(),
+    status: 'ACTIVE',
+  });
+
+  // Identity 3: Polson Bakery owner — SMS-preferred portal access.
+  const [polsonOwner] = await tx
+    .insert(portalIdentity)
+    .values({
+      firmId,
+      fullName: 'Renee Polson',
+      primaryPhone: '+13125550149',
+      preferredMethod: 'SMS',
+    })
+    .returning({ id: portalIdentity.id });
+  if (!polsonOwner) throw new Error('failed to insert portal_identity Renee');
+  await tx.insert(clientPortalAccess).values({
+    portalIdentityId: polsonOwner.id,
+    clientId: polson,
+    role: 'FULL',
+    invitedBy: inviter,
+    invitedAt: new Date(),
+    acceptedAt: new Date(),
+    status: 'ACTIVE',
+  });
+
+  // Silence the linter for the discarded destructuring var.
+  void sql;
+  void and;
+}
+
+function log(msg: string): void {
   // eslint-disable-next-line no-console
-  console.log('seed: nothing to do yet (Phase 2 wires this up)');
+  console.log(`seed: ${msg}`);
 }
 
 main().catch((err: unknown) => {

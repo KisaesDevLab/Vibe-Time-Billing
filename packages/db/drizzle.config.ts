@@ -2,11 +2,12 @@
 import type { Config } from 'drizzle-kit';
 
 export default {
-  schema: './src/schema/*.ts',
+  schema: './src/schema/index.ts',
   out: './migrations',
-  dialect: 'postgresql',
+  driver: 'pg',
   dbCredentials: {
-    url: process.env['DATABASE_URL'] ?? 'postgresql://vibe:vibe@localhost:5432/vibe_tb',
+    connectionString:
+      process.env['DATABASE_URL'] ?? 'postgresql://vibe:vibe@localhost:5432/vibe_tb',
   },
   strict: true,
   verbose: true,
