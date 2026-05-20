@@ -20,6 +20,8 @@ import { createAuditRouter } from './audit/routes';
 import { createBillingBatchRouter } from './billing-batches/routes';
 import { createAdjustmentRouter } from './adjustments/routes';
 import { createReportRouter } from './reports/routes';
+import { createInvoiceRouter } from './invoices/routes';
+import { createPortalInvoiceRouter } from './portal/invoices';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -29,6 +31,14 @@ export interface AppDeps {
   sendMagicLink?: StaffRoutesDeps['sendMagicLink'];
   sendPortalEmail?: PortalRoutesDeps['sendEmail'];
   sendPortalSms?: PortalRoutesDeps['sendSms'];
+  // Optional payment provider hook. In dev/test the portal pay endpoint
+  // returns 402 if no provider is wired; production injects the Stripe
+  // client (apps/api/src/payments/stripe.ts) per the firm's BYO keys.
+  chargeInvoice?: (args: {
+    invoiceId: string;
+    amountCents: number;
+    metadata: Record<string, string>;
+  }) => Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }>;
   fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
@@ -107,6 +117,9 @@ export function createApp(deps: AppDeps): Express {
   const reportRouter = createReportRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/reports', auth.requireAuth, auth.requireCsrf, reportRouter);
 
+  const invoiceRouter = createInvoiceRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/invoices', auth.requireAuth, auth.requireCsrf, invoiceRouter);
+
   // Portal auth realm — distinct middleware, signing key, cookie.
   const portal = portalAuthDeps(deps.sessionStore);
   const portalRouter = createPortalAuthRouter({
@@ -118,6 +131,13 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/auth', portalRouter);
+
+  const portalInvoiceRouter = createPortalInvoiceRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+    chargeInvoice: deps.chargeInvoice,
+  });
+  app.use('/api/portal/invoices', portalInvoiceRouter);
 
   return app;
 }

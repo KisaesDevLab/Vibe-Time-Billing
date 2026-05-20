@@ -1,0 +1,247 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Portal-side invoice endpoints. Scoped to the session's active_client_id.
+// Marks invoice.first_viewed_at on first GET (Q30 — portal-view receipt).
+
+import express, { type Request, type Response, type Router } from 'express';
+import { z } from 'zod';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+
+import type { Database } from '@vibe/db';
+import { clients, firms, invoiceLineItems, invoices, payments } from '@vibe/db/schema';
+import { renderInvoiceHtml } from '@vibe/core/invoicing';
+
+import { emitAudit } from '../auth/audit';
+import { logger } from '../logger';
+
+export interface PortalInvoiceRoutesDeps {
+  db: Database | null;
+  requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  // Pluggable payment provider, wired from app.ts.
+  chargeInvoice?: (args: {
+    invoiceId: string;
+    amountCents: number;
+    metadata: Record<string, string>;
+  }) => Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }>;
+}
+
+const PaySchema = z.object({
+  paymentMethodToken: z.string().min(1).optional(),
+  amountCents: z.number().int().positive().optional(),
+});
+
+export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router {
+  const router = express.Router();
+
+  router.get('/', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ open: [], paid: [] });
+      return;
+    }
+    const rows = await deps.db
+      .select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        issueDate: invoices.issueDate,
+        dueDate: invoices.dueDate,
+        totalCents: invoices.totalCents,
+        paidCents: invoices.paidCents,
+        status: invoices.status,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.clientId, session.activeClientId),
+          inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE']),
+        ),
+      )
+      .orderBy(desc(invoices.issueDate))
+      .limit(500);
+    const open = rows.filter((r) => r.status !== 'PAID');
+    const paid = rows.filter((r) => r.status === 'PAID');
+    res.json({ open, paid });
+  });
+
+  router.get('/:id', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ invoice: null });
+      return;
+    }
+    const [inv] = await deps.db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, req.params['id']!), eq(invoices.clientId, session.activeClientId)))
+      .limit(1);
+    if (!inv) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const lines = await deps.db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, inv.id))
+      .orderBy(invoiceLineItems.sortOrder);
+
+    // Q30: portal-view receipt
+    if (!inv.firstViewedAt) {
+      await deps.db
+        .update(invoices)
+        .set({ firstViewedAt: new Date() })
+        .where(and(eq(invoices.id, inv.id), isNull(invoices.firstViewedAt)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorPortalIdentityId: session.portalIdentityId,
+        activeClientId: session.activeClientId,
+        after: { firstViewedAt: 'now' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    }
+    res.json({ invoice: inv, lineItems: lines });
+  });
+
+  router.get('/:id/pdf.html', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).send('db_unavailable');
+      return;
+    }
+    const [inv] = await deps.db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, req.params['id']!), eq(invoices.clientId, session.activeClientId)))
+      .limit(1);
+    if (!inv) {
+      res.status(404).send('not found');
+      return;
+    }
+    const [firm] = await deps.db
+      .select({ name: firms.name })
+      .from(firms)
+      .where(eq(firms.id, inv.firmId))
+      .limit(1);
+    const [client] = await deps.db
+      .select({ name: clients.name, billingAddress: clients.billingAddress })
+      .from(clients)
+      .where(eq(clients.id, inv.clientId))
+      .limit(1);
+    const lines = await deps.db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, inv.id))
+      .orderBy(invoiceLineItems.sortOrder);
+    const html = renderInvoiceHtml({
+      invoiceNumber: inv.invoiceNumber,
+      issueDate: inv.issueDate,
+      dueDate: inv.dueDate,
+      firm: { name: firm?.name ?? 'Firm' },
+      client: { name: client?.name ?? 'Client', billingAddress: client?.billingAddress ?? null },
+      lines: lines.map((l) => ({
+        kind: l.kind,
+        description: l.description,
+        amountCents: Number(l.amountCents),
+      })),
+      subtotalCents: Number(inv.subtotalCents),
+      processingFeeCents: Number(inv.feeCents),
+      totalCents: Number(inv.totalCents),
+      notes: inv.notes ?? null,
+    });
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  });
+
+  router.post('/:id/pay', deps.requireAuth, async (req: Request, res: Response) => {
+    const parsed = PaySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const [inv] = await deps.db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.id, req.params['id']!), eq(invoices.clientId, session.activeClientId)))
+      .limit(1);
+    if (!inv) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+      res.status(409).json({ error: 'invoice_not_payable', status: inv.status });
+      return;
+    }
+
+    const amount = parsed.data.amountCents ?? inv.totalCents - inv.paidCents;
+    if (amount <= 0) {
+      res.status(400).json({ error: 'no_balance_due' });
+      return;
+    }
+
+    const result = deps.chargeInvoice
+      ? await deps.chargeInvoice({
+          invoiceId: inv.id,
+          amountCents: amount,
+          metadata: {
+            invoice_id: inv.id,
+            invoice_number: inv.invoiceNumber,
+            firm_id: inv.firmId,
+            client_id: inv.clientId,
+          },
+        })
+      : { ok: false, errorMessage: 'no_payment_provider_configured' };
+
+    if (!result.ok) {
+      res.status(402).json({ error: 'payment_failed', detail: result.errorMessage });
+      return;
+    }
+
+    await deps.db.transaction(async (tx) => {
+      await tx.insert(payments).values({
+        invoiceId: inv.id,
+        amountCents: amount,
+        feeCents: 0,
+        provider: 'STRIPE',
+        providerChargeId: result.providerChargeId ?? null,
+        status: 'SUCCEEDED',
+        receivedAt: new Date(),
+      });
+      const newPaid = inv.paidCents + amount;
+      const newStatus = newPaid >= inv.totalCents ? 'PAID' : 'PARTIALLY_PAID';
+      await tx
+        .update(invoices)
+        .set({
+          paidCents: newPaid,
+          status: newStatus,
+          paidAt: newStatus === 'PAID' ? new Date() : null,
+        })
+        .where(eq(invoices.id, inv.id));
+    });
+
+    await emitAudit(deps.db, {
+      action: 'PAYMENT',
+      entityType: 'invoice',
+      entityId: inv.id,
+      actorPortalIdentityId: session.portalIdentityId,
+      activeClientId: session.activeClientId,
+      after: { amountCents: amount, providerChargeId: result.providerChargeId },
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+    res.json({ ok: true, paidCents: inv.paidCents + amount });
+  });
+
+  return router;
+}
+
+function clientIp(req: Request): string {
+  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}

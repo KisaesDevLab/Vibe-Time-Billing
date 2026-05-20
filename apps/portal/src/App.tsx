@@ -6,6 +6,7 @@ import { AppShell, Button, Pill } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
 import { HomePage } from './pages/Home';
+import { PortalInvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 
 export function App(): JSX.Element {
@@ -20,6 +21,7 @@ export function App(): JSX.Element {
               <Shell>
                 <Routes>
                   <Route path="/" element={<HomePage />} />
+                  <Route path="/invoices/*" element={<PortalInvoicesPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>

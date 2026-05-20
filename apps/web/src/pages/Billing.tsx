@@ -302,6 +302,23 @@ function BatchDetailPage(): JSX.Element {
                 {finalizing ? 'Finalizing…' : 'Finalize'}
               </Button>
             </div>
+          ) : detail.batch.status === 'APPROVED' ? (
+            <Button
+              onClick={async () => {
+                try {
+                  const r = await api<{ id: string }>('/api/staff/invoices/generate-from-batch', {
+                    method: 'POST',
+                    body: JSON.stringify({ billingBatchId: detail.batch.id }),
+                  });
+                  window.location.href = `/invoices`;
+                  void r;
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'invoice gen failed');
+                }
+              }}
+            >
+              Generate invoice
+            </Button>
           ) : null
         }
       >
