@@ -300,7 +300,7 @@ function proRata(
   // distribute the residual to entries with the largest fractional part.
   const exact: number[] = weights.map((w) => (w * totalAmountCents) / weightSum);
   const floor: number[] = exact.map((v) => Math.trunc(v));
-  let allocated = floor.reduce((s, v) => s + v, 0);
+  const allocated = floor.reduce((s, v) => s + v, 0);
   let residual = totalAmountCents - allocated;
 
   // Rank entries by the magnitude of their fractional part (descending).

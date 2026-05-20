@@ -10,7 +10,8 @@
     ".": "./src/index.ts",
     "./auth": "./src/auth/index.ts",
     "./rbac": "./src/rbac/index.ts",
-    "./rates": "./src/rates/index.ts"
+    "./rates": "./src/rates/index.ts",
+    "./billing": "./src/billing/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
