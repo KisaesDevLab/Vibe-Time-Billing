@@ -745,32 +745,30 @@ Blocker tags used in notes
 
 ---
 
-## Totals
+## Totals (post-Session-I)
 
-Across 513 numbered items:
+Across 545 numbered items (true count from per-phase tables; the BUILD_PLAN summary line of "513" undercounts by ~32):
 
-- `✅` **209** (≈40.7%)
-- `⚠` **121** (≈23.6%)
-- `❌` **183** (≈35.7%)
+- `✅` **214** (≈39.3%)
+- `⚠` **100** (≈18.3%)
+- `❌` **231** (≈42.4%)
 
-The product has reached the point where the spine of every MVP phase has at least one working layer (schema + endpoint + UI), with the major remaining work being external-credential wiring (Stripe charge-from-recurring, email/SMS dispatchers, AI provider runtime config) and the eight workers/MVs that turn point-in-time endpoints into a self-driving appliance.
+Δ from previous audit (209/121/183): **+5 done, -21 partial, +48 missing**. The headline is that Session I converted 9 items that were previously ⚠ ("schema present, no handler / no route") into fully working ✅ (Phase 2 #29, Phase 3 #18, Phase 10 #4, Phase 13 #2, Phase 14 #18, Phase 15 #1, Phase 17 #1-4, #32). The shift in `❌` is bookkeeping — the prior audit's denominators were inconsistent; the per-item statuses tell the real story.
 
 ## Top 5 phases by missing-item percentage
 
-1. **Phase 24 — Vibe Connect integration** — 6/8 ❌ + 2/8 ⚠ ≈ 75% missing
-2. **Phase 23 — AI features** — 17/28 ❌ ≈ 61% missing
-3. **Phase 26 — Polish & launch readiness** — 11/14 ❌ ≈ 79% missing
-4. **Phase 4 — Firm & user admin** — 8/15 ❌ + 3/15 ⚠ ≈ 53% missing
-5. **Phase 17 — Reporting cube** — 22/32 ❌ + 5/32 ⚠ ≈ 69% missing
+1. **Phase 26 — Polish & launch readiness** — 11/14 ❌ ≈ 79% missing
+2. **Phase 24 — Vibe Connect integration** — 6/8 ❌ + 2/8 ⚠ ≈ 75% missing
+3. **Phase 17 — Reporting cube** — 20/32 ❌ + 3/32 ⚠ ≈ 72% missing
+4. **Phase 23 — AI features** — 18/28 ❌ ≈ 64% missing
+5. **Phase 10 — Recurring billing engine** — 24/38 ❌ + 12/38 ⚠ ≈ 95% non-done (after Session I, the spine works, but autopay / hour-bank / NTE / dunning escalation are all still gaps)
 
-(Phase 21 integrations and Phase 18 approval workflows are similar runners-up at ~55-60% missing.)
+## Top 5 highest-priority gaps blocking production use (post-Session-I)
 
-## Top 5 highest-priority gaps blocking production use
+1. **Email/SMS dispatchers not wired into app.ts (Phase 13 #12, Phase 14 #15, Phase 15 #5/#7-8, Phase 16 #24-25, Phase 18 #8, Phase 3 #9)** — `apps/api/src/mail/provider.ts` and `apps/api/src/sms/provider.ts` exist as standalone modules with console/SMTP/Postmark/Resend/Twilio/TextLink impls, but `createApp` does not accept them as deps and no caller invokes `provider.send()`. Magic-link emails, invoice sends, payment confirmations, dunning steps, statements, and portal SMS OTP all still log intent without sending. This is the single largest production blocker — the whole communication surface of the appliance is dark.
+2. **Autopay execution from recurring tick (Phase 10 #25-26, Phase 14 #1 follow-up)** — `runRecurringBillingTick` now produces a DRAFT invoice in one transaction (good), but does not call `stripeProvider.chargeInvoice` for plans with `autoPayFlag = true`, does not send the invoice, and does not record the charge attempt. Subscription firms still need a human to click "Charge" on every invoice.
+3. **Approval-request row creation from adjustment route (Phase 12 #16 → Phase 18 #2)** — Adjustment POST flips status to PENDING_APPROVAL when over threshold but never inserts the `approval_request` row that the Approvals page reads from. The queue UI works; its inbox is permanently empty. One-file fix, highest ROI of any remaining gap.
+4. **Portal-identity invitation endpoint (Phase 6 #12, Phase 16 #7)** — Schema (`portal_invitation`) and SMS OTP flow are complete, but there is no firm-side `POST /clients/:id/portal-invite` endpoint or UI to mint the invite. Cold-start onboarding for the client portal is impossible without raw SQL — blocks the demo path for the whole multi-entity portal story.
+5. **AR aging snapshot consumption + dunning send (Phase 15 #4-8, Phase 17 #11/#12)** — `runArAgingSnapshot` now writes snapshots nightly (good), but no statement-generation, dunning-step send, or by-partner/by-SL aging endpoint reads from it. The data pipeline is fed; the surface is missing.
 
-1. **Materialized views for reporting (Phase 2 #29, Phase 17 #1-4, #31)** — Live `/reports/realization` works on small data, but the four locked MVs (`realization_view`, `utilization_view`, `profitability_view`, `ar_aging_snapshot`) are not in migrations, so the appliance will not meet the sub-second / 100k-entry acceptance targets. Worker `view-refresh` queue is scheduled but its handler is a no-op.
-2. **Recurring billing → invoice end-to-end (Phase 10 #4-5, #25-26, Phase 13 #2)** — `runRecurringBillingTick` creates draft `billing_batch` rows and advances `next_run_date` but does not finalize entries, generate an invoice, or charge the autopay card. Without this, the "subscription invoice fires on schedule" acceptance criteria fail.
-3. **Email/SMS dispatchers across the appliance (Phase 13 #12, Phase 14 #15, Phase 15 #5/#7-8, Phase 16 #24-25, Phase 18 #8)** — Invoice send, payment confirmation, statement, dunning steps, and portal notifications all log intent but do not call a provider. The pluggable abstraction (Q11/Q16) is in `config.ts` but no `MAIL_PROVIDER` / SMS provider is wired into `app.ts`.
-4. **Stripe webhook ingestion + reconciliation (Phase 14 #18-19, #23)** — `createStripeProvider` can sign-verify inbound payloads but there is no `/webhooks/stripe` route mounted, so charge.succeeded / charge.failed / dispute.created never reach the app. Failed-payment retry (Phase 10 #28-30) and pay-to-unlock (Phase 14 #14) both depend on this.
-5. **MCP-token issuance + admin surface for tokens, webhooks, AI provider config (Phase 22 #12, Phase 21 #4/#13, Phase 23 #6-7)** — Tokens exist in `mcp_token` and the bearer middleware works, but no UI/endpoint creates them, so the MCP server and REST API are unusable from outside without raw SQL. Same gap blocks per-firm provider/budget configuration for AI.
-
-Secondary blockers worth flagging: portal-identity invite endpoint (Phase 6 #12, dependency for the whole multi-entity portal story); approval-request row creation from the adjustment route (Phase 12 #16 → Phase 18 #2 — the queue UI works but inbox is empty); audit-log emission coverage on remaining mutations (Phase 19 #1/#6).
+Secondary blockers worth flagging: audit-log emission coverage on taxonomy/clients/engagements mutations (Phase 19 #1/#6); rate-management CRUD endpoints + admin UI (entire Phase 7 above #6, #11, #14, #20); engagement detail page (Phase 8 #15) which gates the rest of Phase 8's interactive surface.
