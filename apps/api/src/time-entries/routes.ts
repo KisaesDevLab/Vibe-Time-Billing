@@ -15,6 +15,7 @@ import {
   engagementRateOverrides,
   engagements,
   firms,
+  requiredFieldRules,
   serviceLineRates,
   timeEntries,
   timeEntryVersions,
@@ -151,6 +152,67 @@ async function loadRateCandidates(
   return out;
 }
 
+type TimeEntryCandidate = {
+  engagementId: string;
+  engagementTypeId: string | null;
+  workCodeId: string | null;
+  serviceLineId: string | null;
+  description: string | null;
+  reasonCodeId: string | null;
+};
+
+function ruleMatches(conds: Record<string, unknown>, te: TimeEntryCandidate): boolean {
+  for (const [k, v] of Object.entries(conds)) {
+    const want = String(v);
+    switch (k) {
+      case 'engagementTypeId':
+        if (te.engagementTypeId !== want) return false;
+        break;
+      case 'engagementId':
+        if (te.engagementId !== want) return false;
+        break;
+      case 'workCodeId':
+        if (te.workCodeId !== want) return false;
+        break;
+      case 'serviceLineId':
+        if (te.serviceLineId !== want) return false;
+        break;
+      default:
+        // Unknown keys make the rule never match — fail closed.
+        return false;
+    }
+  }
+  return true;
+}
+
+function missingFields(fields: string[], te: TimeEntryCandidate): string[] {
+  const missing: string[] = [];
+  for (const f of fields) {
+    const v = (te as unknown as Record<string, unknown>)[f];
+    if (v == null || (typeof v === 'string' && v.trim().length === 0)) missing.push(f);
+  }
+  return missing;
+}
+
+async function evaluateRequiredFieldRules(
+  db: Database,
+  firmId: string,
+  te: TimeEntryCandidate,
+): Promise<{ ok: true } | { ok: false; ruleId: string; ruleName: string; missing: string[] }> {
+  const rules = await db
+    .select()
+    .from(requiredFieldRules)
+    .where(and(eq(requiredFieldRules.firmId, firmId), eq(requiredFieldRules.status, 'ACTIVE')));
+  for (const r of rules) {
+    const conds = (r.conditionsJson ?? {}) as Record<string, unknown>;
+    if (!ruleMatches(conds, te)) continue;
+    const fields = Array.isArray(r.requiredFields) ? (r.requiredFields as string[]) : [];
+    const miss = missingFields(fields, te);
+    if (miss.length > 0) return { ok: false, ruleId: r.id, ruleName: r.name, missing: miss };
+  }
+  return { ok: true };
+}
+
 export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   const router = express.Router();
 
@@ -201,6 +263,24 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           .where(eq(workCodes.id, parsed.data.workCodeId))
           .limit(1);
         serviceLineId = wc?.serviceLineId ?? null;
+      }
+
+      const ruleCheck = await evaluateRequiredFieldRules(deps.db, session.firmId, {
+        engagementId: eng.id,
+        engagementTypeId: eng.engagementTypeId ?? null,
+        workCodeId: parsed.data.workCodeId ?? null,
+        serviceLineId,
+        description: parsed.data.description ?? null,
+        reasonCodeId: null,
+      });
+      if (!ruleCheck.ok) {
+        res.status(400).json({
+          error: 'required_fields_missing',
+          ruleId: ruleCheck.ruleId,
+          ruleName: ruleCheck.ruleName,
+          missing: ruleCheck.missing,
+        });
+        return;
       }
 
       const candidates = await loadRateCandidates(deps.db, {
@@ -377,6 +457,76 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   );
 
   router.get(
+    '/export.csv/by-timekeeper/:appUserId',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.send('id,entryDate,hours,amountCents\n');
+        return;
+      }
+      const start = (req.query['start'] ?? '').toString();
+      const end = (req.query['end'] ?? '').toString();
+      const conds = [eq(timeEntries.appUserId, req.params['appUserId']!)];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      const items = await deps.db
+        .select({
+          id: timeEntries.id,
+          entryDate: timeEntries.entryDate,
+          hours: timeEntries.hours,
+          rateCents: timeEntries.standardRateSnapshotCents,
+          amountCents: timeEntries.standardAmountCents,
+          billable: timeEntries.billableFlag,
+          status: timeEntries.status,
+          engagementId: timeEntries.engagementId,
+          clientId: clients.id,
+          clientName: clients.name,
+        })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(clients.firmId, session.firmId), ...conds))
+        .limit(20000);
+      const header = [
+        'id',
+        'entryDate',
+        'clientName',
+        'engagementId',
+        'hours',
+        'rateCents',
+        'amountCents',
+        'billable',
+        'status',
+      ];
+      const lines = [header.join(',')];
+      for (const t of items) {
+        lines.push(
+          [
+            t.id,
+            t.entryDate,
+            (t.clientName ?? '').replace(/,/g, ' '),
+            t.engagementId,
+            t.hours,
+            t.rateCents,
+            t.amountCents,
+            String(t.billable),
+            t.status,
+          ].join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="time-entries-${req.params['appUserId']!.slice(0, 8)}-${new Date()
+          .toISOString()
+          .slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
+  router.get(
     '/by-engagement/:engagementId',
     requirePermission(deps, 'time_entry:read:all'),
     async (req: Request, res: Response) => {
@@ -409,6 +559,35 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .where(and(...conds))
         .limit(1000);
       res.json({ items });
+    },
+  );
+
+  router.get(
+    '/suggestions/mine',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+      // Rank by frequency of (engagementId, workCodeId) pair over the
+      // last 30 days. Returns the top 10 with their last-used date so the
+      // UI can pre-fill the form.
+      const rows = await deps.db
+        .select({
+          engagementId: timeEntries.engagementId,
+          workCodeId: timeEntries.workCodeId,
+          count: sql<number>`COUNT(*)`,
+          lastDate: sql<string>`MAX(${timeEntries.entryDate})`,
+        })
+        .from(timeEntries)
+        .where(and(eq(timeEntries.appUserId, session.appUserId), gte(timeEntries.entryDate, since)))
+        .groupBy(timeEntries.engagementId, timeEntries.workCodeId)
+        .orderBy(sql`COUNT(*) DESC`)
+        .limit(10);
+      res.json({ items: rows });
     },
   );
 
@@ -1129,6 +1308,50 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           weekStart: r.weekStart,
           hours: Number(r.hours),
           amountCents: Number(r.amountCents),
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/totals/by-month',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const monthsBack = Math.min(
+        Math.max(parseInt(String(req.query['monthsBack'] ?? '12'), 10) || 12, 1),
+        36,
+      );
+      const since = new Date();
+      since.setUTCMonth(since.getUTCMonth() - monthsBack);
+      since.setUTCDate(1);
+      const sinceStr = since.toISOString().slice(0, 10);
+      const monthCol = sql<string>`to_char(date_trunc('month', ${timeEntries.entryDate})::date, 'YYYY-MM')`;
+      const rows = await deps.db
+        .select({
+          month: monthCol.as('month'),
+          hours: sql<string>`SUM(${timeEntries.hours})`.as('hours'),
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as(
+            'amountCents',
+          ),
+          count: sql<number>`COUNT(*)`.as('count'),
+        })
+        .from(timeEntries)
+        .where(
+          and(eq(timeEntries.appUserId, session.appUserId), gte(timeEntries.entryDate, sinceStr)),
+        )
+        .groupBy(monthCol)
+        .orderBy(monthCol);
+      res.json({
+        items: rows.map((r) => ({
+          month: r.month,
+          hours: Number(r.hours),
+          amountCents: Number(r.amountCents),
+          count: Number(r.count),
         })),
       });
     },

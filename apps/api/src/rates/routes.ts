@@ -639,6 +639,45 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/loaded-margin',
+    requirePermission(deps, 'rate:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      // Loaded margin = (bill - cost) / bill for the current open-ended
+      // timekeeper rate. We list every staff user with both rates set.
+      const rows = await deps.db
+        .select({
+          appUserId: appUsers.id,
+          fullName: appUsers.fullName,
+          billCents: timekeeperRates.billRateCents,
+          costCents: timekeeperRates.costRateCents,
+          effectiveStart: timekeeperRates.effectiveStart,
+        })
+        .from(timekeeperRates)
+        .innerJoin(appUsers, eq(appUsers.id, timekeeperRates.appUserId))
+        .where(and(eq(appUsers.firmId, session.firmId), isNull(timekeeperRates.effectiveEnd)));
+      const items = rows.map((r) => {
+        const bill = Number(r.billCents ?? 0);
+        const cost = r.costCents == null ? null : Number(r.costCents);
+        const marginPct = cost == null || bill <= 0 ? null : (bill - cost) / bill;
+        return {
+          appUserId: r.appUserId,
+          fullName: r.fullName,
+          billCents: bill,
+          costCents: cost,
+          marginPct,
+          effectiveStart: r.effectiveStart,
+        };
+      });
+      res.json({ items });
+    },
+  );
+
   return router;
 }
 

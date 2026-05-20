@@ -20,7 +20,7 @@ export interface AttachmentRoutesDeps extends RbacDeps {
 }
 
 const CreateSchema = z.object({
-  ownerType: z.enum(['engagement', 'invoice', 'client', 'time_entry']),
+  ownerType: z.enum(['engagement', 'invoice', 'client', 'time_entry', 'engagement_letter']),
   ownerId: z.string().uuid(),
   filename: z.string().min(1).max(400),
   mimeType: z.string().max(120),
