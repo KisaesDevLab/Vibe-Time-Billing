@@ -5,9 +5,12 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppShell, Button, Pill } from '@vibe/ui';
 
 import { AccountPage } from './pages/Account';
+import { AdminLayout } from './pages/admin';
 import { AuthProvider, useAuth } from './auth-context';
+import { ClientsPage } from './pages/Clients';
 import { DashboardPage } from './pages/Dashboard';
 import { LoginPage } from './pages/Login';
+import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 
 export function App(): JSX.Element {
@@ -30,7 +33,10 @@ export function App(): JSX.Element {
               <Shell>
                 <Routes>
                   <Route path="/" element={<DashboardPage />} />
+                  <Route path="/clients" element={<ClientsPage />} />
+                  <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/account" element={<AccountPage />} />
+                  <Route path="/admin/*" element={<AdminLayout />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>
