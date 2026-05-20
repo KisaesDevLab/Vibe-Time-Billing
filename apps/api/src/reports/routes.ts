@@ -16,8 +16,13 @@ import {
   billingBatches,
   clients,
   engagements,
+  invoices,
+  payments,
+  recurringBillingPlans,
+  timeEntries,
 } from '@vibe/db/schema';
 import { rollup, rollupBy, type AllocationRow } from '@vibe/core/reporting';
+import { sql as drz } from 'drizzle-orm';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
@@ -485,6 +490,364 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         `attachment; filename="realization-${new Date().toISOString().slice(0, 10)}.csv"`,
       );
       res.send(lines.join('\n') + '\n');
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // DSO + collection rate (Phase 17 #15)
+  // -------------------------------------------------------------------
+  router.get(
+    '/dso',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ dsoDays: null, collectionRatePct: null });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 30),
+        365,
+      );
+      const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+      const [billed] = await deps.db
+        .select({ t: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)` })
+        .from(invoices)
+        .where(
+          and(eq(invoices.firmId, session.firmId), drz`${invoices.issueDate} >= ${since}::date`),
+        );
+      const [paid] = await deps.db
+        .select({
+          t: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            eq(payments.status, 'SUCCEEDED'),
+            drz`${payments.receivedAt} >= ${since}::timestamptz`,
+          ),
+        );
+      const [outstanding] = await deps.db
+        .select({
+          t: drz<number>`COALESCE(SUM(${invoices.totalCents} - ${invoices.paidCents}), 0)`,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        );
+      const billedT = Number(billed?.t ?? 0);
+      const paidT = Number(paid?.t ?? 0);
+      const outstandingT = Number(outstanding?.t ?? 0);
+      const avgDaily = billedT > 0 ? billedT / days : 0;
+      const dsoDays = avgDaily > 0 ? outstandingT / avgDaily : null;
+      const collectionRatePct = billedT > 0 ? (paidT / billedT) * 100 : null;
+      res.json({
+        windowDays: days,
+        billedCents: billedT,
+        paidCents: paidT,
+        outstandingCents: outstandingT,
+        dsoDays,
+        collectionRatePct,
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Collection realization (paid / billed) per partner (Phase 18 #7)
+  // -------------------------------------------------------------------
+  router.get(
+    '/collection-realization',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          partnerId: clients.partnerInChargeId,
+          billed: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          paid: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+        })
+        .from(invoices)
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .where(
+          and(eq(invoices.firmId, session.firmId), drz`${invoices.issueDate} >= ${since}::date`),
+        )
+        .groupBy(clients.partnerInChargeId);
+      res.json({
+        windowDays: 90,
+        items: rows.map((r) => {
+          const b = Number(r.billed);
+          const p = Number(r.paid);
+          return {
+            partnerId: r.partnerId,
+            billedCents: b,
+            paidCents: p,
+            collectionRatePct: b > 0 ? (p / b) * 100 : null,
+          };
+        }),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Effective rate (Phase 18 #8): billed value / hours.
+  // -------------------------------------------------------------------
+  router.get(
+    '/effective-rate',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          appUserId: timeEntries.appUserId,
+          fullName: appUsers.fullName,
+          hours: drz<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          amountCents: drz<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+        })
+        .from(timeEntries)
+        .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .where(
+          and(eq(appUsers.firmId, session.firmId), drz`${timeEntries.entryDate} >= ${since}::date`),
+        )
+        .groupBy(timeEntries.appUserId, appUsers.fullName);
+      res.json({
+        windowDays: 90,
+        items: rows.map((r) => {
+          const h = Number(r.hours);
+          const a = Number(r.amountCents);
+          return {
+            appUserId: r.appUserId,
+            fullName: r.fullName,
+            hours: h,
+            amountCents: a,
+            effectiveRateCents: h > 0 ? Math.round(a / h) : null,
+          };
+        }),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Period-over-period revenue (Phase 18 #14)
+  // -------------------------------------------------------------------
+  router.get(
+    '/revenue-period-over-period',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const monthCol = drz<string>`to_char(date_trunc('month', ${invoices.issueDate})::date, 'YYYY-MM')`;
+      const rows = await deps.db
+        .select({
+          month: monthCol.as('month'),
+          billed: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          paid: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+        })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId))
+        .groupBy(monthCol)
+        .orderBy(monthCol);
+      const items = rows.map((r, i) => {
+        const prev = rows[i - 1];
+        const cur = Number(r.billed);
+        const prv = prev ? Number(prev.billed) : 0;
+        const pctChange = prv > 0 ? ((cur - prv) / prv) * 100 : null;
+        return {
+          month: r.month,
+          billedCents: cur,
+          paidCents: Number(r.paid),
+          pctChangeBilled: pctChange,
+        };
+      });
+      res.json({ items });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // MRR / ARR estimator from active recurring plans (Phase 18 #15)
+  // -------------------------------------------------------------------
+  router.get(
+    '/mrr',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ mrrCents: 0, arrCents: 0, planCount: 0, items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: recurringBillingPlans.id,
+          engagementId: recurringBillingPlans.engagementId,
+          frequency: recurringBillingPlans.frequency,
+          amountCents: recurringBillingPlans.amountCents,
+        })
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(clients.firmId, session.firmId), eq(recurringBillingPlans.status, 'ACTIVE')));
+      // Normalize each plan amount to a monthly figure.
+      const monthly = (freq: string, amount: number): number => {
+        switch (freq) {
+          case 'WEEKLY':
+            return Math.round((amount * 52) / 12);
+          case 'BIWEEKLY':
+            return Math.round((amount * 26) / 12);
+          case 'MONTHLY':
+            return amount;
+          case 'QUARTERLY':
+            return Math.round(amount / 3);
+          case 'ANNUAL':
+            return Math.round(amount / 12);
+          default:
+            return amount;
+        }
+      };
+      const items = rows.map((r) => ({
+        id: r.id,
+        engagementId: r.engagementId,
+        frequency: r.frequency,
+        amountCents: Number(r.amountCents),
+        monthlyAmountCents: monthly(r.frequency, Number(r.amountCents)),
+      }));
+      const mrr = items.reduce((a, b) => a + b.monthlyAmountCents, 0);
+      res.json({ mrrCents: mrr, arrCents: mrr * 12, planCount: items.length, items });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Partner book-of-business (Phase 18 #18)
+  // -------------------------------------------------------------------
+  router.get(
+    '/book-of-business',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const since = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          partnerId: clients.partnerInChargeId,
+          clientCount: drz<number>`COUNT(DISTINCT ${clients.id})`,
+          billedCents: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          paidCents: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+        })
+        .from(clients)
+        .leftJoin(
+          invoices,
+          and(eq(invoices.clientId, clients.id), drz`${invoices.issueDate} >= ${since}::date`),
+        )
+        .where(eq(clients.firmId, session.firmId))
+        .groupBy(clients.partnerInChargeId);
+      res.json({
+        windowDays: 365,
+        items: rows.map((r) => ({
+          partnerId: r.partnerId,
+          clientCount: Number(r.clientCount),
+          billedCents: Number(r.billedCents),
+          paidCents: Number(r.paidCents),
+        })),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Customer lifetime value (Phase 18 #19): lifetime paid revenue per client.
+  // -------------------------------------------------------------------
+  router.get(
+    '/clv',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          clientId: invoices.clientId,
+          paidCents: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+          billedCents: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          firstInvoiceAt: drz<string>`MIN(${invoices.issueDate})`,
+          lastInvoiceAt: drz<string>`MAX(${invoices.issueDate})`,
+        })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId))
+        .groupBy(invoices.clientId)
+        .orderBy(drz`COALESCE(SUM(${invoices.paidCents}), 0) DESC`)
+        .limit(200);
+      res.json({
+        items: rows.map((r) => ({
+          clientId: r.clientId,
+          paidCents: Number(r.paidCents),
+          billedCents: Number(r.billedCents),
+          firstInvoiceAt: r.firstInvoiceAt,
+          lastInvoiceAt: r.lastInvoiceAt,
+        })),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Scope-creep tracking (Phase 18 #16): out-of-scope hours per mixed-mode
+  // engagement vs total hours.
+  // -------------------------------------------------------------------
+  router.get(
+    '/scope-creep',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          engagementId: engagements.id,
+          totalHours: drz<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          outOfScopeHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.inScopeFlag} = false), 0)`,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .leftJoin(timeEntries, eq(timeEntries.engagementId, engagements.id))
+        .where(and(eq(clients.firmId, session.firmId), eq(engagements.mixedModeEnabled, true)))
+        .groupBy(engagements.id);
+      res.json({
+        items: rows
+          .map((r) => {
+            const total = Number(r.totalHours);
+            const out = Number(r.outOfScopeHours);
+            return {
+              engagementId: r.engagementId,
+              totalHours: total,
+              outOfScopeHours: out,
+              creepPct: total > 0 ? (out / total) * 100 : 0,
+            };
+          })
+          .filter((r) => r.totalHours > 0)
+          .sort((a, b) => b.creepPct - a.creepPct)
+          .slice(0, 100),
+      });
     },
   );
 
