@@ -8,6 +8,8 @@ import { AuthProvider, useAuth } from './auth-context';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
+import { PaymentMethodsPage } from './pages/PaymentMethods';
+import { StatementPage } from './pages/Statement';
 
 export function App(): JSX.Element {
   return (
@@ -22,6 +24,8 @@ export function App(): JSX.Element {
                 <Routes>
                   <Route path="/" element={<HomePage />} />
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
+                  <Route path="/statement" element={<StatementPage />} />
+                  <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>
