@@ -14,9 +14,11 @@
     "test:unit": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@vibe/core": "workspace:*",
     "@vibe/db": "workspace:*",
     "@vibe/types": "workspace:*",
     "bullmq": "^5.7.0",
+    "drizzle-orm": "^0.30.10",
     "ioredis": "^5.4.1",
     "pino": "^9.1.0"
   },

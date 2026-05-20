@@ -24,6 +24,8 @@ import { createInvoiceRouter } from './invoices/routes';
 import { createArRouter } from './ar/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
+import { createRestV1Router } from './rest-v1/routes';
+import { createMcpRouter } from './mcp/routes';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -149,6 +151,12 @@ export function createApp(deps: AppDeps): Express {
     chargeInvoice: deps.chargeInvoice,
   });
   app.use('/api/portal/invoices', portalInvoiceRouter);
+
+  // REST v1 — token-authenticated integrator surface.
+  app.use('/api/v1', createRestV1Router({ db: deps.db }));
+
+  // MCP HTTP shim — token-authenticated agent surface.
+  app.use('/mcp', createMcpRouter({ db: deps.db }));
 
   return app;
 }

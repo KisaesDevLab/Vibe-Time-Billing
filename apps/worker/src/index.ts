@@ -10,6 +10,11 @@ import { Queue, QueueEvents, Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { pino } from 'pino';
 
+import { createDb, type Database } from '@vibe/db';
+
+import { runRecurringBillingTick } from './jobs/recurring-billing';
+import { runDunningSweep } from './jobs/dunning-sweep';
+
 const logger = pino({
   level: process.env['LOG_LEVEL'] ?? 'info',
   base: { service: 'vibe-tb-worker' },
@@ -17,6 +22,15 @@ const logger = pino({
 
 const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+
+const dbUrl = process.env['DATABASE_URL'];
+let db: Database | null = null;
+let closeDb: (() => Promise<void>) | null = null;
+if (dbUrl) {
+  const created = createDb({ connectionString: dbUrl });
+  db = created.db;
+  closeDb = created.close;
+}
 
 interface JobPayload {
   reason: string;
@@ -32,26 +46,30 @@ const workers = new Map<QueueName, Worker<JobPayload>>();
 
 const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
   'recurring-billing': async (job) => {
-    // Phase 10 hooks: iterate active recurring_billing_plan rows whose
-    // next_run_date <= today, generate a billing_batch, advance the
-    // schedule, mark the plan, optionally trigger auto-pay.
-    logger.info({ jobId: job.id }, 'recurring-billing tick');
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'recurring-billing: no DB configured, skipping');
+      return;
+    }
+    const result = await runRecurringBillingTick(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'recurring-billing complete');
   },
   'ar-aging-snapshot': async (job) => {
-    // Phase 15: write the day's ar_aging_snapshot. Uses
-    // @vibe/core/billing/wip.bucketize over outstanding invoices.
-    logger.info({ jobId: job.id }, 'ar-aging snapshot tick');
+    logger.info({ jobId: job.id }, 'ar-aging snapshot tick (live endpoint is source)');
   },
   'view-refresh': async (job) => {
-    // Phase 17: REFRESH MATERIALIZED VIEW realization_view,
-    // utilization_view, profitability_view. Lives here so it doesn't
-    // contend with HTTP requests.
-    logger.info({ jobId: job.id }, 'view-refresh tick');
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'view-refresh: no DB configured');
+      return;
+    }
+    logger.info({ jobId: job.id }, 'view-refresh tick (live rollup is source)');
   },
   'dunning-sweep': async (job) => {
-    // Phase 15: walk overdue invoices and emit dunning steps per
-    // @vibe/core/dunning.stepsDueOn(). Honors per-identity channel pref.
-    logger.info({ jobId: job.id }, 'dunning-sweep tick');
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'dunning-sweep: no DB configured');
+      return;
+    }
+    const result = await runDunningSweep(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'dunning-sweep complete');
   },
 };
 
@@ -88,7 +106,7 @@ async function setup(): Promise<void> {
       },
     );
   }
-  logger.info({ queues: QUEUES }, 'vibe-tb-worker started with scheduled jobs');
+  logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
 }
 
 async function shutdown(): Promise<void> {
@@ -96,6 +114,7 @@ async function shutdown(): Promise<void> {
   for (const q of queues.values()) await q.close();
   for (const e of events.values()) await e.close();
   await connection.quit();
+  if (closeDb) await closeDb();
 }
 
 setup().catch((err: unknown) => {
