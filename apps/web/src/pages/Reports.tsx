@@ -59,6 +59,7 @@ export function ReportsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <RevenueOpsCard />
       <Card
         title="Realization"
         action={
@@ -163,5 +164,79 @@ function Stat({
         {value}
       </div>
     </div>
+  );
+}
+
+interface DsoResp {
+  windowDays: number;
+  billedCents: number;
+  paidCents: number;
+  outstandingCents: number;
+  dsoDays: number | null;
+  collectionRatePct: number | null;
+}
+interface MrrResp {
+  mrrCents: number;
+  arrCents: number;
+  planCount: number;
+}
+
+function RevenueOpsCard(): JSX.Element {
+  const [dso, setDso] = useState<DsoResp | null>(null);
+  const [mrr, setMrr] = useState<MrrResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [d, m] = await Promise.all([
+          api<DsoResp>('/api/staff/reports/dso?days=90'),
+          api<MrrResp>('/api/staff/reports/mrr'),
+        ]);
+        setDso(d);
+        setMrr(m);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'failed');
+      }
+    })();
+  }, []);
+
+  return (
+    <Card title="Revenue operations (last 90 days)">
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      {!dso && !mrr ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
+          {dso && (
+            <>
+              <Stat label="Billed" value={formatCents(dso.billedCents)} />
+              <Stat label="Paid" value={formatCents(dso.paidCents)} />
+              <Stat
+                label="DSO"
+                value={dso.dsoDays == null ? '—' : `${dso.dsoDays.toFixed(0)} d`}
+                tone={dso.dsoDays != null && dso.dsoDays > 60 ? 'warning' : undefined}
+              />
+              <Stat
+                label="Collection rate"
+                value={dso.collectionRatePct == null ? '—' : formatPct(dso.collectionRatePct / 100)}
+                tone={
+                  dso.collectionRatePct != null && dso.collectionRatePct < 80
+                    ? 'warning'
+                    : undefined
+                }
+              />
+            </>
+          )}
+          {mrr && (
+            <Stat
+              label={`MRR (${mrr.planCount} plans)`}
+              value={formatCents(mrr.mrrCents)}
+              tone="success"
+            />
+          )}
+        </div>
+      )}
+    </Card>
   );
 }

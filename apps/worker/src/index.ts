@@ -24,6 +24,7 @@ import { runHourBankExpiration } from './jobs/hour-bank-expiration';
 import { runApprovalEscalation } from './jobs/approval-escalation';
 import { runWebhookDispatch } from './jobs/webhook-dispatch';
 import { runAutoRolloverScan } from './jobs/auto-rollover';
+import { runRetentionEnforcement } from './jobs/retention-enforcement';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
@@ -98,6 +99,7 @@ const QUEUES = [
   'approval-escalation',
   'webhook-dispatch',
   'auto-rollover-scan',
+  'retention-enforcement',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -205,6 +207,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runAutoRolloverScan(db, logger);
     logger.info({ jobId: job.id, ...result }, 'auto-rollover-scan complete');
   },
+  'retention-enforcement': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'retention-enforcement: no DB configured');
+      return;
+    }
+    const result = await runRetentionEnforcement(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'retention-enforcement complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -219,6 +229,7 @@ const CRON: Record<QueueName, string> = {
   'approval-escalation': '20 * * * *',
   'webhook-dispatch': '*/2 * * * *',
   'auto-rollover-scan': '30 2 * * *',
+  'retention-enforcement': '45 3 * * *',
 };
 
 async function setup(): Promise<void> {

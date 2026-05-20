@@ -301,6 +301,63 @@ export function createWebhookRouter(deps: WebhookRoutesDeps): Router {
     },
   );
 
+  // Manually re-queue a single delivery (e.g. after a receiver bug fix).
+  router.post(
+    '/:id/deliveries/:deliveryId/replay',
+    requirePermission(deps, 'admin:webhooks:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [endpoint] = await deps.db
+        .select({ id: webhookEndpoints.id })
+        .from(webhookEndpoints)
+        .where(
+          and(
+            eq(webhookEndpoints.id, req.params['id']!),
+            eq(webhookEndpoints.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!endpoint) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const updated = await deps.db
+        .update(webhookDeliveries)
+        .set({
+          status: 'PENDING',
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+          responseStatus: null,
+          responseBody: null,
+        })
+        .where(
+          and(
+            eq(webhookDeliveries.id, req.params['deliveryId']!),
+            eq(webhookDeliveries.webhookEndpointId, endpoint.id),
+          ),
+        )
+        .returning({ id: webhookDeliveries.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'delivery_not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'webhook_delivery',
+        entityId: req.params['deliveryId']!,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'replay' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, requeued: true });
+    },
+  );
+
   return router;
 }
 
