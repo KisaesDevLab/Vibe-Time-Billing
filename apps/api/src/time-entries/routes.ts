@@ -6,6 +6,7 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
 import {
@@ -26,7 +27,19 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export interface TimeEntryRoutesDeps extends RbacDeps {
   db: Database | null;
+  redis?: Redis;
 }
+
+const TIMER_KEY_PREFIX = 'time-entry:timer:';
+function timerKey(appUserId: string): string {
+  return `${TIMER_KEY_PREFIX}${appUserId}`;
+}
+
+const TimerStartSchema = z.object({
+  engagementId: z.string().uuid(),
+  workCodeId: z.string().uuid().optional(),
+  description: z.string().max(2000).optional(),
+});
 
 const CreateSchema = z.object({
   engagementId: z.string().uuid(),
@@ -368,6 +381,93 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .set({ status: 'ARCHIVED' })
         .where(eq(timeEntries.id, prior.id));
       res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/timer/start',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const parsed = TimerStartSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.redis) {
+        res.status(503).json({ error: 'no_redis' });
+        return;
+      }
+      const existing = await deps.redis.get(timerKey(session.appUserId));
+      if (existing) {
+        res.status(409).json({ error: 'timer_already_running', state: JSON.parse(existing) });
+        return;
+      }
+      const state = {
+        engagementId: parsed.data.engagementId,
+        workCodeId: parsed.data.workCodeId ?? null,
+        description: parsed.data.description ?? '',
+        startedAt: new Date().toISOString(),
+      };
+      // 24h TTL guards against orphaned timers.
+      await deps.redis.set(timerKey(session.appUserId), JSON.stringify(state), 'EX', 24 * 3600);
+      res.status(201).json({ ok: true, state });
+    },
+  );
+
+  router.get(
+    '/timer/status',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.redis) {
+        res.json({ running: false });
+        return;
+      }
+      const v = await deps.redis.get(timerKey(session.appUserId));
+      if (!v) {
+        res.json({ running: false });
+        return;
+      }
+      const state = JSON.parse(v) as { startedAt: string; engagementId: string };
+      const elapsedMs = Date.now() - Date.parse(state.startedAt);
+      res.json({ running: true, state, elapsedMs });
+    },
+  );
+
+  router.post(
+    '/timer/stop',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.redis) {
+        res.status(503).json({ error: 'no_redis' });
+        return;
+      }
+      const v = await deps.redis.get(timerKey(session.appUserId));
+      if (!v) {
+        res.status(404).json({ error: 'no_timer_running' });
+        return;
+      }
+      const state = JSON.parse(v) as {
+        engagementId: string;
+        workCodeId: string | null;
+        description: string;
+        startedAt: string;
+      };
+      const elapsedMs = Date.now() - Date.parse(state.startedAt);
+      const elapsedHours = elapsedMs / 3_600_000;
+      // Round to 0.25h per Q19 default.
+      const rounded = Math.max(0.25, Math.round(elapsedHours / 0.25) * 0.25);
+      await deps.redis.del(timerKey(session.appUserId));
+      res.json({
+        ok: true,
+        engagementId: state.engagementId,
+        workCodeId: state.workCodeId,
+        description: state.description,
+        elapsedHours: rounded,
+        startedAt: state.startedAt,
+      });
     },
   );
 

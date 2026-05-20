@@ -154,6 +154,77 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
     res.send(html);
   });
 
+  router.get(
+    '/:id/payments/:paymentId/receipt',
+    deps.requireAuth,
+    async (req: Request, res: Response) => {
+      const session = req.portalSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(
+          and(eq(invoices.id, req.params['id']!), eq(invoices.clientId, session.activeClientId)),
+        )
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [pay] = await deps.db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.id, req.params['paymentId']!), eq(payments.invoiceId, inv.id)))
+        .limit(1);
+      if (!pay) {
+        res.status(404).json({ error: 'payment_not_found' });
+        return;
+      }
+      const [firm] = await deps.db
+        .select({ name: firms.name })
+        .from(firms)
+        .where(eq(firms.id, inv.firmId))
+        .limit(1);
+      const [client] = await deps.db
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, inv.clientId))
+        .limit(1);
+      const html = renderReceiptHtml({
+        firmName: firm?.name ?? 'Firm',
+        clientName: client?.name ?? 'Client',
+        invoiceNumber: inv.invoiceNumber,
+        paymentId: pay.id,
+        amountCents: Number(pay.amountCents),
+        receivedAt: pay.receivedAt,
+        providerChargeId: pay.providerChargeId,
+      });
+      const accept = req.header('accept') ?? '';
+      if (accept.includes('text/html')) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(html);
+        return;
+      }
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        const pdf = await renderHtmlToPdf(html);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `inline; filename="receipt-${inv.invoiceNumber}-${pay.id.slice(0, 8)}.pdf"`,
+        );
+        res.send(pdf);
+      } catch (err) {
+        logger.error({ err }, 'receipt pdf render failed');
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(html);
+      }
+    },
+  );
+
   router.post('/:id/pay', deps.requireAuth, async (req: Request, res: Response) => {
     const parsed = PaySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -244,4 +315,42 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
+
+function renderReceiptHtml(args: {
+  firmName: string;
+  clientName: string;
+  invoiceNumber: string;
+  paymentId: string;
+  amountCents: number;
+  receivedAt: Date;
+  providerChargeId: string | null;
+}): string {
+  const amount = (args.amountCents / 100).toFixed(2);
+  const when = args.receivedAt.toISOString().slice(0, 10);
+  const charge = args.providerChargeId
+    ? `<p>Reference: ${escapeHtml(args.providerChargeId)}</p>`
+    : '';
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Receipt ${escapeHtml(args.invoiceNumber)}</title>
+<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:40px auto;padding:0 20px;color:#111}h1{font-size:1.4rem}table{width:100%;border-collapse:collapse}td{padding:6px 0;border-bottom:1px solid #eee}.r{text-align:right}</style></head>
+<body><h1>Payment Receipt</h1>
+<p><strong>${escapeHtml(args.firmName)}</strong></p>
+<p>Received from ${escapeHtml(args.clientName)} on ${when}.</p>
+<table>
+<tr><td>Invoice</td><td class="r">${escapeHtml(args.invoiceNumber)}</td></tr>
+<tr><td>Payment ID</td><td class="r">${escapeHtml(args.paymentId)}</td></tr>
+<tr><td>Amount</td><td class="r">$${amount}</td></tr>
+</table>
+${charge}
+<p>Thank you.</p>
+</body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

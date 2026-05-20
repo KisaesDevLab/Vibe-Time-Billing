@@ -4,10 +4,10 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagements } from '@vibe/db/schema';
+import { clients, engagements, timeEntries } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
@@ -124,6 +124,66 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .values(insertVals)
         .returning({ id: engagements.id });
       res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.get(
+    '/:id/budget',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ budget: null });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const [tot] = await deps.db
+        .select({
+          hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`.as('hours'),
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as(
+            'amountCents',
+          ),
+        })
+        .from(timeEntries)
+        .where(
+          and(
+            eq(timeEntries.engagementId, eng.id),
+            inArray(timeEntries.status, ['SUBMITTED', 'LOCKED', 'BILLED']),
+          ),
+        );
+      const actualHours = Number(tot?.hours ?? 0);
+      const actualAmountCents = Number(tot?.amountCents ?? 0);
+      const budgetHours = eng.budgetHours != null ? Number(eng.budgetHours) : null;
+      const budgetAmountCents =
+        eng.budgetAmountCents != null ? Number(eng.budgetAmountCents) : null;
+      res.json({
+        budget: {
+          engagementId: eng.id,
+          budgetHours,
+          budgetAmountCents,
+          nteCapCents: eng.nteCapCents != null ? Number(eng.nteCapCents) : null,
+          actualHours,
+          actualAmountCents,
+          hoursUtilizationPct:
+            budgetHours && budgetHours > 0 ? (actualHours / budgetHours) * 100 : null,
+          amountUtilizationPct:
+            budgetAmountCents && budgetAmountCents > 0
+              ? (actualAmountCents / budgetAmountCents) * 100
+              : null,
+        },
+      });
     },
   );
 

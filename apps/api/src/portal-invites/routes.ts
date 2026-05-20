@@ -196,6 +196,79 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
     },
   );
 
+  router.post(
+    '/:id/resend',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(portalInvitation)
+        .where(
+          and(
+            eq(portalInvitation.id, req.params['id']!),
+            eq(portalInvitation.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status !== 'ACTIVE') {
+        res.status(409).json({ error: 'invitation_not_active', status: inv.status });
+        return;
+      }
+      // Rotate token to invalidate the prior magic link.
+      const rawToken = randomBytes(24).toString('hex');
+      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await deps.db
+        .update(portalInvitation)
+        .set({ tokenHash, expiresAt })
+        .where(eq(portalInvitation.id, inv.id));
+      const [client] = await deps.db
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, inv.clientId))
+        .limit(1);
+      const link = `${deps.portalBaseUrl}/auth/accept?token=${encodeURIComponent(rawToken)}`;
+      const message = `${inv.proposedFullName}, here is your new invitation link to ${
+        client?.name ?? 'the client portal'
+      }.\n\nAccept: ${link}\n\nLink expires in 7 days.`;
+      if (inv.deliveryChannel === 'EMAIL' && inv.invitedEmail && deps.sendEmail) {
+        await deps
+          .sendEmail({
+            to: inv.invitedEmail,
+            subject: `Client portal invitation (resent) — ${client?.name ?? ''}`,
+            body: message,
+          })
+          .catch((err: unknown) => logger.error({ err }, 'portal invite resend email failed'));
+      } else if (inv.deliveryChannel === 'SMS' && inv.invitedPhone && deps.sendSms) {
+        await deps
+          .sendSms({
+            to: inv.invitedPhone,
+            body: `Portal invite (resent) from ${client?.name ?? 'firm'}: ${link}`,
+          })
+          .catch((err: unknown) => logger.error({ err }, 'portal invite resend sms failed'));
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'portal_invitation',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { resent: true, expiresAt },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, expiresAt });
+    },
+  );
+
   router.get(
     '/by-client/:clientId',
     requirePermission(deps, 'client:portal-access:manage'),

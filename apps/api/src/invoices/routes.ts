@@ -20,6 +20,7 @@ import {
   firms,
   invoiceLineItems,
   invoices,
+  payments,
   timeEntries,
 } from '@vibe/db/schema';
 import {
@@ -29,6 +30,7 @@ import {
   type LineItem,
   type NumberingConfig,
 } from '@vibe/core/invoicing';
+import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -38,6 +40,7 @@ export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
+  paymentProvider?: PaymentProvider | null;
 }
 
 const GenerateSchema = z.object({
@@ -46,6 +49,42 @@ const GenerateSchema = z.object({
 
 const VoidSchema = z.object({
   reason: z.string().min(1).max(400),
+});
+
+const RefundSchema = z.object({
+  amountCents: z.number().int().positive().optional(),
+  reason: z.string().max(400).optional(),
+});
+
+const CreditMemoSchema = z.object({
+  amountCents: z.number().int().positive(),
+  reason: z.string().min(1).max(400),
+});
+
+const LineItemSchema = z.object({
+  kind: z.enum([
+    'TIME_AGGREGATE',
+    'FIXED_FEE',
+    'MILESTONE',
+    'RECURRING_FEE',
+    'EXPENSE',
+    'PROCESSING_FEE',
+    'CUSTOM',
+  ]),
+  description: z.string().min(1).max(400),
+  amountCents: z.number().int(),
+  engagementId: z.string().uuid().optional(),
+});
+
+const ManualComposeSchema = z.object({
+  clientId: z.string().uuid(),
+  primaryEngagementId: z.string().uuid().optional(),
+  issueDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  notes: z.string().max(2000).optional(),
+  lines: z.array(LineItemSchema).min(1).max(200),
 });
 
 export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
@@ -452,6 +491,291 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/refund',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const parsed = RefundSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Pick the most recent SUCCEEDED payment with a provider charge id.
+      const [pay] = await deps.db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.status, 'SUCCEEDED')))
+        .orderBy(desc(payments.receivedAt))
+        .limit(1);
+      if (!pay) {
+        res.status(409).json({ error: 'no_refundable_payment' });
+        return;
+      }
+      const alreadyRefunded = Number(pay.refundedAmountCents ?? 0);
+      const refundable = Number(pay.amountCents) - alreadyRefunded;
+      if (refundable <= 0) {
+        res.status(409).json({ error: 'fully_refunded' });
+        return;
+      }
+      const amount = parsed.data.amountCents ?? refundable;
+      if (amount > refundable) {
+        res.status(400).json({ error: 'amount_exceeds_refundable', refundable });
+        return;
+      }
+
+      let providerRefundId: string | undefined;
+      if (deps.paymentProvider && pay.providerChargeId) {
+        try {
+          const r = await deps.paymentProvider.refund({
+            providerChargeId: pay.providerChargeId,
+            amountCents: amount,
+          });
+          if (!r.ok) {
+            res.status(502).json({ error: 'provider_refund_failed' });
+            return;
+          }
+          providerRefundId = r.providerRefundId;
+        } catch (err) {
+          logger.error({ err, invoiceId: inv.id }, 'refund provider call errored');
+          res.status(502).json({ error: 'provider_refund_errored' });
+          return;
+        }
+      }
+
+      const newRefunded = alreadyRefunded + amount;
+      const fullyRefunded = newRefunded >= Number(pay.amountCents);
+      await deps.db.transaction(async (tx) => {
+        await tx
+          .update(payments)
+          .set({
+            refundedAmountCents: newRefunded,
+            refundedAt: new Date(),
+            status: fullyRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+          })
+          .where(eq(payments.id, pay.id));
+        const newPaid = Math.max(0, Number(inv.paidCents) - amount);
+        const newInvStatus =
+          newPaid <= 0 ? 'SENT' : newPaid >= Number(inv.totalCents) ? 'PAID' : 'PARTIALLY_PAID';
+        await tx
+          .update(invoices)
+          .set({
+            paidCents: newPaid,
+            status: newInvStatus,
+            paidAt: newInvStatus === 'PAID' ? inv.paidAt : null,
+          })
+          .where(eq(invoices.id, inv.id));
+      });
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'refund',
+          amountCents: amount,
+          providerRefundId,
+          reason: parsed.data.reason,
+          paymentId: pay.id,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      res.json({ ok: true, amountCents: amount, providerRefundId });
+    },
+  );
+
+  router.post(
+    '/:id/credit-memo',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const parsed = CreditMemoSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [orig] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!orig) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [client] = await deps.db
+        .select()
+        .from(clients)
+        .where(eq(clients.id, orig.clientId))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const [maxNum] = await deps.db
+        .select({
+          n: sql<number>`COALESCE(MAX(CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER)), 0)`,
+        })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId));
+      const sequence = Number(maxNum?.n ?? 0) + 1;
+      const issueDate = new Date().toISOString().slice(0, 10);
+      const memoNumber = formatInvoiceNumber({
+        config: { prefix: 'CM', yearPart: 'FOUR_DIGIT' },
+        sequence,
+        issueDate,
+      });
+      const memoAmount = -Math.abs(parsed.data.amountCents);
+      const memoId = await deps.db.transaction(async (tx) => {
+        const [memo] = await tx
+          .insert(invoices)
+          .values({
+            firmId: session.firmId,
+            clientId: orig.clientId,
+            primaryEngagementId: orig.primaryEngagementId,
+            invoiceNumber: memoNumber,
+            issueDate,
+            dueDate: issueDate,
+            subtotalCents: memoAmount,
+            feeCents: 0,
+            totalCents: memoAmount,
+            status: 'SENT',
+            notes: `Credit memo against ${orig.invoiceNumber}. Reason: ${parsed.data.reason}`,
+            sentAt: new Date(),
+          })
+          .returning({ id: invoices.id });
+        if (!memo) throw new Error('credit memo insert failed');
+        await tx.insert(invoiceLineItems).values({
+          invoiceId: memo.id,
+          kind: 'CUSTOM',
+          description: `Credit against ${orig.invoiceNumber}: ${parsed.data.reason}`,
+          amountCents: memoAmount,
+          sortOrder: 0,
+        });
+        return memo.id;
+      });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'invoice',
+        entityId: memoId,
+        actorAppUserId: session.appUserId,
+        after: {
+          memoNumber,
+          amountCents: memoAmount,
+          againstInvoiceId: orig.id,
+          reason: parsed.data.reason,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: memoId, invoiceNumber: memoNumber, totalCents: memoAmount });
+    },
+  );
+
+  router.post(
+    '/',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const parsed = ManualComposeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [client] = await deps.db
+        .select()
+        .from(clients)
+        .where(and(eq(clients.id, parsed.data.clientId), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const totals = computeTotals(parsed.data.lines as LineItem[]);
+      const [maxNum] = await deps.db
+        .select({
+          n: sql<number>`COALESCE(MAX(CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER)), 0)`,
+        })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId));
+      const sequence = Number(maxNum?.n ?? 0) + 1;
+      const issueDate = parsed.data.issueDate ?? new Date().toISOString().slice(0, 10);
+      const dueDate = new Date(Date.parse(issueDate) + client.termsDays * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      const invoiceNumber = formatInvoiceNumber({
+        config: { prefix: 'INV', yearPart: 'FOUR_DIGIT' },
+        sequence,
+        issueDate,
+      });
+      const invoiceId = await deps.db.transaction(async (tx) => {
+        const [inv] = await tx
+          .insert(invoices)
+          .values({
+            firmId: session.firmId,
+            clientId: client.id,
+            primaryEngagementId: parsed.data.primaryEngagementId ?? null,
+            invoiceNumber,
+            issueDate,
+            dueDate,
+            subtotalCents: totals.subtotalCents,
+            feeCents: totals.processingFeeCents,
+            totalCents: totals.totalCents,
+            status: 'DRAFT',
+            notes: parsed.data.notes ?? null,
+          })
+          .returning({ id: invoices.id });
+        if (!inv) throw new Error('invoice insert failed');
+        await tx.insert(invoiceLineItems).values(
+          parsed.data.lines.map((l, i) => ({
+            invoiceId: inv.id,
+            kind: l.kind,
+            description: l.description,
+            amountCents: l.amountCents,
+            engagementId: l.engagementId ?? null,
+            sourceRefType: 'manual',
+            sortOrder: i,
+          })),
+        );
+        return inv.id;
+      });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'invoice',
+        entityId: invoiceId,
+        actorAppUserId: session.appUserId,
+        after: { invoiceNumber, totalCents: totals.totalCents, kind: 'manual' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: invoiceId, invoiceNumber, totalCents: totals.totalCents });
     },
   );
 

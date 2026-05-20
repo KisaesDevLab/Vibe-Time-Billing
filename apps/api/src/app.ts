@@ -146,6 +146,7 @@ export function createApp(deps: AppDeps): Express {
   const timeEntryRouter = createTimeEntryRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    redis: deps.redis,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
 
@@ -173,10 +174,16 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
     sendEmail: deps.sendPortalEmail,
     portalBaseUrl: config.PORTAL_BASE_URL,
+    paymentProvider: deps.stripeProvider ?? null,
   });
   app.use('/api/staff/invoices', auth.requireAuth, auth.requireCsrf, invoiceRouter);
 
-  const arRouter = createArRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  const arRouter = createArRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
   app.use('/api/staff/ar', auth.requireAuth, auth.requireCsrf, arRouter);
 
   const approvalRouter = createApprovalRouter({

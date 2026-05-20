@@ -16,6 +16,8 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export interface ArRoutesDeps extends RbacDeps {
   db: Database | null;
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  portalBaseUrl?: string;
 }
 
 interface ClientAging {
@@ -23,6 +25,7 @@ interface ClientAging {
   clientName: string;
   buckets: Record<AgingBucket, number>;
   total: number;
+  partnerId?: string;
 }
 
 export function createArRouter(deps: ArRoutesDeps): Router {
@@ -41,52 +44,16 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         });
         return;
       }
-      const today = new Date().toISOString().slice(0, 10);
-      const outstanding = await deps.db
-        .select({
-          id: invoices.id,
-          dueDate: invoices.dueDate,
-          totalCents: invoices.totalCents,
-          paidCents: invoices.paidCents,
-          clientId: invoices.clientId,
-          clientName: clients.name,
-        })
-        .from(invoices)
-        .innerJoin(clients, eq(clients.id, invoices.clientId))
-        .where(
-          and(
-            eq(invoices.firmId, session.firmId),
-            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
-            ne(invoices.status, 'VOIDED'),
-          ),
-        )
-        .orderBy(desc(invoices.dueDate));
-
-      // Group by client, bucket each invoice's outstanding balance by days past due.
-      const byClient = new Map<
-        string,
-        { name: string; rows: { entryDate: string; amountCents: number }[] }
-      >();
-      for (const inv of outstanding) {
-        const balance = Number(inv.totalCents) - Number(inv.paidCents);
-        if (balance <= 0) continue;
-        const arr = byClient.get(inv.clientId) ?? { name: inv.clientName, rows: [] };
-        arr.rows.push({ entryDate: inv.dueDate, amountCents: balance });
-        byClient.set(inv.clientId, arr);
+      const data = await loadAging(deps.db, session.firmId, {
+        partnerId: typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : undefined,
+      });
+      if (String(req.query['format'] ?? '').toLowerCase() === 'csv') {
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="ar-aging-${data.asOf}.csv"`);
+        res.send(agingToCsv(data));
+        return;
       }
-      const clientsOut: ClientAging[] = [];
-      const totals = emptyBuckets();
-      for (const [clientId, v] of byClient) {
-        const b = bucketize(v.rows, today);
-        const total = b['0-30'] + b['31-60'] + b['61-90'] + b['90+'];
-        clientsOut.push({ clientId, clientName: v.name, buckets: b, total });
-        totals['0-30'] += b['0-30'];
-        totals['31-60'] += b['31-60'];
-        totals['61-90'] += b['61-90'];
-        totals['90+'] += b['90+'];
-      }
-      clientsOut.sort((a, b) => b.total - a.total);
-      res.json({ asOf: today, totals, clients: clientsOut });
+      res.json(data);
     },
   );
 
@@ -182,7 +149,180 @@ export function createArRouter(deps: ArRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/statement/:clientId/send',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [client] = await deps.db
+        .select()
+        .from(clients)
+        .where(and(eq(clients.id, req.params['clientId']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      if (!deps.sendEmail || !client.billingContactEmail) {
+        res.status(409).json({ error: 'no_email_destination' });
+        return;
+      }
+      const open = await deps.db
+        .select({
+          invoiceNumber: invoices.invoiceNumber,
+          dueDate: invoices.dueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            eq(invoices.clientId, client.id),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        );
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = open
+        .map((o) => ({
+          line: `${o.invoiceNumber}  due ${o.dueDate}  balance $${(
+            (Number(o.totalCents) - Number(o.paidCents)) /
+            100
+          ).toFixed(2)}`,
+          amountCents: Number(o.totalCents) - Number(o.paidCents),
+        }))
+        .filter((r) => r.amountCents > 0);
+      const balance = rows.reduce((s, r) => s + r.amountCents, 0);
+      const body =
+        `Account statement for ${client.name} as of ${today}:\n\n` +
+        rows.map((r) => r.line).join('\n') +
+        `\n\nTotal balance: $${(balance / 100).toFixed(2)}`;
+      try {
+        await deps.sendEmail({
+          to: client.billingContactEmail,
+          subject: `Statement of account — ${client.name}`,
+          body,
+        });
+      } catch (err) {
+        res.status(502).json({ error: 'email_dispatch_failed' });
+        return;
+      }
+      res.json({ ok: true, sentTo: client.billingContactEmail, balanceCents: balance });
+    },
+  );
+
   return router;
+}
+
+async function loadAging(
+  db: Database,
+  firmId: string,
+  opts: { partnerId?: string } = {},
+): Promise<{ asOf: string; totals: Record<AgingBucket, number>; clients: ClientAging[] }> {
+  const today = new Date().toISOString().slice(0, 10);
+  const conds = [
+    eq(invoices.firmId, firmId),
+    inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+    ne(invoices.status, 'VOIDED'),
+  ];
+  if (opts.partnerId) {
+    conds.push(eq(clients.partnerInChargeId, opts.partnerId));
+  }
+  const outstanding = await db
+    .select({
+      id: invoices.id,
+      dueDate: invoices.dueDate,
+      totalCents: invoices.totalCents,
+      paidCents: invoices.paidCents,
+      clientId: invoices.clientId,
+      clientName: clients.name,
+      partnerId: clients.partnerInChargeId,
+    })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .where(and(...conds))
+    .orderBy(desc(invoices.dueDate));
+
+  const byClient = new Map<
+    string,
+    {
+      name: string;
+      partnerId: string;
+      rows: { entryDate: string; amountCents: number }[];
+    }
+  >();
+  for (const inv of outstanding) {
+    const balance = Number(inv.totalCents) - Number(inv.paidCents);
+    if (balance <= 0) continue;
+    const arr = byClient.get(inv.clientId) ?? {
+      name: inv.clientName,
+      partnerId: inv.partnerId,
+      rows: [],
+    };
+    arr.rows.push({ entryDate: inv.dueDate, amountCents: balance });
+    byClient.set(inv.clientId, arr);
+  }
+  const clientsOut: ClientAging[] = [];
+  const totals = emptyBuckets();
+  for (const [clientId, v] of byClient) {
+    const b = bucketize(v.rows, today);
+    const total = b['0-30'] + b['31-60'] + b['61-90'] + b['90+'];
+    clientsOut.push({
+      clientId,
+      clientName: v.name,
+      buckets: b,
+      total,
+      partnerId: v.partnerId,
+    });
+    totals['0-30'] += b['0-30'];
+    totals['31-60'] += b['31-60'];
+    totals['61-90'] += b['61-90'];
+    totals['90+'] += b['90+'];
+  }
+  clientsOut.sort((a, b) => b.total - a.total);
+  return { asOf: today, totals, clients: clientsOut };
+}
+
+function agingToCsv(data: {
+  asOf: string;
+  clients: ClientAging[];
+  totals: Record<AgingBucket, number>;
+}): string {
+  const header = ['Client', 'PartnerId', '0-30', '31-60', '61-90', '90+', 'Total'];
+  const lines = [header.join(',')];
+  for (const c of data.clients) {
+    lines.push(
+      [
+        csvCell(c.clientName),
+        c.partnerId ?? '',
+        c.buckets['0-30'],
+        c.buckets['31-60'],
+        c.buckets['61-90'],
+        c.buckets['90+'],
+        c.total,
+      ].join(','),
+    );
+  }
+  lines.push(
+    [
+      'TOTAL',
+      '',
+      data.totals['0-30'],
+      data.totals['31-60'],
+      data.totals['61-90'],
+      data.totals['90+'],
+      data.totals['0-30'] + data.totals['31-60'] + data.totals['61-90'] + data.totals['90+'],
+    ].join(','),
+  );
+  return lines.join('\n') + '\n';
+}
+
+function csvCell(s: string): string {
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function emptyBuckets(): Record<AgingBucket, number> {
