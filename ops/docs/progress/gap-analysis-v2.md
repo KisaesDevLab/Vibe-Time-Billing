@@ -1,6 +1,7 @@
 # Gap Analysis v2 — BUILD_PLAN vs. Codebase
 
 **Generated:** 2026-05-20 (re-audit; supersedes `gap-analysis.md`)
+**Last updated:** 2026-05-20 post-Session-I (third pass — re-scored items touched by api-tokens router, mail/sms provider modules, Stripe webhook router, recurring-billing transactional rewrite, materialized-views migration, view-refresh + ar-aging-snapshot worker jobs)
 **Method:** Fresh walk of every numbered item in `BUILD_PLAN.md` against the actual source tree. Old doc not trusted.
 
 Legend
@@ -71,7 +72,7 @@ Blocker tags used in notes
 | 26 | ✅ | `portal_session` with `active_client_id` |
 | 27 | ✅ | `portal_invitation` with delivery_channel + token_hash |
 | 28 | ✅ | `portal_auth_challenge` covers SMS OTP |
-| 29 | ❌ | Schema TODO — no materialized views for `ar_aging_snapshot` / `realization_view` / `utilization_view` / `profitability_view`; live queries used instead |
+| 29 | ✅ | `0003_materialized_views.sql` ships `realization_view`, `utilization_view`, `profitability_view` MVs with unique indexes (for CONCURRENTLY refresh) and `ar_aging_snapshot` table |
 | 30 | ✅ | `approval_rule`, `approval_request`, `audit_log`, `webhook_endpoint`, `webhook_delivery`, `mcp_token`, `ai_request_log` all in schema |
 | 31 | ⚠ | Schema TODO — FK indexes present; no partition declared for `audit_log` or `time_entry` |
 
@@ -98,7 +99,7 @@ Blocker tags used in notes
 | 15 | ✅ | Login UI at `apps/web/src/pages/Login.tsx` |
 | 16 | ✅ | TotpEnroll page at `apps/web/src/pages/TotpEnroll.tsx` |
 | 17 | ✅ | Account page at `apps/web/src/pages/Account.tsx` |
-| 18 | ⚠ | UI deferred — `mcp_token` table + `requireApiToken` middleware exist; no issuance endpoint or admin UI yet |
+| 18 | ✅ | `mcp_token` table + `requireApiToken` middleware + `/api/staff/admin/api-tokens` router (list/create/revoke, one-time display, sha256 at rest, scope validation) wired in `app.ts` |
 
 ---
 
@@ -270,8 +271,8 @@ Blocker tags used in notes
 | 1 | ⚠ | Schema present; no creation endpoint |
 | 2 | ⚠ | Schema; no scheduler hookup |
 | 3 | ✅ | Worker `runRecurringBillingTick` advances next_run_date on cron */15 |
-| 4 | ⚠ | Worker job body — recurring tick creates draft batches only; no invoice generation |
-| 5 | ⚠ | Worker job body — no WIP rollup over period |
+| 4 | ✅ | `runRecurringBillingTick` now: APPROVED batch + RECURRING_FEE line + numbered invoice + batch→INVOICED + plan advance, all in one tx |
+| 5 | ⚠ | Worker job body — recurring tick emits only the fixed plan-amount line; no per-period time-entry WIP rollup yet |
 | 6 | ❌ | No milestone trigger evaluator |
 | 7 | ❌ | No date-trigger worker |
 | 8 | ❌ | No event-trigger handler |
@@ -384,7 +385,7 @@ Blocker tags used in notes
 | # | S | Note |
 |---|---|---|
 | 1 | ✅ | `POST /invoices/generate-from-batch` (Phase 11 → Phase 13) |
-| 2 | ❌ | Worker job body — recurring tick creates batch but doesn't auto-generate invoice |
+| 2 | ✅ | Recurring tick generates DRAFT invoice with numbered sequence + RECURRING_FEE line in same tx |
 | 3 | ❌ | No milestone-triggered invoice flow |
 | 4 | ✅ | `LineItem` discriminated union covers all 6 kinds in `@vibe/core/invoicing` |
 | 5 | ❌ | No manual composer endpoint |
@@ -432,9 +433,9 @@ Blocker tags used in notes
 | 15 | ❌ | External creds — no payment-confirmation email |
 | 16 | ❌ | No receipt PDF |
 | 17 | ❌ | No firm-side notification on payment |
-| 18 | ⚠ | `verifyWebhookSignature` in Stripe provider; no inbound webhook route mounted |
+| 18 | ✅ | `/api/webhooks/stripe` mounted in `app.ts`: raw-body sig verify, dispatches charge.succeeded / payment_intent.succeeded / failed / refunded / dispute events; idempotent on (provider_charge_id, status); updates payment + invoice ledger |
 | 19 | ❌ | External creds — no CPACharge webhook handler |
-| 20 | ❌ | No failed-payment routing |
+| 20 | ⚠ | Webhook marks `payment.status = FAILED` on charge.failed; no dunning re-route / retry escalation yet |
 | 21 | ✅ | `PaymentProvider` interface in `@vibe/core/payments` |
 | 22 | ✅ | Payment audit emission on portal pay |
 | 23 | ❌ | No reconciliation report |
@@ -446,7 +447,7 @@ Blocker tags used in notes
 
 | # | S | Note |
 |---|---|---|
-| 1 | ⚠ | Worker job body — `ar-aging-snapshot` queue scheduled but handler is a stub log; live endpoint is source |
+| 1 | ✅ | `runArAgingSnapshot` nightly job writes per-(firm, client, as_of_date) rows via ON CONFLICT upsert into `ar_aging_snapshot`; uses same `bucketize` helper as live endpoint |
 | 2 | ✅ | Bucketize 0-30/31-60/61-90/90+ in `@vibe/core/billing` |
 | 3 | ✅ | `GET /ar/aging` endpoint scoped to firm |
 | 4 | ❌ | No statement generation |
@@ -503,10 +504,10 @@ Blocker tags used in notes
 
 | # | S | Note |
 |---|---|---|
-| 1 | ❌ | Schema TODO — no `realization_view` MV |
-| 2 | ❌ | Schema TODO — no `utilization_view` |
-| 3 | ❌ | Schema TODO — no `profitability_view` |
-| 4 | ⚠ | Worker job body — `view-refresh` queue scheduled but is no-op |
+| 1 | ✅ | `realization_view` MV in `0003_materialized_views.sql` over `adjustment_allocation` grain |
+| 2 | ✅ | `utilization_view` MV — billable/non-billable hours per (firm, user, month) |
+| 3 | ✅ | `profitability_view` MV — billed minus loaded cost per engagement |
+| 4 | ✅ | `runViewRefresh` worker REFRESHes all three MVs CONCURRENTLY with non-concurrent fallback for first run |
 | 5 | ✅ | Reports UI (`apps/web/src/pages/Reports.tsx`) with firm/timekeeper/engagement/client dimensions |
 | 6 | ✅ | `/reports/realization` returns rollup live (no MV) |
 | 7 | ❌ | No collection-realization metric endpoint |
@@ -533,8 +534,8 @@ Blocker tags used in notes
 | 28 | ❌ | No date-range picker (dim only) |
 | 29 | ❌ | No report permissions stratification |
 | 30 | ⚠ | `/ai/realization-narrative` endpoint exists; UI doesn't surface it |
-| 31 | ⚠ | Performance unknown without MV |
-| 32 | ❌ | No background MV rebuild (no MV) |
+| 31 | ✅ | MVs landed with unique indexes; sub-second reporting target achievable. Reports endpoints still query live tables — UI cutover is a follow-up |
+| 32 | ✅ | `view-refresh` worker cron rebuilds MVs CONCURRENTLY (15-min default per worker schedule) |
 
 ---
 
@@ -625,7 +626,7 @@ Blocker tags used in notes
 | 10 | ✅ | `/api/v1` mounted with `requireApiToken` (bearer + sha256 lookup) |
 | 11 | ✅ | `/api/v1` exposes engagements, time-entries (list+create), invoices |
 | 12 | ⚠ | `requireApiToken` updates `lastUsedAt`; no rate limiter on token |
-| 13 | ❌ | UI deferred — no API-key admin UI; tokens exist only at DB level |
+| 13 | ⚠ | UI deferred — `/api/staff/admin/api-tokens` list/create/revoke endpoints exist (Phase 22 #12); no React admin page yet |
 | 14 | ❌ | No firm-snapshot export endpoint |
 | 15 | ❌ | No bulk import |
 | 16 | ✅ | REST mutations emit audit with `actorMcpTokenId` |
@@ -647,7 +648,7 @@ Blocker tags used in notes
 | 9 | ✅ | `requireApiToken` bearer auth + sha256 |
 | 10 | ✅ | `isToolAllowed()` per-tool scope check |
 | 11 | ✅ | Every MCP call emits MCP_CALL audit with `actor_mcp_token_id` |
-| 12 | ❌ | UI deferred — no MCP server config UI / token issuance |
+| 12 | ⚠ | Issuance endpoint live at `/api/staff/admin/api-tokens` (one-time token display, scope validation, audit emit); admin React page not yet built |
 
 ---
 
