@@ -29,6 +29,12 @@ import {
   engagementTypes,
   reasonCodes,
   clients,
+  engagements as engagementsTable,
+  billingBatches as billingBatchesTable,
+  billingBatchEntries as billingBatchEntriesTable,
+  timeEntries as timeEntriesTable,
+  adjustments as adjustmentsTable,
+  adjustmentAllocations as adjustmentAllocationsTable,
 } from '../schema/core';
 import { portalIdentity, clientPortalAccess } from '../schema/portal';
 
@@ -55,9 +61,14 @@ async function main(): Promise<void> {
       const serviceLineIds = await seedServiceLines(tx, firmId);
       await seedWorkCodes(tx, firmId, serviceLineIds);
       await seedEngagementTypes(tx, firmId, serviceLineIds);
-      await seedReasonCodes(tx, firmId);
+      const reasonIds = await seedReasonCodes(tx, firmId);
       const clientIds = await seedClients(tx, firmId, userIds);
       await seedPortalIdentities(tx, firmId, clientIds, userIds);
+      // Demo loop: one engagement on the first client, four timekeepers
+      // post the canonical Vance scenario, a billing batch ties them
+      // together, a hierarchical-cascade write-down is applied. Reports
+      // populate immediately on first sign-in.
+      await seedDemoBilling(tx, firmId, clientIds, userIds, reasonIds);
     });
 
     log(`seeded firm '${FIRM_NAME}'`);
@@ -209,16 +220,20 @@ async function seedEngagementTypes(
   );
 }
 
-async function seedReasonCodes(tx: Tx, firmId: string): Promise<void> {
-  await tx.insert(reasonCodes).values([
-    { firmId, category: 'WRITE_DOWN', label: 'Scope creep' },
-    { firmId, category: 'WRITE_DOWN', label: 'Client relationship' },
-    { firmId, category: 'WRITE_DOWN', label: 'Inefficiency' },
-    { firmId, category: 'WRITE_DOWN', label: 'Estimating error' },
-    { firmId, category: 'WRITE_UP', label: 'Premium service' },
-    { firmId, category: 'WRITE_UP', label: 'Rush delivery' },
-    { firmId, category: 'TRANSFER', label: 'Cost transfer between engagements' },
-  ]);
+async function seedReasonCodes(tx: Tx, firmId: string): Promise<Record<string, string>> {
+  const rows = await tx
+    .insert(reasonCodes)
+    .values([
+      { firmId, category: 'WRITE_DOWN', label: 'Scope creep' },
+      { firmId, category: 'WRITE_DOWN', label: 'Client relationship' },
+      { firmId, category: 'WRITE_DOWN', label: 'Inefficiency' },
+      { firmId, category: 'WRITE_DOWN', label: 'Estimating error' },
+      { firmId, category: 'WRITE_UP', label: 'Premium service' },
+      { firmId, category: 'WRITE_UP', label: 'Rush delivery' },
+      { firmId, category: 'TRANSFER', label: 'Cost transfer between engagements' },
+    ])
+    .returning({ id: reasonCodes.id, label: reasonCodes.label });
+  return Object.fromEntries(rows.map((r) => [r.label, r.id]));
 }
 
 const CLIENT_SEED = [
@@ -347,6 +362,128 @@ async function seedPortalIdentities(
   // Silence the linter for the discarded destructuring var.
   void sql;
   void and;
+}
+
+// The canonical Vance scenario per BUILD_PLAN Phase 12: four timekeepers,
+// one engagement on Holland Manufacturing, $3,950 standard WIP, $1,200
+// hierarchical-cascade write-down. After-seed, the realization report
+// shows Sarah 0%, Mike 83.3%, Rachel + Jenny 100%.
+async function seedDemoBilling(
+  tx: Tx,
+  firmId: string,
+  clientIds: string[],
+  userIds: string[],
+  reasonIds: Record<string, string>,
+): Promise<void> {
+  const clientId = clientIds[0];
+  const sarahId = userIds[0];
+  const mikeId = userIds[1];
+  const rachelId = userIds[2];
+  const jennyId = userIds[3];
+  if (!clientId || !sarahId || !mikeId || !rachelId || !jennyId) return;
+
+  // Engagement
+  const [eng] = await tx
+    .insert(engagementsTable)
+    .values({
+      clientId,
+      name: '1120-S 2026 Tax Return',
+      feeStructure: 'FIXED_FEE',
+      feeAmountCents: 395000,
+      partnerId: sarahId,
+      managerId: mikeId,
+      status: 'ACTIVE',
+      startDate: '2026-01-01',
+    })
+    .returning({ id: engagementsTable.id });
+  if (!eng) return;
+
+  // Billing batch covering January 2026
+  const [batch] = await tx
+    .insert(billingBatchesTable)
+    .values({
+      engagementId: eng.id,
+      periodStart: '2026-01-01',
+      periodEnd: '2026-01-31',
+      status: 'APPROVED',
+      createdById: sarahId,
+      approvedById: sarahId,
+    })
+    .returning({ id: billingBatchesTable.id });
+  if (!batch) return;
+
+  // The four canonical entries.
+  const entrySeed = [
+    { userId: sarahId, hours: '2.00', rate: 50000, amount: 100000 },
+    { userId: mikeId, hours: '4.00', rate: 30000, amount: 120000 },
+    { userId: rachelId, hours: '3.00', rate: 25000, amount: 75000 },
+    { userId: jennyId, hours: '5.00', rate: 20000, amount: 100000 },
+  ];
+  const entryRows = await tx
+    .insert(timeEntriesTable)
+    .values(
+      entrySeed.map((e) => ({
+        engagementId: eng.id,
+        appUserId: e.userId,
+        entryDate: '2026-01-15',
+        hours: e.hours,
+        standardRateSnapshotCents: e.rate,
+        standardAmountCents: e.amount,
+        billingBatchId: batch.id,
+      })),
+    )
+    .returning({ id: timeEntriesTable.id });
+
+  // Tie entries to the batch action ledger
+  await tx.insert(billingBatchEntriesTable).values(
+    entryRows.map((r) => ({
+      billingBatchId: batch.id,
+      timeEntryId: r.id,
+      action: 'INCLUDE' as const,
+    })),
+  );
+
+  // Hierarchical cascade write-down of $1,200 (the Vance scenario).
+  // Sarah (PARTNER) absorbs $1,000, Mike (MANAGER) absorbs $200, juniors
+  // held harmless.
+  const reasonId = reasonIds['Scope creep'];
+  if (!reasonId) return;
+  const [adj] = await tx
+    .insert(adjustmentsTable)
+    .values({
+      billingBatchId: batch.id,
+      method: 'TIME',
+      allocationMethod: 'HIERARCHICAL_CASCADE',
+      totalAmountCents: -120000,
+      reasonCodeId: reasonId,
+      notes: 'Demo: junior staff held harmless; cascade absorbs upward',
+      status: 'APPLIED',
+      createdById: sarahId,
+      approverId: sarahId,
+      approvedAt: new Date(),
+    })
+    .returning({ id: adjustmentsTable.id });
+  if (!adj) return;
+
+  const allocSeed: { userId: string; entryIdx: number; orig: number; adj: number }[] = [
+    { userId: sarahId, entryIdx: 0, orig: 100000, adj: -100000 },
+    { userId: mikeId, entryIdx: 1, orig: 120000, adj: -20000 },
+    { userId: rachelId, entryIdx: 2, orig: 75000, adj: 0 },
+    { userId: jennyId, entryIdx: 3, orig: 100000, adj: 0 },
+  ];
+  await tx.insert(adjustmentAllocationsTable).values(
+    allocSeed.map((a) => ({
+      adjustmentId: adj.id,
+      timeEntryId: entryRows[a.entryIdx]!.id,
+      appUserId: a.userId,
+      originalValueCents: a.orig,
+      adjustedValueCents: a.orig + a.adj,
+      adjustmentAmountCents: a.adj,
+    })),
+  );
+
+  // Reference the firmId so eslint stays quiet.
+  void firmId;
 }
 
 function log(msg: string): void {

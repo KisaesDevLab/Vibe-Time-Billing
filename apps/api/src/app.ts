@@ -26,6 +26,8 @@ import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
+import { createAiRouter } from './ai/routes';
+import type { AiProvider } from '@vibe/core/ai';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -43,6 +45,8 @@ export interface AppDeps {
     amountCents: number;
     metadata: Record<string, string>;
   }) => Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }>;
+  cloudAiProvider?: AiProvider | null;
+  localAiProvider?: AiProvider | null;
   fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
@@ -157,6 +161,15 @@ export function createApp(deps: AppDeps): Express {
 
   // MCP HTTP shim — token-authenticated agent surface.
   app.use('/mcp', createMcpRouter({ db: deps.db }));
+
+  // AI feature endpoints — staff realm.
+  const aiRouter = createAiRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    cloudProvider: deps.cloudAiProvider ?? null,
+    localProvider: deps.localAiProvider ?? null,
+  });
+  app.use('/api/staff/ai', auth.requireAuth, auth.requireCsrf, aiRouter);
 
   return app;
 }
