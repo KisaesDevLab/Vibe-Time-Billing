@@ -17,6 +17,7 @@ import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
+import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
   level: process.env['LOG_LEVEL'] ?? 'info',
@@ -70,6 +71,9 @@ const chargeInvoice = stripe
     }
   : undefined;
 
+const dunningSendEmail = await buildMailDispatch(logger);
+const dunningSendSms = buildSmsDispatch(logger);
+
 interface JobPayload {
   reason: string;
   scheduledFor: string;
@@ -112,7 +116,11 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'dunning-sweep: no DB configured');
       return;
     }
-    const result = await runDunningSweep(db, logger);
+    const result = await runDunningSweep(db, logger, undefined, {
+      sendEmail: dunningSendEmail,
+      sendSms: dunningSendSms,
+      portalBaseUrl: process.env['PORTAL_BASE_URL'],
+    });
     logger.info({ jobId: job.id, ...result }, 'dunning-sweep complete');
   },
 };

@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -36,10 +36,16 @@ import { logger } from '../logger';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  portalBaseUrl?: string;
 }
 
 const GenerateSchema = z.object({
   billingBatchId: z.string().uuid(),
+});
+
+const VoidSchema = z.object({
+  reason: z.string().min(1).max(400),
 });
 
 export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
@@ -50,6 +56,13 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     if (!deps.db) {
       res.json({ items: [] });
       return;
+    }
+    const q = String(req.query['q'] ?? '').trim();
+    const conds = [eq(invoices.firmId, session.firmId)];
+    if (q) {
+      const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
+      const search = or(ilike(invoices.invoiceNumber, like), ilike(clients.name, like));
+      if (search) conds.push(search);
     }
     const items = await deps.db
       .select({
@@ -66,7 +79,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       })
       .from(invoices)
       .innerJoin(clients, eq(clients.id, invoices.clientId))
-      .where(eq(invoices.firmId, session.firmId))
+      .where(and(...conds))
       .orderBy(desc(invoices.issueDate))
       .limit(500);
     res.json({ items });
@@ -337,6 +350,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
+      const sent = await sendInvoiceEmail(deps, session.firmId, req.params['id']!);
+      if (!sent.ok) {
+        res.status(sent.status).json({ error: sent.error });
+        return;
+      }
       await deps.db
         .update(invoices)
         .set({ status: 'SENT', sentAt: new Date() })
@@ -346,7 +364,90 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         entityType: 'invoice',
         entityId: req.params['id']!,
         actorAppUserId: session.appUserId,
-        after: { status: 'SENT' },
+        after: { status: 'SENT', emailedTo: sent.emailedTo },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, emailedTo: sent.emailedTo });
+    },
+  );
+
+  router.post(
+    '/:id/resend',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const sent = await sendInvoiceEmail(deps, session.firmId, req.params['id']!);
+      if (!sent.ok) {
+        res.status(sent.status).json({ error: sent.error });
+        return;
+      }
+      await deps.db
+        .update(invoices)
+        .set({ sentAt: new Date() })
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { resent: true, emailedTo: sent.emailedTo },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, emailedTo: sent.emailedTo });
+    },
+  );
+
+  router.post(
+    '/:id/void',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const parsed = VoidSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select({ status: invoices.status, paidCents: invoices.paidCents })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'already_voided' });
+        return;
+      }
+      if (Number(inv.paidCents) > 0) {
+        res.status(409).json({ error: 'cannot_void_with_payments' });
+        return;
+      }
+      await deps.db
+        .update(invoices)
+        .set({
+          status: 'VOIDED',
+          voidedAt: new Date(),
+          voidedReason: parsed.data.reason,
+        })
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'VOIDED', reason: parsed.data.reason },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
@@ -355,6 +456,56 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   );
 
   return router;
+}
+
+async function sendInvoiceEmail(
+  deps: InvoiceRoutesDeps,
+  firmId: string,
+  invoiceId: string,
+): Promise<{ ok: true; emailedTo: string | null } | { ok: false; status: number; error: string }> {
+  if (!deps.db) return { ok: false, status: 503, error: 'db_unavailable' };
+  const [inv] = await deps.db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      totalCents: invoices.totalCents,
+      dueDate: invoices.dueDate,
+      clientId: invoices.clientId,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.firmId, firmId)))
+    .limit(1);
+  if (!inv) return { ok: false, status: 404, error: 'not_found' };
+  const [client] = await deps.db
+    .select({ name: clients.name, billingContactEmail: clients.billingContactEmail })
+    .from(clients)
+    .where(eq(clients.id, inv.clientId))
+    .limit(1);
+  if (!client) return { ok: false, status: 404, error: 'client_not_found' };
+  if (!deps.sendEmail || !client.billingContactEmail) {
+    // Mark sent even without dispatcher — caller still flips status.
+    return { ok: true, emailedTo: client.billingContactEmail ?? null };
+  }
+  const portalBase = deps.portalBaseUrl ?? '';
+  const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
+  const total = (Number(inv.totalCents) / 100).toFixed(2);
+  const body =
+    `Dear ${client.name},\n\n` +
+    `Invoice ${inv.invoiceNumber} for $${total} is available. ` +
+    `It is due ${inv.dueDate}.\n\n` +
+    (link ? `View and pay online: ${link}\n\n` : '') +
+    `Thank you.`;
+  try {
+    await deps.sendEmail({
+      to: client.billingContactEmail,
+      subject: `Invoice ${inv.invoiceNumber}`,
+      body,
+    });
+  } catch (err) {
+    logger.error({ err, invoiceId: inv.id }, 'invoice email dispatch failed');
+    return { ok: false, status: 502, error: 'email_dispatch_failed' };
+  }
+  return { ok: true, emailedTo: client.billingContactEmail };
 }
 
 function clientIp(req: Request): string {

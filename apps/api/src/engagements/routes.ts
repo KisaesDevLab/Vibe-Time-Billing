@@ -127,6 +127,53 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/:id/clone',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [src] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!src) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, src.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const newName =
+        typeof req.body?.name === 'string' && req.body.name.trim()
+          ? String(req.body.name).slice(0, 200)
+          : `${src.name} (copy)`;
+      const {
+        id: _id,
+        createdAt: _createdAt,
+        updatedAt: _updatedAt,
+        closedAt: _closedAt,
+        closedReason: _closedReason,
+        ...clonable
+      } = src as Record<string, unknown> & { id: string };
+      void _id;
+      void _createdAt;
+      void _updatedAt;
+      void _closedAt;
+      void _closedReason;
+      const [row] = await deps.db
+        .insert(engagements)
+        .values({ ...(clonable as typeof src), name: newName, status: 'PROPOSED' })
+        .returning({ id: engagements.id });
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
   router.patch(
     '/:id/status',
     requirePermission(deps, 'engagement:write'),

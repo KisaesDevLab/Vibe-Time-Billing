@@ -8,7 +8,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { adjustments, approvalRequests, appUsers } from '@vibe/db/schema';
@@ -54,10 +54,10 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         .where(
           and(
             eq(approvalRequests.status, 'PENDING'),
-            // Either explicitly assigned to me, or unassigned (claimable)
+            // Either explicitly assigned to me, or unassigned (claimable).
             or(
               eq(approvalRequests.approverId, session.appUserId),
-              eq(approvalRequests.approverId, session.appUserId), // placeholder; null-check below
+              isNull(approvalRequests.approverId),
             ),
           ),
         )

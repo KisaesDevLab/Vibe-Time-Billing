@@ -8,24 +8,46 @@
 import { and, eq, inArray, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { invoices } from '@vibe/db/schema';
-import { stepsDueOn } from '@vibe/core/dunning';
+import { clients, invoices } from '@vibe/db/schema';
+import { stepsDueOn, type DunningStepKind } from '@vibe/core/dunning';
 
 import type { Logger } from 'pino';
+
+export interface DunningSweepDeps {
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
+  portalBaseUrl?: string;
+}
+
+const SUBJECT_BY_KIND: Record<DunningStepKind, string> = {
+  REMINDER_FRIENDLY: 'Friendly reminder: invoice past due',
+  REMINDER_FIRM: 'Past due notice',
+  REMINDER_ESCALATED: 'Urgent: invoice significantly past due',
+  PARTNER_NOTIFY: 'Past due — partner escalation',
+  AUTO_PAUSE: 'Service pause notice',
+};
 
 export async function runDunningSweep(
   db: Database,
   log: Logger,
   today = new Date().toISOString().slice(0, 10),
-): Promise<{ scanned: number; stepsFired: number }> {
+  deps: DunningSweepDeps = {},
+): Promise<{ scanned: number; stepsFired: number; sentEmails: number; sentSms: number }> {
   const overdue = await db
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
       dueDate: invoices.dueDate,
       status: invoices.status,
+      totalCents: invoices.totalCents,
+      paidCents: invoices.paidCents,
+      clientId: invoices.clientId,
+      clientName: clients.name,
+      billingContactEmail: clients.billingContactEmail,
+      billingContactPhone: clients.billingContactPhone,
     })
     .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
     .where(
       and(
         inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
@@ -35,27 +57,55 @@ export async function runDunningSweep(
     .limit(500);
 
   let stepsFired = 0;
+  let sentEmails = 0;
+  let sentSms = 0;
   for (const inv of overdue) {
     const due = stepsDueOn({ invoiceDueDate: inv.dueDate, today });
     for (const step of due) {
-      // In production this calls the email/sms dispatcher honoring
-      // per-identity channel preferences. Skeleton just logs.
-      log.info(
-        { invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, step: step.kind },
-        'dunning step due',
-      );
       stepsFired++;
+      const balance = Number(inv.totalCents) - Number(inv.paidCents);
+      const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+      const body =
+        `Invoice ${inv.invoiceNumber} (balance $${(balance / 100).toFixed(2)}) ` +
+        `was due ${inv.dueDate}.` +
+        (link ? `\n\nView/pay: ${link}` : '');
+      if (deps.sendEmail && inv.billingContactEmail) {
+        try {
+          await deps.sendEmail({
+            to: inv.billingContactEmail,
+            subject: SUBJECT_BY_KIND[step.kind],
+            body,
+          });
+          sentEmails++;
+        } catch (err) {
+          log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning email failed');
+        }
+      } else if (deps.sendSms && inv.billingContactPhone) {
+        try {
+          await deps.sendSms({
+            to: inv.billingContactPhone,
+            body: `${SUBJECT_BY_KIND[step.kind]}: ${inv.invoiceNumber} ($${(balance / 100).toFixed(
+              2,
+            )}) due ${inv.dueDate}.${link ? ` ${link}` : ''}`,
+          });
+          sentSms++;
+        } catch (err) {
+          log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning sms failed');
+        }
+      } else {
+        log.info(
+          { invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, step: step.kind },
+          'dunning step due (no dispatcher)',
+        );
+      }
       if (step.kind === 'AUTO_PAUSE') {
-        // The engagement-pause path lives in apps/api; the worker would
-        // POST to an internal endpoint here. Logging the intent for now.
         log.warn({ invoiceId: inv.id }, 'auto-pause threshold reached');
       }
     }
-    // Flip status to OVERDUE if any dunning step has fired.
     if (due.length > 0 && inv.status === 'SENT') {
       await db.update(invoices).set({ status: 'OVERDUE' }).where(eq(invoices.id, inv.id));
     }
   }
 
-  return { scanned: overdue.length, stepsFired };
+  return { scanned: overdue.length, stepsFired, sentEmails, sentSms };
 }

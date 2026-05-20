@@ -168,7 +168,12 @@ export function createApp(deps: AppDeps): Express {
   const reportRouter = createReportRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/reports', auth.requireAuth, auth.requireCsrf, reportRouter);
 
-  const invoiceRouter = createInvoiceRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  const invoiceRouter = createInvoiceRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
   app.use('/api/staff/invoices', auth.requireAuth, auth.requireCsrf, invoiceRouter);
 
   const arRouter = createArRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });

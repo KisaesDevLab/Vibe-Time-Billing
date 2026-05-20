@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, gte, lte } from 'drizzle-orm';
+import { and, eq, gte, lte, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -321,6 +321,126 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
 
       await deps.db.update(timeEntries).set(patch).where(eq(timeEntries.id, prior.id));
       res.json({ ok: true, version: nextVersion });
+    },
+  );
+
+  router.delete(
+    '/:id',
+    requirePermission(deps, 'time_entry:update:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [prior] = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(eq(timeEntries.id, req.params['id']!))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (prior.appUserId !== session.appUserId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      if (prior.lockedAt || prior.status === 'BILLED' || prior.status === 'LOCKED') {
+        res.status(409).json({ error: 'locked' });
+        return;
+      }
+      const [maxVersion] = await deps.db
+        .select({ v: timeEntryVersions.version })
+        .from(timeEntryVersions)
+        .where(eq(timeEntryVersions.timeEntryId, prior.id))
+        .orderBy(timeEntryVersions.version)
+        .limit(1);
+      const nextVersion = (maxVersion?.v ?? 0) + 1;
+      await deps.db.insert(timeEntryVersions).values({
+        timeEntryId: prior.id,
+        version: nextVersion,
+        fields: prior,
+        editedById: session.appUserId,
+      });
+      await deps.db
+        .update(timeEntries)
+        .set({ status: 'ARCHIVED' })
+        .where(eq(timeEntries.id, prior.id));
+      res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/totals/by-day',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const start = (req.query['start'] ?? '').toString();
+      const end = (req.query['end'] ?? '').toString();
+      const conds = [eq(timeEntries.appUserId, session.appUserId)];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      const rows = await deps.db
+        .select({
+          entryDate: timeEntries.entryDate,
+          hours: sql<string>`SUM(${timeEntries.hours})`.as('hours'),
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as(
+            'amountCents',
+          ),
+        })
+        .from(timeEntries)
+        .where(and(...conds))
+        .groupBy(timeEntries.entryDate)
+        .orderBy(timeEntries.entryDate);
+      res.json({
+        items: rows.map((r) => ({
+          entryDate: r.entryDate,
+          hours: Number(r.hours),
+          amountCents: Number(r.amountCents),
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/totals/by-week',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const start = (req.query['start'] ?? '').toString();
+      const end = (req.query['end'] ?? '').toString();
+      const conds = [eq(timeEntries.appUserId, session.appUserId)];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      const weekStart = sql<string>`to_char(date_trunc('week', ${timeEntries.entryDate})::date, 'YYYY-MM-DD')`;
+      const rows = await deps.db
+        .select({
+          weekStart: weekStart.as('weekStart'),
+          hours: sql<string>`SUM(${timeEntries.hours})`.as('hours'),
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as(
+            'amountCents',
+          ),
+        })
+        .from(timeEntries)
+        .where(and(...conds))
+        .groupBy(weekStart)
+        .orderBy(weekStart);
+      res.json({
+        items: rows.map((r) => ({
+          weekStart: r.weekStart,
+          hours: Number(r.hours),
+          amountCents: Number(r.amountCents),
+        })),
+      });
     },
   );
 
