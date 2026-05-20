@@ -14,6 +14,8 @@ import { createTaxonomyRouter } from './taxonomy/routes';
 import { createClientRouter } from './clients/routes';
 import { createEngagementRouter } from './engagements/routes';
 import { createTimeEntryRouter } from './time-entries/routes';
+import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
+import { portalAuthDeps } from './auth/portal-middleware';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -21,6 +23,8 @@ export interface AppDeps {
   redis: Redis;
   sessionStore: SessionStore;
   sendMagicLink?: StaffRoutesDeps['sendMagicLink'];
+  sendPortalEmail?: PortalRoutesDeps['sendEmail'];
+  sendPortalSms?: PortalRoutesDeps['sendSms'];
   fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
@@ -79,6 +83,18 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
+
+  // Portal auth realm — distinct middleware, signing key, cookie.
+  const portal = portalAuthDeps(deps.sessionStore);
+  const portalRouter = createPortalAuthRouter({
+    db: deps.db,
+    redis: deps.redis,
+    sessionStore: deps.sessionStore,
+    sendEmail: deps.sendPortalEmail ?? (async () => undefined),
+    sendSms: deps.sendPortalSms ?? (async () => undefined),
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/auth', portalRouter);
 
   return app;
 }
