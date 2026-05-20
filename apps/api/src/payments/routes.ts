@@ -134,6 +134,68 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
   );
 
   router.get(
+    '/by-invoice/:invoiceId',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [inv] = await deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['invoiceId']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(payments)
+        .where(eq(payments.invoiceId, inv.id))
+        .orderBy(desc(payments.receivedAt));
+      res.json({ items });
+    },
+  );
+
+  router.get(
+    '/refunds',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: payments.id,
+          invoiceId: payments.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+          clientName: clients.name,
+          amountCents: payments.amountCents,
+          refundedAmountCents: payments.refundedAmountCents,
+          refundedAt: payments.refundedAt,
+          provider: payments.provider,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            inArray(payments.status, ['REFUNDED', 'PARTIALLY_REFUNDED']),
+          ),
+        )
+        .orderBy(desc(payments.refundedAt))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
+  router.get(
     '/reconciliation',
     requirePermission(deps, 'payment:read'),
     async (req: Request, res: Response) => {

@@ -56,6 +56,9 @@ importers:
       '@vibe/types':
         specifier: workspace:*
         version: link:../../packages/types
+      bullmq:
+        specifier: ^5.7.0
+        version: 5.76.10
       cookie:
         specifier: ^0.6.0
         version: 0.6.0

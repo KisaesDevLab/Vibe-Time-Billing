@@ -37,6 +37,63 @@ const DebitSchema = z.object({
 export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
   const router = express.Router();
 
+  router.post(
+    '/',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const body = req.body as {
+        engagementId?: unknown;
+        openingHours?: unknown;
+        openingAmountCents?: unknown;
+        rolloverCapHours?: unknown;
+        expirationDate?: unknown;
+      };
+      const engagementId = typeof body.engagementId === 'string' ? body.engagementId : null;
+      const openingHours = typeof body.openingHours === 'number' ? body.openingHours : null;
+      const openingAmountCents =
+        typeof body.openingAmountCents === 'number' ? body.openingAmountCents : null;
+      if (!engagementId || openingHours == null || openingAmountCents == null) {
+        res.status(400).json({ error: 'engagement_hours_amount_required' });
+        return;
+      }
+      const ok = await engagementInFirm(deps.db, session.firmId, engagementId);
+      if (!ok) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(hourBanks)
+        .values({
+          engagementId,
+          openingHours: openingHours.toString(),
+          openingAmountCents,
+          rolloverCapHours:
+            typeof body.rolloverCapHours === 'number' ? body.rolloverCapHours.toString() : null,
+          expirationDate:
+            typeof body.expirationDate === 'string' &&
+            /^\d{4}-\d{2}-\d{2}$/.test(body.expirationDate)
+              ? body.expirationDate
+              : null,
+        })
+        .returning({ id: hourBanks.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'hour_bank',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: { engagementId, openingHours, openingAmountCents },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
   router.get(
     '/',
     requirePermission(deps, 'engagement:read'),

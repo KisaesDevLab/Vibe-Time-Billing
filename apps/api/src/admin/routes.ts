@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { appUsers, firms, firmSettings, offices } from '@vibe/db/schema';
@@ -129,6 +129,59 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .update(appUsers)
         .set({ status: 'ARCHIVED' })
         .where(eq(appUsers.id, req.params['id']!));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/users/:id',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as {
+        fullName?: unknown;
+        defaultOfficeId?: unknown;
+        status?: unknown;
+      };
+      const patch: Record<string, unknown> = {};
+      if (typeof body.fullName === 'string' && body.fullName.trim()) {
+        patch['fullName'] = body.fullName.slice(0, 200);
+      }
+      if (typeof body.defaultOfficeId === 'string') {
+        patch['defaultOfficeId'] = body.defaultOfficeId;
+      }
+      if (body.status === 'ACTIVE' || body.status === 'INACTIVE' || body.status === 'ARCHIVED') {
+        patch['status'] = body.status;
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields_to_update' });
+        return;
+      }
+      await deps.db
+        .update(appUsers)
+        .set(patch)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/users/:id/reset-totp',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(appUsers)
+        .set({ totpSecretEncrypted: null, totpEnrolledAt: null })
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
       res.json({ ok: true });
     },
   );

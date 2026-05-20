@@ -138,5 +138,77 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/realization.csv',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.send('appUserId,engagementId,clientId,original,adjusted,realizationPct\n');
+        return;
+      }
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const clientIds = firmClients.map((c) => c.id);
+      if (clientIds.length === 0) {
+        res.setHeader('Content-Type', 'text/csv');
+        res.send('appUserId,engagementId,clientId,originalCents,adjustedCents,realizationPct\n');
+        return;
+      }
+      const firmEngagements = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(inArray(engagements.clientId, clientIds));
+      const engIds = firmEngagements.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.setHeader('Content-Type', 'text/csv');
+        res.send('appUserId,engagementId,clientId,originalCents,adjustedCents,realizationPct\n');
+        return;
+      }
+      const batches = await deps.db
+        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
+        .from(billingBatches)
+        .where(inArray(billingBatches.engagementId, engIds));
+      const batchIds = batches.map((b) => b.id);
+      const batchToEng = new Map(batches.map((b) => [b.id, b.engagementId]));
+      const engToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
+      const rows = batchIds.length
+        ? await deps.db
+            .select({
+              appUserId: adjustmentAllocations.appUserId,
+              originalValueCents: adjustmentAllocations.originalValueCents,
+              adjustedValueCents: adjustmentAllocations.adjustedValueCents,
+              billingBatchId: adjustmentAllocations.adjustmentId,
+            })
+            .from(adjustmentAllocations)
+        : [];
+      const header = [
+        'appUserId',
+        'engagementId',
+        'clientId',
+        'originalCents',
+        'adjustedCents',
+        'realizationPct',
+      ];
+      const lines = [header.join(',')];
+      for (const r of rows) {
+        const engId = batchToEng.get(r.billingBatchId) ?? '';
+        const cliId = engId ? (engToClient.get(engId) ?? '') : '';
+        const orig = Number(r.originalValueCents);
+        const adj = Number(r.adjustedValueCents);
+        const pct = orig > 0 ? ((adj / orig) * 100).toFixed(2) : '0';
+        lines.push([r.appUserId, engId, cliId, orig, adj, pct].join(','));
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="realization-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
   return router;
 }

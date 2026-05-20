@@ -28,6 +28,8 @@ import { createArRouter } from './ar/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
+import { createAdminJobRouter } from './admin/jobs';
+import { createStatsRouter } from './stats/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
@@ -238,6 +240,19 @@ export function createApp(deps: AppDeps): Express {
     localProvider: deps.localAiProvider ?? null,
   });
   app.use('/api/staff/ai', auth.requireAuth, auth.requireCsrf, aiRouter);
+
+  const statsRouter = createStatsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/stats', auth.requireAuth, auth.requireCsrf, statsRouter);
+
+  const adminJobRouter = createAdminJobRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    redisUrl: config.REDIS_URL,
+  });
+  app.use('/api/staff/admin/jobs', auth.requireAuth, auth.requireCsrf, adminJobRouter);
 
   // API token issuance — admin only.
   const apiTokenRouter = createApiTokenRouter({

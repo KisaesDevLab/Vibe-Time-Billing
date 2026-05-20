@@ -488,6 +488,53 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
     },
   );
 
+  router.patch(
+    '/service-line/:id',
+    requirePermission(deps, 'rate:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [row] = await deps.db
+        .select({ id: serviceLineRates.id })
+        .from(serviceLineRates)
+        .innerJoin(serviceLines, eq(serviceLines.id, serviceLineRates.serviceLineId))
+        .where(
+          and(eq(serviceLineRates.id, req.params['id']!), eq(serviceLines.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = req.body as { billRateCents?: unknown; effectiveEnd?: unknown };
+      const patch: Record<string, unknown> = {};
+      if (typeof body.billRateCents === 'number' && body.billRateCents > 0) {
+        patch['billRateCents'] = body.billRateCents;
+      }
+      if (typeof body.effectiveEnd === 'string' && DATE_RE.test(body.effectiveEnd)) {
+        patch['effectiveEnd'] = body.effectiveEnd;
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db.update(serviceLineRates).set(patch).where(eq(serviceLineRates.id, row.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'service_line_rate',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: patch,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.delete(
     '/service-line/:id',
     requirePermission(deps, 'rate:write'),

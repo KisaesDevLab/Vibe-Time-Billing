@@ -98,12 +98,25 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       return;
     }
     const q = String(req.query['q'] ?? '').trim();
+    const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+    const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
     const conds = [eq(invoices.firmId, session.firmId)];
     if (q) {
       const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
       const search = or(ilike(invoices.invoiceNumber, like), ilike(clients.name, like));
       if (search) conds.push(search);
     }
+    if (
+      status === 'DRAFT' ||
+      status === 'SENT' ||
+      status === 'PARTIALLY_PAID' ||
+      status === 'PAID' ||
+      status === 'OVERDUE' ||
+      status === 'VOIDED'
+    ) {
+      conds.push(eq(invoices.status, status));
+    }
+    if (clientId) conds.push(eq(invoices.clientId, clientId));
     const items = await deps.db
       .select({
         id: invoices.id,
@@ -124,6 +137,68 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       .limit(500);
     res.json({ items });
   });
+
+  router.get(
+    '/export.csv',
+    requirePermission(deps, 'invoice:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.send('id,invoiceNumber,status\n');
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          clientName: clients.name,
+          issueDate: invoices.issueDate,
+          dueDate: invoices.dueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .where(eq(invoices.firmId, session.firmId))
+        .orderBy(desc(invoices.issueDate))
+        .limit(10000);
+      const header = [
+        'id',
+        'invoiceNumber',
+        'clientName',
+        'issueDate',
+        'dueDate',
+        'totalCents',
+        'paidCents',
+        'balanceCents',
+        'status',
+      ];
+      const lines = [header.join(',')];
+      for (const inv of items) {
+        const balance = Number(inv.totalCents) - Number(inv.paidCents);
+        lines.push(
+          [
+            inv.id,
+            inv.invoiceNumber,
+            csvStr(inv.clientName),
+            inv.issueDate,
+            inv.dueDate,
+            String(inv.totalCents),
+            String(inv.paidCents),
+            String(balance),
+            inv.status,
+          ].join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="invoices-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
 
   router.post(
     '/generate-from-batch',
@@ -1083,6 +1158,10 @@ async function sendInvoiceEmail(
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
+
+function csvStr(s: string): string {
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 // Reference to firmSettings to avoid unused-import warning — used in

@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagements, timeEntries } from '@vibe/db/schema';
+import { clients, engagementNotes, engagements, timeEntries } from '@vibe/db/schema';
+import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -15,6 +16,10 @@ import { logger } from '../logger';
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
+
+function csv(s: string): string {
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 export interface EngagementRoutesDeps extends RbacDeps {
@@ -291,6 +296,53 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/export.csv',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.send('id,name,status\n');
+        return;
+      }
+      const firmClients = await deps.db
+        .select({ id: clients.id, name: clients.name })
+        .from(clients)
+        .where(eq(clients.firmId, firmId));
+      const clientNameById = new Map(firmClients.map((c) => [c.id, c.name]));
+      if (clientNameById.size === 0) {
+        res.send('id,name,status\n');
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(engagements)
+        .where(inArray(engagements.clientId, Array.from(clientNameById.keys())))
+        .limit(10000);
+      const header = ['id', 'name', 'clientName', 'status', 'feeStructure', 'startDate', 'endDate'];
+      const lines = [header.join(',')];
+      for (const e of items) {
+        lines.push(
+          [
+            e.id,
+            csv(e.name),
+            csv(clientNameById.get(e.clientId) ?? ''),
+            e.status,
+            e.feeStructure,
+            e.startDate ?? '',
+            e.endDate ?? '',
+          ].join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="engagements-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
   router.post(
     '/:id/clone',
     requirePermission(deps, 'engagement:write'),
@@ -432,6 +484,76 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/:id/notes',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(engagementNotes)
+        .where(eq(engagementNotes.engagementId, req.params['id']!))
+        .orderBy(desc(engagementNotes.pinned), desc(engagementNotes.createdAt))
+        .limit(200);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/:id/notes',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const body = typeof req.body?.body === 'string' ? req.body.body.slice(0, 8000) : null;
+      if (!body) {
+        res.status(400).json({ error: 'body_required' });
+        return;
+      }
+      const pinned = req.body?.pinned === true;
+      const [eng] = await deps.db
+        .select({ clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(engagementNotes)
+        .values({
+          engagementId: req.params['id']!,
+          authorId: session.appUserId,
+          body,
+          pinned,
+        })
+        .returning({ id: engagementNotes.id });
+      res.status(201).json({ id: row?.id });
     },
   );
 

@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { adjustments, approvalRequests, appUsers } from '@vibe/db/schema';
+import { adjustments, approvalComments, approvalRequests, appUsers } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -219,6 +219,54 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         return;
       }
       res.json({ entity: null, kind: request.entityType });
+    },
+  );
+
+  router.get(
+    '/:id/comments',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(approvalComments)
+        .where(eq(approvalComments.requestId, req.params['id']!))
+        .orderBy(approvalComments.createdAt);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/:id/comments',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const body = typeof req.body?.body === 'string' ? req.body.body.slice(0, 8000) : null;
+      if (!body) {
+        res.status(400).json({ error: 'body_required' });
+        return;
+      }
+      const [request] = await deps.db
+        .select({ id: approvalRequests.id })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, req.params['id']!))
+        .limit(1);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(approvalComments)
+        .values({ requestId: request.id, authorId: session.appUserId, body })
+        .returning({ id: approvalComments.id });
+      res.status(201).json({ id: row?.id });
     },
   );
 

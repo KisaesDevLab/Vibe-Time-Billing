@@ -19,6 +19,9 @@ import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
 import { runLateFeeAccrual } from './jobs/late-fee-accrual';
 import { runLateEntryAlert } from './jobs/late-entry-alert';
+import { runMilestoneDateTrigger } from './jobs/milestone-date-trigger';
+import { runHourBankExpiration } from './jobs/hour-bank-expiration';
+import { runApprovalEscalation } from './jobs/approval-escalation';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
@@ -88,6 +91,9 @@ const QUEUES = [
   'dunning-sweep',
   'late-fee-accrual',
   'late-entry-alert',
+  'milestone-date-trigger',
+  'hour-bank-expiration',
+  'approval-escalation',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -155,6 +161,30 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     });
     logger.info({ jobId: job.id, ...result }, 'late-entry-alert complete');
   },
+  'milestone-date-trigger': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'milestone-date-trigger: no DB configured');
+      return;
+    }
+    const result = await runMilestoneDateTrigger(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'milestone-date-trigger complete');
+  },
+  'hour-bank-expiration': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'hour-bank-expiration: no DB configured');
+      return;
+    }
+    const result = await runHourBankExpiration(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'hour-bank-expiration complete');
+  },
+  'approval-escalation': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'approval-escalation: no DB configured');
+      return;
+    }
+    const result = await runApprovalEscalation(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'approval-escalation complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -164,6 +194,9 @@ const CRON: Record<QueueName, string> = {
   'dunning-sweep': '0 * * * *',
   'late-fee-accrual': '15 1 * * *',
   'late-entry-alert': '0 9 * * 1-5',
+  'milestone-date-trigger': '5 1 * * *',
+  'hour-bank-expiration': '10 1 * * *',
+  'approval-escalation': '20 * * * *',
 };
 
 async function setup(): Promise<void> {

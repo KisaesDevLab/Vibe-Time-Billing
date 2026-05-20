@@ -265,6 +265,35 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
     },
   );
 
+  router.patch(
+    '/:id/services/:serviceLineId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const includedHours =
+        typeof req.body?.includedHours === 'number' ? req.body.includedHours : null;
+      await deps.db
+        .update(recurringBillingPlanServices)
+        .set({ includedHours: includedHours != null ? includedHours.toString() : null })
+        .where(
+          and(
+            eq(recurringBillingPlanServices.planId, plan.id),
+            eq(recurringBillingPlanServices.serviceLineId, req.params['serviceLineId']!),
+          ),
+        );
+      res.json({ ok: true });
+    },
+  );
+
   router.delete(
     '/:id/services/:serviceLineId',
     requirePermission(deps, 'engagement:write'),
@@ -287,6 +316,100 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
             eq(recurringBillingPlanServices.serviceLineId, req.params['serviceLineId']!),
           ),
         );
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/:id',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = req.body as {
+        amountCents?: unknown;
+        frequency?: unknown;
+        nextRunDate?: unknown;
+        autoPayFlag?: unknown;
+        autoPayPaymentMethodId?: unknown;
+      };
+      const patch: Record<string, unknown> = {};
+      if (typeof body.amountCents === 'number' && body.amountCents > 0) {
+        patch['amountCents'] = body.amountCents;
+      }
+      if (
+        typeof body.frequency === 'string' &&
+        ['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL'].includes(
+          body.frequency,
+        )
+      ) {
+        patch['frequency'] = body.frequency;
+      }
+      if (typeof body.nextRunDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.nextRunDate)) {
+        patch['nextRunDate'] = body.nextRunDate;
+      }
+      if (typeof body.autoPayFlag === 'boolean') patch['autoPayFlag'] = body.autoPayFlag;
+      if (typeof body.autoPayPaymentMethodId === 'string') {
+        patch['autoPayPaymentMethodId'] = body.autoPayPaymentMethodId;
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields_to_update' });
+        return;
+      }
+      await deps.db
+        .update(recurringBillingPlans)
+        .set(patch)
+        .where(eq(recurringBillingPlans.id, plan.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'recurring_billing_plan',
+        entityId: plan.id,
+        actorAppUserId: session.appUserId,
+        after: patch,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/run-now',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Setting next_run_date to today pulls it into the next worker tick.
+      const today = new Date().toISOString().slice(0, 10);
+      await deps.db
+        .update(recurringBillingPlans)
+        .set({ nextRunDate: today })
+        .where(eq(recurringBillingPlans.id, plan.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'recurring_billing_plan',
+        entityId: plan.id,
+        actorAppUserId: session.appUserId,
+        after: { runNow: true, nextRunDate: today },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
     },
   );

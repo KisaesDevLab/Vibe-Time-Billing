@@ -304,6 +304,79 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   );
 
   router.get(
+    '/export.csv',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.send('id,appUserId,entryDate,hours,amountCents\n');
+        return;
+      }
+      const start = (req.query['start'] ?? '').toString();
+      const end = (req.query['end'] ?? '').toString();
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const clientIds = firmClients.map((c) => c.id);
+      if (clientIds.length === 0) {
+        res.send('id,appUserId,entryDate,hours,amountCents\n');
+        return;
+      }
+      const engs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(inArray(engagements.clientId, clientIds));
+      const engIds = engs.map((e) => e.id);
+      const conds = [inArray(timeEntries.engagementId, engIds)];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      const items = engIds.length
+        ? await deps.db
+            .select()
+            .from(timeEntries)
+            .where(and(...conds))
+            .limit(20000)
+        : [];
+      const header = [
+        'id',
+        'appUserId',
+        'engagementId',
+        'entryDate',
+        'hours',
+        'rateCents',
+        'amountCents',
+        'billable',
+        'inScope',
+        'status',
+      ];
+      const lines = [header.join(',')];
+      for (const t of items) {
+        lines.push(
+          [
+            t.id,
+            t.appUserId,
+            t.engagementId,
+            t.entryDate,
+            t.hours,
+            t.standardRateSnapshotCents,
+            t.standardAmountCents,
+            String(t.billableFlag),
+            String(t.inScopeFlag),
+            t.status,
+          ].join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="time-entries-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
+  router.get(
     '/by-engagement/:engagementId',
     requirePermission(deps, 'time_entry:read:all'),
     async (req: Request, res: Response) => {

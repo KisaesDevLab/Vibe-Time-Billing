@@ -18,6 +18,7 @@
     "@vibe/core": "workspace:*",
     "@vibe/db": "workspace:*",
     "@vibe/types": "workspace:*",
+    "bullmq": "^5.7.0",
     "cookie": "^0.6.0",
     "drizzle-orm": "^0.30.10",
     "express": "^4.19.2",

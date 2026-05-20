@@ -181,6 +181,63 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/plain-english-query',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const question =
+        typeof req.body?.question === 'string' ? req.body.question.slice(0, 800) : '';
+      if (!question) {
+        res.status(400).json({ error: 'question_required' });
+        return;
+      }
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You translate plain-English questions about a CPA practice into a brief plan ' +
+            'describing which reports or queries to run. Output 2-4 short bullet points. ' +
+            'No code, no SQL.',
+          userPrompt: question,
+          maxTokens: 240,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'plain_english_query',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ answer: result.text.trim(), providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'plain_english_query',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
   router.get(
     '/request-log',
     requirePermission(deps, 'admin:ai:manage'),

@@ -1089,6 +1089,49 @@ export const payments = pgTable(
 );
 
 // =====================================================================
+// TABLE: client_note + engagement_note + approval_comment
+// Note threads — immutable rows; edits supersede via new inserts.
+// =====================================================================
+
+export const clientNotes = pgTable(
+  'client_note',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => appUsers.id),
+    body: text('body').notNull(),
+    pinned: boolean('pinned').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index('client_note_client_idx').on(t.clientId, t.createdAt),
+  }),
+);
+
+export const engagementNotes = pgTable(
+  'engagement_note',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => appUsers.id),
+    body: text('body').notNull(),
+    pinned: boolean('pinned').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    engagementIdx: index('engagement_note_eng_idx').on(t.engagementId, t.createdAt),
+  }),
+);
+
+// =====================================================================
 // TABLE: holiday_calendar
 // Firm holidays + per-user PTO. app_user_id NULL means firm-wide.
 // =====================================================================
@@ -1188,6 +1231,24 @@ export const approvalRequests = pgTable(
   (t) => ({
     entityIdx: index('approval_request_entity_idx').on(t.entityType, t.entityId),
     approverStatusIdx: index('approval_request_approver_status_idx').on(t.approverId, t.status),
+  }),
+);
+
+export const approvalComments = pgTable(
+  'approval_comment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => approvalRequests.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => appUsers.id),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index('approval_comment_request_idx').on(t.requestId, t.createdAt),
   }),
 );
 

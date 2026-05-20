@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Firm- and engagement-level summary stats for the staff dashboard.
+// All numbers computed live from the canonical tables — for firms over
+// the 100k-time-entry threshold, swap these to read from the materialized
+// realization_view in packages/db/migrations/0003_materialized_views.sql.
+
+import express, { type Request, type Response, type Router } from 'express';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+
+import type { Database } from '@vibe/db';
+import { clients, engagements, invoices, payments, timeEntries } from '@vibe/db/schema';
+
+import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+
+export interface StatsRoutesDeps extends RbacDeps {
+  db: Database | null;
+}
+
+export function createStatsRouter(deps: StatsRoutesDeps): Router {
+  const router = express.Router();
+
+  router.get(
+    '/firm',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const monthStart = new Date(Date.now() - 30 * 86_400_000);
+      const [clientStats] = await deps.db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(clients)
+        .where(and(eq(clients.firmId, session.firmId), eq(clients.status, 'ACTIVE')));
+      const firmClientIds = (
+        await deps.db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(eq(clients.firmId, session.firmId))
+      ).map((c) => c.id);
+      const engStats = firmClientIds.length
+        ? await deps.db
+            .select({ c: sql<number>`COUNT(*)` })
+            .from(engagements)
+            .where(
+              and(inArray(engagements.clientId, firmClientIds), eq(engagements.status, 'ACTIVE')),
+            )
+        : [{ c: 0 }];
+      const [arOutstanding] = await deps.db
+        .select({
+          total: sql<number>`COALESCE(SUM(${invoices.totalCents} - ${invoices.paidCents}), 0)`,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        );
+      const [paidThisMonth] = await deps.db
+        .select({
+          total: sql<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            gte(payments.receivedAt, monthStart),
+            eq(payments.status, 'SUCCEEDED'),
+          ),
+        );
+      const [wipHours] = firmClientIds.length
+        ? await deps.db
+            .select({
+              h: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+              amount: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+            })
+            .from(timeEntries)
+            .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+            .where(
+              and(
+                inArray(engagements.clientId, firmClientIds),
+                eq(timeEntries.status, 'SUBMITTED'),
+              ),
+            )
+        : [{ h: '0', amount: 0 }];
+      res.json({
+        summary: {
+          activeClients: Number(clientStats?.c ?? 0),
+          activeEngagements: Number(engStats[0]?.c ?? 0),
+          arOutstandingCents: Number(arOutstanding?.total ?? 0),
+          collectionsLast30DaysCents: Number(paidThisMonth?.total ?? 0),
+          wipHours: Number(wipHours?.h ?? 0),
+          wipAmountCents: Number(wipHours?.amount ?? 0),
+        },
+      });
+    },
+  );
+
+  router.get(
+    '/engagement/:engagementId',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(engagements.id, req.params['engagementId']!), eq(clients.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const [te] = await deps.db
+        .select({
+          totalEntries: sql<number>`COUNT(*)`,
+          totalHours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          totalAmountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+          submittedCount: sql<number>`COUNT(*) FILTER (WHERE ${timeEntries.status} = 'SUBMITTED')`,
+          billedCount: sql<number>`COUNT(*) FILTER (WHERE ${timeEntries.status} = 'BILLED')`,
+        })
+        .from(timeEntries)
+        .where(eq(timeEntries.engagementId, req.params['engagementId']!));
+      const [inv] = await deps.db
+        .select({
+          invoicedCents: sql<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          paidCents: sql<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+          openCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE'))`,
+        })
+        .from(invoices)
+        .where(eq(invoices.primaryEngagementId, req.params['engagementId']!));
+      res.json({
+        summary: {
+          engagementId: req.params['engagementId'],
+          timeEntries: {
+            total: Number(te?.totalEntries ?? 0),
+            totalHours: Number(te?.totalHours ?? 0),
+            totalAmountCents: Number(te?.totalAmountCents ?? 0),
+            submittedCount: Number(te?.submittedCount ?? 0),
+            billedCount: Number(te?.billedCount ?? 0),
+          },
+          invoicing: {
+            invoicedCents: Number(inv?.invoicedCents ?? 0),
+            paidCents: Number(inv?.paidCents ?? 0),
+            openCount: Number(inv?.openCount ?? 0),
+          },
+        },
+      });
+    },
+  );
+
+  router.get(
+    '/client/:clientId',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.id, req.params['clientId']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({
+          activeCount: sql<number>`COUNT(*) FILTER (WHERE ${engagements.status} = 'ACTIVE')`,
+          closedCount: sql<number>`COUNT(*) FILTER (WHERE ${engagements.status} = 'CLOSED')`,
+        })
+        .from(engagements)
+        .where(eq(engagements.clientId, req.params['clientId']!));
+      const [inv] = await deps.db
+        .select({
+          outstandingCents: sql<number>`COALESCE(SUM(${invoices.totalCents} - ${invoices.paidCents}) FILTER (WHERE ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE')), 0)`,
+          paidCents: sql<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+          totalCents: sql<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+        })
+        .from(invoices)
+        .where(
+          and(eq(invoices.firmId, session.firmId), eq(invoices.clientId, req.params['clientId']!)),
+        );
+      res.json({
+        summary: {
+          clientId: req.params['clientId'],
+          engagements: {
+            active: Number(eng?.activeCount ?? 0),
+            closed: Number(eng?.closedCount ?? 0),
+          },
+          ar: {
+            outstandingCents: Number(inv?.outstandingCents ?? 0),
+            paidCents: Number(inv?.paidCents ?? 0),
+            totalInvoicedCents: Number(inv?.totalCents ?? 0),
+          },
+        },
+      });
+    },
+  );
+
+  return router;
+}
