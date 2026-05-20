@@ -7,3 +7,5 @@ export * as billing from './billing';
 export * as invoicing from './invoicing';
 export * as payments from './payments';
 export * as dunning from './dunning';
+export * as reporting from './reporting';
+export * as approvals from './approvals';

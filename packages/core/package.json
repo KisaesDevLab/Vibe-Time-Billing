@@ -14,7 +14,9 @@
     "./billing": "./src/billing/index.ts",
     "./invoicing": "./src/invoicing/index.ts",
     "./payments": "./src/payments/index.ts",
-    "./dunning": "./src/dunning/index.ts"
+    "./dunning": "./src/dunning/index.ts",
+    "./reporting": "./src/reporting/index.ts",
+    "./approvals": "./src/approvals/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -16,6 +16,7 @@ import { createEngagementRouter } from './engagements/routes';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
 import { portalAuthDeps } from './auth/portal-middleware';
+import { createAuditRouter } from './audit/routes';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -83,6 +84,9 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
+
+  const auditRouter = createAuditRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/audit', auth.requireAuth, auth.requireCsrf, auditRouter);
 
   // Portal auth realm — distinct middleware, signing key, cookie.
   const portal = portalAuthDeps(deps.sessionStore);
