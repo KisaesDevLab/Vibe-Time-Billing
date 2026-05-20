@@ -70,6 +70,8 @@ const app = createApp({
   chargeInvoice,
   cloudAiProvider,
   localAiProvider,
+  stripeProvider: stripe,
+  stripeWebhookSecret: config.STRIPE_WEBHOOK_SECRET ?? null,
 });
 
 app.listen(config.PORT, () => {

@@ -30,7 +30,10 @@ import { createPortalInvoiceRouter } from './portal/invoices';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
+import { createApiTokenRouter } from './admin/api-tokens';
+import { createStripeWebhookRouter } from './webhooks/stripe';
 import type { AiProvider } from '@vibe/core/ai';
+import type { PaymentProvider } from '@vibe/core/payments';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -50,6 +53,8 @@ export interface AppDeps {
   }) => Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }>;
   cloudAiProvider?: AiProvider | null;
   localAiProvider?: AiProvider | null;
+  stripeProvider?: PaymentProvider | null;
+  stripeWebhookSecret?: string | null;
   fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
@@ -207,6 +212,25 @@ export function createApp(deps: AppDeps): Express {
     localProvider: deps.localAiProvider ?? null,
   });
   app.use('/api/staff/ai', auth.requireAuth, auth.requireCsrf, aiRouter);
+
+  // API token issuance — admin only.
+  const apiTokenRouter = createApiTokenRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/api-tokens', auth.requireAuth, auth.requireCsrf, apiTokenRouter);
+
+  // Stripe webhook — mounted BEFORE the global JSON body parser would
+  // have run, so the raw body is preserved for signature verification.
+  // Express routes the call to this router's raw-body parser first.
+  app.use(
+    '/api/webhooks/stripe',
+    createStripeWebhookRouter({
+      db: deps.db,
+      stripe: deps.stripeProvider ?? null,
+      webhookSecret: deps.stripeWebhookSecret ?? null,
+    }),
+  );
 
   return app;
 }

@@ -14,6 +14,8 @@ import { createDb, type Database } from '@vibe/db';
 
 import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
+import { runViewRefresh } from './jobs/view-refresh';
+import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
 
 const logger = pino({
   level: process.env['LOG_LEVEL'] ?? 'info',
@@ -54,14 +56,20 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     logger.info({ jobId: job.id, ...result }, 'recurring-billing complete');
   },
   'ar-aging-snapshot': async (job) => {
-    logger.info({ jobId: job.id }, 'ar-aging snapshot tick (live endpoint is source)');
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'ar-aging snapshot: no DB configured');
+      return;
+    }
+    const result = await runArAgingSnapshot(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'ar-aging snapshot complete');
   },
   'view-refresh': async (job) => {
     if (!db) {
       logger.warn({ jobId: job.id }, 'view-refresh: no DB configured');
       return;
     }
-    logger.info({ jobId: job.id }, 'view-refresh tick (live rollup is source)');
+    const result = await runViewRefresh(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'view-refresh complete');
   },
   'dunning-sweep': async (job) => {
     if (!db) {
