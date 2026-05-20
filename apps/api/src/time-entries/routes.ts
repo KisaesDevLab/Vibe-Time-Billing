@@ -855,6 +855,36 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   );
 
   router.post(
+    '/bulk-status',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true, updated: 0 });
+        return;
+      }
+      const ids = Array.isArray(req.body?.ids)
+        ? req.body.ids.filter((x: unknown): x is string => typeof x === 'string')
+        : [];
+      const status = typeof req.body?.status === 'string' ? req.body.status : null;
+      const allowed = ['DRAFT', 'SUBMITTED', 'LOCKED', 'BILLED', 'WRITTEN_OFF', 'ARCHIVED'];
+      if (ids.length === 0 || !status || !allowed.includes(status)) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const patch: Record<string, unknown> = {
+        status: status as 'DRAFT' | 'SUBMITTED' | 'LOCKED' | 'BILLED' | 'WRITTEN_OFF' | 'ARCHIVED',
+      };
+      if (status === 'LOCKED') patch['lockedAt'] = new Date();
+      const updated = await deps.db
+        .update(timeEntries)
+        .set(patch)
+        .where(inArray(timeEntries.id, ids))
+        .returning({ id: timeEntries.id });
+      res.json({ ok: true, updated: updated.length });
+    },
+  );
+
+  router.post(
     '/timer/start',
     requirePermission(deps, 'time_entry:create'),
     async (req: Request, res: Response) => {

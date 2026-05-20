@@ -375,6 +375,53 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
     },
   );
 
+  router.patch(
+    '/:id',
+    requirePermission(deps, 'adjustment:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [adj] = await deps.db
+        .select()
+        .from(adjustments)
+        .where(eq(adjustments.id, req.params['id']!))
+        .limit(1);
+      if (!adj) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (adj.status !== 'DRAFT' && adj.status !== 'PENDING_APPROVAL') {
+        res.status(409).json({ error: 'not_editable', status: adj.status });
+        return;
+      }
+      const body = req.body as { notes?: unknown };
+      const patch: Record<string, unknown> = {};
+      if (typeof body.notes === 'string') patch['notes'] = body.notes.slice(0, 2000);
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db.update(adjustments).set(patch).where(eq(adjustments.id, adj.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'adjustment',
+        entityId: adj.id,
+        actorAppUserId: session.appUserId,
+        after: patch,
+        ip: (
+          req.headers['x-forwarded-for']?.toString().split(',')[0] ??
+          req.ip ??
+          '0.0.0.0'
+        ).trim(),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/by-creator/:userId',
     requirePermission(deps, 'billing_batch:read'),

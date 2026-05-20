@@ -58,6 +58,47 @@ export function createArRouter(deps: ArRoutesDeps): Router {
   );
 
   router.get(
+    '/by-engagement/:engagementId',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const open = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          dueDate: invoices.dueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            eq(invoices.primaryEngagementId, req.params['engagementId']!),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        )
+        .orderBy(desc(invoices.dueDate));
+      const today = new Date().toISOString().slice(0, 10);
+      const aging = bucketize(
+        open
+          .map((o) => ({
+            entryDate: o.dueDate,
+            amountCents: Number(o.totalCents) - Number(o.paidCents),
+          }))
+          .filter((r) => r.amountCents > 0),
+        today,
+      );
+      res.json({ items: open, aging });
+    },
+  );
+
+  router.get(
     '/top-clients',
     requirePermission(deps, 'report:ar:read'),
     async (req: Request, res: Response) => {

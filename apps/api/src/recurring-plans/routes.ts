@@ -324,6 +324,39 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
   );
 
   router.post(
+    '/:id/recalc-next-run',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [src] = await deps.db
+        .select()
+        .from(recurringBillingPlans)
+        .where(eq(recurringBillingPlans.id, plan.id))
+        .limit(1);
+      if (!src) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const { nextRunDate } = await import('@vibe/core/billing');
+      const nrd = nextRunDate(src.nextRunDate, src.frequency);
+      await deps.db
+        .update(recurringBillingPlans)
+        .set({ nextRunDate: nrd })
+        .where(eq(recurringBillingPlans.id, plan.id));
+      res.json({ ok: true, nextRunDate: nrd });
+    },
+  );
+
+  router.post(
     '/:id/duplicate',
     requirePermission(deps, 'engagement:write'),
     async (req: Request, res: Response) => {

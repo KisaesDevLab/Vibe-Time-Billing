@@ -94,6 +94,80 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/offices/:id',
+    requirePermission(deps, 'office:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ office: null });
+        return;
+      }
+      const [office] = await deps.db
+        .select()
+        .from(offices)
+        .where(and(eq(offices.id, req.params['id']!), eq(offices.firmId, firmId)))
+        .limit(1);
+      if (!office) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({ office });
+    },
+  );
+
+  router.patch(
+    '/offices/:id',
+    requirePermission(deps, 'office:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const parsed = OfficeSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      await deps.db
+        .update(offices)
+        .set(parsed.data)
+        .where(and(eq(offices.id, req.params['id']!), eq(offices.firmId, firmId)));
+      res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/users/:id',
+    requirePermission(deps, 'app_user:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ user: null });
+        return;
+      }
+      const [user] = await deps.db
+        .select({
+          id: appUsers.id,
+          email: appUsers.email,
+          fullName: appUsers.fullName,
+          status: appUsers.status,
+          defaultOfficeId: appUsers.defaultOfficeId,
+          totpEnrolledAt: appUsers.totpEnrolledAt,
+          createdAt: appUsers.createdAt,
+        })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({ user });
+    },
+  );
+
   router.post(
     '/offices',
     requirePermission(deps, 'office:write'),

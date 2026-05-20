@@ -1165,6 +1165,34 @@ export const engagementLetters = pgTable(
   }),
 );
 
+// =====================================================================
+// TABLE: attachment — generic uploaded-file metadata
+// =====================================================================
+
+export const attachments = pgTable(
+  'attachment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    ownerType: text('owner_type').notNull(),
+    ownerId: uuid('owner_id').notNull(),
+    filename: text('filename').notNull(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    storagePath: text('storage_path').notNull(),
+    uploadedById: uuid('uploaded_by_id')
+      .notNull()
+      .references(() => appUsers.id),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    ownerIdx: index('attachment_owner_idx').on(t.ownerType, t.ownerId),
+    firmIdx: index('attachment_firm_idx').on(t.firmId),
+  }),
+);
+
 export const requiredFieldRules = pgTable(
   'required_field_rule',
   {

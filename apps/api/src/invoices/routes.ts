@@ -633,6 +633,76 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     },
   );
 
+  router.patch(
+    '/:id/line-items/:lineItemId',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_immutable' });
+        return;
+      }
+      const body = req.body as {
+        description?: unknown;
+        amountCents?: unknown;
+        sortOrder?: unknown;
+      };
+      const [orig] = await deps.db
+        .select()
+        .from(invoiceLineItems)
+        .where(
+          and(
+            eq(invoiceLineItems.id, req.params['lineItemId']!),
+            eq(invoiceLineItems.invoiceId, inv.id),
+          ),
+        )
+        .limit(1);
+      if (!orig) {
+        res.status(404).json({ error: 'line_item_not_found' });
+        return;
+      }
+      const patch: Record<string, unknown> = {};
+      if (typeof body.description === 'string')
+        patch['description'] = body.description.slice(0, 400);
+      if (typeof body.sortOrder === 'number') patch['sortOrder'] = body.sortOrder;
+      let delta = 0;
+      if (typeof body.amountCents === 'number') {
+        patch['amountCents'] = body.amountCents;
+        delta = body.amountCents - Number(orig.amountCents);
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db.transaction(async (tx) => {
+        await tx.update(invoiceLineItems).set(patch).where(eq(invoiceLineItems.id, orig.id));
+        if (delta !== 0) {
+          await tx
+            .update(invoices)
+            .set({
+              subtotalCents: Number(inv.subtotalCents) + delta,
+              totalCents: Number(inv.totalCents) + delta,
+            })
+            .where(eq(invoices.id, inv.id));
+        }
+      });
+      res.json({ ok: true });
+    },
+  );
+
   router.delete(
     '/:id/line-items/:lineItemId',
     requirePermission(deps, 'invoice:write'),
@@ -743,6 +813,63 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .where(eq(dunningHistory.invoiceId, inv.id))
         .orderBy(dunningHistory.sentAt);
       res.json({ items });
+    },
+  );
+
+  router.post(
+    '/:id/mark-paid',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_not_payable', status: inv.status });
+        return;
+      }
+      const balance = Number(inv.totalCents) - Number(inv.paidCents);
+      const reference =
+        typeof req.body?.reference === 'string' ? req.body.reference.slice(0, 200) : null;
+      await deps.db.transaction(async (tx) => {
+        await tx.insert(payments).values({
+          invoiceId: inv.id,
+          amountCents: balance,
+          feeCents: 0,
+          provider: 'MANUAL',
+          providerChargeId: reference,
+          status: 'SUCCEEDED',
+          receivedAt: new Date(),
+        });
+        await tx
+          .update(invoices)
+          .set({
+            paidCents: Number(inv.totalCents),
+            status: 'PAID',
+            paidAt: new Date(),
+          })
+          .where(eq(invoices.id, inv.id));
+      });
+      await emitAudit(deps.db, {
+        action: 'PAYMENT',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'manual_mark_paid', amountCents: balance, reference },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 

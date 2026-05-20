@@ -402,6 +402,34 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
   );
 
   router.get(
+    '/count',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ pending: 0, mine: 0 });
+        return;
+      }
+      const ownership = or(
+        eq(approvalRequests.approverId, session.appUserId),
+        isNull(approvalRequests.approverId),
+      );
+      const { sql: drz } = await import('drizzle-orm');
+      const [total] = await deps.db
+        .select({ c: drz<number>`COUNT(*)`.as('c') })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.status, 'PENDING'));
+      const conds = [eq(approvalRequests.status, 'PENDING')];
+      if (ownership) conds.push(ownership);
+      const [mine] = await deps.db
+        .select({ c: drz<number>`COUNT(*)`.as('c') })
+        .from(approvalRequests)
+        .where(and(...conds));
+      res.json({ pending: Number(total?.c ?? 0), mine: Number(mine?.c ?? 0) });
+    },
+  );
+
+  router.get(
     '/rules',
     requirePermission(deps, 'firm:settings:read'),
     async (req: Request, res: Response) => {

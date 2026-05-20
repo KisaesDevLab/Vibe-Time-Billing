@@ -32,6 +32,7 @@ import { createAdminJobRouter } from './admin/jobs';
 import { createStatsRouter } from './stats/routes';
 import { createEngagementLetterRouter } from './engagement-letters/routes';
 import { createRequiredFieldRulesRouter } from './required-field-rules/routes';
+import { createAttachmentRouter } from './attachments/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
@@ -272,6 +273,12 @@ export function createApp(deps: AppDeps): Express {
     auth.requireCsrf,
     requiredFieldRulesRouter,
   );
+
+  const attachmentRouter = createAttachmentRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/attachments', auth.requireAuth, auth.requireCsrf, attachmentRouter);
 
   const adminJobRouter = createAdminJobRouter({
     db: deps.db,

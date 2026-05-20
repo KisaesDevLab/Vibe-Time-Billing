@@ -236,6 +236,51 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/:id/transfer',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const toClientId = typeof req.body?.toClientId === 'string' ? req.body.toClientId : null;
+      if (!toClientId) {
+        res.status(400).json({ error: 'to_client_id_required' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, toClientId))) {
+        res.status(404).json({ error: 'target_client_not_found' });
+        return;
+      }
+      await deps.db
+        .update(engagements)
+        .set({ clientId: toClientId })
+        .where(eq(engagements.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'transfer', fromClientId: eng.clientId, toClientId },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.patch(
     '/:id/budget',
     requirePermission(deps, 'engagement:write'),

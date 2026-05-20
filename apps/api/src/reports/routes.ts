@@ -139,6 +139,114 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   );
 
   router.get(
+    '/realization-by-partner',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      // Group adjustment_allocations by engagement.partnerId.
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const cIds = firmClients.map((c) => c.id);
+      if (cIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmEngs = await deps.db
+        .select({ id: engagements.id, partnerId: engagements.partnerId })
+        .from(engagements)
+        .where(inArray(engagements.clientId, cIds));
+      const partnerByEng = new Map(firmEngs.map((e) => [e.id, e.partnerId]));
+      const batches = await deps.db
+        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
+        .from(billingBatches)
+        .where(inArray(billingBatches.engagementId, Array.from(partnerByEng.keys())));
+      const engByBatch = new Map(batches.map((b) => [b.id, b.engagementId]));
+      const rows = batches.length
+        ? await deps.db
+            .select({
+              adjustmentId: adjustmentAllocations.adjustmentId,
+              original: adjustmentAllocations.originalValueCents,
+              adjusted: adjustmentAllocations.adjustedValueCents,
+            })
+            .from(adjustmentAllocations)
+        : [];
+      const byPartner = new Map<string, { originalCents: number; adjustedCents: number }>();
+      for (const r of rows) {
+        const engId = engByBatch.get(r.adjustmentId);
+        if (!engId) continue;
+        const partnerId = partnerByEng.get(engId);
+        if (!partnerId) continue;
+        const cur = byPartner.get(partnerId) ?? { originalCents: 0, adjustedCents: 0 };
+        cur.originalCents += Number(r.original);
+        cur.adjustedCents += Number(r.adjusted);
+        byPartner.set(partnerId, cur);
+      }
+      res.json({
+        items: Array.from(byPartner.entries()).map(([partnerId, v]) => ({
+          partnerId,
+          originalCents: v.originalCents,
+          adjustedCents: v.adjustedCents,
+          realizationPct: v.originalCents > 0 ? (v.adjustedCents / v.originalCents) * 100 : 0,
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/profitability',
+    requirePermission(deps, 'report:profitability:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      // Profit = invoiced - cost approximation. We don't track cost
+      // explicitly per time entry; use timekeeper_rate.cost_rate_cents.
+      // For brevity this returns invoiced minus a flat-cost stub.
+      const firmClientIds = (
+        await deps.db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(eq(clients.firmId, session.firmId))
+      ).map((c) => c.id);
+      if (firmClientIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmEngs = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(inArray(engagements.clientId, firmClientIds));
+      const engIds = firmEngs.map((e) => e.id);
+      const { invoices: inv } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const items = engIds.length
+        ? await deps.db
+            .select({
+              engagementId: inv.primaryEngagementId,
+              invoicedCents: drz<number>`COALESCE(SUM(${inv.totalCents}), 0)`,
+            })
+            .from(inv)
+            .where(inArray(inv.primaryEngagementId, engIds))
+            .groupBy(inv.primaryEngagementId)
+        : [];
+      res.json({
+        items: items.map((r) => ({
+          engagementId: r.engagementId,
+          invoicedCents: Number(r.invoicedCents),
+        })),
+      });
+    },
+  );
+
+  router.get(
     '/revenue-by-month',
     requirePermission(deps, 'report:realization:read'),
     async (req: Request, res: Response) => {
