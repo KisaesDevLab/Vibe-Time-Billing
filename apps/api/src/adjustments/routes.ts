@@ -528,6 +528,78 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/export.csv',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.send('id,kind,method,status,totalCents,createdAt\n');
+        return;
+      }
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const cIds = firmClients.map((c) => c.id);
+      if (cIds.length === 0) {
+        res.send('id,kind,method,status,totalCents,createdAt\n');
+        return;
+      }
+      const engs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(inArray(engagements.clientId, cIds));
+      const engIds = engs.map((e) => e.id);
+      const batches = engIds.length
+        ? await deps.db
+            .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
+            .from(billingBatches)
+            .where(inArray(billingBatches.engagementId, engIds))
+        : [];
+      const batchIds = batches.map((b) => b.id);
+      const engByBatch = new Map(batches.map((b) => [b.id, b.engagementId]));
+      const items = batchIds.length
+        ? await deps.db
+            .select()
+            .from(adjustments)
+            .where(inArray(adjustments.billingBatchId, batchIds))
+            .limit(20000)
+        : [];
+      const header = [
+        'id',
+        'engagementId',
+        'method',
+        'allocationMethod',
+        'status',
+        'totalAmountCents',
+        'reasonCodeId',
+        'createdAt',
+      ];
+      const lines = [header.join(',')];
+      for (const a of items) {
+        lines.push(
+          [
+            a.id,
+            engByBatch.get(a.billingBatchId) ?? '',
+            a.method,
+            a.allocationMethod,
+            a.status,
+            String(a.totalAmountCents ?? 0),
+            a.reasonCodeId ?? '',
+            a.createdAt instanceof Date ? a.createdAt.toISOString() : a.createdAt,
+          ].join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="adjustments-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
   return router;
 }
 

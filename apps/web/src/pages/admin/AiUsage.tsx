@@ -10,9 +10,9 @@ interface LogRow {
   occurredAt: string;
   feature: string;
   provider: string;
-  modelId: string | null;
-  inputTokens: number | null;
-  outputTokens: number | null;
+  model: string | null;
+  requestTokens: number | null;
+  responseTokens: number | null;
   costCents: number | null;
   success: boolean;
   latencyMs: number | null;
@@ -43,8 +43,8 @@ export function AiUsagePage(): JSX.Element {
 
   const totals = useMemo(() => {
     const sumCents = items.reduce((a, r) => a + (r.costCents ?? 0), 0);
-    const sumIn = items.reduce((a, r) => a + (r.inputTokens ?? 0), 0);
-    const sumOut = items.reduce((a, r) => a + (r.outputTokens ?? 0), 0);
+    const sumIn = items.reduce((a, r) => a + (r.requestTokens ?? 0), 0);
+    const sumOut = items.reduce((a, r) => a + (r.responseTokens ?? 0), 0);
     const failed = items.filter((r) => !r.success).length;
     return { sumCents, sumIn, sumOut, failed, count: items.length };
   }, [items]);
@@ -131,12 +131,12 @@ export function AiUsagePage(): JSX.Element {
             },
             { key: 'feature', header: 'Feature', render: (r) => r.feature },
             { key: 'provider', header: 'Provider', render: (r) => r.provider },
-            { key: 'model', header: 'Model', render: (r) => r.modelId ?? '—' },
+            { key: 'model', header: 'Model', render: (r) => r.model ?? '—' },
             {
               key: 'tokens',
               header: 'Tokens (in/out)',
               align: 'right',
-              render: (r) => `${r.inputTokens ?? 0} / ${r.outputTokens ?? 0}`,
+              render: (r) => `${r.requestTokens ?? 0} / ${r.responseTokens ?? 0}`,
             },
             {
               key: 'cost',

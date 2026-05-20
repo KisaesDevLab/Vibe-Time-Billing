@@ -9,6 +9,7 @@ import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { appUsers, firms, firmSettings, offices, roles, userRoles } from '@vibe/db/schema';
+import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -512,6 +513,19 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       });
       res.status(201).json({ created, skipped, ids: created_ids });
+    },
+  );
+
+  router.get(
+    '/permission-matrix',
+    requirePermission(deps, 'firm:settings:read'),
+    async (_req: Request, res: Response) => {
+      const slugs: RoleSlug[] = ['admin', 'partner', 'manager', 'senior', 'staff'];
+      const matrix = PERMISSION_KEYS.map((key) => ({
+        key,
+        roles: slugs.filter((slug) => ROLE_TEMPLATES[slug].has(key)),
+      }));
+      res.json({ permissions: matrix, roles: slugs });
     },
   );
 

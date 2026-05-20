@@ -7,7 +7,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, gte, sum } from 'drizzle-orm';
+import { and, desc, eq, gte, sql, sum } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { aiRequestLog, firmSettings } from '@vibe/db/schema';
@@ -264,6 +264,75 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         .orderBy(desc(aiRequestLog.occurredAt))
         .limit(500);
       res.json({ items });
+    },
+  );
+
+  router.get(
+    '/metrics',
+    requirePermission(deps, 'admin:ai:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: null });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '30'), 10) || 30, 1),
+        365,
+      );
+      const since = new Date(Date.now() - days * 86_400_000);
+      const [totals] = await deps.db
+        .select({
+          totalRequests: sql<number>`COUNT(*)`,
+          failedRequests: sql<number>`COUNT(*) FILTER (WHERE ${aiRequestLog.success} = false)`,
+          totalCostCents: sql<number>`COALESCE(SUM(${aiRequestLog.costCents}), 0)`,
+          totalInputTokens: sql<number>`COALESCE(SUM(${aiRequestLog.requestTokens}), 0)`,
+          totalOutputTokens: sql<number>`COALESCE(SUM(${aiRequestLog.responseTokens}), 0)`,
+          avgLatencyMs: sql<number>`COALESCE(AVG(${aiRequestLog.latencyMs}), 0)`,
+        })
+        .from(aiRequestLog)
+        .where(and(eq(aiRequestLog.firmId, session.firmId), gte(aiRequestLog.occurredAt, since)));
+      const perFeature = await deps.db
+        .select({
+          feature: aiRequestLog.feature,
+          requests: sql<number>`COUNT(*)`,
+          costCents: sql<number>`COALESCE(SUM(${aiRequestLog.costCents}), 0)`,
+        })
+        .from(aiRequestLog)
+        .where(and(eq(aiRequestLog.firmId, session.firmId), gte(aiRequestLog.occurredAt, since)))
+        .groupBy(aiRequestLog.feature);
+      const [settings] = await deps.db
+        .select({
+          monthly: firmSettings.aiMonthlyBudgetCents,
+          warn: firmSettings.aiWarnThresholdPct,
+        })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      const monthly = settings ? Number(settings.monthly) : null;
+      const spent = Number(totals?.totalCostCents ?? 0);
+      const usagePct = monthly && monthly > 0 ? (spent / monthly) * 100 : null;
+      res.json({
+        windowDays: days,
+        totals: {
+          requests: Number(totals?.totalRequests ?? 0),
+          failed: Number(totals?.failedRequests ?? 0),
+          costCents: spent,
+          inputTokens: Number(totals?.totalInputTokens ?? 0),
+          outputTokens: Number(totals?.totalOutputTokens ?? 0),
+          avgLatencyMs: Math.round(Number(totals?.avgLatencyMs ?? 0)),
+        },
+        perFeature: perFeature.map((p) => ({
+          feature: p.feature,
+          requests: Number(p.requests),
+          costCents: Number(p.costCents),
+        })),
+        budget: {
+          monthlyBudgetCents: monthly,
+          warnThresholdPct: settings ? Number(settings.warn) : null,
+          usagePct,
+        },
+      });
     },
   );
 

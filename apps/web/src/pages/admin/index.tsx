@@ -12,8 +12,10 @@ import { HourBanksPage } from './HourBanks';
 import { JobsPage } from './Jobs';
 import { MilestonesPage } from './Milestones';
 import { OfficesPage } from './Offices';
+import { RatesPage } from './Rates';
 import { RecurringPlansPage } from './RecurringPlans';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
+import { SavedReportsPage } from './SavedReports';
 import { TaxonomyPage } from './Taxonomy';
 import { UsersPage } from './Users';
 
@@ -22,6 +24,7 @@ const TABS = [
   { key: 'offices', label: 'Offices', href: '/admin/offices' },
   { key: 'users', label: 'Users', href: '/admin/users' },
   { key: 'taxonomy', label: 'Taxonomy', href: '/admin/taxonomy' },
+  { key: 'rates', label: 'Rates', href: '/admin/rates' },
   { key: 'plans', label: 'Recurring plans', href: '/admin/recurring-plans' },
   { key: 'banks', label: 'Hour banks', href: '/admin/hour-banks' },
   { key: 'holidays', label: 'Holidays', href: '/admin/holidays' },
@@ -30,6 +33,7 @@ const TABS = [
   { key: 'rfr', label: 'Required fields', href: '/admin/required-fields' },
   { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
   { key: 'ai', label: 'AI usage', href: '/admin/ai-usage' },
+  { key: 'saved', label: 'Saved reports', href: '/admin/saved-reports' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
 ];
 
@@ -64,6 +68,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="offices" element={<OfficesPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
+        <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
@@ -72,6 +77,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="required-fields" element={<RequiredFieldRulesPage />} />
         <Route path="milestones" element={<MilestonesPage />} />
         <Route path="ai-usage" element={<AiUsagePage />} />
+        <Route path="saved-reports" element={<SavedReportsPage />} />
         <Route path="jobs" element={<JobsPage />} />
       </Routes>
     </div>
