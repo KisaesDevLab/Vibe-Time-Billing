@@ -58,7 +58,7 @@ importers:
         version: 0.6.0
       drizzle-orm:
         specifier: ^0.30.10
-        version: 0.30.10(postgres@3.4.9)
+        version: 0.30.10(@electric-sql/pglite@0.2.17)(postgres@3.4.9)
       express:
         specifier: ^4.19.2
         version: 4.22.2
@@ -249,11 +249,14 @@ importers:
         version: link:../types
       drizzle-orm:
         specifier: ^0.30.10
-        version: 0.30.10(postgres@3.4.9)
+        version: 0.30.10(@electric-sql/pglite@0.2.17)(postgres@3.4.9)
       postgres:
         specifier: ^3.4.4
         version: 3.4.9
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.2.17
+        version: 0.2.17
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.41
@@ -471,6 +474,9 @@ packages:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
     dev: true
+
+  /@electric-sql/pglite@0.2.17:
+    resolution: {integrity: sha512-qEpKRT2oUaWDH6tjRxLHjdzMqRUGYDnGZlKrnL4dJ77JVMcP2Hpo3NYnOSPKdZdeec57B6QPprCUFg0picx5Pw==}
 
   /@esbuild-kit/core-utils@3.3.2:
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
@@ -2841,7 +2847,7 @@ packages:
       - supports-color
     dev: true
 
-  /drizzle-orm@0.30.10(postgres@3.4.9):
+  /drizzle-orm@0.30.10(@electric-sql/pglite@0.2.17)(postgres@3.4.9):
     resolution: {integrity: sha512-IRy/QmMWw9lAQHpwbUh1b8fcn27S/a9zMIzqea1WNOxK9/4EB8gIo+FZWLiPXzl2n9ixGSv8BhsLZiOppWEwBw==}
     peerDependencies:
       '@aws-sdk/client-rds-data': '>=3'
@@ -2921,6 +2927,7 @@ packages:
       sqlite3:
         optional: true
     dependencies:
+      '@electric-sql/pglite': 0.2.17
       postgres: 3.4.9
     dev: false
 
