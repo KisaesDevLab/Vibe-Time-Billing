@@ -4,3 +4,6 @@ export * as auth from './auth';
 export * as rbac from './rbac';
 export * as rates from './rates';
 export * as billing from './billing';
+export * as invoicing from './invoicing';
+export * as payments from './payments';
+export * as dunning from './dunning';

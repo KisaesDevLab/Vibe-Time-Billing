@@ -11,7 +11,10 @@
     "./auth": "./src/auth/index.ts",
     "./rbac": "./src/rbac/index.ts",
     "./rates": "./src/rates/index.ts",
-    "./billing": "./src/billing/index.ts"
+    "./billing": "./src/billing/index.ts",
+    "./invoicing": "./src/invoicing/index.ts",
+    "./payments": "./src/payments/index.ts",
+    "./dunning": "./src/dunning/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
