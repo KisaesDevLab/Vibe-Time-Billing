@@ -8,7 +8,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -558,6 +558,225 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
           and(eq(approvalRules.id, req.params['id']!), eq(approvalRules.firmId, session.firmId)),
         );
       res.json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Admin: reassign an approval request to a different approver.
+  // Phase 21 #18.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/reassign',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { approverId?: unknown };
+      const newApprover = typeof body.approverId === 'string' ? body.approverId : null;
+      if (!newApprover) {
+        res.status(400).json({ error: 'approverId_required' });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, newApprover), eq(appUsers.firmId, session.firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'approver_not_found' });
+        return;
+      }
+      const [prior] = await deps.db
+        .select({ id: approvalRequests.id, approverId: approvalRequests.approverId })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, req.params['id']!))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(approvalRequests)
+        .set({ approverId: newApprover, status: 'PENDING' })
+        .where(eq(approvalRequests.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'approval_request',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        before: { approverId: prior.approverId },
+        after: { kind: 'reassign', approverId: newApprover },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Approval queue CSV export. Phase 21 #19.
+  // -----------------------------------------------------------------
+  router.get(
+    '/export.csv',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.send('id,entityType,entityId,status,requesterId,approverId,requestedAt\n');
+        return;
+      }
+      const status = (req.query['status'] ?? '').toString();
+      const conds = [
+        inArray(
+          approvalRequests.requesterId,
+          deps.db
+            .select({ id: appUsers.id })
+            .from(appUsers)
+            .where(eq(appUsers.firmId, session.firmId)),
+        ),
+      ];
+      if (['PENDING', 'APPROVED', 'REJECTED', 'APPROVED_WITH_EDITS'].includes(status)) {
+        conds.push(eq(approvalRequests.status, status as 'PENDING'));
+      }
+      const rows = await deps.db
+        .select()
+        .from(approvalRequests)
+        .where(and(...conds))
+        .orderBy(desc(approvalRequests.requestedAt))
+        .limit(20000);
+      const header = [
+        'id',
+        'entityType',
+        'entityId',
+        'status',
+        'requesterId',
+        'approverId',
+        'ruleId',
+        'requestedAt',
+        'respondedAt',
+        'dueAt',
+      ];
+      const lines = [header.join(',')];
+      for (const r of rows) {
+        lines.push(
+          [
+            r.id,
+            r.entityType,
+            r.entityId,
+            r.status,
+            r.requesterId,
+            r.approverId ?? '',
+            r.ruleId ?? '',
+            r.requestedAt instanceof Date ? r.requestedAt.toISOString() : r.requestedAt,
+            r.respondedAt instanceof Date ? r.respondedAt.toISOString() : (r.respondedAt ?? ''),
+            r.dueAt instanceof Date ? r.dueAt.toISOString() : (r.dueAt ?? ''),
+          ].join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="approvals-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Metrics: approval throughput + SLA breach count over a window.
+  // Phase 21 #20.
+  // -----------------------------------------------------------------
+  router.get(
+    '/metrics',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: null });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '30'), 10) || 30, 7),
+        365,
+      );
+      const since = new Date(Date.now() - days * 86_400_000);
+      const firmUsers = deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(eq(appUsers.firmId, session.firmId));
+      const [counts] = await deps.db
+        .select({
+          total: sql<number>`COUNT(*)`,
+          pending: sql<number>`COUNT(*) FILTER (WHERE ${approvalRequests.status} = 'PENDING')`,
+          approved: sql<number>`COUNT(*) FILTER (WHERE ${approvalRequests.status} = 'APPROVED')`,
+          rejected: sql<number>`COUNT(*) FILTER (WHERE ${approvalRequests.status} = 'REJECTED')`,
+          avgResponseMs: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${approvalRequests.respondedAt} - ${approvalRequests.requestedAt})) * 1000) FILTER (WHERE ${approvalRequests.respondedAt} IS NOT NULL), 0)`,
+          slaBreaches: sql<number>`COUNT(*) FILTER (WHERE ${approvalRequests.dueAt} IS NOT NULL AND ${approvalRequests.dueAt} < NOW() AND ${approvalRequests.status} = 'PENDING')`,
+        })
+        .from(approvalRequests)
+        .where(
+          and(
+            inArray(approvalRequests.requesterId, firmUsers),
+            gte(approvalRequests.requestedAt, since),
+          ),
+        );
+      res.json({
+        windowDays: days,
+        total: Number(counts?.total ?? 0),
+        pending: Number(counts?.pending ?? 0),
+        approved: Number(counts?.approved ?? 0),
+        rejected: Number(counts?.rejected ?? 0),
+        avgResponseMs: Number(counts?.avgResponseMs ?? 0),
+        slaBreaches: Number(counts?.slaBreaches ?? 0),
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Dry-run a rule's conditionsJson against a payload — useful for
+  // rule authors to verify match before going live. Phase 21 #16.
+  // -----------------------------------------------------------------
+  router.post(
+    '/rules/:id/dry-run',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ matched: false });
+        return;
+      }
+      const [rule] = await deps.db
+        .select()
+        .from(approvalRules)
+        .where(
+          and(eq(approvalRules.id, req.params['id']!), eq(approvalRules.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!rule) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = req.body as { payload?: unknown };
+      const payload =
+        body.payload && typeof body.payload === 'object'
+          ? (body.payload as Record<string, unknown>)
+          : {};
+      const conds = (rule.conditionsJson ?? {}) as Record<string, unknown>;
+      const matched = Object.entries(conds).every(([k, v]) => {
+        const got = payload[k];
+        if (Array.isArray(v)) return v.includes(got);
+        return v === got;
+      });
+      res.json({
+        ruleId: rule.id,
+        ruleName: rule.name,
+        matched,
+        conditions: conds,
+        payload,
+      });
     },
   );
 

@@ -1212,6 +1212,36 @@ export const requiredFieldRules = pgTable(
 );
 
 // =====================================================================
+// TABLE: saved_report (Phase 18 #21)
+// Persisted report filter state owned by a staff user; shared_flag lets
+// a partner publish a definition firm-wide.
+// =====================================================================
+
+export const savedReports = pgTable(
+  'saved_report',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => appUsers.id),
+    name: text('name').notNull(),
+    reportKind: text('report_kind').notNull(),
+    paramsJson: jsonb('params_json').notNull().default({}),
+    sharedFlag: boolean('shared_flag').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('saved_report_firm_idx').on(t.firmId),
+    ownerIdx: index('saved_report_owner_idx').on(t.ownerId),
+    ownerNameUk: uniqueIndex('saved_report_owner_name_uk').on(t.ownerId, t.name),
+  }),
+);
+
+// =====================================================================
 // TABLE: holiday_calendar
 // Firm holidays + per-user PTO. app_user_id NULL means firm-wide.
 // =====================================================================

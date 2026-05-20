@@ -23,6 +23,7 @@ import { createAuditRouter } from './audit/routes';
 import { createBillingBatchRouter } from './billing-batches/routes';
 import { createAdjustmentRouter } from './adjustments/routes';
 import { createReportRouter } from './reports/routes';
+import { createSavedReportsRouter } from './reports/saved';
 import { createInvoiceRouter } from './invoices/routes';
 import { createArRouter } from './ar/routes';
 import { createApprovalRouter } from './approvals/routes';
@@ -180,6 +181,12 @@ export function createApp(deps: AppDeps): Express {
 
   const reportRouter = createReportRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/reports', auth.requireAuth, auth.requireCsrf, reportRouter);
+
+  const savedReportsRouter = createSavedReportsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/saved-reports', auth.requireAuth, auth.requireCsrf, savedReportsRouter);
 
   const invoiceRouter = createInvoiceRouter({
     db: deps.db,
