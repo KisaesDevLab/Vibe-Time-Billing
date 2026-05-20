@@ -6,6 +6,9 @@ import { AppShell, Button, Pill } from '@vibe/ui';
 
 import { AccountPage } from './pages/Account';
 import { AdminLayout } from './pages/admin';
+import { ApprovalsPage } from './pages/Approvals';
+import { ArPage } from './pages/Ar';
+import { AuditPage } from './pages/Audit';
 import { AuthProvider, useAuth } from './auth-context';
 import { BillingBatchesPage } from './pages/Billing';
 import { ClientsPage } from './pages/Clients';
@@ -40,6 +43,9 @@ export function App(): JSX.Element {
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/invoices" element={<InvoicesPage />} />
+                  <Route path="/ar" element={<ArPage />} />
+                  <Route path="/approvals" element={<ApprovalsPage />} />
+                  <Route path="/audit" element={<AuditPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
@@ -77,7 +83,19 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         { label: 'Clients', href: '/clients', active: location.pathname.startsWith('/clients') },
         { label: 'Time', href: '/time', active: location.pathname.startsWith('/time') },
         { label: 'Billing', href: '/billing', active: location.pathname.startsWith('/billing') },
+        {
+          label: 'Invoices',
+          href: '/invoices',
+          active: location.pathname.startsWith('/invoices'),
+        },
+        { label: 'AR', href: '/ar', active: location.pathname.startsWith('/ar') },
+        {
+          label: 'Approvals',
+          href: '/approvals',
+          active: location.pathname.startsWith('/approvals'),
+        },
         { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
+        { label: 'Audit', href: '/audit', active: location.pathname.startsWith('/audit') },
         { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
         { label: 'Account', href: '/account', active: location.pathname.startsWith('/account') },
       ]}

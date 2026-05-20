@@ -21,6 +21,8 @@ import { createBillingBatchRouter } from './billing-batches/routes';
 import { createAdjustmentRouter } from './adjustments/routes';
 import { createReportRouter } from './reports/routes';
 import { createInvoiceRouter } from './invoices/routes';
+import { createArRouter } from './ar/routes';
+import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import type { RoleSlug } from '@vibe/core/rbac';
 
@@ -119,6 +121,15 @@ export function createApp(deps: AppDeps): Express {
 
   const invoiceRouter = createInvoiceRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/invoices', auth.requireAuth, auth.requireCsrf, invoiceRouter);
+
+  const arRouter = createArRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/ar', auth.requireAuth, auth.requireCsrf, arRouter);
+
+  const approvalRouter = createApprovalRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/approvals', auth.requireAuth, auth.requireCsrf, approvalRouter);
 
   // Portal auth realm — distinct middleware, signing key, cookie.
   const portal = portalAuthDeps(deps.sessionStore);
