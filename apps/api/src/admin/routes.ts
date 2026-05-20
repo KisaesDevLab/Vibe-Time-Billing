@@ -8,8 +8,9 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, firms, firmSettings, offices } from '@vibe/db/schema';
+import { appUsers, firms, firmSettings, offices, roles, userRoles } from '@vibe/db/schema';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export interface AdminRoutesDeps extends RbacDeps {
@@ -338,6 +339,179 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         // The ops script reads this header to differentiate manual runs.
         marker: `manual-${new Date().toISOString().replace(/[:.]/g, '-')}`,
       });
+    },
+  );
+
+  router.get(
+    '/roles',
+    requirePermission(deps, 'app_user:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ roles: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: roles.id,
+          name: roles.name,
+          systemFlag: roles.systemFlag,
+        })
+        .from(roles)
+        .where(eq(roles.firmId, firmId));
+      res.json({ roles: rows });
+    },
+  );
+
+  router.get(
+    '/users/:id/roles',
+    requirePermission(deps, 'app_user:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ roles: [] });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const rows = await deps.db
+        .select({ id: roles.id, name: roles.name })
+        .from(userRoles)
+        .innerJoin(roles, eq(roles.id, userRoles.roleId))
+        .where(eq(userRoles.appUserId, req.params['id']!));
+      res.json({ roles: rows });
+    },
+  );
+
+  router.post(
+    '/users/:id/roles',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { roleIds?: unknown };
+      if (!Array.isArray(body.roleIds) || body.roleIds.some((r) => typeof r !== 'string')) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const wanted = body.roleIds as string[];
+      const [scope] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const allowed = await deps.db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(eq(roles.firmId, firmId));
+      const allowedIds = new Set(allowed.map((r) => r.id));
+      const filtered = wanted.filter((r) => allowedIds.has(r));
+      const before = await deps.db
+        .select({ roleId: userRoles.roleId })
+        .from(userRoles)
+        .where(eq(userRoles.appUserId, req.params['id']!));
+      await deps.db.transaction(async (tx) => {
+        await tx.delete(userRoles).where(eq(userRoles.appUserId, req.params['id']!));
+        if (filtered.length > 0) {
+          await tx
+            .insert(userRoles)
+            .values(filtered.map((roleId) => ({ appUserId: req.params['id']!, roleId })));
+        }
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'app_user_roles',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        before: { roleIds: before.map((b) => b.roleId) },
+        after: { roleIds: filtered },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      res.json({ ok: true, assigned: filtered.length });
+    },
+  );
+
+  router.post(
+    '/users/import',
+    requirePermission(deps, 'app_user:invite'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      if (!deps.db) {
+        res.json({ created: 0, skipped: 0 });
+        return;
+      }
+      const body = req.body as { csv?: unknown };
+      if (typeof body.csv !== 'string' || body.csv.length === 0) {
+        res.status(400).json({ error: 'csv_required' });
+        return;
+      }
+      const lines = body.csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      if (lines.length < 2) {
+        res.status(400).json({ error: 'csv_needs_header_and_one_row' });
+        return;
+      }
+      const header = lines[0]!.split(',').map((h) => h.trim().toLowerCase());
+      const emailIdx = header.indexOf('email');
+      const nameIdx = header.indexOf('fullname');
+      if (emailIdx < 0 || nameIdx < 0) {
+        res.status(400).json({ error: 'csv_missing_columns', need: ['email', 'fullName'] });
+        return;
+      }
+      const existing = new Set(
+        (
+          await deps.db
+            .select({ email: appUsers.email })
+            .from(appUsers)
+            .where(eq(appUsers.firmId, firmId))
+        ).map((u) => u.email.toLowerCase()),
+      );
+      let created = 0;
+      let skipped = 0;
+      const created_ids: string[] = [];
+      for (let i = 1; i < lines.length; i += 1) {
+        const parts = lines[i]!.split(',');
+        const email = (parts[emailIdx] ?? '').trim();
+        const fullName = (parts[nameIdx] ?? '').trim();
+        if (!email || !fullName || existing.has(email.toLowerCase())) {
+          skipped += 1;
+          continue;
+        }
+        const [row] = await deps.db
+          .insert(appUsers)
+          .values({ firmId, email, fullName })
+          .returning({ id: appUsers.id });
+        if (row) {
+          created += 1;
+          created_ids.push(row.id);
+          existing.add(email.toLowerCase());
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'app_user_bulk_import',
+        actorAppUserId: session.appUserId,
+        after: { created, skipped, ids: created_ids },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      res.status(201).json({ created, skipped, ids: created_ids });
     },
   );
 

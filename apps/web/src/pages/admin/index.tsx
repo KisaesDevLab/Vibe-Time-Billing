@@ -3,14 +3,17 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { tokens } from '@vibe/ui';
 
+import { AiUsagePage } from './AiUsage';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
 import { FirmSettingsPage } from './FirmSettings';
 import { HolidaysPage } from './Holidays';
 import { HourBanksPage } from './HourBanks';
 import { JobsPage } from './Jobs';
+import { MilestonesPage } from './Milestones';
 import { OfficesPage } from './Offices';
 import { RecurringPlansPage } from './RecurringPlans';
+import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { TaxonomyPage } from './Taxonomy';
 import { UsersPage } from './Users';
 
@@ -24,6 +27,9 @@ const TABS = [
   { key: 'holidays', label: 'Holidays', href: '/admin/holidays' },
   { key: 'letters', label: 'Engagement letters', href: '/admin/letters' },
   { key: 'rules', label: 'Approval rules', href: '/admin/approval-rules' },
+  { key: 'rfr', label: 'Required fields', href: '/admin/required-fields' },
+  { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
+  { key: 'ai', label: 'AI usage', href: '/admin/ai-usage' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
 ];
 
@@ -63,6 +69,9 @@ export function AdminLayout(): JSX.Element {
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />
+        <Route path="required-fields" element={<RequiredFieldRulesPage />} />
+        <Route path="milestones" element={<MilestonesPage />} />
+        <Route path="ai-usage" element={<AiUsagePage />} />
         <Route path="jobs" element={<JobsPage />} />
       </Routes>
     </div>

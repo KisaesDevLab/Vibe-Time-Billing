@@ -13,21 +13,33 @@ interface RealizationItem {
   realizationPct: number;
 }
 
+interface FirmSummary {
+  activeClients: number;
+  activeEngagements: number;
+  arOutstandingCents: number;
+  collectionsLast30DaysCents: number;
+  wipHours: number;
+  wipAmountCents: number;
+}
+
 const formatPct = (p: number): string => `${(p * 100).toFixed(1)}%`;
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
 export function DashboardPage(): JSX.Element {
   const [items, setItems] = useState<RealizationItem[]>([]);
+  const [summary, setSummary] = useState<FirmSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const res = await api<{ items: RealizationItem[] }>(
-          '/api/staff/reports/realization?dimension=timekeeper',
-        );
-        setItems(res.items ?? []);
+        const [r, s] = await Promise.all([
+          api<{ items: RealizationItem[] }>('/api/staff/reports/realization?dimension=timekeeper'),
+          api<{ summary: FirmSummary | null }>('/api/staff/stats/firm'),
+        ]);
+        setItems(r.items ?? []);
+        setSummary(s.summary);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed to load');
       } finally {
@@ -38,6 +50,26 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      {summary && (
+        <Card title="Firm at a glance">
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(5, 1fr)',
+              gap: 16,
+            }}
+          >
+            <Stat label="Active clients" value={summary.activeClients.toLocaleString()} />
+            <Stat label="Active engagements" value={summary.activeEngagements.toLocaleString()} />
+            <Stat label="WIP" value={formatCents(summary.wipAmountCents)} />
+            <Stat label="AR outstanding" value={formatCents(summary.arOutstandingCents)} />
+            <Stat
+              label="Collections (30d)"
+              value={formatCents(summary.collectionsLast30DaysCents)}
+            />
+          </div>
+        </Card>
+      )}
       <Card title="Realization by timekeeper" action={<Pill tone="accent">live</Pill>}>
         {error && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>}
         {loading ? (
@@ -79,6 +111,15 @@ export function DashboardPage(): JSX.Element {
           <li>Track time, then generate pre-bills and adjustments</li>
         </ul>
       </Card>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: tokens.color.textMuted }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 600 }}>{value}</div>
     </div>
   );
 }
