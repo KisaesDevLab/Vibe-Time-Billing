@@ -122,7 +122,11 @@ export function ClientsPage(): JSX.Element {
         ) : (
           <Table<Client>
             columns={[
-              { key: 'name', header: 'Name', render: (c) => c.name },
+              {
+                key: 'name',
+                header: 'Name',
+                render: (c) => <a href={`/clients/${c.id}`}>{c.name}</a>,
+              },
               {
                 key: 'terms',
                 header: 'Terms (days)',

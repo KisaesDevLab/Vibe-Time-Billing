@@ -179,6 +179,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
       }
       const [eng] = await deps.db
         .select({
+          total: sql<number>`COUNT(*)`,
           activeCount: sql<number>`COUNT(*) FILTER (WHERE ${engagements.status} = 'ACTIVE')`,
           closedCount: sql<number>`COUNT(*) FILTER (WHERE ${engagements.status} = 'CLOSED')`,
         })
@@ -186,6 +187,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         .where(eq(engagements.clientId, req.params['clientId']!));
       const [inv] = await deps.db
         .select({
+          count: sql<number>`COUNT(*)`,
           outstandingCents: sql<number>`COALESCE(SUM(${invoices.totalCents} - ${invoices.paidCents}) FILTER (WHERE ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE')), 0)`,
           paidCents: sql<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
           totalCents: sql<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
@@ -194,18 +196,34 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         .where(
           and(eq(invoices.firmId, session.firmId), eq(invoices.clientId, req.params['clientId']!)),
         );
+      const engRowsForWip = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(eq(engagements.clientId, req.params['clientId']!));
+      const engIds = engRowsForWip.map((r) => r.id);
+      const wip = engIds.length
+        ? await deps.db
+            .select({
+              h: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+              amount: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+            })
+            .from(timeEntries)
+            .where(
+              and(inArray(timeEntries.engagementId, engIds), eq(timeEntries.status, 'SUBMITTED')),
+            )
+        : [{ h: '0', amount: 0 }];
       res.json({
         summary: {
           clientId: req.params['clientId'],
-          engagements: {
-            active: Number(eng?.activeCount ?? 0),
-            closed: Number(eng?.closedCount ?? 0),
-          },
-          ar: {
-            outstandingCents: Number(inv?.outstandingCents ?? 0),
-            paidCents: Number(inv?.paidCents ?? 0),
-            totalInvoicedCents: Number(inv?.totalCents ?? 0),
-          },
+          engagementCount: Number(eng?.total ?? 0),
+          activeEngagementCount: Number(eng?.activeCount ?? 0),
+          closedEngagementCount: Number(eng?.closedCount ?? 0),
+          invoiceCount: Number(inv?.count ?? 0),
+          invoicedCents: Number(inv?.totalCents ?? 0),
+          paidCents: Number(inv?.paidCents ?? 0),
+          outstandingCents: Number(inv?.outstandingCents ?? 0),
+          wipHours: Number(wip[0]?.h ?? 0),
+          wipAmountCents: Number(wip[0]?.amount ?? 0),
         },
       });
     },

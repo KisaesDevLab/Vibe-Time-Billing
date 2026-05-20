@@ -720,5 +720,59 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Fixed-fee gap (Phase 11 #17). For FIXED_FEE and FIXED_FEE_WITH_*
+  // engagements, the gap is (standard_amount_of_time_entries - fee).
+  // Positive gap = unbilled work in excess of fee; negative = budget
+  // headroom remaining.
+  // -----------------------------------------------------------------
+  router.get(
+    '/:id/fixed-fee-gap',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ gapCents: 0, feeCents: 0, wipCents: 0 });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      if (eng.feeAmountCents == null) {
+        res.status(409).json({ error: 'no_fee_set', feeStructure: eng.feeStructure });
+        return;
+      }
+      const { timeEntries: te } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const [wip] = await deps.db
+        .select({
+          amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`,
+          hours: drz<string>`COALESCE(SUM(${te.hours}), 0)`,
+        })
+        .from(te)
+        .where(and(eq(te.engagementId, eng.id), eq(te.billableFlag, true)));
+      const fee = Number(eng.feeAmountCents);
+      const wipCents = Number(wip?.amount ?? 0);
+      res.json({
+        engagementId: eng.id,
+        feeStructure: eng.feeStructure,
+        feeCents: fee,
+        wipCents,
+        wipHours: Number(wip?.hours ?? 0),
+        gapCents: wipCents - fee,
+      });
+    },
+  );
+
   return router;
 }

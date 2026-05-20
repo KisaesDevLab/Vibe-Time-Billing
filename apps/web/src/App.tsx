@@ -11,8 +11,10 @@ import { ArPage } from './pages/Ar';
 import { AuditPage } from './pages/Audit';
 import { AuthProvider, useAuth } from './auth-context';
 import { BillingBatchesPage } from './pages/Billing';
+import { ClientDetailPage } from './pages/ClientDetail';
 import { ClientsPage } from './pages/Clients';
 import { DashboardPage } from './pages/Dashboard';
+import { EngagementDetailPage } from './pages/EngagementDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 import { ReportsPage } from './pages/Reports';
@@ -40,6 +42,8 @@ export function App(): JSX.Element {
                 <Routes>
                   <Route path="/" element={<DashboardPage />} />
                   <Route path="/clients" element={<ClientsPage />} />
+                  <Route path="/clients/:id" element={<ClientDetailPage />} />
+                  <Route path="/engagements/:id" element={<EngagementDetailPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/invoices" element={<InvoicesPage />} />
