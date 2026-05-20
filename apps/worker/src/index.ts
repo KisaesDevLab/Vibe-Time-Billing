@@ -11,6 +11,7 @@ import IORedis from 'ioredis';
 import { pino } from 'pino';
 
 import { createDb, type Database } from '@vibe/db';
+import type { PaymentProvider } from '@vibe/core/payments';
 
 import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
@@ -34,6 +35,41 @@ if (dbUrl) {
   closeDb = created.close;
 }
 
+// Autopay: if STRIPE_SECRET_KEY is set, build a charge hook that the
+// recurring-billing tick can invoke per plan. Otherwise autopay is
+// skipped silently (and audit-logged in the job).
+let stripe: PaymentProvider | null = null;
+const stripeKey = process.env['STRIPE_SECRET_KEY'];
+if (stripeKey) {
+  const { createStripeProvider } = await import('@vibe/core/payments');
+  stripe = createStripeProvider({ secretKey: stripeKey });
+}
+const chargeInvoice = stripe
+  ? async (args: {
+      invoiceId: string;
+      paymentMethodProviderId: string;
+      amountCents: number;
+      metadata: Record<string, string>;
+    }): Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }> => {
+      const r = await stripe!.charge({
+        amountCents: args.amountCents,
+        currency: 'USD',
+        description: `Autopay invoice ${args.metadata['invoice_number'] ?? args.invoiceId}`,
+        metadata: args.metadata,
+        paymentMethod: {
+          providerId: 'stripe',
+          providerMethodId: args.paymentMethodProviderId,
+          kind: 'CARD',
+        },
+      });
+      return {
+        ok: r.ok,
+        providerChargeId: r.providerChargeId || undefined,
+        errorMessage: r.errorMessage,
+      };
+    }
+  : undefined;
+
 interface JobPayload {
   reason: string;
   scheduledFor: string;
@@ -52,7 +88,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'recurring-billing: no DB configured, skipping');
       return;
     }
-    const result = await runRecurringBillingTick(db, logger);
+    const result = await runRecurringBillingTick(db, logger, undefined, { chargeInvoice });
     logger.info({ jobId: job.id, ...result }, 'recurring-billing complete');
   },
   'ar-aging-snapshot': async (job) => {

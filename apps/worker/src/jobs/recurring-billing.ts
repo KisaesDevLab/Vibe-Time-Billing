@@ -20,6 +20,7 @@ import {
   engagements,
   invoiceLineItems,
   invoices,
+  payments,
   recurringBillingPlans,
 } from '@vibe/db/schema';
 import { nextRunDate } from '@vibe/core/billing';
@@ -31,13 +32,26 @@ export interface RecurringBillingTickResult {
   batchesCreated: number;
   invoicesCreated: number;
   plansAdvanced: number;
+  autopayCharged: number;
+  autopayFailed: number;
   errors: number;
+}
+
+export interface RecurringBillingDeps {
+  /** Optional charge function — if absent, autopay is skipped. */
+  chargeInvoice?: (args: {
+    invoiceId: string;
+    paymentMethodProviderId: string;
+    amountCents: number;
+    metadata: Record<string, string>;
+  }) => Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }>;
 }
 
 export async function runRecurringBillingTick(
   db: Database,
   log: Logger,
   today = new Date().toISOString().slice(0, 10),
+  deps: RecurringBillingDeps = {},
 ): Promise<RecurringBillingTickResult> {
   const due = await db
     .select()
@@ -53,6 +67,8 @@ export async function runRecurringBillingTick(
   let batchesCreated = 0;
   let invoicesCreated = 0;
   let plansAdvanced = 0;
+  let autopayCharged = 0;
+  let autopayFailed = 0;
   let errors = 0;
 
   for (const plan of due) {
@@ -76,6 +92,8 @@ export async function runRecurringBillingTick(
     const issueDate = today;
     const dueDate = new Date(Date.now() + client.termsDays * 86_400_000).toISOString().slice(0, 10);
 
+    let createdInvoiceId: string | null = null;
+    let createdInvoiceNumber: string | null = null;
     try {
       await db.transaction(async (tx) => {
         const [batch] = await tx
@@ -147,6 +165,8 @@ export async function runRecurringBillingTick(
         batchesCreated++;
         invoicesCreated++;
         plansAdvanced++;
+        createdInvoiceId = inv.id;
+        createdInvoiceNumber = invoiceNumber;
         log.info(
           { planId: plan.id, batchId: batch.id, invoiceId: inv.id, invoiceNumber },
           'recurring run complete',
@@ -155,8 +175,61 @@ export async function runRecurringBillingTick(
     } catch (err) {
       errors++;
       log.error({ err, planId: plan.id }, 'recurring run failed');
+      continue;
+    }
+
+    // Autopay — runs outside the create transaction so a payment failure
+    // doesn't roll back the invoice. The portal still surfaces the unpaid
+    // invoice; the dunning-sweep job picks it up after due_date.
+    if (plan.autoPayFlag && plan.autoPayPaymentMethodId && deps.chargeInvoice && createdInvoiceId) {
+      try {
+        const result = await deps.chargeInvoice({
+          invoiceId: createdInvoiceId,
+          paymentMethodProviderId: plan.autoPayPaymentMethodId,
+          amountCents: plan.amountCents,
+          metadata: {
+            invoice_id: createdInvoiceId,
+            invoice_number: createdInvoiceNumber ?? '',
+            firm_id: client.firmId,
+            client_id: client.id,
+            autopay: 'true',
+          },
+        });
+        if (result.ok) {
+          await db.insert(payments).values({
+            invoiceId: createdInvoiceId,
+            amountCents: plan.amountCents,
+            feeCents: 0,
+            paymentMethodId: plan.autoPayPaymentMethodId,
+            provider: 'STRIPE',
+            providerChargeId: result.providerChargeId ?? null,
+            status: 'SUCCEEDED',
+            receivedAt: new Date(),
+          });
+          await db
+            .update(invoices)
+            .set({
+              status: 'PAID',
+              paidCents: plan.amountCents,
+              paidAt: new Date(),
+              sentAt: new Date(),
+            })
+            .where(eq(invoices.id, createdInvoiceId));
+          autopayCharged++;
+          log.info(
+            { invoiceId: createdInvoiceId, providerChargeId: result.providerChargeId },
+            'autopay charged',
+          );
+        } else {
+          autopayFailed++;
+          log.warn({ invoiceId: createdInvoiceId, err: result.errorMessage }, 'autopay failed');
+        }
+      } catch (err) {
+        autopayFailed++;
+        log.error({ err, invoiceId: createdInvoiceId }, 'autopay errored');
+      }
     }
   }
 
-  return { batchesCreated, invoicesCreated, plansAdvanced, errors };
+  return { batchesCreated, invoicesCreated, plansAdvanced, autopayCharged, autopayFailed, errors };
 }

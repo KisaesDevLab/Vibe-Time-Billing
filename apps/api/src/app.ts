@@ -32,6 +32,7 @@ import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createStripeWebhookRouter } from './webhooks/stripe';
+import { createPortalInviteRouter } from './portal-invites/routes';
 import type { AiProvider } from '@vibe/core/ai';
 import type { PaymentProvider } from '@vibe/core/payments';
 import type { RoleSlug } from '@vibe/core/rbac';
@@ -219,6 +220,16 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/api-tokens', auth.requireAuth, auth.requireCsrf, apiTokenRouter);
+
+  // Portal invitation (firm-side).
+  const portalInviteRouter = createPortalInviteRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    sendSms: deps.sendPortalSms,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
+  app.use('/api/staff/portal-invites', auth.requireAuth, auth.requireCsrf, portalInviteRouter);
 
   // Stripe webhook — mounted BEFORE the global JSON body parser would
   // have run, so the raw body is preserved for signature verification.

@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import {
   adjustments,
   adjustmentAllocations,
+  approvalRequests,
   appUsers as appUsersTable,
   billingBatches,
   clients,
@@ -207,6 +208,18 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
             adjustmentAmountCents: a.adjustmentAmountCents,
           })),
         );
+
+        // If approval is required, queue the partner-in-charge.
+        if (decision.requiresApproval) {
+          await tx.insert(approvalRequests).values({
+            entityType: 'ADJUSTMENT',
+            entityId: adj.id,
+            requesterId: session.appUserId,
+            approverId: decision.approverAppUserId ?? client.partnerInChargeId,
+            status: 'PENDING',
+            comments: parsed.data.notes ?? null,
+          });
+        }
 
         return adj.id;
       });

@@ -50,6 +50,23 @@ const Schema = z.object({
   AI_LOCAL_MODEL: z.string().optional(),
   VIBE_CONNECT_URL: z.string().optional(),
   VIBE_CONNECT_API_KEY: z.string().optional(),
+  // Mail provider secrets — only the matching one is read per MAIL_PROVIDER.
+  MAIL_FROM: z.string().default('Vibe Time & Billing <[email protected]>'),
+  MAIL_SMTP_HOST: z.string().default('localhost'),
+  MAIL_SMTP_PORT: z.coerce.number().int().positive().default(1025),
+  MAIL_SMTP_SECURE: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
+  MAIL_SMTP_USER: z.string().optional(),
+  MAIL_SMTP_PASS: z.string().optional(),
+  MAIL_POSTMARK_TOKEN: z.string().optional(),
+  MAIL_RESEND_API_KEY: z.string().optional(),
+  // SMS provider secrets.
+  SMS_TWILIO_ACCOUNT_SID: z.string().optional(),
+  SMS_TWILIO_AUTH_TOKEN: z.string().optional(),
+  SMS_TWILIO_FROM: z.string().optional(),
+  SMS_TEXTLINK_API_KEY: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof Schema>;

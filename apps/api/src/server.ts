@@ -15,6 +15,19 @@ import { createDb } from '@vibe/db';
 import { createStripeProvider } from './payments/stripe';
 import { createAnthropicProvider } from './ai/anthropic';
 import { createOllamaProvider } from './ai/ollama';
+import {
+  createConsoleMailProvider,
+  createPostmarkProvider,
+  createResendProvider,
+  createSmtpMailProvider,
+  type MailProvider,
+} from './mail/provider';
+import {
+  createConsoleSmsProvider,
+  createTextLinkSmsProvider,
+  createTwilioSmsProvider,
+  type SmsProvider,
+} from './sms/provider';
 import type { AiProvider } from '@vibe/core/ai';
 
 const config = loadConfig();
@@ -63,6 +76,90 @@ const cloudAiProvider: AiProvider | null = config.AI_CLOUD_API_KEY
     })
   : null;
 
+// Mail provider — Q11 abstraction. Defaults to console (which logs the
+// link/body) so dev still surfaces magic links via stdout if MailHog is
+// down. SMTP path covers MailHog + on-prem mail servers.
+const mailer: MailProvider = (() => {
+  switch (config.MAIL_PROVIDER) {
+    case 'postmark':
+      return config.MAIL_POSTMARK_TOKEN
+        ? createPostmarkProvider(
+            { token: config.MAIL_POSTMARK_TOKEN, from: config.MAIL_FROM },
+            logger,
+          )
+        : createConsoleMailProvider(logger);
+    case 'resend':
+      return config.MAIL_RESEND_API_KEY
+        ? createResendProvider(
+            { apiKey: config.MAIL_RESEND_API_KEY, from: config.MAIL_FROM },
+            logger,
+          )
+        : createConsoleMailProvider(logger);
+    case 'smtp':
+      return createSmtpMailProvider(
+        {
+          host: config.MAIL_SMTP_HOST,
+          port: config.MAIL_SMTP_PORT,
+          secure: config.MAIL_SMTP_SECURE,
+          user: config.MAIL_SMTP_USER,
+          pass: config.MAIL_SMTP_PASS,
+          from: config.MAIL_FROM,
+        },
+        logger,
+      );
+    default:
+      return createConsoleMailProvider(logger);
+  }
+})();
+
+// SMS provider — Q16. Console fallback in dev.
+const smsProvider: SmsProvider = (() => {
+  switch (config.SMS_PROVIDER) {
+    case 'twilio':
+      return config.SMS_TWILIO_ACCOUNT_SID && config.SMS_TWILIO_AUTH_TOKEN && config.SMS_TWILIO_FROM
+        ? createTwilioSmsProvider(
+            {
+              accountSid: config.SMS_TWILIO_ACCOUNT_SID,
+              authToken: config.SMS_TWILIO_AUTH_TOKEN,
+              from: config.SMS_TWILIO_FROM,
+            },
+            logger,
+          )
+        : createConsoleSmsProvider(logger);
+    case 'textlink':
+      return config.SMS_TEXTLINK_API_KEY
+        ? createTextLinkSmsProvider({ apiKey: config.SMS_TEXTLINK_API_KEY }, logger)
+        : createConsoleSmsProvider(logger);
+    default:
+      return createConsoleSmsProvider(logger);
+  }
+})();
+
+// Wrap the providers into the shapes the auth routes expect.
+const sendMagicLink = async (args: {
+  email: string;
+  firmId: string;
+  link: string;
+}): Promise<void> => {
+  await mailer.send({
+    to: args.email,
+    subject: 'Your sign-in link',
+    body: `Click here to sign in: ${args.link}\n\nThis link expires in ${config.MAGIC_LINK_TTL_MINUTES} minutes.`,
+  });
+};
+
+const sendPortalEmail = async (args: {
+  to: string;
+  subject: string;
+  body: string;
+}): Promise<void> => {
+  await mailer.send(args);
+};
+
+const sendPortalSms = async (args: { to: string; body: string }): Promise<void> => {
+  await smsProvider.send(args);
+};
+
 const app = createApp({
   db,
   redis,
@@ -72,6 +169,9 @@ const app = createApp({
   localAiProvider,
   stripeProvider: stripe,
   stripeWebhookSecret: config.STRIPE_WEBHOOK_SECRET ?? null,
+  sendMagicLink,
+  sendPortalEmail,
+  sendPortalSms,
 });
 
 app.listen(config.PORT, () => {
@@ -82,6 +182,8 @@ app.listen(config.PORT, () => {
       stripeWired: Boolean(stripe),
       cloudAiWired: Boolean(cloudAiProvider),
       localAiWired: Boolean(localAiProvider),
+      mailProvider: mailer.id,
+      smsProvider: smsProvider.id,
       portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
     },
     'vibe-tb-api listening',

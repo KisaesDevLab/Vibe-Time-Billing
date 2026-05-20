@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Portal-identity invitation flow (Phase 6 #12). Firm-side endpoints
+// for inviting a person to a client. Dedupes by (firm, email) and
+// (firm, phone): if a portal_identity with that contact already exists
+// at the firm, we attach a new client_portal_access row directly and
+// notify the person. Otherwise we create a portal_invitation token
+// that, when accepted via the portal magic-link, links to a fresh
+// identity.
+
+import { createHash, randomBytes } from 'node:crypto';
+import express, { type Request, type Response, type Router } from 'express';
+import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
+
+import type { Database } from '@vibe/db';
+import { clientPortalAccess, clients, portalIdentity, portalInvitation } from '@vibe/db/schema';
+import { normalizePhone } from '@vibe/core/auth';
+
+import { emitAudit } from '../auth/audit';
+import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { logger } from '../logger';
+
+export interface PortalInviteDeps extends RbacDeps {
+  db: Database | null;
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
+  portalBaseUrl: string;
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const InviteSchema = z
+  .object({
+    clientId: z.string().uuid(),
+    fullName: z.string().min(1).max(200),
+    email: z.string().regex(EMAIL_RE).optional(),
+    phone: z.string().min(5).max(40).optional(),
+    role: z.enum(['FULL', 'VIEW_ONLY', 'PAY_ONLY']).default('FULL'),
+    deliveryChannel: z.enum(['EMAIL', 'SMS']).default('EMAIL'),
+  })
+  .refine((d) => d.email || d.phone, { message: 'email or phone required' });
+
+export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
+  const router = express.Router();
+
+  router.post(
+    '/',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const parsed = InviteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      // Scope: client must belong to firm.
+      const [client] = await deps.db
+        .select({ id: clients.id, firmId: clients.firmId, name: clients.name })
+        .from(clients)
+        .where(and(eq(clients.id, parsed.data.clientId), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+
+      const normPhone = parsed.data.phone ? normalizePhone(parsed.data.phone) : null;
+      if (parsed.data.phone && !normPhone) {
+        res.status(400).json({ error: 'invalid_phone' });
+        return;
+      }
+
+      // Dedup: same firm + same contact -> attach access to existing identity.
+      let existingIdentity: { id: string } | null = null;
+      if (parsed.data.email) {
+        const [row] = await deps.db
+          .select({ id: portalIdentity.id })
+          .from(portalIdentity)
+          .where(
+            and(
+              eq(portalIdentity.firmId, session.firmId),
+              eq(portalIdentity.primaryEmail, parsed.data.email),
+            ),
+          )
+          .limit(1);
+        if (row) existingIdentity = row;
+      }
+      if (!existingIdentity && normPhone) {
+        const [row] = await deps.db
+          .select({ id: portalIdentity.id })
+          .from(portalIdentity)
+          .where(
+            and(
+              eq(portalIdentity.firmId, session.firmId),
+              eq(portalIdentity.primaryPhone, normPhone),
+            ),
+          )
+          .limit(1);
+        if (row) existingIdentity = row;
+      }
+
+      if (existingIdentity) {
+        // Either grant access immediately or no-op if already granted.
+        const [already] = await deps.db
+          .select({ id: clientPortalAccess.id })
+          .from(clientPortalAccess)
+          .where(
+            and(
+              eq(clientPortalAccess.portalIdentityId, existingIdentity.id),
+              eq(clientPortalAccess.clientId, client.id),
+            ),
+          )
+          .limit(1);
+        if (!already) {
+          await deps.db.insert(clientPortalAccess).values({
+            portalIdentityId: existingIdentity.id,
+            clientId: client.id,
+            role: parsed.data.role,
+            status: 'ACTIVE',
+            invitedBy: session.appUserId,
+            invitedAt: new Date(),
+            acceptedAt: new Date(),
+          });
+        }
+        await notifyExisting(deps, parsed.data, client.name);
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'client_portal_access',
+          entityId: existingIdentity.id,
+          actorAppUserId: session.appUserId,
+          after: { clientId: client.id, role: parsed.data.role, dedupedTo: existingIdentity.id },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+        res.status(200).json({ ok: true, deduped: true, identityId: existingIdentity.id });
+        return;
+      }
+
+      // New invitation: token + magic link to onboarding.
+      const rawToken = randomBytes(24).toString('hex');
+      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      const [invitation] = await deps.db
+        .insert(portalInvitation)
+        .values({
+          firmId: session.firmId,
+          clientId: client.id,
+          invitedEmail: parsed.data.email ?? null,
+          invitedPhone: normPhone,
+          proposedFullName: parsed.data.fullName,
+          proposedRole: parsed.data.role,
+          deliveryChannel: parsed.data.deliveryChannel,
+          tokenHash,
+          invitedBy: session.appUserId,
+          expiresAt,
+        })
+        .returning({ id: portalInvitation.id });
+
+      const link = `${deps.portalBaseUrl}/auth/accept?token=${encodeURIComponent(rawToken)}`;
+      const message = `${parsed.data.fullName}, you've been invited to the ${client.name} client portal.\n\nAccept: ${link}\n\nLink expires in 7 days.`;
+
+      if (parsed.data.deliveryChannel === 'EMAIL' && parsed.data.email && deps.sendEmail) {
+        await deps
+          .sendEmail({
+            to: parsed.data.email,
+            subject: `Client portal invitation — ${client.name}`,
+            body: message,
+          })
+          .catch((err: unknown) => logger.error({ err }, 'portal invite email failed'));
+      } else if (parsed.data.deliveryChannel === 'SMS' && normPhone && deps.sendSms) {
+        await deps
+          .sendSms({ to: normPhone, body: `Portal invite from ${client.name}: ${link}` })
+          .catch((err: unknown) => logger.error({ err }, 'portal invite sms failed'));
+      }
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'portal_invitation',
+        entityId: invitation?.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          clientId: client.id,
+          deliveryChannel: parsed.data.deliveryChannel,
+          role: parsed.data.role,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      res.status(201).json({ ok: true, invitationId: invitation?.id, expiresAt });
+    },
+  );
+
+  router.get(
+    '/by-client/:clientId',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ accesses: [], pendingInvitations: [] });
+        return;
+      }
+      const accesses = await deps.db
+        .select()
+        .from(clientPortalAccess)
+        .where(eq(clientPortalAccess.clientId, req.params['clientId']!));
+      const pending = await deps.db
+        .select()
+        .from(portalInvitation)
+        .where(
+          and(
+            eq(portalInvitation.clientId, req.params['clientId']!),
+            eq(portalInvitation.firmId, session.firmId),
+            eq(portalInvitation.status, 'ACTIVE'),
+          ),
+        );
+      res.json({ accesses, pendingInvitations: pending });
+    },
+  );
+
+  return router;
+}
+
+async function notifyExisting(
+  deps: PortalInviteDeps,
+  args: z.infer<typeof InviteSchema>,
+  clientName: string,
+): Promise<void> {
+  const subject = `You've been added to ${clientName} in your portal`;
+  const body = `You now have access to ${clientName}. Sign in to the portal to view and pay invoices.`;
+  if (args.deliveryChannel === 'EMAIL' && args.email && deps.sendEmail) {
+    await deps.sendEmail({ to: args.email, subject, body }).catch(() => undefined);
+  } else if (args.deliveryChannel === 'SMS' && args.phone && deps.sendSms) {
+    const normPhone = normalizePhone(args.phone);
+    if (normPhone) await deps.sendSms({ to: normPhone, body }).catch(() => undefined);
+  }
+}
+
+function clientIp(req: Request): string {
+  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}

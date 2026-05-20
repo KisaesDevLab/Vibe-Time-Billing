@@ -9,6 +9,7 @@ import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { clients, invoices } from '@vibe/db/schema';
+import { sql as drizzleSql } from 'drizzle-orm';
 import { bucketize, type AgingBucket } from '@vibe/core/billing';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -86,6 +87,98 @@ export function createArRouter(deps: ArRoutesDeps): Router {
       }
       clientsOut.sort((a, b) => b.total - a.total);
       res.json({ asOf: today, totals, clients: clientsOut });
+    },
+  );
+
+  router.get(
+    '/snapshots',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '30'), 10) || 30, 1),
+        365,
+      );
+      const rows = await deps.db.execute(drizzleSql`
+        SELECT
+          as_of_date::text                            AS "asOfDate",
+          SUM(bucket_0_30_cents)::bigint              AS "b0to30",
+          SUM(bucket_31_60_cents)::bigint             AS "b31to60",
+          SUM(bucket_61_90_cents)::bigint             AS "b61to90",
+          SUM(bucket_90_plus_cents)::bigint           AS "b90plus",
+          SUM(total_cents)::bigint                    AS "total"
+        FROM ar_aging_snapshot
+        WHERE firm_id = ${session.firmId}
+          AND as_of_date >= CURRENT_DATE - ${days}::int
+        GROUP BY as_of_date
+        ORDER BY as_of_date DESC
+      `);
+      res.json({
+        items: (rows as unknown as { rows: unknown[] }).rows ?? rows,
+      });
+    },
+  );
+
+  router.get(
+    '/statement/:clientId',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ statement: null });
+        return;
+      }
+      const [client] = await deps.db
+        .select()
+        .from(clients)
+        .where(and(eq(clients.id, req.params['clientId']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const open = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          issueDate: invoices.issueDate,
+          dueDate: invoices.dueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            eq(invoices.clientId, client.id),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        );
+      const today = new Date().toISOString().slice(0, 10);
+      const aging = bucketize(
+        open
+          .map((o) => ({
+            entryDate: o.dueDate,
+            amountCents: Number(o.totalCents) - Number(o.paidCents),
+          }))
+          .filter((r) => r.amountCents > 0),
+        today,
+      );
+      const balance = Object.values(aging).reduce((s, n) => s + n, 0);
+      res.json({
+        statement: {
+          asOfDate: today,
+          client: { id: client.id, name: client.name },
+          balanceCents: balance,
+          aging,
+          openInvoices: open,
+        },
+      });
     },
   );
 
