@@ -16,7 +16,11 @@
     "./payments": "./src/payments/index.ts",
     "./dunning": "./src/dunning/index.ts",
     "./reporting": "./src/reporting/index.ts",
-    "./approvals": "./src/approvals/index.ts"
+    "./approvals": "./src/approvals/index.ts",
+    "./webhooks": "./src/webhooks/index.ts",
+    "./mcp": "./src/mcp/index.ts",
+    "./ai": "./src/ai/index.ts",
+    "./connect": "./src/connect/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

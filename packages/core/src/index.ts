@@ -9,3 +9,7 @@ export * as payments from './payments';
 export * as dunning from './dunning';
 export * as reporting from './reporting';
 export * as approvals from './approvals';
+export * as webhooks from './webhooks';
+export * as mcp from './mcp';
+export * as ai from './ai';
+export * as connect from './connect';
