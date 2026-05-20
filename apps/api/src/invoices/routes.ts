@@ -576,6 +576,86 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   );
 
   router.post(
+    '/:id/expense',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      // Expense pass-through with markup (Phase 13 #16). Body:
+      //   { description, costCents, markupPct (e.g. 10 → +10%), engagementId? }
+      // Adds an EXPENSE line item at cost + markup, separately so the
+      // client sees the markup transparently.
+      const Schema = z.object({
+        description: z.string().min(1).max(400),
+        costCents: z.number().int().nonnegative(),
+        markupPct: z.number().min(0).max(200),
+        engagementId: z.string().uuid().optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_immutable' });
+        return;
+      }
+      const markupCents = Math.round((parsed.data.costCents * parsed.data.markupPct) / 100);
+      const total = parsed.data.costCents + markupCents;
+      const [maxSort] = await deps.db
+        .select({ s: sql<number>`COALESCE(MAX(${invoiceLineItems.sortOrder}), 0)` })
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.invoiceId, inv.id));
+      const sortOrder = Number(maxSort?.s ?? 0) + 1;
+      await deps.db.transaction(async (tx) => {
+        await tx.insert(invoiceLineItems).values({
+          invoiceId: inv.id,
+          kind: 'EXPENSE',
+          description: `${parsed.data.description} (cost $${(parsed.data.costCents / 100).toFixed(2)} + ${parsed.data.markupPct}% markup)`,
+          amountCents: total,
+          engagementId: parsed.data.engagementId ?? null,
+          sourceRefType: 'expense',
+          sortOrder,
+        });
+        await tx
+          .update(invoices)
+          .set({
+            subtotalCents: Number(inv.subtotalCents) + total,
+            totalCents: Number(inv.totalCents) + total,
+          })
+          .where(eq(invoices.id, inv.id));
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'expense_passthrough',
+          costCents: parsed.data.costCents,
+          markupPct: parsed.data.markupPct,
+          totalCents: total,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ ok: true, totalCents: total, markupCents });
+    },
+  );
+
+  router.post(
     '/:id/line-items',
     requirePermission(deps, 'invoice:write'),
     async (req: Request, res: Response) => {

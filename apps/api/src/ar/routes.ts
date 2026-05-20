@@ -8,7 +8,7 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, invoices } from '@vibe/db/schema';
+import { clients, engagementTypes, engagements, invoices, serviceLines } from '@vibe/db/schema';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { bucketize, type AgingBucket } from '@vibe/core/billing';
 
@@ -314,6 +314,65 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         return;
       }
       res.json({ ok: true, sentTo: client.billingContactEmail, balanceCents: balance });
+    },
+  );
+
+  router.get(
+    '/aging/by-service-line',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      // Walk: invoice → primary_engagement → engagement_type → service_line.
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          invoiceId: invoices.id,
+          dueDate: invoices.dueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          serviceLineId: serviceLines.id,
+          serviceLineName: serviceLines.name,
+        })
+        .from(invoices)
+        .innerJoin(engagements, eq(engagements.id, invoices.primaryEngagementId))
+        .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
+        .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        );
+      type LineAging = {
+        id: string;
+        name: string;
+        buckets: Record<AgingBucket, number>;
+        total: number;
+      };
+      const map = new Map<string, LineAging>();
+      for (const r of rows) {
+        const key = r.serviceLineId ?? 'unassigned';
+        const name = r.serviceLineName ?? '(no service line)';
+        const balance = Number(r.totalCents) - Number(r.paidCents);
+        if (balance <= 0) continue;
+        const cur = map.get(key) ?? { id: key, name, buckets: emptyBuckets(), total: 0 };
+        const days = r.dueDate
+          ? Math.max(0, Math.floor((Date.parse(today) - Date.parse(r.dueDate)) / 86_400_000))
+          : 0;
+        const b: AgingBucket =
+          days <= 30 ? '0-30' : days <= 60 ? '31-60' : days <= 90 ? '61-90' : '90+';
+        cur.buckets[b] += balance;
+        cur.total += balance;
+        map.set(key, cur);
+      }
+      res.json({
+        asOf: today,
+        items: Array.from(map.values()).sort((a, b) => b.total - a.total),
+      });
     },
   );
 
