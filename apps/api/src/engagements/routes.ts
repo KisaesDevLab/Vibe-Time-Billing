@@ -236,6 +236,58 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
     },
   );
 
+  router.patch(
+    '/:id/budget',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = req.body as {
+        budgetHours?: unknown;
+        budgetAmountCents?: unknown;
+        nteCapCents?: unknown;
+      };
+      const patch: Record<string, unknown> = {};
+      if (typeof body.budgetHours === 'number' && body.budgetHours >= 0) {
+        patch['budgetHours'] = body.budgetHours.toString();
+      }
+      if (typeof body.budgetAmountCents === 'number' && body.budgetAmountCents >= 0) {
+        patch['budgetAmountCents'] = body.budgetAmountCents;
+      }
+      if (typeof body.nteCapCents === 'number' && body.nteCapCents >= 0) {
+        patch['nteCapCents'] = body.nteCapCents;
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db.update(engagements).set(patch).where(eq(engagements.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'budget_update', ...patch },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/:id/budget',
     requirePermission(deps, 'engagement:read'),
@@ -516,6 +568,48 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .orderBy(desc(engagementNotes.pinned), desc(engagementNotes.createdAt))
         .limit(200);
       res.json({ items });
+    },
+  );
+
+  router.delete(
+    '/:id/notes/:noteId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .delete(engagementNotes)
+        .where(
+          and(
+            eq(engagementNotes.id, req.params['noteId']!),
+            eq(engagementNotes.engagementId, req.params['id']!),
+          ),
+        );
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/:id/notes/:noteId/pin',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const pinned = req.body?.pinned === true;
+      await deps.db
+        .update(engagementNotes)
+        .set({ pinned })
+        .where(
+          and(
+            eq(engagementNotes.id, req.params['noteId']!),
+            eq(engagementNotes.engagementId, req.params['id']!),
+          ),
+        );
+      res.json({ ok: true });
     },
   );
 

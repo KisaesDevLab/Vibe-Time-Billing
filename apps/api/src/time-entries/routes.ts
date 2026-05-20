@@ -788,6 +788,73 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   );
 
   router.post(
+    '/:id/write-off',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(timeEntries)
+        .set({ status: 'WRITTEN_OFF' })
+        .where(eq(timeEntries.id, req.params['id']!));
+      res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/by-status/:status',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const status = req.params['status']!;
+      const allowed = ['DRAFT', 'SUBMITTED', 'LOCKED', 'BILLED', 'WRITTEN_OFF', 'ARCHIVED'];
+      if (!allowed.includes(status)) {
+        res.status(400).json({ error: 'invalid_status' });
+        return;
+      }
+      // Scope to firm via engagement->client join.
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const firmClientIds = firmClients.map((c) => c.id);
+      if (firmClientIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmEngs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(inArray(engagements.clientId, firmClientIds));
+      const engIds = firmEngs.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(
+          and(
+            inArray(timeEntries.engagementId, engIds),
+            eq(
+              timeEntries.status,
+              status as 'DRAFT' | 'SUBMITTED' | 'LOCKED' | 'BILLED' | 'WRITTEN_OFF' | 'ARCHIVED',
+            ),
+          ),
+        )
+        .limit(1000);
+      res.json({ items });
+    },
+  );
+
+  router.post(
     '/timer/start',
     requirePermission(deps, 'time_entry:create'),
     async (req: Request, res: Response) => {

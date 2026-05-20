@@ -58,6 +58,24 @@ export function createArRouter(deps: ArRoutesDeps): Router {
   );
 
   router.get(
+    '/top-clients',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const limit = Math.min(
+        Math.max(parseInt(String(req.query['limit'] ?? '10'), 10) || 10, 1),
+        100,
+      );
+      const data = await loadAging(deps.db, session.firmId);
+      res.json({ items: data.clients.slice(0, limit) });
+    },
+  );
+
+  router.get(
     '/snapshots',
     requirePermission(deps, 'report:ar:read'),
     async (req: Request, res: Response) => {

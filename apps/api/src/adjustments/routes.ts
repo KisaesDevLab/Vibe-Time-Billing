@@ -375,6 +375,42 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/by-creator/:userId',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(adjustments)
+        .where(eq(adjustments.createdById, req.params['userId']!))
+        .orderBy(desc(adjustments.createdAt))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
+  router.get(
+    '/by-approver/:userId',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(adjustments)
+        .where(eq(adjustments.approverId, req.params['userId']!))
+        .orderBy(desc(adjustments.approvedAt))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
   router.post(
     '/:id/reverse',
     requirePermission(deps, 'adjustment:reverse'),

@@ -7,7 +7,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -135,6 +135,176 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         ...value,
       }));
       res.json({ dimension: parsed.data.dimension, items });
+    },
+  );
+
+  router.get(
+    '/revenue-by-month',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const { invoices: inv } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          month: drz<string>`to_char(${inv.issueDate}, 'YYYY-MM')`.as('month'),
+          totalCents: drz<number>`COALESCE(SUM(${inv.totalCents}), 0)`.as('totalCents'),
+          paidCents: drz<number>`COALESCE(SUM(${inv.paidCents}), 0)`.as('paidCents'),
+          count: drz<number>`COUNT(*)`.as('count'),
+        })
+        .from(inv)
+        .where(eq(inv.firmId, session.firmId))
+        .groupBy(drz`to_char(${inv.issueDate}, 'YYYY-MM')`)
+        .orderBy(drz`to_char(${inv.issueDate}, 'YYYY-MM') DESC`)
+        .limit(24);
+      res.json({
+        items: rows.map((r) => ({
+          month: r.month,
+          totalCents: Number(r.totalCents),
+          paidCents: Number(r.paidCents),
+          count: Number(r.count),
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/utilization',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+      const { timeEntries: te, appUsers: au } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          appUserId: te.appUserId,
+          fullName: au.fullName,
+          billableHours: drz<string>`COALESCE(SUM(${te.hours}) FILTER (WHERE ${te.billableFlag}), 0)`,
+          totalHours: drz<string>`COALESCE(SUM(${te.hours}), 0)`,
+        })
+        .from(te)
+        .innerJoin(au, eq(au.id, te.appUserId))
+        .where(and(eq(au.firmId, session.firmId), drz`${te.entryDate} >= ${since}::date`))
+        .groupBy(te.appUserId, au.fullName);
+      res.json({
+        asOf: new Date().toISOString().slice(0, 10),
+        windowDays: 30,
+        items: rows.map((r) => ({
+          appUserId: r.appUserId,
+          fullName: r.fullName,
+          billableHours: Number(r.billableHours),
+          totalHours: Number(r.totalHours),
+          utilizationPct:
+            Number(r.totalHours) > 0 ? (Number(r.billableHours) / Number(r.totalHours)) * 100 : 0,
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/time-by-engagement',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const cIds = firmClients.map((c) => c.id);
+      if (cIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmEngs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(inArray(engagements.clientId, cIds));
+      const engIds = firmEngs.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const { timeEntries: te } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          engagementId: te.engagementId,
+          hours: drz<string>`COALESCE(SUM(${te.hours}), 0)`.as('hours'),
+          amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`.as('amount'),
+        })
+        .from(te)
+        .where(inArray(te.engagementId, engIds))
+        .groupBy(te.engagementId);
+      res.json({
+        items: rows.map((r) => ({
+          engagementId: r.engagementId,
+          hours: Number(r.hours),
+          amountCents: Number(r.amount),
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/time-by-client',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmEngs = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(clients.firmId, session.firmId));
+      const engIds = firmEngs.map((e) => e.id);
+      const clientByEng = new Map(firmEngs.map((e) => [e.id, e.clientId]));
+      if (engIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const { timeEntries: te } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          engagementId: te.engagementId,
+          hours: drz<string>`COALESCE(SUM(${te.hours}), 0)`.as('hours'),
+          amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`.as('amount'),
+        })
+        .from(te)
+        .where(inArray(te.engagementId, engIds))
+        .groupBy(te.engagementId);
+      const byClient = new Map<string, { hours: number; amountCents: number }>();
+      for (const r of rows) {
+        const cid = clientByEng.get(r.engagementId);
+        if (!cid) continue;
+        const cur = byClient.get(cid) ?? { hours: 0, amountCents: 0 };
+        cur.hours += Number(r.hours);
+        cur.amountCents += Number(r.amount);
+        byClient.set(cid, cur);
+      }
+      res.json({
+        items: Array.from(byClient.entries()).map(([clientId, v]) => ({
+          clientId,
+          hours: v.hours,
+          amountCents: v.amountCents,
+        })),
+      });
     },
   );
 

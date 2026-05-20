@@ -1132,6 +1132,58 @@ export const engagementNotes = pgTable(
 );
 
 // =====================================================================
+// TABLE: engagement_letter — versioned engagement letters with HTML body
+// and optional storage_path to the rendered PDF.
+// =====================================================================
+
+export const engagementLetters = pgTable(
+  'engagement_letter',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    status: text('status').notNull().default('DRAFT'),
+    bodyHtml: text('body_html').notNull(),
+    storagePath: text('storage_path'),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    sentToEmail: text('sent_to_email'),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    acceptedIp: text('accepted_ip'),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    voidedReason: text('voided_reason'),
+    createdById: uuid('created_by_id')
+      .notNull()
+      .references(() => appUsers.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    engIdx: index('engagement_letter_eng_idx').on(t.engagementId),
+    statusIdx: index('engagement_letter_status_idx').on(t.status),
+    engVersionUnique: uniqueIndex('engagement_letter_eng_version_uk').on(t.engagementId, t.version),
+  }),
+);
+
+export const requiredFieldRules = pgTable(
+  'required_field_rule',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    conditionsJson: jsonb('conditions_json').notNull(),
+    requiredFields: jsonb('required_fields').notNull(),
+    status: text('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('required_field_rule_firm_idx').on(t.firmId, t.status),
+  }),
+);
+
+// =====================================================================
 // TABLE: holiday_calendar
 // Firm holidays + per-user PTO. app_user_id NULL means firm-wide.
 // =====================================================================

@@ -11,7 +11,13 @@ import { z } from 'zod';
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { adjustments, approvalComments, approvalRequests, appUsers } from '@vibe/db/schema';
+import {
+  adjustments,
+  approvalComments,
+  approvalRequests,
+  approvalRules,
+  appUsers,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -270,6 +276,65 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
     },
   );
 
+  router.delete(
+    '/:id/comments/:commentId',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [c] = await deps.db
+        .select({ authorId: approvalComments.authorId })
+        .from(approvalComments)
+        .where(eq(approvalComments.id, req.params['commentId']!))
+        .limit(1);
+      if (!c) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (c.authorId !== session.appUserId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      await deps.db
+        .delete(approvalComments)
+        .where(eq(approvalComments.id, req.params['commentId']!));
+      res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/all',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      const allowed = ['PENDING', 'APPROVED', 'REJECTED', 'APPROVED_WITH_EDITS', 'CANCELLED'];
+      const conds = [eq(approvalRequests.requesterId, session.appUserId)];
+      if (status && allowed.includes(status)) {
+        conds.push(
+          eq(
+            approvalRequests.status,
+            status as 'PENDING' | 'APPROVED' | 'REJECTED' | 'APPROVED_WITH_EDITS' | 'CANCELLED',
+          ),
+        );
+      }
+      const items = await deps.db
+        .select()
+        .from(approvalRequests)
+        .where(and(...conds))
+        .orderBy(desc(approvalRequests.requestedAt))
+        .limit(200);
+      res.json({ items });
+    },
+  );
+
   router.post(
     '/bulk-decide',
     requirePermission(deps, 'approval:act'),
@@ -333,6 +398,138 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true, processed });
+    },
+  );
+
+  router.get(
+    '/rules',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(approvalRules)
+        .where(eq(approvalRules.firmId, session.firmId))
+        .orderBy(approvalRules.priority);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/rules',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const body = req.body as {
+        entityType?: unknown;
+        name?: unknown;
+        conditionsJson?: unknown;
+        approverResolutionJson?: unknown;
+        slaHours?: unknown;
+        autoEscalateHours?: unknown;
+        priority?: unknown;
+      };
+      const entityType = typeof body.entityType === 'string' ? body.entityType : null;
+      const name = typeof body.name === 'string' ? body.name.slice(0, 200) : null;
+      const allowed = ['ADJUSTMENT', 'PRE_BILL', 'INVOICE', 'ENGAGEMENT_LETTER', 'RATE_CHANGE'];
+      if (!entityType || !allowed.includes(entityType) || !name) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(approvalRules)
+        .values({
+          firmId: session.firmId,
+          entityType: entityType as
+            | 'ADJUSTMENT'
+            | 'PRE_BILL'
+            | 'INVOICE'
+            | 'ENGAGEMENT_LETTER'
+            | 'RATE_CHANGE',
+          name,
+          conditionsJson: body.conditionsJson ?? {},
+          approverResolutionJson: body.approverResolutionJson ?? {},
+          slaHours: typeof body.slaHours === 'number' ? body.slaHours : null,
+          autoEscalateHours:
+            typeof body.autoEscalateHours === 'number' ? body.autoEscalateHours : null,
+          priority: typeof body.priority === 'number' ? body.priority : 100,
+        })
+        .returning({ id: approvalRules.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'approval_rule',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: { entityType, name },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.patch(
+    '/rules/:id',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as Record<string, unknown>;
+      const patch: Record<string, unknown> = {};
+      for (const k of ['name', 'conditionsJson', 'approverResolutionJson']) {
+        if (k in body) patch[k] = body[k];
+      }
+      for (const k of ['slaHours', 'autoEscalateHours', 'priority']) {
+        if (typeof body[k] === 'number') patch[k] = body[k];
+      }
+      if (
+        body['status'] === 'ACTIVE' ||
+        body['status'] === 'INACTIVE' ||
+        body['status'] === 'ARCHIVED'
+      ) {
+        patch['status'] = body['status'];
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db
+        .update(approvalRules)
+        .set(patch)
+        .where(
+          and(eq(approvalRules.id, req.params['id']!), eq(approvalRules.firmId, session.firmId)),
+        );
+      res.json({ ok: true });
+    },
+  );
+
+  router.delete(
+    '/rules/:id',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(approvalRules)
+        .set({ status: 'ARCHIVED' })
+        .where(
+          and(eq(approvalRules.id, req.params['id']!), eq(approvalRules.firmId, session.firmId)),
+        );
+      res.json({ ok: true });
     },
   );
 

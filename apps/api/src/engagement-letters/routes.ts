@@ -1,0 +1,286 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Engagement letter endpoints (Phase 8 #17, Phase 23 #28). Versioned per
+// engagement. The DRAFT->SENT->ACCEPTED lifecycle gives the firm a single
+// source of truth for "the client agreed to these terms on this date."
+
+import express, { type Request, type Response, type Router } from 'express';
+import { z } from 'zod';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
+
+import type { Database } from '@vibe/db';
+import { clients, engagementLetters, engagements } from '@vibe/db/schema';
+
+import { emitAudit } from '../auth/audit';
+import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { logger } from '../logger';
+
+export interface EngagementLetterDeps extends RbacDeps {
+  db: Database | null;
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  portalBaseUrl?: string;
+}
+
+const CreateSchema = z.object({
+  engagementId: z.string().uuid(),
+  bodyHtml: z.string().min(1).max(200_000),
+});
+
+export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router {
+  const router = express.Router();
+
+  router.get(
+    '/by-engagement/:engagementId',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      if (!(await engagementInFirm(deps.db, session.firmId, req.params['engagementId']!))) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: engagementLetters.id,
+          version: engagementLetters.version,
+          status: engagementLetters.status,
+          sentAt: engagementLetters.sentAt,
+          sentToEmail: engagementLetters.sentToEmail,
+          acceptedAt: engagementLetters.acceptedAt,
+          createdAt: engagementLetters.createdAt,
+        })
+        .from(engagementLetters)
+        .where(eq(engagementLetters.engagementId, req.params['engagementId']!))
+        .orderBy(desc(engagementLetters.version));
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const parsed = CreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      if (!(await engagementInFirm(deps.db, session.firmId, parsed.data.engagementId))) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const [maxV] = await deps.db
+        .select({ v: sql<number>`COALESCE(MAX(${engagementLetters.version}), 0)` })
+        .from(engagementLetters)
+        .where(eq(engagementLetters.engagementId, parsed.data.engagementId));
+      const version = Number(maxV?.v ?? 0) + 1;
+      const [row] = await deps.db
+        .insert(engagementLetters)
+        .values({
+          engagementId: parsed.data.engagementId,
+          version,
+          status: 'DRAFT',
+          bodyHtml: parsed.data.bodyHtml,
+          createdById: session.appUserId,
+        })
+        .returning({ id: engagementLetters.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'engagement_letter',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: { engagementId: parsed.data.engagementId, version },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: row?.id, version });
+    },
+  );
+
+  router.get(
+    '/:id',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ letter: null });
+        return;
+      }
+      const letter = await letterForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!letter) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({ letter });
+    },
+  );
+
+  router.post(
+    '/:id/send',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const letter = await letterForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!letter) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (letter.status !== 'DRAFT') {
+        res.status(409).json({ error: 'not_draft', status: letter.status });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, letter.engagementId))
+        .limit(1);
+      const [client] = eng
+        ? await deps.db
+            .select({ name: clients.name, billingContactEmail: clients.billingContactEmail })
+            .from(clients)
+            .where(eq(clients.id, eng.clientId))
+            .limit(1)
+        : [];
+      const to = typeof req.body?.to === 'string' ? req.body.to : client?.billingContactEmail;
+      if (!to) {
+        res.status(400).json({ error: 'to_address_required' });
+        return;
+      }
+      if (deps.sendEmail) {
+        const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/letters/${letter.id}` : '';
+        await deps
+          .sendEmail({
+            to,
+            subject: `Engagement letter (v${letter.version}) — ${client?.name ?? ''}`,
+            body:
+              `Please review and accept the engagement letter.\n\n` +
+              (link ? `View online: ${link}\n\n` : '') +
+              `Thank you.`,
+          })
+          .catch((err: unknown) => logger.error({ err }, 'engagement letter send failed'));
+      }
+      await deps.db
+        .update(engagementLetters)
+        .set({ status: 'SENT', sentAt: new Date(), sentToEmail: to })
+        .where(eq(engagementLetters.id, letter.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_letter',
+        entityId: letter.id,
+        actorAppUserId: session.appUserId,
+        after: { status: 'SENT', sentTo: to },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/accept',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const letter = await letterForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!letter) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (letter.status !== 'SENT') {
+        res.status(409).json({ error: 'not_sent', status: letter.status });
+        return;
+      }
+      await deps.db
+        .update(engagementLetters)
+        .set({ status: 'ACCEPTED', acceptedAt: new Date(), acceptedIp: clientIp(req) })
+        .where(eq(engagementLetters.id, letter.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_letter',
+        entityId: letter.id,
+        actorAppUserId: session.appUserId,
+        after: { status: 'ACCEPTED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/void',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const letter = await letterForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!letter) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 400) : null;
+      await deps.db
+        .update(engagementLetters)
+        .set({ status: 'VOIDED', voidedAt: new Date(), voidedReason: reason })
+        .where(eq(engagementLetters.id, letter.id));
+      res.json({ ok: true });
+    },
+  );
+
+  // Unused asc import — silence warning.
+  void asc;
+
+  return router;
+}
+
+async function engagementInFirm(
+  db: Database,
+  firmId: string,
+  engagementId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: engagements.id })
+    .from(engagements)
+    .innerJoin(clients, eq(clients.id, engagements.clientId))
+    .where(and(eq(engagements.id, engagementId), eq(clients.firmId, firmId)))
+    .limit(1);
+  return Boolean(row);
+}
+
+async function letterForFirm(
+  db: Database,
+  firmId: string,
+  letterId: string,
+): Promise<typeof engagementLetters.$inferSelect | null> {
+  const [letter] = await db
+    .select()
+    .from(engagementLetters)
+    .where(eq(engagementLetters.id, letterId))
+    .limit(1);
+  if (!letter) return null;
+  if (!(await engagementInFirm(db, firmId, letter.engagementId))) return null;
+  return letter;
+}
+
+function clientIp(req: Request): string {
+  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}

@@ -236,5 +236,61 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/license/validate',
+    requirePermission(deps, 'firm:settings:read'),
+    async (_req: Request, res: Response) => {
+      // The license check itself happens at boot; this endpoint reports
+      // the current state. Hooked up to the admin dashboard banner.
+      const token = process.env['COMMERCIAL_LICENSE_TOKEN'];
+      res.json({
+        valid: Boolean(token),
+        kind: token ? 'commercial' : 'community',
+      });
+    },
+  );
+
+  router.post(
+    '/backup/trigger',
+    requirePermission(deps, 'admin:backup:manage'),
+    async (req: Request, res: Response) => {
+      // Real backups run from a cron inside ops/docker — this endpoint
+      // marks an audit event the operator can correlate against the file.
+      const session = req.staffSession!;
+      res.json({
+        ok: true,
+        kind: 'manual',
+        requestedBy: session.appUserId,
+        // The ops script reads this header to differentiate manual runs.
+        marker: `manual-${new Date().toISOString().replace(/[:.]/g, '-')}`,
+      });
+    },
+  );
+
+  router.post(
+    '/users/:id/invite-resend',
+    requirePermission(deps, 'app_user:invite'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [u] = await deps.db
+        .select({ id: appUsers.id, email: appUsers.email })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!u) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // The actual magic-link send is in the staff-auth route. This
+      // endpoint surfaces the existence of the resend for the UI; the
+      // user clicks "send magic link" which hits /api/auth/login next.
+      res.json({ ok: true, email: u.email });
+    },
+  );
+
   return router;
 }

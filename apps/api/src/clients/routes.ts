@@ -172,6 +172,67 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/bulk-import',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, created: 0 });
+        return;
+      }
+      const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+      const partnerInChargeId =
+        typeof req.body?.defaultPartnerId === 'string' ? req.body.defaultPartnerId : null;
+      if (!rows || rows.length === 0 || !partnerInChargeId) {
+        res.status(400).json({ error: 'rows_and_default_partner_required' });
+        return;
+      }
+      const created: string[] = [];
+      const skipped: { row: number; reason: string }[] = [];
+      for (let i = 0; i < rows.length && i < 1000; i++) {
+        const r = rows[i] as Record<string, unknown>;
+        const name =
+          typeof r['name'] === 'string' && r['name'].trim() ? r['name'].slice(0, 200) : null;
+        if (!name) {
+          skipped.push({ row: i, reason: 'missing_name' });
+          continue;
+        }
+        try {
+          const [newRow] = await deps.db
+            .insert(clients)
+            .values({
+              firmId,
+              name,
+              partnerInChargeId,
+              billingContactEmail:
+                typeof r['billingContactEmail'] === 'string' ? r['billingContactEmail'] : null,
+              billingContactPhone:
+                typeof r['billingContactPhone'] === 'string' ? r['billingContactPhone'] : null,
+              termsDays: typeof r['termsDays'] === 'number' ? r['termsDays'] : 30,
+            })
+            .returning({ id: clients.id });
+          if (newRow) created.push(newRow.id);
+        } catch (err) {
+          skipped.push({
+            row: i,
+            reason: err instanceof Error ? err.message.slice(0, 200) : 'insert_failed',
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'client',
+        actorAppUserId: session.appUserId,
+        after: { kind: 'bulk_import', created: created.length, skipped: skipped.length },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ created: created.length, createdIds: created, skipped });
+    },
+  );
+
   router.get(
     '/export.csv',
     requirePermission(deps, 'client:read'),
@@ -251,6 +312,58 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         .orderBy(desc(clientNotes.pinned), desc(clientNotes.createdAt))
         .limit(200);
       res.json({ items });
+    },
+  );
+
+  router.delete(
+    '/:id/notes/:noteId',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.id, req.params['id']!), eq(clients.firmId, firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .delete(clientNotes)
+        .where(and(eq(clientNotes.id, req.params['noteId']!), eq(clientNotes.clientId, client.id)));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/:id/notes/:noteId/pin',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const pinned = req.body?.pinned === true;
+      const [client] = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.id, req.params['id']!), eq(clients.firmId, firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(clientNotes)
+        .set({ pinned })
+        .where(and(eq(clientNotes.id, req.params['noteId']!), eq(clientNotes.clientId, client.id)));
+      res.json({ ok: true });
     },
   );
 

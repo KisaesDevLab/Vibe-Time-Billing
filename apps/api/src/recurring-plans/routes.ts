@@ -12,10 +12,13 @@ import type { Database } from '@vibe/db';
 import {
   clients,
   engagements,
+  invoiceLineItems,
+  invoices,
   recurringBillingPlans,
   recurringBillingPlanServices,
   serviceLines,
 } from '@vibe/db/schema';
+import { desc as drzDesc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -317,6 +320,85 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
           ),
         );
       res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/duplicate',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [src] = await deps.db
+        .select()
+        .from(recurringBillingPlans)
+        .where(eq(recurringBillingPlans.id, plan.id))
+        .limit(1);
+      if (!src) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const {
+        id: _id,
+        createdAt: _ca,
+        pausedAt: _pa,
+        pausedReason: _pr,
+        ...clonable
+      } = src as typeof src & { id: string };
+      void _id;
+      void _ca;
+      void _pa;
+      void _pr;
+      const [row] = await deps.db
+        .insert(recurringBillingPlans)
+        .values({ ...(clonable as typeof src), status: 'ACTIVE' })
+        .returning({ id: recurringBillingPlans.id });
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.get(
+    '/:id/invoices',
+    requirePermission(deps, 'invoice:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Find invoices that have a RECURRING_FEE line item sourced from this plan.
+      const rows = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          issueDate: invoices.issueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .innerJoin(invoiceLineItems, eq(invoiceLineItems.invoiceId, invoices.id))
+        .where(
+          and(
+            eq(invoiceLineItems.sourceRefType, 'recurring_plan'),
+            eq(invoiceLineItems.sourceRefId, plan.id),
+          ),
+        )
+        .orderBy(drzDesc(invoices.issueDate));
+      res.json({ items: rows });
     },
   );
 

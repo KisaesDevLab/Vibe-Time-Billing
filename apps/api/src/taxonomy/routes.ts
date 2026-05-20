@@ -368,6 +368,50 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
   );
 
   router.get(
+    '/work-codes/by-service-line/:serviceLineId',
+    requirePermission(deps, 'taxonomy:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(workCodes)
+        .where(
+          and(
+            eq(workCodes.firmId, firmId),
+            eq(workCodes.serviceLineId, req.params['serviceLineId']!),
+          ),
+        );
+      res.json({ items });
+    },
+  );
+
+  router.get(
+    '/engagement-types/by-service-line/:serviceLineId',
+    requirePermission(deps, 'taxonomy:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(engagementTypes)
+        .where(
+          and(
+            eq(engagementTypes.firmId, firmId),
+            eq(engagementTypes.serviceLineId, req.params['serviceLineId']!),
+          ),
+        );
+      res.json({ items });
+    },
+  );
+
+  router.get(
     '/export',
     requirePermission(deps, 'taxonomy:read'),
     async (req: Request, res: Response) => {

@@ -30,6 +30,8 @@ import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createAdminJobRouter } from './admin/jobs';
 import { createStatsRouter } from './stats/routes';
+import { createEngagementLetterRouter } from './engagement-letters/routes';
+import { createRequiredFieldRulesRouter } from './required-field-rules/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
@@ -246,6 +248,30 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/stats', auth.requireAuth, auth.requireCsrf, statsRouter);
+
+  const engagementLetterRouter = createEngagementLetterRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
+  app.use(
+    '/api/staff/engagement-letters',
+    auth.requireAuth,
+    auth.requireCsrf,
+    engagementLetterRouter,
+  );
+
+  const requiredFieldRulesRouter = createRequiredFieldRulesRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/required-field-rules',
+    auth.requireAuth,
+    auth.requireCsrf,
+    requiredFieldRulesRouter,
+  );
 
   const adminJobRouter = createAdminJobRouter({
     db: deps.db,

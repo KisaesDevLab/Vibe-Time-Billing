@@ -747,6 +747,77 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   );
 
   router.post(
+    '/:id/duplicate',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [orig] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!orig) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const lines = await deps.db
+        .select()
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.invoiceId, orig.id));
+      const [maxNum] = await deps.db
+        .select({
+          n: sql<number>`COALESCE(MAX(CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER)), 0)`,
+        })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId));
+      const issueDate = new Date().toISOString().slice(0, 10);
+      const invoiceNumber = formatInvoiceNumber({
+        config: { prefix: 'INV', yearPart: 'FOUR_DIGIT' },
+        sequence: Number(maxNum?.n ?? 0) + 1,
+        issueDate,
+      });
+      const newId = await deps.db.transaction(async (tx) => {
+        const [inv] = await tx
+          .insert(invoices)
+          .values({
+            firmId: orig.firmId,
+            clientId: orig.clientId,
+            primaryEngagementId: orig.primaryEngagementId,
+            invoiceNumber,
+            issueDate,
+            dueDate: new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10),
+            subtotalCents: orig.subtotalCents,
+            feeCents: orig.feeCents,
+            totalCents: orig.totalCents,
+            status: 'DRAFT',
+            notes: orig.notes,
+          })
+          .returning({ id: invoices.id });
+        if (!inv) throw new Error('duplicate failed');
+        if (lines.length > 0) {
+          await tx.insert(invoiceLineItems).values(
+            lines.map((l, i) => ({
+              invoiceId: inv.id,
+              kind: l.kind,
+              description: l.description,
+              amountCents: l.amountCents,
+              engagementId: l.engagementId,
+              sourceRefType: 'duplicate',
+              sortOrder: i,
+            })),
+          );
+        }
+        return inv.id;
+      });
+      res.status(201).json({ id: newId, invoiceNumber });
+    },
+  );
+
+  router.post(
     '/:id/dunning',
     requirePermission(deps, 'invoice:write'),
     async (req: Request, res: Response) => {
