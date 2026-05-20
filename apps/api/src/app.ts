@@ -2,6 +2,9 @@
 import express, { type Express, type Request, type Response } from 'express';
 import pinoHttp from 'pino-http';
 import type { Redis } from 'ioredis';
+import { sql as drizzleSql } from 'drizzle-orm';
+
+const sqlOne = drizzleSql`SELECT 1`;
 
 import { loadConfig } from './config';
 import { logger } from './logger';
@@ -59,12 +62,46 @@ export function createApp(deps: AppDeps): Express {
   app.use(express.json({ limit: '1mb' }));
   app.use(pinoHttp({ logger }));
 
+  // Liveness — used by Docker HEALTHCHECK. Cheap, no I/O.
   app.get('/health', (_req: Request, res: Response) => {
     res.json({
       status: 'ok',
       service: 'vibe-time-billing-api',
       env: config.NODE_ENV,
       portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
+    });
+  });
+
+  // Readiness — surfaces what's actually wired vs. stubbed. Used by the
+  // admin dashboard's "system status" panel.
+  app.get('/health/ready', async (_req: Request, res: Response) => {
+    let dbOk = false;
+    let dbError: string | undefined;
+    try {
+      if (deps.db) {
+        // Trivial round-trip; doesn't allocate anything.
+        await deps.db.execute(sqlOne);
+        dbOk = true;
+      }
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'db_unreachable';
+    }
+    let redisOk = false;
+    try {
+      const pong = await deps.redis.ping();
+      redisOk = pong === 'PONG';
+    } catch {
+      redisOk = false;
+    }
+    res.json({
+      status: dbOk && redisOk ? 'ready' : 'degraded',
+      checks: { db: dbOk, redis: redisOk, dbError },
+      wiring: {
+        stripe: Boolean(deps.chargeInvoice),
+        aiCloud: Boolean(deps.cloudAiProvider),
+        aiLocal: Boolean(deps.localAiProvider),
+        portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
+      },
     });
   });
 

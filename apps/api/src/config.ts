@@ -41,6 +41,15 @@ const Schema = z.object({
   MCP_PORT: z.coerce.number().int().positive().default(3002),
 
   AI_DEFAULT_MONTHLY_BUDGET_CENTS: z.coerce.number().int().nonnegative().default(10000),
+  // Provider secrets — all optional; presence drives wiring in server.ts.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  AI_CLOUD_API_KEY: z.string().optional(),
+  AI_CLOUD_MODEL: z.string().default('claude-opus-4-7'),
+  AI_LOCAL_URL: z.string().default('http://localhost:11434'),
+  AI_LOCAL_MODEL: z.string().optional(),
+  VIBE_CONNECT_URL: z.string().optional(),
+  VIBE_CONNECT_API_KEY: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof Schema>;
