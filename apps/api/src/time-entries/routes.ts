@@ -675,6 +675,57 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   );
 
   router.get(
+    '/totals/firm/by-user',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const start = (req.query['start'] ?? '').toString();
+      const end = (req.query['end'] ?? '').toString();
+      const conds = [];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      // Scope to firm via app_user join.
+      const userIds = (
+        await deps.db.select({ id: firms.id }).from(firms).where(eq(firms.id, session.firmId))
+      ).length
+        ? (
+            await deps.db
+              .select({ id: sql<string>`app_user.id`.as('id') })
+              .from(sql`app_user`)
+              .where(sql`app_user.firm_id = ${session.firmId}`)
+          ).map((r) => r.id as string)
+        : [];
+      if (userIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const allConds = [...conds, inArray(timeEntries.appUserId, userIds)];
+      const rows = await deps.db
+        .select({
+          appUserId: timeEntries.appUserId,
+          hours: sql<string>`SUM(${timeEntries.hours})`.as('hours'),
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as(
+            'amountCents',
+          ),
+        })
+        .from(timeEntries)
+        .where(and(...allConds))
+        .groupBy(timeEntries.appUserId);
+      res.json({
+        items: rows.map((r) => ({
+          appUserId: r.appUserId,
+          hours: Number(r.hours),
+          amountCents: Number(r.amountCents),
+        })),
+      });
+    },
+  );
+
+  router.get(
     '/totals/by-day',
     requirePermission(deps, 'time_entry:read:own'),
     async (req: Request, res: Response) => {

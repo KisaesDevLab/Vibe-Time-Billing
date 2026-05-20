@@ -17,6 +17,8 @@ import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
+import { runLateFeeAccrual } from './jobs/late-fee-accrual';
+import { runLateEntryAlert } from './jobs/late-entry-alert';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
@@ -79,7 +81,14 @@ interface JobPayload {
   scheduledFor: string;
 }
 
-const QUEUES = ['recurring-billing', 'ar-aging-snapshot', 'view-refresh', 'dunning-sweep'] as const;
+const QUEUES = [
+  'recurring-billing',
+  'ar-aging-snapshot',
+  'view-refresh',
+  'dunning-sweep',
+  'late-fee-accrual',
+  'late-entry-alert',
+] as const;
 type QueueName = (typeof QUEUES)[number];
 
 const queues = new Map<QueueName, Queue<JobPayload>>();
@@ -123,6 +132,29 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     });
     logger.info({ jobId: job.id, ...result }, 'dunning-sweep complete');
   },
+  'late-fee-accrual': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'late-fee-accrual: no DB configured');
+      return;
+    }
+    const flatCents = parseInt(process.env['LATE_FEE_FLAT_CENTS'] ?? '0', 10);
+    const pctMonthly = parseFloat(process.env['LATE_FEE_PCT_MONTHLY'] ?? '0');
+    const result = await runLateFeeAccrual(db, logger, undefined, {
+      flatCents: Number.isFinite(flatCents) ? flatCents : 0,
+      pctMonthly: Number.isFinite(pctMonthly) ? pctMonthly : 0,
+    });
+    logger.info({ jobId: job.id, ...result }, 'late-fee-accrual complete');
+  },
+  'late-entry-alert': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'late-entry-alert: no DB configured');
+      return;
+    }
+    const result = await runLateEntryAlert(db, logger, undefined, {
+      sendEmail: dunningSendEmail,
+    });
+    logger.info({ jobId: job.id, ...result }, 'late-entry-alert complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -130,6 +162,8 @@ const CRON: Record<QueueName, string> = {
   'ar-aging-snapshot': '30 0 * * *',
   'view-refresh': '*/15 * * * *',
   'dunning-sweep': '0 * * * *',
+  'late-fee-accrual': '15 1 * * *',
+  'late-entry-alert': '0 9 * * 1-5',
 };
 
 async function setup(): Promise<void> {

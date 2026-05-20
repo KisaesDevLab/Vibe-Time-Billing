@@ -37,6 +37,8 @@ import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createPaymentRouter } from './payments/routes';
 import { createRateRouter } from './rates/routes';
+import { createHolidayRouter } from './holidays/routes';
+import { createMilestoneRouter } from './milestones/routes';
 import type { AiProvider } from '@vibe/core/ai';
 import type { PaymentProvider } from '@vibe/core/payments';
 import type { RoleSlug } from '@vibe/core/rbac';
@@ -260,6 +262,18 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/rates', auth.requireAuth, auth.requireCsrf, rateRouter);
+
+  const holidayRouter = createHolidayRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/holidays', auth.requireAuth, auth.requireCsrf, holidayRouter);
+
+  const milestoneRouter = createMilestoneRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/milestones', auth.requireAuth, auth.requireCsrf, milestoneRouter);
 
   // Portal invitation (firm-side).
   const portalInviteRouter = createPortalInviteRouter({

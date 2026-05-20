@@ -9,7 +9,13 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagements, recurringBillingPlans } from '@vibe/db/schema';
+import {
+  clients,
+  engagements,
+  recurringBillingPlans,
+  recurringBillingPlanServices,
+  serviceLines,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -165,6 +171,93 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
           ),
         );
       res.json({ counts, dueSoonWithin7Days: Number(dueSoon?.c ?? 0) });
+    },
+  );
+
+  router.get(
+    '/:id/services',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          planId: recurringBillingPlanServices.planId,
+          serviceLineId: recurringBillingPlanServices.serviceLineId,
+          serviceLineName: serviceLines.name,
+          includedHours: recurringBillingPlanServices.includedHours,
+        })
+        .from(recurringBillingPlanServices)
+        .innerJoin(serviceLines, eq(serviceLines.id, recurringBillingPlanServices.serviceLineId))
+        .where(eq(recurringBillingPlanServices.planId, plan.id));
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/:id/services',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = req.body as { serviceLineId?: unknown; includedHours?: unknown };
+      const serviceLineId = typeof body.serviceLineId === 'string' ? body.serviceLineId : null;
+      if (!serviceLineId) {
+        res.status(400).json({ error: 'service_line_id_required' });
+        return;
+      }
+      const includedHours = typeof body.includedHours === 'number' ? body.includedHours : null;
+      await deps.db
+        .insert(recurringBillingPlanServices)
+        .values({
+          planId: plan.id,
+          serviceLineId,
+          includedHours: includedHours != null ? includedHours.toString() : null,
+        })
+        .onConflictDoNothing();
+      res.status(201).json({ ok: true });
+    },
+  );
+
+  router.delete(
+    '/:id/services/:serviceLineId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const plan = await planForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .delete(recurringBillingPlanServices)
+        .where(
+          and(
+            eq(recurringBillingPlanServices.planId, plan.id),
+            eq(recurringBillingPlanServices.serviceLineId, req.params['serviceLineId']!),
+          ),
+        );
+      res.json({ ok: true });
     },
   );
 

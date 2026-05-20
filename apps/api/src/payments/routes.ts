@@ -7,7 +7,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { clients, invoices, payments } from '@vibe/db/schema';
@@ -129,6 +129,71 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         ok: true,
         applied,
         unappliedCents: remaining,
+      });
+    },
+  );
+
+  router.get(
+    '/reconciliation',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], summary: { totalCents: 0, count: 0 } });
+        return;
+      }
+      const start = typeof req.query['start'] === 'string' ? req.query['start'] : null;
+      const end = typeof req.query['end'] === 'string' ? req.query['end'] : null;
+      const provider = typeof req.query['provider'] === 'string' ? req.query['provider'] : null;
+      const conds = [eq(invoices.firmId, session.firmId)];
+      if (start && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
+        conds.push(gte(payments.receivedAt, new Date(start)));
+      }
+      if (end && /^\d{4}-\d{2}-\d{2}$/.test(end)) {
+        conds.push(lte(payments.receivedAt, new Date(end)));
+      }
+      if (provider) conds.push(eq(payments.provider, provider));
+      const rows = await deps.db
+        .select({
+          paymentId: payments.id,
+          invoiceId: payments.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+          clientId: invoices.clientId,
+          clientName: clients.name,
+          amountCents: payments.amountCents,
+          feeCents: payments.feeCents,
+          provider: payments.provider,
+          providerChargeId: payments.providerChargeId,
+          status: payments.status,
+          receivedAt: payments.receivedAt,
+          refundedAmountCents: payments.refundedAmountCents,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .where(and(...conds))
+        .orderBy(desc(payments.receivedAt))
+        .limit(2000);
+      const totalCents = rows.reduce(
+        (s, r) => s + Number(r.amountCents) - Number(r.refundedAmountCents ?? 0),
+        0,
+      );
+      const [agg] = await deps.db
+        .select({
+          gross: sql<number>`COALESCE(SUM(${payments.amountCents}), 0)`,
+          refunds: sql<number>`COALESCE(SUM(${payments.refundedAmountCents}), 0)`,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(and(...conds));
+      res.json({
+        items: rows,
+        summary: {
+          count: rows.length,
+          totalCents,
+          grossCents: Number(agg?.gross ?? 0),
+          refundsCents: Number(agg?.refunds ?? 0),
+        },
       });
     },
   );

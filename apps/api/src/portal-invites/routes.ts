@@ -269,6 +269,46 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
     },
   );
 
+  router.post(
+    '/access/:accessId/revoke',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      // Verify the access row belongs to a client at this firm.
+      const [scope] = await deps.db
+        .select({
+          accessId: clientPortalAccess.id,
+          clientFirmId: clients.firmId,
+        })
+        .from(clientPortalAccess)
+        .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+        .where(eq(clientPortalAccess.id, req.params['accessId']!))
+        .limit(1);
+      if (!scope || scope.clientFirmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(clientPortalAccess)
+        .set({ status: 'INACTIVE', revokedAt: new Date(), revokedBy: session.appUserId })
+        .where(eq(clientPortalAccess.id, scope.accessId));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'client_portal_access',
+        entityId: scope.accessId,
+        actorAppUserId: session.appUserId,
+        after: { status: 'INACTIVE', revoked: true },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/by-client/:clientId',
     requirePermission(deps, 'client:portal-access:manage'),

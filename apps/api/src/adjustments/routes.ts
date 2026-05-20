@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -319,6 +319,95 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         .from(adjustmentAllocations)
         .where(eq(adjustmentAllocations.adjustmentId, req.params['id']!));
       res.json({ allocations: rows });
+    },
+  );
+
+  router.get(
+    '/',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const batchId = typeof req.query['batchId'] === 'string' ? req.query['batchId'] : null;
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      const conds = [] as ReturnType<typeof eq>[];
+      if (batchId) conds.push(eq(adjustments.billingBatchId, batchId));
+      const allowed = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'APPLIED', 'REVERSED'];
+      if (status && allowed.includes(status)) {
+        conds.push(
+          eq(
+            adjustments.status,
+            status as
+              | 'DRAFT'
+              | 'PENDING_APPROVAL'
+              | 'APPROVED'
+              | 'REJECTED'
+              | 'APPLIED'
+              | 'REVERSED',
+          ),
+        );
+      }
+      const builder = deps.db.select().from(adjustments);
+      const items = await (conds.length === 0
+        ? builder.orderBy(desc(adjustments.createdAt)).limit(500)
+        : builder
+            .where(and(...conds))
+            .orderBy(desc(adjustments.createdAt))
+            .limit(500));
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/:id/reverse',
+    requirePermission(deps, 'adjustment:reverse'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [adj] = await deps.db
+        .select()
+        .from(adjustments)
+        .where(eq(adjustments.id, req.params['id']!))
+        .limit(1);
+      if (!adj) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (adj.status === 'REVERSED') {
+        res.status(409).json({ error: 'already_reversed' });
+        return;
+      }
+      if (adj.status !== 'APPLIED' && adj.status !== 'APPROVED') {
+        res.status(409).json({ error: 'not_reversible', status: adj.status });
+        return;
+      }
+      await deps.db
+        .update(adjustments)
+        .set({
+          status: 'REVERSED',
+          reversedAt: new Date(),
+          reversedById: session.appUserId,
+        })
+        .where(eq(adjustments.id, adj.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'adjustment',
+        entityId: adj.id,
+        actorAppUserId: session.appUserId,
+        after: { status: 'REVERSED' },
+        ip: (
+          req.headers['x-forwarded-for']?.toString().split(',')[0] ??
+          req.ip ??
+          '0.0.0.0'
+        ).trim(),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
     },
   );
 

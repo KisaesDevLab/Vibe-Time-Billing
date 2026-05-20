@@ -1089,6 +1089,32 @@ export const payments = pgTable(
 );
 
 // =====================================================================
+// TABLE: holiday_calendar
+// Firm holidays + per-user PTO. app_user_id NULL means firm-wide.
+// =====================================================================
+
+export const holidayCalendar = pgTable(
+  'holiday_calendar',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id').references(() => appUsers.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    startDate: date('start_date').notNull(),
+    endDate: date('end_date').notNull(),
+    kind: text('kind').notNull().default('HOLIDAY'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmRangeIdx: index('holiday_calendar_firm_range_idx').on(t.firmId, t.startDate, t.endDate),
+    userRangeIdx: index('holiday_calendar_user_range_idx').on(t.appUserId, t.startDate, t.endDate),
+  }),
+);
+
+// =====================================================================
 // TABLE: dunning_history
 // Per-invoice ledger of dunning steps already dispatched. The sweep job
 // consults this to skip already-sent kinds and writes on each dispatch.

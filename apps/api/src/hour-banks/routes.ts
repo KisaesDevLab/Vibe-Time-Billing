@@ -94,6 +94,29 @@ export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/:id/transactions',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const bank = await bankForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!bank) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(hourBankTransactions)
+        .where(eq(hourBankTransactions.hourBankId, bank.id))
+        .orderBy(hourBankTransactions.occurredAt);
+      res.json({ items });
+    },
+  );
+
   router.post(
     '/:id/top-up',
     requirePermission(deps, 'engagement:write'),

@@ -70,6 +70,57 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
   );
 
   router.get(
+    '/by-actor/:actorAppUserId',
+    requirePermission(deps, 'admin:audit:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '30'), 10) || 30, 1),
+        365,
+      );
+      const since = new Date(Date.now() - days * 86_400_000);
+      const items = await deps.db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.actorAppUserId, req.params['actorAppUserId']!),
+            gte(auditLog.occurredAt, since),
+          ),
+        )
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
+  router.get(
+    '/by-entity/:entityType/:entityId',
+    requirePermission(deps, 'admin:audit:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.entityType, req.params['entityType']!),
+            eq(auditLog.entityId, req.params['entityId']!),
+          ),
+        )
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(200);
+      res.json({ items });
+    },
+  );
+
+  router.get(
     '/export.csv',
     requirePermission(deps, 'admin:audit:export'),
     async (req: Request, res: Response) => {

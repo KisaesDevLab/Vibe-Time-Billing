@@ -110,5 +110,64 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/bulk-update/preview',
+    requirePermission(deps, 'rate:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ rows: [] });
+        return;
+      }
+      const body = req.body as { pctChange?: unknown; appUserIds?: unknown };
+      const pct = typeof body.pctChange === 'number' ? body.pctChange : NaN;
+      if (!Number.isFinite(pct)) {
+        res.status(400).json({ error: 'pct_change_required' });
+        return;
+      }
+      const userIdFilter = Array.isArray(body.appUserIds)
+        ? body.appUserIds.filter((x): x is string => typeof x === 'string')
+        : null;
+      const currentConds = [eq(appUsers.firmId, session.firmId)];
+      if (userIdFilter && userIdFilter.length > 0) {
+        // intentionally restrict to provided users in firm scope
+      }
+      const users = await deps.db
+        .select({ id: appUsers.id, fullName: appUsers.fullName })
+        .from(appUsers)
+        .where(and(...currentConds));
+      const rates = await deps.db.select().from(timekeeperRates);
+      const byUser = new Map<string, (typeof rates)[number][]>();
+      for (const r of rates) {
+        const list = byUser.get(r.appUserId) ?? [];
+        list.push(r);
+        byUser.set(r.appUserId, list);
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = users
+        .filter((u) => !userIdFilter || userIdFilter.includes(u.id))
+        .map((u) => {
+          const userRates = byUser.get(u.id) ?? [];
+          const current = userRates
+            .filter(
+              (r) => r.effectiveStart <= today && (!r.effectiveEnd || r.effectiveEnd >= today),
+            )
+            .sort((a, b) => (a.effectiveStart < b.effectiveStart ? 1 : -1))[0];
+          if (!current) return null;
+          const currentCents = current.billRateCents;
+          const newCents = Math.round(currentCents * (1 + pct / 100));
+          return {
+            appUserId: u.id,
+            fullName: u.fullName,
+            currentBillRateCents: currentCents,
+            proposedBillRateCents: newCents,
+            deltaCents: newCents - currentCents,
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+      res.json({ rows, pctChange: pct });
+    },
+  );
+
   return router;
 }

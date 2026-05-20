@@ -230,5 +230,35 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/export',
+    requirePermission(deps, 'taxonomy:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({
+          serviceLines: [],
+          workCodes: [],
+          engagementTypes: [],
+          reasonCodes: [],
+        });
+        return;
+      }
+      const [sls, wcs, ets, rcs] = await Promise.all([
+        deps.db.select().from(serviceLines).where(eq(serviceLines.firmId, session.firmId)),
+        deps.db.select().from(workCodes).where(eq(workCodes.firmId, session.firmId)),
+        deps.db.select().from(engagementTypes).where(eq(engagementTypes.firmId, session.firmId)),
+        deps.db.select().from(reasonCodes).where(eq(reasonCodes.firmId, session.firmId)),
+      ]);
+      res.json({
+        serviceLines: sls,
+        workCodes: wcs,
+        engagementTypes: ets,
+        reasonCodes: rcs,
+        exportedAt: new Date().toISOString(),
+      });
+    },
+  );
+
   return router;
 }

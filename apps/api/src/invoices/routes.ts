@@ -15,6 +15,7 @@ import {
   billingBatchEntries,
   billingBatches,
   clients,
+  dunningHistory,
   engagements,
   firmSettings,
   firms,
@@ -491,6 +492,33 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/:id/dunning-history',
+    requirePermission(deps, 'invoice:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [inv] = await deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(dunningHistory)
+        .where(eq(dunningHistory.invoiceId, inv.id))
+        .orderBy(dunningHistory.sentAt);
+      res.json({ items });
     },
   );
 

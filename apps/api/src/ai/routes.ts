@@ -7,7 +7,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, gte, sum } from 'drizzle-orm';
+import { and, desc, eq, gte, sum } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { aiRequestLog, firmSettings } from '@vibe/db/schema';
@@ -178,6 +178,35 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         });
         res.status(502).json({ error: 'ai_provider_failed' });
       }
+    },
+  );
+
+  router.get(
+    '/request-log',
+    requirePermission(deps, 'admin:ai:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '30'), 10) || 30, 1),
+        180,
+      );
+      const feature = typeof req.query['feature'] === 'string' ? req.query['feature'] : null;
+      const userId = typeof req.query['appUserId'] === 'string' ? req.query['appUserId'] : null;
+      const since = new Date(Date.now() - days * 86_400_000);
+      const conds = [eq(aiRequestLog.firmId, session.firmId), gte(aiRequestLog.occurredAt, since)];
+      if (feature) conds.push(eq(aiRequestLog.feature, feature));
+      if (userId) conds.push(eq(aiRequestLog.appUserId, userId));
+      const items = await deps.db
+        .select()
+        .from(aiRequestLog)
+        .where(and(...conds))
+        .orderBy(desc(aiRequestLog.occurredAt))
+        .limit(500);
+      res.json({ items });
     },
   );
 
