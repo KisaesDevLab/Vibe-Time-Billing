@@ -148,6 +148,146 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/:id/delegate',
+    requirePermission(deps, 'approval:act'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const toUserId = typeof req.body?.toUserId === 'string' ? req.body.toUserId : null;
+      if (!toUserId) {
+        res.status(400).json({ error: 'to_user_id_required' });
+        return;
+      }
+      const [request] = await deps.db
+        .select()
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, req.params['id']!))
+        .limit(1);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (request.status !== 'PENDING') {
+        res.status(409).json({ error: 'already_decided', status: request.status });
+        return;
+      }
+      await deps.db
+        .update(approvalRequests)
+        .set({ approverId: toUserId })
+        .where(eq(approvalRequests.id, request.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'approval_request',
+        entityId: request.id,
+        actorAppUserId: session.appUserId,
+        after: { delegatedTo: toUserId },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/:id/entity',
+    requirePermission(deps, 'approval:queue:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ entity: null });
+        return;
+      }
+      const [request] = await deps.db
+        .select()
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, req.params['id']!))
+        .limit(1);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (request.entityType === 'ADJUSTMENT') {
+        const [adj] = await deps.db
+          .select()
+          .from(adjustments)
+          .where(eq(adjustments.id, request.entityId))
+          .limit(1);
+        res.json({ entity: adj ?? null, kind: 'ADJUSTMENT' });
+        return;
+      }
+      res.json({ entity: null, kind: request.entityType });
+    },
+  );
+
+  router.post(
+    '/bulk-decide',
+    requirePermission(deps, 'approval:act'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, processed: 0 });
+        return;
+      }
+      const body = req.body as { ids?: unknown; decision?: unknown; comments?: unknown };
+      const ids = Array.isArray(body.ids)
+        ? body.ids.filter((x): x is string => typeof x === 'string')
+        : [];
+      const decision = typeof body.decision === 'string' ? body.decision : '';
+      if (
+        ids.length === 0 ||
+        !(decision === 'APPROVED' || decision === 'REJECTED' || decision === 'APPROVED_WITH_EDITS')
+      ) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const comments = typeof body.comments === 'string' ? body.comments : null;
+      let processed = 0;
+      for (const id of ids) {
+        const [request] = await deps.db
+          .select()
+          .from(approvalRequests)
+          .where(eq(approvalRequests.id, id))
+          .limit(1);
+        if (!request || request.status !== 'PENDING') continue;
+        await deps.db.transaction(async (tx) => {
+          await tx
+            .update(approvalRequests)
+            .set({
+              status: decision as 'APPROVED' | 'REJECTED' | 'APPROVED_WITH_EDITS',
+              approverId: session.appUserId,
+              respondedAt: new Date(),
+              comments: comments ?? request.comments,
+            })
+            .where(eq(approvalRequests.id, request.id));
+          if (request.entityType === 'ADJUSTMENT' && decision === 'APPROVED') {
+            await tx
+              .update(adjustments)
+              .set({ status: 'APPLIED', approverId: session.appUserId, approvedAt: new Date() })
+              .where(eq(adjustments.id, request.entityId));
+          } else if (request.entityType === 'ADJUSTMENT' && decision === 'REJECTED') {
+            await tx
+              .update(adjustments)
+              .set({ status: 'REJECTED' })
+              .where(eq(adjustments.id, request.entityId));
+          }
+        });
+        processed++;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'approval_request',
+        actorAppUserId: session.appUserId,
+        after: { kind: 'bulk_decide', decision, count: processed },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, processed });
+    },
+  );
+
   return router;
 }
 

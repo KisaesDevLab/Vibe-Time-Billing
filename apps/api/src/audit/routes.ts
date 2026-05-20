@@ -21,6 +21,25 @@ const QuerySchema = z.object({
   entityId: z.string().uuid().optional(),
   actorAppUserId: z.string().uuid().optional(),
   actorPortalIdentityId: z.string().uuid().optional(),
+  action: z
+    .enum([
+      'CREATE',
+      'UPDATE',
+      'ARCHIVE',
+      'RESTORE',
+      'LOGIN',
+      'LOGOUT',
+      'STEP_UP',
+      'EXPORT',
+      'IMPERSONATE',
+      'PAYMENT',
+      'WEBHOOK_DELIVERY',
+      'MCP_CALL',
+      'AI_REQUEST',
+      'BACKUP',
+      'RESTORE_DATABASE',
+    ])
+    .optional(),
   start: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}/)
@@ -55,6 +74,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
       if (q.actorAppUserId) conds.push(eq(auditLog.actorAppUserId, q.actorAppUserId));
       if (q.actorPortalIdentityId)
         conds.push(eq(auditLog.actorPortalIdentityId, q.actorPortalIdentityId));
+      if (q.action) conds.push(eq(auditLog.action, q.action));
       if (q.start) conds.push(gte(auditLog.occurredAt, new Date(q.start)));
       if (q.end) conds.push(lte(auditLog.occurredAt, new Date(q.end)));
 
@@ -140,6 +160,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
       if (q.actorAppUserId) conds.push(eq(auditLog.actorAppUserId, q.actorAppUserId));
       if (q.actorPortalIdentityId)
         conds.push(eq(auditLog.actorPortalIdentityId, q.actorPortalIdentityId));
+      if (q.action) conds.push(eq(auditLog.action, q.action));
       if (q.start) conds.push(gte(auditLog.occurredAt, new Date(q.start)));
       if (q.end) conds.push(lte(auditLog.occurredAt, new Date(q.end)));
       const builder = deps.db.select().from(auditLog);

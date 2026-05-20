@@ -175,6 +175,36 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
   );
 
   router.get(
+    '/:id',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ plan: null });
+        return;
+      }
+      const [row] = await deps.db
+        .select()
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(recurringBillingPlans.id, req.params['id']!), eq(clients.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({
+        plan: row.recurring_billing_plan,
+        engagement: row.engagement,
+        client: row.client,
+      });
+    },
+  );
+
+  router.get(
     '/:id/services',
     requirePermission(deps, 'engagement:read'),
     async (req: Request, res: Response) => {

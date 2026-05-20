@@ -179,6 +179,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
+      // Lifecycle enforcement: PAUSED engagements cannot accept new time.
+      if (eng.status === 'PAUSED' || eng.status === 'CLOSED' || eng.status === 'ARCHIVED') {
+        res.status(409).json({ error: 'engagement_not_writable', status: eng.status });
+        return;
+      }
       const [client] = await deps.db
         .select()
         .from(clients)
@@ -295,6 +300,128 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         amount: snapshot.amountCents,
         resolutionLevel: resolved.level,
       });
+    },
+  );
+
+  router.get(
+    '/by-engagement/:engagementId',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      // Scope: engagement must belong to firm.
+      const [scope] = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(engagements.id, req.params['engagementId']!), eq(clients.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const start = (req.query['start'] ?? '').toString();
+      const end = (req.query['end'] ?? '').toString();
+      const conds = [eq(timeEntries.engagementId, req.params['engagementId']!)];
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      const items = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(and(...conds))
+        .limit(1000);
+      res.json({ items });
+    },
+  );
+
+  router.get(
+    '/by-client/:clientId',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.id, req.params['clientId']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const engIds = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(eq(engagements.clientId, req.params['clientId']!));
+      const ids = engIds.map((e) => e.id);
+      if (ids.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(inArray(timeEntries.engagementId, ids))
+        .limit(1000);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/:id/submit',
+    requirePermission(deps, 'time_entry:update:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [prior] = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(eq(timeEntries.id, req.params['id']!))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (prior.appUserId !== session.appUserId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      if (prior.status !== 'DRAFT') {
+        res.status(409).json({ error: 'not_draft', status: prior.status });
+        return;
+      }
+      await deps.db
+        .update(timeEntries)
+        .set({ status: 'SUBMITTED' })
+        .where(eq(timeEntries.id, prior.id));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/lock',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(timeEntries)
+        .set({ status: 'LOCKED', lockedAt: new Date() })
+        .where(eq(timeEntries.id, req.params['id']!));
+      res.json({ ok: true });
     },
   );
 

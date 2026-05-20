@@ -332,8 +332,23 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
       }
       const batchId = typeof req.query['batchId'] === 'string' ? req.query['batchId'] : null;
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      const engagementId =
+        typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
       const conds = [] as ReturnType<typeof eq>[];
       if (batchId) conds.push(eq(adjustments.billingBatchId, batchId));
+      if (engagementId) {
+        // Filter batches in that engagement.
+        const batchRows = await deps.db
+          .select({ id: billingBatches.id })
+          .from(billingBatches)
+          .where(eq(billingBatches.engagementId, engagementId));
+        const batchIds = batchRows.map((b) => b.id);
+        if (batchIds.length === 0) {
+          res.json({ items: [] });
+          return;
+        }
+        conds.push(inArray(adjustments.billingBatchId, batchIds));
+      }
       const allowed = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'APPLIED', 'REVERSED'];
       if (status && allowed.includes(status)) {
         conds.push(

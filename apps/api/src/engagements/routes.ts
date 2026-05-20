@@ -9,7 +9,13 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { clients, engagements, timeEntries } from '@vibe/db/schema';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { logger } from '../logger';
+
+function clientIp(req: Request): string {
+  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
 
 export interface EngagementRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -88,10 +94,23 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      const conds = [inArray(engagements.clientId, ids)];
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      const allowed = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'];
+      if (status && allowed.includes(status)) {
+        conds.push(
+          eq(
+            engagements.status,
+            status as 'PROPOSED' | 'ACTIVE' | 'PAUSED' | 'CLOSED' | 'ARCHIVED',
+          ),
+        );
+      }
+      const partnerId = typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : null;
+      if (partnerId) conds.push(eq(engagements.partnerId, partnerId));
       const items = await deps.db
         .select()
         .from(engagements)
-        .where(inArray(engagements.clientId, ids))
+        .where(and(...conds))
         .limit(500);
       res.json({ items });
     },
@@ -115,6 +134,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.status(404).json({ error: 'client_not_found' });
         return;
       }
+      const session = req.staffSession!;
       const insertVals = {
         ...parsed.data,
         budgetHours: parsed.data.budgetHours?.toString(),
@@ -123,6 +143,15 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .insert(engagements)
         .values(insertVals)
         .returning({ id: engagements.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'engagement',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ id: row?.id });
     },
   );
@@ -322,12 +351,86 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
+      const session = req.staffSession!;
+      // CLOSED transition: refuse if WIP remains (SUBMITTED time entries
+      // not yet attached to a billing batch).
+      if (parsed.data.status === 'CLOSED') {
+        const [open] = await deps.db
+          .select({ c: sql<number>`COUNT(*)`.as('c') })
+          .from(timeEntries)
+          .where(
+            and(
+              eq(timeEntries.engagementId, req.params['id']!),
+              eq(timeEntries.status, 'SUBMITTED'),
+            ),
+          );
+        const openCount = Number(open?.c ?? 0);
+        if (openCount > 0) {
+          res.status(409).json({ error: 'unresolved_wip', submittedTimeEntries: openCount });
+          return;
+        }
+      }
       const patch: Record<string, unknown> = { status: parsed.data.status };
       if (parsed.data.status === 'CLOSED' || parsed.data.status === 'ARCHIVED') {
         patch['closedAt'] = new Date();
         patch['closedReason'] = parsed.data.reason ?? null;
       }
       await deps.db.update(engagements).set(patch).where(eq(engagements.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: parsed.data.status, reason: parsed.data.reason },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/:id',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const parsed = EngagementCreateSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const patch: Record<string, unknown> = { ...parsed.data };
+      if (parsed.data.budgetHours != null) {
+        patch['budgetHours'] = parsed.data.budgetHours.toString();
+      }
+      await deps.db.update(engagements).set(patch).where(eq(engagements.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
     },
   );

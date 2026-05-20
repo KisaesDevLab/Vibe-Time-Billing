@@ -495,6 +495,155 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/:id/line-items',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const parsed = LineItemSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_immutable' });
+        return;
+      }
+      const [maxSort] = await deps.db
+        .select({ s: sql<number>`COALESCE(MAX(${invoiceLineItems.sortOrder}), 0)` })
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.invoiceId, inv.id));
+      const sortOrder = Number(maxSort?.s ?? 0) + 1;
+      await deps.db.transaction(async (tx) => {
+        await tx.insert(invoiceLineItems).values({
+          invoiceId: inv.id,
+          kind: parsed.data.kind,
+          description: parsed.data.description,
+          amountCents: parsed.data.amountCents,
+          engagementId: parsed.data.engagementId ?? null,
+          sourceRefType: 'manual',
+          sortOrder,
+        });
+        await tx
+          .update(invoices)
+          .set({
+            subtotalCents: Number(inv.subtotalCents) + parsed.data.amountCents,
+            totalCents: Number(inv.totalCents) + parsed.data.amountCents,
+          })
+          .where(eq(invoices.id, inv.id));
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'line_item_add', amountCents: parsed.data.amountCents },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ ok: true });
+    },
+  );
+
+  router.delete(
+    '/:id/line-items/:lineItemId',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_immutable' });
+        return;
+      }
+      const [line] = await deps.db
+        .select()
+        .from(invoiceLineItems)
+        .where(
+          and(
+            eq(invoiceLineItems.id, req.params['lineItemId']!),
+            eq(invoiceLineItems.invoiceId, inv.id),
+          ),
+        )
+        .limit(1);
+      if (!line) {
+        res.status(404).json({ error: 'line_item_not_found' });
+        return;
+      }
+      await deps.db.transaction(async (tx) => {
+        await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.id, line.id));
+        await tx
+          .update(invoices)
+          .set({
+            subtotalCents: Number(inv.subtotalCents) - Number(line.amountCents),
+            totalCents: Number(inv.totalCents) - Number(line.amountCents),
+          })
+          .where(eq(invoices.id, inv.id));
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'line_item_remove', lineItemId: line.id, amountCents: line.amountCents },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/:id/notes',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const notes = typeof req.body?.notes === 'string' ? req.body.notes.slice(0, 2000) : null;
+      await deps.db
+        .update(invoices)
+        .set({ notes })
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { notesUpdated: true },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/:id/dunning-history',
     requirePermission(deps, 'invoice:read'),

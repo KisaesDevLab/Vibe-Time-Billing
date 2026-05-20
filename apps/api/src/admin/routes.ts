@@ -116,6 +116,23 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  router.patch(
+    '/users/:id/archive',
+    requirePermission(deps, 'app_user:archive'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(appUsers)
+        .set({ status: 'ARCHIVED' })
+        .where(eq(appUsers.id, req.params['id']!));
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/users',
     requirePermission(deps, 'app_user:read'),

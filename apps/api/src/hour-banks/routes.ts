@@ -38,6 +38,36 @@ export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
   const router = express.Router();
 
   router.get(
+    '/',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: hourBanks.id,
+          engagementId: hourBanks.engagementId,
+          engagementName: engagements.name,
+          clientId: engagements.clientId,
+          clientName: clients.name,
+          openingHours: hourBanks.openingHours,
+          openingAmountCents: hourBanks.openingAmountCents,
+          expirationDate: hourBanks.expirationDate,
+          forfeitedAt: hourBanks.forfeitedAt,
+        })
+        .from(hourBanks)
+        .innerJoin(engagements, eq(engagements.id, hourBanks.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(clients.firmId, session.firmId))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
+  router.get(
     '/by-engagement/:engagementId',
     requirePermission(deps, 'engagement:read'),
     async (req: Request, res: Response) => {

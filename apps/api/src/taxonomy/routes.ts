@@ -9,7 +9,13 @@ import { and, eq } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { engagementTypes, reasonCodes, serviceLines, workCodes } from '@vibe/db/schema';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { logger } from '../logger';
+
+function clientIp(req: Request): string {
+  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
 
 export interface TaxonomyRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -94,10 +100,20 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
+      const session = req.staffSession!;
       const [row] = await deps.db
         .insert(serviceLines)
         .values({ firmId, ...parsed.data })
         .returning({ id: serviceLines.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'service_line',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ id: row?.id });
     },
   );
@@ -111,10 +127,20 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
+      const session = req.staffSession!;
       await deps.db
         .update(serviceLines)
         .set({ status: 'ARCHIVED' })
         .where(and(eq(serviceLines.firmId, firmId), eq(serviceLines.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'service_line',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'ARCHIVED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
     },
   );
@@ -147,10 +173,20 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
+      const session = req.staffSession!;
       const [row] = await deps.db
         .insert(workCodes)
         .values({ firmId, ...parsed.data })
         .returning({ id: workCodes.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'work_code',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ id: row?.id });
     },
   );
@@ -186,10 +222,20 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
+      const session = req.staffSession!;
       const [row] = await deps.db
         .insert(engagementTypes)
         .values({ firmId, ...parsed.data })
         .returning({ id: engagementTypes.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'engagement_type',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ id: row?.id });
     },
   );
@@ -222,11 +268,102 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
+      const session = req.staffSession!;
       const [row] = await deps.db
         .insert(reasonCodes)
         .values({ firmId, ...parsed.data })
         .returning({ id: reasonCodes.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'reason_code',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.patch(
+    '/work-codes/:id/archive',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(workCodes)
+        .set({ status: 'ARCHIVED' })
+        .where(and(eq(workCodes.firmId, firmId), eq(workCodes.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'work_code',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'ARCHIVED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/engagement-types/:id/archive',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(engagementTypes)
+        .set({ status: 'ARCHIVED' })
+        .where(and(eq(engagementTypes.firmId, firmId), eq(engagementTypes.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'engagement_type',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'ARCHIVED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/reason-codes/:id/archive',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(reasonCodes)
+        .set({ status: 'ARCHIVED' })
+        .where(and(eq(reasonCodes.firmId, firmId), eq(reasonCodes.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'reason_code',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'ARCHIVED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 

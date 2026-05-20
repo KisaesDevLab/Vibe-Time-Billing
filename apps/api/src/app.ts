@@ -27,6 +27,7 @@ import { createInvoiceRouter } from './invoices/routes';
 import { createArRouter } from './ar/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
+import { createPortalProfileRouter } from './portal/profile';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
@@ -216,6 +217,12 @@ export function createApp(deps: AppDeps): Express {
     chargeInvoice: deps.chargeInvoice,
   });
   app.use('/api/portal/invoices', portalInvoiceRouter);
+
+  const portalProfileRouter = createPortalProfileRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/profile', portalProfileRouter);
 
   // REST v1 — token-authenticated integrator surface.
   app.use('/api/v1', createRestV1Router({ db: deps.db }));
