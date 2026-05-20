@@ -854,6 +854,45 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/count-by-status',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ counts: {} });
+        return;
+      }
+      const firmClientIds = (
+        await deps.db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(eq(clients.firmId, session.firmId))
+      ).map((c) => c.id);
+      if (firmClientIds.length === 0) {
+        res.json({ counts: {} });
+        return;
+      }
+      const firmEngs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(inArray(engagements.clientId, firmClientIds));
+      const engIds = firmEngs.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.json({ counts: {} });
+        return;
+      }
+      const rows = await deps.db
+        .select({ status: timeEntries.status, c: sql<number>`COUNT(*)`.as('c') })
+        .from(timeEntries)
+        .where(inArray(timeEntries.engagementId, engIds))
+        .groupBy(timeEntries.status);
+      const counts: Record<string, number> = {};
+      for (const r of rows) counts[r.status] = Number(r.c);
+      res.json({ counts });
+    },
+  );
+
   router.post(
     '/bulk-status',
     requirePermission(deps, 'time_entry:update:any'),

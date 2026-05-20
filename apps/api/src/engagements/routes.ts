@@ -112,6 +112,30 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       }
       const partnerId = typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : null;
       if (partnerId) conds.push(eq(engagements.partnerId, partnerId));
+      const managerId = typeof req.query['managerId'] === 'string' ? req.query['managerId'] : null;
+      if (managerId) conds.push(eq(engagements.managerId, managerId));
+      const feeStructure =
+        typeof req.query['feeStructure'] === 'string' ? req.query['feeStructure'] : null;
+      const allowedFees = [
+        'HOURLY',
+        'HOURLY_NTE',
+        'FIXED_FEE',
+        'FIXED_FEE_WITH_MILESTONES',
+        'RECURRING_SUBSCRIPTION',
+      ];
+      if (feeStructure && allowedFees.includes(feeStructure)) {
+        conds.push(
+          eq(
+            engagements.feeStructure,
+            feeStructure as
+              | 'HOURLY'
+              | 'HOURLY_NTE'
+              | 'FIXED_FEE'
+              | 'FIXED_FEE_WITH_MILESTONES'
+              | 'RECURRING_SUBSCRIPTION',
+          ),
+        );
+      }
       const items = await deps.db
         .select()
         .from(engagements)

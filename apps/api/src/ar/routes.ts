@@ -58,6 +58,49 @@ export function createArRouter(deps: ArRoutesDeps): Router {
   );
 
   router.get(
+    '/delinquent',
+    requirePermission(deps, 'report:ar:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const minDays = Math.max(parseInt(String(req.query['minDays'] ?? '60'), 10) || 60, 0);
+      const cutoff = new Date(Date.now() - minDays * 86_400_000).toISOString().slice(0, 10);
+      const items = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          clientId: invoices.clientId,
+          clientName: clients.name,
+          dueDate: invoices.dueDate,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            inArray(invoices.status, ['OVERDUE', 'PARTIALLY_PAID']),
+            drizzleSql`${invoices.dueDate} <= ${cutoff}::date`,
+          ),
+        )
+        .orderBy(invoices.dueDate);
+      res.json({
+        asOf: new Date().toISOString().slice(0, 10),
+        minDaysOverdue: minDays,
+        items: items.map((r) => ({
+          ...r,
+          balanceCents: Number(r.totalCents) - Number(r.paidCents),
+        })),
+      });
+    },
+  );
+
+  router.get(
     '/by-engagement/:engagementId',
     requirePermission(deps, 'report:ar:read'),
     async (req: Request, res: Response) => {

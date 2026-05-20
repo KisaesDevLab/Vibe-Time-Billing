@@ -30,6 +30,42 @@ export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router
   const router = express.Router();
 
   router.get(
+    '/',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      const allowed = ['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED', 'VOIDED'];
+      const firmEngs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(clients.firmId, session.firmId));
+      const engIds = firmEngs.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const { inArray: ina } = await import('drizzle-orm');
+      const conds = [ina(engagementLetters.engagementId, engIds)];
+      if (status && allowed.includes(status)) {
+        conds.push(eq(engagementLetters.status, status));
+      }
+      const items = await deps.db
+        .select()
+        .from(engagementLetters)
+        .where(and(...conds))
+        .orderBy(desc(engagementLetters.createdAt))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
+  router.get(
     '/by-engagement/:engagementId',
     requirePermission(deps, 'engagement:read'),
     async (req: Request, res: Response) => {

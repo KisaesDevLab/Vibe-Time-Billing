@@ -323,6 +323,40 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
     },
   );
 
+  router.get(
+    '/due-now',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const items = await deps.db
+        .select({
+          id: recurringBillingPlans.id,
+          engagementId: recurringBillingPlans.engagementId,
+          engagementName: engagements.name,
+          clientName: clients.name,
+          amountCents: recurringBillingPlans.amountCents,
+          nextRunDate: recurringBillingPlans.nextRunDate,
+        })
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            eq(clients.firmId, session.firmId),
+            eq(recurringBillingPlans.status, 'ACTIVE'),
+            sql`${recurringBillingPlans.nextRunDate} <= ${today}::date`,
+          ),
+        )
+        .orderBy(recurringBillingPlans.nextRunDate);
+      res.json({ items });
+    },
+  );
+
   router.post(
     '/:id/recalc-next-run',
     requirePermission(deps, 'engagement:write'),

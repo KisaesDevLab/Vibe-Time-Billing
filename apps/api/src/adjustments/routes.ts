@@ -423,6 +423,25 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
   );
 
   router.get(
+    '/count-by-status',
+    requirePermission(deps, 'billing_batch:read'),
+    async (_req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ counts: {} });
+        return;
+      }
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({ status: adjustments.status, c: drz<number>`COUNT(*)`.as('c') })
+        .from(adjustments)
+        .groupBy(adjustments.status);
+      const counts: Record<string, number> = {};
+      for (const r of rows) counts[r.status] = Number(r.c);
+      res.json({ counts });
+    },
+  );
+
+  router.get(
     '/by-creator/:userId',
     requirePermission(deps, 'billing_batch:read'),
     async (req: Request, res: Response) => {

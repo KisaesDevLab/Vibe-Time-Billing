@@ -874,6 +874,57 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   );
 
   router.post(
+    '/batch-send',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, sent: 0 });
+        return;
+      }
+      const ids = Array.isArray(req.body?.ids)
+        ? req.body.ids.filter((x: unknown): x is string => typeof x === 'string')
+        : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'ids_required' });
+        return;
+      }
+      let sent = 0;
+      for (const id of ids) {
+        const r = await sendInvoiceEmail(deps, session.firmId, id);
+        if (r.ok) {
+          await deps.db
+            .update(invoices)
+            .set({ status: 'SENT', sentAt: new Date() })
+            .where(and(eq(invoices.id, id), eq(invoices.firmId, session.firmId)));
+          sent++;
+        }
+      }
+      res.json({ ok: true, sent, total: ids.length });
+    },
+  );
+
+  router.get(
+    '/count-by-status',
+    requirePermission(deps, 'invoice:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ counts: {} });
+        return;
+      }
+      const rows = await deps.db
+        .select({ status: invoices.status, c: sql<number>`COUNT(*)`.as('c') })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId))
+        .groupBy(invoices.status);
+      const counts: Record<string, number> = {};
+      for (const r of rows) counts[r.status] = Number(r.c);
+      res.json({ counts });
+    },
+  );
+
+  router.post(
     '/:id/duplicate',
     requirePermission(deps, 'invoice:write'),
     async (req: Request, res: Response) => {
