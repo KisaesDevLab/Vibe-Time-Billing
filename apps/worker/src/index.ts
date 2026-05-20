@@ -26,6 +26,7 @@ import { runWebhookDispatch } from './jobs/webhook-dispatch';
 import { runAutoRolloverScan } from './jobs/auto-rollover';
 import { runRetentionEnforcement } from './jobs/retention-enforcement';
 import { runScopeCreepAlert } from './jobs/scope-creep-alert';
+import { runWipAgeAlert } from './jobs/wip-age-alert';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
@@ -102,6 +103,7 @@ const QUEUES = [
   'auto-rollover-scan',
   'retention-enforcement',
   'scope-creep-alert',
+  'wip-age-alert',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -225,6 +227,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runScopeCreepAlert(db, logger);
     logger.info({ jobId: job.id, ...result }, 'scope-creep-alert complete');
   },
+  'wip-age-alert': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'wip-age-alert: no DB configured');
+      return;
+    }
+    const result = await runWipAgeAlert(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'wip-age-alert complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -241,6 +251,7 @@ const CRON: Record<QueueName, string> = {
   'auto-rollover-scan': '30 2 * * *',
   'retention-enforcement': '45 3 * * *',
   'scope-creep-alert': '50 7 * * 1',
+  'wip-age-alert': '30 8 * * 1',
 };
 
 async function setup(): Promise<void> {

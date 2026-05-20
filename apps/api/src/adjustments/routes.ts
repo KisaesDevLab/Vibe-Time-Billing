@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql as drz } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -597,6 +597,75 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         `attachment; filename="adjustments-${new Date().toISOString().slice(0, 10)}.csv"`,
       );
       res.send(lines.join('\n') + '\n');
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Bulk-across-engagements preview (Phase 12 #21). Given a list of
+  // billing-batch IDs + a target realization percentage, compute the
+  // suggested per-batch write-down totals — no writes. Caller can then
+  // POST /adjustments per batch with the suggested amount.
+  // -----------------------------------------------------------------
+  router.post(
+    '/bulk-preview',
+    requirePermission(deps, 'adjustment:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const body = req.body as {
+        billingBatchIds?: unknown;
+        targetRealizationPct?: unknown;
+      };
+      if (!Array.isArray(body.billingBatchIds) || body.billingBatchIds.length === 0) {
+        res.status(400).json({ error: 'billingBatchIds_required' });
+        return;
+      }
+      const target =
+        typeof body.targetRealizationPct === 'number' ? body.targetRealizationPct : NaN;
+      if (!Number.isFinite(target) || target < 0 || target > 2) {
+        res.status(400).json({ error: 'targetRealizationPct_must_be_0_to_2' });
+        return;
+      }
+      const batchIds = body.billingBatchIds.filter((b): b is string => typeof b === 'string');
+      // Scope-check: every batch must belong to the firm.
+      const scoped = await deps.db
+        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(inArray(billingBatches.id, batchIds), eq(clients.firmId, session.firmId)));
+      const allowed = new Set(scoped.map((s) => s.id));
+      const items: {
+        billingBatchId: string;
+        engagementId: string | null;
+        currentWipCents: number;
+        suggestedWriteDownCents: number;
+      }[] = [];
+      for (const bid of batchIds) {
+        if (!allowed.has(bid)) continue;
+        const [agg] = await deps.db
+          .select({ total: drz<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)` })
+          .from(timeEntries)
+          .where(eq(timeEntries.billingBatchId, bid));
+        const wip = Number(agg?.total ?? 0);
+        const targetCents = Math.round(wip * target);
+        items.push({
+          billingBatchId: bid,
+          engagementId: scoped.find((s) => s.id === bid)?.engagementId ?? null,
+          currentWipCents: wip,
+          suggestedWriteDownCents: targetCents - wip,
+        });
+      }
+      const totalWip = items.reduce((a, b) => a + b.currentWipCents, 0);
+      const totalAdjustment = items.reduce((a, b) => a + b.suggestedWriteDownCents, 0);
+      res.json({
+        targetRealizationPct: target,
+        batches: items,
+        totals: { wipCents: totalWip, suggestedAdjustmentCents: totalAdjustment },
+      });
     },
   );
 
