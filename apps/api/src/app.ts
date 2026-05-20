@@ -9,12 +9,15 @@ import { createStaffAuthRouter, type StaffRoutesDeps } from './auth/staff-routes
 import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
+import { createAdminRouter } from './admin/routes';
+import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
   db: Database | null;
   redis: Redis;
   sessionStore: SessionStore;
   sendMagicLink?: StaffRoutesDeps['sendMagicLink'];
+  fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -51,6 +54,9 @@ export function createApp(deps: AppDeps): Express {
   app.get('/api/staff/whoami', (req, res) => {
     res.json({ session: req.staffSession });
   });
+
+  const adminRouter = createAdminRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/admin', auth.requireAuth, auth.requireCsrf, adminRouter);
 
   return app;
 }

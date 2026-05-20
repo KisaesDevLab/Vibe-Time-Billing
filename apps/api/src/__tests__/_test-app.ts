@@ -42,6 +42,7 @@ export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<Te
       (async (args) => {
         captured.push(args);
       }),
+    fakeUserRoles: overrides.fakeUserRoles,
   });
 
   return { app, redis, capturedMagicLinks: captured };
