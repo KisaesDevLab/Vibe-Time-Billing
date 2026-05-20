@@ -105,13 +105,11 @@ export function createMilestoneRouter(deps: MilestoneRoutesDeps): Router {
       }
       const sumMilestones = parsed.data.milestones.reduce((s, m) => s + m.amountCents, 0);
       if (sumMilestones !== parsed.data.totalFeeCents) {
-        res
-          .status(400)
-          .json({
-            error: 'milestones_must_sum_to_total',
-            sum: sumMilestones,
-            total: parsed.data.totalFeeCents,
-          });
+        res.status(400).json({
+          error: 'milestones_must_sum_to_total',
+          sum: sumMilestones,
+          total: parsed.data.totalFeeCents,
+        });
         return;
       }
       const planId = await deps.db.transaction(async (tx) => {
