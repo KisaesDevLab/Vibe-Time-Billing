@@ -216,20 +216,53 @@ export async function runRecurringBillingTick(
             })
             .where(eq(invoices.id, createdInvoiceId));
           autopayCharged++;
+          // Success resets the consecutive-failure counter.
+          await db
+            .update(recurringBillingPlans)
+            .set({ consecutiveFailureCount: 0 })
+            .where(eq(recurringBillingPlans.id, plan.id));
           log.info(
             { invoiceId: createdInvoiceId, providerChargeId: result.providerChargeId },
             'autopay charged',
           );
         } else {
           autopayFailed++;
+          await handleAutopayFailure(db, log, plan);
           log.warn({ invoiceId: createdInvoiceId, err: result.errorMessage }, 'autopay failed');
         }
       } catch (err) {
         autopayFailed++;
+        await handleAutopayFailure(db, log, plan);
         log.error({ err, invoiceId: createdInvoiceId }, 'autopay errored');
       }
     }
   }
 
   return { batchesCreated, invoicesCreated, plansAdvanced, autopayCharged, autopayFailed, errors };
+}
+
+async function handleAutopayFailure(
+  db: Database,
+  log: Logger,
+  plan: { id: string; consecutiveFailureCount: number; autopayPauseThreshold: number },
+): Promise<void> {
+  const next = (plan.consecutiveFailureCount ?? 0) + 1;
+  const threshold = plan.autopayPauseThreshold ?? 3;
+  if (next >= threshold) {
+    await db
+      .update(recurringBillingPlans)
+      .set({
+        consecutiveFailureCount: next,
+        status: 'PAUSED',
+        pausedAt: new Date(),
+        pausedReason: 'autopay_threshold',
+      })
+      .where(eq(recurringBillingPlans.id, plan.id));
+    log.warn({ planId: plan.id, failures: next, threshold }, 'recurring plan auto-paused');
+  } else {
+    await db
+      .update(recurringBillingPlans)
+      .set({ consecutiveFailureCount: next })
+      .where(eq(recurringBillingPlans.id, plan.id));
+  }
 }

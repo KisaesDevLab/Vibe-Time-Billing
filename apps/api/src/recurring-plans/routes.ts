@@ -73,6 +73,9 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
           status: recurringBillingPlans.status,
           autoPayFlag: recurringBillingPlans.autoPayFlag,
           pausedAt: recurringBillingPlans.pausedAt,
+          pausedReason: recurringBillingPlans.pausedReason,
+          consecutiveFailureCount: recurringBillingPlans.consecutiveFailureCount,
+          autopayPauseThreshold: recurringBillingPlans.autopayPauseThreshold,
         })
         .from(recurringBillingPlans)
         .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))

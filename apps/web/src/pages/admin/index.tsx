@@ -18,6 +18,7 @@ import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { SavedReportsPage } from './SavedReports';
 import { TaxonomyPage } from './Taxonomy';
 import { UsersPage } from './Users';
+import { WebhooksPage } from './Webhooks';
 
 const TABS = [
   { key: 'firm', label: 'Firm settings', href: '/admin/firm' },
@@ -34,6 +35,7 @@ const TABS = [
   { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
   { key: 'ai', label: 'AI usage', href: '/admin/ai-usage' },
   { key: 'saved', label: 'Saved reports', href: '/admin/saved-reports' },
+  { key: 'webhooks', label: 'Webhooks', href: '/admin/webhooks' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
 ];
 
@@ -78,6 +80,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="milestones" element={<MilestonesPage />} />
         <Route path="ai-usage" element={<AiUsagePage />} />
         <Route path="saved-reports" element={<SavedReportsPage />} />
+        <Route path="webhooks" element={<WebhooksPage />} />
         <Route path="jobs" element={<JobsPage />} />
       </Routes>
     </div>

@@ -308,6 +308,14 @@ export const firmSettings = pgTable('firm_settings', {
   portalEnabled: boolean('portal_enabled').notNull().default(true),
   portalSubdomain: text('portal_subdomain'),
 
+  // Branding (Phase 4 #13)
+  brandDisplayName: text('brand_display_name'),
+  brandLogoUrl: text('brand_logo_url'),
+  brandAccentColor: text('brand_accent_color'),
+  brandSupportEmail: text('brand_support_email'),
+  brandSupportPhone: text('brand_support_phone'),
+  brandFooterHtml: text('brand_footer_html'),
+
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -779,6 +787,9 @@ export const recurringBillingPlans = pgTable(
     status: recurringPlanStatus('status').notNull().default('ACTIVE'),
     pausedAt: timestamp('paused_at', { withTimezone: true }),
     pausedReason: text('paused_reason'),
+    // Auto-pause after N consecutive autopay failures (Phase 10 #30)
+    consecutiveFailureCount: integer('consecutive_failure_count').notNull().default(0),
+    autopayPauseThreshold: integer('autopay_pause_threshold').notNull().default(3),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

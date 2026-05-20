@@ -38,6 +38,16 @@ const FirmSettingsPatchSchema = z
     timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
     stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
     portalEnabled: z.boolean().optional(),
+    brandDisplayName: z.string().max(120).nullable().optional(),
+    brandLogoUrl: z.string().url().max(500).nullable().optional(),
+    brandAccentColor: z
+      .string()
+      .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
+      .nullable()
+      .optional(),
+    brandSupportEmail: z.string().email().max(254).nullable().optional(),
+    brandSupportPhone: z.string().max(40).nullable().optional(),
+    brandFooterHtml: z.string().max(4000).nullable().optional(),
   })
   .strict();
 
