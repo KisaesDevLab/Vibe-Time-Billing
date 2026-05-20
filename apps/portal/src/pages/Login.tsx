@@ -71,7 +71,6 @@ function CombinedLogin(): JSX.Element {
           label="Email or phone"
           value={contact}
           onChange={(e) => setContact(e.target.value)}
-          autoFocus
           required
           placeholder={looksLikeEmail ? `you${AT}example.com` : '(312) 555-0148'}
         />
@@ -122,7 +121,6 @@ function SmsOtpForm({ phone }: { phone: string }): JSX.Element {
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
           inputMode="numeric"
-          autoFocus
           required
           maxLength={6}
         />

@@ -50,7 +50,6 @@ function RequestLinkPage(): JSX.Element {
             label="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            autoFocus
             required
             placeholder="you@firm.example"
           />

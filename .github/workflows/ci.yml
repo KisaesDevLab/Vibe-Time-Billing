@@ -99,6 +99,11 @@ jobs:
       - name: Integration tests
         run: pnpm test:integration
 
+      - name: Bundle-size budget
+        run: |
+          pnpm build
+          pnpm size:budget
+
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
