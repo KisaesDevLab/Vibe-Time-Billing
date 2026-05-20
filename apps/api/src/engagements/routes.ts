@@ -721,6 +721,67 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // NTE auto-suggest (Phase 10 #20). Suggests an NTE cap based on
+  // the engagement's fee amount and recent realization. Caller can
+  // accept by PATCH-ing the engagement with the returned value.
+  // -----------------------------------------------------------------
+  router.get(
+    '/:id/nte-suggest',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ suggestedCapCents: 0 });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      // Two heuristics:
+      //   1. If fee_amount_cents is set, suggest fee × 1.2 (20% cushion).
+      //   2. Otherwise, suggest 1.25 × the trailing-90-day average month
+      //      of unbilled standard amount, rounded up to the nearest $500.
+      let suggested = 0;
+      let basis = 'no_data';
+      if (eng.feeAmountCents != null && Number(eng.feeAmountCents) > 0) {
+        suggested = Math.round(Number(eng.feeAmountCents) * 1.2);
+        basis = 'fee_with_20pct_cushion';
+      } else {
+        const { timeEntries: te } = await import('@vibe/db/schema');
+        const { sql: drz } = await import('drizzle-orm');
+        const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+        const [row] = await deps.db
+          .select({
+            amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`,
+          })
+          .from(te)
+          .where(and(eq(te.engagementId, eng.id), drz`${te.entryDate} >= ${since}::date`));
+        const monthlyAvg = Number(row?.amount ?? 0) / 3;
+        if (monthlyAvg > 0) {
+          suggested = Math.ceil((monthlyAvg * 1.25) / 50000) * 50000;
+          basis = 'trailing_90d_avg_x1.25';
+        }
+      }
+      res.json({
+        engagementId: eng.id,
+        currentCapCents: eng.nteCapCents == null ? null : Number(eng.nteCapCents),
+        suggestedCapCents: suggested,
+        basis,
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Fixed-fee gap (Phase 11 #17). For FIXED_FEE and FIXED_FEE_WITH_*
   // engagements, the gap is (standard_amount_of_time_entries - fee).
   // Positive gap = unbilled work in excess of fee; negative = budget

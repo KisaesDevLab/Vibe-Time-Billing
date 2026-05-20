@@ -29,7 +29,8 @@ type JobName =
   | 'approval-escalation'
   | 'webhook-dispatch'
   | 'auto-rollover-scan'
-  | 'retention-enforcement';
+  | 'retention-enforcement'
+  | 'scope-creep-alert';
 
 const JOB_NAMES: readonly JobName[] = [
   'recurring-billing',
@@ -44,6 +45,7 @@ const JOB_NAMES: readonly JobName[] = [
   'webhook-dispatch',
   'auto-rollover-scan',
   'retention-enforcement',
+  'scope-creep-alert',
 ];
 
 export function createAdminJobRouter(deps: AdminJobRoutesDeps): Router {
