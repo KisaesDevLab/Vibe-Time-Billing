@@ -36,6 +36,10 @@ import { logger } from '../logger';
 
 export interface AdjustmentRoutesDeps extends RbacDeps {
   db: Database | null;
+  // Q4 step-up: any adjustment over the firm's adjustmentApprovalThresholdCents
+  // requires fresh TOTP. We apply step-up uniformly on the create endpoint;
+  // the threshold check is then a soft signal in the approval workflow.
+  requireStepUp: (req: Request, res: Response, next: () => void) => void;
 }
 
 const CreateSchema = z
@@ -68,6 +72,7 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
 
   router.post(
     '/',
+    deps.requireStepUp,
     requirePermission(deps, 'adjustment:create'),
     async (req: Request, res: Response) => {
       const parsed = CreateSchema.safeParse(req.body);

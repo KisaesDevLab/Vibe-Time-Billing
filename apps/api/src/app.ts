@@ -100,6 +100,7 @@ export function createApp(deps: AppDeps): Express {
   const adjustmentRouter = createAdjustmentRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    requireStepUp: auth.requireStepUp,
   });
   app.use('/api/staff/adjustments', auth.requireAuth, auth.requireCsrf, adjustmentRouter);
 

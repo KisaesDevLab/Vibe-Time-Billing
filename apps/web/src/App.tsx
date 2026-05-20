@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell, Button, Pill } from '@vibe/ui';
 
+import { AccountPage } from './pages/Account';
 import { AuthProvider, useAuth } from './auth-context';
 import { DashboardPage } from './pages/Dashboard';
 import { LoginPage } from './pages/Login';
@@ -29,6 +30,7 @@ export function App(): JSX.Element {
               <Shell>
                 <Routes>
                   <Route path="/" element={<DashboardPage />} />
+                  <Route path="/account" element={<AccountPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>
@@ -65,6 +67,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         { label: 'Billing', href: '/billing', active: location.pathname.startsWith('/billing') },
         { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
         { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
+        { label: 'Account', href: '/account', active: location.pathname.startsWith('/account') },
       ]}
       trailing={
         <Button variant="secondary" size="sm" onClick={() => void logout()}>
