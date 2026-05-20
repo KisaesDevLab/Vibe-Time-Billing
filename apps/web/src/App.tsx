@@ -20,6 +20,7 @@ import { LoginPage } from './pages/Login';
 import { ReportsPage } from './pages/Reports';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
+import { WipDashboardPage } from './pages/Wip';
 
 export function App(): JSX.Element {
   return (
@@ -46,6 +47,7 @@ export function App(): JSX.Element {
                   <Route path="/engagements/:id" element={<EngagementDetailPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
+                  <Route path="/wip" element={<WipDashboardPage />} />
                   <Route path="/invoices" element={<InvoicesPage />} />
                   <Route path="/ar" element={<ArPage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
@@ -87,6 +89,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         { label: 'Clients', href: '/clients', active: location.pathname.startsWith('/clients') },
         { label: 'Time', href: '/time', active: location.pathname.startsWith('/time') },
         { label: 'Billing', href: '/billing', active: location.pathname.startsWith('/billing') },
+        { label: 'WIP', href: '/wip', active: location.pathname.startsWith('/wip') },
         {
           label: 'Invoices',
           href: '/invoices',

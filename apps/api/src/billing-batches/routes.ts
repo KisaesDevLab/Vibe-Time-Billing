@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, between, eq, isNull } from 'drizzle-orm';
+import { and, between, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -278,6 +278,193 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
       res.json({ ok: true, summary });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Period-close bulk pre-bill (Phase 11 #11). Creates one billing
+  // batch per engagement that has unbilled, submitted time entries in
+  // the period. Returns the list of created batch IDs.
+  // -----------------------------------------------------------------
+  router.post(
+    '/period-close',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true, batches: [] });
+        return;
+      }
+      const body = req.body as {
+        periodStart?: unknown;
+        periodEnd?: unknown;
+        engagementIds?: unknown;
+      };
+      const start = typeof body.periodStart === 'string' ? body.periodStart : null;
+      const end = typeof body.periodEnd === 'string' ? body.periodEnd : null;
+      const re = /^\d{4}-\d{2}-\d{2}$/;
+      if (!start || !end || !re.test(start) || !re.test(end)) {
+        res.status(400).json({ error: 'period_start_end_required' });
+        return;
+      }
+      const filter = Array.isArray(body.engagementIds)
+        ? body.engagementIds.filter((x): x is string => typeof x === 'string')
+        : null;
+      // Find all engagements (within the firm) that have unbilled
+      // entries in the window. Cap at 500 batches per call.
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const cIds = firmClients.map((c) => c.id);
+      if (cIds.length === 0) {
+        res.json({ ok: true, batches: [], skipped: 0 });
+        return;
+      }
+      const engs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(
+          and(
+            inArray(engagements.clientId, cIds),
+            eq(engagements.status, 'ACTIVE'),
+            ...(filter ? [inArray(engagements.id, filter)] : []),
+          ),
+        );
+      const engIds = engs.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.json({ ok: true, batches: [], skipped: 0 });
+        return;
+      }
+      // Engagements that actually have unbilled entries.
+      const candidates = await deps.db
+        .select({
+          engagementId: timeEntries.engagementId,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(timeEntries)
+        .where(
+          and(
+            inArray(timeEntries.engagementId, engIds),
+            isNull(timeEntries.billingBatchId),
+            between(timeEntries.entryDate, start, end),
+          ),
+        )
+        .groupBy(timeEntries.engagementId)
+        .limit(500);
+      const created: { engagementId: string; batchId: string; entries: number }[] = [];
+      for (const c of candidates) {
+        const batchId = await deps.db.transaction(async (tx) => {
+          const [batch] = await tx
+            .insert(billingBatches)
+            .values({
+              engagementId: c.engagementId,
+              periodStart: start,
+              periodEnd: end,
+              createdById: session.appUserId,
+            })
+            .returning({ id: billingBatches.id });
+          if (!batch) return null;
+          const rows = await tx
+            .select({ id: timeEntries.id })
+            .from(timeEntries)
+            .where(
+              and(
+                eq(timeEntries.engagementId, c.engagementId),
+                isNull(timeEntries.billingBatchId),
+                between(timeEntries.entryDate, start, end),
+              ),
+            );
+          if (rows.length > 0) {
+            await tx.insert(billingBatchEntries).values(
+              rows.map((r) => ({
+                billingBatchId: batch.id,
+                timeEntryId: r.id,
+                action: 'INCLUDE' as const,
+              })),
+            );
+            for (const r of rows) {
+              await tx
+                .update(timeEntries)
+                .set({ billingBatchId: batch.id })
+                .where(eq(timeEntries.id, r.id));
+            }
+          }
+          return batch.id;
+        });
+        if (batchId) {
+          created.push({
+            engagementId: c.engagementId,
+            batchId,
+            entries: Number(c.count),
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'billing_batch_bulk',
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'period_close',
+          periodStart: start,
+          periodEnd: end,
+          created: created.length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ ok: true, created, skipped: candidates.length - created.length });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Firm-wide WIP dashboard (Phase 11 #25). Returns per-engagement
+  // unbilled-time totals ordered by largest first.
+  // -----------------------------------------------------------------
+  router.get(
+    '/wip-dashboard',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          engagementId: engagements.id,
+          engagementName: engagements.name,
+          clientId: clients.id,
+          clientName: clients.name,
+          hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+          entryCount: sql<number>`COUNT(${timeEntries.id})`,
+          oldestDate: sql<string>`MIN(${timeEntries.entryDate})`,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .leftJoin(
+          timeEntries,
+          and(eq(timeEntries.engagementId, engagements.id), isNull(timeEntries.billingBatchId)),
+        )
+        .where(and(eq(clients.firmId, session.firmId), eq(engagements.status, 'ACTIVE')))
+        .groupBy(engagements.id, engagements.name, clients.id, clients.name);
+      res.json({
+        asOf: new Date().toISOString().slice(0, 10),
+        items: rows
+          .map((r) => ({
+            engagementId: r.engagementId,
+            engagementName: r.engagementName,
+            clientId: r.clientId,
+            clientName: r.clientName,
+            hours: Number(r.hours),
+            amountCents: Number(r.amountCents),
+            entryCount: Number(r.entryCount),
+            oldestDate: r.oldestDate,
+          }))
+          .filter((r) => r.entryCount > 0)
+          .sort((a, b) => b.amountCents - a.amountCents),
+      });
     },
   );
 
