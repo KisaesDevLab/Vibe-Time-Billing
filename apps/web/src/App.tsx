@@ -7,9 +7,11 @@ import { AppShell, Button, Pill } from '@vibe/ui';
 import { AccountPage } from './pages/Account';
 import { AdminLayout } from './pages/admin';
 import { AuthProvider, useAuth } from './auth-context';
+import { BillingBatchesPage } from './pages/Billing';
 import { ClientsPage } from './pages/Clients';
 import { DashboardPage } from './pages/Dashboard';
 import { LoginPage } from './pages/Login';
+import { ReportsPage } from './pages/Reports';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 
@@ -35,6 +37,8 @@ export function App(): JSX.Element {
                   <Route path="/" element={<DashboardPage />} />
                   <Route path="/clients" element={<ClientsPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
+                  <Route path="/billing/*" element={<BillingBatchesPage />} />
+                  <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
                   <Route path="*" element={<Navigate to="/" replace />} />

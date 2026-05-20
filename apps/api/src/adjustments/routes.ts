@@ -6,18 +6,22 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   adjustments,
   adjustmentAllocations,
+  appUsers as appUsersTable,
   billingBatches,
   clients,
   engagements,
   firmSettings,
+  roles,
   timeEntries,
+  userRoles,
 } from '@vibe/db/schema';
+import type { AppUserRole } from '@vibe/types';
 import {
   allocateCustomWeighted,
   allocateHierarchicalCascade,
@@ -130,15 +134,12 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         return;
       }
 
+      const userIds = Array.from(new Set(rows.map((r) => r.appUserId)));
+      const roleMap = await loadRolesForUsers(deps.db, userIds);
       const entries: TimeEntryInput[] = rows.map((r) => ({
         id: r.id,
         appUserId: r.appUserId,
-        // appUserRole isn't on time_entry — caller assumes 'STAFF' for cascade tier
-        // resolution unless the route is given a roles map; until that's wired,
-        // we fall back to 'STAFF' which prevents partner-absorbs / cascade from
-        // being usable without supplemental data. Surface a 400 if those methods
-        // are requested without role data.
-        appUserRole: 'STAFF',
+        appUserRole: roleMap.get(r.appUserId) ?? 'STAFF',
         hours: Number(r.hours),
         standardAmountCents: r.standardAmountCents,
       }));
@@ -234,6 +235,64 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
     },
   );
 
+  // Preview: run the allocation but don't persist. Used by the
+  // adjustment dialog to show the per-timekeeper cascade preview.
+  router.post(
+    '/preview',
+    requirePermission(deps, 'adjustment:create'),
+    async (req: Request, res: Response) => {
+      const parsed = CreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ allocations: [], total: parsed.data.totalAmountCents });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: timeEntries.id,
+          appUserId: timeEntries.appUserId,
+          hours: timeEntries.hours,
+          standardAmountCents: timeEntries.standardAmountCents,
+        })
+        .from(timeEntries)
+        .where(eq(timeEntries.billingBatchId, parsed.data.billingBatchId));
+      const userIds = Array.from(new Set(rows.map((r) => r.appUserId)));
+      const userRows =
+        userIds.length === 0
+          ? []
+          : await deps.db
+              .select({ id: appUsersTable.id, fullName: appUsersTable.fullName })
+              .from(appUsersTable)
+              .where(inArray(appUsersTable.id, userIds));
+      const userName = new Map(userRows.map((u) => [u.id, u.fullName]));
+      const roleMap = await loadRolesForUsers(deps.db, userIds);
+
+      const entries: TimeEntryInput[] = rows.map((r) => ({
+        id: r.id,
+        appUserId: r.appUserId,
+        appUserRole: roleMap.get(r.appUserId) ?? 'STAFF',
+        hours: Number(r.hours),
+        standardAmountCents: r.standardAmountCents,
+      }));
+      let allocation: AllocationResult[];
+      try {
+        allocation = runAllocation(parsed.data, entries);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'allocation_failed';
+        res.status(400).json({ error: 'allocation_failed', detail: message });
+        return;
+      }
+      const decorated = allocation.map((a) => ({
+        ...a,
+        appUserName: userName.get(a.appUserId) ?? null,
+      }));
+      res.json({ allocations: decorated, total: parsed.data.totalAmountCents });
+    },
+  );
+
   router.get(
     '/:id/allocations',
     requirePermission(deps, 'billing_batch:read'),
@@ -302,4 +361,24 @@ function runAllocation(
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
+
+const KNOWN_ROLES: AppUserRole[] = ['PARTNER', 'MANAGER', 'SENIOR', 'STAFF', 'ADMIN'];
+
+async function loadRolesForUsers(
+  db: Database,
+  userIds: string[],
+): Promise<Map<string, AppUserRole>> {
+  if (userIds.length === 0) return new Map();
+  const rows = await db
+    .select({ userId: userRoles.appUserId, slug: roles.name })
+    .from(userRoles)
+    .innerJoin(roles, eq(roles.id, userRoles.roleId))
+    .where(inArray(userRoles.appUserId, userIds));
+  const out = new Map<string, AppUserRole>();
+  for (const r of rows) {
+    const upper = r.slug.toUpperCase() as AppUserRole;
+    if (KNOWN_ROLES.includes(upper)) out.set(r.userId, upper);
+  }
+  return out;
 }

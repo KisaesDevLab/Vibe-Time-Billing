@@ -136,6 +136,49 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   router.get(
+    '/',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const firmClients = await deps.db
+        .select({ id: clients.id, name: clients.name })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      if (firmClients.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const clientMap = new Map(firmClients.map((c) => [c.id, c.name]));
+      const firmEngagements = await deps.db
+        .select({ id: engagements.id, name: engagements.name, clientId: engagements.clientId })
+        .from(engagements);
+      const engMap = new Map(
+        firmEngagements.filter((e) => clientMap.has(e.clientId)).map((e) => [e.id, e]),
+      );
+      if (engMap.size === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      const allBatches = await deps.db.select().from(billingBatches).limit(500);
+      const items = allBatches
+        .filter((b) => engMap.has(b.engagementId))
+        .map((b) => {
+          const eng = engMap.get(b.engagementId)!;
+          return {
+            ...b,
+            engagementName: eng.name,
+            clientName: clientMap.get(eng.clientId) ?? null,
+          };
+        });
+      res.json({ items });
+    },
+  );
+
+  router.get(
     '/:id',
     requirePermission(deps, 'billing_batch:read'),
     async (req: Request, res: Response) => {
