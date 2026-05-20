@@ -17,6 +17,9 @@ import { createTimeEntryRouter } from './time-entries/routes';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
 import { portalAuthDeps } from './auth/portal-middleware';
 import { createAuditRouter } from './audit/routes';
+import { createBillingBatchRouter } from './billing-batches/routes';
+import { createAdjustmentRouter } from './adjustments/routes';
+import { createReportRouter } from './reports/routes';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -87,6 +90,21 @@ export function createApp(deps: AppDeps): Express {
 
   const auditRouter = createAuditRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/audit', auth.requireAuth, auth.requireCsrf, auditRouter);
+
+  const billingBatchRouter = createBillingBatchRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/billing-batches', auth.requireAuth, auth.requireCsrf, billingBatchRouter);
+
+  const adjustmentRouter = createAdjustmentRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/adjustments', auth.requireAuth, auth.requireCsrf, adjustmentRouter);
+
+  const reportRouter = createReportRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/reports', auth.requireAuth, auth.requireCsrf, reportRouter);
 
   // Portal auth realm — distinct middleware, signing key, cookie.
   const portal = portalAuthDeps(deps.sessionStore);
