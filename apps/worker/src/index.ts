@@ -22,6 +22,8 @@ import { runLateEntryAlert } from './jobs/late-entry-alert';
 import { runMilestoneDateTrigger } from './jobs/milestone-date-trigger';
 import { runHourBankExpiration } from './jobs/hour-bank-expiration';
 import { runApprovalEscalation } from './jobs/approval-escalation';
+import { runWebhookDispatch } from './jobs/webhook-dispatch';
+import { runAutoRolloverScan } from './jobs/auto-rollover';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
@@ -94,6 +96,8 @@ const QUEUES = [
   'milestone-date-trigger',
   'hour-bank-expiration',
   'approval-escalation',
+  'webhook-dispatch',
+  'auto-rollover-scan',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -185,6 +189,22 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runApprovalEscalation(db, logger);
     logger.info({ jobId: job.id, ...result }, 'approval-escalation complete');
   },
+  'webhook-dispatch': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'webhook-dispatch: no DB configured');
+      return;
+    }
+    const result = await runWebhookDispatch(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'webhook-dispatch complete');
+  },
+  'auto-rollover-scan': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'auto-rollover-scan: no DB configured');
+      return;
+    }
+    const result = await runAutoRolloverScan(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'auto-rollover-scan complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -197,6 +217,8 @@ const CRON: Record<QueueName, string> = {
   'milestone-date-trigger': '5 1 * * *',
   'hour-bank-expiration': '10 1 * * *',
   'approval-escalation': '20 * * * *',
+  'webhook-dispatch': '*/2 * * * *',
+  'auto-rollover-scan': '30 2 * * *',
 };
 
 async function setup(): Promise<void> {

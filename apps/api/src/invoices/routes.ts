@@ -36,6 +36,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { publishWebhookEvent } from '../webhooks/publish';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -483,6 +484,10 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      await publishWebhookEvent(deps.db, session.firmId, 'invoice.sent', {
+        invoiceId: req.params['id']!,
+        emailedTo: sent.emailedTo,
+      }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
       res.json({ ok: true, emailedTo: sent.emailedTo });
     },
   );

@@ -39,6 +39,7 @@ import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createStripeWebhookRouter } from './webhooks/stripe';
+import { createWebhookRouter } from './webhooks/outbound';
 import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
@@ -346,6 +347,12 @@ export function createApp(deps: AppDeps): Express {
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/portal-invites', auth.requireAuth, auth.requireCsrf, portalInviteRouter);
+
+  const webhookRouter = createWebhookRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/webhooks', auth.requireAuth, auth.requireCsrf, webhookRouter);
 
   // Stripe webhook — mounted BEFORE the global JSON body parser would
   // have run, so the raw body is preserved for signature verification.

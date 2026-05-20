@@ -14,6 +14,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
+import { publishWebhookEvent } from './publish';
 
 export interface StripeWebhookDeps {
   db: Database | null;
@@ -128,6 +129,23 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         actorMcpTokenId: 'stripe-webhook',
         after: { providerChargeId: chargeId, status: 'SUCCEEDED' },
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // Dispatch outbound events. We re-read the invoice to pick the
+      // right "paid" vs "received" event depending on whether it cleared
+      // the full balance.
+      if (inv) {
+        const fullyPaid = inv.paidCents + pay.amountCents >= inv.totalCents;
+        await publishWebhookEvent(deps.db, inv.firmId, 'payment.received', {
+          invoiceId: pay.invoiceId,
+          paymentId: pay.id,
+          amountCents: pay.amountCents,
+        }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+        if (fullyPaid) {
+          await publishWebhookEvent(deps.db, inv.firmId, 'invoice.paid', {
+            invoiceId: pay.invoiceId,
+            totalCents: inv.totalCents,
+          }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+        }
+      }
       return;
     }
     case 'charge.failed':
@@ -139,6 +157,17 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         .limit(1);
       if (!pay) return;
       await deps.db.update(payments).set({ status: 'FAILED' }).where(eq(payments.id, pay.id));
+      const [inv] = await deps.db
+        .select({ firmId: invoices.firmId })
+        .from(invoices)
+        .where(eq(invoices.id, pay.invoiceId))
+        .limit(1);
+      if (inv) {
+        await publishWebhookEvent(deps.db, inv.firmId, 'payment.failed', {
+          invoiceId: pay.invoiceId,
+          paymentId: pay.id,
+        }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+      }
       return;
     }
     case 'charge.refunded':
