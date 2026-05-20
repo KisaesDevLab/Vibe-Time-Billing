@@ -495,6 +495,78 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   );
 
   router.post(
+    '/:id/dunning',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          dueDate: invoices.dueDate,
+          status: invoices.status,
+          clientId: invoices.clientId,
+        })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_not_collectible', status: inv.status });
+        return;
+      }
+      const [client] = await deps.db
+        .select({
+          name: clients.name,
+          billingContactEmail: clients.billingContactEmail,
+        })
+        .from(clients)
+        .where(eq(clients.id, inv.clientId))
+        .limit(1);
+      if (!deps.sendEmail || !client?.billingContactEmail) {
+        res.status(409).json({ error: 'no_email_destination' });
+        return;
+      }
+      const balance = Number(inv.totalCents) - Number(inv.paidCents);
+      const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+      const body =
+        `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
+        `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
+        (link ? `View/pay: ${link}\n\n` : '') +
+        `Please reach out if you have any questions.`;
+      try {
+        await deps.sendEmail({
+          to: client.billingContactEmail,
+          subject: `Reminder: invoice ${inv.invoiceNumber}`,
+          body,
+        });
+      } catch (err) {
+        res.status(502).json({ error: 'email_dispatch_failed' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'manual_dunning', sentTo: client.billingContactEmail },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, sentTo: client.billingContactEmail });
+    },
+  );
+
+  router.post(
     '/:id/refund',
     requirePermission(deps, 'invoice:write'),
     async (req: Request, res: Response) => {

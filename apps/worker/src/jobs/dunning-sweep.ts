@@ -8,7 +8,7 @@
 import { and, eq, inArray, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, invoices } from '@vibe/db/schema';
+import { clients, dunningHistory, invoices } from '@vibe/db/schema';
 import { stepsDueOn, type DunningStepKind } from '@vibe/core/dunning';
 
 import type { Logger } from 'pino';
@@ -60,7 +60,14 @@ export async function runDunningSweep(
   let sentEmails = 0;
   let sentSms = 0;
   for (const inv of overdue) {
-    const due = stepsDueOn({ invoiceDueDate: inv.dueDate, today });
+    const alreadyRows = await db
+      .select({ stepKind: dunningHistory.stepKind })
+      .from(dunningHistory)
+      .where(eq(dunningHistory.invoiceId, inv.id));
+    const alreadySentKinds = new Set<DunningStepKind>(
+      alreadyRows.map((r) => r.stepKind as DunningStepKind),
+    );
+    const due = stepsDueOn({ invoiceDueDate: inv.dueDate, today, alreadySentKinds });
     for (const step of due) {
       stepsFired++;
       const balance = Number(inv.totalCents) - Number(inv.paidCents);
@@ -69,7 +76,13 @@ export async function runDunningSweep(
         `Invoice ${inv.invoiceNumber} (balance $${(balance / 100).toFixed(2)}) ` +
         `was due ${inv.dueDate}.` +
         (link ? `\n\nView/pay: ${link}` : '');
+      let outcome = 'SENT';
+      let errorMessage: string | null = null;
+      let channel: 'EMAIL' | 'SMS' | null = null;
+      let recipient: string | null = null;
       if (deps.sendEmail && inv.billingContactEmail) {
+        channel = 'EMAIL';
+        recipient = inv.billingContactEmail;
         try {
           await deps.sendEmail({
             to: inv.billingContactEmail,
@@ -78,9 +91,13 @@ export async function runDunningSweep(
           });
           sentEmails++;
         } catch (err) {
+          outcome = 'FAILED';
+          errorMessage = err instanceof Error ? err.message : 'send_failed';
           log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning email failed');
         }
       } else if (deps.sendSms && inv.billingContactPhone) {
+        channel = 'SMS';
+        recipient = inv.billingContactPhone;
         try {
           await deps.sendSms({
             to: inv.billingContactPhone,
@@ -90,13 +107,33 @@ export async function runDunningSweep(
           });
           sentSms++;
         } catch (err) {
+          outcome = 'FAILED';
+          errorMessage = err instanceof Error ? err.message : 'send_failed';
           log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning sms failed');
         }
       } else {
+        outcome = 'NO_DISPATCHER';
         log.info(
           { invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, step: step.kind },
           'dunning step due (no dispatcher)',
         );
+      }
+      // Record the step. Unique index on (invoice_id, step_kind) makes
+      // double-firing the same step a no-op (insert with ON CONFLICT DO NOTHING).
+      try {
+        await db
+          .insert(dunningHistory)
+          .values({
+            invoiceId: inv.id,
+            stepKind: step.kind,
+            channel,
+            recipient,
+            outcome,
+            errorMessage,
+          })
+          .onConflictDoNothing();
+      } catch (err) {
+        log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning ledger write failed');
       }
       if (step.kind === 'AUTO_PAUSE') {
         log.warn({ invoiceId: inv.id }, 'auto-pause threshold reached');

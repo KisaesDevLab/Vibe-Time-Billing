@@ -128,6 +128,81 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   );
 
   router.get(
+    '/:id',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ engagement: null });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const [client] = await deps.db
+        .select({
+          id: clients.id,
+          name: clients.name,
+          partnerInChargeId: clients.partnerInChargeId,
+        })
+        .from(clients)
+        .where(eq(clients.id, eng.clientId))
+        .limit(1);
+      res.json({ engagement: eng, client });
+    },
+  );
+
+  router.post(
+    '/bulk-status',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const body = req.body as { ids?: unknown; status?: unknown; reason?: unknown };
+      const ids = Array.isArray(body.ids)
+        ? body.ids.filter((x): x is string => typeof x === 'string')
+        : [];
+      const targetStatus = typeof body.status === 'string' ? body.status : '';
+      const allowed = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'] as const;
+      if (!ids.length || !(allowed as readonly string[]).includes(targetStatus)) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ ok: true, updated: 0 });
+        return;
+      }
+      const reason = typeof body.reason === 'string' ? body.reason : null;
+      // Scope: only update engagements whose client belongs to firm.
+      const firmClients = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.firmId, firmId));
+      const clientIds = firmClients.map((c) => c.id);
+      const patch: Record<string, unknown> = { status: targetStatus };
+      if (targetStatus === 'CLOSED' || targetStatus === 'ARCHIVED') {
+        patch['closedAt'] = new Date();
+        patch['closedReason'] = reason;
+      }
+      const updated = await deps.db
+        .update(engagements)
+        .set(patch)
+        .where(and(inArray(engagements.id, ids), inArray(engagements.clientId, clientIds)))
+        .returning({ id: engagements.id });
+      res.json({ ok: true, updated: updated.length });
+    },
+  );
+
+  router.get(
     '/:id/budget',
     requirePermission(deps, 'engagement:read'),
     async (req: Request, res: Response) => {

@@ -69,5 +69,78 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/export.csv',
+    requirePermission(deps, 'admin:audit:export'),
+    async (req: Request, res: Response) => {
+      const parsed = QuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_query' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const conds: SQL<unknown>[] = [];
+      const q = parsed.data;
+      if (q.entityType) conds.push(eq(auditLog.entityType, q.entityType));
+      if (q.entityId) conds.push(eq(auditLog.entityId, q.entityId));
+      if (q.actorAppUserId) conds.push(eq(auditLog.actorAppUserId, q.actorAppUserId));
+      if (q.actorPortalIdentityId)
+        conds.push(eq(auditLog.actorPortalIdentityId, q.actorPortalIdentityId));
+      if (q.start) conds.push(gte(auditLog.occurredAt, new Date(q.start)));
+      if (q.end) conds.push(lte(auditLog.occurredAt, new Date(q.end)));
+      const builder = deps.db.select().from(auditLog);
+      // CSV export defaults higher than default 100 because operators
+      // export windows tend to be days/weeks.
+      const limit = Math.min(q.limit, 5000);
+      const rows = await (conds.length === 0
+        ? builder.orderBy(desc(auditLog.occurredAt)).limit(limit)
+        : builder
+            .where(and(...conds))
+            .orderBy(desc(auditLog.occurredAt))
+            .limit(limit));
+      const header = [
+        'occurredAt',
+        'action',
+        'entityType',
+        'entityId',
+        'actorAppUserId',
+        'actorPortalIdentityId',
+        'ip',
+        'userAgent',
+      ];
+      const lines = [header.join(',')];
+      for (const r of rows) {
+        const row = r as Record<string, unknown>;
+        lines.push(
+          [
+            (row['occurredAt'] as Date | undefined)?.toISOString() ?? '',
+            row['action'] ?? '',
+            row['entityType'] ?? '',
+            row['entityId'] ?? '',
+            row['actorAppUserId'] ?? '',
+            row['actorPortalIdentityId'] ?? '',
+            row['ip'] ?? '',
+            csvCell(String(row['userAgent'] ?? '')),
+          ]
+            .map((c) => (typeof c === 'string' ? c : String(c)))
+            .join(','),
+        );
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="audit-log-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join('\n') + '\n');
+    },
+  );
+
   return router;
+}
+
+function csvCell(s: string): string {
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }

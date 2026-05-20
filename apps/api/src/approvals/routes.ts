@@ -38,6 +38,24 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      const ownership = or(
+        eq(approvalRequests.approverId, session.appUserId),
+        isNull(approvalRequests.approverId),
+      );
+      const conds = [eq(approvalRequests.status, 'PENDING')];
+      if (ownership) conds.push(ownership);
+      const entityType =
+        typeof req.query['entityType'] === 'string' ? req.query['entityType'] : null;
+      const allowed = [
+        'ADJUSTMENT',
+        'PRE_BILL',
+        'INVOICE',
+        'ENGAGEMENT_LETTER',
+        'RATE_CHANGE',
+      ] as const;
+      if (entityType && (allowed as readonly string[]).includes(entityType)) {
+        conds.push(eq(approvalRequests.entityType, entityType as (typeof allowed)[number]));
+      }
       const rows = await deps.db
         .select({
           id: approvalRequests.id,
@@ -51,16 +69,7 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         })
         .from(approvalRequests)
         .innerJoin(appUsers, eq(appUsers.id, approvalRequests.requesterId))
-        .where(
-          and(
-            eq(approvalRequests.status, 'PENDING'),
-            // Either explicitly assigned to me, or unassigned (claimable).
-            or(
-              eq(approvalRequests.approverId, session.appUserId),
-              isNull(approvalRequests.approverId),
-            ),
-          ),
-        )
+        .where(and(...conds))
         .orderBy(desc(approvalRequests.requestedAt))
         .limit(200);
       res.json({ items: rows });

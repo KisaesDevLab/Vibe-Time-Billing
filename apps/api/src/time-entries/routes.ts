@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
@@ -55,6 +55,20 @@ const UpdateSchema = z.object({
   workCodeId: z.string().uuid().nullable().optional(),
   description: z.string().max(2000).optional(),
   billableFlag: z.boolean().optional(),
+});
+
+const BulkFromTemplateSchema = z.object({
+  template: z.object({
+    engagementId: z.string().uuid(),
+    workCodeId: z.string().uuid().optional(),
+    hours: z.number().positive().max(24),
+    description: z.string().max(2000).optional(),
+    billableFlag: z.boolean().optional(),
+  }),
+  dates: z
+    .array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/))
+    .min(1)
+    .max(60),
 });
 
 async function loadRateCandidates(
@@ -219,6 +233,40 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
       const snapshot = captureRateSnapshot({ rate: resolved, hours: parsed.data.hours });
 
+      // NTE cap (Phase 10 #19): if the engagement has nte_cap_cents set,
+      // reject when this entry would push the running standard-amount
+      // total past the cap. LIFETIME scope is enforced across all entries;
+      // PERIOD scope uses the calendar month containing entryDate.
+      if (eng.nteCapCents != null && Number(eng.nteCapCents) > 0) {
+        const monthStart = parsed.data.entryDate.slice(0, 7) + '-01';
+        const nextMonth = new Date(monthStart + 'T00:00:00Z');
+        nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+        const monthEnd = nextMonth.toISOString().slice(0, 10);
+        const conds = [
+          eq(timeEntries.engagementId, eng.id),
+          inArray(timeEntries.status, ['SUBMITTED', 'LOCKED', 'BILLED']),
+        ];
+        if (eng.nteCapScope === 'PERIOD') {
+          conds.push(gte(timeEntries.entryDate, monthStart));
+          conds.push(lte(timeEntries.entryDate, monthEnd));
+        }
+        const [accum] = await deps.db
+          .select({
+            total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as('total'),
+          })
+          .from(timeEntries)
+          .where(and(...conds));
+        const projected = Number(accum?.total ?? 0) + snapshot.amountCents;
+        if (projected > Number(eng.nteCapCents)) {
+          res.status(409).json({
+            error: 'nte_cap_exceeded',
+            capCents: Number(eng.nteCapCents),
+            projectedCents: projected,
+          });
+          return;
+        }
+      }
+
       // Q20 — in_scope flag set at write time from engagement's array
       const inScope =
         eng.mixedModeEnabled && parsed.data.workCodeId
@@ -334,6 +382,161 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
 
       await deps.db.update(timeEntries).set(patch).where(eq(timeEntries.id, prior.id));
       res.json({ ok: true, version: nextVersion });
+    },
+  );
+
+  router.post(
+    '/bulk-from-template',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const parsed = BulkFromTemplateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true, created: 0 });
+        return;
+      }
+      const t = parsed.data.template;
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, t.engagementId))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const [client] = await deps.db
+        .select()
+        .from(clients)
+        .where(eq(clients.id, eng.clientId))
+        .limit(1);
+      if (!client || client.firmId !== session.firmId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      let serviceLineId: string | null = null;
+      if (t.workCodeId) {
+        const [wc] = await deps.db
+          .select({ serviceLineId: workCodes.serviceLineId })
+          .from(workCodes)
+          .where(eq(workCodes.id, t.workCodeId))
+          .limit(1);
+        serviceLineId = wc?.serviceLineId ?? null;
+      }
+      const candidates = await loadRateCandidates(deps.db, {
+        appUserId: session.appUserId,
+        engagementId: eng.id,
+        clientId: client.id,
+        serviceLineId,
+      });
+      const inScope =
+        eng.mixedModeEnabled && t.workCodeId ? eng.inScopeWorkCodeIds.includes(t.workCodeId) : true;
+      const rows: (typeof timeEntries.$inferInsert)[] = [];
+      for (const date of parsed.data.dates) {
+        const resolved = resolveRate({
+          serviceDate: date,
+          appUserId: session.appUserId,
+          engagementId: eng.id,
+          clientId: client.id,
+          serviceLineId,
+          candidates,
+          firmDefaultBillRateCents: 0,
+        });
+        if (resolved.level === 'firm' && resolved.billRateCents === 0) {
+          res.status(400).json({ error: 'no_rate_resolves', forDate: date });
+          return;
+        }
+        const snapshot = captureRateSnapshot({ rate: resolved, hours: t.hours });
+        rows.push({
+          engagementId: eng.id,
+          appUserId: session.appUserId,
+          workCodeId: t.workCodeId ?? null,
+          entryDate: date,
+          hours: t.hours.toString(),
+          billableFlag: t.billableFlag ?? true,
+          inScopeFlag: inScope,
+          description: t.description ?? '',
+          standardRateSnapshotCents: snapshot.rateCents,
+          standardAmountCents: snapshot.amountCents,
+        });
+      }
+      const inserted = await deps.db
+        .insert(timeEntries)
+        .values(rows)
+        .returning({ id: timeEntries.id });
+      res.status(201).json({ ok: true, created: inserted.length, ids: inserted.map((r) => r.id) });
+    },
+  );
+
+  router.post(
+    '/:id/transfer',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const toEngagementId =
+        typeof req.body?.engagementId === 'string' ? req.body.engagementId : null;
+      if (!toEngagementId) {
+        res.status(400).json({ error: 'engagement_id_required' });
+        return;
+      }
+      const [prior] = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(eq(timeEntries.id, req.params['id']!))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (prior.lockedAt || prior.status === 'BILLED') {
+        res.status(409).json({ error: 'locked' });
+        return;
+      }
+      // Validate the target engagement belongs to the same firm.
+      const [target] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, toEngagementId))
+        .limit(1);
+      if (!target) {
+        res.status(404).json({ error: 'target_engagement_not_found' });
+        return;
+      }
+      const [targetClient] = await deps.db
+        .select({ firmId: clients.firmId })
+        .from(clients)
+        .where(eq(clients.id, target.clientId))
+        .limit(1);
+      if (!targetClient || targetClient.firmId !== session.firmId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const [maxVersion] = await deps.db
+        .select({ v: timeEntryVersions.version })
+        .from(timeEntryVersions)
+        .where(eq(timeEntryVersions.timeEntryId, prior.id))
+        .orderBy(timeEntryVersions.version)
+        .limit(1);
+      const nextVersion = (maxVersion?.v ?? 0) + 1;
+      await deps.db.insert(timeEntryVersions).values({
+        timeEntryId: prior.id,
+        version: nextVersion,
+        fields: prior,
+        editedById: session.appUserId,
+      });
+      await deps.db
+        .update(timeEntries)
+        .set({ engagementId: toEngagementId })
+        .where(eq(timeEntries.id, prior.id));
+      res.json({ ok: true });
     },
   );
 

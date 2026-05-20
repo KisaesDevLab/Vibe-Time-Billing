@@ -1089,6 +1089,34 @@ export const payments = pgTable(
 );
 
 // =====================================================================
+// TABLE: dunning_history
+// Per-invoice ledger of dunning steps already dispatched. The sweep job
+// consults this to skip already-sent kinds and writes on each dispatch.
+// =====================================================================
+
+export const dunningHistory = pgTable(
+  'dunning_history',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    stepKind: text('step_kind').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+    channel: text('channel'),
+    recipient: text('recipient'),
+    outcome: text('outcome').notNull().default('SENT'),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    invoiceIdx: index('dunning_history_invoice_idx').on(t.invoiceId),
+    sentAtIdx: index('dunning_history_sent_at_idx').on(t.sentAt),
+    invoiceStepUnique: uniqueIndex('dunning_history_invoice_step_uk').on(t.invoiceId, t.stepKind),
+  }),
+);
+
+// =====================================================================
 // APPROVAL WORKFLOW
 // =====================================================================
 
