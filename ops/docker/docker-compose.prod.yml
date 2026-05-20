@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+# Production compose for the Vibe Time & Billing appliance.
+# Pull the published image, mount /backups and /data volumes, wire Caddy.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vibe-tb-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vibe}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?postgres password required}
+      POSTGRES_DB: ${POSTGRES_DB:-vibe_tb}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - backups:/backups
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-vibe} -d ${POSTGRES_DB:-vibe_tb}']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vibe-tb-redis
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/kisaesdevlab/vibe-time-billing:${TAG:-latest}
+    container_name: vibe-tb-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vibe}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibe_tb}
+      REDIS_URL: redis://redis:6379
+      STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:?staff jwt required}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?portal jwt required}
+      APP_BASE_URL: ${APP_BASE_URL}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL}
+      COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}
+      SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    entrypoint: ['/usr/bin/tini', '--', '/app/ops/docker/entrypoint-api.sh']
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/kisaesdevlab/vibe-time-billing:${TAG:-latest}
+    container_name: vibe-tb-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vibe}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibe_tb}
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    command: ['node', 'apps/worker/dist/index.js']
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: vibe-tb-caddy
+    depends_on:
+      - api
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+  backup:
+    image: postgres:16-alpine
+    container_name: vibe-tb-backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-vibe}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-vibe_tb}
+      BACKUP_DIR: /backups
+      RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - backups:/backups
+      - ../scripts:/scripts:ro
+    entrypoint: ['/bin/sh', '-c']
+    # Q12: nightly pg_dump cron via simple loop (lighter than full cron).
+    command:
+      - |
+        apk add --no-cache busybox-suid >/dev/null 2>&1 || true
+        echo "0 2 * * * /scripts/backup.sh" > /etc/crontabs/root
+        crond -f -l 8
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:
+  backups:
+  caddy-data:
+  caddy-config:
