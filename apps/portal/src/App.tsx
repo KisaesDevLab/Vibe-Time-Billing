@@ -1,40 +1,99 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { Routes, Route, Navigate } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
-import { Pill, tokens } from '@vibe/ui';
+import { AppShell, Button, Pill } from '@vibe/ui';
+
+import { AuthProvider, useAuth } from './auth-context';
+import { HomePage } from './pages/Home';
+import { LoginPage } from './pages/Login';
 
 export function App(): JSX.Element {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/auth/login" element={<LoginPage />} />
+        <Route
+          path="*"
+          element={
+            <RequireAuth>
+              <Shell>
+                <Routes>
+                  <Route path="/" element={<HomePage />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Shell>
+            </RequireAuth>
+          }
+        />
+      </Routes>
+    </AuthProvider>
+  );
+}
+
+function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
+  const { me, loading } = useAuth();
+  const location = useLocation();
+  if (loading) return <FullPageMsg>Loading…</FullPageMsg>;
+  if (!me) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/auth/login?next=${next}`} replace />;
+  }
+  return children;
+}
+
+function Shell({ children }: { children: ReactNode }): JSX.Element {
+  const { me, logout } = useAuth();
+  const location = useLocation();
+  return (
+    <AppShell
+      brand="Client Portal"
+      realmBadge={<Pill tone="success">portal</Pill>}
+      nav={[
+        { label: 'Overview', href: '/', active: location.pathname === '/' },
+        { label: 'Invoices', href: '/invoices', active: location.pathname.startsWith('/invoices') },
+        {
+          label: 'Statement',
+          href: '/statement',
+          active: location.pathname.startsWith('/statement'),
+        },
+        {
+          label: 'Payment methods',
+          href: '/payment-methods',
+          active: location.pathname.startsWith('/payment-methods'),
+        },
+      ]}
+      trailing={
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {me && (
+            <span style={{ fontSize: 12, color: '#8b97a6' }}>
+              Client: <code>{me.activeClientId.slice(0, 8)}…</code>
+            </span>
+          )}
+          <Button variant="secondary" size="sm" onClick={() => void logout()}>
+            Sign out
+          </Button>
+        </div>
+      }
+    >
+      {children}
+    </AppShell>
+  );
+}
+
+function FullPageMsg({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div
       style={{
         minHeight: '100vh',
-        background: tokens.color.bg,
-        color: tokens.color.text,
-        fontFamily: tokens.font.body,
-        padding: tokens.space.xl,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: '#8b97a6',
+        fontFamily: '-apple-system, system-ui, sans-serif',
       }}
     >
-      <header style={{ display: 'flex', alignItems: 'center', gap: tokens.space.md }}>
-        <h1 style={{ margin: 0, fontSize: 20 }}>Client Portal</h1>
-        <Pill tone="success">portal</Pill>
-      </header>
-      <main style={{ marginTop: tokens.space.xl }}>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </main>
+      {children}
     </div>
-  );
-}
-
-function Landing(): JSX.Element {
-  return (
-    <section>
-      <p style={{ color: tokens.color.textMuted }}>
-        Phase 1 portal scaffold. Phase 16 builds the invoice viewing, payment, and entity-switcher
-        experience here.
-      </p>
-    </section>
   );
 }

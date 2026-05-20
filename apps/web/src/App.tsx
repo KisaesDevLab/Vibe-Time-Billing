@@ -1,39 +1,95 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { Routes, Route, Navigate } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
-import { Pill, tokens } from '@vibe/ui';
+import { AppShell, Button, Pill } from '@vibe/ui';
+
+import { AuthProvider, useAuth } from './auth-context';
+import { DashboardPage } from './pages/Dashboard';
+import { LoginPage } from './pages/Login';
+import { TotpEnrollPage } from './pages/TotpEnroll';
 
 export function App(): JSX.Element {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/auth/login" element={<LoginPage />} />
+        <Route
+          path="/auth/totp"
+          element={
+            <RequireAuth>
+              <TotpEnrollPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="*"
+          element={
+            <RequireAuth>
+              <Shell>
+                <Routes>
+                  <Route path="/" element={<DashboardPage />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Shell>
+            </RequireAuth>
+          }
+        />
+      </Routes>
+    </AuthProvider>
+  );
+}
+
+function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
+  const { me, loading } = useAuth();
+  const location = useLocation();
+  if (loading) return <FullPageMsg>Loading…</FullPageMsg>;
+  if (!me) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/auth/login?next=${next}`} replace />;
+  }
+  return children;
+}
+
+function Shell({ children }: { children: ReactNode }): JSX.Element {
+  const { logout } = useAuth();
+  const location = useLocation();
+  return (
+    <AppShell
+      brand="Vibe Time & Billing"
+      realmBadge={<Pill tone="accent">staff</Pill>}
+      nav={[
+        { label: 'Dashboard', href: '/', active: location.pathname === '/' },
+        { label: 'Clients', href: '/clients', active: location.pathname.startsWith('/clients') },
+        { label: 'Time', href: '/time', active: location.pathname.startsWith('/time') },
+        { label: 'Billing', href: '/billing', active: location.pathname.startsWith('/billing') },
+        { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
+        { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
+      ]}
+      trailing={
+        <Button variant="secondary" size="sm" onClick={() => void logout()}>
+          Sign out
+        </Button>
+      }
+    >
+      {children}
+    </AppShell>
+  );
+}
+
+function FullPageMsg({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div
       style={{
         minHeight: '100vh',
-        background: tokens.color.bg,
-        color: tokens.color.text,
-        fontFamily: tokens.font.body,
-        padding: tokens.space.xl,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: '#8b97a6',
+        fontFamily: '-apple-system, system-ui, sans-serif',
       }}
     >
-      <header style={{ display: 'flex', alignItems: 'center', gap: tokens.space.md }}>
-        <h1 style={{ margin: 0, fontSize: 20 }}>Vibe Time &amp; Billing</h1>
-        <Pill tone="accent">staff</Pill>
-      </header>
-      <main style={{ marginTop: tokens.space.xl }}>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </main>
+      {children}
     </div>
-  );
-}
-
-function Home(): JSX.Element {
-  return (
-    <section>
-      <p style={{ color: tokens.color.textMuted }}>
-        Phase 1 scaffold. Subsequent phases populate the staff UI.
-      </p>
-    </section>
   );
 }
