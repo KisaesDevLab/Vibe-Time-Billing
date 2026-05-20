@@ -10,6 +10,7 @@ import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
+import { createTaxonomyRouter } from './taxonomy/routes';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 export interface AppDeps {
@@ -57,6 +58,9 @@ export function createApp(deps: AppDeps): Express {
 
   const adminRouter = createAdminRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/admin', auth.requireAuth, auth.requireCsrf, adminRouter);
+
+  const taxonomyRouter = createTaxonomyRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/taxonomy', auth.requireAuth, auth.requireCsrf, taxonomyRouter);
 
   return app;
 }
