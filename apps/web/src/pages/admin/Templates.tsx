@@ -88,6 +88,18 @@ function EngagementTab(): JSX.Element {
   const [items, setItems] = useState<EngagementTpl[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{
+    name: string;
+    defaultFeeStructure: string;
+    defaultFeeAmountCents: string;
+    defaultBudgetHours: string;
+  }>({
+    name: '',
+    defaultFeeStructure: 'FIXED_FEE',
+    defaultFeeAmountCents: '',
+    defaultBudgetHours: '',
+  });
   const [draft, setDraft] = useState({
     key: '',
     name: '',
@@ -153,6 +165,39 @@ function EngagementTab(): JSX.Element {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'archive_failed');
+    }
+  }
+
+  function beginEdit(t: EngagementTpl): void {
+    setEditingId(t.id);
+    setEditDraft({
+      name: t.name,
+      defaultFeeStructure: t.defaultFeeStructure,
+      defaultFeeAmountCents: t.defaultFeeAmountCents != null ? String(t.defaultFeeAmountCents) : '',
+      defaultBudgetHours: t.defaultBudgetHours ?? '',
+    });
+  }
+
+  async function saveEdit(id: string): Promise<void> {
+    if (!editDraft.name.trim()) return;
+    try {
+      await api(`/api/staff/admin/templates/engagement/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editDraft.name.trim(),
+          defaultFeeStructure: editDraft.defaultFeeStructure,
+          defaultFeeAmountCents: editDraft.defaultFeeAmountCents
+            ? Number(editDraft.defaultFeeAmountCents)
+            : null,
+          defaultBudgetHours: editDraft.defaultBudgetHours
+            ? Number(editDraft.defaultBudgetHours)
+            : null,
+        }),
+      });
+      setEditingId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
     }
   }
 
@@ -231,40 +276,102 @@ function EngagementTab(): JSX.Element {
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No templates yet.</p>
       ) : (
         <div style={{ display: 'grid', gap: 6 }}>
-          {items.map((t) => (
-            <div
-              key={t.id}
-              style={{
-                padding: 10,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                flexWrap: 'wrap',
-              }}
-            >
-              <strong style={{ fontSize: 13 }}>{t.name}</strong>
-              <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
-              <Pill>{t.defaultFeeStructure}</Pill>
-              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                {formatCents(t.defaultFeeAmountCents)} ·{' '}
-                {t.defaultBudgetHours ? `${t.defaultBudgetHours}h` : 'no budget'}
-              </span>
-              {t.isSystem && <Pill tone="accent">system</Pill>}
-              {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
-              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <Button size="sm" variant="ghost" onClick={() => void clone(t.id)}>
-                  Clone
-                </Button>
-                {t.status === 'ACTIVE' && (
-                  <Button size="sm" variant="ghost" onClick={() => void archive(t.id)}>
-                    Archive
-                  </Button>
+          {items.map((t) => {
+            const isEditing = editingId === t.id;
+            return (
+              <div
+                key={t.id}
+                style={{
+                  padding: 10,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {isEditing ? (
+                    <input
+                      value={editDraft.name}
+                      onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })}
+                      style={{ ...fieldStyle, flex: 1, minWidth: 220 }}
+                    />
+                  ) : (
+                    <strong style={{ fontSize: 13 }}>{t.name}</strong>
+                  )}
+                  <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+                  {!isEditing && <Pill>{t.defaultFeeStructure}</Pill>}
+                  {!isEditing && (
+                    <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                      {formatCents(t.defaultFeeAmountCents)} ·{' '}
+                      {t.defaultBudgetHours ? `${t.defaultBudgetHours}h` : 'no budget'}
+                    </span>
+                  )}
+                  {t.isSystem && <Pill tone="accent">system</Pill>}
+                  {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {isEditing ? (
+                      <>
+                        <Button size="sm" onClick={() => void saveEdit(t.id)}>
+                          Save
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => beginEdit(t)}>
+                          Edit
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => void clone(t.id)}>
+                          Clone
+                        </Button>
+                        {t.status === 'ACTIVE' && (
+                          <Button size="sm" variant="ghost" onClick={() => void archive(t.id)}>
+                            Archive
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </span>
+                </div>
+                {isEditing && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8 }}>
+                    <select
+                      value={editDraft.defaultFeeStructure}
+                      onChange={(e) =>
+                        setEditDraft({ ...editDraft, defaultFeeStructure: e.target.value })
+                      }
+                      style={fieldStyle}
+                    >
+                      <option value="HOURLY">Hourly</option>
+                      <option value="HOURLY_NTE">Hourly (NTE)</option>
+                      <option value="FIXED_FEE">Fixed fee</option>
+                      <option value="FIXED_FEE_WITH_MILESTONES">Fixed fee + milestones</option>
+                      <option value="RECURRING_SUBSCRIPTION">Recurring subscription</option>
+                    </select>
+                    <input
+                      value={editDraft.defaultFeeAmountCents}
+                      onChange={(e) =>
+                        setEditDraft({ ...editDraft, defaultFeeAmountCents: e.target.value })
+                      }
+                      placeholder="Fee (cents)"
+                      style={fieldStyle}
+                    />
+                    <input
+                      value={editDraft.defaultBudgetHours}
+                      onChange={(e) =>
+                        setEditDraft({ ...editDraft, defaultBudgetHours: e.target.value })
+                      }
+                      placeholder="Budget hours"
+                      style={fieldStyle}
+                    />
+                  </div>
                 )}
-              </span>
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </Card>
@@ -396,6 +503,10 @@ function LetterTab(): JSX.Element {
 function ClientTab(): JSX.Element {
   const [items, setItems] = useState<ClientTpl[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editClientType, setEditClientType] = useState<'INDIVIDUAL' | 'BUSINESS'>('BUSINESS');
+  const [editDefaults, setEditDefaults] = useState('');
 
   async function load(): Promise<void> {
     try {
@@ -409,6 +520,48 @@ function ClientTab(): JSX.Element {
     void load();
   }, []);
 
+  function beginEdit(t: ClientTpl): void {
+    setEditingId(t.id);
+    setEditName(t.name);
+    setEditClientType(t.clientType);
+    setEditDefaults(JSON.stringify(t.defaultsJson ?? {}, null, 2));
+  }
+
+  async function saveEdit(id: string): Promise<void> {
+    let parsedDefaults: Record<string, unknown>;
+    try {
+      parsedDefaults = editDefaults.trim() ? JSON.parse(editDefaults) : {};
+    } catch {
+      setError('Defaults must be valid JSON.');
+      return;
+    }
+    try {
+      await api(`/api/staff/admin/templates/client/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editName.trim(),
+          clientType: editClientType,
+          defaultsJson: parsedDefaults,
+        }),
+      });
+      setEditingId(null);
+      setError(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
+    }
+  }
+
+  async function archive(id: string): Promise<void> {
+    if (!confirm('Archive this client template? Wizard will no longer offer it.')) return;
+    try {
+      await api(`/api/staff/admin/templates/client/${id}/archive`, { method: 'PATCH' });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'archive_failed');
+    }
+  }
+
   return (
     <Card title="Client templates">
       {error && (
@@ -418,35 +571,99 @@ function ClientTab(): JSX.Element {
       )}
       <p style={{ fontSize: 12, color: tokens.color.textMuted }}>
         Prefill defaults for the Create Client wizard. Picking a template fills tags, terms, and
-        pipeline stage in the wizard.
+        pipeline stage in the wizard. <code>defaultsJson</code> keys match wizard field names (e.g.{' '}
+        <code>termsDays</code>, <code>pipelineStage</code>, <code>tags</code>).
       </p>
       {items.length === 0 ? (
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No templates yet.</p>
       ) : (
         <div style={{ display: 'grid', gap: 6 }}>
-          {items.map((t) => (
-            <div
-              key={t.id}
-              style={{
-                padding: 10,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                flexWrap: 'wrap',
-              }}
-            >
-              <strong style={{ fontSize: 13 }}>{t.name}</strong>
-              <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
-              <Pill>{t.clientType}</Pill>
-              {t.isSystem && <Pill tone="accent">system</Pill>}
-              {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
-              <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                {Object.keys(t.defaultsJson ?? {}).length} default field(s)
-              </span>
-            </div>
-          ))}
+          {items.map((t) => {
+            const isEditing = editingId === t.id;
+            return (
+              <div
+                key={t.id}
+                style={{
+                  padding: 10,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {isEditing ? (
+                    <input
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      style={{ ...fieldStyle, flex: 1, minWidth: 220 }}
+                    />
+                  ) : (
+                    <strong style={{ fontSize: 13 }}>{t.name}</strong>
+                  )}
+                  <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+                  {isEditing ? (
+                    <select
+                      value={editClientType}
+                      onChange={(e) =>
+                        setEditClientType(e.target.value as 'INDIVIDUAL' | 'BUSINESS')
+                      }
+                      style={fieldStyle}
+                    >
+                      <option value="INDIVIDUAL">Individual</option>
+                      <option value="BUSINESS">Business</option>
+                    </select>
+                  ) : (
+                    <Pill>{t.clientType}</Pill>
+                  )}
+                  {t.isSystem && <Pill tone="accent">system</Pill>}
+                  {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
+                  {!isEditing && (
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      {Object.keys(t.defaultsJson ?? {}).length} default field(s)
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {isEditing ? (
+                      <>
+                        <Button size="sm" onClick={() => void saveEdit(t.id)}>
+                          Save
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => beginEdit(t)}>
+                          Edit
+                        </Button>
+                        {t.status === 'ACTIVE' && (
+                          <Button size="sm" variant="ghost" onClick={() => void archive(t.id)}>
+                            Archive
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </span>
+                </div>
+                {isEditing && (
+                  <textarea
+                    value={editDefaults}
+                    onChange={(e) => setEditDefaults(e.target.value)}
+                    rows={6}
+                    style={{
+                      ...fieldStyle,
+                      fontFamily: 'ui-monospace, monospace',
+                      fontSize: 11,
+                      resize: 'vertical',
+                    }}
+                    aria-label="Defaults JSON"
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </Card>

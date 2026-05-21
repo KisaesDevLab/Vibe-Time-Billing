@@ -2,9 +2,32 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+
+const FEE_STRUCTURES = [
+  'HOURLY',
+  'HOURLY_NTE',
+  'FIXED_FEE',
+  'FIXED_FEE_WITH_MILESTONES',
+  'RECURRING_SUBSCRIPTION',
+] as const;
+type FeeStructure = (typeof FEE_STRUCTURES)[number];
+
+const STATUSES = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'] as const;
+type EngagementStatusKind = (typeof STATUSES)[number];
+
+const editFieldStyle: React.CSSProperties = {
+  padding: '6px 8px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 13,
+  width: '100%',
+  boxSizing: 'border-box',
+};
 
 interface Engagement {
   id: string;
@@ -61,6 +84,34 @@ interface HourBank {
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
+interface EditDraft {
+  name: string;
+  feeStructure: FeeStructure;
+  feeAmountCents: string;
+  budgetHours: string;
+  budgetAmountCents: string;
+  nteCapCents: string;
+  startDate: string;
+  endDate: string;
+  mixedModeEnabled: boolean;
+  feePassthroughEnabled: boolean;
+}
+
+function emptyDraftFrom(e: Engagement): EditDraft {
+  return {
+    name: e.name,
+    feeStructure: e.feeStructure as FeeStructure,
+    feeAmountCents: e.feeAmountCents != null ? String(e.feeAmountCents) : '',
+    budgetHours: e.budgetHours ?? '',
+    budgetAmountCents: e.budgetAmountCents != null ? String(e.budgetAmountCents) : '',
+    nteCapCents: e.nteCapCents != null ? String(e.nteCapCents) : '',
+    startDate: e.startDate ?? '',
+    endDate: e.endDate ?? '',
+    mixedModeEnabled: e.mixedModeEnabled,
+    feePassthroughEnabled: e.feePassthroughEnabled,
+  };
+}
+
 export function EngagementDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const [engagement, setEngagement] = useState<Engagement | null>(null);
@@ -68,28 +119,85 @@ export function EngagementDetailPage(): JSX.Element {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [banks, setBanks] = useState<HourBank[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<EditDraft | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  async function reload(): Promise<void> {
+    if (!id) return;
+    try {
+      const [e, s, m, b] = await Promise.all([
+        api<{ engagement: Engagement }>(`/api/staff/engagements/${id}`),
+        api<{ summary: Summary | null }>(`/api/staff/stats/engagement/${id}`),
+        api<{ milestones: Milestone[] }>(`/api/staff/milestones/by-engagement/${id}`),
+        api<{ bank: HourBank | null }>(`/api/staff/hour-banks/by-engagement/${id}`).catch(() => ({
+          bank: null,
+        })),
+      ]);
+      setEngagement(e.engagement);
+      setSummary(s.summary);
+      setMilestones(m.milestones ?? []);
+      setBanks(b.bank ? [b.bank] : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
 
   useEffect(() => {
-    if (!id) return;
-    void (async () => {
-      try {
-        const [e, s, m, b] = await Promise.all([
-          api<{ engagement: Engagement }>(`/api/staff/engagements/${id}`),
-          api<{ summary: Summary | null }>(`/api/staff/stats/engagement/${id}`),
-          api<{ milestones: Milestone[] }>(`/api/staff/milestones/by-engagement/${id}`),
-          api<{ bank: HourBank | null }>(`/api/staff/hour-banks/by-engagement/${id}`).catch(() => ({
-            bank: null,
-          })),
-        ]);
-        setEngagement(e.engagement);
-        setSummary(s.summary);
-        setMilestones(m.milestones ?? []);
-        setBanks(b.bank ? [b.bank] : []);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'failed');
-      }
-    })();
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function saveEdit(): Promise<void> {
+    if (!id || !draft) return;
+    setSavingEdit(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {
+        name: draft.name.trim(),
+        feeStructure: draft.feeStructure,
+        mixedModeEnabled: draft.mixedModeEnabled,
+        feePassthroughEnabled: draft.feePassthroughEnabled,
+      };
+      if (draft.feeAmountCents.trim()) body.feeAmountCents = Number(draft.feeAmountCents);
+      if (draft.budgetHours.trim()) body.budgetHours = Number(draft.budgetHours);
+      if (draft.budgetAmountCents.trim()) body.budgetAmountCents = Number(draft.budgetAmountCents);
+      if (draft.nteCapCents.trim()) body.nteCapCents = Number(draft.nteCapCents);
+      if (draft.startDate) body.startDate = draft.startDate;
+      if (draft.endDate) body.endDate = draft.endDate;
+      await api(`/api/staff/engagements/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      setEditing(false);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_failed');
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function changeStatus(next: EngagementStatusKind): Promise<void> {
+    if (!id) return;
+    if (next === 'CLOSED' || next === 'ARCHIVED') {
+      if (!confirm(`Move engagement to ${next}? This may be hard to reverse.`)) return;
+    }
+    setSavingStatus(true);
+    setError(null);
+    try {
+      await api(`/api/staff/engagements/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: next }),
+      });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'status_failed');
+    } finally {
+      setSavingStatus(false);
+    }
+  }
 
   if (error) {
     return (
@@ -108,53 +216,202 @@ export function EngagementDetailPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12 }} role="alert">
+          {error}
+        </p>
+      )}
       <Card
-        title={engagement.name}
+        title={
+          editing && draft ? (
+            <input
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              style={{ ...editFieldStyle, fontSize: 16, fontWeight: 600, minWidth: 280 }}
+              aria-label="Engagement name"
+            />
+          ) : (
+            engagement.name
+          )
+        }
         action={
-          <span style={{ display: 'flex', gap: 8 }}>
-            <Pill tone={engagement.status === 'ACTIVE' ? 'success' : 'neutral'}>
-              {engagement.status}
-            </Pill>
+          <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              value={engagement.status}
+              onChange={(e) => void changeStatus(e.target.value as EngagementStatusKind)}
+              disabled={savingStatus || editing}
+              aria-label="Engagement status"
+              style={editFieldStyle}
+            >
+              {STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
             <Pill tone="accent">{engagement.feeStructure}</Pill>
+            {editing ? (
+              <>
+                <Button size="sm" onClick={() => void saveEdit()} disabled={savingEdit}>
+                  {savingEdit ? 'Saving…' : 'Save'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setEditing(false);
+                    setDraft(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setDraft(emptyDraftFrom(engagement));
+                  setEditing(true);
+                }}
+              >
+                Edit
+              </Button>
+            )}
           </span>
         }
       >
-        <dl
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'auto 1fr auto 1fr',
-            gap: '6px 16px',
-            fontSize: 13,
-            margin: 0,
-          }}
-        >
-          <dt style={{ color: tokens.color.textMuted }}>Client</dt>
-          <dd style={{ margin: 0 }}>
-            <a href={`/clients/${engagement.clientId}`}>open</a>
-          </dd>
-          <dt style={{ color: tokens.color.textMuted }}>Fee</dt>
-          <dd style={{ margin: 0 }}>
-            {engagement.feeAmountCents == null ? '—' : formatCents(engagement.feeAmountCents)}
-          </dd>
-          <dt style={{ color: tokens.color.textMuted }}>Budget hours</dt>
-          <dd style={{ margin: 0 }}>{engagement.budgetHours ?? '—'}</dd>
-          <dt style={{ color: tokens.color.textMuted }}>Budget $</dt>
-          <dd style={{ margin: 0 }}>
-            {engagement.budgetAmountCents == null ? '—' : formatCents(engagement.budgetAmountCents)}
-          </dd>
-          <dt style={{ color: tokens.color.textMuted }}>NTE cap</dt>
-          <dd style={{ margin: 0 }}>
-            {engagement.nteCapCents == null ? '—' : formatCents(engagement.nteCapCents)}
-          </dd>
-          <dt style={{ color: tokens.color.textMuted }}>Mixed mode</dt>
-          <dd style={{ margin: 0 }}>{engagement.mixedModeEnabled ? 'yes' : 'no'}</dd>
-          <dt style={{ color: tokens.color.textMuted }}>Fee passthrough</dt>
-          <dd style={{ margin: 0 }}>{engagement.feePassthroughEnabled ? 'yes' : 'no'}</dd>
-          <dt style={{ color: tokens.color.textMuted }}>Start</dt>
-          <dd style={{ margin: 0 }}>{engagement.startDate ?? '—'}</dd>
-          <dt style={{ color: tokens.color.textMuted }}>End</dt>
-          <dd style={{ margin: 0 }}>{engagement.endDate ?? '—'}</dd>
-        </dl>
+        {editing && draft ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Fee structure">
+              <select
+                value={draft.feeStructure}
+                onChange={(e) =>
+                  setDraft({ ...draft, feeStructure: e.target.value as FeeStructure })
+                }
+                style={editFieldStyle}
+              >
+                {FEE_STRUCTURES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Fee amount (cents)">
+              <input
+                type="number"
+                min={0}
+                value={draft.feeAmountCents}
+                onChange={(e) => setDraft({ ...draft, feeAmountCents: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="Budget hours">
+              <input
+                type="number"
+                min={0}
+                step={0.25}
+                value={draft.budgetHours}
+                onChange={(e) => setDraft({ ...draft, budgetHours: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="Budget $ (cents)">
+              <input
+                type="number"
+                min={0}
+                value={draft.budgetAmountCents}
+                onChange={(e) => setDraft({ ...draft, budgetAmountCents: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="NTE cap (cents)">
+              <input
+                type="number"
+                min={0}
+                value={draft.nteCapCents}
+                onChange={(e) => setDraft({ ...draft, nteCapCents: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="Start date">
+              <input
+                type="date"
+                value={draft.startDate}
+                onChange={(e) => setDraft({ ...draft, startDate: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="End date">
+              <input
+                type="date"
+                value={draft.endDate}
+                onChange={(e) => setDraft({ ...draft, endDate: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="Mixed mode">
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.mixedModeEnabled}
+                  onChange={(e) => setDraft({ ...draft, mixedModeEnabled: e.target.checked })}
+                />
+                Enable in-scope tagging per entry
+              </label>
+            </Field>
+            <Field label="Fee passthrough">
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.feePassthroughEnabled}
+                  onChange={(e) => setDraft({ ...draft, feePassthroughEnabled: e.target.checked })}
+                />
+                Add processing fee line item on invoices
+              </label>
+            </Field>
+          </div>
+        ) : (
+          <dl
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'auto 1fr auto 1fr',
+              gap: '6px 16px',
+              fontSize: 13,
+              margin: 0,
+            }}
+          >
+            <dt style={{ color: tokens.color.textMuted }}>Client</dt>
+            <dd style={{ margin: 0 }}>
+              <a href={`/clients/${engagement.clientId}`}>open</a>
+            </dd>
+            <dt style={{ color: tokens.color.textMuted }}>Fee</dt>
+            <dd style={{ margin: 0 }}>
+              {engagement.feeAmountCents == null ? '—' : formatCents(engagement.feeAmountCents)}
+            </dd>
+            <dt style={{ color: tokens.color.textMuted }}>Budget hours</dt>
+            <dd style={{ margin: 0 }}>{engagement.budgetHours ?? '—'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>Budget $</dt>
+            <dd style={{ margin: 0 }}>
+              {engagement.budgetAmountCents == null
+                ? '—'
+                : formatCents(engagement.budgetAmountCents)}
+            </dd>
+            <dt style={{ color: tokens.color.textMuted }}>NTE cap</dt>
+            <dd style={{ margin: 0 }}>
+              {engagement.nteCapCents == null ? '—' : formatCents(engagement.nteCapCents)}
+            </dd>
+            <dt style={{ color: tokens.color.textMuted }}>Mixed mode</dt>
+            <dd style={{ margin: 0 }}>{engagement.mixedModeEnabled ? 'yes' : 'no'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>Fee passthrough</dt>
+            <dd style={{ margin: 0 }}>{engagement.feePassthroughEnabled ? 'yes' : 'no'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>Start</dt>
+            <dd style={{ margin: 0 }}>{engagement.startDate ?? '—'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>End</dt>
+            <dd style={{ margin: 0 }}>{engagement.endDate ?? '—'}</dd>
+          </dl>
+        )}
       </Card>
 
       {summary && (
@@ -406,5 +663,18 @@ function Stat({ label, value }: { label: string; value: string }): JSX.Element {
       <div style={{ fontSize: 11, color: tokens.color.textMuted }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 600 }}>{value}</div>
     </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+  return (
+    <label style={{ display: 'block' }}>
+      <span
+        style={{ fontSize: 11, color: tokens.color.textMuted, display: 'block', marginBottom: 4 }}
+      >
+        {label}
+      </span>
+      {children}
+    </label>
   );
 }
