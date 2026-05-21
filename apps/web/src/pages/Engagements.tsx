@@ -245,46 +245,67 @@ export function EngagementsPage(): JSX.Element {
     else setSelectedIds(new Set(visible.map((r) => r.id)));
   }
 
+  // QA fix — every mutation handler was a bare `await api(...)` with no
+  // try/catch. Callers used `void bulkSetWorkflow(...)` so any non-2xx
+  // bubbled up as an unhandled promise rejection (visible in the
+  // browser console). Now any error is surfaced via setError and the
+  // promise resolves cleanly.
   async function bulkSetWorkflow(state: WorkflowState): Promise<void> {
-    await Promise.all(
-      Array.from(selectedIds).map((id) =>
-        api(`/api/staff/engagements/${id}/workflow-state`, {
-          method: 'PATCH',
-          body: JSON.stringify({ workflowState: state }),
-        }),
-      ),
-    );
-    setSelectedIds(new Set());
-    void load();
+    try {
+      await Promise.all(
+        Array.from(selectedIds).map((id) =>
+          api(`/api/staff/engagements/${id}/workflow-state`, {
+            method: 'PATCH',
+            body: JSON.stringify({ workflowState: state }),
+          }),
+        ),
+      );
+      setSelectedIds(new Set());
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'bulk_workflow_failed');
+    }
   }
 
   async function bulkSetPriority(p: Priority): Promise<void> {
-    await Promise.all(
-      Array.from(selectedIds).map((id) =>
-        api(`/api/staff/engagements/${id}/priority`, {
-          method: 'PATCH',
-          body: JSON.stringify({ priority: p }),
-        }),
-      ),
-    );
-    setSelectedIds(new Set());
-    void load();
+    try {
+      await Promise.all(
+        Array.from(selectedIds).map((id) =>
+          api(`/api/staff/engagements/${id}/priority`, {
+            method: 'PATCH',
+            body: JSON.stringify({ priority: p }),
+          }),
+        ),
+      );
+      setSelectedIds(new Set());
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'bulk_priority_failed');
+    }
   }
 
   async function setRowWorkflow(id: string, state: WorkflowState): Promise<void> {
-    await api(`/api/staff/engagements/${id}/workflow-state`, {
-      method: 'PATCH',
-      body: JSON.stringify({ workflowState: state }),
-    });
-    void load();
+    try {
+      await api(`/api/staff/engagements/${id}/workflow-state`, {
+        method: 'PATCH',
+        body: JSON.stringify({ workflowState: state }),
+      });
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'workflow_update_failed');
+    }
   }
 
   async function setRowPriority(id: string, p: Priority): Promise<void> {
-    await api(`/api/staff/engagements/${id}/priority`, {
-      method: 'PATCH',
-      body: JSON.stringify({ priority: p }),
-    });
-    void load();
+    try {
+      await api(`/api/staff/engagements/${id}/priority`, {
+        method: 'PATCH',
+        body: JSON.stringify({ priority: p }),
+      });
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'priority_update_failed');
+    }
   }
 
   function exportCsv(): void {

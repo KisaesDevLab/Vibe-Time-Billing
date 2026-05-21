@@ -146,7 +146,7 @@ function FilesCardCompact({ clientId }: { clientId: string }): JSX.Element {
                 {humanSize(f.sizeBytes)}
               </span>
               <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                {f.uploadedAt.slice(0, 10)}
+                {(f.uploadedAt ?? '').slice(0, 10) || '—'}
               </span>
             </div>
           ))}

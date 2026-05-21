@@ -59,13 +59,21 @@ export function ColumnFilter({
   const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // QA fix — only sync draft state when the popover *opens*. Previously
+  // `selected` and `sort` were in the deps, so any parent re-render that
+  // produced a new Set reference (Engagements.tsx passes `new Set()`
+  // literals for the sort-only columns) wiped the user's in-progress
+  // selection. Use an open-edge detector via a ref.
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setDraftSelected(new Set(selected));
       setDraftSort(sort);
       setQuery('');
     }
-  }, [open, selected, sort]);
+    wasOpenRef.current = open;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

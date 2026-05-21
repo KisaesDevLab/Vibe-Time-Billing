@@ -620,7 +620,7 @@ export function FileBrowser({ scope, clientId, uploadedById }: Props): JSX.Eleme
                         </a>
                       )}
                     </td>
-                    <td style={tdStyle()}>{f.uploadedAt.slice(0, 10)}</td>
+                    <td style={tdStyle()}>{(f.uploadedAt ?? '').slice(0, 10) || '—'}</td>
                     <td style={tdStyle()}>{humanSize(f.sizeBytes)}</td>
                     {scope === 'client' && (
                       <td style={tdStyle()}>
@@ -641,7 +641,8 @@ export function FileBrowser({ scope, clientId, uploadedById }: Props): JSX.Eleme
                           setShareOpen(true);
                         }}
                         onDelete={async () => {
-                          if (confirm(`Delete ${f.fileName}?`)) {
+                          if (!confirm(`Delete ${f.fileName}?`)) return;
+                          try {
                             await api(
                               scope === 'internal'
                                 ? `/api/staff/internal-files/${f.id}`
@@ -649,6 +650,8 @@ export function FileBrowser({ scope, clientId, uploadedById }: Props): JSX.Eleme
                               { method: 'DELETE' },
                             );
                             await loadFiles();
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : 'delete_failed');
                           }
                         }}
                       />
