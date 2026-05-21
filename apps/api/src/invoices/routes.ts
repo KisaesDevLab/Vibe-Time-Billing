@@ -36,6 +36,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
+import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
@@ -1772,12 +1773,19 @@ async function sendInvoiceEmail(
     `It is due ${inv.dueDate}.\n\n` +
     (link ? `View and pay online: ${link}\n\n` : '') +
     `Thank you.`;
+  const subject = `Invoice ${inv.invoiceNumber}`;
   try {
-    await deps.sendEmail({
-      to: billingContact.email,
-      subject: `Invoice ${inv.invoiceNumber}`,
+    await deps.sendEmail({ to: billingContact.email, subject, body });
+    await recordOutbound({
+      db: deps.db,
+      firmId,
+      clientId: inv.clientId,
+      channel: 'EMAIL',
+      subject,
       body,
-    });
+      relatedEntityType: 'invoice',
+      relatedEntityId: inv.id,
+    }).catch((err) => logger.warn({ err }, 'comms record failed'));
   } catch (err) {
     logger.error({ err, invoiceId: inv.id }, 'invoice email dispatch failed');
     return { ok: false, status: 502, error: 'email_dispatch_failed' };

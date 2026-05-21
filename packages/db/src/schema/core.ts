@@ -737,6 +737,119 @@ export const clientContacts = pgTable(
 );
 
 // =====================================================================
+// v2 0028 — client_task. Per-client task list (Canopy-style Tasks tab).
+// =====================================================================
+
+export const clientTaskPriority = pgEnum('client_task_priority', [
+  'LOW',
+  'MEDIUM',
+  'HIGH',
+  'URGENT',
+]);
+export const clientTaskStatus = pgEnum('client_task_status', [
+  'OPEN',
+  'IN_PROGRESS',
+  'BLOCKED',
+  'DONE',
+  'CANCELED',
+]);
+
+export const clientTasks = pgTable(
+  'client_task',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    // engagement FK added after engagements table is declared (forward
+    // reference would break Drizzle); see the FK constraint in migration
+    // 0028 itself. Column type alone is sufficient here.
+    engagementId: uuid('engagement_id'),
+    assigneeUserId: uuid('assignee_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    title: text('title').notNull(),
+    description: text('description'),
+    priority: clientTaskPriority('priority').notNull().default('MEDIUM'),
+    status: clientTaskStatus('status').notNull().default('OPEN'),
+    dueDate: date('due_date'),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    clientStatusIdx: index('client_task_client_status_idx').on(t.clientId, t.status),
+    assigneeIdx: index('client_task_assignee_idx')
+      .on(t.assigneeUserId, t.status, t.dueDate)
+      .where(sql`status NOT IN ('DONE', 'CANCELED')`),
+  }),
+);
+
+// =====================================================================
+// v2 0029 — client_file. Metadata catalog; blob lives in the storage
+// adapter (LocalFsAdapter / S3Adapter).
+// =====================================================================
+
+export const clientFiles = pgTable(
+  'client_file',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    engagementId: uuid('engagement_id'),
+    fileName: text('file_name').notNull(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    storagePath: text('storage_path').notNull(),
+    uploadedById: uuid('uploaded_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index('client_file_client_idx').on(t.clientId, t.status, t.uploadedAt),
+  }),
+);
+
+// =====================================================================
+// v2 0030 — client_communication. Outbound notifications auto-record;
+// staff records inbound/internal manually.
+// =====================================================================
+
+export const clientCommunications = pgTable(
+  'client_communication',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'MEETING', 'NOTE'] }).notNull(),
+    direction: text('direction', { enum: ['INBOUND', 'OUTBOUND', 'INTERNAL'] }).notNull(),
+    subject: text('subject'),
+    body: text('body').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    recordedById: uuid('recorded_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    relatedEntityType: text('related_entity_type'),
+    relatedEntityId: uuid('related_entity_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index('client_communication_client_idx').on(t.clientId, t.occurredAt),
+    firmIdx: index('client_communication_firm_idx').on(t.firmId, t.occurredAt),
+  }),
+);
+
+// =====================================================================
 // TABLE: engagement
 // =====================================================================
 

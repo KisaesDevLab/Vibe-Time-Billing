@@ -14,6 +14,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
 import { getBillingContact } from '../clients/billing-contact';
+import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
 import { publishWebhookEvent } from './publish';
 
@@ -155,19 +156,28 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
             const billingContact = await getBillingContact(deps.db, inv.clientId);
             if (client && billingContact?.email) {
               const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
-              await deps.sendEmail({
-                to: billingContact.email,
-                subject: `Payment received — ${inv.invoiceNumber}`,
-                body: [
-                  `Hi ${client.name},`,
-                  ``,
-                  `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
-                  fullyPaid
-                    ? `This invoice is now PAID. Thank you!`
-                    : `Remaining balance: $${((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2)}.`,
-                  link ? `\nView receipt: ${link}` : '',
-                ].join('\n'),
-              });
+              const subject = `Payment received — ${inv.invoiceNumber}`;
+              const body = [
+                `Hi ${client.name},`,
+                ``,
+                `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
+                fullyPaid
+                  ? `This invoice is now PAID. Thank you!`
+                  : `Remaining balance: $${((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2)}.`,
+                link ? `\nView receipt: ${link}` : '',
+              ].join('\n');
+              await deps.sendEmail({ to: billingContact.email, subject, body });
+              // v2 Sprint C — auto-record outbound in client timeline.
+              await recordOutbound({
+                db: deps.db,
+                firmId: inv.firmId,
+                clientId: inv.clientId,
+                channel: 'EMAIL',
+                subject,
+                body,
+                relatedEntityType: 'invoice',
+                relatedEntityId: inv.id,
+              }).catch((err) => logger.warn({ err }, 'comms record failed'));
             }
           } catch (err) {
             logger.warn({ err, invoiceId: inv.id }, 'payment confirmation email failed');

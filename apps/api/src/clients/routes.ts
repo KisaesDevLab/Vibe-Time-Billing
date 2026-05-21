@@ -22,11 +22,17 @@ import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import type { StorageAdapter } from '../files/storage';
 import { logger } from '../logger';
+import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
+import { mountFileRoutes } from './files';
+import { mountTaskRoutes } from './tasks';
 
 export interface ClientRoutesDeps extends RbacDeps {
   db: Database | null;
+  /** v2 Sprint C — file storage adapter for /clients/:id/files. */
+  storage?: StorageAdapter;
 }
 
 const ClientSchema = z.object({
@@ -664,6 +670,13 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
 
   // v2 Sprint B — multi-contact CRUD endpoints (workstream 1.2).
   mountContactRoutes(router, deps);
+
+  // v2 Sprint C — tasks (1.3) + files (1.4) + communications (1.5).
+  mountTaskRoutes(router, deps);
+  if (deps.storage) {
+    mountFileRoutes(router, { ...deps, storage: deps.storage });
+  }
+  mountCommunicationRoutes(router, deps);
 
   return router;
 }

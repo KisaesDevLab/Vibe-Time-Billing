@@ -13,6 +13,7 @@ import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
+import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
@@ -224,7 +225,15 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/taxonomy', auth.requireAuth, auth.requireCsrf, templatePackRouter);
 
-  const clientRouter = createClientRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  // v2 Sprint C — file storage adapter. Selection is env-driven; safe
+  // to build at boot since LocalFsAdapter doesn't touch the filesystem
+  // until a put/get runs.
+  const storage = buildStorageAdapter();
+  const clientRouter = createClientRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    storage,
+  });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
 
   const engagementRouter = createEngagementRouter({

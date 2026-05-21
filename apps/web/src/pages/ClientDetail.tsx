@@ -5,7 +5,10 @@ import { useParams } from 'react-router-dom';
 import { Button, Card, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { CommunicationsCard } from './clients/CommunicationsCard';
 import { ContactsCard } from './clients/ContactsCard';
+import { FilesCard } from './clients/FilesCard';
+import { TasksCard } from './clients/TasksCard';
 
 interface Client {
   id: string;
@@ -54,7 +57,12 @@ interface Summary {
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
-type Tab = 'home' | 'engagements' | 'billing';
+type Tab = 'home' | 'communications' | 'files' | 'tasks' | 'engagements' | 'billing';
+
+interface StaffUser {
+  id: string;
+  fullName: string;
+}
 
 export function ClientDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
@@ -65,6 +73,18 @@ export function ClientDetailPage(): JSX.Element {
   const [showMerge, setShowMerge] = useState(false);
   const [allClients, setAllClients] = useState<ClientLite[]>([]);
   const [tab, setTab] = useState<Tab>('home');
+  const [staff, setStaff] = useState<StaffUser[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ users: StaffUser[] }>('/api/staff/admin/users');
+        setStaff(r.users ?? []);
+      } catch {
+        // Non-fatal.
+      }
+    })();
+  }, []);
 
   async function load(): Promise<void> {
     if (!id) return;
@@ -170,6 +190,9 @@ export function ClientDetailPage(): JSX.Element {
       <Tabs
         tabs={[
           { key: 'home', label: 'Home' },
+          { key: 'communications', label: 'Communications' },
+          { key: 'files', label: 'Files' },
+          { key: 'tasks', label: 'Tasks' },
           { key: 'engagements', label: 'Engagements', badge: engagements.length },
           { key: 'billing', label: 'Billing' },
         ]}
@@ -202,12 +225,22 @@ export function ClientDetailPage(): JSX.Element {
 
           <ContactsCard clientId={client.id} />
 
+          <TasksCard clientId={client.id} compact users={staff} />
+
+          <FilesCard clientId={client.id} compact />
+
           <TagsCustomFieldsCard
             client={client}
             onSaved={(updated) => setClient({ ...client, ...updated })}
           />
         </>
       )}
+
+      {tab === 'communications' && <CommunicationsCard clientId={client.id} />}
+
+      {tab === 'files' && <FilesCard clientId={client.id} />}
+
+      {tab === 'tasks' && <TasksCard clientId={client.id} users={staff} />}
 
       {tab === 'engagements' && (
         <>
