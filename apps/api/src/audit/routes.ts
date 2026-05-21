@@ -257,6 +257,42 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Full-text-ish search across audit_log (Phase 19 #9). Matches against
+  // action / entity_type / entity_id / ip / user-agent. Returns the 200
+  // most recent matches.
+  // -----------------------------------------------------------------
+  router.get(
+    '/search',
+    requirePermission(deps, 'admin:audit:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const q = String(req.query['q'] ?? '').trim();
+      if (q.length < 2) {
+        res.json({ items: [] });
+        return;
+      }
+      const { ilike, or } = await import('drizzle-orm');
+      const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
+      const match = or(
+        ilike(auditLog.entityType, like),
+        ilike(auditLog.entityId, like),
+        ilike(auditLog.ip, like),
+        ilike(auditLog.userAgent, like),
+      );
+      const items = await deps.db
+        .select()
+        .from(auditLog)
+        .where(match)
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(200);
+      res.json({ items });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Outbound-notification log. Surfaces recent dunning + magic-link
   // sends. Pulled from dunning_history (real send ledger) joined with
   // invoice for context.
