@@ -809,6 +809,55 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   );
 
   // -------------------------------------------------------------------
+  // Capacity forecast (Phase 23 #15). Projects each timekeeper's next 4
+  // weeks of billable hours based on a 90-day trailing average and
+  // compares to a configurable weekly target.
+  // -------------------------------------------------------------------
+  router.get(
+    '/capacity-forecast',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const weeklyTarget = parseFloat(String(req.query['weeklyTarget'] ?? '32')) || 32;
+      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          appUserId: timeEntries.appUserId,
+          fullName: appUsers.fullName,
+          totalBillableHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.billableFlag} = true), 0)`,
+        })
+        .from(timeEntries)
+        .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .where(
+          and(eq(appUsers.firmId, session.firmId), drz`${timeEntries.entryDate} >= ${since}::date`),
+        )
+        .groupBy(timeEntries.appUserId, appUsers.fullName);
+      // 90 days ≈ 13 weeks; weekly average × 4 weeks = projection.
+      res.json({
+        weeklyTargetHours: weeklyTarget,
+        projectionWeeks: 4,
+        items: rows.map((r) => {
+          const billable = Number(r.totalBillableHours);
+          const weeklyAvg = billable / 13;
+          const projectedNext4Weeks = weeklyAvg * 4;
+          return {
+            appUserId: r.appUserId,
+            fullName: r.fullName,
+            trailing90Hours: billable,
+            weeklyAvgHours: weeklyAvg,
+            projectedNext4Weeks,
+            varianceVsTarget: projectedNext4Weeks - weeklyTarget * 4,
+          };
+        }),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
   // Productivity by office (Phase 20 #8). Hours + billable hours per
   // office over a window.
   // -------------------------------------------------------------------

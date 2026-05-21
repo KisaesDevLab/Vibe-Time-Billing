@@ -1460,6 +1460,63 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Mark many invoices PAID at once (manual reconciliation).
+  // -----------------------------------------------------------------
+  router.post(
+    '/bulk-mark-paid',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ updated: 0 });
+        return;
+      }
+      const body = req.body as { invoiceIds?: unknown };
+      const ids = Array.isArray(body.invoiceIds)
+        ? body.invoiceIds.filter((x): x is string => typeof x === 'string')
+        : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'invoiceIds_required' });
+        return;
+      }
+      const rows = await deps.db
+        .select()
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            sql`${invoices.id} = ANY(ARRAY[${sql.join(
+              ids.map((i) => sql`${i}`),
+              sql`,`,
+            )}]::uuid[])`,
+          ),
+        );
+      let updated = 0;
+      for (const inv of rows) {
+        if (inv.status === 'PAID' || inv.status === 'VOIDED') continue;
+        await deps.db
+          .update(invoices)
+          .set({
+            status: 'PAID',
+            paidCents: inv.totalCents,
+            paidAt: new Date(),
+          })
+          .where(eq(invoices.id, inv.id));
+        updated++;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice_bulk',
+        actorAppUserId: session.appUserId,
+        after: { kind: 'bulk_mark_paid', count: updated },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ updated });
+    },
+  );
+
   return router;
 }
 

@@ -4,6 +4,8 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { tokens } from '@vibe/ui';
 
 import { AiUsagePage } from './AiUsage';
+import { BackupPage } from './Backup';
+import { CompliancePage } from './Compliance';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
 import { FirmSettingsPage } from './FirmSettings';
@@ -45,6 +47,8 @@ const TABS = [
   { key: 'roles', label: 'Roles', href: '/admin/roles' },
   { key: 'notifs', label: 'Notifications', href: '/admin/notifications' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
+  { key: 'backup', label: 'Backup', href: '/admin/backup' },
+  { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
 ];
 
 export function AdminLayout(): JSX.Element {
@@ -94,6 +98,8 @@ export function AdminLayout(): JSX.Element {
         <Route path="roles" element={<RolesPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="jobs" element={<JobsPage />} />
+        <Route path="backup" element={<BackupPage />} />
+        <Route path="compliance" element={<CompliancePage />} />
       </Routes>
     </div>
   );

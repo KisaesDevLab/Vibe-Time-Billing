@@ -721,6 +721,128 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Custom fields PATCH. Replaces the entire customFields jsonb blob.
+  // -----------------------------------------------------------------
+  router.patch(
+    '/:id/custom-fields',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { customFields?: unknown };
+      if (!body.customFields || typeof body.customFields !== 'object') {
+        res.status(400).json({ error: 'customFields_required' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      await deps.db
+        .update(engagements)
+        .set({ customFields: body.customFields as Record<string, unknown> })
+        .where(eq(engagements.id, eng.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: eng.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'custom_fields', customFields: body.customFields },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Engagement rollover-now (Phase 8 #22 v2 — partner-driven). Creates
+  // a new engagement in PROPOSED status, optionally with the autoRollover
+  // price-increase applied, and queues the old one to be CLOSED.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/rollover',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const pct = eng.autoRolloverPriceIncreasePct ? Number(eng.autoRolloverPriceIncreasePct) : 0;
+      const newFee =
+        eng.feeAmountCents != null
+          ? Math.round(Number(eng.feeAmountCents) * (1 + pct / 100))
+          : null;
+      const [created] = await deps.db
+        .insert(engagements)
+        .values({
+          clientId: eng.clientId,
+          engagementTypeId: eng.engagementTypeId,
+          name: `${eng.name} (rollover)`,
+          feeStructure: eng.feeStructure,
+          feeAmountCents: newFee,
+          budgetHours: eng.budgetHours,
+          budgetAmountCents: eng.budgetAmountCents,
+          mixedModeEnabled: eng.mixedModeEnabled,
+          inScopeWorkCodeIds: eng.inScopeWorkCodeIds,
+          nteCapCents: eng.nteCapCents,
+          nteCapScope: eng.nteCapScope,
+          feePassthroughEnabled: eng.feePassthroughEnabled,
+          partnerId: eng.partnerId,
+          managerId: eng.managerId,
+          scopeDefinition: eng.scopeDefinition,
+          status: 'PROPOSED',
+          autoRolloverEnabled: eng.autoRolloverEnabled,
+          autoRolloverPriceIncreasePct: eng.autoRolloverPriceIncreasePct,
+        })
+        .returning({ id: engagements.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'engagement',
+        entityId: created?.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'rollover',
+          fromEngagementId: eng.id,
+          priceIncreasePct: pct,
+          newFeeCents: newFee,
+        },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.status(201).json({ id: created?.id, priceIncreasePct: pct });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Assign-to-team (Phase 8 #10). Sets partnerId + managerId in one
   // call. Either can be null to clear.
   // -----------------------------------------------------------------

@@ -32,6 +32,7 @@ import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createAdminJobRouter } from './admin/jobs';
+import { createComplianceRouter } from './admin/compliance';
 import { createStatsRouter } from './stats/routes';
 import { createEngagementLetterRouter } from './engagement-letters/routes';
 import { createRequiredFieldRulesRouter } from './required-field-rules/routes';
@@ -306,6 +307,12 @@ export function createApp(deps: AppDeps): Express {
     redisUrl: config.REDIS_URL,
   });
   app.use('/api/staff/admin/jobs', auth.requireAuth, auth.requireCsrf, adminJobRouter);
+
+  const complianceRouter = createComplianceRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/compliance', auth.requireAuth, auth.requireCsrf, complianceRouter);
 
   // API token issuance — admin only.
   const apiTokenRouter = createApiTokenRouter({
