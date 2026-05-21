@@ -10,14 +10,16 @@ import { z } from 'zod';
 import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
+import type { Redis } from 'ioredis';
 import { clients, engagements, invoices, timeEntries } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
-import { requireApiToken, requireToolScope } from '../auth/api-token';
+import { requireApiToken, requireApiTokenRateLimit, requireToolScope } from '../auth/api-token';
 import { logger } from '../logger';
 
 export interface RestRoutesDeps {
   db: Database | null;
+  redis?: Redis;
 }
 
 const TimeEntryCreateSchema = z.object({
@@ -36,6 +38,7 @@ export function createRestV1Router(deps: RestRoutesDeps): Router {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
   router.use(requireApiToken(deps.db));
+  router.use(requireApiTokenRateLimit(deps.redis));
 
   router.get(
     '/engagements',

@@ -391,8 +391,15 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       const engagementId =
         typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
-      const conds = [] as ReturnType<typeof eq>[];
+      const q = typeof req.query['q'] === 'string' ? req.query['q'].trim() : '';
+      const conds = [] as Array<ReturnType<typeof eq> | ReturnType<typeof drz>>;
       if (batchId) conds.push(eq(adjustments.billingBatchId, batchId));
+      // Phase 12 #26 — free-text search across notes and id prefix.
+      if (q) {
+        conds.push(
+          drz`(${adjustments.notes} ILIKE ${'%' + q + '%'} OR ${adjustments.id}::text ILIKE ${q + '%'})`,
+        );
+      }
       if (engagementId) {
         // Filter batches in that engagement.
         const batchRows = await deps.db

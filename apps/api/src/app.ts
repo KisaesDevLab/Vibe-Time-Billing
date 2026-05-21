@@ -340,7 +340,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/portal/letters', portalLetterRouter);
 
   // REST v1 — token-authenticated integrator surface.
-  app.use('/api/v1', createRestV1Router({ db: deps.db }));
+  app.use('/api/v1', createRestV1Router({ db: deps.db, redis: deps.redis }));
 
   // MCP HTTP shim — token-authenticated agent surface.
   app.use('/mcp', createMcpRouter({ db: deps.db }));

@@ -48,6 +48,12 @@ const Schema = z.object({
   AI_CLOUD_MODEL: z.string().default('claude-opus-4-7'),
   AI_LOCAL_URL: z.string().default('http://localhost:11434'),
   AI_LOCAL_MODEL: z.string().optional(),
+  // Phase 23 #4 — OpenAI-compatible provider (vLLM, Groq, Together, etc.)
+  AI_OPENAI_BASE_URL: z.string().optional(),
+  AI_OPENAI_API_KEY: z.string().optional(),
+  AI_OPENAI_MODEL: z.string().optional(),
+  AI_OPENAI_COST_INPUT_CENTS: z.coerce.number().nonnegative().optional(),
+  AI_OPENAI_COST_OUTPUT_CENTS: z.coerce.number().nonnegative().optional(),
   VIBE_CONNECT_URL: z.string().optional(),
   VIBE_CONNECT_API_KEY: z.string().optional(),
   // Mail provider secrets — only the matching one is read per MAIL_PROVIDER.

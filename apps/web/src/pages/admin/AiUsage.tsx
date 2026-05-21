@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useMemo, useState } from 'react';
 
-import { Card, Pill, Table, tokens } from '@vibe/ui';
+import { AiPanel, Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { aiUsable, useAiStatus } from '../../hooks/useAiStatus';
 
 interface LogRow {
   id: string;
@@ -74,6 +75,7 @@ export function AiUsagePage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <PricingRenewalCard />
       {aiStatus && (
         <Card title="AI status">
           <div style={{ display: 'flex', gap: 16, fontSize: 13, alignItems: 'center' }}>
@@ -225,5 +227,105 @@ function Stat({ label, value }: { label: string; value: string }): JSX.Element {
       <div style={{ fontSize: 11, color: tokens.color.textMuted }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 600 }}>{value}</div>
     </div>
+  );
+}
+
+// Phase 23 #27 — embedded pricing-renewal panel.
+// Partner enters engagement type + service line, model returns a
+// 3-line fee/effort/notes block. Lives on the AI Usage page so the
+// firm-admin role lands on it during cost reviews.
+function PricingRenewalCard(): JSX.Element | null {
+  const ai = useAiStatus();
+  const [engagementType, setEngagementType] = useState('');
+  const [serviceLine, setServiceLine] = useState('');
+  const [complexity, setComplexity] = useState<'LOW' | 'MEDIUM' | 'HIGH'>('MEDIUM');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(null);
+  if (!aiUsable(ai)) return null;
+
+  async function ask(): Promise<void> {
+    if (!engagementType.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ text: string }>('/api/staff/ai/pricing-suggestion', {
+        method: 'POST',
+        body: JSON.stringify({
+          engagementTypeName: engagementType,
+          serviceLineName: serviceLine || undefined,
+          complexity,
+        }),
+      });
+      setText(r.text);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <AiPanel
+      title="Pricing renewal suggestions"
+      providerId={ai?.providerId ?? undefined}
+      busy={busy}
+      error={err}
+      action={
+        <Button size="sm" onClick={() => void ask()} disabled={busy || !engagementType.trim()}>
+          {text ? 'Regenerate' : 'Suggest'}
+        </Button>
+      }
+    >
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8 }}>
+        <Input
+          label="Engagement type"
+          value={engagementType}
+          onChange={(e) => setEngagementType(e.target.value)}
+          placeholder="1040 individual return"
+        />
+        <Input
+          label="Service line (optional)"
+          value={serviceLine}
+          onChange={(e) => setServiceLine(e.target.value)}
+          placeholder="tax"
+        />
+        <label style={{ fontSize: 13 }}>
+          Complexity
+          <select
+            value={complexity}
+            onChange={(e) => setComplexity(e.target.value as 'LOW' | 'MEDIUM' | 'HIGH')}
+            style={{
+              marginTop: 4,
+              padding: '6px 8px',
+              background: tokens.color.surface,
+              color: tokens.color.text,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+              fontSize: 13,
+            }}
+          >
+            <option value="LOW">Low</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High</option>
+          </select>
+        </label>
+      </div>
+      {text && (
+        <pre
+          style={{
+            margin: 0,
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            background: tokens.color.bg,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            padding: 8,
+          }}
+        >
+          {text}
+        </pre>
+      )}
+    </AiPanel>
   );
 }

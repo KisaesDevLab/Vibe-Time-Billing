@@ -631,6 +631,102 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Reopen a finalized batch into a new version (Phase 11 #23).
+  // Creates a fresh DRAFT batch with previousVersionId = current,
+  // version = current.version + 1. Old batch flips to CANCELLED.
+  // INCLUDED entries are released (billing_batch_id = null) so the
+  // new batch can re-pull them; INVOICED status is preserved as a
+  // metadata trail. The old invoice (if any) is left untouched.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/reopen',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Refuse if already replaced by a newer version (avoid loops).
+      const [child] = await deps.db
+        .select({ id: billingBatches.id })
+        .from(billingBatches)
+        .where(eq(billingBatches.previousVersionId, batch.billing_batch.id))
+        .limit(1);
+      if (child) {
+        res.status(409).json({ error: 'already_reopened', newVersionId: child.id });
+        return;
+      }
+      const newId = await deps.db.transaction(async (tx) => {
+        const [newBatch] = await tx
+          .insert(billingBatches)
+          .values({
+            engagementId: batch.billing_batch.engagementId,
+            periodStart: batch.billing_batch.periodStart,
+            periodEnd: batch.billing_batch.periodEnd,
+            status: 'DRAFT',
+            createdById: session.appUserId,
+            assignedPartnerId: batch.billing_batch.assignedPartnerId,
+            previousVersionId: batch.billing_batch.id,
+            version: (batch.billing_batch.version ?? 1) + 1,
+          })
+          .returning({ id: billingBatches.id });
+        if (!newBatch) throw new Error('reopen_failed');
+        // Release entries from the old batch and pull them into the new one.
+        const entries = await tx
+          .select({ id: timeEntries.id })
+          .from(timeEntries)
+          .where(eq(timeEntries.billingBatchId, batch.billing_batch.id));
+        if (entries.length > 0) {
+          await tx
+            .update(timeEntries)
+            .set({ billingBatchId: newBatch.id, lockedAt: null })
+            .where(
+              inArray(
+                timeEntries.id,
+                entries.map((e) => e.id),
+              ),
+            );
+          await tx.insert(billingBatchEntries).values(
+            entries.map((e) => ({
+              billingBatchId: newBatch.id,
+              timeEntryId: e.id,
+              action: 'INCLUDE' as const,
+            })),
+          );
+        }
+        await tx
+          .update(billingBatches)
+          .set({ status: 'CANCELLED' })
+          .where(eq(billingBatches.id, batch.billing_batch.id));
+        return newBatch.id;
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'billing_batch',
+        entityId: batch.billing_batch.id,
+        actorAppUserId: session.appUserId,
+        before: { status: batch.billing_batch.status, version: batch.billing_batch.version ?? 1 },
+        after: { kind: 'reopened', newVersionId: newId },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, newVersionId: newId });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Recompute a batch (Phase 11 #21). Re-aggregates time-entry totals
   // for the batch. Useful after a time entry was edited but the batch
   // was already created. Read-only — returns the recomputed numbers,

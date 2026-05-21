@@ -993,6 +993,10 @@ export const billingBatches = pgTable(
     assignedPartnerId: uuid('assigned_partner_id').references(() => appUsers.id, {
       onDelete: 'set null',
     }),
+    // Phase 11 #23 — reopen → new version. previousVersionId points to
+    // the batch this one replaces; version increments per reopen.
+    previousVersionId: uuid('previous_version_id'),
+    version: integer('version').notNull().default(1),
     finalizedAt: timestamp('finalized_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

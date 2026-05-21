@@ -105,7 +105,14 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     const conds = [eq(invoices.firmId, session.firmId)];
     if (q) {
       const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
-      const search = or(ilike(invoices.invoiceNumber, like), ilike(clients.name, like));
+      // Phase 13 #22 — broaden the free-text reach to invoice notes
+      // and id-prefix lookups so partners can paste any visible string
+      // and have it resolve.
+      const search = or(
+        ilike(invoices.invoiceNumber, like),
+        ilike(clients.name, like),
+        ilike(invoices.notes, like),
+      );
       if (search) conds.push(search);
     }
     if (

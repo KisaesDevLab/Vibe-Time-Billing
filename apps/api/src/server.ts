@@ -15,6 +15,7 @@ import { createDb } from '@vibe/db';
 import { createStripeProvider } from './payments/stripe';
 import { createAnthropicProvider } from './ai/anthropic';
 import { createOllamaProvider } from './ai/ollama';
+import { createOpenAiCompatibleProvider } from './ai/openai-compatible';
 import {
   createConsoleMailProvider,
   createPostmarkProvider,
@@ -65,10 +66,20 @@ const chargeInvoice = stripe
   : undefined;
 
 // AI providers — Q15: local preferred, cloud fallback. Constructed only if
-// their config is present.
-const localAiProvider: AiProvider | null = config.AI_LOCAL_MODEL
-  ? createOllamaProvider({ url: config.AI_LOCAL_URL, model: config.AI_LOCAL_MODEL })
-  : null;
+// their config is present. AI_OPENAI_BASE_URL elects the OpenAI-compatible
+// path (Phase 23 #4); use it for hosted gateways like Groq/Together or for
+// vLLM-style on-prem inference servers.
+const localAiProvider: AiProvider | null = config.AI_OPENAI_BASE_URL
+  ? createOpenAiCompatibleProvider({
+      baseUrl: config.AI_OPENAI_BASE_URL,
+      apiKey: config.AI_OPENAI_API_KEY,
+      model: config.AI_OPENAI_MODEL ?? config.AI_LOCAL_MODEL ?? 'gpt-4o-mini',
+      costPer1kInputCents: config.AI_OPENAI_COST_INPUT_CENTS,
+      costPer1kOutputCents: config.AI_OPENAI_COST_OUTPUT_CENTS,
+    })
+  : config.AI_LOCAL_MODEL
+    ? createOllamaProvider({ url: config.AI_LOCAL_URL, model: config.AI_LOCAL_MODEL })
+    : null;
 const cloudAiProvider: AiProvider | null = config.AI_CLOUD_API_KEY
   ? createAnthropicProvider({
       apiKey: config.AI_CLOUD_API_KEY,
