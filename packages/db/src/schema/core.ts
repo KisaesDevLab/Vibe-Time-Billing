@@ -542,6 +542,12 @@ export const clients = pgTable(
     tags: jsonb('tags').$type<string[]>().notNull().default([]),
     notes: text('notes'),
 
+    // Legal hold (Phase 19 #12) — when true, the retention worker
+    // skips this client's records and archive is blocked.
+    legalHoldFlag: boolean('legal_hold_flag').notNull().default(false),
+    legalHoldReason: text('legal_hold_reason'),
+    legalHoldSetAt: timestamp('legal_hold_set_at', { withTimezone: true }),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

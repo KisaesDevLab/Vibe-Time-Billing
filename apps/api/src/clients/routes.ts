@@ -145,6 +145,42 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     },
   );
 
+  // Legal-hold toggle (Phase 19 #12). When set, archive is blocked and
+  // the retention worker preserves audit + ai_request_log entries.
+  router.post(
+    '/:id/legal-hold',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { enabled?: unknown; reason?: unknown };
+      const enabled = body.enabled === true;
+      const reason = enabled && typeof body.reason === 'string' ? body.reason.slice(0, 1000) : null;
+      await deps.db
+        .update(clients)
+        .set({
+          legalHoldFlag: enabled,
+          legalHoldReason: reason,
+          legalHoldSetAt: enabled ? new Date() : null,
+        })
+        .where(and(eq(clients.firmId, firmId), eq(clients.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'legal_hold', enabled, reason },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, legalHoldFlag: enabled });
+    },
+  );
+
   router.patch(
     '/:id/archive',
     requirePermission(deps, 'client:archive'),
@@ -153,6 +189,16 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       const session = req.staffSession!;
       if (!deps.db) {
         res.json({ ok: true });
+        return;
+      }
+      // Phase 19 #12 — legal-hold blocks archive.
+      const [c] = await deps.db
+        .select({ legalHoldFlag: clients.legalHoldFlag })
+        .from(clients)
+        .where(and(eq(clients.firmId, firmId), eq(clients.id, req.params['id']!)))
+        .limit(1);
+      if (c?.legalHoldFlag) {
+        res.status(409).json({ error: 'legal_hold_active' });
         return;
       }
       await deps.db
