@@ -343,6 +343,26 @@ export const offices = pgTable(
 );
 
 // =====================================================================
+// TABLE: office_settings — per-office overrides (Phase 4 #7)
+// =====================================================================
+
+export const officeSettings = pgTable('office_settings', {
+  officeId: uuid('office_id')
+    .notNull()
+    .references(() => offices.id, { onDelete: 'cascade' })
+    .primaryKey(),
+  // NULL = inherit from firm_settings
+  adjustmentApprovalThresholdCents: bigint('adjustment_approval_threshold_cents', {
+    mode: 'number',
+  }),
+  timeEntryRoundingHours: numeric('time_entry_rounding_hours', { precision: 4, scale: 2 }),
+  lateEntryAlertDays: integer('late_entry_alert_days'),
+  lateEntryLockoutDays: integer('late_entry_lockout_days'),
+  invoiceNumberingPrefix: text('invoice_numbering_prefix'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// =====================================================================
 // TABLE: app_user (STAFF — distinct from portal_identity)
 // =====================================================================
 

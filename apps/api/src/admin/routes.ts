@@ -777,5 +777,99 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // ----------------------------------------------------------------
+  // Per-office settings overrides (Phase 4 #7). Resolution is
+  // "office override if set, else firm default".
+  // ----------------------------------------------------------------
+  router.get(
+    '/offices/:id/settings',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ resolved: null, override: null });
+        return;
+      }
+      const { offices, officeSettings, firmSettings } = await import('@vibe/db/schema');
+      const [office] = await deps.db
+        .select({ id: offices.id })
+        .from(offices)
+        .where(and(eq(offices.id, req.params['id']!), eq(offices.firmId, firmId)))
+        .limit(1);
+      if (!office) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [firm] = await deps.db
+        .select()
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, firmId))
+        .limit(1);
+      const [ov] = await deps.db
+        .select()
+        .from(officeSettings)
+        .where(eq(officeSettings.officeId, office.id))
+        .limit(1);
+      const pick = <T>(o: T | null | undefined, f: T): T => (o ?? f) as T;
+      res.json({
+        override: ov ?? null,
+        resolved: firm
+          ? {
+              adjustmentApprovalThresholdCents: pick(
+                ov?.adjustmentApprovalThresholdCents,
+                firm.adjustmentApprovalThresholdCents,
+              ),
+              timeEntryRoundingHours: pick(ov?.timeEntryRoundingHours, firm.timeEntryRoundingHours),
+              lateEntryAlertDays: pick(ov?.lateEntryAlertDays, firm.lateEntryAlertDays),
+              lateEntryLockoutDays: pick(ov?.lateEntryLockoutDays, firm.lateEntryLockoutDays),
+              invoiceNumberingPrefix: pick(ov?.invoiceNumberingPrefix, firm.invoiceNumberingPrefix),
+            }
+          : null,
+      });
+    },
+  );
+
+  router.put(
+    '/offices/:id/settings',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const { offices, officeSettings } = await import('@vibe/db/schema');
+      const [office] = await deps.db
+        .select({ id: offices.id })
+        .from(offices)
+        .where(and(eq(offices.id, req.params['id']!), eq(offices.firmId, firmId)))
+        .limit(1);
+      if (!office) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const numOrNull = (k: string): number | null =>
+        body[k] === null ? null : typeof body[k] === 'number' ? (body[k] as number) : null;
+      const strOrNull = (k: string): string | null =>
+        body[k] === null ? null : typeof body[k] === 'string' ? (body[k] as string) : null;
+
+      const values = {
+        officeId: office.id,
+        adjustmentApprovalThresholdCents: numOrNull('adjustmentApprovalThresholdCents'),
+        timeEntryRoundingHours: strOrNull('timeEntryRoundingHours'),
+        lateEntryAlertDays: numOrNull('lateEntryAlertDays'),
+        lateEntryLockoutDays: numOrNull('lateEntryLockoutDays'),
+        invoiceNumberingPrefix: strOrNull('invoiceNumberingPrefix'),
+        updatedAt: new Date(),
+      };
+      await deps.db
+        .insert(officeSettings)
+        .values(values)
+        .onConflictDoUpdate({ target: officeSettings.officeId, set: values });
+      res.json({ ok: true });
+    },
+  );
+
   return router;
 }
