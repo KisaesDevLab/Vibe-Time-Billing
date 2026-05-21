@@ -53,10 +53,32 @@ jobs:
         env:
           LHCI_BUILD_CONTEXT__CURRENT_BRANCH: ${{ github.head_ref || github.ref_name }}
 
+      - name: Print scores to log
+        if: always()
+        run: |
+          set +e
+          for f in .lighthouseci/lhr-*.json; do
+            [ -f "$f" ] || continue
+            echo "::group::Lighthouse scores — $(basename "$f")"
+            node -e "
+              const r = JSON.parse(require('fs').readFileSync('$f', 'utf8'));
+              const cats = r.categories || {};
+              for (const k of Object.keys(cats)) {
+                const v = cats[k];
+                console.log(k.padEnd(16), ' ', (v.score == null ? 'n/a' : v.score.toFixed(2)));
+              }
+            "
+            echo "::endgroup::"
+          done
+          ls -la .lighthouseci/ 2>&1 || true
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lighthouse-reports
-          path: .lighthouseci/
+          path: |
+            .lighthouseci/*.json
+            .lighthouseci/*.html
+          if-no-files-found: warn
           retention-days: 14
