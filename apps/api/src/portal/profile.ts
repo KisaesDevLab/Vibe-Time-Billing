@@ -326,6 +326,87 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
   );
 
   // ---------------------------------------------------------------
+  // Pay-to-unlock signal (Phase 19 #20). Returns the list of overdue
+  // invoices the client must clear before document/portal features are
+  // re-enabled. The "unlock" itself is a gate the firm enables by
+  // marking specific invoices as gating in admin (future field).
+  // Until then the rule is: any invoice ≥30 days past due is "gating".
+  // ---------------------------------------------------------------
+  router.get('/pay-to-unlock', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ unlocked: true, blockers: [] });
+      return;
+    }
+    if (!session.activeClientId) {
+      res.status(400).json({ error: 'no_active_client' });
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const rows = await deps.db
+      .select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        dueDate: invoices.dueDate,
+        totalCents: invoices.totalCents,
+        paidCents: invoices.paidCents,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.clientId, session.activeClientId),
+          drz`${invoices.status} IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID')`,
+          drz`${invoices.dueDate} <= ${cutoff}::date`,
+        ),
+      )
+      .limit(50);
+    const blockers = rows
+      .filter((r) => Number(r.totalCents) - Number(r.paidCents) > 0)
+      .map((r) => ({
+        invoiceId: r.id,
+        invoiceNumber: r.invoiceNumber,
+        dueDate: r.dueDate,
+        balanceCents: Number(r.totalCents) - Number(r.paidCents),
+        daysOverdue: r.dueDate
+          ? Math.floor((Date.parse(today) - Date.parse(r.dueDate)) / 86_400_000)
+          : 0,
+      }));
+    res.json({ unlocked: blockers.length === 0, blockers });
+  });
+
+  // ---------------------------------------------------------------
+  // Public branding (no auth — used by the portal shell to render
+  // logo + accent color before the login screen). Looks up the firm
+  // by host header / commercial license token at boot.
+  // ---------------------------------------------------------------
+  router.get('/branding', async (_req: Request, res: Response) => {
+    if (!deps.db) {
+      res.json({ branding: null });
+      return;
+    }
+    const { firmSettings, firms } = await import('@vibe/db/schema');
+    // Single-firm appliance — just grab the first row.
+    const [first] = await deps.db.select({ id: firms.id }).from(firms).limit(1);
+    if (!first) {
+      res.json({ branding: null });
+      return;
+    }
+    const [b] = await deps.db
+      .select({
+        displayName: firmSettings.brandDisplayName,
+        logoUrl: firmSettings.brandLogoUrl,
+        accentColor: firmSettings.brandAccentColor,
+        supportEmail: firmSettings.brandSupportEmail,
+        supportPhone: firmSettings.brandSupportPhone,
+      })
+      .from(firmSettings)
+      .where(eq(firmSettings.firmId, first.id))
+      .limit(1);
+    res.json({ branding: b ?? null });
+  });
+
+  // ---------------------------------------------------------------
   // Entity switcher (Phase 19 #21). List clients this identity has
   // ACTIVE portal access to and switch the active one. The active
   // client scopes every other portal endpoint.

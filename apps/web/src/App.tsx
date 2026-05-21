@@ -22,6 +22,7 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
+import { OnboardingPage } from './pages/Onboarding';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
 import { TimeEntryPage } from './pages/TimeEntry';
@@ -64,6 +65,7 @@ export function App(): JSX.Element {
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
                   <Route path="/account" element={<AccountPage />} />
+                  <Route path="/onboarding" element={<OnboardingPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
