@@ -678,8 +678,16 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
             .where(eq(appUsers.firmId, session.firmId)),
         ),
       ];
-      if (['PENDING', 'APPROVED', 'REJECTED', 'APPROVED_WITH_EDITS'].includes(status)) {
-        conds.push(eq(approvalRequests.status, status as 'PENDING'));
+      const validStatuses = [
+        'PENDING',
+        'APPROVED',
+        'REJECTED',
+        'APPROVED_WITH_EDITS',
+        'CANCELLED',
+      ] as const;
+      type ApprovalStatus = (typeof validStatuses)[number];
+      if ((validStatuses as readonly string[]).includes(status)) {
+        conds.push(eq(approvalRequests.status, status as ApprovalStatus));
       }
       const rows = await deps.db
         .select()

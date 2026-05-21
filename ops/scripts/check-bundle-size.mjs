@@ -41,7 +41,9 @@ for (const app of Object.keys(BUDGETS_KB)) {
   const gzippedKb = Math.round((gzipped.length / 1024) * 10) / 10;
   const budget = BUDGETS_KB[app];
   const status = gzippedKb <= budget ? 'ok' : 'OVER';
-  console.log(`size: ${app}/${mainJs} -> ${gzippedKb} KB gzipped (budget ${budget} KB) [${status}]`);
+  console.log(
+    `size: ${app}/${mainJs} -> ${gzippedKb} KB gzipped (budget ${budget} KB) [${status}]`,
+  );
   if (gzippedKb > budget) failed = true;
 }
 

@@ -19,6 +19,7 @@ import {
 import { sql as drz } from 'drizzle-orm';
 import type { AnySession } from '@vibe/core/auth';
 
+import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 
 export interface PortalProfileDeps {
@@ -682,6 +683,13 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         updatedAt: new Date(),
       })
       .where(eq(portalAltContact.id, row.id));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'portal_alt_contact',
+      entityId: row.id,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: { channel: row.channel, verified: true },
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
     res.json({ verified: true });
   });
 
@@ -692,14 +700,21 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       return;
     }
     const { portalAltContact } = await import('@vibe/db/schema');
+    const targetId = req.params['id']!;
     await deps.db
       .delete(portalAltContact)
       .where(
         and(
-          eq(portalAltContact.id, req.params['id']!),
+          eq(portalAltContact.id, targetId),
           eq(portalAltContact.portalIdentityId, session.portalIdentityId),
         ),
       );
+    await emitAudit(deps.db, {
+      action: 'ARCHIVE',
+      entityType: 'portal_alt_contact',
+      entityId: targetId,
+      actorPortalIdentityId: session.portalIdentityId,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
     res.json({ ok: true });
   });
 

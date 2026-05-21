@@ -214,8 +214,3 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
       logger.debug({ type: event.type }, 'unhandled stripe event');
   }
 }
-
-// Quiet unused: `and` is imported for future event-filtering predicates
-// (e.g. and(eq(provider_charge_id, …), eq(firm_id, …)) when the
-// schema gains a firm_id column on payment for cross-firm safety).
-void and;

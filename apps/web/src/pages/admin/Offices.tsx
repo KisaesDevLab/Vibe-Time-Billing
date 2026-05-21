@@ -137,6 +137,7 @@ function OfficeSettingsPanel({ officeId }: { officeId: string }): JSX.Element {
   }
   useEffect(() => {
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [officeId]);
 
   async function save(field: keyof OverrideShape, value: number | string | null): Promise<void> {
