@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from './auth-context';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
+import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
 import { StatementPage } from './pages/Statement';
 import { SwitchEntityPage } from './pages/Switch';
@@ -28,6 +29,7 @@ export function App(): JSX.Element {
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
+                  <Route path="/notifications" element={<NotificationPrefsPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>
@@ -74,6 +76,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           label: 'Switch client',
           href: '/switch',
           active: location.pathname.startsWith('/switch'),
+        },
+        {
+          label: 'Notifications',
+          href: '/notifications',
+          active: location.pathname.startsWith('/notifications'),
         },
       ]}
       trailing={
