@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+#
+# Exclude host artifacts so COPY . . doesn't drag Windows-built
+# node_modules into the Linux image. The Dockerfile reinstalls fresh
+# via `pnpm install --frozen-lockfile` so omitting these is correct.
+
+# Dependencies — must rebuild per-platform inside the image
+node_modules
+.pnpm-store
+
+# Build outputs — Docker builder stage produces its own
+dist
+build
+*.tsbuildinfo
+.turbo
+.lighthouseci
+
+# Test outputs
+coverage
+.vitest-cache
+test-results
+playwright-report
+
+# VCS — not needed at runtime
+.git
+.github
+
+# Env / secrets — must not bake into image
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
