@@ -79,6 +79,19 @@ export function WebhooksPage(): JSX.Element {
     }
   }
 
+  async function testFire(id: string): Promise<void> {
+    try {
+      await api(`/api/staff/webhooks/${id}/test-fire`, { method: 'POST' });
+      // Refresh the deliveries view if it's open on this endpoint.
+      if (expandedId === id) {
+        const r = await api<{ items: Delivery[] }>(`/api/staff/webhooks/${id}/deliveries`);
+        setDeliveries(r.items ?? []);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
   async function rotate(id: string): Promise<void> {
     if (!confirm('Rotate this endpoint secret? The old secret will stop working.')) return;
     try {
@@ -223,6 +236,9 @@ export function WebhooksPage(): JSX.Element {
                 <span style={{ display: 'flex', gap: 6 }}>
                   <Button size="sm" variant="secondary" onClick={() => void loadDeliveries(e.id)}>
                     Deliveries
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => void testFire(e.id)}>
+                    Test
                   </Button>
                   <Button size="sm" variant="secondary" onClick={() => void rotate(e.id)}>
                     Rotate

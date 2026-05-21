@@ -721,6 +721,64 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Bulk reassign: change partner + manager on many engagements at once.
+  // -----------------------------------------------------------------
+  router.post(
+    '/bulk-assign',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ updated: 0 });
+        return;
+      }
+      const body = req.body as {
+        engagementIds?: unknown;
+        partnerId?: unknown;
+        managerId?: unknown;
+      };
+      const ids = Array.isArray(body.engagementIds)
+        ? body.engagementIds.filter((x): x is string => typeof x === 'string')
+        : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'engagementIds_required' });
+        return;
+      }
+      const patch: Record<string, unknown> = {};
+      if (typeof body.partnerId === 'string') patch['partnerId'] = body.partnerId;
+      if (typeof body.managerId === 'string') patch['managerId'] = body.managerId;
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      // Scope-check via client→firm join.
+      const scoped = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(clients.firmId, firmId), inArray(engagements.id, ids)));
+      const allowed = scoped.map((s) => s.id);
+      const updated = allowed.length
+        ? await deps.db
+            .update(engagements)
+            .set(patch)
+            .where(inArray(engagements.id, allowed))
+            .returning({ id: engagements.id })
+        : [];
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_bulk',
+        actorAppUserId: session.appUserId,
+        after: { kind: 'bulk_assign', count: updated.length, patch },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ updated: updated.length });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Custom fields PATCH. Replaces the entire customFields jsonb blob.
   // -----------------------------------------------------------------
   router.patch(

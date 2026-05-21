@@ -11,6 +11,7 @@ import { EngagementLettersPage } from './EngagementLetters';
 import { FirmSettingsPage } from './FirmSettings';
 import { HolidaysPage } from './Holidays';
 import { HourBanksPage } from './HourBanks';
+import { HourBankTxPage } from './HourBankTx';
 import { JobsPage } from './Jobs';
 import { MilestonesPage } from './Milestones';
 import { NotificationsPage } from './Notifications';
@@ -35,6 +36,7 @@ const TABS = [
   { key: 'rates', label: 'Rates', href: '/admin/rates' },
   { key: 'plans', label: 'Recurring plans', href: '/admin/recurring-plans' },
   { key: 'banks', label: 'Hour banks', href: '/admin/hour-banks' },
+  { key: 'banks-tx', label: 'Hour-bank tx', href: '/admin/hour-bank-tx' },
   { key: 'holidays', label: 'Holidays', href: '/admin/holidays' },
   { key: 'letters', label: 'Engagement letters', href: '/admin/letters' },
   { key: 'rules', label: 'Approval rules', href: '/admin/approval-rules' },
@@ -86,6 +88,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />
+        <Route path="hour-bank-tx" element={<HourBankTxPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />
