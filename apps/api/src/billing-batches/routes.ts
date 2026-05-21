@@ -21,6 +21,7 @@ import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billin
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { renderHtmlToPdf } from '../pdf/render';
 
@@ -48,6 +49,7 @@ const FinalizeSchema = z.object({
 
 export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.post(
     '/',

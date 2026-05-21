@@ -21,6 +21,7 @@ import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 function clientIp(req: Request): string {
@@ -104,6 +105,7 @@ async function clientBelongsToFirm(
 
 export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/',

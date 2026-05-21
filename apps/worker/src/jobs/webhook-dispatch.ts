@@ -6,7 +6,7 @@
 // failure, and marks DELIVERED or FAILED.
 
 import crypto from 'node:crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { webhookDeliveries, webhookEndpoints } from '@vibe/db/schema';
@@ -25,13 +25,18 @@ export async function runWebhookDispatch(
   log: Logger,
   now = new Date(),
 ): Promise<{ scanned: number; delivered: number; failed: number; retrying: number }> {
+  // QA fix — raw `sql\`${now}\`` interpolation was passing a JS Date to the
+  // postgres driver and throwing "string/Buffer expected, got Date" before
+  // the parameter binder kicked in. drizzle's typed ops serialise Date
+  // correctly against a timestamptz column.
   const due = await db
     .select()
     .from(webhookDeliveries)
     .where(
       and(
         eq(webhookDeliveries.status, 'PENDING'),
-        sql`(${webhookDeliveries.nextAttemptAt} IS NULL OR ${webhookDeliveries.nextAttemptAt} <= ${now})`,
+        or(isNull(webhookDeliveries.nextAttemptAt), lte(webhookDeliveries.nextAttemptAt, now)) ??
+          isNull(webhookDeliveries.nextAttemptAt),
       ),
     )
     .limit(100);

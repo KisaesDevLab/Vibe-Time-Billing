@@ -24,6 +24,7 @@ import { desc } from 'drizzle-orm';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import type { StorageAdapter } from '../files/storage';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
@@ -63,6 +64,7 @@ const MergeSchema = z.object({
 
 export function createClientRouter(deps: ClientRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get('/', requirePermission(deps, 'client:read'), async (req: Request, res: Response) => {
     const firmId = req.staffSession?.firmId;

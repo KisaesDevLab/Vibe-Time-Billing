@@ -278,14 +278,22 @@ export function mountFolderRoutes(router: Router, deps: FolderRoutesDeps): void 
     },
   );
 
-  // Folder-template list (read-only — picker uses it).
+  // Folder-template list (read-only — picker uses it). Path includes the
+  // client :id so the route nests cleanly under the client-scoped router;
+  // the templates themselves are firm-scoped (the :id is only used for
+  // firm-membership validation).
   router.get(
-    '/folder-templates',
+    '/:id/folder-templates',
     requirePermission(deps, 'client:read'),
     async (req: Request, res: Response) => {
       const firmId = req.staffSession?.firmId;
       if (!firmId || !deps.db) {
         res.json({ items: [] });
+        return;
+      }
+      const clientId = req.params['id']!;
+      if (!(await ensureClientInFirm(deps.db, clientId, firmId))) {
+        res.status(404).json({ error: 'not_found' });
         return;
       }
       const items = await deps.db

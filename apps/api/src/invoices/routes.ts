@@ -37,6 +37,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
@@ -98,6 +99,7 @@ const ManualComposeSchema = z.object({
 
 export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get('/', requirePermission(deps, 'invoice:read'), async (req: Request, res: Response) => {
     const session = req.staffSession!;

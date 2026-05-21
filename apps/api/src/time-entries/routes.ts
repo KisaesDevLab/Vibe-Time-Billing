@@ -29,6 +29,7 @@ import { captureRateSnapshot, resolveRate, type RateCandidate } from '@vibe/core
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface TimeEntryRoutesDeps extends RbacDeps {
@@ -224,6 +225,7 @@ async function evaluateRequiredFieldRules(
 
 export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.post(
     '/',

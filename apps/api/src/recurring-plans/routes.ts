@@ -22,6 +22,7 @@ import { desc as drzDesc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface RecurringPlanRoutesDeps extends RbacDeps {
@@ -42,6 +43,7 @@ const CreateSchema = z.object({
 
 export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/',

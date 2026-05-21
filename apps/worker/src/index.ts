@@ -342,6 +342,10 @@ async function setup(): Promise<void> {
       const cutoff = new Date(Date.now() - 60 * 60_000);
       void (async () => {
         try {
+          // QA fix — auditLog.entityId is uuid. BullMQ jobIds look like
+          // "repeat:webhook-dispatch:scheduler:1779403047000" which threw
+          // 22P02 both on the dedup SELECT and the INSERT. Stash the real
+          // jobId in afterJson and dedup against that via the JSONB key.
           const { sql, and, eq, gte } = await import('drizzle-orm');
           const { auditLog } = await import('@vibe/db/schema');
           const [dup] = await db!
@@ -350,7 +354,7 @@ async function setup(): Promise<void> {
             .where(
               and(
                 eq(auditLog.entityType, 'worker_job_failure'),
-                eq(auditLog.entityId, jobId),
+                sql`${auditLog.afterJson} ->> 'jobId' = ${jobId}`,
                 gte(auditLog.occurredAt, cutoff),
               ),
             )
@@ -359,13 +363,10 @@ async function setup(): Promise<void> {
           await db!.insert(auditLog).values({
             action: 'CREATE',
             entityType: 'worker_job_failure',
-            entityId: jobId,
+            entityId: null,
             actorMcpTokenId: 'worker',
             afterJson: { queue: name, jobId, failedReason },
           });
-          // Touch sql so lint doesn't complain about unused import once
-          // there's no other consumer in this scope.
-          void sql;
         } catch (err) {
           logger.error({ err, queue: name, jobId }, 'job-failure audit emit failed');
         }
