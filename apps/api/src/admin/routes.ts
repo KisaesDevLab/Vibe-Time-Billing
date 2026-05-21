@@ -871,5 +871,103 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // ----------------------------------------------------------------
+  // Notification templates (Phase 20 #12). Per Q28: variable
+  // insertion only via {{placeholder}} markers. UI uses the picker
+  // to insert variables; the dispatcher renders at send time.
+  // ----------------------------------------------------------------
+  router.get(
+    '/notification-templates',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const { notificationTemplates } = await import('@vibe/db/schema');
+      const items = await deps.db
+        .select()
+        .from(notificationTemplates)
+        .where(eq(notificationTemplates.firmId, firmId));
+      res.json({ items });
+    },
+  );
+
+  router.put(
+    '/notification-templates/:kind/:channel',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const { notificationTemplates } = await import('@vibe/db/schema');
+      const kind = req.params['kind']!;
+      const channel = req.params['channel'] === 'SMS' ? 'SMS' : 'EMAIL';
+      const body = (req.body ?? {}) as { subject?: string; body?: string; enabled?: boolean };
+      if (typeof body.body !== 'string' || body.body.length === 0) {
+        res.status(400).json({ error: 'body_required' });
+        return;
+      }
+      // Mine placeholder names so the UI variable picker can render them.
+      const re = /{{\s*([a-zA-Z0-9_.]+)\s*}}/g;
+      const seen = new Set<string>();
+      const sources = [body.body, body.subject ?? ''].join('\n');
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(sources))) seen.add(m[1]!);
+      const variables = Array.from(seen).sort();
+
+      const values = {
+        firmId,
+        kind,
+        channel: channel as 'EMAIL' | 'SMS',
+        subject: body.subject ?? null,
+        body: body.body,
+        variablesJson: variables,
+        enabled: body.enabled ?? true,
+        updatedAt: new Date(),
+      };
+      await deps.db
+        .insert(notificationTemplates)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [
+            notificationTemplates.firmId,
+            notificationTemplates.kind,
+            notificationTemplates.channel,
+          ],
+          set: values,
+        });
+      res.json({ ok: true, variables });
+    },
+  );
+
+  router.delete(
+    '/notification-templates/:kind/:channel',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const { notificationTemplates } = await import('@vibe/db/schema');
+      const kind = req.params['kind']!;
+      const channel = req.params['channel'] === 'SMS' ? 'SMS' : 'EMAIL';
+      await deps.db
+        .delete(notificationTemplates)
+        .where(
+          and(
+            eq(notificationTemplates.firmId, firmId),
+            eq(notificationTemplates.kind, kind),
+            eq(notificationTemplates.channel, channel),
+          ),
+        );
+      res.json({ ok: true });
+    },
+  );
+
   return router;
 }

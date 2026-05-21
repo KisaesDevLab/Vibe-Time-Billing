@@ -346,6 +346,33 @@ export const offices = pgTable(
 // TABLE: office_settings — per-office overrides (Phase 4 #7)
 // =====================================================================
 
+// =====================================================================
+// TABLE: notification_template (Phase 20 #12) — per-firm overrides for
+// email/SMS notification copy. Variable insertion only, per Q28.
+// =====================================================================
+
+export const notificationTemplates = pgTable(
+  'notification_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    channel: text('channel', { enum: ['EMAIL', 'SMS'] }).notNull(),
+    subject: text('subject'),
+    body: text('body').notNull(),
+    variablesJson: jsonb('variables_json'),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKindIdx: index('notification_template_firm_kind_idx').on(t.firmId, t.kind),
+    uniqueTriplet: uniqueIndex('notification_template_uk').on(t.firmId, t.kind, t.channel),
+  }),
+);
+
 export const officeSettings = pgTable('office_settings', {
   officeId: uuid('office_id')
     .notNull()
