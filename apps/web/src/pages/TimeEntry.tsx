@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
@@ -19,6 +19,7 @@ interface WorkCode {
 interface TimeEntry {
   id: string;
   engagementId: string;
+  workCodeId?: string | null;
   entryDate: string;
   hours: string;
   standardAmountCents: number;
@@ -27,11 +28,143 @@ interface TimeEntry {
   description: string;
 }
 
+interface DayTotal {
+  entryDate: string;
+  hours: number;
+  amountCents: number;
+}
+
+interface MonthTotal {
+  month: string;
+  hours: number;
+  amountCents: number;
+  count: number;
+}
+
+type ViewMode = 'log' | 'day' | 'week' | 'month';
+
 const today = (): string => new Date().toISOString().slice(0, 10);
 
+function addDays(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function startOfWeek(iso: string): string {
+  // Monday-anchored week (matches Postgres date_trunc('week') ISO default).
+  const d = new Date(`${iso}T00:00:00Z`);
+  const dow = d.getUTCDay(); // 0..6, Sunday=0
+  const delta = dow === 0 ? -6 : 1 - dow;
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
+function shortDate(iso: string): string {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function dayLabel(iso: string): string {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
+    weekday: 'short',
+  });
+}
+
 export function TimeEntryPage(): JSX.Element {
+  const [view, setView] = useState<ViewMode>('log');
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [e, w] = await Promise.all([
+          api<{ items: Engagement[] }>('/api/staff/engagements'),
+          api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
+        ]);
+        setEngagements(e.items ?? []);
+        setWorkCodes(w.items ?? []);
+      } catch {
+        // Silent; child views render empty/error states themselves.
+      }
+    })();
+  }, []);
+
+  return (
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <ViewTabs view={view} onChange={setView} />
+      {view === 'log' && <LogView engagements={engagements} workCodes={workCodes} />}
+      {view === 'day' && <DayView engagements={engagements} />}
+      {view === 'week' && <WeekView engagements={engagements} />}
+      {view === 'month' && <MonthView />}
+    </div>
+  );
+}
+
+function ViewTabs({
+  view,
+  onChange,
+}: {
+  view: ViewMode;
+  onChange: (v: ViewMode) => void;
+}): JSX.Element {
+  const tabs: { id: ViewMode; label: string }[] = [
+    { id: 'log', label: 'Quick log' },
+    { id: 'day', label: 'Day' },
+    { id: 'week', label: 'Week' },
+    { id: 'month', label: 'Month' },
+  ];
+  return (
+    <div
+      role="tablist"
+      style={{
+        display: 'inline-flex',
+        gap: 2,
+        padding: 2,
+        background: tokens.color.surface,
+        border: `1px solid ${tokens.color.border}`,
+        borderRadius: tokens.radius.md,
+        width: 'fit-content',
+      }}
+    >
+      {tabs.map((t) => {
+        const active = view === t.id;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(t.id)}
+            style={{
+              padding: '6px 14px',
+              border: 'none',
+              borderRadius: tokens.radius.sm,
+              background: active ? tokens.color.accent : 'transparent',
+              color: active ? '#fff' : tokens.color.text,
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: 'pointer',
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function LogView({
+  engagements,
+  workCodes,
+}: {
+  engagements: Engagement[];
+  workCodes: WorkCode[];
+}): JSX.Element {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,13 +179,7 @@ export function TimeEntryPage(): JSX.Element {
   async function load(): Promise<void> {
     setLoading(true);
     try {
-      const [e, w, t] = await Promise.all([
-        api<{ items: Engagement[] }>('/api/staff/engagements'),
-        api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
-        api<{ items: TimeEntry[] }>('/api/staff/time-entries/mine'),
-      ]);
-      setEngagements(e.items ?? []);
-      setWorkCodes(w.items ?? []);
+      const t = await api<{ items: TimeEntry[] }>('/api/staff/time-entries/mine');
       setEntries(t.items ?? []);
     } finally {
       setLoading(false);
@@ -91,7 +218,7 @@ export function TimeEntryPage(): JSX.Element {
   const totalAmount = entries.reduce((s, e) => s + e.standardAmountCents, 0);
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+    <>
       <Card title="Log time">
         <form
           onSubmit={submit}
@@ -106,52 +233,27 @@ export function TimeEntryPage(): JSX.Element {
             <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
               Engagement
             </div>
-            <select
-              value={engagementId}
-              onChange={(e) => setEngagementId(e.target.value)}
-              required
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: tokens.color.surface,
-                color: tokens.color.text,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                fontSize: 14,
-              }}
-            >
+            <Select value={engagementId} onChange={setEngagementId} required>
               <option value="">— select —</option>
               {engagements.map((e) => (
                 <option key={e.id} value={e.id}>
                   {e.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label style={{ display: 'block' }}>
             <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
               Work code
             </div>
-            <select
-              value={workCodeId}
-              onChange={(e) => setWorkCodeId(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: tokens.color.surface,
-                color: tokens.color.text,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                fontSize: 14,
-              }}
-            >
+            <Select value={workCodeId} onChange={setWorkCodeId}>
               <option value="">— none —</option>
               {workCodes.map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <Input
             type="date"
@@ -237,8 +339,502 @@ export function TimeEntryPage(): JSX.Element {
           />
         )}
       </Card>
-    </div>
+    </>
   );
+}
+
+function DayView({ engagements }: { engagements: Engagement[] }): JSX.Element {
+  const [date, setDate] = useState(today());
+  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void api<{ items: TimeEntry[] }>(`/api/staff/time-entries/mine?start=${date}&end=${date}`).then(
+      (r) => {
+        if (cancelled) return;
+        setEntries(r.items ?? []);
+        setLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  const total = entries.reduce((s, e) => s + Number(e.hours), 0);
+  const billable = entries.filter((e) => e.billableFlag).reduce((s, e) => s + Number(e.hours), 0);
+  const byEngagement = useMemo(() => {
+    const m = new Map<string, TimeEntry[]>();
+    for (const e of entries) {
+      const arr = m.get(e.engagementId) ?? [];
+      arr.push(e);
+      m.set(e.engagementId, arr);
+    }
+    return Array.from(m.entries()).map(([id, items]) => ({
+      engagementId: id,
+      engagementName: engagements.find((eng) => eng.id === id)?.name ?? id.slice(0, 8),
+      items,
+      hours: items.reduce((s, e) => s + Number(e.hours), 0),
+    }));
+  }, [entries, engagements]);
+
+  return (
+    <Card
+      title="Day"
+      action={
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setDate(addDays(date, -1))}
+            aria-label="Previous day"
+          >
+            ‹
+          </Button>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            style={inputStyle}
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setDate(addDays(date, 1))}
+            aria-label="Next day"
+          >
+            ›
+          </Button>
+          <Pill tone={total >= 7 ? 'success' : total >= 4 ? 'warning' : 'danger'}>
+            {total.toFixed(2)}h ({billable.toFixed(2)} billable)
+          </Pill>
+        </div>
+      }
+    >
+      {loading ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+      ) : byEngagement.length === 0 ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No time logged on {date}.</p>
+      ) : (
+        <div style={{ display: 'grid', gap: tokens.space.md }}>
+          {byEngagement.map((g) => (
+            <div
+              key={g.engagementId}
+              style={{
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                padding: 12,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'baseline',
+                  marginBottom: 8,
+                }}
+              >
+                <strong style={{ fontSize: 14 }}>{g.engagementName}</strong>
+                <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                  {g.hours.toFixed(2)}h
+                </span>
+              </div>
+              {g.items.map((e) => (
+                <div
+                  key={e.id}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '60px 1fr auto',
+                    gap: 8,
+                    padding: '4px 0',
+                    fontSize: 13,
+                    borderTop: `1px solid ${tokens.color.border}`,
+                  }}
+                >
+                  <span style={{ fontWeight: 500 }}>{Number(e.hours).toFixed(2)}h</span>
+                  <span style={{ color: tokens.color.textMuted }}>
+                    {e.description || <em>(no description)</em>}
+                  </span>
+                  <span style={{ display: 'flex', gap: 4 }}>
+                    {e.billableFlag ? (
+                      <Pill tone="success">billable</Pill>
+                    ) : (
+                      <Pill tone="neutral">non-bill</Pill>
+                    )}
+                    {!e.inScopeFlag && <Pill tone="warning">OOS</Pill>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function WeekView({ engagements }: { engagements: Engagement[] }): JSX.Element {
+  const [weekAnchor, setWeekAnchor] = useState(startOfWeek(today()));
+  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const weekEnd = useMemo(() => addDays(weekAnchor, 6), [weekAnchor]);
+  const days = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(weekAnchor, i)),
+    [weekAnchor],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void api<{ items: TimeEntry[] }>(
+      `/api/staff/time-entries/mine?start=${weekAnchor}&end=${weekEnd}`,
+    ).then((r) => {
+      if (cancelled) return;
+      setEntries(r.items ?? []);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [weekAnchor, weekEnd]);
+
+  // Build grid: rows = engagementId, columns = day → hours sum
+  const grid = useMemo(() => {
+    const byEng = new Map<string, Map<string, number>>();
+    for (const e of entries) {
+      const row = byEng.get(e.engagementId) ?? new Map<string, number>();
+      row.set(e.entryDate, (row.get(e.entryDate) ?? 0) + Number(e.hours));
+      byEng.set(e.engagementId, row);
+    }
+    const rows = Array.from(byEng.entries()).map(([id, dayMap]) => ({
+      engagementId: id,
+      engagementName: engagements.find((eng) => eng.id === id)?.name ?? id.slice(0, 8),
+      cells: days.map((d) => dayMap.get(d) ?? 0),
+      total: Array.from(dayMap.values()).reduce((s, v) => s + v, 0),
+    }));
+    rows.sort((a, b) => b.total - a.total);
+    return rows;
+  }, [entries, days, engagements]);
+
+  const dailyTotals = useMemo(
+    () =>
+      days.map((d) =>
+        entries.filter((e) => e.entryDate === d).reduce((s, e) => s + Number(e.hours), 0),
+      ),
+    [entries, days],
+  );
+  const weekTotal = dailyTotals.reduce((s, v) => s + v, 0);
+
+  return (
+    <Card
+      title="Week"
+      action={
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setWeekAnchor(addDays(weekAnchor, -7))}
+            aria-label="Previous week"
+          >
+            ‹ Prev
+          </Button>
+          <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
+            {shortDate(weekAnchor)} – {shortDate(weekEnd)}
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setWeekAnchor(addDays(weekAnchor, 7))}
+            aria-label="Next week"
+          >
+            Next ›
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => setWeekAnchor(startOfWeek(today()))}>
+            This week
+          </Button>
+          <Pill tone={weekTotal >= 35 ? 'success' : weekTotal >= 20 ? 'warning' : 'danger'}>
+            {weekTotal.toFixed(2)}h
+          </Pill>
+        </div>
+      }
+    >
+      {loading ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table
+            style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: 13,
+              minWidth: 700,
+            }}
+          >
+            <thead>
+              <tr>
+                <th style={th('left')}>Engagement</th>
+                {days.map((d) => (
+                  <th key={d} style={th('right')}>
+                    <div style={{ fontWeight: 600 }}>{dayLabel(d)}</div>
+                    <div style={{ fontSize: 11, color: tokens.color.textMuted, fontWeight: 400 }}>
+                      {shortDate(d)}
+                    </div>
+                  </th>
+                ))}
+                <th style={th('right')}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {grid.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={9}
+                    style={{ padding: 16, textAlign: 'center', color: tokens.color.textMuted }}
+                  >
+                    No time logged this week.
+                  </td>
+                </tr>
+              ) : (
+                grid.map((r) => (
+                  <tr key={r.engagementId}>
+                    <td style={td('left')}>{r.engagementName}</td>
+                    {r.cells.map((h, i) => (
+                      <td key={i} style={td('right', h > 0)}>
+                        {h > 0 ? h.toFixed(2) : '–'}
+                      </td>
+                    ))}
+                    <td style={{ ...td('right'), fontWeight: 600 }}>{r.total.toFixed(2)}</td>
+                  </tr>
+                ))
+              )}
+              <tr style={{ background: tokens.color.surface, fontWeight: 600 }}>
+                <td style={td('left')}>Daily total</td>
+                {dailyTotals.map((h, i) => (
+                  <td
+                    key={i}
+                    style={{
+                      ...td('right'),
+                      color:
+                        h >= 7
+                          ? tokens.color.success
+                          : h >= 4
+                            ? tokens.color.warning
+                            : tokens.color.textMuted,
+                    }}
+                  >
+                    {h > 0 ? h.toFixed(2) : '–'}
+                  </td>
+                ))}
+                <td style={td('right')}>{weekTotal.toFixed(2)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function MonthView(): JSX.Element {
+  const [monthsBack, setMonthsBack] = useState(6);
+  const [days, setDays] = useState<DayTotal[]>([]);
+  const [months, setMonths] = useState<MonthTotal[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void Promise.all([
+      api<{ items: MonthTotal[] }>(
+        `/api/staff/time-entries/totals/by-month?monthsBack=${monthsBack}`,
+      ),
+      // pull last ~62 days of day totals for the heatmap
+      (async () => {
+        const end = today();
+        const start = addDays(end, -62);
+        return api<{ items: DayTotal[] }>(
+          `/api/staff/time-entries/totals/by-day?start=${start}&end=${end}`,
+        );
+      })(),
+    ]).then(([m, d]) => {
+      if (cancelled) return;
+      setMonths(m.items ?? []);
+      setDays(d.items ?? []);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [monthsBack]);
+
+  const dayMap = useMemo(() => new Map(days.map((d) => [d.entryDate, d])), [days]);
+  const heatmapDays = useMemo(() => {
+    const end = today();
+    return Array.from({ length: 62 }, (_, i) => addDays(end, -(61 - i)));
+  }, []);
+
+  function heatColor(hours: number): string {
+    if (hours <= 0) return tokens.color.surface;
+    if (hours < 4) return 'rgba(245, 158, 11, 0.3)'; // warning low
+    if (hours < 7) return 'rgba(245, 158, 11, 0.7)'; // warning mid
+    if (hours < 9) return 'rgba(34, 197, 94, 0.7)'; // success
+    return 'rgba(34, 197, 94, 1)'; // success high
+  }
+
+  return (
+    <>
+      <Card
+        title="Recent activity (62-day heatmap)"
+        action={
+          <Pill tone="neutral">
+            {days.reduce((s, d) => s + d.hours, 0).toFixed(2)}h over {days.length} active days
+          </Pill>
+        }
+      >
+        {loading ? (
+          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+        ) : (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(31, 1fr)',
+              gap: 2,
+            }}
+          >
+            {heatmapDays.map((d) => {
+              const h = dayMap.get(d)?.hours ?? 0;
+              return (
+                <div
+                  key={d}
+                  title={`${d}: ${h.toFixed(2)}h`}
+                  style={{
+                    aspectRatio: '1 / 1',
+                    background: heatColor(h),
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: 2,
+                  }}
+                />
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Month rollup"
+        action={
+          <select
+            value={monthsBack}
+            onChange={(e) => setMonthsBack(Number(e.target.value))}
+            style={inputStyle}
+            aria-label="Months back"
+          >
+            <option value={3}>Last 3 months</option>
+            <option value={6}>Last 6 months</option>
+            <option value={12}>Last 12 months</option>
+            <option value={24}>Last 24 months</option>
+          </select>
+        }
+      >
+        {loading ? (
+          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+        ) : months.length === 0 ? (
+          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No time in this window.</p>
+        ) : (
+          <Table<MonthTotal>
+            columns={[
+              { key: 'month', header: 'Month', render: (m) => m.month },
+              {
+                key: 'hours',
+                header: 'Hours',
+                align: 'right',
+                render: (m) => m.hours.toFixed(2),
+              },
+              {
+                key: 'amount',
+                header: 'Standard $',
+                align: 'right',
+                render: (m) => `$${(m.amountCents / 100).toLocaleString()}`,
+              },
+              {
+                key: 'count',
+                header: 'Entries',
+                align: 'right',
+                render: (m) => m.count.toString(),
+              },
+            ]}
+            rows={months}
+            rowKey={(m) => m.month}
+            empty="No months in window."
+          />
+        )}
+      </Card>
+    </>
+  );
+}
+
+const inputStyle = {
+  padding: '6px 10px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 13,
+} as const;
+
+function Select({
+  value,
+  onChange,
+  required,
+  children,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      required={required}
+      style={{
+        width: '100%',
+        padding: '10px 12px',
+        background: tokens.color.surface,
+        color: tokens.color.text,
+        border: `1px solid ${tokens.color.border}`,
+        borderRadius: tokens.radius.md,
+        fontSize: 14,
+      }}
+    >
+      {children}
+    </select>
+  );
+}
+
+function th(align: 'left' | 'right'): React.CSSProperties {
+  return {
+    textAlign: align,
+    padding: '8px',
+    borderBottom: `1px solid ${tokens.color.border}`,
+    fontSize: 12,
+    fontWeight: 600,
+    color: tokens.color.textMuted,
+  };
+}
+
+function td(align: 'left' | 'right', emphasized = false): React.CSSProperties {
+  return {
+    textAlign: align,
+    padding: '6px 8px',
+    borderBottom: `1px solid ${tokens.color.border}`,
+    color: emphasized ? tokens.color.text : tokens.color.textMuted,
+    fontWeight: emphasized ? 500 : 400,
+  };
 }
 
 function AiDescribeButton({
