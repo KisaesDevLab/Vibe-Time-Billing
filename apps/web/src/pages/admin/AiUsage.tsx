@@ -22,11 +22,30 @@ interface LogRow {
 
 const formatCents = (c: number): string => `$${(c / 100).toFixed(2)}`;
 
+interface AiStatus {
+  enabled: boolean;
+  optedIn: boolean;
+  providerWired: boolean;
+  providerId: string | null;
+}
+
 export function AiUsagePage(): JSX.Element {
   const [items, setItems] = useState<LogRow[]>([]);
   const [days, setDays] = useState(30);
   const [feature, setFeature] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<AiStatus>('/api/staff/ai/status');
+        setAiStatus(r);
+      } catch {
+        setAiStatus({ enabled: false, optedIn: false, providerWired: false, providerId: null });
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -55,6 +74,36 @@ export function AiUsagePage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      {aiStatus && (
+        <Card title="AI status">
+          <div style={{ display: 'flex', gap: 16, fontSize: 13, alignItems: 'center' }}>
+            <span>
+              Status:{' '}
+              {aiStatus.enabled ? (
+                <Pill tone="success">enabled</Pill>
+              ) : (
+                <Pill tone="warning">disabled</Pill>
+              )}
+            </span>
+            <span>
+              Opted in:{' '}
+              {aiStatus.optedIn ? <Pill tone="success">yes</Pill> : <Pill tone="neutral">no</Pill>}
+            </span>
+            <span>
+              Provider:{' '}
+              {aiStatus.providerWired ? (
+                <Pill tone="success">{aiStatus.providerId ?? 'wired'}</Pill>
+              ) : (
+                <Pill tone="warning">none</Pill>
+              )}
+            </span>
+          </div>
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
+            Toggle off via <code>VIBE_AI_DISABLED=true</code>. Per-feature overrides with{' '}
+            <code>VIBE_AI_FEATURE_&lt;NAME&gt;=local|cloud</code>.
+          </p>
+        </Card>
+      )}
       <Card title="AI usage summary">
         <div
           style={{
