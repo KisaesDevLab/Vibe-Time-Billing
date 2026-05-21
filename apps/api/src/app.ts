@@ -31,6 +31,7 @@ import { createArRouter } from './ar/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
+import { createPortalLetterRouter } from './portal/letters';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
 import { createConnectRouter } from './connect/routes';
@@ -250,6 +251,12 @@ export function createApp(deps: AppDeps): Express {
     sessionStore: deps.sessionStore,
   });
   app.use('/api/portal/profile', portalProfileRouter);
+
+  const portalLetterRouter = createPortalLetterRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/letters', portalLetterRouter);
 
   // REST v1 — token-authenticated integrator surface.
   app.use('/api/v1', createRestV1Router({ db: deps.db }));

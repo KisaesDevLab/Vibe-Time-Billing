@@ -7,6 +7,7 @@ import { AppShell, Button, Pill } from '@vibe/ui';
 import { AuthProvider, useAuth } from './auth-context';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
+import { LettersPage } from './pages/Letters';
 import { LoginPage } from './pages/Login';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
@@ -26,6 +27,7 @@ export function App(): JSX.Element {
                 <Routes>
                   <Route path="/" element={<HomePage />} />
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
+                  <Route path="/letters" element={<LettersPage />} />
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
@@ -62,6 +64,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       nav={[
         { label: 'Overview', href: '/', active: location.pathname === '/' },
         { label: 'Invoices', href: '/invoices', active: location.pathname.startsWith('/invoices') },
+        { label: 'Letters', href: '/letters', active: location.pathname.startsWith('/letters') },
         {
           label: 'Statement',
           href: '/statement',
