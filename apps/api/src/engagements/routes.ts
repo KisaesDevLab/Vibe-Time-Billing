@@ -13,6 +13,8 @@ import {
   engagements,
   firmSettings,
   hourBanks,
+  milestonePlans,
+  milestones,
   timeEntries,
 } from '@vibe/db/schema';
 import { desc } from 'drizzle-orm';
@@ -631,6 +633,44 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      // Phase 10 #6/#8 — fire well-known event keys. Milestones with
+      // trigger_type=EVENT and trigger_event_key matching the status
+      // transition flip to TRIGGERED. Best-effort; never blocks the
+      // status PATCH.
+      const eventKey = `engagement.${parsed.data.status.toLowerCase()}`;
+      try {
+        const fired = await deps.db
+          .select({ id: milestones.id })
+          .from(milestones)
+          .innerJoin(milestonePlans, eq(milestonePlans.id, milestones.planId))
+          .where(
+            and(
+              eq(milestones.status, 'PENDING'),
+              eq(milestones.triggerType, 'EVENT'),
+              eq(milestones.triggerEventKey, eventKey),
+              eq(milestonePlans.engagementId, req.params['id']!),
+            ),
+          );
+        if (fired.length > 0) {
+          await deps.db
+            .update(milestones)
+            .set({ status: 'TRIGGERED', triggeredAt: new Date() })
+            .where(
+              inArray(
+                milestones.id,
+                fired.map((m) => m.id),
+              ),
+            );
+          logger.info(
+            { eventKey, engagementId: req.params['id'], fired: fired.length },
+            'milestone event trigger fired on status PATCH',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'event-trigger evaluation failed');
+      }
+
       res.json({ ok: true });
     },
   );

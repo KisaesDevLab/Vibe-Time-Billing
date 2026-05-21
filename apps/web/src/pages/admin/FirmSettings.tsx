@@ -51,6 +51,7 @@ interface Settings {
   enabledFeeStructures: FeeStructure[];
   billableTargetHoursPerMonth: number;
   aiProvider: 'local' | 'cloud' | null;
+  invoiceTemplateStyle: 'modern' | 'classic' | 'minimal';
 }
 
 const MONTHS = [
@@ -110,6 +111,7 @@ export function FirmSettingsPage(): JSX.Element {
           enabledFeeStructures: s.enabledFeeStructures,
           billableTargetHoursPerMonth: s.billableTargetHoursPerMonth,
           aiProvider: s.aiProvider,
+          invoiceTemplateStyle: s.invoiceTemplateStyle,
           brandDisplayName: s.brandDisplayName || null,
           brandLogoUrl: s.brandLogoUrl || null,
           brandAccentColor: s.brandAccentColor || null,
@@ -319,6 +321,22 @@ export function FirmSettingsPage(): JSX.Element {
           Used on invoice PDFs, the client portal header, and dunning emails.
         </p>
         <div style={{ display: 'grid', gap: 12, maxWidth: 560 }}>
+          <Select
+            label="Invoice template style"
+            value={s.invoiceTemplateStyle}
+            onChange={(v) =>
+              setS({ ...s, invoiceTemplateStyle: v as 'modern' | 'classic' | 'minimal' })
+            }
+            options={[
+              { value: 'modern', label: 'Modern (default — accent rule, two-column header)' },
+              { value: 'classic', label: 'Classic (centered firm block, serif body)' },
+              { value: 'minimal', label: 'Minimal (large total callout, single column)' },
+            ]}
+          />
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+            Preview any invoice with <code>?style=classic</code> or <code>?style=minimal</code> on
+            the PDF URL.
+          </p>
           <Input
             label="Display name"
             value={s.brandDisplayName ?? ''}

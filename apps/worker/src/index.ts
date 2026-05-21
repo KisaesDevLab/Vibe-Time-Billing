@@ -26,6 +26,7 @@ import { runHourBankExpiration } from './jobs/hour-bank-expiration';
 import { runHourBankReplenish } from './jobs/hour-bank-replenish';
 import { runApprovalEscalation } from './jobs/approval-escalation';
 import { runApprovalSlaMonitor } from './jobs/approval-sla-monitor';
+import { runPaymentRetry } from './jobs/payment-retry';
 import { runWebhookDispatch } from './jobs/webhook-dispatch';
 import { runAutoRolloverScan } from './jobs/auto-rollover';
 import { runRetentionEnforcement } from './jobs/retention-enforcement';
@@ -108,6 +109,7 @@ const QUEUES = [
   'hour-bank-replenish',
   'approval-escalation',
   'approval-sla-monitor',
+  'payment-retry',
   'webhook-dispatch',
   'auto-rollover-scan',
   'retention-enforcement',
@@ -226,6 +228,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runApprovalSlaMonitor(db, logger);
     logger.info({ jobId: job.id, ...result }, 'approval-sla-monitor complete');
   },
+  'payment-retry': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'payment-retry: no DB configured');
+      return;
+    }
+    const result = await runPaymentRetry(db, logger, { chargeInvoice });
+    logger.info({ jobId: job.id, ...result }, 'payment-retry complete');
+  },
   'webhook-dispatch': async (job) => {
     if (!db) {
       logger.warn({ jobId: job.id }, 'webhook-dispatch: no DB configured');
@@ -304,6 +314,7 @@ const CRON: Record<QueueName, string> = {
   'hour-bank-replenish': '40 1 * * *',
   'approval-escalation': '20 * * * *',
   'approval-sla-monitor': '50 * * * *',
+  'payment-retry': '15 2 * * *',
   'webhook-dispatch': '*/2 * * * *',
   'auto-rollover-scan': '30 2 * * *',
   'retention-enforcement': '45 3 * * *',

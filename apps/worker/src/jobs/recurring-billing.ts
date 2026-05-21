@@ -16,6 +16,7 @@ import { and, eq, lte, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  billingBatchEntries,
   billingBatches,
   clients,
   engagements,
@@ -23,7 +24,9 @@ import {
   invoices,
   payments,
   recurringBillingPlans,
+  timeEntries,
 } from '@vibe/db/schema';
+import { gte, isNull, lte as drzLte } from 'drizzle-orm';
 import { nextRunDate } from '@vibe/core/billing';
 import { formatInvoiceNumber } from '@vibe/core/invoicing';
 
@@ -97,6 +100,66 @@ export async function runRecurringBillingTick(
 
     let createdInvoiceId: string | null = null;
     let createdInvoiceNumber: string | null = null;
+    // Phase 10 #35 — explicit idempotency key. Deterministic per
+    // (plan, period_start). Index on idempotency_key makes the duplicate
+    // insert error fail fast, which we catch and skip below.
+    const idempotencyKey = `recurring:${plan.id}:${periodStart}`;
+    const [existingBatch] = await db
+      .select({ id: billingBatches.id })
+      .from(billingBatches)
+      .where(eq(billingBatches.idempotencyKey, idempotencyKey))
+      .limit(1);
+    if (existingBatch) {
+      log.info(
+        { planId: plan.id, periodStart, batchId: existingBatch.id },
+        'recurring tick skipped — idempotency key already present',
+      );
+      // Advance nextRunDate anyway so this plan doesn't re-trigger forever.
+      await db
+        .update(recurringBillingPlans)
+        .set({ nextRunDate: nextRunDate(plan.nextRunDate, plan.frequency) })
+        .where(eq(recurringBillingPlans.id, plan.id));
+      continue;
+    }
+    // Phase 10 #5 — per-period WIP rollup. HOURLY / HOURLY_NTE engagements
+    // bill by actual time worked, so the recurring tick rolls up unbilled
+    // entries in the period. RECURRING_SUBSCRIPTION (and other fee
+    // structures) keep the flat-amount line.
+    const isTimeBased = eng.feeStructure === 'HOURLY' || eng.feeStructure === 'HOURLY_NTE';
+    let rolledUpEntries: { id: string; amountCents: number }[] = [];
+    let rolledUpAmount = 0;
+    if (isTimeBased) {
+      const rows = await db
+        .select({
+          id: timeEntries.id,
+          amountCents: timeEntries.standardAmountCents,
+        })
+        .from(timeEntries)
+        .where(
+          and(
+            eq(timeEntries.engagementId, eng.id),
+            isNull(timeEntries.billingBatchId),
+            gte(timeEntries.entryDate, periodStart),
+            drzLte(timeEntries.entryDate, periodEnd),
+          ),
+        );
+      rolledUpEntries = rows.map((r) => ({ id: r.id, amountCents: Number(r.amountCents) }));
+      rolledUpAmount = rolledUpEntries.reduce((s, r) => s + r.amountCents, 0);
+      // If there's no WIP to bill on a time-based plan, skip the tick
+      // entirely but still advance nextRunDate so the schedule moves on.
+      if (rolledUpAmount === 0) {
+        log.info(
+          { planId: plan.id, periodStart, periodEnd },
+          'recurring tick: time-based plan with zero WIP, skipping invoice',
+        );
+        await db
+          .update(recurringBillingPlans)
+          .set({ nextRunDate: nextRunDate(plan.nextRunDate, plan.frequency) })
+          .where(eq(recurringBillingPlans.id, plan.id));
+        continue;
+      }
+    }
+    const invoiceAmount = isTimeBased ? rolledUpAmount : plan.amountCents;
     try {
       await db.transaction(async (tx) => {
         const [batch] = await tx
@@ -106,10 +169,32 @@ export async function runRecurringBillingTick(
             periodStart,
             periodEnd,
             status: 'APPROVED',
+            idempotencyKey,
             finalizedAt: new Date(),
           })
           .returning({ id: billingBatches.id });
         if (!batch) throw new Error('batch insert failed');
+
+        // Attach the rolled-up entries to the batch so they're flagged
+        // as billed and won't be picked up by the next tick.
+        if (rolledUpEntries.length > 0) {
+          await tx
+            .update(timeEntries)
+            .set({ billingBatchId: batch.id })
+            .where(
+              sql`${timeEntries.id} = ANY(ARRAY[${sql.join(
+                rolledUpEntries.map((e) => sql`${e.id}::uuid`),
+                sql`, `,
+              )}])`,
+            );
+          await tx.insert(billingBatchEntries).values(
+            rolledUpEntries.map((e) => ({
+              billingBatchId: batch.id,
+              timeEntryId: e.id,
+              action: 'INCLUDE' as const,
+            })),
+          );
+        }
 
         // Per-firm sequence — read max numeric suffix and bump. The
         // unique index on (firm_id, invoice_number) catches collisions
@@ -136,9 +221,9 @@ export async function runRecurringBillingTick(
             invoiceNumber,
             issueDate,
             dueDate,
-            subtotalCents: plan.amountCents,
+            subtotalCents: invoiceAmount,
             feeCents: 0,
-            totalCents: plan.amountCents,
+            totalCents: invoiceAmount,
             status: 'DRAFT',
           })
           .returning({ id: invoices.id });
@@ -146,9 +231,11 @@ export async function runRecurringBillingTick(
 
         await tx.insert(invoiceLineItems).values({
           invoiceId: inv.id,
-          kind: 'RECURRING_FEE',
-          description: `${eng.name} — ${periodStart} to ${periodEnd}`,
-          amountCents: plan.amountCents,
+          kind: isTimeBased ? 'TIME_AGGREGATE' : 'RECURRING_FEE',
+          description: isTimeBased
+            ? `${eng.name} — time billed ${periodStart} to ${periodEnd} (${rolledUpEntries.length} entries)`
+            : `${eng.name} — ${periodStart} to ${periodEnd}`,
+          amountCents: invoiceAmount,
           engagementId: eng.id,
           sourceRefType: 'recurring_plan',
           sourceRefId: plan.id,
@@ -189,7 +276,7 @@ export async function runRecurringBillingTick(
         const result = await deps.chargeInvoice({
           invoiceId: createdInvoiceId,
           paymentMethodProviderId: plan.autoPayPaymentMethodId,
-          amountCents: plan.amountCents,
+          amountCents: invoiceAmount,
           metadata: {
             invoice_id: createdInvoiceId,
             invoice_number: createdInvoiceNumber ?? '',
@@ -201,7 +288,7 @@ export async function runRecurringBillingTick(
         if (result.ok) {
           await db.insert(payments).values({
             invoiceId: createdInvoiceId,
-            amountCents: plan.amountCents,
+            amountCents: invoiceAmount,
             feeCents: 0,
             paymentMethodId: plan.autoPayPaymentMethodId,
             provider: 'STRIPE',
@@ -213,7 +300,7 @@ export async function runRecurringBillingTick(
             .update(invoices)
             .set({
               status: 'PAID',
-              paidCents: plan.amountCents,
+              paidCents: invoiceAmount,
               paidAt: new Date(),
               sentAt: new Date(),
             })
@@ -230,11 +317,39 @@ export async function runRecurringBillingTick(
           );
         } else {
           autopayFailed++;
+          // Phase 10 #28 — insert a FAILED payment row with nextRetryAt
+          // set to +3 days. The payment-retry worker picks this up.
+          await db.insert(payments).values({
+            invoiceId: createdInvoiceId,
+            amountCents: invoiceAmount,
+            feeCents: 0,
+            paymentMethodId: plan.autoPayPaymentMethodId,
+            provider: 'STRIPE',
+            providerChargeId: null,
+            status: 'FAILED',
+            receivedAt: new Date(),
+            retryCount: 0,
+            nextRetryAt: new Date(Date.now() + 3 * 86_400_000),
+          });
           await handleAutopayFailure(db, log, plan, deps);
           log.warn({ invoiceId: createdInvoiceId, err: result.errorMessage }, 'autopay failed');
         }
       } catch (err) {
         autopayFailed++;
+        if (createdInvoiceId) {
+          await db.insert(payments).values({
+            invoiceId: createdInvoiceId,
+            amountCents: invoiceAmount,
+            feeCents: 0,
+            paymentMethodId: plan.autoPayPaymentMethodId,
+            provider: 'STRIPE',
+            providerChargeId: null,
+            status: 'FAILED',
+            receivedAt: new Date(),
+            retryCount: 0,
+            nextRetryAt: new Date(Date.now() + 3 * 86_400_000),
+          });
+        }
         await handleAutopayFailure(db, log, plan, deps);
         log.error({ err, invoiceId: createdInvoiceId }, 'autopay errored');
       }

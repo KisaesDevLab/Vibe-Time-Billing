@@ -490,6 +490,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           supportEmail: firmSettings.brandSupportEmail,
           supportPhone: firmSettings.brandSupportPhone,
           footerHtml: firmSettings.brandFooterHtml,
+          templateStyle: firmSettings.invoiceTemplateStyle,
         })
         .from(firmSettings)
         .where(eq(firmSettings.firmId, inv.firmId))
@@ -558,6 +559,15 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         invoiceNumber: inv.invoiceNumber,
         issueDate: inv.issueDate,
         dueDate: inv.dueDate,
+        // Phase 13 #6 — firm picks the template style; ?style= override
+        // for preview ("preview as classic" without saving).
+        style: (() => {
+          const q = typeof req.query['style'] === 'string' ? req.query['style'] : null;
+          if (q === 'modern' || q === 'classic' || q === 'minimal') return q;
+          const s = branding?.templateStyle;
+          if (s === 'modern' || s === 'classic' || s === 'minimal') return s;
+          return 'modern';
+        })(),
         firm: {
           name: branding?.displayName || firm?.name || 'Firm',
           logoUrl: branding?.logoUrl ?? null,

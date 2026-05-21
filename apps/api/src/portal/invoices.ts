@@ -8,7 +8,14 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, firms, invoiceLineItems, invoices, payments } from '@vibe/db/schema';
+import {
+  clients,
+  firmSettings,
+  firms,
+  invoiceLineItems,
+  invoices,
+  payments,
+} from '@vibe/db/schema';
 import { renderInvoiceHtml } from '@vibe/core/invoicing';
 
 import { emitAudit } from '../auth/audit';
@@ -124,6 +131,19 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .from(firms)
       .where(eq(firms.id, inv.firmId))
       .limit(1);
+    const [branding] = await deps.db
+      .select({
+        displayName: firmSettings.brandDisplayName,
+        logoUrl: firmSettings.brandLogoUrl,
+        accentColor: firmSettings.brandAccentColor,
+        supportEmail: firmSettings.brandSupportEmail,
+        supportPhone: firmSettings.brandSupportPhone,
+        footerHtml: firmSettings.brandFooterHtml,
+        templateStyle: firmSettings.invoiceTemplateStyle,
+      })
+      .from(firmSettings)
+      .where(eq(firmSettings.firmId, inv.firmId))
+      .limit(1);
     const [client] = await deps.db
       .select({ name: clients.name, billingAddress: clients.billingAddress })
       .from(clients)
@@ -134,11 +154,27 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .from(invoiceLineItems)
       .where(eq(invoiceLineItems.invoiceId, inv.id))
       .orderBy(invoiceLineItems.sortOrder);
+    const style: 'modern' | 'classic' | 'minimal' =
+      branding?.templateStyle === 'classic' || branding?.templateStyle === 'minimal'
+        ? branding.templateStyle
+        : 'modern';
     const html = renderInvoiceHtml({
       invoiceNumber: inv.invoiceNumber,
       issueDate: inv.issueDate,
       dueDate: inv.dueDate,
-      firm: { name: firm?.name ?? 'Firm' },
+      style,
+      firm: {
+        name: branding?.displayName || firm?.name || 'Firm',
+        logoUrl: branding?.logoUrl ?? null,
+      },
+      branding: branding
+        ? {
+            accentColor: branding.accentColor ?? null,
+            supportEmail: branding.supportEmail ?? null,
+            supportPhone: branding.supportPhone ?? null,
+            footerHtml: branding.footerHtml ?? null,
+          }
+        : null,
       client: { name: client?.name ?? 'Client', billingAddress: client?.billingAddress ?? null },
       lines: lines.map((l) => ({
         kind: l.kind,

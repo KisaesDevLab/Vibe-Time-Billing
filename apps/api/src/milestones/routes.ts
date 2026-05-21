@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -271,6 +271,87 @@ export function createMilestoneRouter(deps: MilestoneRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ invoiceId, invoiceNumber });
+    },
+  );
+
+  // Phase 10 #6/#8 — event-trigger evaluator. External events arrive
+  // here; the endpoint flips any PENDING milestone whose
+  // trigger_event_key matches to TRIGGERED. Idempotent — re-firing the
+  // same event is a no-op because the WHERE filters on status=PENDING.
+  //
+  // Internal dispatches (e.g. engagement-status PATCH → CLOSED) call
+  // this same endpoint via the staff session. External integrations
+  // can also POST it via the REST API once we add an event scope on
+  // mcp_token; for v1 staff-only.
+  router.post(
+    '/event',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const Schema = z.object({
+        eventKey: z.string().min(1).max(120),
+        engagementId: z.string().uuid().optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ ok: true, fired: 0 });
+        return;
+      }
+      const { eventKey, engagementId } = parsed.data;
+      // Scope: find all PENDING milestones with matching triggerEventKey
+      // that belong to this firm (joined through milestone_plan ↔
+      // engagement ↔ client). When engagementId is provided, scope
+      // further to that engagement.
+      const candidates = await deps.db
+        .select({
+          milestoneId: milestones.id,
+          milestoneName: milestones.name,
+          engagementId: milestonePlans.engagementId,
+        })
+        .from(milestones)
+        .innerJoin(milestonePlans, eq(milestonePlans.id, milestones.planId))
+        .innerJoin(engagements, eq(engagements.id, milestonePlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            eq(milestones.status, 'PENDING'),
+            eq(milestones.triggerType, 'EVENT'),
+            eq(milestones.triggerEventKey, eventKey),
+            eq(clients.firmId, session.firmId),
+          ),
+        );
+      const filtered = engagementId
+        ? candidates.filter((c) => c.engagementId === engagementId)
+        : candidates;
+      if (filtered.length === 0) {
+        res.json({ ok: true, fired: 0, candidates: candidates.length });
+        return;
+      }
+      const ids = filtered.map((c) => c.milestoneId);
+      await deps.db
+        .update(milestones)
+        .set({ status: 'TRIGGERED', triggeredAt: new Date() })
+        .where(inArray(milestones.id, ids));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'milestone',
+        entityId: ids[0]!,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'event_trigger', eventKey, firedCount: ids.length, engagementId },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      for (const c of filtered) {
+        logger.info(
+          { milestoneId: c.milestoneId, name: c.milestoneName, eventKey },
+          'milestone event-trigger fired',
+        );
+      }
+      res.json({ ok: true, fired: filtered.length, milestoneIds: ids });
     },
   );
 

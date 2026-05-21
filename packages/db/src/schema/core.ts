@@ -322,6 +322,10 @@ export const firmSettings = pgTable('firm_settings', {
   // lives on app_user.billable_target_hours_per_month.
   billableTargetHoursPerMonth: integer('billable_target_hours_per_month').notNull().default(130),
 
+  // Phase 13 #6 — invoice template picker. One of 'modern', 'classic',
+  // 'minimal'. CHECK constraint enforces the value space.
+  invoiceTemplateStyle: text('invoice_template_style').notNull().default('modern'),
+
   // Branding (Phase 4 #13)
   brandDisplayName: text('brand_display_name'),
   brandLogoUrl: text('brand_logo_url'),
@@ -991,6 +995,11 @@ export const billingBatches = pgTable(
     periodStart: date('period_start').notNull(),
     periodEnd: date('period_end').notNull(),
     status: billingBatchStatus('status').notNull().default('DRAFT'),
+    // Phase 10 #35 — explicit idempotency key. Set deterministically by
+    // the recurring tick to 'recurring:<plan_id>:<period_start>' so
+    // double-runs are dropped at the UNIQUE constraint. NULL for
+    // manually-created batches.
+    idempotencyKey: text('idempotency_key'),
     createdById: uuid('created_by_id').references(() => appUsers.id),
     approvedById: uuid('approved_by_id').references(() => appUsers.id),
     // Phase 11 #10 — assigned partner for pre-bill review. NULL = use
@@ -1196,6 +1205,11 @@ export const payments = pgTable(
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
     refundedAt: timestamp('refunded_at', { withTimezone: true }),
     refundedAmountCents: bigint('refunded_amount_cents', { mode: 'number' }),
+    // Phase 10 #28 — scheduled retry on failed autopay. retryCount tracks
+    // how many attempts have happened; nextRetryAt is when the worker
+    // should pick this row up. Cleared on SUCCEEDED transition.
+    retryCount: integer('retry_count').notNull().default(0),
+    nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

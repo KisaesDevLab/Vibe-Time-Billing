@@ -91,6 +91,8 @@ const FirmSettingsPatchSchema = z
     billableTargetHoursPerMonth: z.number().int().min(40).max(220).optional(),
     // Phase 23 #6 — firm AI provider override.
     aiProvider: z.enum(['local', 'cloud']).nullable().optional(),
+    // Phase 13 #6 — invoice template picker.
+    invoiceTemplateStyle: z.enum(['modern', 'classic', 'minimal']).optional(),
   })
   .strict();
 
