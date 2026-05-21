@@ -260,6 +260,48 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Refunds for a specific invoice. Useful for the invoice detail page.
+  // -----------------------------------------------------------------
+  router.get(
+    '/by-invoice/:invoiceId/refunds',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['invoiceId']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: payments.id,
+          amountCents: payments.amountCents,
+          refundedAmountCents: payments.refundedAmountCents,
+          status: payments.status,
+          providerChargeId: payments.providerChargeId,
+          receivedAt: payments.receivedAt,
+        })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.invoiceId, req.params['invoiceId']!),
+            inArray(payments.status, ['REFUNDED', 'PARTIALLY_REFUNDED']),
+          ),
+        )
+        .orderBy(desc(payments.receivedAt));
+      res.json({ items });
+    },
+  );
+
   return router;
 }
 

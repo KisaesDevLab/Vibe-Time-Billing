@@ -721,6 +721,68 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Assign-to-team (Phase 8 #10). Sets partnerId + managerId in one
+  // call. Either can be null to clear.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/assign',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { partnerId?: unknown; managerId?: unknown };
+      const partnerId =
+        typeof body.partnerId === 'string'
+          ? body.partnerId
+          : body.partnerId === null
+            ? null
+            : undefined;
+      const managerId =
+        typeof body.managerId === 'string'
+          ? body.managerId
+          : body.managerId === null
+            ? null
+            : undefined;
+      if (partnerId === undefined && managerId === undefined) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const patch: Record<string, unknown> = {};
+      if (partnerId !== undefined) patch['partnerId'] = partnerId;
+      if (managerId !== undefined) patch['managerId'] = managerId;
+      await deps.db.update(engagements).set(patch).where(eq(engagements.id, eng.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: eng.id,
+        actorAppUserId: session.appUserId,
+        before: { partnerId: eng.partnerId, managerId: eng.managerId },
+        after: { kind: 'assign', ...patch },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // NTE auto-suggest (Phase 10 #20). Suggests an NTE cap based on
   // the engagement's fee amount and recent realization. Caller can
   // accept by PATCH-ing the engagement with the returned value.

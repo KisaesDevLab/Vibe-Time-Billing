@@ -257,6 +257,44 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Outbound-notification log. Surfaces recent dunning + magic-link
+  // sends. Pulled from dunning_history (real send ledger) joined with
+  // invoice for context.
+  // -----------------------------------------------------------------
+  router.get(
+    '/notifications/recent',
+    requirePermission(deps, 'admin:audit:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(Math.max(parseInt(String(req.query['days'] ?? '14'), 10) || 14, 1), 90);
+      const since = new Date(Date.now() - days * 86_400_000);
+      const { dunningHistory, invoices } = await import('@vibe/db/schema');
+      const items = await deps.db
+        .select({
+          id: dunningHistory.id,
+          invoiceId: dunningHistory.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+          stepKind: dunningHistory.stepKind,
+          sentAt: dunningHistory.sentAt,
+          channel: dunningHistory.channel,
+          recipient: dunningHistory.recipient,
+          outcome: dunningHistory.outcome,
+          errorMessage: dunningHistory.errorMessage,
+        })
+        .from(dunningHistory)
+        .innerJoin(invoices, eq(invoices.id, dunningHistory.invoiceId))
+        .where(and(eq(invoices.firmId, session.firmId), gte(dunningHistory.sentAt, since)))
+        .orderBy(desc(dunningHistory.sentAt))
+        .limit(500);
+      res.json({ items });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Inbox: surfaces alerts emitted by the workers
   // (audit_anomaly_alert, scope_creep_alert, wip_age_alert,
   //  engagement_rollover). Read-only firm-scoped view.

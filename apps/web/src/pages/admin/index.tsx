@@ -11,11 +11,13 @@ import { HolidaysPage } from './Holidays';
 import { HourBanksPage } from './HourBanks';
 import { JobsPage } from './Jobs';
 import { MilestonesPage } from './Milestones';
+import { NotificationsPage } from './Notifications';
 import { OfficesPage } from './Offices';
 import { PermissionMatrixPage } from './PermissionMatrix';
 import { RatesPage } from './Rates';
 import { RecurringPlansPage } from './RecurringPlans';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
+import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
 import { TaxonomyPage } from './Taxonomy';
 import { UsersPage } from './Users';
@@ -38,6 +40,8 @@ const TABS = [
   { key: 'saved', label: 'Saved reports', href: '/admin/saved-reports' },
   { key: 'webhooks', label: 'Webhooks', href: '/admin/webhooks' },
   { key: 'perms', label: 'Permissions', href: '/admin/permissions' },
+  { key: 'roles', label: 'Roles', href: '/admin/roles' },
+  { key: 'notifs', label: 'Notifications', href: '/admin/notifications' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
 ];
 
@@ -84,6 +88,8 @@ export function AdminLayout(): JSX.Element {
         <Route path="saved-reports" element={<SavedReportsPage />} />
         <Route path="webhooks" element={<WebhooksPage />} />
         <Route path="permissions" element={<PermissionMatrixPage />} />
+        <Route path="roles" element={<RolesPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="jobs" element={<JobsPage />} />
       </Routes>
     </div>

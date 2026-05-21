@@ -301,6 +301,53 @@ export function createWebhookRouter(deps: WebhookRoutesDeps): Router {
     },
   );
 
+  // Aggregate delivery success rate per endpoint over a window.
+  router.get(
+    '/metrics',
+    requirePermission(deps, 'admin:webhooks:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(Math.max(parseInt(String(req.query['days'] ?? '7'), 10) || 7, 1), 90);
+      const since = new Date(Date.now() - days * 86_400_000);
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          endpointId: webhookDeliveries.webhookEndpointId,
+          url: webhookEndpoints.url,
+          total: drz<number>`COUNT(*)`,
+          delivered: drz<number>`COUNT(*) FILTER (WHERE ${webhookDeliveries.status} = 'DELIVERED')`,
+          failed: drz<number>`COUNT(*) FILTER (WHERE ${webhookDeliveries.status} = 'FAILED')`,
+          avgAttempts: drz<number>`COALESCE(AVG(${webhookDeliveries.attemptCount}), 0)`,
+        })
+        .from(webhookDeliveries)
+        .innerJoin(webhookEndpoints, eq(webhookEndpoints.id, webhookDeliveries.webhookEndpointId))
+        .where(
+          and(
+            eq(webhookEndpoints.firmId, session.firmId),
+            drz`${webhookDeliveries.createdAt} >= ${since}::timestamptz`,
+          ),
+        )
+        .groupBy(webhookDeliveries.webhookEndpointId, webhookEndpoints.url);
+      res.json({
+        windowDays: days,
+        items: rows.map((r) => ({
+          endpointId: r.endpointId,
+          url: r.url,
+          total: Number(r.total),
+          delivered: Number(r.delivered),
+          failed: Number(r.failed),
+          successRatePct:
+            Number(r.total) > 0 ? (Number(r.delivered) / Number(r.total)) * 100 : null,
+          avgAttempts: Number(r.avgAttempts),
+        })),
+      });
+    },
+  );
+
   // Manually re-queue a single delivery (e.g. after a receiver bug fix).
   router.post(
     '/:id/deliveries/:deliveryId/replay',

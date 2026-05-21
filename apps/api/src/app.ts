@@ -24,6 +24,7 @@ import { createBillingBatchRouter } from './billing-batches/routes';
 import { createAdjustmentRouter } from './adjustments/routes';
 import { createReportRouter } from './reports/routes';
 import { createSavedReportsRouter } from './reports/saved';
+import { createSearchRouter } from './search/routes';
 import { createInvoiceRouter } from './invoices/routes';
 import { createArRouter } from './ar/routes';
 import { createApprovalRouter } from './approvals/routes';
@@ -188,6 +189,9 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/saved-reports', auth.requireAuth, auth.requireCsrf, savedReportsRouter);
+
+  const searchRouter = createSearchRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/search', auth.requireAuth, auth.requireCsrf, searchRouter);
 
   const invoiceRouter = createInvoiceRouter({
     db: deps.db,

@@ -8,7 +8,15 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, firms, firmSettings, offices, roles, userRoles } from '@vibe/db/schema';
+import {
+  appUsers,
+  firms,
+  firmSettings,
+  offices,
+  rolePermissions,
+  roles,
+  userRoles,
+} from '@vibe/db/schema';
 import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
 
 import { emitAudit } from '../auth/audit';
@@ -523,6 +531,173 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       });
       res.status(201).json({ created, skipped, ids: created_ids });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Custom role CRUD (Phase 4 #11). The 5 system role templates ship
+  // hard-coded in @vibe/core/rbac and can't be edited; firms can also
+  // create extra rows in the `role` table and pick from PERMISSION_KEYS
+  // for each. user_role rows resolve from both sources at session time.
+  // -----------------------------------------------------------------
+  router.post(
+    '/roles',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const body = req.body as { name?: unknown; permissionKeys?: unknown };
+      const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+      if (!name) {
+        res.status(400).json({ error: 'name_required' });
+        return;
+      }
+      const keys = Array.isArray(body.permissionKeys)
+        ? body.permissionKeys.filter(
+            (k): k is string =>
+              typeof k === 'string' && (PERMISSION_KEYS as readonly string[]).includes(k),
+          )
+        : [];
+      const created = await deps.db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(roles)
+          .values({ firmId: session.firmId, name, systemFlag: false })
+          .returning({ id: roles.id });
+        if (!row) throw new Error('insert_failed');
+        if (keys.length > 0) {
+          await tx
+            .insert(rolePermissions)
+            .values(keys.map((k) => ({ roleId: row.id, permissionKey: k })));
+        }
+        return row.id;
+      });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'role',
+        entityId: created,
+        actorAppUserId: session.appUserId,
+        after: { name, permissionKeys: keys },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      res.status(201).json({ id: created });
+    },
+  );
+
+  router.get(
+    '/roles/:id/permissions',
+    requirePermission(deps, 'app_user:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ permissions: [] });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(and(eq(roles.id, req.params['id']!), eq(roles.firmId, session.firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const rows = await deps.db
+        .select({ k: rolePermissions.permissionKey })
+        .from(rolePermissions)
+        .where(eq(rolePermissions.roleId, req.params['id']!));
+      res.json({ permissions: rows.map((r) => r.k) });
+    },
+  );
+
+  router.put(
+    '/roles/:id/permissions',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { permissionKeys?: unknown };
+      if (!Array.isArray(body.permissionKeys)) {
+        res.status(400).json({ error: 'permissionKeys_required' });
+        return;
+      }
+      const wanted = body.permissionKeys.filter(
+        (k): k is string =>
+          typeof k === 'string' && (PERMISSION_KEYS as readonly string[]).includes(k),
+      );
+      const [scope] = await deps.db
+        .select({ id: roles.id, systemFlag: roles.systemFlag })
+        .from(roles)
+        .where(and(eq(roles.id, req.params['id']!), eq(roles.firmId, session.firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (scope.systemFlag) {
+        res.status(409).json({ error: 'system_role_immutable' });
+        return;
+      }
+      await deps.db.transaction(async (tx) => {
+        await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, req.params['id']!));
+        if (wanted.length > 0) {
+          await tx
+            .insert(rolePermissions)
+            .values(wanted.map((k) => ({ roleId: req.params['id']!, permissionKey: k })));
+        }
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'role_permissions',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { permissionKeys: wanted },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      res.json({ ok: true, count: wanted.length });
+    },
+  );
+
+  router.delete(
+    '/roles/:id',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ id: roles.id, systemFlag: roles.systemFlag })
+        .from(roles)
+        .where(and(eq(roles.id, req.params['id']!), eq(roles.firmId, session.firmId)))
+        .limit(1);
+      if (!scope) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (scope.systemFlag) {
+        res.status(409).json({ error: 'system_role_undeletable' });
+        return;
+      }
+      await deps.db.delete(roles).where(eq(roles.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'role',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { deleted: true },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+      res.json({ ok: true });
     },
   );
 
