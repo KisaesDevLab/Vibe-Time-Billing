@@ -4,6 +4,8 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell, Button, Pill } from '@vibe/ui';
 
+import { QuickFind } from './QuickFind';
+
 import { AccountPage } from './pages/Account';
 import { AdminLayout } from './pages/admin';
 import { AlertsPage } from './pages/Alerts';
@@ -118,6 +120,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       }
     >
       {children}
+      <QuickFind />
     </AppShell>
   );
 }

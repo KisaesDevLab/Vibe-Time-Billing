@@ -809,6 +809,112 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   );
 
   // -------------------------------------------------------------------
+  // Productivity by office (Phase 20 #8). Hours + billable hours per
+  // office over a window.
+  // -------------------------------------------------------------------
+  router.get(
+    '/productivity-by-office',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '30'), 10) || 30, 1),
+        365,
+      );
+      const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+      const { offices } = await import('@vibe/db/schema');
+      const rows = await deps.db
+        .select({
+          officeId: appUsers.defaultOfficeId,
+          officeName: offices.name,
+          totalHours: drz<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          billableHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.billableFlag} = true), 0)`,
+          headcount: drz<number>`COUNT(DISTINCT ${appUsers.id})`,
+        })
+        .from(timeEntries)
+        .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .leftJoin(offices, eq(offices.id, appUsers.defaultOfficeId))
+        .where(
+          and(eq(appUsers.firmId, session.firmId), drz`${timeEntries.entryDate} >= ${since}::date`),
+        )
+        .groupBy(appUsers.defaultOfficeId, offices.name);
+      res.json({
+        windowDays: days,
+        items: rows.map((r) => {
+          const total = Number(r.totalHours);
+          const billable = Number(r.billableHours);
+          return {
+            officeId: r.officeId,
+            officeName: r.officeName ?? '(no office)',
+            totalHours: total,
+            billableHours: billable,
+            headcount: Number(r.headcount),
+            utilizationPct: total > 0 ? (billable / total) * 100 : 0,
+          };
+        }),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Billable-hour target tracking (Phase 20 #8 v2). Compares each
+  // timekeeper's billable hours to a configurable monthly target (env
+  // BILLABLE_HOUR_TARGET, default 130). Returns over/under for the
+  // current month.
+  // -------------------------------------------------------------------
+  router.get(
+    '/billable-targets',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const target =
+        parseFloat(String(req.query['target'] ?? process.env['BILLABLE_HOUR_TARGET'] ?? '130')) ||
+        130;
+      const now = new Date();
+      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+        .toISOString()
+        .slice(0, 10);
+      const rows = await deps.db
+        .select({
+          appUserId: timeEntries.appUserId,
+          fullName: appUsers.fullName,
+          billableHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.billableFlag} = true), 0)`,
+        })
+        .from(timeEntries)
+        .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .where(
+          and(
+            eq(appUsers.firmId, session.firmId),
+            drz`${timeEntries.entryDate} >= ${monthStart}::date`,
+          ),
+        )
+        .groupBy(timeEntries.appUserId, appUsers.fullName);
+      res.json({
+        targetHours: target,
+        monthStart,
+        items: rows.map((r) => {
+          const billable = Number(r.billableHours);
+          return {
+            appUserId: r.appUserId,
+            fullName: r.fullName,
+            billableHours: billable,
+            varianceHours: billable - target,
+            attainmentPct: target > 0 ? (billable / target) * 100 : 0,
+          };
+        }),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
   // Scope-creep tracking (Phase 18 #16): out-of-scope hours per mixed-mode
   // engagement vs total hours.
   // -------------------------------------------------------------------
