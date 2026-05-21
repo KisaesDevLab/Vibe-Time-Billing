@@ -801,3 +801,65 @@ describe('Zero-amount adjustment', () => {
     }
   });
 });
+
+// =====================================================================
+// Cascading adjustments — Phase 12 #30. When two adjustments are applied
+// serially to the same batch, the second one operates on already-adjusted
+// values. This test confirms the math composes correctly: a 10% write-down
+// followed by a 5% write-down should leave 85.5% (1 × 0.90 × 0.95).
+// =====================================================================
+describe('Cascading adjustments', () => {
+  it('composes two sequential pro-rata write-downs correctly', () => {
+    const entries: TimeEntryInput[] = [
+      { id: 'e1', appUserId: 'u1', appUserRole: 'STAFF', hours: 10, standardAmountCents: 100_000 },
+    ];
+
+    const first = allocateProRataByValue({
+      totalAmountCents: -10_000, // -10% of $1,000
+      timeEntries: entries,
+    });
+    expect(first).toHaveLength(1);
+    expect(first[0]!.adjustedValueCents).toBe(90_000);
+
+    // Second adjustment operates on the already-adjusted value.
+    const afterFirst: TimeEntryInput[] = entries.map((e) => ({
+      ...e,
+      standardAmountCents: first.find((r) => r.timeEntryId === e.id)!.adjustedValueCents,
+    }));
+    const second = allocateProRataByValue({
+      totalAmountCents: -4_500, // -5% of $900
+      timeEntries: afterFirst,
+    });
+    expect(second).toHaveLength(1);
+    expect(second[0]!.adjustedValueCents).toBe(85_500);
+  });
+
+  it('preserves grain across cascading adjustments', () => {
+    const entries: TimeEntryInput[] = [
+      { id: 'e1', appUserId: 'u1', appUserRole: 'STAFF', hours: 5, standardAmountCents: 50_000 },
+      { id: 'e2', appUserId: 'u2', appUserRole: 'SENIOR', hours: 8, standardAmountCents: 96_000 },
+    ];
+    const first = allocateProRataByValue({
+      totalAmountCents: -14_600,
+      timeEntries: entries,
+    });
+    // Sum of allocated original values equals sum of input.
+    const firstSumOriginal = first.reduce((a, r) => a + r.originalValueCents, 0);
+    expect(firstSumOriginal).toBe(50_000 + 96_000);
+
+    // Apply second adjustment on adjusted values.
+    const afterFirst = entries.map((e) => ({
+      ...e,
+      standardAmountCents: first.find((r) => r.timeEntryId === e.id)!.adjustedValueCents,
+    }));
+    const second = allocateProRataByValue({
+      totalAmountCents: -1_317,
+      timeEntries: afterFirst,
+    });
+    // Per-entry grain preserved (one allocation row per entry).
+    expect(second).toHaveLength(2);
+    for (const r of second) {
+      expect(r.timeEntryId).toMatch(/^e[12]$/);
+    }
+  });
+});
