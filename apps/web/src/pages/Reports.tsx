@@ -80,6 +80,7 @@ export function ReportsPage(): JSX.Element {
         onClearDrill={clearDrill}
       />
       <RevenueOpsCard />
+      <SubscriptionProfitabilityCard />
       <PlainEnglishCard />
       <BillableTargetsCard />
       <CapacityForecastCard />
@@ -333,11 +334,13 @@ function Stat({
   value,
   tone,
   trend,
+  delta,
 }: {
   label: string;
   value: string;
   tone?: 'success' | 'warning';
   trend?: number[];
+  delta?: { value: string; pct: number | null };
 }): JSX.Element {
   return (
     <div>
@@ -367,6 +370,25 @@ function Stat({
           />
         )}
       </div>
+      {delta && (
+        <div
+          style={{
+            fontSize: 11,
+            color:
+              delta.pct == null
+                ? tokens.color.textMuted
+                : delta.pct >= 0
+                  ? tokens.color.success
+                  : tokens.color.danger,
+            marginTop: 2,
+          }}
+          title="vs prior period"
+        >
+          {delta.pct == null
+            ? `prior ${delta.value}`
+            : `${delta.pct >= 0 ? '↑' : '↓'} ${Math.abs(delta.pct).toFixed(1)}% vs ${delta.value}`}
+        </div>
+      )}
     </div>
   );
 }
@@ -378,6 +400,28 @@ interface DsoResp {
   outstandingCents: number;
   dsoDays: number | null;
   collectionRatePct: number | null;
+  prior?: {
+    billedCents: number;
+    paidCents: number;
+    collectionRatePct: number | null;
+    windowStart: string;
+    windowEnd: string;
+  };
+}
+
+interface SubProfitRow {
+  planId: string;
+  engagementName: string;
+  clientName: string;
+  frequency: string;
+  monthlyRevenue: number;
+  trailingRevenue: number;
+  inScopeHours: number;
+  oosHours: number;
+  oosBilledCents: number;
+  inScopeCostCents: number;
+  grossMarginCents: number;
+  grossMarginPct: number | null;
 }
 interface MrrResp {
   mrrCents: number;
@@ -685,8 +729,39 @@ function RevenueOpsCard(): JSX.Element {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
           {dso && (
             <>
-              <Stat label="Billed" value={formatCents(dso.billedCents)} trend={billedTrend} />
-              <Stat label="Paid" value={formatCents(dso.paidCents)} trend={paidTrend} />
+              <Stat
+                label="Billed"
+                value={formatCents(dso.billedCents)}
+                trend={billedTrend}
+                delta={
+                  dso.prior
+                    ? {
+                        value: formatCents(dso.prior.billedCents),
+                        pct:
+                          dso.prior.billedCents > 0
+                            ? ((dso.billedCents - dso.prior.billedCents) / dso.prior.billedCents) *
+                              100
+                            : null,
+                      }
+                    : undefined
+                }
+              />
+              <Stat
+                label="Paid"
+                value={formatCents(dso.paidCents)}
+                trend={paidTrend}
+                delta={
+                  dso.prior
+                    ? {
+                        value: formatCents(dso.prior.paidCents),
+                        pct:
+                          dso.prior.paidCents > 0
+                            ? ((dso.paidCents - dso.prior.paidCents) / dso.prior.paidCents) * 100
+                            : null,
+                      }
+                    : undefined
+                }
+              />
               <Stat
                 label="DSO"
                 value={dso.dsoDays == null ? '—' : `${dso.dsoDays.toFixed(0)} d`}
@@ -698,6 +773,14 @@ function RevenueOpsCard(): JSX.Element {
                 tone={
                   dso.collectionRatePct != null && dso.collectionRatePct < 80
                     ? 'warning'
+                    : undefined
+                }
+                delta={
+                  dso.prior && dso.prior.collectionRatePct != null && dso.collectionRatePct != null
+                    ? {
+                        value: formatPct(dso.prior.collectionRatePct / 100),
+                        pct: dso.collectionRatePct - dso.prior.collectionRatePct,
+                      }
                     : undefined
                 }
               />
@@ -712,6 +795,86 @@ function RevenueOpsCard(): JSX.Element {
           )}
         </div>
       )}
+    </Card>
+  );
+}
+
+function SubscriptionProfitabilityCard(): JSX.Element {
+  const [items, setItems] = useState<SubProfitRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ items: SubProfitRow[] }>(
+          '/api/staff/reports/subscription-profitability',
+        );
+        setItems(r.items ?? []);
+      } catch {
+        // ignore — no subscription plans yet
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+  if (loading) return <></>;
+  if (items.length === 0) return <></>;
+  return (
+    <Card title="Subscription profitability (trailing 90 days)">
+      <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '0 0 8px' }}>
+        Revenue = retainer (normalized to 90d) + out-of-scope billed. Cost = standard cost of
+        in-scope hours absorbed by the retainer. Sorted worst-margin first.
+      </p>
+      <Table<SubProfitRow>
+        columns={[
+          {
+            key: 'eng',
+            header: 'Engagement',
+            render: (r) => `${r.engagementName} · ${r.clientName}`,
+          },
+          { key: 'freq', header: 'Cycle', render: (r) => r.frequency },
+          {
+            key: 'rev',
+            header: 'Trailing rev',
+            align: 'right',
+            render: (r) => formatCents(r.trailingRevenue + r.oosBilledCents),
+          },
+          {
+            key: 'inscope',
+            header: 'In-scope hrs',
+            align: 'right',
+            render: (r) => r.inScopeHours.toFixed(1),
+          },
+          {
+            key: 'oos',
+            header: 'OOS hrs',
+            align: 'right',
+            render: (r) => r.oosHours.toFixed(1),
+          },
+          {
+            key: 'margin',
+            header: 'Margin',
+            align: 'right',
+            render: (r) => (
+              <Pill
+                tone={
+                  r.grossMarginPct == null
+                    ? 'neutral'
+                    : r.grossMarginPct >= 0.5
+                      ? 'success'
+                      : r.grossMarginPct >= 0.25
+                        ? 'warning'
+                        : 'danger'
+                }
+              >
+                {r.grossMarginPct == null ? '—' : `${(r.grossMarginPct * 100).toFixed(0)}%`}
+              </Pill>
+            ),
+          },
+        ]}
+        rows={items}
+        rowKey={(r) => r.planId}
+        empty="No active recurring plans yet."
+      />
     </Card>
   );
 }

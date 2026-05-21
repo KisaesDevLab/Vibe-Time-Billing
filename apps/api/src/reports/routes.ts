@@ -591,6 +591,41 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const avgDaily = billedT > 0 ? billedT / days : 0;
       const dsoDays = avgDaily > 0 ? outstandingT / avgDaily : null;
       const collectionRatePct = billedT > 0 ? (paidT / billedT) * 100 : null;
+
+      // Phase 17 #27 — prior-period comparison overlay. Compute the
+      // SAME window shifted back by `days` so the delta is apples-to-
+      // apples (90d-vs-90d, not month-vs-month).
+      const priorEnd = new Date(Date.now() - days * 86_400_000);
+      const priorStart = new Date(Date.now() - 2 * days * 86_400_000);
+      const priorStartStr = priorStart.toISOString().slice(0, 10);
+      const priorEndStr = priorEnd.toISOString().slice(0, 10);
+      const [priorBilled] = await deps.db
+        .select({ t: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)` })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            drz`${invoices.issueDate} >= ${priorStartStr}::date`,
+            drz`${invoices.issueDate} < ${priorEndStr}::date`,
+          ),
+        );
+      const [priorPaid] = await deps.db
+        .select({
+          t: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            eq(payments.status, 'SUCCEEDED'),
+            drz`${payments.receivedAt} >= ${priorStartStr}::timestamptz`,
+            drz`${payments.receivedAt} < ${priorEndStr}::timestamptz`,
+          ),
+        );
+      const priorBilledT = Number(priorBilled?.t ?? 0);
+      const priorPaidT = Number(priorPaid?.t ?? 0);
+
       res.json({
         windowDays: days,
         billedCents: billedT,
@@ -598,6 +633,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         outstandingCents: outstandingT,
         dsoDays,
         collectionRatePct,
+        prior: {
+          billedCents: priorBilledT,
+          paidCents: priorPaidT,
+          collectionRatePct: priorBilledT > 0 ? (priorPaidT / priorBilledT) * 100 : null,
+          windowStart: priorStartStr,
+          windowEnd: priorEndStr,
+        },
       });
     },
   );
@@ -1257,6 +1299,113 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }
       items.sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore));
       res.json({ items: items.slice(0, 200) });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Subscription profitability (Phase 17 #17). Per active recurring
+  // plan: monthly revenue (from plan.amount_cents normalized to month),
+  // estimated standard cost of in-scope hours logged in the trailing
+  // 90 days, and rough gross margin pct. Helps the firm spot retainer
+  // engagements where the bundle no longer fits.
+  // -------------------------------------------------------------------
+  router.get(
+    '/subscription-profitability',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const trailingDays = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 30),
+        365,
+      );
+      const since = new Date(Date.now() - trailingDays * 86_400_000).toISOString().slice(0, 10);
+
+      const plans = await deps.db
+        .select({
+          id: recurringBillingPlans.id,
+          engagementId: recurringBillingPlans.engagementId,
+          engagementName: engagements.name,
+          clientName: clients.name,
+          frequency: recurringBillingPlans.frequency,
+          amountCents: recurringBillingPlans.amountCents,
+        })
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(clients.firmId, session.firmId), eq(recurringBillingPlans.status, 'ACTIVE')));
+
+      if (plans.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+
+      const monthly = (freq: string, amount: number): number => {
+        switch (freq) {
+          case 'WEEKLY':
+            return Math.round((amount * 52) / 12);
+          case 'BIWEEKLY':
+            return Math.round((amount * 26) / 12);
+          case 'QUARTERLY':
+            return Math.round(amount / 3);
+          case 'ANNUAL':
+            return Math.round(amount / 12);
+          default:
+            return amount;
+        }
+      };
+
+      const engIds = plans.map((p) => p.engagementId);
+      const usage = await deps.db
+        .select({
+          engagementId: timeEntries.engagementId,
+          inScopeHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.hours} ELSE 0 END), 0)`,
+          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
+          oosHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.hours} END), 0)`,
+          oosBilledCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
+        })
+        .from(timeEntries)
+        .where(
+          and(
+            inArray(timeEntries.engagementId, engIds),
+            drz`${timeEntries.entryDate} >= ${since}::date`,
+          ),
+        )
+        .groupBy(timeEntries.engagementId);
+      const usageByEng = new Map(usage.map((u) => [u.engagementId, u]));
+
+      const items = plans.map((p) => {
+        const u = usageByEng.get(p.engagementId);
+        const monthlyRevenue = monthly(p.frequency, Number(p.amountCents));
+        const trailingRevenue = Math.round((monthlyRevenue * trailingDays) / 30);
+        const inScopeCost = Number(u?.inScopeCostCents ?? 0);
+        const oosBilled = Number(u?.oosBilledCents ?? 0);
+        const totalRevenue = trailingRevenue + oosBilled;
+        const totalCost = inScopeCost; // standard cost of in-scope work absorbed by retainer
+        const grossMarginCents = totalRevenue - totalCost;
+        const grossMarginPct = totalRevenue > 0 ? grossMarginCents / totalRevenue : null;
+        return {
+          planId: p.id,
+          engagementId: p.engagementId,
+          engagementName: p.engagementName,
+          clientName: p.clientName,
+          frequency: p.frequency,
+          monthlyRevenue,
+          trailingDays,
+          trailingRevenue,
+          inScopeHours: Number(u?.inScopeHours ?? 0),
+          inScopeCostCents: inScopeCost,
+          oosHours: Number(u?.oosHours ?? 0),
+          oosBilledCents: oosBilled,
+          grossMarginCents,
+          grossMarginPct,
+        };
+      });
+      items.sort((a, b) => (a.grossMarginPct ?? 0) - (b.grossMarginPct ?? 0));
+      res.json({ items, windowDays: trailingDays });
     },
   );
 
