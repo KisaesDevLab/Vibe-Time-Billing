@@ -380,6 +380,54 @@ export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
     },
   );
 
+  router.post(
+    '/:id/refund',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { hours?: unknown; amountCents?: unknown };
+      const hours = typeof body.hours === 'number' ? body.hours : 0;
+      const amountCents = typeof body.amountCents === 'number' ? body.amountCents : 0;
+      if (hours <= 0 || amountCents <= 0) {
+        res.status(400).json({ error: 'hours_and_amount_required' });
+        return;
+      }
+      const bank = await bankForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!bank) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const balance = await computeBalance(
+        deps.db,
+        bank.id,
+        Number(bank.openingHours),
+        Number(bank.openingAmountCents),
+      );
+      const newRunning = balance.balanceHours - hours;
+      await deps.db.insert(hourBankTransactions).values({
+        hourBankId: bank.id,
+        type: 'REFUND',
+        hours: hours.toString(),
+        amountCents,
+        runningBalanceHours: newRunning.toString(),
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'hour_bank',
+        entityId: bank.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'refund', hours, amountCents },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true, hoursRemaining: newRunning });
+    },
+  );
+
   return router;
 }
 
