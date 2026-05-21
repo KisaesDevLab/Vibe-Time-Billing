@@ -844,6 +844,73 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Cost vs revenue per engagement. Cost is sum(hours × timekeeper.cost_rate)
+  // for entries on this engagement; revenue is sum(invoice paid_cents)
+  // attributed to this engagement as the primary engagement.
+  // -----------------------------------------------------------------
+  router.get(
+    '/:id/cost-vs-revenue',
+    requirePermission(deps, 'report:profitability:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!(await clientBelongsToFirm(deps.db, firmId, eng.clientId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const { timekeeperRates, invoices } = await import('@vibe/db/schema');
+      const [cost] = await deps.db
+        .select({
+          c: sql<number>`
+            COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE((
+              SELECT ${timekeeperRates.costRateCents}
+              FROM ${timekeeperRates}
+              WHERE ${timekeeperRates.appUserId} = ${timeEntries.appUserId}
+                AND ${timekeeperRates.effectiveStart} <= ${timeEntries.entryDate}
+                AND (${timekeeperRates.effectiveEnd} IS NULL OR ${timekeeperRates.effectiveEnd} >= ${timeEntries.entryDate})
+              ORDER BY ${timekeeperRates.effectiveStart} DESC
+              LIMIT 1
+            ), 0)), 0)::bigint
+          `,
+        })
+        .from(timeEntries)
+        .where(eq(timeEntries.engagementId, eng.id));
+      const [rev] = await deps.db
+        .select({
+          billed: sql<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          paid: sql<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+        })
+        .from(invoices)
+        .where(eq(invoices.primaryEngagementId, eng.id));
+      const costCents = Number(cost?.c ?? 0);
+      const billedCents = Number(rev?.billed ?? 0);
+      const paidCents = Number(rev?.paid ?? 0);
+      res.json({
+        summary: {
+          engagementId: eng.id,
+          costCents,
+          billedCents,
+          paidCents,
+          marginCents: paidCents - costCents,
+          marginPct: paidCents > 0 ? ((paidCents - costCents) / paidCents) * 100 : null,
+        },
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Fixed-fee gap (Phase 11 #17). For FIXED_FEE and FIXED_FEE_WITH_*
   // engagements, the gap is (standard_amount_of_time_entries - fee).
   // Positive gap = unbilled work in excess of fee; negative = budget

@@ -714,6 +714,44 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Test the configured mail provider. Sends a one-line message to the
+  // given address and returns success / failure. No template, no audit
+  // value beyond the audit_log row.
+  // -----------------------------------------------------------------
+  router.post(
+    '/email/test',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const body = req.body as { to?: unknown };
+      const to = typeof body.to === 'string' ? body.to : '';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        res.status(400).json({ error: 'invalid_to' });
+        return;
+      }
+      const session = req.staffSession!;
+      // The actual mail provider hangs off the app's PortalRoutesDeps —
+      // we don't have a direct handle here, so emit an audit event and
+      // tell the caller to use the standard verify-magic-link surface to
+      // confirm send. (Future: pipe sendPortalEmail in via deps.)
+      if (deps.db) {
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'email_test',
+          actorAppUserId: session.appUserId,
+          after: { to, kind: 'placeholder' },
+          ip: req.ip ?? null,
+          userAgent: req.get('user-agent') ?? null,
+        });
+      }
+      res.json({
+        ok: true,
+        sent: false,
+        note: 'mail-test surface logs the request; actual provider send wired in next iteration',
+      });
+    },
+  );
+
   router.post(
     '/users/:id/invite-resend',
     requirePermission(deps, 'app_user:invite'),

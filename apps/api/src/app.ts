@@ -14,6 +14,7 @@ import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
 import { createTaxonomyRouter } from './taxonomy/routes';
+import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
 import { createEngagementRouter } from './engagements/routes';
 import { createTimeEntryRouter } from './time-entries/routes';
@@ -148,6 +149,12 @@ export function createApp(deps: AppDeps): Express {
 
   const taxonomyRouter = createTaxonomyRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/taxonomy', auth.requireAuth, auth.requireCsrf, taxonomyRouter);
+
+  const templatePackRouter = createTemplatePackRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/taxonomy', auth.requireAuth, auth.requireCsrf, templatePackRouter);
 
   const clientRouter = createClientRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);

@@ -920,6 +920,95 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Split one time entry into multiple. Each split row gets a new entry
+  // with the proportional hours; the original is archived. Bookmark the
+  // split intent in the version trail. Useful when a single timed block
+  // covered multiple work codes or engagements.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/split',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true, created: [] });
+        return;
+      }
+      const body = req.body as { splits?: unknown };
+      if (!Array.isArray(body.splits) || body.splits.length < 2) {
+        res.status(400).json({ error: 'at_least_two_splits_required' });
+        return;
+      }
+      const splits = body.splits.filter(
+        (s): s is { hours: number; description?: string; workCodeId?: string } =>
+          typeof s === 'object' &&
+          s !== null &&
+          typeof (s as { hours?: unknown }).hours === 'number' &&
+          (s as { hours: number }).hours > 0,
+      );
+      if (splits.length < 2) {
+        res.status(400).json({ error: 'invalid_splits' });
+        return;
+      }
+      const [prior] = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(eq(timeEntries.id, req.params['id']!))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (prior.lockedAt || prior.status === 'BILLED' || prior.status === 'LOCKED') {
+        res.status(409).json({ error: 'locked' });
+        return;
+      }
+      const totalHours = splits.reduce((a, s) => a + s.hours, 0);
+      if (Math.abs(totalHours - Number(prior.hours)) > 0.001) {
+        res.status(400).json({
+          error: 'splits_must_sum_to_original',
+          original: Number(prior.hours),
+          splitTotal: totalHours,
+        });
+        return;
+      }
+      const rate = prior.standardRateSnapshotCents;
+      const created: string[] = [];
+      await deps.db.transaction(async (tx) => {
+        for (const s of splits) {
+          const [row] = await tx
+            .insert(timeEntries)
+            .values({
+              engagementId: prior.engagementId,
+              appUserId: prior.appUserId,
+              workCodeId: s.workCodeId ?? prior.workCodeId,
+              entryDate: prior.entryDate,
+              hours: s.hours.toString(),
+              billableFlag: prior.billableFlag,
+              inScopeFlag: prior.inScopeFlag,
+              description: s.description ?? prior.description,
+              standardRateSnapshotCents: rate,
+              standardAmountCents: Math.round(rate * s.hours),
+            })
+            .returning({ id: timeEntries.id });
+          if (row) created.push(row.id);
+        }
+        await tx
+          .update(timeEntries)
+          .set({ status: 'ARCHIVED' })
+          .where(eq(timeEntries.id, prior.id));
+        await tx.insert(timeEntryVersions).values({
+          timeEntryId: prior.id,
+          version: 1,
+          fields: { ...prior, splitInto: created },
+          editedById: session.appUserId,
+        });
+      });
+      res.status(201).json({ ok: true, created });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Bulk cost-transfer (Phase 11 #12). Move many time entries to a
   // different engagement in one call. Each entry gets a new version row
   // and audit_log entry. Locked or billed entries are skipped.

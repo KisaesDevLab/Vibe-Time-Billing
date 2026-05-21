@@ -9,6 +9,7 @@ import { AdminLayout } from './pages/admin';
 import { AlertsPage } from './pages/Alerts';
 import { ApprovalsPage } from './pages/Approvals';
 import { ArPage } from './pages/Ar';
+import { ArByServiceLinePage } from './pages/ArByServiceLine';
 import { AuditPage } from './pages/Audit';
 import { AuthProvider, useAuth } from './auth-context';
 import { BillingBatchesPage } from './pages/Billing';
@@ -51,6 +52,7 @@ export function App(): JSX.Element {
                   <Route path="/wip" element={<WipDashboardPage />} />
                   <Route path="/invoices" element={<InvoicesPage />} />
                   <Route path="/ar" element={<ArPage />} />
+                  <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />
