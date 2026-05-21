@@ -808,6 +808,12 @@ export const timeEntries = pgTable(
 
     status: timeEntryStatus('status').notNull().default('SUBMITTED'),
 
+    // Phase 9 #22 — per-entry approver (when engagement requires
+    // explicit approval, the manager/partner who signs off lands here).
+    // NULL = not yet approved (or no approval requirement).
+    approverId: uuid('approver_id'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+
     billingBatchId: uuid('billing_batch_id'), // forward reference, see below
     lockedAt: timestamp('locked_at', { withTimezone: true }),
 

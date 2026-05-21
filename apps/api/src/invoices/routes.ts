@@ -62,6 +62,10 @@ const RefundSchema = z.object({
 const CreditMemoSchema = z.object({
   amountCents: z.number().int().positive(),
   reason: z.string().min(1).max(400),
+  // Phase 12 #19 — optional link to the adjustment that triggered this
+  // credit memo. Recorded in audit log + invoice notes so reverse
+  // lookups work (admin search by adjustmentId).
+  adjustmentId: z.string().uuid().optional(),
 });
 
 const LineItemSchema = z.object({
@@ -1541,7 +1545,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             feeCents: 0,
             totalCents: memoAmount,
             status: 'SENT',
-            notes: `Credit memo against ${orig.invoiceNumber}. Reason: ${parsed.data.reason}`,
+            notes:
+              `Credit memo against ${orig.invoiceNumber}. Reason: ${parsed.data.reason}` +
+              (parsed.data.adjustmentId ? ` [adjustment: ${parsed.data.adjustmentId}]` : ''),
             sentAt: new Date(),
           })
           .returning({ id: invoices.id });
@@ -1565,6 +1571,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           amountCents: memoAmount,
           againstInvoiceId: orig.id,
           reason: parsed.data.reason,
+          adjustmentId: parsed.data.adjustmentId ?? null,
         },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,

@@ -715,6 +715,146 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     },
   );
 
+  // Phase 23 #13 — scope-creep narrative. Wraps the rule-based
+  // /reports/scope-creep output in a 2-sentence partner-facing summary
+  // explaining the at-risk engagements + one recommendation.
+  router.post(
+    '/scope-creep-narrative',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps, 'scope-creep-narrative');
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const body = req.body as {
+        flagged?: Array<{ engagementName?: string; oosPct?: number; oosHours?: number }>;
+      };
+      const flagged = Array.isArray(body.flagged) ? body.flagged.slice(0, 20) : [];
+      if (flagged.length === 0) {
+        res.json({ narrative: 'No engagements currently showing scope creep.' });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You are a CPA practice consultant. Given a list of mixed-mode engagements where ' +
+            'out-of-scope hours have spiked, write a 2-sentence partner-facing summary plus one ' +
+            'concrete recommendation. Plain text. No engagement names invented; only use the list.',
+          userPrompt: flagged
+            .map(
+              (f, i) =>
+                `${i + 1}. ${f.engagementName ?? 'engagement'} — OOS ${f.oosPct?.toFixed?.(0) ?? '?'}% (${f.oosHours?.toFixed?.(1) ?? '?'}h)`,
+            )
+            .join('\n'),
+          maxTokens: 220,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'scope_creep_narrative',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ narrative: result.text, providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'scope_creep_narrative',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
+  // Phase 23 #15 — capacity narrative. Wraps the rolling-average forecast
+  // in a 2-sentence summary highlighting overcapacity and undercapacity
+  // timekeepers + one staffing recommendation.
+  router.post(
+    '/capacity-narrative',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps, 'capacity-narrative');
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const body = req.body as {
+        forecasts?: Array<{
+          fullName?: string;
+          weeklyAvgHours?: number;
+          projectedNext4Weeks?: number;
+          varianceVsTarget?: number;
+        }>;
+      };
+      const items = Array.isArray(body.forecasts) ? body.forecasts.slice(0, 30) : [];
+      if (items.length === 0) {
+        res.json({ narrative: 'No capacity data available yet.' });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You are a CPA practice consultant. Given a list of timekeepers with their 4-week ' +
+            'projected hours and variance vs target, write a 2-sentence partner-facing summary ' +
+            'flagging overcapacity (variance ≪ 0) and undercapacity (variance ≫ 0) names, plus ' +
+            'one concrete staffing recommendation. Plain text.',
+          userPrompt: items
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.fullName ?? 'staff'} — avg ${r.weeklyAvgHours?.toFixed?.(1) ?? '?'}h/wk, projected ${r.projectedNext4Weeks?.toFixed?.(1) ?? '?'}h in 4w, variance ${r.varianceVsTarget?.toFixed?.(0) ?? '?'}h`,
+            )
+            .join('\n'),
+          maxTokens: 220,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'capacity_narrative',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ narrative: result.text, providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'capacity_narrative',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
   router.get(
     '/request-log',
     requirePermission(deps, 'admin:ai:manage'),

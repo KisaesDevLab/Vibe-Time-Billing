@@ -975,6 +975,53 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
     },
   );
 
+  // Phase 9 #22 — per-entry approval. Manager/partner signs off on a
+  // specific entry. NULL approver_id is the unapproved state; this
+  // endpoint flips both approver_id and approved_at. Callers with
+  // time_entry:update:any (manager+) can approve any entry; staff
+  // cannot self-approve.
+  router.post(
+    '/:id/approve',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [entry] = await deps.db
+        .select({ id: timeEntries.id, appUserId: timeEntries.appUserId })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(timeEntries.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!entry) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (entry.appUserId === session.appUserId) {
+        res.status(409).json({ error: 'cannot_self_approve' });
+        return;
+      }
+      const now = new Date();
+      await deps.db
+        .update(timeEntries)
+        .set({ approverId: session.appUserId, approvedAt: now })
+        .where(eq(timeEntries.id, entry.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'time_entry',
+        entityId: entry.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'approve', approverId: session.appUserId, approvedAt: now.toISOString() },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, approverId: session.appUserId, approvedAt: now.toISOString() });
+    },
+  );
+
   router.post(
     '/:id/transfer',
     requirePermission(deps, 'time_entry:update:any'),

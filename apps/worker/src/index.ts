@@ -318,8 +318,45 @@ async function setup(): Promise<void> {
     queues.set(name, queue);
 
     const evt = new QueueEvents(name, { connection });
+    // Phase 10 #34 — alerting on job failures. Audit-log every BullMQ
+    // 'failed' event so the staff Alerts inbox surfaces it alongside
+    // wip-age, scope-creep, and audit-anomaly notifications. Suppress
+    // is per-(queue, jobId) duplicate within the same hour so retried
+    // failures don't spam.
     evt.on('failed', ({ jobId, failedReason }) => {
       logger.error({ jobId, queue: name, failedReason }, 'job failed');
+      if (!db) return;
+      const cutoff = new Date(Date.now() - 60 * 60_000);
+      void (async () => {
+        try {
+          const { sql, and, eq, gte } = await import('drizzle-orm');
+          const { auditLog } = await import('@vibe/db/schema');
+          const [dup] = await db!
+            .select({ id: auditLog.id })
+            .from(auditLog)
+            .where(
+              and(
+                eq(auditLog.entityType, 'worker_job_failure'),
+                eq(auditLog.entityId, jobId),
+                gte(auditLog.occurredAt, cutoff),
+              ),
+            )
+            .limit(1);
+          if (dup) return;
+          await db!.insert(auditLog).values({
+            action: 'CREATE',
+            entityType: 'worker_job_failure',
+            entityId: jobId,
+            actorMcpTokenId: 'worker',
+            afterJson: { queue: name, jobId, failedReason },
+          });
+          // Touch sql so lint doesn't complain about unused import once
+          // there's no other consumer in this scope.
+          void sql;
+        } catch (err) {
+          logger.error({ err, queue: name, jobId }, 'job-failure audit emit failed');
+        }
+      })();
     });
     events.set(name, evt);
 
