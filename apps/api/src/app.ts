@@ -44,6 +44,7 @@ import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createStripeWebhookRouter } from './webhooks/stripe';
+import { createCpaChargeWebhookRouter } from './webhooks/cpacharge';
 import { createWebhookRouter } from './webhooks/outbound';
 import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
@@ -95,6 +96,63 @@ export function createApp(deps: AppDeps): Express {
       env: config.NODE_ENV,
       portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
     });
+  });
+
+  // Per-service health probes — each external dep gets its own URL so a
+  // load-balancer or monitoring system can target it specifically.
+  app.get('/health/db', async (_req: Request, res: Response) => {
+    try {
+      if (deps.db) {
+        await deps.db.execute(sqlOne);
+        res.json({ status: 'ok', service: 'db' });
+        return;
+      }
+      res.status(503).json({ status: 'no_db', service: 'db' });
+    } catch (err) {
+      res
+        .status(503)
+        .json({ status: 'down', service: 'db', error: err instanceof Error ? err.message : '?' });
+    }
+  });
+  app.get('/health/redis', async (_req: Request, res: Response) => {
+    try {
+      const pong = await deps.redis.ping();
+      if (pong === 'PONG') {
+        res.json({ status: 'ok', service: 'redis' });
+        return;
+      }
+      res.status(503).json({ status: 'unexpected_reply', service: 'redis', reply: pong });
+    } catch (err) {
+      res.status(503).json({
+        status: 'down',
+        service: 'redis',
+        error: err instanceof Error ? err.message : '?',
+      });
+    }
+  });
+
+  // Prometheus-style text exposition. Minimal — counts only, since we
+  // don't run a real metrics library in-process. Tags include service name
+  // so Prometheus can group across the api/worker pair.
+  app.get('/metrics', async (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+    const lines: string[] = [];
+    lines.push('# HELP vibe_up Whether the API process is up.');
+    lines.push('# TYPE vibe_up gauge');
+    lines.push(`vibe_up{service="api"} 1`);
+    // Memory.
+    const mem = process.memoryUsage();
+    lines.push('# HELP vibe_process_rss_bytes Resident set size in bytes.');
+    lines.push('# TYPE vibe_process_rss_bytes gauge');
+    lines.push(`vibe_process_rss_bytes{service="api"} ${mem.rss}`);
+    lines.push('# HELP vibe_process_heap_used_bytes Heap used in bytes.');
+    lines.push('# TYPE vibe_process_heap_used_bytes gauge');
+    lines.push(`vibe_process_heap_used_bytes{service="api"} ${mem.heapUsed}`);
+    // Uptime.
+    lines.push('# HELP vibe_process_uptime_seconds Process uptime.');
+    lines.push('# TYPE vibe_process_uptime_seconds counter');
+    lines.push(`vibe_process_uptime_seconds{service="api"} ${process.uptime().toFixed(2)}`);
+    res.send(lines.join('\n') + '\n');
   });
 
   // Readiness — surfaces what's actually wired vs. stubbed. Used by the
@@ -398,6 +456,15 @@ export function createApp(deps: AppDeps): Express {
       db: deps.db,
       stripe: deps.stripeProvider ?? null,
       webhookSecret: deps.stripeWebhookSecret ?? null,
+    }),
+  );
+
+  app.use(
+    '/api/webhooks/cpacharge',
+    createCpaChargeWebhookRouter({
+      db: deps.db,
+      provider: null,
+      webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
     }),
   );
 
