@@ -23,6 +23,9 @@ export function AuditPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Full-text search (matches entity_type / entity_id / ip / user-agent).
+  const [searchQ, setSearchQ] = useState('');
+
   // Filters — persisted to localStorage so the page survives reloads.
   const saved = ((): {
     entityType?: string;
@@ -75,6 +78,22 @@ export function AuditPage(): JSX.Element {
     void load();
   }
 
+  async function fullText(): Promise<void> {
+    if (searchQ.length < 2) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await api<{ items: AuditRow[] }>(
+        `/api/staff/audit/search?q=${encodeURIComponent(searchQ)}`,
+      );
+      setItems(r.items ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <Card title="Filter audit log">
@@ -111,6 +130,24 @@ export function AuditPage(): JSX.Element {
           </Button>
         </form>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
+      </Card>
+
+      <Card title="Full-text search">
+        <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+          <Input
+            label="Search audit text"
+            placeholder="entity id, action, IP, user-agent…"
+            value={searchQ}
+            onChange={(e) => setSearchQ(e.target.value)}
+          />
+          <Button
+            type="button"
+            disabled={loading || searchQ.length < 2}
+            onClick={() => void fullText()}
+          >
+            Search
+          </Button>
+        </div>
       </Card>
 
       <Card title={`Events (${items.length})`}>
