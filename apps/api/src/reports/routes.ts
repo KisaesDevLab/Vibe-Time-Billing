@@ -1143,5 +1143,78 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
     },
   );
 
+  // -------------------------------------------------------------------
+  // Time-entry anomaly highlighting (Phase 17 #26): flags timekeepers
+  // whose daily hours over the last 90 days deviate >2.5 std-dev from
+  // their own personal mean. Surfaces only the outlier days so a partner
+  // can drill in without scanning hundreds of normal rows.
+  // -------------------------------------------------------------------
+  router.get(
+    '/time-anomalies',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          appUserId: timeEntries.appUserId,
+          entryDate: timeEntries.entryDate,
+          hours: drz<string>`SUM(${timeEntries.hours})`,
+        })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            eq(clients.firmId, session.firmId),
+            drz`${timeEntries.entryDate} >= ${since}::date`,
+            drz`${timeEntries.status} <> 'ARCHIVED'`,
+          ),
+        )
+        .groupBy(timeEntries.appUserId, timeEntries.entryDate);
+
+      const byUser = new Map<string, Array<{ entryDate: string; hours: number }>>();
+      for (const r of rows) {
+        const arr = byUser.get(r.appUserId) ?? [];
+        arr.push({ entryDate: r.entryDate, hours: Number(r.hours) });
+        byUser.set(r.appUserId, arr);
+      }
+      const items: Array<{
+        appUserId: string;
+        entryDate: string;
+        hours: number;
+        mean: number;
+        stdev: number;
+        zScore: number;
+      }> = [];
+      for (const [appUserId, days] of byUser) {
+        if (days.length < 5) continue;
+        const mean = days.reduce((a, d) => a + d.hours, 0) / days.length;
+        const variance = days.reduce((a, d) => a + (d.hours - mean) ** 2, 0) / days.length;
+        const stdev = Math.sqrt(variance);
+        if (stdev === 0) continue;
+        for (const d of days) {
+          const z = (d.hours - mean) / stdev;
+          if (Math.abs(z) >= 2.5) {
+            items.push({
+              appUserId,
+              entryDate: d.entryDate,
+              hours: d.hours,
+              mean: Number(mean.toFixed(2)),
+              stdev: Number(stdev.toFixed(2)),
+              zScore: Number(z.toFixed(2)),
+            });
+          }
+        }
+      }
+      items.sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore));
+      res.json({ items: items.slice(0, 200) });
+    },
+  );
+
   return router;
 }
