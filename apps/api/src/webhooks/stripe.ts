@@ -9,7 +9,7 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { invoices, payments } from '@vibe/db/schema';
+import { clients, dunningHistory, invoices, payments } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
@@ -20,6 +20,9 @@ export interface StripeWebhookDeps {
   db: Database | null;
   stripe: PaymentProvider | null;
   webhookSecret: string | null;
+  // Phase 14 #15 + #20 — confirmation email + dunning re-route hooks.
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  portalBaseUrl?: string;
 }
 
 interface StripeEvent {
@@ -139,6 +142,37 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           paymentId: pay.id,
           amountCents: pay.amountCents,
         }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+        // Phase 14 #15 — payment confirmation email to the client.
+        if (deps.sendEmail) {
+          try {
+            const [client] = await deps.db
+              .select({
+                name: clients.name,
+                email: clients.billingContactEmail,
+              })
+              .from(clients)
+              .where(eq(clients.id, inv.clientId))
+              .limit(1);
+            if (client?.email) {
+              const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+              await deps.sendEmail({
+                to: client.email,
+                subject: `Payment received — ${inv.invoiceNumber}`,
+                body: [
+                  `Hi ${client.name},`,
+                  ``,
+                  `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
+                  fullyPaid
+                    ? `This invoice is now PAID. Thank you!`
+                    : `Remaining balance: $${((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2)}.`,
+                  link ? `\nView receipt: ${link}` : '',
+                ].join('\n'),
+              });
+            }
+          } catch (err) {
+            logger.warn({ err, invoiceId: inv.id }, 'payment confirmation email failed');
+          }
+        }
         if (fullyPaid) {
           await publishWebhookEvent(deps.db, inv.firmId, 'invoice.paid', {
             invoiceId: pay.invoiceId,
@@ -178,6 +212,17 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         .limit(1);
       if (!pay) return;
       await deps.db.update(payments).set({ status: 'FAILED' }).where(eq(payments.id, pay.id));
+      // Phase 14 #20 — dunning re-route on failed payment. Clear the
+      // dunning_history for this invoice so the next sweep treats it
+      // as a fresh overdue and restarts the friendly-reminder cycle.
+      // The unique index on (invoice_id, step_kind) was the suppression
+      // gate; deletion lifts it.
+      await deps.db
+        .delete(dunningHistory)
+        .where(eq(dunningHistory.invoiceId, pay.invoiceId))
+        .catch((err: unknown) =>
+          logger.warn({ err, invoiceId: pay.invoiceId }, 'dunning re-route reset failed'),
+        );
       const [inv] = await deps.db
         .select({ firmId: invoices.firmId })
         .from(invoices)

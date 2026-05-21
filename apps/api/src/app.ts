@@ -479,6 +479,8 @@ export function createApp(deps: AppDeps): Express {
       db: deps.db,
       stripe: deps.stripeProvider ?? null,
       webhookSecret: deps.stripeWebhookSecret ?? null,
+      sendEmail: deps.sendPortalEmail,
+      portalBaseUrl: config.PORTAL_BASE_URL,
     }),
   );
 

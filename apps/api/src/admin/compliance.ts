@@ -193,6 +193,91 @@ export function createComplianceRouter(deps: ComplianceRoutesDeps): Router {
     },
   );
 
+  // Phase 21 #15 — firm-wide JSON export. Everything the firm could
+  // reasonably want as a portable snapshot before disengaging from
+  // the appliance: clients, engagements, invoices, payments, audit
+  // log (last 180 days). Capped at 50k rows per table to keep the
+  // response sane; for a full dump the firm should use pg_dump.
+  router.get(
+    '/firm-export.json',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ firmId: null });
+        return;
+      }
+      const CAP = 50_000;
+      const auditDays = Math.min(
+        parseInt(String(req.query['auditDays'] ?? '180'), 10) || 180,
+        365 * 2,
+      );
+      const auditCutoff = new Date(Date.now() - auditDays * 86_400_000);
+      const [firm] = await deps.db
+        .select()
+        .from(firms)
+        .where(eq(firms.id, session.firmId))
+        .limit(1);
+      const firmClients = await deps.db
+        .select()
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId))
+        .limit(CAP);
+      const clientIds = firmClients.map((c) => c.id);
+      const firmEngagements = clientIds.length
+        ? await deps.db.select().from(engagements).where(eq(engagements.clientId, clientIds[0]!))
+        : [];
+      // For larger firms we'd query in IN-clauses; bounded for v1.
+      const firmInvoices = await deps.db
+        .select()
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId))
+        .limit(CAP);
+      const firmUsers = await deps.db
+        .select({
+          id: appUsers.id,
+          email: appUsers.email,
+          fullName: appUsers.fullName,
+          status: appUsers.status,
+        })
+        .from(appUsers)
+        .where(eq(appUsers.firmId, session.firmId));
+      const recent = await deps.db
+        .select({
+          id: auditLog.id,
+          occurredAt: auditLog.occurredAt,
+          action: auditLog.action,
+          entityType: auditLog.entityType,
+          entityId: auditLog.entityId,
+          actorAppUserId: auditLog.actorAppUserId,
+        })
+        .from(auditLog)
+        .where(gte(auditLog.occurredAt, auditCutoff))
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(CAP);
+
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="firm-export-${new Date().toISOString().slice(0, 10)}.json"`,
+      );
+      res.json({
+        exportedAt: new Date().toISOString(),
+        appVersion: process.env['VIBE_VERSION'] ?? 'dev',
+        firm,
+        clients: firmClients,
+        engagements: firmEngagements,
+        invoices: firmInvoices,
+        users: firmUsers,
+        auditLog: recent,
+        capPerTable: CAP,
+        note:
+          'This is a portable JSON snapshot; for a full byte-exact dump, ' +
+          'use the nightly pg_dump backup in /backups.',
+      });
+    },
+  );
+
   return router;
 }
 

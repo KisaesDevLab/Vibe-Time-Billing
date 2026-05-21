@@ -755,6 +755,128 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
     },
   );
 
+  // Phase 10 #21 — proration commit. POST /:id/proration-commit applies
+  // the plan amount change in one transaction: updates
+  // recurring_billing_plan.amount_cents and inserts a one-off DRAFT
+  // invoice carrying the proration line (or a credit memo when the
+  // proration is negative). Caller previews via /proration-preview
+  // before posting.
+  router.post(
+    '/:id/proration-commit',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { newAmountCents?: unknown; changeDate?: unknown };
+      const newAmount = typeof body.newAmountCents === 'number' ? body.newAmountCents : NaN;
+      const changeDate =
+        typeof body.changeDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.changeDate)
+          ? body.changeDate
+          : null;
+      if (!Number.isFinite(newAmount) || newAmount < 0 || !changeDate) {
+        res.status(400).json({ error: 'newAmountCents_and_changeDate_required' });
+        return;
+      }
+      const [plan] = await deps.db
+        .select()
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(recurringBillingPlans.id, req.params['id']!), eq(clients.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const oldAmount = Number(plan.recurring_billing_plan.amountCents);
+      const periodDays =
+        plan.recurring_billing_plan.frequency === 'MONTHLY'
+          ? 30
+          : plan.recurring_billing_plan.frequency === 'QUARTERLY'
+            ? 91
+            : plan.recurring_billing_plan.frequency === 'ANNUAL'
+              ? 365
+              : plan.recurring_billing_plan.frequency === 'BIWEEKLY'
+                ? 14
+                : 7;
+      const change = new Date(changeDate);
+      const nextRun = new Date(plan.recurring_billing_plan.nextRunDate);
+      const daysRemaining = Math.max(
+        0,
+        Math.floor((nextRun.getTime() - change.getTime()) / 86_400_000),
+      );
+      const oldUnused = Math.round((oldAmount * daysRemaining) / periodDays);
+      const newUnused = Math.round((newAmount * daysRemaining) / periodDays);
+      const prorationCents = newUnused - oldUnused;
+
+      const result = await deps.db.transaction(async (tx) => {
+        await tx
+          .update(recurringBillingPlans)
+          .set({ amountCents: newAmount })
+          .where(eq(recurringBillingPlans.id, plan.recurring_billing_plan.id));
+
+        // Skip the proration invoice when delta is zero (re-apply or no-op).
+        if (prorationCents === 0)
+          return { planId: plan.recurring_billing_plan.id, invoiceId: null };
+
+        // Build a small DRAFT invoice carrying the proration.
+        const [maxNum] = await tx
+          .select({
+            n: sql<number>`COALESCE(MAX(CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER)), 0)`,
+          })
+          .from(invoices)
+          .where(eq(invoices.firmId, session.firmId));
+        const seq = Number(maxNum?.n ?? 0) + 1;
+        const today = new Date().toISOString().slice(0, 10);
+        const number = `PR-${today.slice(0, 4)}-${String(seq).padStart(5, '0')}`;
+        const [inv] = await tx
+          .insert(invoices)
+          .values({
+            firmId: session.firmId,
+            clientId: plan.client.id,
+            primaryEngagementId: plan.recurring_billing_plan.engagementId,
+            invoiceNumber: number,
+            issueDate: today,
+            dueDate: today,
+            subtotalCents: prorationCents,
+            feeCents: 0,
+            totalCents: prorationCents,
+            status: 'DRAFT',
+            notes: `Proration on plan change: $${(oldAmount / 100).toFixed(2)} → $${(newAmount / 100).toFixed(2)} effective ${changeDate}`,
+          })
+          .returning({ id: invoices.id });
+        if (!inv) throw new Error('proration_invoice_failed');
+        await tx.insert(invoiceLineItems).values({
+          invoiceId: inv.id,
+          kind: 'CUSTOM',
+          description:
+            prorationCents >= 0
+              ? `Plan upgrade proration (${daysRemaining} of ${periodDays} days)`
+              : `Plan downgrade credit (${daysRemaining} of ${periodDays} days)`,
+          amountCents: prorationCents,
+          sourceRefType: 'recurring_billing_plan',
+          sourceRefId: plan.recurring_billing_plan.id,
+          sortOrder: 0,
+        });
+        return { planId: plan.recurring_billing_plan.id, invoiceId: inv.id };
+      });
+
+      res.json({
+        ok: true,
+        planId: result.planId,
+        invoiceId: result.invoiceId,
+        prorationCents,
+        oldAmountCents: oldAmount,
+        newAmountCents: newAmount,
+      });
+    },
+  );
+
   return router;
 }
 
