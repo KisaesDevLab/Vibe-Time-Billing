@@ -6,6 +6,8 @@
 // dunning sweeps (Phase 15). Each job's domain logic lives in @vibe/core;
 // this file is the orchestration shell.
 
+import http from 'node:http';
+
 import { Queue, QueueEvents, Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { pino } from 'pino';
@@ -376,6 +378,38 @@ async function setup(): Promise<void> {
     );
   }
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
+  startHealthServer();
+}
+
+// Phase 25 #11 — per-service health probe. Tiny HTTP listener that
+// exposes /health for k8s/docker healthchecks against the worker
+// process specifically (distinct from the api's /health). Default
+// port 3003; override via WORKER_HEALTH_PORT.
+function startHealthServer(): void {
+  const port = parseInt(process.env['WORKER_HEALTH_PORT'] ?? '3003', 10) || 3003;
+  const startedAt = Date.now();
+  const server = http.createServer((req, res) => {
+    if (req.url === '/health') {
+      const queueNames = Array.from(workers.keys());
+      const queuesUp = workers.size > 0;
+      const dbUp = Boolean(db);
+      res.writeHead(queuesUp ? 200 : 503, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          service: 'vibe-tb-worker',
+          ok: queuesUp,
+          db: dbUp,
+          queueCount: workers.size,
+          queues: queueNames,
+          uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+        }),
+      );
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end('{"error":"not_found"}');
+  });
+  server.listen(port, () => logger.info({ port }, 'worker health server listening'));
 }
 
 async function shutdown(): Promise<void> {
