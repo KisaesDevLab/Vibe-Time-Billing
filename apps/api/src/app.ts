@@ -239,6 +239,7 @@ export function createApp(deps: AppDeps): Express {
   const billingBatchRouter = createBillingBatchRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
   });
   app.use('/api/staff/billing-batches', auth.requireAuth, auth.requireCsrf, billingBatchRouter);
 

@@ -10,6 +10,7 @@ import { and, between, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  appUsers,
   billingBatchEntries,
   billingBatches,
   clients,
@@ -21,9 +22,12 @@ import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billin
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { renderHtmlToPdf } from '../pdf/render';
 
 export interface BillingBatchRoutesDeps extends RbacDeps {
   db: Database | null;
+  // Phase 11 #9 — wired for emailable pre-bill.
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
 }
 
 const CreateSchema = z.object({
@@ -371,9 +375,21 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
             `${r.entryDate}  ${Number(r.hours).toFixed(2)}h  $${(Number(r.amountCents) / 100).toFixed(2)}  ${r.description ?? ''}`,
         ),
       ];
-      // The actual send is wired via the dunning-sweep mail dispatcher;
-      // here we audit-log the request. A real dispatch path lives in
-      // worker dispatchers — we mark the marker for now.
+      const emailBody = lines.join('\n');
+      let sent = false;
+      let dispatchError: string | null = null;
+      if (deps.sendEmail) {
+        try {
+          await deps.sendEmail({
+            to,
+            subject: `Pre-bill ready: ${batch.client.name} · ${batch.engagement.name} (${batch.billing_batch.periodStart} → ${batch.billing_batch.periodEnd})`,
+            body: emailBody,
+          });
+          sent = true;
+        } catch (err) {
+          dispatchError = err instanceof Error ? err.message : 'dispatch_failed';
+        }
+      }
       await emitAudit(deps.db, {
         action: 'EXPORT',
         entityType: 'billing_batch',
@@ -384,11 +400,161 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           to,
           entryCount: rows.length,
           totalCents: total,
+          sent,
+          dispatchError,
         },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.json({ ok: true, sent: false, preview: lines.join('\n') });
+      res.json({ ok: true, sent, dispatchError, preview: emailBody });
+    },
+  );
+
+  // Phase 11 #10 — assign-partner. PATCH the assignedPartnerId on a
+  // pre-bill so a different partner reviews than the engagement's
+  // partner-in-charge. NULL = inherit engagement partner.
+  router.patch(
+    '/:id/assign-partner',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { partnerId?: unknown };
+      const partnerId =
+        body.partnerId === null ? null : typeof body.partnerId === 'string' ? body.partnerId : null;
+      const [row] = await deps.db
+        .select({ id: billingBatches.id, firmId: clients.firmId })
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(billingBatches.id, req.params['id']!))
+        .limit(1);
+      if (!row || row.firmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(billingBatches)
+        .set({ assignedPartnerId: partnerId })
+        .where(eq(billingBatches.id, row.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'billing_batch',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'assign_partner', partnerId },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, assignedPartnerId: partnerId });
+    },
+  );
+
+  // Phase 11 #8 — pre-bill PDF. Renders an HTML view of the batch
+  // (totals + entries + write-off summary) and pipes through Puppeteer.
+  // ?mode=html returns the HTML preview directly (no Chrome needed in
+  // dev).
+  router.get(
+    '/:id/pdf',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const entryRows = await deps.db
+        .select({
+          entryDate: timeEntries.entryDate,
+          hours: timeEntries.hours,
+          amountCents: timeEntries.standardAmountCents,
+          appUserId: timeEntries.appUserId,
+          appUserName: appUsers.fullName,
+          description: timeEntries.description,
+        })
+        .from(timeEntries)
+        .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .where(eq(timeEntries.billingBatchId, batch.billing_batch.id))
+        .orderBy(timeEntries.entryDate);
+      const total = entryRows.reduce((a, r) => a + Number(r.amountCents), 0);
+      const totalHours = entryRows.reduce((a, r) => a + Number(r.hours), 0);
+
+      const html = `<!doctype html><html><head><meta charset="utf-8"/>
+<title>Pre-bill ${batch.engagement.name}</title>
+<style>
+  body { font: 13px -apple-system, BlinkMacSystemFont, sans-serif; color: #111; margin: 32px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .meta { color: #555; margin-bottom: 24px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #ddd; font-size: 12px; }
+  th { text-align: left; background: #f4f6f9; font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tfoot td { border-top: 2px solid #333; border-bottom: none; font-weight: 600; }
+</style>
+</head><body>
+  <h1>Pre-bill — ${escape(batch.client.name)}</h1>
+  <div class="meta">
+    <div><strong>${escape(batch.engagement.name)}</strong></div>
+    <div>Period ${batch.billing_batch.periodStart} → ${batch.billing_batch.periodEnd}</div>
+    <div>Status: ${batch.billing_batch.status} · ${entryRows.length} entries</div>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Date</th><th>Timekeeper</th><th class="num">Hours</th><th class="num">Amount</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      ${entryRows
+        .map(
+          (r) => `<tr>
+        <td>${r.entryDate}</td>
+        <td>${escape(r.appUserName ?? r.appUserId.slice(0, 8))}</td>
+        <td class="num">${Number(r.hours).toFixed(2)}</td>
+        <td class="num">$${(Number(r.amountCents) / 100).toFixed(2)}</td>
+        <td>${escape(r.description ?? '')}</td>
+      </tr>`,
+        )
+        .join('')}
+    </tbody>
+    <tfoot>
+      <tr><td colspan="2">Totals</td><td class="num">${totalHours.toFixed(2)}</td><td class="num">$${(total / 100).toFixed(2)}</td><td></td></tr>
+    </tfoot>
+  </table>
+</body></html>`;
+
+      const wantHtml =
+        req.query['mode'] === 'html' || req.headers.accept?.toString().includes('text/html');
+      if (wantHtml) {
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+        return;
+      }
+      try {
+        const pdf = await renderHtmlToPdf(html);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `inline; filename="prebill-${batch.engagement.name.replace(/[^a-z0-9]+/gi, '-')}.pdf"`,
+        );
+        res.send(pdf);
+      } catch (err) {
+        logger.warn({ err }, 'puppeteer not available — falling back to HTML');
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      }
     },
   );
 
@@ -753,6 +919,14 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   return router;
+}
+
+function escape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function clientIp(req: Request): string {

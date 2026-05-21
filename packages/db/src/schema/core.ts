@@ -967,6 +967,12 @@ export const billingBatches = pgTable(
     status: billingBatchStatus('status').notNull().default('DRAFT'),
     createdById: uuid('created_by_id').references(() => appUsers.id),
     approvedById: uuid('approved_by_id').references(() => appUsers.id),
+    // Phase 11 #10 — assigned partner for pre-bill review. NULL = use
+    // engagement.partnerId. Filtered to non-null when listing a partner's
+    // pending pre-bills (partial index on (assigned_partner_id, status)).
+    assignedPartnerId: uuid('assigned_partner_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
     finalizedAt: timestamp('finalized_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
