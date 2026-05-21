@@ -60,6 +60,7 @@ export function ReportsPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <RevenueOpsCard />
+      <PlainEnglishCard />
       <BillableTargetsCard />
       <CapacityForecastCard />
       <Card
@@ -322,6 +323,75 @@ function BillableTargetsCard(): JSX.Element {
         rowKey={(r) => r.appUserId}
         empty="No billable hours yet this month."
       />
+    </Card>
+  );
+}
+
+function PlainEnglishCard(): JSX.Element {
+  const [q, setQ] = useState('');
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function ask(): Promise<void> {
+    if (!q.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ answer: string }>('/api/staff/ai/plain-english-query', {
+        method: 'POST',
+        body: JSON.stringify({ question: q }),
+      });
+      setText(r.answer);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Ask in plain English">
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+        Ask any question about the practice; the AI suggests which reports to run.
+      </p>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void ask();
+          }}
+          placeholder='"Which engagements have the worst realization this quarter?"'
+          style={{
+            flex: 1,
+            padding: '8px 12px',
+            borderRadius: tokens.radius.sm,
+            border: `1px solid ${tokens.color.border}`,
+            background: tokens.color.surface,
+            color: tokens.color.text,
+            fontSize: 13,
+          }}
+        />
+        <Button onClick={() => void ask()} disabled={busy}>
+          {busy ? '…' : '✨ Ask'}
+        </Button>
+      </div>
+      {text && (
+        <p
+          style={{
+            marginTop: 12,
+            fontSize: 13,
+            color: tokens.color.text,
+            background: tokens.color.surface,
+            padding: 12,
+            borderRadius: tokens.radius.sm,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {text}
+        </p>
+      )}
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
     </Card>
   );
 }
