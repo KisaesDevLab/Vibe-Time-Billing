@@ -452,6 +452,86 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Pre-bill narrative (Phase 23 #25). Given a batch summary (counts +
+  // amounts), generates a 2-3 sentence executive summary for the partner
+  // review. No PII flows to the LLM — caller passes aggregated counts.
+  // -----------------------------------------------------------------
+  router.post(
+    '/prebill-narrative',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const Schema = z.object({
+        clientName: z.string().max(120).optional(),
+        engagementName: z.string().max(200).optional(),
+        entryCount: z.number().int().nonnegative(),
+        totalHours: z.number().nonnegative(),
+        totalAmountCents: z.number().int().nonnegative(),
+        oldestEntryDate: z.string().optional(),
+        adjustmentCount: z.number().int().nonnegative().optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You write 2-3 sentence pre-bill summaries for CPA partners. Output plain text, no headers.',
+          userPrompt: [
+            parsed.data.clientName ? `Client: ${parsed.data.clientName}` : null,
+            parsed.data.engagementName ? `Engagement: ${parsed.data.engagementName}` : null,
+            `Entries: ${parsed.data.entryCount}`,
+            `Hours: ${parsed.data.totalHours.toFixed(2)}`,
+            `Standard amount: $${(parsed.data.totalAmountCents / 100).toFixed(2)}`,
+            parsed.data.oldestEntryDate ? `Oldest entry: ${parsed.data.oldestEntryDate}` : null,
+            parsed.data.adjustmentCount != null
+              ? `Adjustments applied: ${parsed.data.adjustmentCount}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          maxTokens: 200,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'prebill_narrative',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ narrative: result.text.trim(), providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'prebill_narrative',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------
   // AI-augmented anomaly detection (Phase 23 #10). Combines the rule-
   // based scope_creep + wip_age + audit_anomaly alerts from audit_log
   // with an LLM summary that explains the patterns in partner-readable
