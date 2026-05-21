@@ -20,6 +20,7 @@ import {
   userRoles,
 } from '@vibe/db/schema';
 import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
+import { seedNotificationTemplates } from '@vibe/db/seed-helpers';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -989,6 +990,32 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .from(notificationTemplates)
         .where(eq(notificationTemplates.firmId, firmId));
       res.json({ items });
+    },
+  );
+
+  // v2 Sprint A — populate any kind/channel pair that does not yet have
+  // an override row. Existing rows are preserved (admins keep their
+  // customizations). Returns the count inserted so the UI can toast it.
+  router.post(
+    '/notification-templates/seed-defaults',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ inserted: 0 });
+        return;
+      }
+      const inserted = await deps.db.transaction(async (tx) =>
+        seedNotificationTemplates(tx, firmId),
+      );
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'notification_template',
+        entityId: 'seed-defaults',
+        actorAppUserId: req.staffSession!.appUserId,
+        after: { inserted },
+      }).catch(() => undefined);
+      res.json({ inserted });
     },
   );
 

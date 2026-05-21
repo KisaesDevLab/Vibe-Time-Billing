@@ -13,6 +13,7 @@ import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
+import { createMessagingRouter } from './messaging/routes';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
@@ -207,6 +208,12 @@ export function createApp(deps: AppDeps): Express {
 
   const adminRouter = createAdminRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/admin', auth.requireAuth, auth.requireCsrf, adminRouter);
+
+  const messagingRouter = createMessagingRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/messaging', auth.requireAuth, auth.requireCsrf, messagingRouter);
 
   const taxonomyRouter = createTaxonomyRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/taxonomy', auth.requireAuth, auth.requireCsrf, taxonomyRouter);

@@ -15,6 +15,7 @@ import { HourBanksPage } from './HourBanks';
 import { HourBankTxPage } from './HourBankTx';
 import { JobsPage } from './Jobs';
 import { MilestonesPage } from './Milestones';
+import { MessagingPage } from './Messaging';
 import { NotificationsPage } from './Notifications';
 import { NotificationTemplatesPage } from './NotificationTemplates';
 import { OfficesPage } from './Offices';
@@ -49,6 +50,7 @@ const TABS = [
   { key: 'webhooks', label: 'Webhooks', href: '/admin/webhooks' },
   { key: 'perms', label: 'Permissions', href: '/admin/permissions' },
   { key: 'roles', label: 'Roles', href: '/admin/roles' },
+  { key: 'messaging', label: 'Email + SMS providers', href: '/admin/messaging' },
   { key: 'notifs', label: 'Notifications', href: '/admin/notifications' },
   { key: 'notif-tpl', label: 'Notif templates', href: '/admin/notification-templates' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
@@ -103,6 +105,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="webhooks" element={<WebhooksPage />} />
         <Route path="permissions" element={<PermissionMatrixPage />} />
         <Route path="roles" element={<RolesPage />} />
+        <Route path="messaging" element={<MessagingPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="notification-templates" element={<NotificationTemplatesPage />} />
         <Route path="jobs" element={<JobsPage />} />

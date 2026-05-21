@@ -33,6 +33,12 @@ const Schema = z.object({
   MAIL_PROVIDER: z.enum(['smtp', 'postmark', 'resend', 'ses']).default('smtp'),
   SMS_PROVIDER: z.enum(['textlink', 'twilio', 'sns']).default('textlink'),
 
+  // v2 Sprint A — at-rest encryption key for DB-backed messaging
+  // provider config (AES-256-GCM). 32 bytes encoded as base64 or hex.
+  // In dev a deterministic placeholder is used so the API boots without
+  // setup. In prod the loader requires an explicit value (see below).
+  KMS_KEY: z.string().optional(),
+
   COMMERCIAL_LICENSE_TOKEN: z.string().optional(),
   MCP_ENABLED: z
     .string()
@@ -91,6 +97,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         DATABASE_URL: env['DATABASE_URL'] ?? 'postgresql://vibe:vibe@localhost:5432/vibe_tb',
         STAFF_JWT_SECRET: env['STAFF_JWT_SECRET'] ?? 'dev-staff-secret-please-rotate',
         PORTAL_JWT_SECRET: env['PORTAL_JWT_SECRET'] ?? 'dev-portal-secret-please-rotate',
+        // Deterministic dev placeholder so messaging-config round-trip
+        // works locally without setup. Production loader (below) requires
+        // an explicit value.
+        KMS_KEY:
+          env['KMS_KEY'] ??
+          // 32 bytes of zeros encoded as hex — explicitly insecure, dev only.
+          '0000000000000000000000000000000000000000000000000000000000000000',
       };
 
   const parsed = Schema.safeParse({ ...defaults, ...env });
@@ -101,6 +114,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   if (parsed.data.STAFF_JWT_SECRET === parsed.data.PORTAL_JWT_SECRET) {
     throw new Error('STAFF_JWT_SECRET and PORTAL_JWT_SECRET must differ (cross-realm isolation)');
+  }
+
+  if (isProd && !parsed.data.KMS_KEY) {
+    throw new Error('KMS_KEY is required in production (32 bytes, base64 or hex)');
   }
 
   cached = parsed.data;

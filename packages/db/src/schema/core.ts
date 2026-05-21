@@ -51,6 +51,17 @@ export const entityStatus = pgEnum('entity_status', [
   'ARCHIVED',
 ]);
 
+// v2 0026 — CRM-class client model expansion.
+export const clientType = pgEnum('client_type', ['INDIVIDUAL', 'BUSINESS']);
+export const filingStatus = pgEnum('filing_status', [
+  'SINGLE',
+  'MFJ',
+  'MFS',
+  'HOH',
+  'QW',
+]);
+export const pipelineStage = pgEnum('pipeline_stage', ['PROSPECT', 'CLIENT', 'OTHER']);
+
 export const userStatus = pgEnum('user_status', ['ACTIVE', 'INACTIVE', 'ARCHIVED']);
 
 export const officeRole = pgEnum('office_role', ['PARTNER', 'MANAGER', 'SENIOR', 'STAFF', 'ADMIN']);
@@ -334,6 +345,13 @@ export const firmSettings = pgTable('firm_settings', {
   brandSupportPhone: text('brand_support_phone'),
   brandFooterHtml: text('brand_footer_html'),
 
+  // v2 Sprint A 0035 — DB-backed messaging provider config, encrypted
+  // at rest with AES-256-GCM. NULL = inherit from env vars.
+  mailConfigEncrypted: text('mail_config_encrypted'),
+  smsConfigEncrypted: text('sms_config_encrypted'),
+  mailConfigUpdatedAt: timestamp('mail_config_updated_at', { withTimezone: true }),
+  smsConfigUpdatedAt: timestamp('sms_config_updated_at', { withTimezone: true }),
+
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -597,6 +615,17 @@ export const clients = pgTable(
       .notNull()
       .references(() => appUsers.id),
 
+    // v2 0026 — CRM expansion
+    clientType: clientType('client_type').notNull().default('BUSINESS'),
+    clientFacingName: text('client_facing_name'),
+    externalId: text('external_id'),
+    filingStatus: filingStatus('filing_status'),
+    // FK to client_source lands in 0034 (Sprint B); column is nullable
+    // UUID until then.
+    sourceId: uuid('source_id'),
+    pipelineStage: pipelineStage('pipeline_stage').notNull().default('CLIENT'),
+    active: boolean('active').notNull().default(true),
+
     billingContactName: text('billing_contact_name'),
     billingContactEmail: text('billing_contact_email'),
     billingContactPhone: text('billing_contact_phone'),
@@ -627,6 +656,10 @@ export const clients = pgTable(
     statusIdx: index('client_status_idx').on(t.status),
     partnerIdx: index('client_partner_idx').on(t.partnerInChargeId),
     nameSearchIdx: index('client_name_search_idx').on(t.firmId, t.name),
+    pipelineIdx: index('client_pipeline_stage_idx').on(t.firmId, t.pipelineStage),
+    externalIdUk: uniqueIndex('client_firm_external_id_uk')
+      .on(t.firmId, t.externalId)
+      .where(sql`external_id IS NOT NULL`),
   }),
 );
 

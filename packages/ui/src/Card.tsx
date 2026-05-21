@@ -4,7 +4,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { tokens } from './tokens';
 
 export interface CardProps {
-  title?: string;
+  title?: ReactNode;
   action?: ReactNode;
   children: ReactNode;
   style?: CSSProperties;

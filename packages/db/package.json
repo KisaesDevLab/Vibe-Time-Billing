@@ -8,7 +8,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./schema": "./src/schema/index.ts"
+    "./schema": "./src/schema/index.ts",
+    "./seed-helpers": "./src/seed-helpers/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

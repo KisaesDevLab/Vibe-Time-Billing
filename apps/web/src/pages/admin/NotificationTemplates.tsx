@@ -121,6 +121,37 @@ export function NotificationTemplatesPage(): JSX.Element {
           Variable insertion only (per Q28). Use <code>{'{{variable.name}}'}</code> markers; the
           dispatcher substitutes at send time. Unset templates use the baked-in defaults.
         </p>
+        {!active && status && (
+          <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }} role="status">
+            {status}
+          </p>
+        )}
+        {!active && error && (
+          <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+            {error}
+          </p>
+        )}
+        <div style={{ marginBottom: 12 }}>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              void (async () => {
+                try {
+                  const r = await api<{ inserted: number }>(
+                    '/api/staff/admin/notification-templates/seed-defaults',
+                    { method: 'POST' },
+                  );
+                  setStatus(`Seeded ${r.inserted} default(s). Existing overrides preserved.`);
+                  await load();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'seed_failed');
+                }
+              })();
+            }}
+          >
+            Seed missing defaults
+          </Button>
+        </div>
         <div style={{ display: 'grid', gap: 8 }}>
           {KINDS.map((k) => (
             <div

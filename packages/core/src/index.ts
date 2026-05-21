@@ -13,3 +13,4 @@ export * as webhooks from './webhooks';
 export * as mcp from './mcp';
 export * as ai from './ai';
 export * as connect from './connect';
+export * as crypto from './crypto';
