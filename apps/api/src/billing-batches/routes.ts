@@ -318,6 +318,78 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Subscription overage split (Phase 11 #19). For a RECURRING_SUBSCRIPTION
+  // engagement, splits the batch's standard amount into in-scope vs overage.
+  // -----------------------------------------------------------------
+  router.get(
+    '/:id/subscription-split',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const eng = batch.engagement;
+      if (eng.feeStructure !== 'RECURRING_SUBSCRIPTION') {
+        res
+          .status(409)
+          .json({ error: 'not_subscription_engagement', feeStructure: eng.feeStructure });
+        return;
+      }
+      const [inScope] = await deps.db
+        .select({
+          hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+        })
+        .from(timeEntries)
+        .where(
+          and(
+            eq(timeEntries.billingBatchId, batch.billing_batch.id),
+            eq(timeEntries.inScopeFlag, true),
+          ),
+        );
+      const [outOfScope] = await deps.db
+        .select({
+          hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+        })
+        .from(timeEntries)
+        .where(
+          and(
+            eq(timeEntries.billingBatchId, batch.billing_batch.id),
+            eq(timeEntries.inScopeFlag, false),
+          ),
+        );
+      res.json({
+        summary: {
+          batchId: batch.billing_batch.id,
+          subscriptionFeeCents: eng.feeAmountCents != null ? Number(eng.feeAmountCents) : null,
+          inScope: {
+            hours: Number(inScope?.hours ?? 0),
+            amountCents: Number(inScope?.amountCents ?? 0),
+          },
+          overage: {
+            hours: Number(outOfScope?.hours ?? 0),
+            amountCents: Number(outOfScope?.amountCents ?? 0),
+          },
+        },
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Recompute a batch (Phase 11 #21). Re-aggregates time-entry totals
   // for the batch. Useful after a time entry was edited but the batch
   // was already created. Read-only — returns the recomputed numbers,

@@ -595,6 +595,83 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Reopen an invoice as a new draft (Phase 11 #23). Voids the original
+  // and creates a fresh DRAFT carrying forward the line items so a partner
+  // can re-edit + re-send. Returns the new invoice id.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/reopen',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'PAID' || inv.status === 'PARTIALLY_PAID') {
+        res.status(409).json({ error: 'cannot_reopen_with_payments', status: inv.status });
+        return;
+      }
+      const oldLines = await deps.db
+        .select()
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.invoiceId, inv.id));
+      const newId = await deps.db.transaction(async (tx) => {
+        await tx.update(invoices).set({ status: 'VOIDED' }).where(eq(invoices.id, inv.id));
+        const [created] = await tx
+          .insert(invoices)
+          .values({
+            firmId: inv.firmId,
+            clientId: inv.clientId,
+            primaryEngagementId: inv.primaryEngagementId,
+            invoiceNumber: `${inv.invoiceNumber}-r${Date.now() % 1000}`,
+            issueDate: new Date().toISOString().slice(0, 10),
+            dueDate: inv.dueDate,
+            status: 'DRAFT',
+            subtotalCents: inv.subtotalCents,
+            feeCents: inv.feeCents,
+            totalCents: inv.totalCents,
+            paidCents: 0,
+            notes: inv.notes ?? null,
+          })
+          .returning({ id: invoices.id });
+        if (!created) throw new Error('reopen_failed');
+        for (const l of oldLines) {
+          await tx.insert(invoiceLineItems).values({
+            invoiceId: created.id,
+            kind: l.kind,
+            description: l.description,
+            amountCents: l.amountCents,
+            engagementId: l.engagementId,
+            sourceRefType: 'reopen',
+            sortOrder: l.sortOrder,
+          });
+        }
+        return created.id;
+      });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'invoice',
+        entityId: newId,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'reopen', from: inv.id },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: newId, voidedOriginal: inv.id });
+    },
+  );
+
   router.post(
     '/:id/void',
     requirePermission(deps, 'invoice:write'),
