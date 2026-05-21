@@ -232,6 +232,42 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
           .set({ isDefault: true, updatedAt: new Date() })
           .where(eq(paymentMethod.id, pm.id));
       });
+
+      // Phase 10 #31 — auto-resume plans paused for autopay failures.
+      // When the identity adopts a new payment method as autopay, any
+      // recurring plans for clients they have ACTIVE access to that
+      // were paused for PAYMENT_FAILED reason flip back to ACTIVE with
+      // the failure counter reset. The next-run worker picks up where
+      // it left off.
+      if (session.activeClientId) {
+        const { recurringBillingPlans, engagements } = await import('@vibe/db/schema');
+        const resumed = await deps.db
+          .update(recurringBillingPlans)
+          .set({
+            status: 'ACTIVE',
+            pausedAt: null,
+            pausedReason: null,
+            consecutiveFailureCount: 0,
+          })
+          .where(
+            and(
+              eq(recurringBillingPlans.status, 'PAUSED'),
+              eq(recurringBillingPlans.pausedReason, 'PAYMENT_FAILED'),
+              drz`${recurringBillingPlans.engagementId} IN (
+                SELECT ${engagements.id} FROM ${engagements}
+                WHERE ${engagements.clientId} = ${session.activeClientId}
+              )`,
+            ),
+          )
+          .returning({ id: recurringBillingPlans.id });
+        if (resumed.length > 0) {
+          logger.info(
+            { count: resumed.length, clientId: session.activeClientId },
+            'recurring plans auto-resumed after payment-method update',
+          );
+        }
+      }
+
       res.json({ ok: true });
     },
   );
