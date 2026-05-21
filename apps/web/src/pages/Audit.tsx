@@ -16,16 +16,31 @@ interface AuditRow {
   ip: string | null;
 }
 
+const FILTER_KEY = '__vibe_audit_filters';
+
 export function AuditPage(): JSX.Element {
   const [items, setItems] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters
-  const [entityType, setEntityType] = useState('');
-  const [entityId, setEntityId] = useState('');
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  // Filters — persisted to localStorage so the page survives reloads.
+  const saved = ((): {
+    entityType?: string;
+    entityId?: string;
+    start?: string;
+    end?: string;
+  } => {
+    try {
+      const raw = localStorage.getItem(FILTER_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  })();
+  const [entityType, setEntityType] = useState(saved.entityType ?? '');
+  const [entityId, setEntityId] = useState(saved.entityId ?? '');
+  const [start, setStart] = useState(saved.start ?? '');
+  const [end, setEnd] = useState(saved.end ?? '');
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -39,6 +54,11 @@ export function AuditPage(): JSX.Element {
       params.set('limit', '200');
       const r = await api<{ items: AuditRow[] }>(`/api/staff/audit?${params.toString()}`);
       setItems(r.items ?? []);
+      try {
+        localStorage.setItem(FILTER_KEY, JSON.stringify({ entityType, entityId, start, end }));
+      } catch {
+        // ignore localStorage failures
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     } finally {
