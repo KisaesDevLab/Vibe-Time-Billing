@@ -1384,6 +1384,10 @@ export const approvalRequests = pgTable(
     requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
     respondedAt: timestamp('responded_at', { withTimezone: true }),
     dueAt: timestamp('due_at', { withTimezone: true }),
+    // Phase 18 #5 — multi-step routing
+    currentStep: integer('current_step').notNull().default(1),
+    totalSteps: integer('total_steps').notNull().default(1),
+    stepsJson: jsonb('steps_json'),
   },
   (t) => ({
     entityIdx: index('approval_request_entity_idx').on(t.entityType, t.entityId),

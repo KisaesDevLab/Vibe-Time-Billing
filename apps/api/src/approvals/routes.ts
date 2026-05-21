@@ -111,7 +111,34 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         return;
       }
 
+      // Phase 18 #5 — multi-step routing. If APPROVE on an intermediate
+      // step, advance to the next step and stay PENDING; only terminal
+      // step approvals or any REJECT flip status.
+      const isApprove =
+        parsed.data.decision === 'APPROVED' || parsed.data.decision === 'APPROVED_WITH_EDITS';
+      const nextStep = request.currentStep + 1;
+      const advancing = isApprove && nextStep <= request.totalSteps;
+      let nextApproverId: string | null = null;
+      if (advancing) {
+        const steps = Array.isArray(request.stepsJson)
+          ? (request.stepsJson as Array<{ approverId?: string }>)
+          : [];
+        nextApproverId = steps[nextStep - 1]?.approverId ?? null;
+      }
+
       await deps.db.transaction(async (tx) => {
+        if (advancing) {
+          await tx
+            .update(approvalRequests)
+            .set({
+              currentStep: nextStep,
+              approverId: nextApproverId,
+              comments: parsed.data.comments ?? request.comments,
+              // status stays PENDING
+            })
+            .where(eq(approvalRequests.id, request.id));
+          return;
+        }
         await tx
           .update(approvalRequests)
           .set({
@@ -122,7 +149,8 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
           })
           .where(eq(approvalRequests.id, request.id));
 
-        // If approving an adjustment, flip its status PENDING_APPROVAL -> APPLIED.
+        // If approving an adjustment at the last step, flip its status
+        // PENDING_APPROVAL -> APPLIED.
         if (request.entityType === 'ADJUSTMENT' && parsed.data.decision === 'APPROVED') {
           await tx
             .update(adjustments)
@@ -145,12 +173,22 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         entityType: 'approval_request',
         entityId: request.id,
         actorAppUserId: session.appUserId,
-        after: { status: parsed.data.decision, comments: parsed.data.comments },
+        after: {
+          status: advancing ? 'PENDING' : parsed.data.decision,
+          step: advancing ? nextStep : request.currentStep,
+          totalSteps: request.totalSteps,
+          comments: parsed.data.comments,
+        },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
-      res.json({ ok: true });
+      res.json({
+        ok: true,
+        advanced: advancing,
+        currentStep: advancing ? nextStep : request.currentStep,
+        totalSteps: request.totalSteps,
+      });
     },
   );
 
