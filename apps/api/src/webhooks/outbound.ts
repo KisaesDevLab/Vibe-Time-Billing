@@ -302,6 +302,91 @@ export function createWebhookRouter(deps: WebhookRoutesDeps): Router {
     },
   );
 
+  // Phase 21 #5 — webhook delivery log export. CSV/JSON download of the
+  // last N (configurable, capped at 5000) deliveries for one endpoint.
+  router.get(
+    '/:id/deliveries/export',
+    requirePermission(deps, 'admin:webhooks:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [endpoint] = await deps.db
+        .select({ id: webhookEndpoints.id, url: webhookEndpoints.url })
+        .from(webhookEndpoints)
+        .where(
+          and(
+            eq(webhookEndpoints.id, req.params['id']!),
+            eq(webhookEndpoints.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!endpoint) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const limit = Math.min(
+        Math.max(parseInt(String(req.query['limit'] ?? '1000'), 10) || 1000, 1),
+        5000,
+      );
+      const format = String(req.query['format'] ?? 'json').toLowerCase();
+      const items = await deps.db
+        .select({
+          id: webhookDeliveries.id,
+          eventType: webhookDeliveries.eventType,
+          status: webhookDeliveries.status,
+          attemptCount: webhookDeliveries.attemptCount,
+          lastAttemptAt: webhookDeliveries.lastAttemptAt,
+          nextAttemptAt: webhookDeliveries.nextAttemptAt,
+          responseStatus: webhookDeliveries.responseStatus,
+          createdAt: webhookDeliveries.createdAt,
+        })
+        .from(webhookDeliveries)
+        .where(eq(webhookDeliveries.webhookEndpointId, endpoint.id))
+        .orderBy(desc(webhookDeliveries.createdAt))
+        .limit(limit);
+
+      if (format === 'csv') {
+        const header =
+          'id,event_type,status,attempt_count,last_attempt_at,next_attempt_at,response_status,created_at';
+        const csvEscape = (v: unknown): string => {
+          if (v === null || v === undefined) return '';
+          const s = v instanceof Date ? v.toISOString() : String(v);
+          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        };
+        const rows = items.map((r) =>
+          [
+            r.id,
+            r.eventType,
+            r.status,
+            r.attemptCount,
+            r.lastAttemptAt,
+            r.nextAttemptAt,
+            r.responseStatus,
+            r.createdAt,
+          ]
+            .map(csvEscape)
+            .join(','),
+        );
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="webhook-deliveries-${endpoint.id.slice(0, 8)}.csv"`,
+        );
+        res.send([header, ...rows].join('\n'));
+        return;
+      }
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="webhook-deliveries-${endpoint.id.slice(0, 8)}.json"`,
+      );
+      res.json({ endpoint: { id: endpoint.id, url: endpoint.url }, items, count: items.length });
+    },
+  );
+
   // Test-fire a delivery to one of the firm's endpoints with a sample
   // payload. Useful when wiring a receiver — verifies signature path.
   router.post(
