@@ -57,6 +57,8 @@ const EngagementCreateSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
   autoRolloverEnabled: z.boolean().optional(),
+  // Phase 7 #13 — premium/discount multiplier in basis points (10000 = 1.0x).
+  rateMultiplierBps: z.number().int().min(1000).max(50000).optional(),
   // Optional hour-bank attachment. When supplied, the engagement is
   // created and an hour_bank row is inserted in the same transaction.
   // Phase 8 #8 — bank-bearing engagements no longer need a second POST.

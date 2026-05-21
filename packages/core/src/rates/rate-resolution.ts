@@ -118,13 +118,22 @@ function pickMostRecent(matches: RateCandidate[]): RateCandidate {
  * `time_entry.standard_rate_snapshot_cents` and `standard_amount_cents`.
  * Historical reports never shift when rates change (CLAUDE.md
  * non-negotiable #3).
+ *
+ * Optional `multiplierBps` (Phase 7 #13) is the engagement-level
+ * premium/discount in basis points: 10000 = 1.0x (default), 11000 =
+ * +10% premium, 8500 = 15% discount. Applied to the resolved rate
+ * BEFORE rounding so a 15% discount on a $420/hr rate snapshots as
+ * $357/hr (not $420 stored then $357 displayed elsewhere).
  */
-export function captureRateSnapshot(args: { rate: ResolvedRate; hours: number }): {
-  rateCents: Cents;
-  amountCents: Cents;
-} {
+export function captureRateSnapshot(args: {
+  rate: ResolvedRate;
+  hours: number;
+  multiplierBps?: number;
+}): { rateCents: Cents; amountCents: Cents } {
+  const bps = args.multiplierBps ?? 10000;
+  const effectiveRate = Math.round((args.rate.billRateCents * bps) / 10000);
   return {
-    rateCents: args.rate.billRateCents,
-    amountCents: Math.round(args.rate.billRateCents * args.hours),
+    rateCents: effectiveRate,
+    amountCents: Math.round(effectiveRate * args.hours),
   };
 }

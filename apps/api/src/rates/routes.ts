@@ -19,6 +19,7 @@ import {
   serviceLines,
   timekeeperRates,
 } from '@vibe/db/schema';
+import { resolveRate, type RateCandidate } from '@vibe/core/rates';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -675,6 +676,130 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         };
       });
       res.json({ items });
+    },
+  );
+
+  // Phase 7 #17 — rate resolution debug panel.
+  // Given (appUserId, engagementId, serviceDate), load every candidate
+  // the time-entry POST would, run resolveRate, return resolved level +
+  // candidates considered + trace. Partners ask "why is this rate $X" —
+  // this endpoint answers.
+  router.get(
+    '/resolve-debug',
+    requirePermission(deps, 'rate:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ resolved: null, candidates: [], engagement: null });
+        return;
+      }
+      const appUserId = String(req.query['appUserId'] ?? '');
+      const engagementId = String(req.query['engagementId'] ?? '');
+      const serviceDate = String(req.query['serviceDate'] ?? '');
+      if (!appUserId || !engagementId || !DATE_RE.test(serviceDate)) {
+        res.status(400).json({ error: 'appUserId_engagementId_serviceDate_required' });
+        return;
+      }
+      // Scope: user must belong to firm and engagement's client must too.
+      const [user] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, appUserId), eq(appUsers.firmId, session.firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'user_not_found' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          name: engagements.name,
+          rateMultiplierBps: engagements.rateMultiplierBps,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(engagements.id, engagementId), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+
+      const candidates: RateCandidate[] = [];
+      const tk = await deps.db
+        .select()
+        .from(timekeeperRates)
+        .where(eq(timekeeperRates.appUserId, appUserId));
+      for (const r of tk) {
+        candidates.push({
+          level: 'timekeeper',
+          appUserId,
+          billRateCents: r.billRateCents,
+          costRateCents: r.costRateCents ?? null,
+          effectiveStart: r.effectiveStart,
+          effectiveEnd: r.effectiveEnd ?? null,
+        });
+      }
+      const cl = await deps.db
+        .select()
+        .from(clientRateOverrides)
+        .where(
+          and(
+            eq(clientRateOverrides.clientId, eng.clientId),
+            eq(clientRateOverrides.appUserId, appUserId),
+          ),
+        );
+      for (const r of cl) {
+        candidates.push({
+          level: 'client',
+          clientId: eng.clientId,
+          appUserId,
+          billRateCents: r.billRateCents,
+          effectiveStart: r.effectiveStart,
+          effectiveEnd: r.effectiveEnd ?? null,
+        });
+      }
+      const engOv = await deps.db
+        .select()
+        .from(engagementRateOverrides)
+        .where(
+          and(
+            eq(engagementRateOverrides.engagementId, engagementId),
+            eq(engagementRateOverrides.appUserId, appUserId),
+          ),
+        );
+      for (const r of engOv) {
+        candidates.push({
+          level: 'engagement',
+          engagementId,
+          appUserId,
+          billRateCents: r.billRateCents,
+          effectiveStart: r.effectiveStart,
+        });
+      }
+
+      const resolved = resolveRate({
+        serviceDate,
+        appUserId,
+        engagementId,
+        clientId: eng.clientId,
+        serviceLineId: null,
+        candidates,
+        firmDefaultBillRateCents: 0,
+      });
+      const multiplierBps = eng.rateMultiplierBps ?? 10000;
+      const effectiveRateCents = Math.round((resolved.billRateCents * multiplierBps) / 10000);
+      res.json({
+        resolved,
+        engagement: {
+          id: eng.id,
+          name: eng.name,
+          rateMultiplierBps: multiplierBps,
+        },
+        effectiveRateCents,
+        candidates,
+      });
     },
   );
 

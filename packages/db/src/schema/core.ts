@@ -654,6 +654,12 @@ export const engagements = pgTable(
       scale: 2,
     }),
 
+    // Phase 7 #13 — premium / discount multiplier in basis points.
+    // 10000 = 1.0x (no adjustment); 11000 = 1.1x (10% premium);
+    // 8500 = 0.85x (15% discount). Applied to the resolved rate before
+    // snapshot capture on time entries.
+    rateMultiplierBps: integer('rate_multiplier_bps').notNull().default(10000),
+
     customFields: jsonb('custom_fields').notNull().default({}),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

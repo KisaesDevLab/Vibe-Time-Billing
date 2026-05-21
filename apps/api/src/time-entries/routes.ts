@@ -324,7 +324,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(400).json({ error: 'no_rate_resolves', userId: session.appUserId });
         return;
       }
-      const snapshot = captureRateSnapshot({ rate: resolved, hours: parsed.data.hours });
+      const snapshot = captureRateSnapshot({
+        rate: resolved,
+        hours: parsed.data.hours,
+        multiplierBps: eng.rateMultiplierBps ?? 10000,
+      });
 
       // NTE cap (Phase 10 #19): if the engagement has nte_cap_cents set,
       // reject when this entry would push the running standard-amount
