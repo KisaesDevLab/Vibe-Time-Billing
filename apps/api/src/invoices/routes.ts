@@ -36,6 +36,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
@@ -164,6 +165,35 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .where(eq(invoices.firmId, session.firmId))
         .orderBy(desc(invoices.issueDate))
         .limit(10000);
+      const format = String(req.query['format'] ?? '').toLowerCase();
+      const dateStr = new Date().toISOString().slice(0, 10);
+      if (format === 'xlsx' || format === 'xls' || format === 'excel') {
+        const sheet = excelTable<(typeof items)[number]>({
+          title: `Invoices ${dateStr}`,
+          columns: [
+            { header: 'Invoice', render: (i) => i.invoiceNumber },
+            { header: 'Client', render: (i) => i.clientName },
+            { header: 'Issued', render: (i) => i.issueDate ?? '' },
+            { header: 'Due', render: (i) => i.dueDate ?? '' },
+            { header: 'Total', render: (i) => Number(i.totalCents) / 100, numeric: true },
+            { header: 'Paid', render: (i) => Number(i.paidCents) / 100, numeric: true },
+            {
+              header: 'Balance',
+              render: (i) => (Number(i.totalCents) - Number(i.paidCents)) / 100,
+              numeric: true,
+            },
+            { header: 'Status', render: (i) => i.status },
+          ],
+          rows: items,
+        });
+        res.setHeader('Content-Type', sheet.mime);
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="invoices-${dateStr}.${sheet.ext}"`,
+        );
+        res.send(sheet.body);
+        return;
+      }
       const header = [
         'id',
         'invoiceNumber',
@@ -193,10 +223,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         );
       }
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="invoices-${new Date().toISOString().slice(0, 10)}.csv"`,
-      );
+      res.setHeader('Content-Disposition', `attachment; filename="invoices-${dateStr}.csv"`);
       res.send(lines.join('\n') + '\n');
     },
   );

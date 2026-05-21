@@ -12,6 +12,7 @@ import { clients, engagementTypes, engagements, invoices, serviceLines } from '@
 import { sql as drizzleSql } from 'drizzle-orm';
 import { bucketize, type AgingBucket } from '@vibe/core/billing';
 
+import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export interface ArRoutesDeps extends RbacDeps {
@@ -47,10 +48,33 @@ export function createArRouter(deps: ArRoutesDeps): Router {
       const data = await loadAging(deps.db, session.firmId, {
         partnerId: typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : undefined,
       });
-      if (String(req.query['format'] ?? '').toLowerCase() === 'csv') {
+      const format = String(req.query['format'] ?? '').toLowerCase();
+      if (format === 'csv') {
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="ar-aging-${data.asOf}.csv"`);
         res.send(agingToCsv(data));
+        return;
+      }
+      if (format === 'xlsx' || format === 'xls' || format === 'excel') {
+        const sheet = excelTable<ClientAging>({
+          title: `AR aging as of ${data.asOf}`,
+          columns: [
+            { header: 'Client', render: (c) => c.clientName },
+            { header: 'PartnerId', render: (c) => c.partnerId ?? '' },
+            { header: '0-30', render: (c) => c.buckets['0-30'] / 100, numeric: true },
+            { header: '31-60', render: (c) => c.buckets['31-60'] / 100, numeric: true },
+            { header: '61-90', render: (c) => c.buckets['61-90'] / 100, numeric: true },
+            { header: '90+', render: (c) => c.buckets['90+'] / 100, numeric: true },
+            { header: 'Total', render: (c) => c.total / 100, numeric: true },
+          ],
+          rows: data.clients,
+        });
+        res.setHeader('Content-Type', sheet.mime);
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="ar-aging-${data.asOf}.${sheet.ext}"`,
+        );
+        res.send(sheet.body);
         return;
       }
       res.json(data);

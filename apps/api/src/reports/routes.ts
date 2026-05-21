@@ -31,8 +31,17 @@ export interface ReportRoutesDeps extends RbacDeps {
   db: Database | null;
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const QuerySchema = z.object({
   dimension: z.enum(['firm', 'timekeeper', 'engagement', 'client']).default('firm'),
+  start: z.string().regex(DATE_RE).optional(),
+  end: z.string().regex(DATE_RE).optional(),
+  // Drill filters (Phase 17 #20). When provided, the rollup is scoped
+  // to the matching subset before grouping; lets the UI follow
+  // firm → timekeeper → engagement.
+  appUserId: z.string().uuid().optional(),
+  engagementId: z.string().uuid().optional(),
+  clientId: z.string().uuid().optional(),
 });
 
 export function createReportRouter(deps: ReportRoutesDeps): Router {
@@ -89,19 +98,38 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
 
-      const rows = await deps.db
+      // Date filter (#28) + drill filters (#20): always join to
+      // time_entries so we can scope on entry date and drill into
+      // specific timekeepers/engagements/clients.
+      const conds = [];
+      if (parsed.data.start)
+        conds.push(drz`${timeEntries.entryDate} >= ${parsed.data.start}::date`);
+      if (parsed.data.end) conds.push(drz`${timeEntries.entryDate} <= ${parsed.data.end}::date`);
+      if (parsed.data.appUserId)
+        conds.push(eq(adjustmentAllocations.appUserId, parsed.data.appUserId));
+      if (parsed.data.engagementId)
+        conds.push(eq(billingBatches.engagementId, parsed.data.engagementId));
+      const baseQuery = deps.db
         .select({
           appUserId: adjustmentAllocations.appUserId,
+          timeEntryId: adjustmentAllocations.timeEntryId,
           originalValueCents: adjustmentAllocations.originalValueCents,
           adjustedValueCents: adjustmentAllocations.adjustedValueCents,
           engagementId: billingBatches.engagementId,
+          entryDate: timeEntries.entryDate,
         })
         .from(adjustmentAllocations)
-        .innerJoin(billingBatches, eq(adjustmentAllocations.adjustmentId, billingBatches.id));
+        .innerJoin(billingBatches, eq(adjustmentAllocations.adjustmentId, billingBatches.id))
+        .innerJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId));
+      const rows = await (conds.length > 0 ? baseQuery.where(and(...conds)) : baseQuery);
 
       const enginToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
       const allocationRows: AllocationRow[] = rows
         .filter((r) => enginToClient.has(r.engagementId))
+        .filter(
+          (r) =>
+            !parsed.data.clientId || enginToClient.get(r.engagementId) === parsed.data.clientId,
+        )
         .map((r) => ({
           appUserId: r.appUserId,
           engagementId: r.engagementId,
@@ -122,24 +150,40 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }[parsed.data.dimension];
       const map = rollupBy(allocationRows, keyFn);
 
-      // Enrich timekeeper view with names.
+      // Enrich rows with labels so the UI can render a name and drill
+      // (Phase 17 #20). Timekeeper → full name, engagement → name,
+      // client → name.
       let nameMap = new Map<string, string>();
-      if (parsed.data.dimension === 'timekeeper') {
-        const ids = Array.from(map.keys());
-        if (ids.length > 0) {
+      const ids = Array.from(map.keys());
+      if (ids.length > 0) {
+        if (parsed.data.dimension === 'timekeeper') {
           const people = await deps.db
             .select({ id: appUsers.id, fullName: appUsers.fullName })
             .from(appUsers)
             .where(inArray(appUsers.id, ids));
           nameMap = new Map(people.map((p) => [p.id, p.fullName]));
+        } else if (parsed.data.dimension === 'engagement') {
+          const engs = await deps.db
+            .select({ id: engagements.id, name: engagements.name })
+            .from(engagements)
+            .where(inArray(engagements.id, ids));
+          nameMap = new Map(engs.map((e) => [e.id, e.name]));
+        } else if (parsed.data.dimension === 'client') {
+          const cls = await deps.db
+            .select({ id: clients.id, name: clients.name })
+            .from(clients)
+            .where(inArray(clients.id, ids));
+          nameMap = new Map(cls.map((c) => [c.id, c.name]));
         }
       }
 
-      const items = Array.from(map.entries()).map(([key, value]) => ({
-        key,
-        label: nameMap.get(key) ?? null,
-        ...value,
-      }));
+      const items = Array.from(map.entries())
+        .map(([key, value]) => ({
+          key,
+          label: nameMap.get(key) ?? null,
+          ...value,
+        }))
+        .sort((a, b) => a.realizationPct - b.realizationPct);
       res.json({ dimension: parsed.data.dimension, items });
     },
   );

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Input, Pill, Sparkline, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -25,15 +26,190 @@ interface DimResponse {
   items: DimensionItem[];
 }
 
+interface PeriodRow {
+  month: string;
+  billedCents: number;
+  paidCents: number;
+  pctChangeBilled: number | null;
+}
+
 const formatPct = (p: number): string => `${(p * 100).toFixed(1)}%`;
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+function ninetyDaysAgo(): string {
+  return new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+}
+
 export function ReportsPage(): JSX.Element {
-  const [dim, setDim] = useState<Dimension>('firm');
+  const [search, setSearch] = useSearchParams();
+  const dim = (search.get('dim') ?? 'firm') as Dimension;
+  const start = search.get('start') ?? '';
+  const end = search.get('end') ?? '';
+  const drillUser = search.get('userId') ?? '';
+  const drillEng = search.get('engagementId') ?? '';
+  const drillClient = search.get('clientId') ?? '';
+
+  function setParam(name: string, value: string | null): void {
+    const next = new URLSearchParams(search);
+    if (value && value.length > 0) next.set(name, value);
+    else next.delete(name);
+    setSearch(next, { replace: false });
+  }
+
+  function clearDrill(): void {
+    const next = new URLSearchParams(search);
+    next.delete('userId');
+    next.delete('engagementId');
+    next.delete('clientId');
+    setSearch(next, { replace: false });
+  }
+
+  const drillActive = Boolean(drillUser || drillEng || drillClient);
+
+  return (
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <FilterBar
+        start={start}
+        end={end}
+        onStartChange={(v) => setParam('start', v)}
+        onEndChange={(v) => setParam('end', v)}
+        drillActive={drillActive}
+        onClearDrill={clearDrill}
+      />
+      <RevenueOpsCard />
+      <PlainEnglishCard />
+      <BillableTargetsCard />
+      <CapacityForecastCard />
+      <RealizationCard
+        dim={dim}
+        onDimChange={(d) => setParam('dim', d)}
+        start={start}
+        end={end}
+        drillUser={drillUser}
+        drillEng={drillEng}
+        drillClient={drillClient}
+        onDrill={(d, key) => {
+          // Drill from firm → timekeeper / engagement / client view.
+          const next = new URLSearchParams(search);
+          if (d === 'timekeeper') next.set('userId', key);
+          else if (d === 'engagement') next.set('engagementId', key);
+          else if (d === 'client') next.set('clientId', key);
+          next.set('dim', 'firm');
+          setSearch(next);
+        }}
+      />
+    </div>
+  );
+}
+
+function FilterBar({
+  start,
+  end,
+  onStartChange,
+  onEndChange,
+  drillActive,
+  onClearDrill,
+}: {
+  start: string;
+  end: string;
+  onStartChange: (v: string) => void;
+  onEndChange: (v: string) => void;
+  drillActive: boolean;
+  onClearDrill: () => void;
+}): JSX.Element {
+  function preset(days: number): void {
+    onStartChange(new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10));
+    onEndChange(today());
+  }
+  function clearDates(): void {
+    onStartChange('');
+    onEndChange('');
+  }
+  return (
+    <Card title="Filters">
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 12,
+          alignItems: 'end',
+        }}
+      >
+        <Input
+          label="Start"
+          type="date"
+          value={start}
+          onChange={(e) => onStartChange(e.target.value)}
+        />
+        <Input label="End" type="date" value={end} onChange={(e) => onEndChange(e.target.value)} />
+        <div style={{ display: 'flex', gap: 6, alignSelf: 'center' }}>
+          <Button size="sm" variant="secondary" onClick={() => preset(7)}>
+            7d
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => preset(30)}>
+            30d
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => preset(90)}>
+            90d
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => preset(365)}>
+            12m
+          </Button>
+        </div>
+        {(start || end) && (
+          <Button size="sm" variant="secondary" onClick={clearDates}>
+            Clear dates
+          </Button>
+        )}
+        {drillActive && (
+          <Button size="sm" onClick={onClearDrill}>
+            ✕ Clear drill
+          </Button>
+        )}
+        <span style={{ fontSize: 11, color: tokens.color.textMuted, marginLeft: 'auto' }}>
+          Filters apply to realization. Share this URL — settings persist via query string.
+        </span>
+      </div>
+    </Card>
+  );
+}
+
+function RealizationCard({
+  dim,
+  onDimChange,
+  start,
+  end,
+  drillUser,
+  drillEng,
+  drillClient,
+  onDrill,
+}: {
+  dim: Dimension;
+  onDimChange: (d: Dimension) => void;
+  start: string;
+  end: string;
+  drillUser: string;
+  drillEng: string;
+  drillClient: string;
+  onDrill: (d: Exclude<Dimension, 'firm'>, key: string) => void;
+}): JSX.Element {
   const [firmSummary, setFirmSummary] = useState<FirmSummary['summary'] | null>(null);
   const [items, setItems] = useState<DimensionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const url = useMemo(() => {
+    const p = new URLSearchParams({ dimension: dim });
+    if (start) p.set('start', start);
+    if (end) p.set('end', end);
+    if (drillUser) p.set('appUserId', drillUser);
+    if (drillEng) p.set('engagementId', drillEng);
+    if (drillClient) p.set('clientId', drillClient);
+    return `/api/staff/reports/realization?${p.toString()}`;
+  }, [dim, start, end, drillUser, drillEng, drillClient]);
 
   useEffect(() => {
     setLoading(true);
@@ -41,11 +217,11 @@ export function ReportsPage(): JSX.Element {
     void (async () => {
       try {
         if (dim === 'firm') {
-          const r = await api<FirmSummary>('/api/staff/reports/realization?dimension=firm');
+          const r = await api<FirmSummary>(url);
           setFirmSummary(r.summary);
           setItems([]);
         } else {
-          const r = await api<DimResponse>(`/api/staff/reports/realization?dimension=${dim}`);
+          const r = await api<DimResponse>(url);
           setItems(r.items ?? []);
           setFirmSummary(null);
         }
@@ -55,92 +231,100 @@ export function ReportsPage(): JSX.Element {
         setLoading(false);
       }
     })();
-  }, [dim]);
+  }, [url, dim]);
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <RevenueOpsCard />
-      <PlainEnglishCard />
-      <BillableTargetsCard />
-      <CapacityForecastCard />
-      <Card
-        title="Realization"
-        action={
-          <div style={{ display: 'flex', gap: 6 }}>
-            {(['firm', 'timekeeper', 'engagement', 'client'] as const).map((d) => (
-              <Button
-                key={d}
-                size="sm"
-                variant={dim === d ? 'primary' : 'secondary'}
-                onClick={() => setDim(d)}
-              >
-                {d}
-              </Button>
-            ))}
-          </div>
-        }
-      >
-        {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
-        {loading ? (
-          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
-        ) : dim === 'firm' ? (
-          firmSummary ? (
-            <div>
-              <div style={{ display: 'flex', gap: 32 }}>
-                <Stat label="Standard WIP" value={formatCents(firmSummary.originalValueCents)} />
-                <Stat
-                  label="After adjustments"
-                  value={formatCents(firmSummary.adjustedValueCents)}
-                />
-                <Stat
-                  label="Realization"
-                  value={formatPct(firmSummary.realizationPct)}
-                  tone={firmSummary.realizationPct >= 0.9 ? 'success' : 'warning'}
-                />
-              </div>
-              <NarrativeButton realizationPct={firmSummary.realizationPct} />
+    <Card
+      title={`Realization${drillUser || drillEng || drillClient ? ' (drilled)' : ''}`}
+      action={
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['firm', 'timekeeper', 'engagement', 'client'] as const).map((d) => (
+            <Button
+              key={d}
+              size="sm"
+              variant={dim === d ? 'primary' : 'secondary'}
+              onClick={() => onDimChange(d)}
+            >
+              {d}
+            </Button>
+          ))}
+        </div>
+      }
+    >
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      {loading ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+      ) : dim === 'firm' ? (
+        firmSummary ? (
+          <div>
+            <div style={{ display: 'flex', gap: 32 }}>
+              <Stat label="Standard WIP" value={formatCents(firmSummary.originalValueCents)} />
+              <Stat label="After adjustments" value={formatCents(firmSummary.adjustedValueCents)} />
+              <Stat
+                label="Realization"
+                value={formatPct(firmSummary.realizationPct)}
+                tone={firmSummary.realizationPct >= 0.9 ? 'success' : 'warning'}
+              />
             </div>
-          ) : (
-            <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No adjustment data yet.</p>
-          )
+            <NarrativeButton realizationPct={firmSummary.realizationPct} />
+          </div>
         ) : (
-          <Table<DimensionItem>
-            columns={[
-              {
-                key: 'label',
-                header: dim.charAt(0).toUpperCase() + dim.slice(1),
-                render: (r) => r.label ?? <code>{r.key.slice(0, 8)}</code>,
-              },
-              {
-                key: 'wip',
-                header: 'Standard WIP',
-                align: 'right',
-                render: (r) => formatCents(r.originalValueCents),
-              },
-              {
-                key: 'adj',
-                header: 'After adjustments',
-                align: 'right',
-                render: (r) => formatCents(r.adjustedValueCents),
-              },
-              {
-                key: 'pct',
-                header: 'Realization',
-                align: 'right',
-                render: (r) => (
-                  <Pill tone={r.realizationPct >= 0.9 ? 'success' : 'warning'}>
-                    {formatPct(r.realizationPct)}
-                  </Pill>
-                ),
-              },
-            ]}
-            rows={items}
-            rowKey={(r) => r.key}
-            empty="No data for this dimension yet."
-          />
-        )}
-      </Card>
-    </div>
+          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No adjustment data yet.</p>
+        )
+      ) : (
+        <Table<DimensionItem>
+          columns={[
+            {
+              key: 'label',
+              header: dim.charAt(0).toUpperCase() + dim.slice(1),
+              render: (r) => (
+                <button
+                  type="button"
+                  onClick={() => onDrill(dim, r.key)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: tokens.color.accent,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    fontSize: 'inherit',
+                    padding: 0,
+                  }}
+                  title={`Drill into ${dim} ${r.label ?? r.key.slice(0, 8)}`}
+                >
+                  {r.label ?? r.key.slice(0, 8)}
+                </button>
+              ),
+            },
+            {
+              key: 'wip',
+              header: 'Standard WIP',
+              align: 'right',
+              render: (r) => formatCents(r.originalValueCents),
+            },
+            {
+              key: 'adj',
+              header: 'After adjustments',
+              align: 'right',
+              render: (r) => formatCents(r.adjustedValueCents),
+            },
+            {
+              key: 'pct',
+              header: 'Realization',
+              align: 'right',
+              render: (r) => (
+                <Pill tone={r.realizationPct >= 0.9 ? 'success' : 'warning'}>
+                  {formatPct(r.realizationPct)}
+                </Pill>
+              ),
+            },
+          ]}
+          rows={items}
+          rowKey={(r) => r.key}
+          empty="No data for this dimension yet."
+        />
+      )}
+    </Card>
   );
 }
 
@@ -148,29 +332,40 @@ function Stat({
   label,
   value,
   tone,
+  trend,
 }: {
   label: string;
   value: string;
   tone?: 'success' | 'warning';
+  trend?: number[];
 }): JSX.Element {
   return (
     <div>
       <div style={{ fontSize: 11, color: tokens.color.textMuted, textTransform: 'uppercase' }}>
         {label}
       </div>
-      <div
-        style={{
-          fontSize: 22,
-          fontWeight: 600,
-          color:
-            tone === 'success'
-              ? tokens.color.success
-              : tone === 'warning'
-                ? tokens.color.warning
-                : tokens.color.text,
-        }}
-      >
-        {value}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <div
+          style={{
+            fontSize: 22,
+            fontWeight: 600,
+            color:
+              tone === 'success'
+                ? tokens.color.success
+                : tone === 'warning'
+                  ? tokens.color.warning
+                  : tokens.color.text,
+          }}
+        >
+          {value}
+        </div>
+        {trend && trend.length > 1 && (
+          <Sparkline
+            values={trend}
+            tone={tone === 'warning' ? 'warning' : tone === 'success' ? 'success' : 'accent'}
+            ariaLabel={`${label} trend`}
+          />
+        )}
       </div>
     </div>
   );
@@ -443,25 +638,46 @@ function NarrativeButton({ realizationPct }: { realizationPct: number }): JSX.El
 function RevenueOpsCard(): JSX.Element {
   const [dso, setDso] = useState<DsoResp | null>(null);
   const [mrr, setMrr] = useState<MrrResp | null>(null);
+  const [trend, setTrend] = useState<PeriodRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [d, m] = await Promise.all([
+        const [d, m, p] = await Promise.all([
           api<DsoResp>('/api/staff/reports/dso?days=90'),
           api<MrrResp>('/api/staff/reports/mrr'),
+          api<{ items: PeriodRow[] }>('/api/staff/reports/revenue-period-over-period'),
         ]);
         setDso(d);
         setMrr(m);
+        setTrend(p.items ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed');
       }
     })();
   }, []);
 
+  // Sparkline series — last 12 months of billed totals.
+  const billedTrend = trend.slice(-12).map((r) => r.billedCents);
+  const paidTrend = trend.slice(-12).map((r) => r.paidCents);
+
   return (
-    <Card title="Revenue operations (last 90 days)">
+    <Card
+      title="Revenue operations (last 90 days)"
+      action={
+        <a
+          href="/api/staff/invoices/export.csv?format=xlsx"
+          style={{
+            fontSize: 12,
+            color: tokens.color.accent,
+            textDecoration: 'none',
+          }}
+        >
+          ⬇ Excel
+        </a>
+      }
+    >
       {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
       {!dso && !mrr ? (
         <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
@@ -469,8 +685,8 @@ function RevenueOpsCard(): JSX.Element {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
           {dso && (
             <>
-              <Stat label="Billed" value={formatCents(dso.billedCents)} />
-              <Stat label="Paid" value={formatCents(dso.paidCents)} />
+              <Stat label="Billed" value={formatCents(dso.billedCents)} trend={billedTrend} />
+              <Stat label="Paid" value={formatCents(dso.paidCents)} trend={paidTrend} />
               <Stat
                 label="DSO"
                 value={dso.dsoDays == null ? '—' : `${dso.dsoDays.toFixed(0)} d`}
@@ -499,3 +715,6 @@ function RevenueOpsCard(): JSX.Element {
     </Card>
   );
 }
+
+// Tame an unused-import warning when Reports.tsx is imported in tests.
+void ninetyDaysAgo;
