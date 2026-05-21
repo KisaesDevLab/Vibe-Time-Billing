@@ -809,6 +809,84 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   );
 
   // -------------------------------------------------------------------
+  // Firm-wide profitability summary: cost + revenue + margin across all
+  // engagements with activity. Returns one row per engagement above a
+  // small threshold so the table stays tractable.
+  // -------------------------------------------------------------------
+  router.get(
+    '/firm-profitability',
+    requirePermission(deps, 'report:profitability:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], totals: null });
+        return;
+      }
+      const { timekeeperRates } = await import('@vibe/db/schema');
+      const rows = await deps.db
+        .select({
+          engagementId: engagements.id,
+          engagementName: engagements.name,
+          clientName: clients.name,
+          costCents: drz<number>`
+            COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE((
+              SELECT ${timekeeperRates.costRateCents}
+              FROM ${timekeeperRates}
+              WHERE ${timekeeperRates.appUserId} = ${timeEntries.appUserId}
+                AND ${timekeeperRates.effectiveStart} <= ${timeEntries.entryDate}
+                AND (${timekeeperRates.effectiveEnd} IS NULL OR ${timekeeperRates.effectiveEnd} >= ${timeEntries.entryDate})
+              ORDER BY ${timekeeperRates.effectiveStart} DESC
+              LIMIT 1
+            ), 0)), 0)::bigint`,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .leftJoin(timeEntries, eq(timeEntries.engagementId, engagements.id))
+        .where(and(eq(clients.firmId, session.firmId)))
+        .groupBy(engagements.id, engagements.name, clients.name);
+      const invRows = await deps.db
+        .select({
+          engagementId: invoices.primaryEngagementId,
+          billedCents: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          paidCents: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
+        })
+        .from(invoices)
+        .where(eq(invoices.firmId, session.firmId))
+        .groupBy(invoices.primaryEngagementId);
+      const billMap = new Map(invRows.map((r) => [r.engagementId, r]));
+      const items = rows
+        .map((r) => {
+          const inv = billMap.get(r.engagementId);
+          const billedCents = inv ? Number(inv.billedCents) : 0;
+          const paidCents = inv ? Number(inv.paidCents) : 0;
+          const costCents = Number(r.costCents);
+          return {
+            engagementId: r.engagementId,
+            engagementName: r.engagementName,
+            clientName: r.clientName,
+            costCents,
+            billedCents,
+            paidCents,
+            marginCents: paidCents - costCents,
+            marginPct: paidCents > 0 ? ((paidCents - costCents) / paidCents) * 100 : null,
+          };
+        })
+        .filter((r) => r.costCents > 0 || r.billedCents > 0)
+        .sort((a, b) => b.marginCents - a.marginCents);
+      const totals = items.reduce(
+        (acc, r) => ({
+          costCents: acc.costCents + r.costCents,
+          billedCents: acc.billedCents + r.billedCents,
+          paidCents: acc.paidCents + r.paidCents,
+          marginCents: acc.marginCents + r.marginCents,
+        }),
+        { costCents: 0, billedCents: 0, paidCents: 0, marginCents: 0 },
+      );
+      res.json({ items, totals });
+    },
+  );
+
+  // -------------------------------------------------------------------
   // Capacity forecast (Phase 23 #15). Projects each timekeeper's next 4
   // weeks of billable hours based on a 90-day trailing average and
   // compares to a configurable weekly target.
