@@ -850,6 +850,99 @@ export const clientCommunications = pgTable(
 );
 
 // =====================================================================
+// v2 0031 — client_template. Wizard prefills keyed by clientType.
+// =====================================================================
+
+export const clientTemplates = pgTable(
+  'client_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    clientType: clientType('client_type').notNull(),
+    defaultsJson: jsonb('defaults_json').notNull().default({}),
+    defaultEngagementTemplateIds: jsonb('default_engagement_template_ids')
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    isSystem: boolean('is_system').notNull().default(false),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('client_template_firm_key_uk').on(t.firmId, t.key),
+  }),
+);
+
+// =====================================================================
+// v2 0032 — engagement_template. Firm-editable replacement for the
+// hardcoded JSON starter pack.
+// =====================================================================
+
+export const engagementTemplates = pgTable(
+  'engagement_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    engagementTypeId: uuid('engagement_type_id').references(() => engagementTypes.id, {
+      onDelete: 'set null',
+    }),
+    defaultFeeStructure: feeStructure('default_fee_structure').notNull(),
+    defaultFeeAmountCents: bigint('default_fee_amount_cents', { mode: 'number' }),
+    defaultBudgetHours: numeric('default_budget_hours', { precision: 8, scale: 2 }),
+    inScopeWorkCodeIds: jsonb('in_scope_work_code_ids').$type<string[]>().notNull().default([]),
+    // FK added in 0033 after the letter table exists; declared here as
+    // a plain uuid column so Drizzle can reference it.
+    defaultLetterTemplateId: uuid('default_letter_template_id'),
+    customFieldsSchema: jsonb('custom_fields_schema').notNull().default({}),
+    isSystem: boolean('is_system').notNull().default(false),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('engagement_template_firm_key_uk').on(t.firmId, t.key),
+  }),
+);
+
+// =====================================================================
+// v2 0033 — engagement_letter_template. Library for the
+// "Generate letter" picker on engagement detail.
+// =====================================================================
+
+export const engagementLetterTemplates = pgTable(
+  'engagement_letter_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    engagementTypeId: uuid('engagement_type_id').references(() => engagementTypes.id, {
+      onDelete: 'set null',
+    }),
+    bodyHtml: text('body_html').notNull(),
+    variablesJson: jsonb('variables_json'),
+    isSystem: boolean('is_system').notNull().default(false),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('engagement_letter_template_firm_key_uk').on(t.firmId, t.key),
+  }),
+);
+
+// =====================================================================
 // TABLE: engagement
 // =====================================================================
 

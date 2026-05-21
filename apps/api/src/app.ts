@@ -15,6 +15,7 @@ import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
+import { createTemplateRouter } from './admin/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
@@ -215,6 +216,12 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/messaging', auth.requireAuth, auth.requireCsrf, messagingRouter);
+
+  const templateRouter = createTemplateRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/templates', auth.requireAuth, auth.requireCsrf, templateRouter);
 
   const taxonomyRouter = createTaxonomyRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/taxonomy', auth.requireAuth, auth.requireCsrf, taxonomyRouter);

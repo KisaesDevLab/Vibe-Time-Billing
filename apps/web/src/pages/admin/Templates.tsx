@@ -1,99 +1,454 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Template admin (v2 Sprint D). Replaces the read-only starter-pack
+// viewer with full CRUD across the three template families:
+//   Engagement / Letter / Client
+//
+// Each tab is a list with edit-in-place + clone + archive. New rows
+// go through a small inline create form. The system templates seeded
+// at install are marked with a "system" pill — you can clone them but
+// editing/archiving leaves the originals intact (UI nicety; the API
+// allows editing them too).
+
 import { useEffect, useState } from 'react';
 
-import { Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
-interface WorkCode {
+type Kind = 'engagement' | 'letter' | 'client';
+
+interface EngagementTpl {
+  id: string;
   key: string;
   name: string;
-  billable_default: boolean;
-  in_scope_default: boolean;
+  defaultFeeStructure: string;
+  defaultFeeAmountCents: number | null;
+  defaultBudgetHours: string | null;
+  defaultLetterTemplateId: string | null;
+  isSystem: boolean;
+  status: string;
 }
 
-interface Template {
+interface LetterTpl {
+  id: string;
   key: string;
   name: string;
-  service_line_category: string;
-  default_fee_structure: string;
-  default_fee_amount_cents: number | null;
-  default_budget_hours: number | null;
-  default_partner_review_required: boolean;
-  work_codes: WorkCode[];
+  bodyHtml: string;
+  variablesJson: string[] | null;
+  isSystem: boolean;
+  status: string;
 }
 
-interface Pack {
-  version: string;
-  description: string;
-  templates: Template[];
+interface ClientTpl {
+  id: string;
+  key: string;
+  name: string;
+  clientType: 'INDIVIDUAL' | 'BUSINESS';
+  defaultsJson: Record<string, unknown>;
+  defaultEngagementTemplateIds: string[];
+  isSystem: boolean;
+  status: string;
 }
 
-const formatCents = (c: number | null): string =>
-  c == null ? '—' : `$${(c / 100).toLocaleString()}`;
+const fieldStyle: React.CSSProperties = {
+  padding: '6px 10px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.md,
+  fontSize: 13,
+};
+
+function formatCents(c: number | null): string {
+  return c == null ? '—' : `$${(c / 100).toLocaleString()}`;
+}
 
 export function TemplatesPage(): JSX.Element {
-  const [pack, setPack] = useState<Pack | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const r = await api<Pack>('/api/staff/taxonomy/engagement-template-pack');
-        setPack(r);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'failed');
-      }
-    })();
-  }, []);
-
-  if (error) return <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>;
-  if (!pack) return <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>;
-
+  const [kind, setKind] = useState<Kind>('engagement');
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <Card title={`Engagement template starter pack · v${pack.version}`}>
-        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
-          {pack.description}
-        </p>
-        <Table<Template>
-          columns={[
-            { key: 'name', header: 'Template', render: (t) => t.name },
-            {
-              key: 'cat',
-              header: 'Category',
-              render: (t) => <Pill>{t.service_line_category}</Pill>,
-            },
-            {
-              key: 'fee',
-              header: 'Fee structure',
-              render: (t) => <code style={{ fontSize: 11 }}>{t.default_fee_structure}</code>,
-            },
-            {
-              key: 'amt',
-              header: 'Default fee',
-              align: 'right',
-              render: (t) => formatCents(t.default_fee_amount_cents),
-            },
-            {
-              key: 'h',
-              header: 'Budget hours',
-              align: 'right',
-              render: (t) =>
-                t.default_budget_hours == null ? '—' : t.default_budget_hours.toString(),
-            },
-            {
-              key: 'wc',
-              header: 'Work codes',
-              align: 'right',
-              render: (t) => String(t.work_codes.length),
-            },
-          ]}
-          rows={pack.templates}
-          rowKey={(t) => t.key}
-          empty="Pack is empty."
-        />
-      </Card>
+      <Tabs
+        tabs={[
+          { key: 'engagement', label: 'Engagement templates' },
+          { key: 'letter', label: 'Letter templates' },
+          { key: 'client', label: 'Client templates' },
+        ]}
+        active={kind}
+        onChange={(k) => setKind(k as Kind)}
+      />
+      {kind === 'engagement' && <EngagementTab />}
+      {kind === 'letter' && <LetterTab />}
+      {kind === 'client' && <ClientTab />}
     </div>
+  );
+}
+
+function EngagementTab(): JSX.Element {
+  const [items, setItems] = useState<EngagementTpl[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({
+    key: '',
+    name: '',
+    defaultFeeStructure: 'FIXED_FEE',
+    defaultFeeAmountCents: '',
+    defaultBudgetHours: '',
+  });
+
+  async function load(): Promise<void> {
+    try {
+      const r = await api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement');
+      setItems(r.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function add(): Promise<void> {
+    if (!draft.key.trim() || !draft.name.trim()) return;
+    try {
+      await api('/api/staff/admin/templates/engagement', {
+        method: 'POST',
+        body: JSON.stringify({
+          key: draft.key.trim(),
+          name: draft.name.trim(),
+          defaultFeeStructure: draft.defaultFeeStructure,
+          defaultFeeAmountCents: draft.defaultFeeAmountCents
+            ? Number(draft.defaultFeeAmountCents)
+            : null,
+          defaultBudgetHours: draft.defaultBudgetHours ? Number(draft.defaultBudgetHours) : null,
+        }),
+      });
+      setDraft({
+        key: '',
+        name: '',
+        defaultFeeStructure: 'FIXED_FEE',
+        defaultFeeAmountCents: '',
+        defaultBudgetHours: '',
+      });
+      setAdding(false);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'add_failed');
+    }
+  }
+
+  async function clone(id: string): Promise<void> {
+    try {
+      await api(`/api/staff/admin/templates/engagement/${id}/clone`, { method: 'POST' });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'clone_failed');
+    }
+  }
+
+  async function archive(id: string): Promise<void> {
+    if (!confirm('Archive this template? It will be hidden from pickers.')) return;
+    try {
+      await api(`/api/staff/admin/templates/engagement/${id}/archive`, { method: 'PATCH' });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'archive_failed');
+    }
+  }
+
+  return (
+    <Card
+      title="Engagement templates"
+      action={
+        <Button size="sm" onClick={() => setAdding(!adding)}>
+          {adding ? 'Cancel' : '+ New template'}
+        </Button>
+      }
+    >
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+          {error}
+        </p>
+      )}
+      {adding && (
+        <div
+          style={{
+            padding: 12,
+            marginBottom: 12,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            display: 'grid',
+            gap: 8,
+          }}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 8 }}>
+            <input
+              value={draft.key}
+              onChange={(e) => setDraft({ ...draft, key: e.target.value })}
+              placeholder="key (lower_snake) *"
+              style={fieldStyle}
+            />
+            <input
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              placeholder="Name *"
+              style={fieldStyle}
+            />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8 }}>
+            <select
+              value={draft.defaultFeeStructure}
+              onChange={(e) => setDraft({ ...draft, defaultFeeStructure: e.target.value })}
+              style={fieldStyle}
+            >
+              <option value="HOURLY">Hourly</option>
+              <option value="HOURLY_NTE">Hourly (NTE)</option>
+              <option value="FIXED_FEE">Fixed fee</option>
+              <option value="FIXED_FEE_WITH_MILESTONES">Fixed fee + milestones</option>
+              <option value="RECURRING_SUBSCRIPTION">Recurring subscription</option>
+            </select>
+            <input
+              value={draft.defaultFeeAmountCents}
+              onChange={(e) => setDraft({ ...draft, defaultFeeAmountCents: e.target.value })}
+              placeholder="Fee (cents)"
+              style={fieldStyle}
+            />
+            <input
+              value={draft.defaultBudgetHours}
+              onChange={(e) => setDraft({ ...draft, defaultBudgetHours: e.target.value })}
+              placeholder="Budget hours"
+              style={fieldStyle}
+            />
+          </div>
+          <div>
+            <Button size="sm" onClick={() => void add()}>
+              Create
+            </Button>
+          </div>
+        </div>
+      )}
+      {items.length === 0 ? (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No templates yet.</p>
+      ) : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {items.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                padding: 10,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <strong style={{ fontSize: 13 }}>{t.name}</strong>
+              <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+              <Pill>{t.defaultFeeStructure}</Pill>
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                {formatCents(t.defaultFeeAmountCents)} ·{' '}
+                {t.defaultBudgetHours ? `${t.defaultBudgetHours}h` : 'no budget'}
+              </span>
+              {t.isSystem && <Pill tone="accent">system</Pill>}
+              {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                <Button size="sm" variant="ghost" onClick={() => void clone(t.id)}>
+                  Clone
+                </Button>
+                {t.status === 'ACTIVE' && (
+                  <Button size="sm" variant="ghost" onClick={() => void archive(t.id)}>
+                    Archive
+                  </Button>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function LetterTab(): JSX.Element {
+  const [items, setItems] = useState<LetterTpl[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(): Promise<void> {
+    try {
+      const r = await api<{ items: LetterTpl[] }>('/api/staff/admin/templates/letter');
+      setItems(r.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function save(id: string): Promise<void> {
+    try {
+      await api(`/api/staff/admin/templates/letter/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ bodyHtml: editBody }),
+      });
+      setEditingId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
+    }
+  }
+
+  return (
+    <Card title="Letter templates">
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+          {error}
+        </p>
+      )}
+      <p style={{ fontSize: 12, color: tokens.color.textMuted }}>
+        Variables follow the same <code>{'{{entity.field}}'}</code> markers as notification
+        templates. The &ldquo;Generate letter&rdquo; button on an engagement detail page substitutes
+        them in.
+      </p>
+      <div style={{ display: 'grid', gap: 12 }}>
+        {items.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              padding: 12,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              display: 'grid',
+              gap: 8,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <strong style={{ fontSize: 13 }}>{t.name}</strong>
+              <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+              {t.isSystem && <Pill tone="accent">system</Pill>}
+              {t.variablesJson && t.variablesJson.length > 0 && (
+                <Pill>{`${t.variablesJson.length} vars`}</Pill>
+              )}
+              <span style={{ marginLeft: 'auto' }}>
+                {editingId === t.id ? (
+                  <>
+                    <Button size="sm" onClick={() => void save(t.id)}>
+                      Save
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setEditingId(t.id);
+                      setEditBody(t.bodyHtml);
+                    }}
+                  >
+                    Edit body
+                  </Button>
+                )}
+              </span>
+            </div>
+            {editingId === t.id ? (
+              <textarea
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                rows={10}
+                style={{
+                  ...fieldStyle,
+                  fontFamily: 'ui-monospace, monospace',
+                  resize: 'vertical',
+                }}
+              />
+            ) : (
+              <pre
+                style={{
+                  margin: 0,
+                  padding: 8,
+                  background: tokens.color.bg,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  fontSize: 11,
+                  fontFamily: 'ui-monospace, monospace',
+                  whiteSpace: 'pre-wrap',
+                  maxHeight: 160,
+                  overflow: 'auto',
+                }}
+              >
+                {t.bodyHtml}
+              </pre>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function ClientTab(): JSX.Element {
+  const [items, setItems] = useState<ClientTpl[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(): Promise<void> {
+    try {
+      const r = await api<{ items: ClientTpl[] }>('/api/staff/admin/templates/client');
+      setItems(r.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  return (
+    <Card title="Client templates">
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+          {error}
+        </p>
+      )}
+      <p style={{ fontSize: 12, color: tokens.color.textMuted }}>
+        Prefill defaults for the Create Client wizard. Picking a template fills tags, terms, and
+        pipeline stage in the wizard.
+      </p>
+      {items.length === 0 ? (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No templates yet.</p>
+      ) : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {items.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                padding: 10,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <strong style={{ fontSize: 13 }}>{t.name}</strong>
+              <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+              <Pill>{t.clientType}</Pill>
+              {t.isSystem && <Pill tone="accent">system</Pill>}
+              {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
+              <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                {Object.keys(t.defaultsJson ?? {}).length} default field(s)
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
