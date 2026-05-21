@@ -41,13 +41,38 @@ const OfficeSchema = z.object({
   isDefault: z.boolean().optional(),
 });
 
+const FEE_STRUCTURES = [
+  'HOURLY',
+  'HOURLY_NTE',
+  'FIXED_FEE',
+  'FIXED_FEE_WITH_MILESTONES',
+  'RECURRING_SUBSCRIPTION',
+] as const;
+const ALLOCATION_METHODS = [
+  'SPECIFIC_ENTRIES',
+  'PRO_RATA_BY_VALUE',
+  'PRO_RATA_BY_HOURS',
+  'PARTNER_ABSORBS',
+  'HIERARCHICAL_CASCADE',
+  'CUSTOM_WEIGHTED',
+] as const;
+
 const FirmSettingsPatchSchema = z
   .object({
     adjustmentApprovalThresholdCents: z.number().int().nonnegative().optional(),
     aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
     timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
     stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
+    lateEntryAlertDays: z.number().int().min(1).max(90).optional(),
+    lateEntryLockoutDays: z.number().int().min(1).max(365).optional(),
+    invoiceNumberingPrefix: z.string().max(12).optional(),
     portalEnabled: z.boolean().optional(),
+    portalSubdomain: z
+      .string()
+      .regex(/^[a-z0-9-]+$/)
+      .max(63)
+      .nullable()
+      .optional(),
     brandDisplayName: z.string().max(120).nullable().optional(),
     brandLogoUrl: z.string().url().max(500).nullable().optional(),
     brandAccentColor: z
@@ -58,6 +83,23 @@ const FirmSettingsPatchSchema = z
     brandSupportEmail: z.string().email().max(254).nullable().optional(),
     brandSupportPhone: z.string().max(40).nullable().optional(),
     brandFooterHtml: z.string().max(4000).nullable().optional(),
+    // Phase 20 #4 — fee structures the firm wants to expose.
+    enabledFeeStructures: z.array(z.enum(FEE_STRUCTURES)).min(1).max(5).optional(),
+    // Phase 20 #8 — firm-wide billable target.
+    billableTargetHoursPerMonth: z.number().int().min(40).max(220).optional(),
+    // Phase 23 #6 — firm AI provider override.
+    aiProvider: z.enum(['local', 'cloud']).nullable().optional(),
+  })
+  .strict();
+
+const FirmPatchSchema = z
+  .object({
+    // Phase 20 #5 — default allocation method.
+    defaultAllocationMethod: z.enum(ALLOCATION_METHODS).optional(),
+    // Phase 20 #6 — fiscal year start month (1..12).
+    fiscalYearStartMonth: z.number().int().min(1).max(12).optional(),
+    name: z.string().min(1).max(200).optional(),
+    defaultTermsDays: z.number().int().min(0).max(365).optional(),
   })
   .strict();
 
@@ -87,17 +129,41 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     '/firm-settings',
     requirePermission(deps, 'firm:settings:write'),
     async (req: Request, res: Response) => {
-      const parsed = FirmSettingsPatchSchema.safeParse(req.body);
-      if (!parsed.success) {
+      // Split incoming body into firm-table fields and firm_settings
+      // fields so the partner editing fiscalYearStart doesn't have to
+      // know which table it lives on.
+      const settingsParsed = FirmSettingsPatchSchema.safeParse(req.body);
+      const firmParsed = FirmPatchSchema.safeParse(req.body);
+      if (!settingsParsed.success && !firmParsed.success) {
         res.status(400).json({ error: 'invalid_payload' });
         return;
       }
       const firmId = req.staffSession?.firmId;
       if (!firmId || !deps.db) {
-        res.status(200).json({ ok: true, applied: parsed.data });
+        res.status(200).json({
+          ok: true,
+          applied: { ...settingsParsed.data, ...firmParsed.data },
+        });
         return;
       }
-      await deps.db.update(firmSettings).set(parsed.data).where(eq(firmSettings.firmId, firmId));
+      const settingsData =
+        settingsParsed.success && Object.keys(settingsParsed.data).length > 0
+          ? settingsParsed.data
+          : null;
+      const firmData =
+        firmParsed.success && Object.keys(firmParsed.data).length > 0 ? firmParsed.data : null;
+      if (settingsData) {
+        await deps.db
+          .update(firmSettings)
+          .set({ ...settingsData, updatedAt: new Date() })
+          .where(eq(firmSettings.firmId, firmId));
+      }
+      if (firmData) {
+        await deps.db
+          .update(firms)
+          .set({ ...firmData, updatedAt: new Date() })
+          .where(eq(firms.id, firmId));
+      }
       res.json({ ok: true });
     },
   );
@@ -242,6 +308,8 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         fullName?: unknown;
         defaultOfficeId?: unknown;
         status?: unknown;
+        standardHoursPerWeek?: unknown;
+        billableTargetHoursPerMonth?: unknown;
       };
       const patch: Record<string, unknown> = {};
       if (typeof body.fullName === 'string' && body.fullName.trim()) {
@@ -252,6 +320,24 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       }
       if (body.status === 'ACTIVE' || body.status === 'INACTIVE' || body.status === 'ARCHIVED') {
         patch['status'] = body.status;
+      }
+      // Phase 20 #7 — standard hours per week (utilization denominator).
+      if (
+        typeof body.standardHoursPerWeek === 'number' &&
+        body.standardHoursPerWeek >= 0 &&
+        body.standardHoursPerWeek <= 80
+      ) {
+        patch['standardHoursPerWeek'] = body.standardHoursPerWeek.toFixed(2);
+      }
+      // Phase 20 #8 — per-user billable target override.
+      if (body.billableTargetHoursPerMonth === null) {
+        patch['billableTargetHoursPerMonth'] = null;
+      } else if (
+        typeof body.billableTargetHoursPerMonth === 'number' &&
+        body.billableTargetHoursPerMonth >= 0 &&
+        body.billableTargetHoursPerMonth <= 300
+      ) {
+        patch['billableTargetHoursPerMonth'] = Math.round(body.billableTargetHoursPerMonth);
       }
       if (Object.keys(patch).length === 0) {
         res.status(400).json({ error: 'no_fields_to_update' });
@@ -298,6 +384,8 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           fullName: appUsers.fullName,
           status: appUsers.status,
           totpEnrolledAt: appUsers.totpEnrolledAt,
+          standardHoursPerWeek: appUsers.standardHoursPerWeek,
+          billableTargetHoursPerMonth: appUsers.billableTargetHoursPerMonth,
         })
         .from(appUsers)
         .where(eq(appUsers.firmId, firmId));

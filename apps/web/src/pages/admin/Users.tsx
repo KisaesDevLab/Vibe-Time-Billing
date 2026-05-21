@@ -11,6 +11,8 @@ interface User {
   fullName: string;
   status: 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
   totpEnrolledAt: string | null;
+  standardHoursPerWeek?: string | number | null;
+  billableTargetHoursPerMonth?: number | null;
 }
 
 export function UsersPage(): JSX.Element {
@@ -111,6 +113,26 @@ export function UsersPage(): JSX.Element {
                   <Pill tone={u.status === 'ACTIVE' ? 'success' : 'neutral'}>{u.status}</Pill>
                 ),
               },
+              {
+                key: 'hours',
+                header: 'Std hrs/wk',
+                align: 'right',
+                render: (u) => (
+                  <HoursEditor user={u} field="standardHoursPerWeek" onSaved={() => void load()} />
+                ),
+              },
+              {
+                key: 'target',
+                header: 'Billable target',
+                align: 'right',
+                render: (u) => (
+                  <HoursEditor
+                    user={u}
+                    field="billableTargetHoursPerMonth"
+                    onSaved={() => void load()}
+                  />
+                ),
+              },
             ]}
             rows={users}
             rowKey={(u) => u.id}
@@ -119,5 +141,63 @@ export function UsersPage(): JSX.Element {
         )}
       </Card>
     </div>
+  );
+}
+
+function HoursEditor({
+  user,
+  field,
+  onSaved,
+}: {
+  user: User;
+  field: 'standardHoursPerWeek' | 'billableTargetHoursPerMonth';
+  onSaved: () => void;
+}): JSX.Element {
+  const initial =
+    field === 'standardHoursPerWeek'
+      ? user.standardHoursPerWeek == null
+        ? ''
+        : String(user.standardHoursPerWeek)
+      : user.billableTargetHoursPerMonth == null
+        ? ''
+        : String(user.billableTargetHoursPerMonth);
+  const [v, setV] = useState(initial);
+  const [busy, setBusy] = useState(false);
+
+  async function save(): Promise<void> {
+    if (v === initial) return;
+    const num = v === '' ? null : Number(v);
+    if (num != null && !Number.isFinite(num)) return;
+    setBusy(true);
+    try {
+      await api(`/api/staff/admin/users/${user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [field]: num }),
+      });
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <input
+      type="number"
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => void save()}
+      placeholder={field === 'billableTargetHoursPerMonth' ? 'inherit' : '40'}
+      disabled={busy}
+      style={{
+        width: 70,
+        padding: '4px 6px',
+        textAlign: 'right',
+        background: tokens.color.surface,
+        color: tokens.color.text,
+        border: `1px solid ${tokens.color.border}`,
+        borderRadius: tokens.radius.sm,
+        fontSize: 12,
+      }}
+    />
   );
 }

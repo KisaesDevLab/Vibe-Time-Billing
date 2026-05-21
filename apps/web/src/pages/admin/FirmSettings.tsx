@@ -1,15 +1,46 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useState, type FormEvent } from 'react';
 
-import { Button, Card, Input, tokens } from '@vibe/ui';
+import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+
+const FEE_STRUCTURES = [
+  'HOURLY',
+  'HOURLY_NTE',
+  'FIXED_FEE',
+  'FIXED_FEE_WITH_MILESTONES',
+  'RECURRING_SUBSCRIPTION',
+] as const;
+type FeeStructure = (typeof FEE_STRUCTURES)[number];
+
+const ALLOCATION_METHODS = [
+  'SPECIFIC_ENTRIES',
+  'PRO_RATA_BY_VALUE',
+  'PRO_RATA_BY_HOURS',
+  'PARTNER_ABSORBS',
+  'HIERARCHICAL_CASCADE',
+  'CUSTOM_WEIGHTED',
+] as const;
+type AllocationMethod = (typeof ALLOCATION_METHODS)[number];
+
+interface Firm {
+  id: string;
+  name: string;
+  fiscalYearStartMonth: number;
+  defaultAllocationMethod: AllocationMethod;
+  defaultTermsDays: number;
+}
 
 interface Settings {
   adjustmentApprovalThresholdCents: number;
   aiMonthlyBudgetCents: number;
   stepUpTimeoutMinutes: number;
+  lateEntryAlertDays: number;
+  lateEntryLockoutDays: number;
+  invoiceNumberingPrefix: string;
   portalEnabled: boolean;
+  portalSubdomain: string | null;
   timeEntryRoundingHours: string;
   brandDisplayName: string | null;
   brandLogoUrl: string | null;
@@ -17,10 +48,29 @@ interface Settings {
   brandSupportEmail: string | null;
   brandSupportPhone: string | null;
   brandFooterHtml: string | null;
+  enabledFeeStructures: FeeStructure[];
+  billableTargetHoursPerMonth: number;
+  aiProvider: 'local' | 'cloud' | null;
 }
+
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 
 export function FirmSettingsPage(): JSX.Element {
   const [s, setS] = useState<Settings | null>(null);
+  const [f, setF] = useState<Firm | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -29,8 +79,9 @@ export function FirmSettingsPage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ settings: Settings }>('/api/staff/admin/firm-settings');
+        const r = await api<{ firm: Firm; settings: Settings }>('/api/staff/admin/firm-settings');
         setS(r.settings);
+        setF(r.firm);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed');
       } finally {
@@ -41,7 +92,7 @@ export function FirmSettingsPage(): JSX.Element {
 
   async function save(e: FormEvent): Promise<void> {
     e.preventDefault();
-    if (!s) return;
+    if (!s || !f) return;
     setSaving(true);
     setError(null);
     try {
@@ -51,13 +102,24 @@ export function FirmSettingsPage(): JSX.Element {
           adjustmentApprovalThresholdCents: s.adjustmentApprovalThresholdCents,
           aiMonthlyBudgetCents: s.aiMonthlyBudgetCents,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
+          lateEntryAlertDays: s.lateEntryAlertDays,
+          lateEntryLockoutDays: s.lateEntryLockoutDays,
+          invoiceNumberingPrefix: s.invoiceNumberingPrefix,
           portalEnabled: s.portalEnabled,
+          portalSubdomain: s.portalSubdomain || null,
+          enabledFeeStructures: s.enabledFeeStructures,
+          billableTargetHoursPerMonth: s.billableTargetHoursPerMonth,
+          aiProvider: s.aiProvider,
           brandDisplayName: s.brandDisplayName || null,
           brandLogoUrl: s.brandLogoUrl || null,
           brandAccentColor: s.brandAccentColor || null,
           brandSupportEmail: s.brandSupportEmail || null,
           brandSupportPhone: s.brandSupportPhone || null,
           brandFooterHtml: s.brandFooterHtml || null,
+          // Firm-table fields — server splits the body across tables.
+          defaultAllocationMethod: f.defaultAllocationMethod,
+          fiscalYearStartMonth: f.fiscalYearStartMonth,
+          defaultTermsDays: f.defaultTermsDays,
         }),
       });
       setSavedAt(Date.now());
@@ -69,12 +131,91 @@ export function FirmSettingsPage(): JSX.Element {
   }
 
   if (loading) return <p style={{ color: tokens.color.textMuted }}>Loading…</p>;
-  if (!s) return <p style={{ color: tokens.color.danger }}>{error ?? 'Settings unavailable'}</p>;
+  if (!s || !f)
+    return <p style={{ color: tokens.color.danger }}>{error ?? 'Settings unavailable'}</p>;
+
+  function toggleFee(fee: FeeStructure): void {
+    if (!s) return;
+    const has = s.enabledFeeStructures.includes(fee);
+    if (has && s.enabledFeeStructures.length === 1) return; // never drop to 0
+    setS({
+      ...s,
+      enabledFeeStructures: has
+        ? s.enabledFeeStructures.filter((x) => x !== fee)
+        : [...s.enabledFeeStructures, fee],
+    });
+  }
 
   return (
     <form onSubmit={save} style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 720 }}>
+      <Card title="Firm">
+        <div style={{ display: 'grid', gap: 16, maxWidth: 480 }}>
+          <Select
+            label="Default allocation method (Phase 12 fallback)"
+            value={f.defaultAllocationMethod}
+            onChange={(v) => setF({ ...f, defaultAllocationMethod: v as AllocationMethod })}
+            options={ALLOCATION_METHODS.map((m) => ({ value: m, label: m.replace(/_/g, ' ') }))}
+          />
+          <Select
+            label="Fiscal year starts in"
+            value={String(f.fiscalYearStartMonth)}
+            onChange={(v) => setF({ ...f, fiscalYearStartMonth: Number(v) })}
+            options={MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))}
+          />
+          <Input
+            label="Default invoice terms (days)"
+            type="number"
+            min={0}
+            max={365}
+            value={f.defaultTermsDays}
+            onChange={(e) => setF({ ...f, defaultTermsDays: Number(e.target.value) })}
+          />
+        </div>
+      </Card>
+
+      <Card title="Engagement defaults">
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 13 }}>
+            <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 6 }}>
+              Enabled fee structures — engagement-create dropdown filters by these
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {FEE_STRUCTURES.map((fee) => {
+                const on = s.enabledFeeStructures.includes(fee);
+                return (
+                  <button
+                    key={fee}
+                    type="button"
+                    onClick={() => toggleFee(fee)}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: tokens.radius.pill,
+                      border: `1px solid ${on ? tokens.color.accent : tokens.color.border}`,
+                      background: on ? tokens.color.accentMuted : 'transparent',
+                      color: on ? tokens.color.text : tokens.color.textMuted,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                  >
+                    {fee.replace(/_/g, ' ')}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <Input
+            label="Firm-wide billable target (hrs/month)"
+            type="number"
+            min={40}
+            max={220}
+            value={s.billableTargetHoursPerMonth}
+            onChange={(e) => setS({ ...s, billableTargetHoursPerMonth: Number(e.target.value) })}
+          />
+        </div>
+      </Card>
+
       <Card
-        title="Firm settings"
+        title="Approvals + auth + AI"
         action={
           <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
             locked decisions from QUESTIONS.md
@@ -96,12 +237,63 @@ export function FirmSettingsPage(): JSX.Element {
             value={s.aiMonthlyBudgetCents}
             onChange={(e) => setS({ ...s, aiMonthlyBudgetCents: Number(e.target.value) })}
           />
+          <Select
+            label="AI provider preference — Q15 / Phase 23 #6"
+            value={s.aiProvider ?? ''}
+            onChange={(v) => setS({ ...s, aiProvider: v === '' ? null : (v as 'local' | 'cloud') })}
+            options={[
+              { value: '', label: 'Default (local-first)' },
+              { value: 'local', label: 'Force local (Ollama)' },
+              { value: 'cloud', label: 'Force cloud (Anthropic)' },
+            ]}
+          />
           <Input
             label="Step-up TOTP timeout (minutes) — Q4"
             type="number"
             value={s.stepUpTimeoutMinutes}
             onChange={(e) => setS({ ...s, stepUpTimeoutMinutes: Number(e.target.value) })}
           />
+        </div>
+      </Card>
+
+      <Card title="Time entry">
+        <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
+          <Input
+            label="Late-entry alert (days)"
+            type="number"
+            min={1}
+            max={90}
+            value={s.lateEntryAlertDays}
+            onChange={(e) => setS({ ...s, lateEntryAlertDays: Number(e.target.value) })}
+          />
+          <Input
+            label="Late-entry lockout (days)"
+            type="number"
+            min={1}
+            max={365}
+            value={s.lateEntryLockoutDays}
+            onChange={(e) => setS({ ...s, lateEntryLockoutDays: Number(e.target.value) })}
+          />
+          <Input
+            label="Invoice numbering prefix"
+            value={s.invoiceNumberingPrefix}
+            onChange={(e) => setS({ ...s, invoiceNumberingPrefix: e.target.value })}
+            placeholder="INV"
+          />
+        </div>
+      </Card>
+
+      <Card
+        title="Portal"
+        action={
+          s.portalEnabled ? (
+            <Pill tone="success">enabled</Pill>
+          ) : (
+            <Pill tone="warning">disabled</Pill>
+          )
+        }
+      >
+        <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
             <input
               type="checkbox"
@@ -110,6 +302,15 @@ export function FirmSettingsPage(): JSX.Element {
             />
             Portal enabled
           </label>
+          <Input
+            label="Portal subdomain (Q10)"
+            value={s.portalSubdomain ?? ''}
+            onChange={(e) => setS({ ...s, portalSubdomain: e.target.value || null })}
+            placeholder="portal"
+          />
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+            Used by Caddy routing templates. e.g. &ldquo;portal&rdquo; → portal.firm.com.
+          </p>
         </div>
       </Card>
 
@@ -142,7 +343,7 @@ export function FirmSettingsPage(): JSX.Element {
             type="email"
             value={s.brandSupportEmail ?? ''}
             onChange={(e) => setS({ ...s, brandSupportEmail: e.target.value })}
-            placeholder="billing@firm.com"
+            placeholder="[email protected]"
           />
           <Input
             label="Support phone"
@@ -164,6 +365,8 @@ export function FirmSettingsPage(): JSX.Element {
                 padding: 8,
                 borderRadius: tokens.radius.sm,
                 border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.surface,
+                color: tokens.color.text,
               }}
             />
           </label>
@@ -182,5 +385,43 @@ export function FirmSettingsPage(): JSX.Element {
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
       </div>
     </form>
+  );
+}
+
+function Select({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}): JSX.Element {
+  return (
+    <label style={{ fontSize: 13 }}>
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          marginTop: 4,
+          padding: '8px 10px',
+          width: '100%',
+          background: tokens.color.surface,
+          color: tokens.color.text,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.sm,
+          fontSize: 13,
+        }}
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

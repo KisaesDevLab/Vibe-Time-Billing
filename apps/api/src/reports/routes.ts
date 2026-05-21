@@ -17,6 +17,7 @@ import {
   billingBatches,
   clients,
   engagements,
+  firmSettings,
   invoices,
   payments,
   recurringBillingPlans,
@@ -1089,9 +1090,17 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const target =
-        parseFloat(String(req.query['target'] ?? process.env['BILLABLE_HOUR_TARGET'] ?? '130')) ||
-        130;
+      // Phase 20 #8 — pick firm default from firm_settings, allow per-user
+      // override on app_user.billable_target_hours_per_month. ?target=
+      // query still overrides everything for ad-hoc what-if reports.
+      const [fs] = await deps.db
+        .select({ firmTarget: firmSettings.billableTargetHoursPerMonth })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      const queryTarget = parseFloat(String(req.query['target'] ?? ''));
+      const fallbackTarget =
+        !Number.isNaN(queryTarget) && queryTarget > 0 ? queryTarget : (fs?.firmTarget ?? 130);
       const now = new Date();
       const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
         .toISOString()
@@ -1100,6 +1109,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .select({
           appUserId: timeEntries.appUserId,
           fullName: appUsers.fullName,
+          userTarget: appUsers.billableTargetHoursPerMonth,
           billableHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.billableFlag} = true), 0)`,
         })
         .from(timeEntries)
@@ -1110,16 +1120,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             drz`${timeEntries.entryDate} >= ${monthStart}::date`,
           ),
         )
-        .groupBy(timeEntries.appUserId, appUsers.fullName);
+        .groupBy(timeEntries.appUserId, appUsers.fullName, appUsers.billableTargetHoursPerMonth);
       res.json({
-        targetHours: target,
+        targetHours: fallbackTarget,
         monthStart,
         items: rows.map((r) => {
           const billable = Number(r.billableHours);
+          const target = r.userTarget ?? fallbackTarget;
           return {
             appUserId: r.appUserId,
             fullName: r.fullName,
             billableHours: billable,
+            targetHours: target,
             varianceHours: billable - target,
             attainmentPct: target > 0 ? (billable / target) * 100 : 0,
           };

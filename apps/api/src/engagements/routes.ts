@@ -7,7 +7,14 @@ import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagementNotes, engagements, hourBanks, timeEntries } from '@vibe/db/schema';
+import {
+  clients,
+  engagementNotes,
+  engagements,
+  firmSettings,
+  hourBanks,
+  timeEntries,
+} from '@vibe/db/schema';
 import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
@@ -177,6 +184,27 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       }
       if (!(await clientBelongsToFirm(deps.db, firmId, parsed.data.clientId))) {
         res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      // Phase 20 #4 — refuse fee structures the firm has disabled.
+      const [fs] = await deps.db
+        .select({ enabled: firmSettings.enabledFeeStructures })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, firmId))
+        .limit(1);
+      const enabled = fs?.enabled ?? [
+        'HOURLY',
+        'HOURLY_NTE',
+        'FIXED_FEE',
+        'FIXED_FEE_WITH_MILESTONES',
+        'RECURRING_SUBSCRIPTION',
+      ];
+      if (!enabled.includes(parsed.data.feeStructure)) {
+        res.status(409).json({
+          error: 'fee_structure_disabled',
+          feeStructure: parsed.data.feeStructure,
+          enabled,
+        });
         return;
       }
       const session = req.staffSession!;

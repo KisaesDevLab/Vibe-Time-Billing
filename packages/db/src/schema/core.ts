@@ -309,6 +309,19 @@ export const firmSettings = pgTable('firm_settings', {
   portalEnabled: boolean('portal_enabled').notNull().default(true),
   portalSubdomain: text('portal_subdomain'),
 
+  // Phase 20 #4 — which fee structures are exposed in engagement-create.
+  enabledFeeStructures: jsonb('enabled_fee_structures')
+    .$type<string[]>()
+    .notNull()
+    .default(['HOURLY', 'HOURLY_NTE', 'FIXED_FEE', 'FIXED_FEE_WITH_MILESTONES', 'RECURRING_SUBSCRIPTION']),
+
+  // Phase 23 #6 — firm-wide AI provider override. NULL = local-first (Q15).
+  aiProvider: text('ai_provider'),
+
+  // Phase 20 #8 — firm-wide billable-target default. Per-user override
+  // lives on app_user.billable_target_hours_per_month.
+  billableTargetHoursPerMonth: integer('billable_target_hours_per_month').notNull().default(130),
+
   // Branding (Phase 4 #13)
   brandDisplayName: text('brand_display_name'),
   brandLogoUrl: text('brand_logo_url'),
@@ -414,6 +427,10 @@ export const appUsers = pgTable(
     standardHoursPerWeek: numeric('standard_hours_per_week', { precision: 5, scale: 2 })
       .notNull()
       .default('40.00'),
+
+    // Phase 20 #8 — per-user billable target override. NULL = inherit
+    // firm_settings.billable_target_hours_per_month.
+    billableTargetHoursPerMonth: integer('billable_target_hours_per_month'),
 
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
