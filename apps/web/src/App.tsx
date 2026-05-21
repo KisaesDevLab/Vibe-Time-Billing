@@ -19,6 +19,7 @@ import { BillingBatchesPage } from './pages/Billing';
 import { ClientDetailPage } from './pages/ClientDetail';
 import { ClientsPage } from './pages/Clients';
 import { DashboardPage } from './pages/Dashboard';
+import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
@@ -52,6 +53,7 @@ export function App(): JSX.Element {
                   <Route path="/" element={<DashboardPage />} />
                   <Route path="/clients" element={<ClientsPage />} />
                   <Route path="/clients/:id" element={<ClientDetailPage />} />
+                  <Route path="/engagements/new" element={<EngagementCreatePage />} />
                   <Route path="/engagements/:id" element={<EngagementDetailPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />

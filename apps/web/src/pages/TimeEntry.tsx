@@ -88,32 +88,85 @@ export function TimeEntryPage(): JSX.Element {
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [pinnedClientIds, setPinnedClientIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void (async () => {
       try {
-        const [e, w, c] = await Promise.all([
+        const [e, w, c, p] = await Promise.all([
           api<{ items: Engagement[] }>('/api/staff/engagements'),
           api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
           api<{ items: Client[] }>('/api/staff/clients'),
+          api<{ items: { clientId: string }[] }>('/api/staff/clients/pins').catch(() => ({
+            items: [],
+          })),
         ]);
         setEngagements(e.items ?? []);
         setWorkCodes(w.items ?? []);
-        setClients(c.items ?? []);
+        // Sort pinned clients to top of the list.
+        const pins = new Set((p.items ?? []).map((x) => x.clientId));
+        setPinnedClientIds(pins);
+        const sorted = [...(c.items ?? [])].sort((a, b) => {
+          const pa = pins.has(a.id) ? 0 : 1;
+          const pb = pins.has(b.id) ? 0 : 1;
+          if (pa !== pb) return pa - pb;
+          return a.name.localeCompare(b.name);
+        });
+        setClients(sorted);
       } catch {
         // Silent; child views render empty/error states themselves.
       }
     })();
   }, []);
 
+  async function togglePin(clientId: string): Promise<void> {
+    const isPinned = pinnedClientIds.has(clientId);
+    try {
+      if (isPinned) {
+        await api(`/api/staff/clients/pins/${clientId}`, { method: 'DELETE' });
+        const next = new Set(pinnedClientIds);
+        next.delete(clientId);
+        setPinnedClientIds(next);
+      } else {
+        await api('/api/staff/clients/pins', {
+          method: 'POST',
+          body: JSON.stringify({ clientId }),
+        });
+        const next = new Set(pinnedClientIds);
+        next.add(clientId);
+        setPinnedClientIds(next);
+      }
+      // Re-sort with new pin state.
+      setClients((prev) =>
+        [...prev].sort((a, b) => {
+          const set = isPinned
+            ? new Set(Array.from(pinnedClientIds).filter((id) => id !== clientId))
+            : new Set([...Array.from(pinnedClientIds), clientId]);
+          const pa = set.has(a.id) ? 0 : 1;
+          const pb = set.has(b.id) ? 0 : 1;
+          if (pa !== pb) return pa - pb;
+          return a.name.localeCompare(b.name);
+        }),
+      );
+    } catch {
+      // Non-fatal.
+    }
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <ViewTabs view={view} onChange={setView} />
       {view === 'log' && (
-        <LogView engagements={engagements} workCodes={workCodes} clients={clients} />
+        <LogView
+          engagements={engagements}
+          workCodes={workCodes}
+          clients={clients}
+          pinnedClientIds={pinnedClientIds}
+          onTogglePin={(id) => void togglePin(id)}
+        />
       )}
-      {view === 'day' && <DayView engagements={engagements} />}
-      {view === 'week' && <WeekView engagements={engagements} />}
+      {view === 'day' && <DayView engagements={engagements} clients={clients} />}
+      {view === 'week' && <WeekView engagements={engagements} clients={clients} />}
       {view === 'month' && <MonthView />}
     </div>
   );
@@ -183,10 +236,14 @@ function LogView({
   engagements,
   workCodes,
   clients,
+  pinnedClientIds,
+  onTogglePin,
 }: {
   engagements: Engagement[];
   workCodes: WorkCode[];
   clients: Client[];
+  pinnedClientIds: Set<string>;
+  onTogglePin: (clientId: string) => void;
 }): JSX.Element {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -307,8 +364,41 @@ function LogView({
           }}
         >
           <label style={{ display: 'block' }}>
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: tokens.color.textMuted,
+                marginBottom: 4,
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+              }}
+            >
               Client
+              {clientId && (
+                <button
+                  type="button"
+                  onClick={() => onTogglePin(clientId)}
+                  aria-label={pinnedClientIds.has(clientId) ? 'Unpin client' : 'Pin client'}
+                  title={
+                    pinnedClientIds.has(clientId)
+                      ? 'Unpin (remove from top of list)'
+                      : 'Pin (sort to top of list)'
+                  }
+                  style={{
+                    fontSize: 12,
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: pinnedClientIds.has(clientId)
+                      ? tokens.color.accent
+                      : tokens.color.textMuted,
+                    padding: 0,
+                  }}
+                >
+                  {pinnedClientIds.has(clientId) ? '★' : '☆'}
+                </button>
+              )}
             </div>
             <Select
               value={clientId}
@@ -321,6 +411,7 @@ function LogView({
               <option value="">— select —</option>
               {activeClients.map((c) => (
                 <option key={c.id} value={c.id}>
+                  {pinnedClientIds.has(c.id) ? '★ ' : ''}
                   {c.name}
                 </option>
               ))}
@@ -475,7 +566,13 @@ function LogView({
   );
 }
 
-function DayView({ engagements }: { engagements: Engagement[] }): JSX.Element {
+function DayView({
+  engagements,
+  clients,
+}: {
+  engagements: Engagement[];
+  clients: Client[];
+}): JSX.Element {
   const [date, setDate] = useState(today());
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -504,13 +601,18 @@ function DayView({ engagements }: { engagements: Engagement[] }): JSX.Element {
       arr.push(e);
       m.set(e.engagementId, arr);
     }
-    return Array.from(m.entries()).map(([id, items]) => ({
-      engagementId: id,
-      engagementName: engagements.find((eng) => eng.id === id)?.name ?? id.slice(0, 8),
-      items,
-      hours: items.reduce((s, e) => s + Number(e.hours), 0),
-    }));
-  }, [entries, engagements]);
+    return Array.from(m.entries()).map(([id, items]) => {
+      const eng = engagements.find((e) => e.id === id);
+      const cli = clients.find((c) => c.id === eng?.clientId);
+      return {
+        engagementId: id,
+        engagementName: eng?.name ?? id.slice(0, 8),
+        clientName: cli?.name ?? null,
+        items,
+        hours: items.reduce((s, e) => s + Number(e.hours), 0),
+      };
+    });
+  }, [entries, engagements, clients]);
 
   return (
     <Card
@@ -568,7 +670,15 @@ function DayView({ engagements }: { engagements: Engagement[] }): JSX.Element {
                   marginBottom: 8,
                 }}
               >
-                <strong style={{ fontSize: 14 }}>{g.engagementName}</strong>
+                <span>
+                  {g.clientName && (
+                    <span style={{ color: tokens.color.accent, fontSize: 14, fontWeight: 600 }}>
+                      {g.clientName}
+                      <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>·</span>
+                    </span>
+                  )}
+                  <strong style={{ fontSize: 14 }}>{g.engagementName}</strong>
+                </span>
                 <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
                   {g.hours.toFixed(2)}h
                 </span>
@@ -607,7 +717,13 @@ function DayView({ engagements }: { engagements: Engagement[] }): JSX.Element {
   );
 }
 
-function WeekView({ engagements }: { engagements: Engagement[] }): JSX.Element {
+function WeekView({
+  engagements,
+  clients,
+}: {
+  engagements: Engagement[];
+  clients: Client[];
+}): JSX.Element {
   const [weekAnchor, setWeekAnchor] = useState(startOfWeek(today()));
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -641,15 +757,27 @@ function WeekView({ engagements }: { engagements: Engagement[] }): JSX.Element {
       row.set(e.entryDate, (row.get(e.entryDate) ?? 0) + Number(e.hours));
       byEng.set(e.engagementId, row);
     }
-    const rows = Array.from(byEng.entries()).map(([id, dayMap]) => ({
-      engagementId: id,
-      engagementName: engagements.find((eng) => eng.id === id)?.name ?? id.slice(0, 8),
-      cells: days.map((d) => dayMap.get(d) ?? 0),
-      total: Array.from(dayMap.values()).reduce((s, v) => s + v, 0),
-    }));
-    rows.sort((a, b) => b.total - a.total);
+    const rows = Array.from(byEng.entries()).map(([id, dayMap]) => {
+      const eng = engagements.find((e) => e.id === id);
+      const cli = clients.find((c) => c.id === eng?.clientId);
+      return {
+        engagementId: id,
+        engagementName: eng?.name ?? id.slice(0, 8),
+        clientName: cli?.name ?? null,
+        cells: days.map((d) => dayMap.get(d) ?? 0),
+        total: Array.from(dayMap.values()).reduce((s, v) => s + v, 0),
+      };
+    });
+    // Sort by client name (alphabetical) so each client's engagements
+    // cluster — easier scan than pure hours-desc.
+    rows.sort((a, b) => {
+      const ca = (a.clientName ?? '').toLowerCase();
+      const cb = (b.clientName ?? '').toLowerCase();
+      if (ca !== cb) return ca.localeCompare(cb);
+      return b.total - a.total;
+    });
     return rows;
-  }, [entries, days, engagements]);
+  }, [entries, days, engagements, clients]);
 
   const dailyTotals = useMemo(
     () =>
@@ -732,7 +860,15 @@ function WeekView({ engagements }: { engagements: Engagement[] }): JSX.Element {
               ) : (
                 grid.map((r) => (
                   <tr key={r.engagementId}>
-                    <td style={td('left')}>{r.engagementName}</td>
+                    <td style={td('left')}>
+                      {r.clientName && (
+                        <span style={{ color: tokens.color.accent, fontWeight: 600 }}>
+                          {r.clientName}
+                          <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>·</span>
+                        </span>
+                      )}
+                      {r.engagementName}
+                    </td>
                     {r.cells.map((h, i) => (
                       <td key={i} style={td('right', h > 0)}>
                         {h > 0 ? h.toFixed(2) : '–'}

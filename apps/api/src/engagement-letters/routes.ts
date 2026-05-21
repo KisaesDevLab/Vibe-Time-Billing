@@ -14,6 +14,7 @@ import { clients, engagementLetters, engagements } from '@vibe/db/schema';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
+import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
 
 export interface EngagementLetterDeps extends RbacDeps {
@@ -193,16 +194,26 @@ export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router
       }
       if (deps.sendEmail) {
         const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/letters/${letter.id}` : '';
+        const subject = `Engagement letter (v${letter.version}) — ${billingContact?.fullName ?? ''}`;
+        const body =
+          `Please review and accept the engagement letter.\n\n` +
+          (link ? `View online: ${link}\n\n` : '') +
+          `Thank you.`;
         await deps
-          .sendEmail({
-            to,
-            subject: `Engagement letter (v${letter.version}) — ${billingContact?.fullName ?? ''}`,
-            body:
-              `Please review and accept the engagement letter.\n\n` +
-              (link ? `View online: ${link}\n\n` : '') +
-              `Thank you.`,
-          })
+          .sendEmail({ to, subject, body })
           .catch((err: unknown) => logger.error({ err }, 'engagement letter send failed'));
+        if (eng) {
+          await recordOutbound({
+            db: deps.db,
+            firmId: session.firmId,
+            clientId: eng.clientId,
+            channel: 'EMAIL',
+            subject,
+            body,
+            relatedEntityType: 'engagement_letter',
+            relatedEntityId: letter.id,
+          }).catch((err) => logger.warn({ err }, 'comms record failed'));
+        }
       }
       await deps.db
         .update(engagementLetters)

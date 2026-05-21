@@ -943,6 +943,28 @@ export const engagementLetterTemplates = pgTable(
 );
 
 // =====================================================================
+// v2 0036 — user_pinned_client. Per-timekeeper pinned clients shown
+// at the top of the Time entry combobox and Clients list.
+// =====================================================================
+
+export const userPinnedClients = pgTable(
+  'user_pinned_client',
+  {
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    pinnedAt: timestamp('pinned_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.appUserId, t.clientId] }),
+    userIdx: index('user_pinned_client_user_idx').on(t.appUserId, t.pinnedAt),
+  }),
+);
+
+// =====================================================================
 // TABLE: engagement
 // =====================================================================
 

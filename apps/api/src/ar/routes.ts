@@ -15,6 +15,7 @@ import { bucketize, type AgingBucket } from '@vibe/core/billing';
 import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
+import { recordOutbound } from '../clients/communications';
 
 export interface ArRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -330,12 +331,18 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         `Account statement for ${client.name} as of ${today}:\n\n` +
         rows.map((r) => r.line).join('\n') +
         `\n\nTotal balance: $${(balance / 100).toFixed(2)}`;
+      const subject = `Statement of account — ${client.name}`;
       try {
-        await deps.sendEmail({
-          to: billingEmail,
-          subject: `Statement of account — ${client.name}`,
+        await deps.sendEmail({ to: billingEmail, subject, body });
+        await recordOutbound({
+          db: deps.db,
+          firmId: session.firmId,
+          clientId: client.id,
+          channel: 'EMAIL',
+          subject,
           body,
-        });
+          relatedEntityType: 'statement',
+        }).catch(() => undefined);
       } catch (err) {
         res.status(502).json({ error: 'email_dispatch_failed' });
         return;

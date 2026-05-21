@@ -11,6 +11,7 @@ import type { Database } from '@vibe/db';
 import {
   appUsers,
   auditLog,
+  clientCommunications,
   clientContacts,
   clients,
   dunningHistory,
@@ -95,16 +96,28 @@ export async function runDunningSweep(
       let errorMessage: string | null = null;
       let channel: 'EMAIL' | 'SMS' | null = null;
       let recipient: string | null = null;
+      const subject = SUBJECT_BY_KIND[step.kind];
       if (deps.sendEmail && inv.billingContactEmail) {
         channel = 'EMAIL';
         recipient = inv.billingContactEmail;
         try {
-          await deps.sendEmail({
-            to: inv.billingContactEmail,
-            subject: SUBJECT_BY_KIND[step.kind],
-            body,
-          });
+          await deps.sendEmail({ to: inv.billingContactEmail, subject, body });
           sentEmails++;
+          // v2 followup — record dunning email in client timeline.
+          await db
+            .insert(clientCommunications)
+            .values({
+              firmId: inv.firmId,
+              clientId: inv.clientId,
+              channel: 'EMAIL',
+              direction: 'OUTBOUND',
+              subject,
+              body,
+              occurredAt: new Date(),
+              relatedEntityType: 'dunning',
+              relatedEntityId: inv.id,
+            })
+            .catch(() => undefined);
         } catch (err) {
           outcome = 'FAILED';
           errorMessage = err instanceof Error ? err.message : 'send_failed';
@@ -113,14 +126,26 @@ export async function runDunningSweep(
       } else if (deps.sendSms && inv.billingContactPhone) {
         channel = 'SMS';
         recipient = inv.billingContactPhone;
+        const smsBody = `${subject}: ${inv.invoiceNumber} ($${(balance / 100).toFixed(
+          2,
+        )}) due ${inv.dueDate}.${link ? ` ${link}` : ''}`;
         try {
-          await deps.sendSms({
-            to: inv.billingContactPhone,
-            body: `${SUBJECT_BY_KIND[step.kind]}: ${inv.invoiceNumber} ($${(balance / 100).toFixed(
-              2,
-            )}) due ${inv.dueDate}.${link ? ` ${link}` : ''}`,
-          });
+          await deps.sendSms({ to: inv.billingContactPhone, body: smsBody });
           sentSms++;
+          await db
+            .insert(clientCommunications)
+            .values({
+              firmId: inv.firmId,
+              clientId: inv.clientId,
+              channel: 'SMS',
+              direction: 'OUTBOUND',
+              subject: null,
+              body: smsBody,
+              occurredAt: new Date(),
+              relatedEntityType: 'dunning',
+              relatedEntityId: inv.id,
+            })
+            .catch(() => undefined);
         } catch (err) {
           outcome = 'FAILED';
           errorMessage = err instanceof Error ? err.message : 'send_failed';

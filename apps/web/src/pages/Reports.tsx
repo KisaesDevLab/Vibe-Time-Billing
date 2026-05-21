@@ -71,6 +71,7 @@ export function ReportsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <ReportLibraryCards />
       <FilterBar
         start={start}
         end={end}
@@ -881,3 +882,130 @@ function SubscriptionProfitabilityCard(): JSX.Element {
 
 // Tame an unused-import warning when Reports.tsx is imported in tests.
 void ninetyDaysAgo;
+
+// =====================================================================
+// ReportLibraryCards (v2 followup) — 10-card landing grid as the new
+// header on /reports. Each card is a deep-link / inline view of a
+// specific report kind so partners can navigate by intent.
+// =====================================================================
+
+interface CardSpec {
+  key: string;
+  title: string;
+  blurb: string;
+  href?: string;
+  scrollTo?: string;
+}
+
+const REPORT_CARDS: CardSpec[] = [
+  {
+    key: 'realization',
+    title: 'Realization',
+    blurb: 'Original vs adjusted value by firm / timekeeper / engagement / client.',
+    scrollTo: 'realization-card',
+  },
+  {
+    key: 'revenue-ops',
+    title: 'Revenue ops',
+    blurb: 'Billed + paid by month with period-over-period growth.',
+    scrollTo: 'revenue-ops-card',
+  },
+  {
+    key: 'profitability',
+    title: 'Engagement profitability',
+    blurb: 'Cost vs revenue by engagement, sortable.',
+    href: '/reports/profitability',
+  },
+  {
+    key: 'subscriptions',
+    title: 'Subscription profitability',
+    blurb: 'Recurring MRR + churn + ARPU.',
+    scrollTo: 'subscription-profitability-card',
+  },
+  {
+    key: 'targets',
+    title: 'Billable targets',
+    blurb: 'Per-timekeeper progress vs firm target.',
+    scrollTo: 'billable-targets-card',
+  },
+  {
+    key: 'capacity',
+    title: 'Capacity forecast',
+    blurb: 'Open WIP + scheduled engagements vs available hours.',
+    scrollTo: 'capacity-forecast-card',
+  },
+  {
+    key: 'wip',
+    title: 'WIP dashboard',
+    blurb: 'Unbilled work, aged by submit date.',
+    href: '/wip',
+  },
+  {
+    key: 'ar',
+    title: 'AR aging',
+    blurb: 'Open invoices bucketed by age.',
+    href: '/ar',
+  },
+  {
+    key: 'ar-snapshot',
+    title: 'AR snapshots',
+    blurb: 'Daily AR snapshot history + diff between dates.',
+    href: '/ar/snapshots',
+  },
+  {
+    key: 'audit',
+    title: 'Audit log',
+    blurb: 'Every state change, append-only.',
+    href: '/audit',
+  },
+];
+
+function ReportLibraryCards(): JSX.Element {
+  function go(c: CardSpec): void {
+    if (c.href) {
+      window.location.href = c.href;
+      return;
+    }
+    if (c.scrollTo) {
+      const el = document.getElementById(c.scrollTo);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  return (
+    <Card title="Report library">
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+        Jump to a specific lens. Some cards scroll to a section below; others link to a dedicated
+        page.
+      </p>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+          gap: 10,
+        }}
+      >
+        {REPORT_CARDS.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            onClick={() => go(c)}
+            style={{
+              textAlign: 'left',
+              padding: 12,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              background: tokens.color.surface,
+              color: tokens.color.text,
+              cursor: 'pointer',
+              display: 'grid',
+              gap: 4,
+            }}
+          >
+            <strong style={{ fontSize: 13 }}>{c.title}</strong>
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>{c.blurb}</span>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}

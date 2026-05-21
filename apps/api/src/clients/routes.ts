@@ -17,6 +17,7 @@ import {
   invoices,
   portalInvitation,
   portalSession,
+  userPinnedClients,
 } from '@vibe/db/schema';
 import { desc } from 'drizzle-orm';
 
@@ -665,6 +666,69 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, ids)))
         .returning({ id: clients.id });
       res.json({ updated: updated.length });
+    },
+  );
+
+  // v2 followup — pinned clients (per-timekeeper). GET returns the
+  // caller's pinned list; POST upserts a pin; DELETE removes one.
+  router.get(
+    '/pins',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession;
+      if (!session || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select({ clientId: userPinnedClients.clientId, pinnedAt: userPinnedClients.pinnedAt })
+        .from(userPinnedClients)
+        .where(eq(userPinnedClients.appUserId, session.appUserId));
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/pins',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = (req.body ?? {}) as { clientId?: string };
+      const clientId = typeof body.clientId === 'string' ? body.clientId : '';
+      if (!clientId) {
+        res.status(400).json({ error: 'clientId_required' });
+        return;
+      }
+      await deps.db
+        .insert(userPinnedClients)
+        .values({ appUserId: session.appUserId, clientId })
+        .onConflictDoNothing();
+      res.json({ ok: true });
+    },
+  );
+
+  router.delete(
+    '/pins/:clientId',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .delete(userPinnedClients)
+        .where(
+          and(
+            eq(userPinnedClients.appUserId, session.appUserId),
+            eq(userPinnedClients.clientId, req.params['clientId']!),
+          ),
+        );
+      res.json({ ok: true });
     },
   );
 

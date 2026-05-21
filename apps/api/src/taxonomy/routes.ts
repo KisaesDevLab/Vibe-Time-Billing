@@ -168,6 +168,47 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
     },
   );
 
+  // v2 followup — rename (PATCH name + color). Refuses to rename to a
+  // string that already exists for this firm.
+  router.patch(
+    '/service-lines/:id',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const parsed = ServiceLineSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const updates: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+      if (parsed.data.category !== undefined) updates.category = parsed.data.category;
+      if (parsed.data.color !== undefined) updates.color = parsed.data.color;
+      if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db
+        .update(serviceLines)
+        .set(updates)
+        .where(and(eq(serviceLines.firmId, firmId), eq(serviceLines.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'service_line',
+        entityId: req.params['id']!,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: updates,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.patch(
     '/service-lines/:id/archive',
     requirePermission(deps, 'taxonomy:write'),
@@ -342,6 +383,51 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
   );
 
   router.patch(
+    '/work-codes/:id',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const parsed = WorkCodeSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const updates: Record<string, unknown> = {};
+      for (const k of [
+        'name',
+        'serviceLineId',
+        'billableDefault',
+        'descriptionTemplate',
+      ] as const) {
+        const v = parsed.data[k];
+        if (v !== undefined) updates[k] = v;
+      }
+      if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db
+        .update(workCodes)
+        .set(updates)
+        .where(and(eq(workCodes.firmId, firmId), eq(workCodes.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'work_code',
+        entityId: req.params['id']!,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: updates,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
     '/work-codes/:id/archive',
     requirePermission(deps, 'taxonomy:write'),
     async (req: Request, res: Response) => {
@@ -374,6 +460,46 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
   );
 
   router.patch(
+    '/engagement-types/:id',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const parsed = EngagementTypeSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const updates: Record<string, unknown> = {};
+      for (const k of ['name', 'serviceLineId', 'defaultFeeStructure'] as const) {
+        const v = parsed.data[k];
+        if (v !== undefined) updates[k] = v;
+      }
+      if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db
+        .update(engagementTypes)
+        .set(updates)
+        .where(and(eq(engagementTypes.firmId, firmId), eq(engagementTypes.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_type',
+        entityId: req.params['id']!,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: updates,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
     '/engagement-types/:id/archive',
     requirePermission(deps, 'taxonomy:write'),
     async (req: Request, res: Response) => {
@@ -398,6 +524,44 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         entityId: req.params['id']!,
         actorAppUserId: session.appUserId,
         after: { status: 'ARCHIVED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/reason-codes/:id',
+    requirePermission(deps, 'taxonomy:write'),
+    async (req: Request, res: Response) => {
+      const parsed = ReasonCodeSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const updates: Record<string, unknown> = {};
+      if (parsed.data.label !== undefined) updates.label = parsed.data.label;
+      if (parsed.data.category !== undefined) updates.category = parsed.data.category;
+      if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db
+        .update(reasonCodes)
+        .set(updates)
+        .where(and(eq(reasonCodes.firmId, firmId), eq(reasonCodes.id, req.params['id']!)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'reason_code',
+        entityId: req.params['id']!,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: updates,
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));

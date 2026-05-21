@@ -5,9 +5,12 @@ import { useParams } from 'react-router-dom';
 import { Button, Card, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { BillingCard } from './clients/BillingCard';
+import { ClientInfoCard } from './clients/ClientInfoCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 import { ContactsCard } from './clients/ContactsCard';
 import { FilesCard } from './clients/FilesCard';
+import { NotesCard } from './clients/NotesCard';
 import { TasksCard } from './clients/TasksCard';
 
 interface Client {
@@ -57,7 +60,7 @@ interface Summary {
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
-type Tab = 'home' | 'communications' | 'files' | 'tasks' | 'engagements' | 'billing';
+type Tab = 'home' | 'communications' | 'notes' | 'files' | 'tasks' | 'engagements' | 'billing';
 
 interface StaffUser {
   id: string;
@@ -191,6 +194,7 @@ export function ClientDetailPage(): JSX.Element {
         tabs={[
           { key: 'home', label: 'Home' },
           { key: 'communications', label: 'Communications' },
+          { key: 'notes', label: 'Notes' },
           { key: 'files', label: 'Files' },
           { key: 'tasks', label: 'Tasks' },
           { key: 'engagements', label: 'Engagements', badge: engagements.length },
@@ -223,6 +227,11 @@ export function ClientDetailPage(): JSX.Element {
             </Card>
           )}
 
+          <ClientInfoCard
+            client={client}
+            onSaved={(updated) => setClient({ ...client, ...updated })}
+          />
+
           <ContactsCard clientId={client.id} />
 
           <TasksCard clientId={client.id} compact users={staff} />
@@ -237,6 +246,8 @@ export function ClientDetailPage(): JSX.Element {
       )}
 
       {tab === 'communications' && <CommunicationsCard clientId={client.id} />}
+
+      {tab === 'notes' && <NotesCard clientId={client.id} />}
 
       {tab === 'files' && <FilesCard clientId={client.id} />}
 
@@ -301,14 +312,7 @@ export function ClientDetailPage(): JSX.Element {
         </>
       )}
 
-      {tab === 'billing' && (
-        <Card title="Billing">
-          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-            Invoices, payments, and AR for this client land here in Sprint C. For now visit the
-            global Invoices and AR pages.
-          </p>
-        </Card>
-      )}
+      {tab === 'billing' && <BillingCard clientId={client.id} />}
     </div>
   );
 }

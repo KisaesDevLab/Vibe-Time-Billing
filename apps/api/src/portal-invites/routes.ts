@@ -19,6 +19,7 @@ import { normalizePhone } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
 
 export interface PortalInviteDeps extends RbacDeps {
@@ -165,17 +166,34 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
       const message = `${parsed.data.fullName}, you've been invited to the ${client.name} client portal.\n\nAccept: ${link}\n\nLink expires in 7 days.`;
 
       if (parsed.data.deliveryChannel === 'EMAIL' && parsed.data.email && deps.sendEmail) {
+        const subject = `Client portal invitation — ${client.name}`;
         await deps
-          .sendEmail({
-            to: parsed.data.email,
-            subject: `Client portal invitation — ${client.name}`,
-            body: message,
-          })
+          .sendEmail({ to: parsed.data.email, subject, body: message })
           .catch((err: unknown) => logger.error({ err }, 'portal invite email failed'));
+        await recordOutbound({
+          db: deps.db,
+          firmId: session.firmId,
+          clientId: client.id,
+          channel: 'EMAIL',
+          subject,
+          body: message,
+          relatedEntityType: 'portal_invitation',
+          relatedEntityId: invitation?.id,
+        }).catch(() => undefined);
       } else if (parsed.data.deliveryChannel === 'SMS' && normPhone && deps.sendSms) {
+        const smsBody = `Portal invite from ${client.name}: ${link}`;
         await deps
-          .sendSms({ to: normPhone, body: `Portal invite from ${client.name}: ${link}` })
+          .sendSms({ to: normPhone, body: smsBody })
           .catch((err: unknown) => logger.error({ err }, 'portal invite sms failed'));
+        await recordOutbound({
+          db: deps.db,
+          firmId: session.firmId,
+          clientId: client.id,
+          channel: 'SMS',
+          body: smsBody,
+          relatedEntityType: 'portal_invitation',
+          relatedEntityId: invitation?.id,
+        }).catch(() => undefined);
       }
 
       await emitAudit(deps.db, {

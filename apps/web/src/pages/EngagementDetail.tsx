@@ -432,6 +432,12 @@ export function EngagementDetailPage(): JSX.Element {
         </Card>
       )}
 
+      <LetterGenerator
+        engagementId={id ?? ''}
+        engagement={engagement}
+        onGenerated={() => void reload()}
+      />
+
       {milestones.length > 0 && (
         <Card title={`Milestones (${milestones.length})`}>
           <Table<Milestone>
@@ -676,5 +682,175 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       </span>
       {children}
     </label>
+  );
+}
+
+// =====================================================================
+// LetterGenerator — picks a letter template, substitutes {{handlebars}}
+// vars from the engagement + client, saves as a DRAFT letter row.
+// =====================================================================
+
+interface LetterTemplate {
+  id: string;
+  name: string;
+  bodyHtml: string;
+  isSystem: boolean;
+  status: string;
+}
+
+interface ClientLite {
+  id: string;
+  name: string;
+}
+
+function substituteVars(body: string, vars: Record<string, string>): string {
+  return body.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (_, name: string) => {
+    return vars[name] ?? `{{${name}}}`;
+  });
+}
+
+function LetterGenerator({
+  engagementId,
+  engagement,
+  onGenerated,
+}: {
+  engagementId: string;
+  engagement: Engagement;
+  onGenerated: () => void;
+}): JSX.Element {
+  const [templates, setTemplates] = useState<LetterTemplate[]>([]);
+  const [pickedId, setPickedId] = useState('');
+  const [preview, setPreview] = useState('');
+  const [client, setClient] = useState<ClientLite | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [t, c] = await Promise.all([
+          api<{ items: LetterTemplate[] }>('/api/staff/admin/templates/letter'),
+          api<{ client: ClientLite }>(`/api/staff/clients/${engagement.clientId}`).catch(() => ({
+            client: { id: engagement.clientId, name: 'client' },
+          })),
+        ]);
+        setTemplates((t.items ?? []).filter((x) => x.status === 'ACTIVE'));
+        setClient(c.client);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'load_failed');
+      }
+    })();
+  }, [engagement.clientId]);
+
+  useEffect(() => {
+    if (!pickedId) {
+      setPreview('');
+      return;
+    }
+    const tpl = templates.find((t) => t.id === pickedId);
+    if (!tpl) return;
+    const feeStr =
+      engagement.feeAmountCents != null
+        ? `$${(engagement.feeAmountCents / 100).toLocaleString()}`
+        : 'TBD';
+    setPreview(
+      substituteVars(tpl.bodyHtml, {
+        'client.name': client?.name ?? '',
+        'engagement.name': engagement.name,
+        'engagement.fee': feeStr,
+        'engagement.tax_year': new Date().getFullYear().toString(),
+        'engagement.fye_date': engagement.endDate ?? 'TBD',
+      }),
+    );
+  }, [pickedId, templates, engagement, client]);
+
+  async function generate(): Promise<void> {
+    if (!pickedId || !preview) return;
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const r = await api<{ id: string; version: number }>('/api/staff/engagement-letters', {
+        method: 'POST',
+        body: JSON.stringify({ engagementId, bodyHtml: preview }),
+      });
+      setStatus(`Letter v${r.version} created as DRAFT (id: ${r.id.slice(0, 8)}…).`);
+      setPickedId('');
+      setPreview('');
+      onGenerated();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'generate_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Engagement letter">
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+        Generate a draft letter from a template. Variables (<code>{`{{client.name}}`}</code>,{' '}
+        <code>{`{{engagement.name}}`}</code>, <code>{`{{engagement.fee}}`}</code>) substitute in the
+        preview before save.
+      </p>
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12 }} role="alert">
+          {error}
+        </p>
+      )}
+      {status && (
+        <p style={{ color: tokens.color.success, fontSize: 12 }} role="status">
+          {status}
+        </p>
+      )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 10 }}>
+        <label style={{ flex: 1 }}>
+          <span
+            style={{
+              fontSize: 11,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Template
+          </span>
+          <select
+            value={pickedId}
+            onChange={(e) => setPickedId(e.target.value)}
+            style={editFieldStyle}
+          >
+            <option value="">— pick —</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+                {t.isSystem ? ' (system)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button onClick={() => void generate()} disabled={busy || !pickedId}>
+          {busy ? 'Saving…' : 'Save as draft'}
+        </Button>
+      </div>
+      {preview && (
+        <pre
+          style={{
+            margin: 0,
+            padding: 12,
+            background: tokens.color.bg,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            fontSize: 12,
+            fontFamily: tokens.font.body,
+            whiteSpace: 'pre-wrap',
+            maxHeight: 280,
+            overflow: 'auto',
+          }}
+        >
+          {preview}
+        </pre>
+      )}
+    </Card>
   );
 }

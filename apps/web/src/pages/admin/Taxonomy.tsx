@@ -95,6 +95,29 @@ function ServiceLinesPanel(): JSX.Element {
         columns={[
           { key: 'name', header: 'Name', render: (r) => r.name },
           { key: 'cat', header: 'Category', render: (r) => <Pill>{r.category}</Pill> },
+          {
+            key: 'edit',
+            header: '',
+            align: 'right',
+            render: (r) => (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  const next = prompt(`Rename service line "${r.name}":`, r.name);
+                  if (!next || next.trim() === r.name) return;
+                  void api(`/api/staff/taxonomy/service-lines/${r.id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ name: next.trim(), category: r.category }),
+                  })
+                    .then(load)
+                    .catch((e) => setErr(e instanceof Error ? e.message : 'rename_failed'));
+                }}
+              >
+                Rename
+              </Button>
+            ),
+          },
         ]}
         rows={items}
         rowKey={(r) => r.id}
@@ -152,6 +175,27 @@ function WorkCodesPanel(): JSX.Element {
             key: 'billable',
             header: 'Billable default',
             render: (r) => (r.billableDefault ? '✓' : '—'),
+          },
+          {
+            key: 'edit',
+            header: '',
+            align: 'right',
+            render: (r) => (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  const next = prompt(`Rename work code "${r.name}":`, r.name);
+                  if (!next || next.trim() === r.name) return;
+                  void api(`/api/staff/taxonomy/work-codes/${r.id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ name: next.trim() }),
+                  }).then(load);
+                }}
+              >
+                Rename
+              </Button>
+            ),
           },
         ]}
         rows={items}
@@ -215,6 +259,27 @@ function ReasonCodesPanel(): JSX.Element {
         columns={[
           { key: 'cat', header: 'Category', render: (r) => <Pill>{r.category}</Pill> },
           { key: 'label', header: 'Label', render: (r) => r.label },
+          {
+            key: 'edit',
+            header: '',
+            align: 'right',
+            render: (r) => (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  const next = prompt(`Rename reason code "${r.label}":`, r.label);
+                  if (!next || next.trim() === r.label) return;
+                  void api(`/api/staff/taxonomy/reason-codes/${r.id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ label: next.trim(), category: r.category }),
+                  }).then(load);
+                }}
+              >
+                Rename
+              </Button>
+            ),
+          },
         ]}
         rows={items}
         rowKey={(r) => r.id}
