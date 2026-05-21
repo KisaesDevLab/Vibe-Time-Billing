@@ -87,6 +87,38 @@ export function createAdminJobRouter(deps: AdminJobRoutesDeps): Router {
   );
 
   router.get(
+    '/stats',
+    requirePermission(deps, 'admin:backup:manage'),
+    async (_req: Request, res: Response) => {
+      const connection = new IORedis(deps.redisUrl, { maxRetriesPerRequest: null });
+      try {
+        const { Queue } = await import('bullmq');
+        const stats: Record<
+          string,
+          { waiting: number; active: number; delayed: number; failed: number }
+        > = {};
+        for (const name of JOB_NAMES) {
+          const q = new Queue(name, { connection });
+          const counts = await q.getJobCounts('waiting', 'active', 'delayed', 'failed');
+          stats[name] = {
+            waiting: counts['waiting'] ?? 0,
+            active: counts['active'] ?? 0,
+            delayed: counts['delayed'] ?? 0,
+            failed: counts['failed'] ?? 0,
+          };
+          await q.close();
+        }
+        res.json({ stats });
+      } catch (err) {
+        logger.error({ err }, 'job stats fetch failed');
+        res.status(502).json({ error: 'fetch_failed' });
+      } finally {
+        await connection.quit().catch(() => undefined);
+      }
+    },
+  );
+
+  router.get(
     '/known',
     requirePermission(deps, 'admin:backup:manage'),
     async (_req: Request, res: Response) => {

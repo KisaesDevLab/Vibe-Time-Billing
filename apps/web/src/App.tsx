@@ -12,6 +12,7 @@ import { AlertsPage } from './pages/Alerts';
 import { ApprovalsPage } from './pages/Approvals';
 import { ArPage } from './pages/Ar';
 import { ArByServiceLinePage } from './pages/ArByServiceLine';
+import { ArSnapshotsPage } from './pages/ArSnapshots';
 import { AuditPage } from './pages/Audit';
 import { AuthProvider, useAuth } from './auth-context';
 import { BillingBatchesPage } from './pages/Billing';
@@ -21,6 +22,7 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
+import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
@@ -55,10 +57,12 @@ export function App(): JSX.Element {
                   <Route path="/invoices" element={<InvoicesPage />} />
                   <Route path="/ar" element={<ArPage />} />
                   <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
+                  <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
+                  <Route path="/reports/profitability" element={<ProfitabilityPage />} />
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
                   <Route path="*" element={<Navigate to="/" replace />} />

@@ -251,7 +251,152 @@ export function EngagementDetailPage(): JSX.Element {
           />
         </Card>
       )}
+
+      <EngagementNotes engagementId={id ?? ''} />
     </div>
+  );
+}
+
+interface Note {
+  id: string;
+  authorId: string;
+  body: string;
+  pinned: boolean;
+  createdAt: string;
+}
+
+function EngagementNotes({ engagementId }: { engagementId: string }): JSX.Element {
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [body, setBody] = useState('');
+  const [pinned, setPinned] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(): Promise<void> {
+    if (!engagementId) return;
+    try {
+      const r = await api<{ items: Note[] }>(`/api/staff/engagements/${engagementId}/notes`);
+      setNotes(r.items ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engagementId]);
+
+  async function add(): Promise<void> {
+    if (!body.trim()) return;
+    try {
+      await api(`/api/staff/engagements/${engagementId}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ body, pinned }),
+      });
+      setBody('');
+      setPinned(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  async function remove(noteId: string): Promise<void> {
+    try {
+      await api(`/api/staff/engagements/${engagementId}/notes/${noteId}`, { method: 'DELETE' });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  return (
+    <Card title={`Notes (${notes.length})`}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={3}
+          placeholder="Add a note…"
+          style={{
+            width: '100%',
+            padding: 8,
+            borderRadius: tokens.radius.sm,
+            border: `1px solid ${tokens.color.border}`,
+            background: tokens.color.surface,
+            color: tokens.color.text,
+            fontFamily: 'inherit',
+            fontSize: 13,
+          }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
+            Pin
+          </label>
+          <button
+            type="button"
+            onClick={() => void add()}
+            style={{
+              padding: '6px 12px',
+              borderRadius: tokens.radius.sm,
+              border: 'none',
+              background: tokens.color.accent,
+              color: '#fff',
+              cursor: 'pointer',
+              fontSize: 13,
+            }}
+          >
+            Add
+          </button>
+        </div>
+        {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      </div>
+      <div style={{ marginTop: 16, display: 'grid', gap: 8 }}>
+        {notes.map((n) => (
+          <div
+            key={n.id}
+            style={{
+              padding: 12,
+              borderRadius: tokens.radius.sm,
+              border: `1px solid ${tokens.color.border}`,
+              fontSize: 13,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginBottom: 6,
+                color: tokens.color.textMuted,
+                fontSize: 11,
+              }}
+            >
+              <span>{new Date(n.createdAt).toLocaleString()}</span>
+              <span>
+                {n.pinned && <Pill tone="accent">pinned</Pill>}{' '}
+                <button
+                  type="button"
+                  onClick={() => void remove(n.id)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: tokens.color.textMuted,
+                    cursor: 'pointer',
+                    fontSize: 11,
+                  }}
+                >
+                  delete
+                </button>
+              </span>
+            </div>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{n.body}</div>
+          </div>
+        ))}
+        {notes.length === 0 && (
+          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No notes yet.</p>
+        )}
+      </div>
+    </Card>
   );
 }
 

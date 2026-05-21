@@ -17,8 +17,16 @@ const JOB_DESCRIPTIONS: Record<string, string> = {
   'approval-escalation': 'Reassign stale approvals back to the unassigned pool.',
 };
 
+interface QStat {
+  waiting: number;
+  active: number;
+  delayed: number;
+  failed: number;
+}
+
 export function JobsPage(): JSX.Element {
   const [jobs, setJobs] = useState<string[]>([]);
+  const [stats, setStats] = useState<Record<string, QStat>>({});
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<Record<string, string>>({});
 
@@ -28,6 +36,12 @@ export function JobsPage(): JSX.Element {
       setJobs(r.jobs ?? []);
     } catch {
       // ignore
+    }
+    try {
+      const s = await api<{ stats: Record<string, QStat> }>('/api/staff/admin/jobs/stats');
+      setStats(s.stats ?? {});
+    } catch {
+      // stats requires redis; OK to ignore
     }
   }
   useEffect(() => {
@@ -80,6 +94,12 @@ export function JobsPage(): JSX.Element {
                 <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                   {JOB_DESCRIPTIONS[j] ?? ''}
                 </div>
+                {stats[j] && (
+                  <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>
+                    waiting {stats[j]!.waiting} · active {stats[j]!.active} · delayed{' '}
+                    {stats[j]!.delayed} · failed {stats[j]!.failed}
+                  </div>
+                )}
               </div>
               <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{status[j] ?? ''}</span>
               <Button size="sm" disabled={running.has(j)} onClick={() => void run(j)}>
