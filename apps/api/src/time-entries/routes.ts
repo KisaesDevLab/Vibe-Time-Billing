@@ -15,6 +15,8 @@ import {
   engagementRateOverrides,
   engagements,
   firms,
+  hourBanks,
+  hourBankTransactions,
   requiredFieldRules,
   serviceLineRates,
   timeEntries,
@@ -24,7 +26,9 @@ import {
 } from '@vibe/db/schema';
 import { captureRateSnapshot, resolveRate, type RateCandidate } from '@vibe/core/rates';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { logger } from '../logger';
 
 export interface TimeEntryRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -34,6 +38,10 @@ export interface TimeEntryRoutesDeps extends RbacDeps {
 const TIMER_KEY_PREFIX = 'time-entry:timer:';
 function timerKey(appUserId: string): string {
   return `${TIMER_KEY_PREFIX}${appUserId}`;
+}
+
+function clientIp(req: Request): string {
+  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
 }
 
 const TimerStartSchema = z.object({
@@ -374,11 +382,100 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         })
         .returning({ id: timeEntries.id });
 
+      // Phase 10 #13 — auto-debit hour bank if this engagement has one.
+      // Best-effort: don't fail the time entry if the bank can't be
+      // debited (out-of-balance or query error logs but doesn't roll
+      // back the entry; OOS hours legitimately can't reduce a depleted
+      // bank, the partner reviews these at pre-bill).
+      let hourBankDebit: {
+        bankId: string;
+        debitedHours: number;
+        balanceAfterHours: number;
+      } | null = null;
+      const debitableHours = inScope ? parsed.data.hours : 0;
+      if (row?.id && debitableHours > 0) {
+        try {
+          const [bank] = await deps.db
+            .select({
+              id: hourBanks.id,
+              openingHours: hourBanks.openingHours,
+              openingAmountCents: hourBanks.openingAmountCents,
+              forfeitedAt: hourBanks.forfeitedAt,
+            })
+            .from(hourBanks)
+            .where(eq(hourBanks.engagementId, eng.id))
+            .limit(1);
+          if (bank && !bank.forfeitedAt) {
+            const [agg] = await deps.db
+              .select({
+                debited:
+                  sql<string>`COALESCE(SUM(CASE WHEN ${hourBankTransactions.type} IN ('DEBIT','EXPIRE','FORFEIT') THEN ${hourBankTransactions.hours} ELSE 0 END), 0)`.as(
+                    'debited',
+                  ),
+                purchased:
+                  sql<string>`COALESCE(SUM(CASE WHEN ${hourBankTransactions.type} = 'PURCHASE' THEN ${hourBankTransactions.hours} ELSE 0 END), 0)`.as(
+                    'purchased',
+                  ),
+              })
+              .from(hourBankTransactions)
+              .where(eq(hourBankTransactions.hourBankId, bank.id));
+            const balanceBefore =
+              Number(bank.openingHours) + Number(agg?.purchased ?? 0) - Number(agg?.debited ?? 0);
+            // Debit only the portion that fits; the rest is unbanked
+            // overage (handled at billing time via the mixed-mode lane).
+            const toDebit = Math.min(debitableHours, Math.max(balanceBefore, 0));
+            if (toDebit > 0) {
+              const balanceAfter = balanceBefore - toDebit;
+              const proRataAmount = Math.round(
+                (toDebit / parsed.data.hours) * snapshot.amountCents,
+              );
+              const [tx] = await deps.db
+                .insert(hourBankTransactions)
+                .values({
+                  hourBankId: bank.id,
+                  type: 'DEBIT',
+                  hours: toDebit.toFixed(2),
+                  amountCents: proRataAmount,
+                  sourceRefType: 'time_entry',
+                  sourceRefId: row.id,
+                  runningBalanceHours: balanceAfter.toFixed(2),
+                  occurredAt: new Date(),
+                })
+                .returning({ id: hourBankTransactions.id });
+              hourBankDebit = {
+                bankId: bank.id,
+                debitedHours: toDebit,
+                balanceAfterHours: balanceAfter,
+              };
+              await emitAudit(deps.db, {
+                action: 'CREATE',
+                entityType: 'hour_bank_transaction',
+                entityId: tx?.id,
+                actorAppUserId: session.appUserId,
+                after: {
+                  type: 'DEBIT',
+                  source: 'time_entry_auto',
+                  bankId: bank.id,
+                  hours: toDebit,
+                  amountCents: proRataAmount,
+                  timeEntryId: row.id,
+                },
+                ip: clientIp(req),
+                userAgent: req.header('user-agent') ?? null,
+              }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, engagementId: eng.id }, 'hour-bank auto-debit failed');
+        }
+      }
+
       res.status(201).json({
         id: row?.id,
         rateSnapshot: snapshot.rateCents,
         amount: snapshot.amountCents,
         resolutionLevel: resolved.level,
+        hourBankDebit,
       });
     },
   );

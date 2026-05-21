@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagementNotes, engagements, timeEntries } from '@vibe/db/schema';
+import { clients, engagementNotes, engagements, hourBanks, timeEntries } from '@vibe/db/schema';
 import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
@@ -57,6 +57,20 @@ const EngagementCreateSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
   autoRolloverEnabled: z.boolean().optional(),
+  // Optional hour-bank attachment. When supplied, the engagement is
+  // created and an hour_bank row is inserted in the same transaction.
+  // Phase 8 #8 — bank-bearing engagements no longer need a second POST.
+  hourBank: z
+    .object({
+      openingHours: z.number().positive().max(10_000),
+      openingAmountCents: z.number().int().nonnegative(),
+      rolloverCapHours: z.number().nonnegative().max(10_000).optional(),
+      expirationDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+    })
+    .optional(),
 });
 
 const EngagementStatusSchema = z.object({
@@ -164,24 +178,53 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
+      const { hourBank, ...engagementFields } = parsed.data;
       const insertVals = {
-        ...parsed.data,
-        budgetHours: parsed.data.budgetHours?.toString(),
+        ...engagementFields,
+        budgetHours: engagementFields.budgetHours?.toString(),
       };
-      const [row] = await deps.db
-        .insert(engagements)
-        .values(insertVals)
-        .returning({ id: engagements.id });
+      const { engagementId, hourBankId } = await deps.db.transaction(async (tx) => {
+        const [eng] = await tx
+          .insert(engagements)
+          .values(insertVals)
+          .returning({ id: engagements.id });
+        let bankId: string | null = null;
+        if (hourBank && eng?.id) {
+          const [bank] = await tx
+            .insert(hourBanks)
+            .values({
+              engagementId: eng.id,
+              openingHours: hourBank.openingHours.toString(),
+              openingAmountCents: hourBank.openingAmountCents,
+              rolloverCapHours: hourBank.rolloverCapHours?.toString() ?? null,
+              expirationDate: hourBank.expirationDate ?? null,
+            })
+            .returning({ id: hourBanks.id });
+          bankId = bank?.id ?? null;
+        }
+        return { engagementId: eng?.id, hourBankId: bankId };
+      });
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'engagement',
-        entityId: row?.id,
+        entityId: engagementId,
         actorAppUserId: session.appUserId,
         after: parsed.data,
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.status(201).json({ id: row?.id });
+      if (hourBankId) {
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'hour_bank',
+          entityId: hourBankId,
+          actorAppUserId: session.appUserId,
+          after: { engagementId, ...hourBank },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      }
+      res.status(201).json({ id: engagementId, hourBankId });
     },
   );
 
