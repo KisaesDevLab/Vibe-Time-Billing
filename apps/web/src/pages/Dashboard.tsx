@@ -50,6 +50,7 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <AlertsCallout />
       {summary && (
         <Card title="Firm at a glance">
           <div
@@ -112,6 +113,32 @@ export function DashboardPage(): JSX.Element {
         </ul>
       </Card>
     </div>
+  );
+}
+
+function AlertsCallout(): JSX.Element {
+  const [count, setCount] = useState<number>(0);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ items: unknown[] }>('/api/staff/audit/alerts');
+        setCount(r.items.length);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+  if (count === 0) return <></>;
+  return (
+    <Card title="Alerts">
+      <p style={{ fontSize: 13, margin: 0 }}>
+        <Pill tone="warning">{count}</Pill>{' '}
+        <a href="/alerts" style={{ color: tokens.color.accent }}>
+          worker alerts need attention
+        </a>{' '}
+        — scope creep, aged WIP, audit anomalies, engagement rollovers.
+      </p>
+    </Card>
   );
 }
 
