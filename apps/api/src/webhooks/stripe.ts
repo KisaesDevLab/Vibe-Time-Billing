@@ -13,6 +13,7 @@ import { clients, dunningHistory, invoices, payments } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
+import { getBillingContact } from '../clients/billing-contact';
 import { logger } from '../logger';
 import { publishWebhookEvent } from './publish';
 
@@ -146,17 +147,16 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         if (deps.sendEmail) {
           try {
             const [client] = await deps.db
-              .select({
-                name: clients.name,
-                email: clients.billingContactEmail,
-              })
+              .select({ name: clients.name })
               .from(clients)
               .where(eq(clients.id, inv.clientId))
               .limit(1);
-            if (client?.email) {
+            // v2 0027 — billing email lives on client_contact.
+            const billingContact = await getBillingContact(deps.db, inv.clientId);
+            if (client && billingContact?.email) {
               const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
               await deps.sendEmail({
-                to: client.email,
+                to: billingContact.email,
                 subject: `Payment received — ${inv.invoiceNumber}`,
                 body: [
                   `Hi ${client.name},`,

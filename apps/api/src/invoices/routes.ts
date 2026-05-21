@@ -35,6 +35,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBillingContact } from '../clients/billing-contact';
 import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
@@ -1345,17 +1346,16 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         return;
       }
       const [client] = await deps.db
-        .select({
-          name: clients.name,
-          billingContactEmail: clients.billingContactEmail,
-        })
+        .select({ name: clients.name })
         .from(clients)
         .where(eq(clients.id, inv.clientId))
         .limit(1);
-      if (!deps.sendEmail || !client?.billingContactEmail) {
+      const billingContact = await getBillingContact(deps.db, inv.clientId);
+      if (!deps.sendEmail || !billingContact?.email) {
         res.status(409).json({ error: 'no_email_destination' });
         return;
       }
+      void client;
       const balance = Number(inv.totalCents) - Number(inv.paidCents);
       const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
       const body =
@@ -1365,7 +1365,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         `Please reach out if you have any questions.`;
       try {
         await deps.sendEmail({
-          to: client.billingContactEmail,
+          to: billingContact.email,
           subject: `Reminder: invoice ${inv.invoiceNumber}`,
           body,
         });
@@ -1378,11 +1378,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         entityType: 'invoice',
         entityId: inv.id,
         actorAppUserId: session.appUserId,
-        after: { kind: 'manual_dunning', sentTo: client.billingContactEmail },
+        after: { kind: 'manual_dunning', sentTo: billingContact.email },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.json({ ok: true, sentTo: client.billingContactEmail });
+      res.json({ ok: true, sentTo: billingContact.email });
     },
   );
 
@@ -1753,14 +1753,15 @@ async function sendInvoiceEmail(
     .limit(1);
   if (!inv) return { ok: false, status: 404, error: 'not_found' };
   const [client] = await deps.db
-    .select({ name: clients.name, billingContactEmail: clients.billingContactEmail })
+    .select({ name: clients.name })
     .from(clients)
     .where(eq(clients.id, inv.clientId))
     .limit(1);
   if (!client) return { ok: false, status: 404, error: 'client_not_found' };
-  if (!deps.sendEmail || !client.billingContactEmail) {
+  const billingContact = await getBillingContact(deps.db, inv.clientId);
+  if (!deps.sendEmail || !billingContact?.email) {
     // Mark sent even without dispatcher — caller still flips status.
-    return { ok: true, emailedTo: client.billingContactEmail ?? null };
+    return { ok: true, emailedTo: billingContact?.email ?? null };
   }
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
@@ -1773,7 +1774,7 @@ async function sendInvoiceEmail(
     `Thank you.`;
   try {
     await deps.sendEmail({
-      to: client.billingContactEmail,
+      to: billingContact.email,
       subject: `Invoice ${inv.invoiceNumber}`,
       body,
     });
@@ -1781,7 +1782,7 @@ async function sendInvoiceEmail(
     logger.error({ err, invoiceId: inv.id }, 'invoice email dispatch failed');
     return { ok: false, status: 502, error: 'email_dispatch_failed' };
   }
-  return { ok: true, emailedTo: client.billingContactEmail };
+  return { ok: true, emailedTo: billingContact.email };
 }
 
 function clientIp(req: Request): string {

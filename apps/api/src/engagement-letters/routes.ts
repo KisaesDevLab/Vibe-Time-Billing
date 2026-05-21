@@ -13,6 +13,7 @@ import { clients, engagementLetters, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBillingContact } from '../clients/billing-contact';
 import { logger } from '../logger';
 
 export interface EngagementLetterDeps extends RbacDeps {
@@ -182,14 +183,10 @@ export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router
         .from(engagements)
         .where(eq(engagements.id, letter.engagementId))
         .limit(1);
-      const [client] = eng
-        ? await deps.db
-            .select({ name: clients.name, billingContactEmail: clients.billingContactEmail })
-            .from(clients)
-            .where(eq(clients.id, eng.clientId))
-            .limit(1)
-        : [];
-      const to = typeof req.body?.to === 'string' ? req.body.to : client?.billingContactEmail;
+      // v2 0027 — billing email lives on client_contact (isBilling=true).
+      const billingContact = eng ? await getBillingContact(deps.db, eng.clientId) : null;
+      const to =
+        typeof req.body?.to === 'string' ? req.body.to : (billingContact?.email ?? undefined);
       if (!to) {
         res.status(400).json({ error: 'to_address_required' });
         return;
@@ -199,7 +196,7 @@ export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router
         await deps
           .sendEmail({
             to,
-            subject: `Engagement letter (v${letter.version}) — ${client?.name ?? ''}`,
+            subject: `Engagement letter (v${letter.version}) — ${billingContact?.fullName ?? ''}`,
             body:
               `Please review and accept the engagement letter.\n\n` +
               (link ? `View online: ${link}\n\n` : '') +

@@ -16,3 +16,5 @@ export { AiPanel, type AiPanelProps } from './AiPanel';
 export { AppShell, type AppShellProps, type NavItem } from './AppShell';
 export { AuthLayout, type AuthLayoutProps } from './AuthLayout';
 export { ThemeToggle, useTheme, type ThemeToggleProps } from './ThemeToggle';
+export { Tabs, type TabsProps, type TabSpec } from './Tabs';
+export { Wizard, type WizardProps, type WizardStep } from './Wizard';

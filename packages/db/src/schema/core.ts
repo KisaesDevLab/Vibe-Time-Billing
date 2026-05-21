@@ -599,6 +599,46 @@ export const reasonCodes = pgTable(
 );
 
 // =====================================================================
+// v2 0034 — client_source + contact_role taxonomies. Drive the
+// Source dropdown in the Create Client wizard and the Role dropdown in
+// the Contacts step. Seeded with sensible defaults at firm init.
+// =====================================================================
+
+export const clientSources = pgTable(
+  'client_source',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('client_source_firm_key_uk').on(t.firmId, t.key),
+  }),
+);
+
+export const contactRoles = pgTable(
+  'contact_role',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('contact_role_firm_key_uk').on(t.firmId, t.key),
+  }),
+);
+
+// =====================================================================
 // TABLE: client
 // =====================================================================
 
@@ -620,15 +660,11 @@ export const clients = pgTable(
     clientFacingName: text('client_facing_name'),
     externalId: text('external_id'),
     filingStatus: filingStatus('filing_status'),
-    // FK to client_source lands in 0034 (Sprint B); column is nullable
-    // UUID until then.
-    sourceId: uuid('source_id'),
+    sourceId: uuid('source_id').references(() => clientSources.id, { onDelete: 'set null' }),
     pipelineStage: pipelineStage('pipeline_stage').notNull().default('CLIENT'),
     active: boolean('active').notNull().default(true),
 
-    billingContactName: text('billing_contact_name'),
-    billingContactEmail: text('billing_contact_email'),
-    billingContactPhone: text('billing_contact_phone'),
+    // billingContactName/Email/Phone migrated to client_contact in 0027.
     billingAddress: text('billing_address'),
 
     termsDays: integer('terms_days').notNull().default(30),
@@ -660,6 +696,43 @@ export const clients = pgTable(
     externalIdUk: uniqueIndex('client_firm_external_id_uk')
       .on(t.firmId, t.externalId)
       .where(sql`external_id IS NOT NULL`),
+  }),
+);
+
+// =====================================================================
+// v2 0027 — client_contact (one-to-many). Replaces the legacy single-
+// row billing_contact_* columns; each client has at least one row.
+// At most one isPrimary and at most one isBilling per client (partial
+// unique indexes).
+// =====================================================================
+
+export const clientContacts = pgTable(
+  'client_contact',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    fullName: text('full_name').notNull(),
+    roleId: uuid('role_id').references(() => contactRoles.id, { onDelete: 'set null' }),
+    email: text('email'),
+    phone: text('phone'),
+    mobile: text('mobile'),
+    isPrimary: boolean('is_primary').notNull().default(false),
+    isBilling: boolean('is_billing').notNull().default(false),
+    isPortalIdentity: boolean('is_portal_identity').notNull().default(false),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index('client_contact_client_idx').on(t.clientId),
+    primaryUk: uniqueIndex('client_contact_primary_uk')
+      .on(t.clientId)
+      .where(sql`is_primary = true`),
+    billingUk: uniqueIndex('client_contact_billing_uk')
+      .on(t.clientId)
+      .where(sql`is_billing = true`),
   }),
 );
 

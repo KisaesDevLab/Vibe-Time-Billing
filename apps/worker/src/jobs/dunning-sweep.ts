@@ -11,6 +11,7 @@ import type { Database } from '@vibe/db';
 import {
   appUsers,
   auditLog,
+  clientContacts,
   clients,
   dunningHistory,
   engagements,
@@ -50,13 +51,18 @@ export async function runDunningSweep(
       paidCents: invoices.paidCents,
       clientId: invoices.clientId,
       clientName: clients.name,
-      billingContactEmail: clients.billingContactEmail,
-      billingContactPhone: clients.billingContactPhone,
+      // v2 0027 — billing email/phone live on client_contact (isBilling).
+      billingContactEmail: clientContacts.email,
+      billingContactPhone: clientContacts.phone,
       primaryEngagementId: invoices.primaryEngagementId,
       firmId: invoices.firmId,
     })
     .from(invoices)
     .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(
+      clientContacts,
+      and(eq(clientContacts.clientId, clients.id), eq(clientContacts.isBilling, true)),
+    )
     .where(
       and(
         inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),

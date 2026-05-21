@@ -8,6 +8,7 @@ import { and, eq, ilike, inArray, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  clientContacts,
   clientNotes,
   clientPortalAccess,
   clientRateOverrides,
@@ -22,6 +23,7 @@ import { desc } from 'drizzle-orm';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { mountContactRoutes } from './contacts';
 
 export interface ClientRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -30,13 +32,20 @@ export interface ClientRoutesDeps extends RbacDeps {
 const ClientSchema = z.object({
   name: z.string().min(1).max(200),
   partnerInChargeId: z.string().uuid(),
-  billingContactName: z.string().max(200).optional(),
-  billingContactEmail: z.string().max(254).optional(),
-  billingContactPhone: z.string().max(40).optional(),
+  // v2 0027 — billing-contact fields moved off client onto client_contact.
+  // Callers create the contact via /clients/:id/contacts.
   termsDays: z.number().int().min(0).max(365).optional(),
   invoiceConsolidationPreference: z.enum(['CONSOLIDATED', 'SEPARATE']).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   customFields: z.record(z.string(), z.unknown()).optional(),
+  // v2 Sprint B (0026) — CRM expansion fields.
+  clientType: z.enum(['INDIVIDUAL', 'BUSINESS']).optional(),
+  clientFacingName: z.string().max(200).nullable().optional(),
+  externalId: z.string().max(120).nullable().optional(),
+  filingStatus: z.enum(['SINGLE', 'MFJ', 'MFS', 'HOH', 'QW']).nullable().optional(),
+  sourceId: z.string().uuid().nullable().optional(),
+  pipelineStage: z.enum(['PROSPECT', 'CLIENT', 'OTHER']).optional(),
+  active: z.boolean().optional(),
 });
 
 const MergeSchema = z.object({
@@ -267,14 +276,30 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
               firmId,
               name,
               partnerInChargeId,
-              billingContactEmail:
-                typeof r['billingContactEmail'] === 'string' ? r['billingContactEmail'] : null,
-              billingContactPhone:
-                typeof r['billingContactPhone'] === 'string' ? r['billingContactPhone'] : null,
               termsDays: typeof r['termsDays'] === 'number' ? r['termsDays'] : 30,
             })
             .returning({ id: clients.id });
-          if (newRow) created.push(newRow.id);
+          if (newRow) {
+            created.push(newRow.id);
+            // v2 0027 — seed an isPrimary/isBilling contact row from
+            // any billing fields the import provided.
+            const email =
+              typeof r['billingContactEmail'] === 'string' ? r['billingContactEmail'] : null;
+            const phone =
+              typeof r['billingContactPhone'] === 'string' ? r['billingContactPhone'] : null;
+            const contactName =
+              typeof r['billingContactName'] === 'string' && r['billingContactName'].trim()
+                ? r['billingContactName']
+                : name;
+            await deps.db.insert(clientContacts).values({
+              clientId: newRow.id,
+              fullName: contactName,
+              email,
+              phone,
+              isPrimary: true,
+              isBilling: Boolean(email || phone),
+            });
+          }
         } catch (err) {
           skipped.push({
             row: i,
@@ -303,17 +328,23 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.send('id,name,status\n');
         return;
       }
+      // v2 0027 — billing email/phone now live on client_contact. Join
+      // the isBilling row so the CSV layout stays the same as v1.
       const items = await deps.db
         .select({
           id: clients.id,
           name: clients.name,
           status: clients.status,
-          billingContactEmail: clients.billingContactEmail,
-          billingContactPhone: clients.billingContactPhone,
+          billingContactEmail: clientContacts.email,
+          billingContactPhone: clientContacts.phone,
           termsDays: clients.termsDays,
           createdAt: clients.createdAt,
         })
         .from(clients)
+        .leftJoin(
+          clientContacts,
+          and(eq(clientContacts.clientId, clients.id), eq(clientContacts.isBilling, true)),
+        )
         .where(eq(clients.firmId, firmId))
         .limit(10000);
       const header = [
@@ -630,6 +661,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       res.json({ updated: updated.length });
     },
   );
+
+  // v2 Sprint B — multi-contact CRUD endpoints (workstream 1.2).
+  mountContactRoutes(router, deps);
 
   return router;
 }

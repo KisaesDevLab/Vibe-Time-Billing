@@ -9,6 +9,8 @@ import { and, eq } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   adjustments,
+  clientSources,
+  contactRoles,
   engagements,
   engagementTypes,
   reasonCodes,
@@ -508,6 +510,97 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
       });
     },
   );
+
+  // ------------------------------------------------------------------
+  // v2 Sprint B (workstream 3.6) — client_source + contact_role taxonomy.
+  // Backs the Source dropdown in Create Client wizard and the Role
+  // dropdown in the Contacts step. Seeded with defaults in 0034.
+  // ------------------------------------------------------------------
+
+  const TaxonomyEntrySchema = z.object({
+    key: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9_]*$/),
+    name: z.string().min(1).max(120),
+  });
+
+  for (const cfg of [
+    { path: 'client-sources', table: clientSources, entityType: 'client_source' as const },
+    { path: 'contact-roles', table: contactRoles, entityType: 'contact_role' as const },
+  ]) {
+    router.get(
+      `/${cfg.path}`,
+      requirePermission(deps, 'taxonomy:read'),
+      async (req: Request, res: Response) => {
+        const firmId = req.staffSession?.firmId;
+        if (!firmId || !deps.db) {
+          res.json({ items: [] });
+          return;
+        }
+        const items = await deps.db.select().from(cfg.table).where(eq(cfg.table.firmId, firmId));
+        res.json({ items });
+      },
+    );
+
+    router.post(
+      `/${cfg.path}`,
+      requirePermission(deps, 'taxonomy:write'),
+      async (req: Request, res: Response) => {
+        const parsed = TaxonomyEntrySchema.safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ error: 'invalid_payload' });
+          return;
+        }
+        const firmId = req.staffSession!.firmId;
+        if (!deps.db) {
+          res.status(201).json({ ok: true });
+          return;
+        }
+        const [row] = await deps.db
+          .insert(cfg.table)
+          .values({ firmId, key: parsed.data.key, name: parsed.data.name })
+          .returning({ id: cfg.table.id });
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: cfg.entityType,
+          entityId: row?.id,
+          actorAppUserId: req.staffSession!.appUserId,
+          after: parsed.data,
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+        res.status(201).json({ id: row?.id });
+      },
+    );
+
+    router.patch(
+      `/${cfg.path}/:id/archive`,
+      requirePermission(deps, 'taxonomy:write'),
+      async (req: Request, res: Response) => {
+        const firmId = req.staffSession!.firmId;
+        if (!deps.db) {
+          res.json({ ok: true });
+          return;
+        }
+        await deps.db
+          .update(cfg.table)
+          .set({ status: 'ARCHIVED' })
+          .where(and(eq(cfg.table.firmId, firmId), eq(cfg.table.id, req.params['id']!)));
+        await emitAudit(deps.db, {
+          action: 'ARCHIVE',
+          entityType: cfg.entityType,
+          entityId: req.params['id']!,
+          actorAppUserId: req.staffSession!.appUserId,
+          after: { status: 'ARCHIVED' },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+        res.json({ ok: true });
+      },
+    );
+  }
 
   return router;
 }

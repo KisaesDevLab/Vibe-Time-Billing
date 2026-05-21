@@ -14,6 +14,7 @@ import { bucketize, type AgingBucket } from '@vibe/core/billing';
 
 import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBillingContact } from '../clients/billing-contact';
 
 export interface ArRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -293,10 +294,12 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         res.status(404).json({ error: 'client_not_found' });
         return;
       }
-      if (!deps.sendEmail || !client.billingContactEmail) {
+      const billingContact = await getBillingContact(deps.db, client.id);
+      if (!deps.sendEmail || !billingContact?.email) {
         res.status(409).json({ error: 'no_email_destination' });
         return;
       }
+      const billingEmail = billingContact.email;
       const open = await deps.db
         .select({
           invoiceNumber: invoices.invoiceNumber,
@@ -329,7 +332,7 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         `\n\nTotal balance: $${(balance / 100).toFixed(2)}`;
       try {
         await deps.sendEmail({
-          to: client.billingContactEmail,
+          to: billingEmail,
           subject: `Statement of account — ${client.name}`,
           body,
         });
@@ -337,7 +340,7 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         res.status(502).json({ error: 'email_dispatch_failed' });
         return;
       }
-      res.json({ ok: true, sentTo: client.billingContactEmail, balanceCents: balance });
+      res.json({ ok: true, sentTo: billingEmail, balanceCents: balance });
     },
   );
 

@@ -2,9 +2,10 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { ContactsCard } from './clients/ContactsCard';
 
 interface Client {
   id: string;
@@ -16,6 +17,13 @@ interface Client {
   createdAt: string;
   tags?: string[] | null;
   customFields?: Record<string, unknown> | null;
+  // v2 Sprint B (0026)
+  clientType?: 'INDIVIDUAL' | 'BUSINESS';
+  clientFacingName?: string | null;
+  externalId?: string | null;
+  filingStatus?: 'SINGLE' | 'MFJ' | 'MFS' | 'HOH' | 'QW' | null;
+  pipelineStage?: 'PROSPECT' | 'CLIENT' | 'OTHER';
+  active?: boolean;
 }
 
 interface ClientLite {
@@ -46,6 +54,8 @@ interface Summary {
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
+type Tab = 'home' | 'engagements' | 'billing';
+
 export function ClientDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const [client, setClient] = useState<Client | null>(null);
@@ -54,6 +64,7 @@ export function ClientDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [showMerge, setShowMerge] = useState(false);
   const [allClients, setAllClients] = useState<ClientLite[]>([]);
+  const [tab, setTab] = useState<Tab>('home');
 
   async function load(): Promise<void> {
     if (!id) return;
@@ -106,15 +117,30 @@ export function ClientDetailPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <Card
-        title={client.name}
+        title={
+          <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <span>{client.clientFacingName || client.name}</span>
+            {client.clientType && (
+              <Pill>{client.clientType === 'INDIVIDUAL' ? 'Individual' : 'Business'}</Pill>
+            )}
+            {client.pipelineStage && client.pipelineStage !== 'CLIENT' && (
+              <Pill tone={client.pipelineStage === 'PROSPECT' ? 'warning' : 'neutral'}>
+                {client.pipelineStage[0] + client.pipelineStage.slice(1).toLowerCase()}
+              </Pill>
+            )}
+          </span>
+        }
         action={
-          <Pill tone={client.status === 'ACTIVE' ? 'success' : 'neutral'}>{client.status}</Pill>
+          <span style={{ display: 'flex', gap: 6 }}>
+            {client.active === false && <Pill tone="warning">Inactive</Pill>}
+            <Pill tone={client.status === 'ACTIVE' ? 'success' : 'neutral'}>{client.status}</Pill>
+          </span>
         }
       >
         <dl
           style={{
             display: 'grid',
-            gridTemplateColumns: 'auto 1fr',
+            gridTemplateColumns: 'auto 1fr auto 1fr',
             gap: '6px 16px',
             fontSize: 13,
             margin: 0,
@@ -124,91 +150,132 @@ export function ClientDetailPage(): JSX.Element {
           <dd style={{ margin: 0 }}>{client.termsDays} days</dd>
           <dt style={{ color: tokens.color.textMuted }}>Consolidation</dt>
           <dd style={{ margin: 0 }}>{client.invoiceConsolidationPreference}</dd>
+          {client.externalId && (
+            <>
+              <dt style={{ color: tokens.color.textMuted }}>External ID</dt>
+              <dd style={{ margin: 0 }}>{client.externalId}</dd>
+            </>
+          )}
+          {client.filingStatus && (
+            <>
+              <dt style={{ color: tokens.color.textMuted }}>Filing status</dt>
+              <dd style={{ margin: 0 }}>{client.filingStatus}</dd>
+            </>
+          )}
           <dt style={{ color: tokens.color.textMuted }}>Created</dt>
           <dd style={{ margin: 0 }}>{client.createdAt.slice(0, 10)}</dd>
         </dl>
       </Card>
 
-      {summary && (
-        <Card title="At a glance">
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(5, 1fr)',
-              gap: 16,
-            }}
-          >
-            <Stat
-              label="Engagements"
-              value={`${summary.activeEngagementCount} / ${summary.engagementCount}`}
-            />
-            <Stat label="WIP" value={formatCents(summary.wipAmountCents)} />
-            <Stat label="Invoiced" value={formatCents(summary.invoicedCents)} />
-            <Stat label="Paid" value={formatCents(summary.paidCents)} />
-            <Stat label="Outstanding" value={formatCents(summary.outstandingCents)} />
-          </div>
-        </Card>
-      )}
-
-      <TagsCustomFieldsCard
-        client={client}
-        onSaved={(updated) => setClient({ ...client, ...updated })}
+      <Tabs
+        tabs={[
+          { key: 'home', label: 'Home' },
+          { key: 'engagements', label: 'Engagements', badge: engagements.length },
+          { key: 'billing', label: 'Billing' },
+        ]}
+        active={tab}
+        onChange={(k) => setTab(k as Tab)}
       />
 
-      <Card
-        title="Merge / dedup"
-        action={
-          <Button size="sm" variant="secondary" onClick={() => void openMerge()}>
-            Merge another client into this one
-          </Button>
-        }
-      >
-        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-          Re-points every engagement, invoice, rate override, note, portal access, invitation, and
-          active session from the source client onto this one, then archives the source. Refuses
-          when either client is under legal hold.
-        </p>
-        {showMerge && (
-          <MergeDialog
-            target={client}
-            allClients={allClients.filter((c) => c.id !== client.id && c.status === 'ACTIVE')}
-            onClose={() => setShowMerge(false)}
-            onMerged={() => {
-              setShowMerge(false);
-              void load();
-            }}
-          />
-        )}
-      </Card>
+      {tab === 'home' && (
+        <>
+          {summary && (
+            <Card title="At a glance">
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(5, 1fr)',
+                  gap: 16,
+                }}
+              >
+                <Stat
+                  label="Engagements"
+                  value={`${summary.activeEngagementCount} / ${summary.engagementCount}`}
+                />
+                <Stat label="WIP" value={formatCents(summary.wipAmountCents)} />
+                <Stat label="Invoiced" value={formatCents(summary.invoicedCents)} />
+                <Stat label="Paid" value={formatCents(summary.paidCents)} />
+                <Stat label="Outstanding" value={formatCents(summary.outstandingCents)} />
+              </div>
+            </Card>
+          )}
 
-      <Card title={`Engagements (${engagements.length})`}>
-        <Table<Engagement>
-          columns={[
-            {
-              key: 'name',
-              header: 'Name',
-              render: (e) => <a href={`/engagements/${e.id}`}>{e.name}</a>,
-            },
-            { key: 'fee', header: 'Fee structure', render: (e) => e.feeStructure },
-            {
-              key: 'amt',
-              header: 'Fee amount',
-              align: 'right',
-              render: (e) => (e.feeAmountCents == null ? '—' : formatCents(e.feeAmountCents)),
-            },
-            {
-              key: 'status',
-              header: 'Status',
-              render: (e) => (
-                <Pill tone={e.status === 'ACTIVE' ? 'success' : 'neutral'}>{e.status}</Pill>
-              ),
-            },
-          ]}
-          rows={engagements}
-          rowKey={(e) => e.id}
-          empty="No engagements yet."
-        />
-      </Card>
+          <ContactsCard clientId={client.id} />
+
+          <TagsCustomFieldsCard
+            client={client}
+            onSaved={(updated) => setClient({ ...client, ...updated })}
+          />
+        </>
+      )}
+
+      {tab === 'engagements' && (
+        <>
+          <Card title={`Engagements (${engagements.length})`}>
+            <Table<Engagement>
+              columns={[
+                {
+                  key: 'name',
+                  header: 'Name',
+                  render: (e) => <a href={`/engagements/${e.id}`}>{e.name}</a>,
+                },
+                { key: 'fee', header: 'Fee structure', render: (e) => e.feeStructure },
+                {
+                  key: 'amt',
+                  header: 'Fee amount',
+                  align: 'right',
+                  render: (e) => (e.feeAmountCents == null ? '—' : formatCents(e.feeAmountCents)),
+                },
+                {
+                  key: 'status',
+                  header: 'Status',
+                  render: (e) => (
+                    <Pill tone={e.status === 'ACTIVE' ? 'success' : 'neutral'}>{e.status}</Pill>
+                  ),
+                },
+              ]}
+              rows={engagements}
+              rowKey={(e) => e.id}
+              empty="No engagements yet."
+            />
+          </Card>
+
+          <Card
+            title="Merge / dedup"
+            action={
+              <Button size="sm" variant="secondary" onClick={() => void openMerge()}>
+                Merge another client into this one
+              </Button>
+            }
+          >
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+              Re-points every engagement, invoice, rate override, note, portal access, invitation,
+              and active session from the source client onto this one, then archives the source.
+              Refuses when either client is under legal hold.
+            </p>
+            {showMerge && (
+              <MergeDialog
+                target={client}
+                allClients={allClients.filter((c) => c.id !== client.id && c.status === 'ACTIVE')}
+                onClose={() => setShowMerge(false)}
+                onMerged={() => {
+                  setShowMerge(false);
+                  void load();
+                }}
+              />
+            )}
+          </Card>
+        </>
+      )}
+
+      {tab === 'billing' && (
+        <Card title="Billing">
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            Invoices, payments, and AR for this client land here in Sprint C. For now visit the
+            global Invoices and AR pages.
+          </p>
+        </Card>
+      )}
     </div>
   );
 }
