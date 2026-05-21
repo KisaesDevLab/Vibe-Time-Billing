@@ -61,6 +61,7 @@ export function ReportsPage(): JSX.Element {
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <RevenueOpsCard />
       <BillableTargetsCard />
+      <CapacityForecastCard />
       <Card
         title="Realization"
         action={
@@ -188,6 +189,77 @@ interface TargetRow {
   billableHours: number;
   varianceHours: number;
   attainmentPct: number;
+}
+
+interface CapRow {
+  appUserId: string;
+  fullName: string;
+  trailing90Hours: number;
+  weeklyAvgHours: number;
+  projectedNext4Weeks: number;
+  varianceVsTarget: number;
+}
+
+function CapacityForecastCard(): JSX.Element {
+  const [items, setItems] = useState<CapRow[]>([]);
+  const [target, setTarget] = useState<number>(32);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ weeklyTargetHours: number; items: CapRow[] }>(
+          '/api/staff/reports/capacity-forecast',
+        );
+        setItems(r.items ?? []);
+        setTarget(r.weeklyTargetHours);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+  if (items.length === 0) return <></>;
+  return (
+    <Card title={`Capacity forecast · next 4 weeks · weekly target ${target}h`}>
+      <Table<CapRow>
+        columns={[
+          { key: 'name', header: 'Timekeeper', render: (r) => r.fullName },
+          {
+            key: 'avg',
+            header: 'Weekly avg',
+            align: 'right',
+            render: (r) => r.weeklyAvgHours.toFixed(1),
+          },
+          {
+            key: 'proj',
+            header: 'Projected 4w',
+            align: 'right',
+            render: (r) => r.projectedNext4Weeks.toFixed(1),
+          },
+          {
+            key: 'var',
+            header: 'Variance',
+            align: 'right',
+            render: (r) => (
+              <Pill
+                tone={
+                  r.varianceVsTarget >= 0
+                    ? 'success'
+                    : r.varianceVsTarget >= -16
+                      ? 'warning'
+                      : 'danger'
+                }
+              >
+                {r.varianceVsTarget >= 0 ? '+' : ''}
+                {r.varianceVsTarget.toFixed(0)}h
+              </Pill>
+            ),
+          },
+        ]}
+        rows={items}
+        rowKey={(r) => r.appUserId}
+        empty="No projection data yet."
+      />
+    </Card>
+  );
 }
 
 function BillableTargetsCard(): JSX.Element {

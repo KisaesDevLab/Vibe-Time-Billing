@@ -301,6 +301,47 @@ export function createWebhookRouter(deps: WebhookRoutesDeps): Router {
     },
   );
 
+  // Test-fire a delivery to one of the firm's endpoints with a sample
+  // payload. Useful when wiring a receiver — verifies signature path.
+  router.post(
+    '/:id/test-fire',
+    requirePermission(deps, 'admin:webhooks:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [endpoint] = await deps.db
+        .select({ id: webhookEndpoints.id })
+        .from(webhookEndpoints)
+        .where(
+          and(
+            eq(webhookEndpoints.id, req.params['id']!),
+            eq(webhookEndpoints.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!endpoint) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db.insert(webhookDeliveries).values({
+        webhookEndpointId: endpoint.id,
+        eventType: 'test.fire',
+        payload: {
+          eventType: 'test.fire',
+          firmId: session.firmId,
+          ts: new Date().toISOString(),
+          test: true,
+        },
+        status: 'PENDING',
+        nextAttemptAt: new Date(),
+      });
+      res.json({ ok: true, queued: true });
+    },
+  );
+
   // Aggregate delivery success rate per endpoint over a window.
   router.get(
     '/metrics',

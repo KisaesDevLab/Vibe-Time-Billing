@@ -4,7 +4,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, ilike, or } from 'drizzle-orm';
+import { and, eq, ilike, inArray, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { clientNotes, clients } from '@vibe/db/schema';
@@ -397,6 +397,34 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         .values({ clientId: client.id, authorId: session.appUserId, body, pinned })
         .returning({ id: clientNotes.id });
       res.status(201).json({ id: row?.id });
+    },
+  );
+
+  // Bulk archive (or unarchive). Body: { clientIds: string[], status: 'ARCHIVED' | 'ACTIVE' }
+  router.post(
+    '/bulk-status',
+    requirePermission(deps, 'client:archive'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ updated: 0 });
+        return;
+      }
+      const body = req.body as { clientIds?: unknown; status?: unknown };
+      const ids = Array.isArray(body.clientIds)
+        ? body.clientIds.filter((x): x is string => typeof x === 'string')
+        : [];
+      const status = body.status === 'ARCHIVED' || body.status === 'ACTIVE' ? body.status : null;
+      if (ids.length === 0 || !status) {
+        res.status(400).json({ error: 'clientIds_and_status_required' });
+        return;
+      }
+      const updated = await deps.db
+        .update(clients)
+        .set({ status })
+        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, ids)))
+        .returning({ id: clients.id });
+      res.json({ updated: updated.length });
     },
   );
 
