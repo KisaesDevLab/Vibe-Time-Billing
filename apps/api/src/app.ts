@@ -288,6 +288,26 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/staff/approvals', auth.requireAuth, auth.requireCsrf, approvalRouter);
 
   // Portal auth realm — distinct middleware, signing key, cookie.
+  // Phase 16 #27 — unauth status endpoint so the portal SPA can render
+  // a clear 'portal disabled' page without trying to log in.
+  app.get('/api/portal/status', async (_req, res) => {
+    const cfgLocal = config;
+    const licensed = Boolean(cfgLocal.COMMERCIAL_LICENSE_TOKEN);
+    let firmEnabled = true;
+    if (deps.db && licensed) {
+      try {
+        const { firmSettings } = await import('@vibe/db/schema');
+        const [first] = await deps.db
+          .select({ enabled: firmSettings.portalEnabled })
+          .from(firmSettings)
+          .limit(1);
+        firmEnabled = first?.enabled ?? true;
+      } catch {
+        // no-op
+      }
+    }
+    res.json({ licensed, firmEnabled, enabled: licensed && firmEnabled });
+  });
   const portal = portalAuthDeps(deps.sessionStore, deps.db);
   const portalRouter = createPortalAuthRouter({
     db: deps.db,

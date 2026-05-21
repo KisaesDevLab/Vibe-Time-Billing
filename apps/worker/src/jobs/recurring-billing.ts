@@ -15,6 +15,7 @@ import { and, eq, lte, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  appUsers,
   billingBatches,
   clients,
   engagements,
@@ -39,6 +40,8 @@ export interface RecurringBillingTickResult {
 
 export interface RecurringBillingDeps {
   /** Optional charge function — if absent, autopay is skipped. */
+  /** Optional email dispatcher — when present, partners get notified on auto-pause (Phase 10 #32). */
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   chargeInvoice?: (args: {
     invoiceId: string;
     paymentMethodProviderId: string;
@@ -227,12 +230,12 @@ export async function runRecurringBillingTick(
           );
         } else {
           autopayFailed++;
-          await handleAutopayFailure(db, log, plan);
+          await handleAutopayFailure(db, log, plan, deps);
           log.warn({ invoiceId: createdInvoiceId, err: result.errorMessage }, 'autopay failed');
         }
       } catch (err) {
         autopayFailed++;
-        await handleAutopayFailure(db, log, plan);
+        await handleAutopayFailure(db, log, plan, deps);
         log.error({ err, invoiceId: createdInvoiceId }, 'autopay errored');
       }
     }
@@ -244,7 +247,13 @@ export async function runRecurringBillingTick(
 async function handleAutopayFailure(
   db: Database,
   log: Logger,
-  plan: { id: string; consecutiveFailureCount: number; autopayPauseThreshold: number },
+  plan: {
+    id: string;
+    engagementId: string;
+    consecutiveFailureCount: number;
+    autopayPauseThreshold: number;
+  },
+  deps: RecurringBillingDeps = {},
 ): Promise<void> {
   const next = (plan.consecutiveFailureCount ?? 0) + 1;
   const threshold = plan.autopayPauseThreshold ?? 3;
@@ -259,6 +268,40 @@ async function handleAutopayFailure(
       })
       .where(eq(recurringBillingPlans.id, plan.id));
     log.warn({ planId: plan.id, failures: next, threshold }, 'recurring plan auto-paused');
+    // Phase 10 #32 — partner notification on auto-pause.
+    if (deps.sendEmail) {
+      try {
+        const [eng] = await db
+          .select({
+            engagementName: engagements.name,
+            clientName: clients.name,
+            partnerEmail: appUsers.email,
+            partnerName: appUsers.fullName,
+          })
+          .from(engagements)
+          .innerJoin(clients, eq(clients.id, engagements.clientId))
+          .innerJoin(appUsers, eq(appUsers.id, engagements.partnerId))
+          .where(eq(engagements.id, plan.engagementId))
+          .limit(1);
+        if (eng?.partnerEmail) {
+          await deps.sendEmail({
+            to: eng.partnerEmail,
+            subject: `Auto-paused: ${eng.clientName} · ${eng.engagementName}`,
+            body: [
+              `Hi ${eng.partnerName ?? 'there'},`,
+              ``,
+              `The recurring plan on ${eng.engagementName} (${eng.clientName}) was auto-paused`,
+              `after ${threshold} consecutive autopay failures. No more invoices will be`,
+              `generated until the payment method is updated and the plan is resumed.`,
+              ``,
+              `Recommendation: reach out to the client before the next billing cycle.`,
+            ].join('\n'),
+          });
+        }
+      } catch (err) {
+        log.warn({ err, planId: plan.id }, 'auto-pause notify dispatch failed');
+      }
+    }
   } else {
     await db
       .update(recurringBillingPlans)

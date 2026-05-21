@@ -127,7 +127,10 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'recurring-billing: no DB configured, skipping');
       return;
     }
-    const result = await runRecurringBillingTick(db, logger, undefined, { chargeInvoice });
+    const result = await runRecurringBillingTick(db, logger, undefined, {
+      chargeInvoice,
+      sendEmail: dunningSendEmail,
+    });
     logger.info({ jobId: job.id, ...result }, 'recurring-billing complete');
   },
   'ar-aging-snapshot': async (job) => {

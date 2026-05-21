@@ -18,6 +18,30 @@ import { StatementPage } from './pages/Statement';
 import { SwitchEntityPage } from './pages/Switch';
 
 export function App(): JSX.Element {
+  // Phase 16 #27 — license + firm-toggle gate. Block all routes (login
+  // included) when the portal is disabled at either layer, so the
+  // client sees a single clear message instead of a broken login form.
+  const status = usePortalStatus();
+  if (status === null) {
+    return <FullPageMsg>Loading…</FullPageMsg>;
+  }
+  if (!status.enabled) {
+    return (
+      <FullPageMsg>
+        <div style={{ textAlign: 'center', maxWidth: 420 }}>
+          <h1 style={{ fontSize: 20, color: tokens.color.text }}>Portal unavailable</h1>
+          <p style={{ color: tokens.color.textMuted, fontSize: 14 }}>
+            {!status.licensed
+              ? 'This appliance does not have a commercial license token configured.'
+              : 'Your firm has disabled the client portal.'}
+          </p>
+          <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>
+            Contact your firm administrator for help.
+          </p>
+        </div>
+      </FullPageMsg>
+    );
+  }
   return (
     <AuthProvider>
       <Routes>
@@ -46,6 +70,22 @@ export function App(): JSX.Element {
       </Routes>
     </AuthProvider>
   );
+}
+
+interface PortalStatus {
+  licensed: boolean;
+  firmEnabled: boolean;
+  enabled: boolean;
+}
+
+function usePortalStatus(): PortalStatus | null {
+  const [s, setS] = useState<PortalStatus | null>(null);
+  useEffect(() => {
+    void api<PortalStatus>('/api/portal/status')
+      .then(setS)
+      .catch(() => setS({ licensed: false, firmEnabled: false, enabled: false }));
+  }, []);
+  return s;
 }
 
 function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {

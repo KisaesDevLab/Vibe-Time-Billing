@@ -8,7 +8,14 @@
 import { and, eq, inArray, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, dunningHistory, invoices } from '@vibe/db/schema';
+import {
+  appUsers,
+  auditLog,
+  clients,
+  dunningHistory,
+  engagements,
+  invoices,
+} from '@vibe/db/schema';
 import { stepsDueOn, type DunningStepKind } from '@vibe/core/dunning';
 
 import type { Logger } from 'pino';
@@ -45,6 +52,8 @@ export async function runDunningSweep(
       clientName: clients.name,
       billingContactEmail: clients.billingContactEmail,
       billingContactPhone: clients.billingContactPhone,
+      primaryEngagementId: invoices.primaryEngagementId,
+      firmId: invoices.firmId,
     })
     .from(invoices)
     .innerJoin(clients, eq(clients.id, invoices.clientId))
@@ -135,8 +144,66 @@ export async function runDunningSweep(
       } catch (err) {
         log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning ledger write failed');
       }
-      if (step.kind === 'AUTO_PAUSE') {
-        log.warn({ invoiceId: inv.id }, 'auto-pause threshold reached');
+      // Phase 15 #11 — PARTNER_NOTIFY: also send to the engagement's
+      // partner-in-charge (not just the client billing contact). The
+      // primary engagement on the invoice points us at the partner.
+      if (step.kind === 'PARTNER_NOTIFY' && deps.sendEmail && inv.primaryEngagementId) {
+        try {
+          const [partner] = await db
+            .select({ email: appUsers.email, fullName: appUsers.fullName })
+            .from(engagements)
+            .innerJoin(appUsers, eq(appUsers.id, engagements.partnerId))
+            .where(eq(engagements.id, inv.primaryEngagementId))
+            .limit(1);
+          if (partner?.email) {
+            await deps.sendEmail({
+              to: partner.email,
+              subject: `Partner escalation: ${inv.clientName} ${inv.invoiceNumber} past due`,
+              body: [
+                `Hi ${partner.fullName ?? 'there'},`,
+                ``,
+                `An invoice on one of your engagements is now significantly past due:`,
+                `  Client: ${inv.clientName}`,
+                `  Invoice: ${inv.invoiceNumber}`,
+                `  Balance: $${(balance / 100).toFixed(2)}`,
+                `  Due date: ${inv.dueDate}`,
+                ``,
+                `Standard dunning has run; consider personal outreach.`,
+              ].join('\n'),
+            });
+          }
+        } catch (err) {
+          log.warn({ err, invoiceId: inv.id }, 'partner notify dispatch failed');
+        }
+      }
+      // Phase 15 #12 — AUTO_PAUSE: flip the engagement to PAUSED so no
+      // new time entries can be booked. Audit so the partner can see why.
+      if (step.kind === 'AUTO_PAUSE' && inv.primaryEngagementId) {
+        log.warn(
+          { invoiceId: inv.id, engagementId: inv.primaryEngagementId },
+          'auto-pause threshold reached',
+        );
+        await db
+          .update(engagements)
+          .set({ status: 'PAUSED', updatedAt: new Date() })
+          .where(eq(engagements.id, inv.primaryEngagementId));
+        try {
+          await db.insert(auditLog).values({
+            action: 'UPDATE',
+            entityType: 'engagement',
+            entityId: inv.primaryEngagementId,
+            actorMcpTokenId: 'dunning-sweep-worker',
+            beforeJson: { status: 'ACTIVE' },
+            afterJson: {
+              status: 'PAUSED',
+              reason: 'auto_pause_dunning',
+              invoiceId: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+            },
+          });
+        } catch (err) {
+          log.error({ err }, 'audit emit for auto-pause failed');
+        }
       }
     }
     if (due.length > 0 && inv.status === 'SENT') {
