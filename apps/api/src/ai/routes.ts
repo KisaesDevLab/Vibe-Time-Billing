@@ -628,6 +628,85 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Natural-language → filter object (Phase 23 #17). Translates a
+  // plain-English question into a structured filter that the staff UI
+  // can apply to existing report endpoints. Returns JSON with a `target`
+  // (which report) and `params` (the filters).
+  // -----------------------------------------------------------------
+  router.post(
+    '/nl-to-filter',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const body = req.body as { question?: unknown };
+      const question = typeof body.question === 'string' ? body.question.slice(0, 600) : '';
+      if (!question) {
+        res.status(400).json({ error: 'question_required' });
+        return;
+      }
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You translate plain-English questions about a CPA practice into a JSON object describing ' +
+            'which report endpoint to query and which filter parameters. Output ONLY valid JSON with ' +
+            'fields: target (one of: realization, profitability, ar_aging, mrr, dso, utilization, ' +
+            'effective_rate, capacity_forecast, scope_creep), params (object), confidence (0-1).',
+          userPrompt: question,
+          maxTokens: 200,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'nl_to_filter',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        // Try to extract just the JSON object from the response.
+        const text = result.text.trim();
+        let parsed: unknown = null;
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+          try {
+            parsed = JSON.parse(match[0]);
+          } catch {
+            // ignore
+          }
+        }
+        res.json({
+          filter: parsed,
+          rawText: text,
+          providerId: result.providerId,
+        });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'nl_to_filter',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
   router.get(
     '/request-log',
     requirePermission(deps, 'admin:ai:manage'),
