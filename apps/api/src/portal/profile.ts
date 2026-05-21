@@ -8,12 +8,15 @@ import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 
+import { createHash, randomInt } from 'node:crypto';
+
 import type { Database } from '@vibe/db';
 import {
   clientPortalAccess,
   invoices,
   paymentMethod,
   payments,
+  portalAltContact,
   portalIdentity,
 } from '@vibe/db/schema';
 import { sql as drz } from 'drizzle-orm';
@@ -21,6 +24,11 @@ import type { AnySession } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
+
+// Phase 19 #22 — alt-contact OTP timing constants.
+const OTP_TTL_MS = 10 * 60_000;
+const OTP_SEND_RATE_LIMIT_MS = 60_000;
+const OTP_MAX_ATTEMPTS = 5;
 
 export interface PortalProfileDeps {
   db: Database | null;
@@ -525,7 +533,6 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.json({ items: [] });
       return;
     }
-    const { portalAltContact } = await import('@vibe/db/schema');
     const rows = await deps.db
       .select({
         id: portalAltContact.id,
@@ -550,11 +557,9 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.status(503).json({ error: 'db_unavailable' });
       return;
     }
-    const { portalAltContact } = await import('@vibe/db/schema');
-    const { createHash, randomInt } = await import('node:crypto');
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     const hash = createHash('sha256').update(code).digest('hex');
-    const expires = new Date(Date.now() + 10 * 60_000);
+    const expires = new Date(Date.now() + OTP_TTL_MS);
 
     // Upsert at the (identity, channel, value) grain — re-adding resets
     // the OTP rather than duplicating the row.
@@ -571,7 +576,7 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       .limit(1);
 
     // Sliding-window rate limit (Q29): one send per minute per row.
-    if (existing?.sentAt && Date.now() - existing.sentAt.getTime() < 60_000) {
+    if (existing?.sentAt && Date.now() - existing.sentAt.getTime() < OTP_SEND_RATE_LIMIT_MS) {
       res.status(429).json({ error: 'rate_limited' });
       return;
     }
@@ -606,7 +611,11 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
     }
 
     // Dispatch the code. Best-effort; the row still exists if delivery
-    // fails so the identity can retry.
+    // fails so the identity can retry. Report dispatch outcome honestly
+    // so the UI can show a retry affordance instead of pretending it
+    // succeeded.
+    let dispatched = false;
+    let dispatchSkipped = false;
     try {
       if (parsed.data.channel === 'EMAIL' && deps.sendEmail) {
         await deps.sendEmail({
@@ -614,16 +623,28 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
           subject: 'Verify your contact',
           body: `Your Vibe verification code: ${code}`,
         });
+        dispatched = true;
       } else if (parsed.data.channel === 'SMS' && deps.sendSms) {
         await deps.sendSms({
           to: parsed.data.value,
           body: `Your Vibe verification code: ${code}`,
         });
+        dispatched = true;
+      } else {
+        // No provider wired for this channel.
+        dispatchSkipped = true;
       }
     } catch (err) {
       logger.error({ err }, 'alt-contact OTP dispatch failed');
     }
-    res.json({ id: rowId, sent: true });
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'portal_alt_contact',
+      entityId: rowId,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: { channel: parsed.data.channel, dispatched, dispatchSkipped },
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.json({ id: rowId, sent: dispatched, dispatchSkipped });
   });
 
   router.post('/alt-contacts/:id/verify', deps.requireAuth, async (req: Request, res: Response) => {
@@ -637,8 +658,6 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.status(503).json({ error: 'db_unavailable' });
       return;
     }
-    const { portalAltContact } = await import('@vibe/db/schema');
-    const { createHash } = await import('node:crypto');
     const [row] = await deps.db
       .select()
       .from(portalAltContact)
@@ -661,7 +680,7 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.status(410).json({ error: 'otp_expired' });
       return;
     }
-    if (row.otpAttempts >= 5) {
+    if (row.otpAttempts >= OTP_MAX_ATTEMPTS) {
       res.status(429).json({ error: 'too_many_attempts' });
       return;
     }
@@ -699,7 +718,6 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.status(503).json({ error: 'db_unavailable' });
       return;
     }
-    const { portalAltContact } = await import('@vibe/db/schema');
     const targetId = req.params['id']!;
     await deps.db
       .delete(portalAltContact)

@@ -12,6 +12,8 @@ import {
   appUsers,
   firms,
   firmSettings,
+  notificationTemplates,
+  officeSettings,
   offices,
   rolePermissions,
   roles,
@@ -790,7 +792,6 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ resolved: null, override: null });
         return;
       }
-      const { offices, officeSettings, firmSettings } = await import('@vibe/db/schema');
       const [office] = await deps.db
         .select({ id: offices.id })
         .from(offices)
@@ -838,7 +839,6 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
-      const { offices, officeSettings } = await import('@vibe/db/schema');
       const [office] = await deps.db
         .select({ id: offices.id })
         .from(offices)
@@ -885,7 +885,6 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { notificationTemplates } = await import('@vibe/db/schema');
       const items = await deps.db
         .select()
         .from(notificationTemplates)
@@ -903,7 +902,6 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
-      const { notificationTemplates } = await import('@vibe/db/schema');
       const kind = req.params['kind']!;
       const channel = req.params['channel'] === 'SMS' ? 'SMS' : 'EMAIL';
       const body = (req.body ?? {}) as { subject?: string; body?: string; enabled?: boolean };
@@ -953,7 +951,6 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
-      const { notificationTemplates } = await import('@vibe/db/schema');
       const kind = req.params['kind']!;
       const channel = req.params['channel'] === 'SMS' ? 'SMS' : 'EMAIL';
       await deps.db
