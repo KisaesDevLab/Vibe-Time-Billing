@@ -867,6 +867,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .insert(officeSettings)
         .values(values)
         .onConflictDoUpdate({ target: officeSettings.officeId, set: values });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'office_settings',
+        entityId: office.id,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: values,
+      }).catch(() => undefined);
       res.json({ ok: true });
     },
   );
@@ -938,6 +945,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           ],
           set: values,
         });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'notification_template',
+        entityId: `${kind}:${channel}`,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: { kind, channel, enabled: values.enabled, variableCount: variables.length },
+      }).catch(() => undefined);
       res.json({ ok: true, variables });
     },
   );
@@ -962,6 +976,12 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
             eq(notificationTemplates.channel, channel),
           ),
         );
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'notification_template',
+        entityId: `${kind}:${channel}`,
+        actorAppUserId: req.staffSession!.appUserId,
+      }).catch(() => undefined);
       res.json({ ok: true });
     },
   );

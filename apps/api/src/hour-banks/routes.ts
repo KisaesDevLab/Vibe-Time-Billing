@@ -473,6 +473,13 @@ export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
         return;
       }
       await deps.db.update(hourBanks).set(patch).where(eq(hourBanks.id, bank.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'hour_bank',
+        entityId: bank.id,
+        actorAppUserId: session.appUserId,
+        after: { ...patch, kind: 'replenish_settings' },
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
     },
   );

@@ -99,10 +99,28 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         return;
       }
 
+      // Firm-scope guard: only the requester's firm can act on this
+      // request. Inner-join through requester app_user to enforce.
       const [request] = await deps.db
-        .select()
+        .select({
+          id: approvalRequests.id,
+          ruleId: approvalRequests.ruleId,
+          entityType: approvalRequests.entityType,
+          entityId: approvalRequests.entityId,
+          requesterId: approvalRequests.requesterId,
+          approverId: approvalRequests.approverId,
+          status: approvalRequests.status,
+          comments: approvalRequests.comments,
+          requestedAt: approvalRequests.requestedAt,
+          respondedAt: approvalRequests.respondedAt,
+          dueAt: approvalRequests.dueAt,
+          currentStep: approvalRequests.currentStep,
+          totalSteps: approvalRequests.totalSteps,
+          stepsJson: approvalRequests.stepsJson,
+        })
         .from(approvalRequests)
-        .where(eq(approvalRequests.id, req.params['id']!))
+        .innerJoin(appUsers, eq(appUsers.id, approvalRequests.requesterId))
+        .where(and(eq(approvalRequests.id, req.params['id']!), eq(appUsers.firmId, session.firmId)))
         .limit(1);
       if (!request) {
         res.status(404).json({ error: 'not_found' });
