@@ -373,11 +373,15 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
   );
 
   // ---------------------------------------------------------------
-  // Pay-to-unlock signal (Phase 19 #20). Returns the list of overdue
-  // invoices the client must clear before document/portal features are
-  // re-enabled. The "unlock" itself is a gate the firm enables by
-  // marking specific invoices as gating in admin (future field).
-  // Until then the rule is: any invoice ≥30 days past due is "gating".
+  // Pay-to-unlock signal (Phase 13 #24, 14 #13, 16 #20). Combines two
+  // gating rules into one response:
+  //   1. Explicit: any invoice with pay_to_unlock_attachments=true that
+  //      still has balance. The firm sets this on the invoice when
+  //      generating it; clearing it fires the client.unlocked webhook.
+  //   2. Heuristic: any invoice ≥30 days past due (default — until the
+  //      firm wires explicit gates, this catches chronic non-payers).
+  // Response carries { unlocked, blockers, gatingKind: 'EXPLICIT' |
+  //   'OVERDUE' } per blocker so the UI can render appropriate copy.
   // ---------------------------------------------------------------
   router.get('/pay-to-unlock', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;
@@ -398,26 +402,28 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         dueDate: invoices.dueDate,
         totalCents: invoices.totalCents,
         paidCents: invoices.paidCents,
+        payToUnlockAttachments: invoices.payToUnlockAttachments,
       })
       .from(invoices)
       .where(
         and(
           eq(invoices.clientId, session.activeClientId),
           drz`${invoices.status} IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID')`,
-          drz`${invoices.dueDate} <= ${cutoff}::date`,
         ),
       )
-      .limit(50);
+      .limit(200);
     const blockers = rows
       .filter((r) => Number(r.totalCents) - Number(r.paidCents) > 0)
+      .filter((r) => r.payToUnlockAttachments || (r.dueDate && r.dueDate <= cutoff))
       .map((r) => ({
         invoiceId: r.id,
         invoiceNumber: r.invoiceNumber,
         dueDate: r.dueDate,
         balanceCents: Number(r.totalCents) - Number(r.paidCents),
         daysOverdue: r.dueDate
-          ? Math.floor((Date.parse(today) - Date.parse(r.dueDate)) / 86_400_000)
+          ? Math.max(0, Math.floor((Date.parse(today) - Date.parse(r.dueDate)) / 86_400_000))
           : 0,
+        gatingKind: r.payToUnlockAttachments ? ('EXPLICIT' as const) : ('OVERDUE' as const),
       }));
     res.json({ unlocked: blockers.length === 0, blockers });
   });

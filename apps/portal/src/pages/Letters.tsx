@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { PayToUnlockBanner, useUnlockStatus } from '../components/PayToUnlockBanner';
 
 interface Letter {
   id: string;
@@ -18,6 +19,8 @@ export function LettersPage(): JSX.Element {
   const [items, setItems] = useState<Letter[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const unlock = useUnlockStatus();
+  const locked = unlock.blockers.some((b) => b.gatingKind === 'EXPLICIT');
 
   async function load(): Promise<void> {
     try {
@@ -49,6 +52,7 @@ export function LettersPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
+      <PayToUnlockBanner />
       <Card title="Engagement letters awaiting your acceptance">
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         <Table<Letter>
@@ -68,22 +72,25 @@ export function LettersPage(): JSX.Element {
             {
               key: 'actions',
               header: '',
-              render: (l) => (
-                <span style={{ display: 'flex', gap: 6 }}>
-                  <a
-                    href={`/api/portal/letters/${l.id}/render.html`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Button size="sm" variant="secondary">
-                      Read
+              render: (l) =>
+                locked ? (
+                  <Pill tone="danger">Locked — pay invoice to unlock</Pill>
+                ) : (
+                  <span style={{ display: 'flex', gap: 6 }}>
+                    <a
+                      href={`/api/portal/letters/${l.id}/render.html`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Button size="sm" variant="secondary">
+                        Read
+                      </Button>
+                    </a>
+                    <Button size="sm" disabled={busy === l.id} onClick={() => void accept(l.id)}>
+                      {busy === l.id ? 'Accepting…' : 'Accept'}
                     </Button>
-                  </a>
-                  <Button size="sm" disabled={busy === l.id} onClick={() => void accept(l.id)}>
-                    {busy === l.id ? 'Accepting…' : 'Accept'}
-                  </Button>
-                </span>
-              ),
+                  </span>
+                ),
             },
           ]}
           rows={items}

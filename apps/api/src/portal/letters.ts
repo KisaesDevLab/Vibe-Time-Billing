@@ -9,9 +9,31 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientPortalAccess, engagementLetters, engagements } from '@vibe/db/schema';
+import { clientPortalAccess, engagementLetters, engagements, invoices } from '@vibe/db/schema';
+import { sql } from 'drizzle-orm';
 
 import { logger } from '../logger';
+
+/**
+ * Phase 13 #24, 14 #13, 16 #20 — pay-to-unlock client-side gate.
+ * Returns true when the active client has any unpaid invoice flagged
+ * `pay_to_unlock_attachments`. Engagement-letter render and any other
+ * attachment download must call this and 402 when locked.
+ */
+async function isClientLocked(db: Database, clientId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.clientId, clientId),
+        eq(invoices.payToUnlockAttachments, true),
+        sql`${invoices.status} IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID')`,
+        sql`${invoices.totalCents} > ${invoices.paidCents}`,
+      ),
+    );
+  return Number(row?.count ?? 0) > 0;
+}
 
 export interface PortalLetterDeps {
   db: Database | null;
@@ -84,6 +106,13 @@ export function createPortalLetterRouter(deps: PortalLetterDeps): Router {
       .limit(1);
     if (!letter || letter.clientId !== session.activeClientId) {
       res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    // Pay-to-unlock gate: refuse render when the client has any unpaid
+    // pay-to-unlock invoice. The portal surfaces this on the Letters
+    // page; the gate here defends against direct-URL bypass.
+    if (await isClientLocked(deps.db, letter.clientId)) {
+      res.status(402).json({ error: 'pay_to_unlock_locked' });
       return;
     }
     const html = `<!doctype html><html><head><meta charset="utf-8"/><title>Engagement letter v${letter.version}</title>
