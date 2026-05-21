@@ -20,6 +20,7 @@ import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
 import { TaxonomyPage } from './Taxonomy';
+import { TemplatesPage } from './Templates';
 import { UsersPage } from './Users';
 import { WebhooksPage } from './Webhooks';
 
@@ -28,6 +29,7 @@ const TABS = [
   { key: 'offices', label: 'Offices', href: '/admin/offices' },
   { key: 'users', label: 'Users', href: '/admin/users' },
   { key: 'taxonomy', label: 'Taxonomy', href: '/admin/taxonomy' },
+  { key: 'tpl', label: 'Templates', href: '/admin/templates' },
   { key: 'rates', label: 'Rates', href: '/admin/rates' },
   { key: 'plans', label: 'Recurring plans', href: '/admin/recurring-plans' },
   { key: 'banks', label: 'Hour banks', href: '/admin/hour-banks' },
@@ -76,6 +78,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="offices" element={<OfficesPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
+        <Route path="templates" element={<TemplatesPage />} />
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />

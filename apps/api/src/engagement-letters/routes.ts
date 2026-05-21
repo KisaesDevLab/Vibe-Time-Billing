@@ -285,6 +285,38 @@ export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router
   // Unused asc import — silence warning.
   void asc;
 
+  router.get(
+    '/:id/render.html',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const letter = await letterForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!letter) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const html = `<!doctype html>
+<html><head><meta charset="utf-8"/><title>Engagement letter v${letter.version}</title>
+<style>
+  body { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #111; margin: 48px; max-width: 720px; }
+  h1, h2 { color: #111; }
+  .meta { font-size: 11px; color: #666; margin-bottom: 24px; }
+  .footer { margin-top: 48px; font-size: 11px; color: #666; }
+</style></head>
+<body>
+  <div class="meta">Engagement letter · version ${letter.version} · status ${letter.status}</div>
+  ${letter.bodyHtml}
+  <div class="footer">${letter.acceptedAt ? `Accepted ${new Date(letter.acceptedAt).toISOString().slice(0, 10)} from ${letter.acceptedIp ?? 'unknown IP'}` : 'Not yet accepted.'}</div>
+</body></html>`;
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    },
+  );
+
   return router;
 }
 

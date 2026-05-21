@@ -60,6 +60,7 @@ export function ReportsPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <RevenueOpsCard />
+      <BillableTargetsCard />
       <Card
         title="Realization"
         action={
@@ -179,6 +180,72 @@ interface MrrResp {
   mrrCents: number;
   arrCents: number;
   planCount: number;
+}
+
+interface TargetRow {
+  appUserId: string;
+  fullName: string;
+  billableHours: number;
+  varianceHours: number;
+  attainmentPct: number;
+}
+
+function BillableTargetsCard(): JSX.Element {
+  const [items, setItems] = useState<TargetRow[]>([]);
+  const [target, setTarget] = useState<number>(130);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ targetHours: number; items: TargetRow[] }>(
+          '/api/staff/reports/billable-targets',
+        );
+        setItems(r.items ?? []);
+        setTarget(r.targetHours);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+  if (items.length === 0) return <></>;
+  return (
+    <Card title={`Billable-hour targets · current month · target ${target}h`}>
+      <Table<TargetRow>
+        columns={[
+          { key: 'name', header: 'Timekeeper', render: (r) => r.fullName },
+          {
+            key: 'h',
+            header: 'Hours',
+            align: 'right',
+            render: (r) => r.billableHours.toFixed(2),
+          },
+          {
+            key: 'v',
+            header: 'Variance',
+            align: 'right',
+            render: (r) =>
+              r.varianceHours >= 0 ? `+${r.varianceHours.toFixed(1)}` : r.varianceHours.toFixed(1),
+          },
+          {
+            key: 'att',
+            header: 'Attainment',
+            align: 'right',
+            render: (r) => (
+              <Pill
+                tone={
+                  r.attainmentPct >= 100 ? 'success' : r.attainmentPct >= 80 ? 'warning' : 'danger'
+                }
+              >
+                {r.attainmentPct.toFixed(0)}%
+              </Pill>
+            ),
+          },
+        ]}
+        rows={items}
+        rowKey={(r) => r.appUserId}
+        empty="No billable hours yet this month."
+      />
+    </Card>
+  );
 }
 
 function RevenueOpsCard(): JSX.Element {

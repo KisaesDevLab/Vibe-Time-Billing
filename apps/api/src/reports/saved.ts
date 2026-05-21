@@ -147,5 +147,38 @@ export function createSavedReportsRouter(deps: SavedReportRoutesDeps): Router {
     },
   );
 
+  // GET by id (used by the run-loader to repopulate filters).
+  router.get(
+    '/:id',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ report: null });
+        return;
+      }
+      const visible = or(
+        eq(savedReports.ownerId, session.appUserId),
+        eq(savedReports.sharedFlag, true),
+      );
+      const [row] = await deps.db
+        .select()
+        .from(savedReports)
+        .where(
+          and(
+            eq(savedReports.firmId, session.firmId),
+            eq(savedReports.id, req.params['id']!),
+            visible,
+          ),
+        )
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({ report: row });
+    },
+  );
+
   return router;
 }
