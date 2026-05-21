@@ -1,0 +1,45 @@
+# Cloudflare Tunnel config for Vibe Time & Billing
+#
+# Two ingress services per Q10:
+#   app.firm.com    → staff app
+#   portal.firm.com → client portal (only when commercial license enabled)
+#
+# Usage:
+#   1. Create a tunnel: `cloudflared tunnel create vibe-firm`
+#   2. Copy the tunnel UUID + credentials JSON into ./creds/
+#   3. Adjust the hostnames below
+#   4. Mount this file at /etc/cloudflared/config.yml in the cloudflared container
+#   5. Add the same hostnames to your firm's DNS in Cloudflare (CNAME → tunnel-uuid.cfargotunnel.com)
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /etc/cloudflared/creds/credentials.json
+
+# Origin connection tuning — Caddy in front of the appliance handles TLS,
+# so we forward HTTP from the tunnel to Caddy on port 80 inside the
+# docker-compose network.
+originRequest:
+  connectTimeout: 30s
+  keepAliveTimeout: 90s
+  noTLSVerify: true
+
+ingress:
+  # Staff app — required.
+  - hostname: app.firm.com
+    service: http://caddy:80
+    originRequest:
+      httpHostHeader: app.firm.com
+
+  # Client portal — gate this rule on whether the commercial license is
+  # active in firm settings. If the license token is absent the portal
+  # responds 503 by design.
+  - hostname: portal.firm.com
+    service: http://caddy:80
+    originRequest:
+      httpHostHeader: portal.firm.com
+
+  # Catch-all required by cloudflared schema.
+  - service: http_status:404
+
+# Logging — emit JSON so the host syslog forwarder can pick it up.
+loglevel: info
+transport-loglevel: warn
