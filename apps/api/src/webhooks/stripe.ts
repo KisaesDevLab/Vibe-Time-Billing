@@ -144,6 +144,27 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
             invoiceId: pay.invoiceId,
             totalCents: inv.totalCents,
           }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+          // Phase 14 #14 — pay-to-unlock signal. If this invoice gated
+          // attachment access and was the last unpaid pay-to-unlock
+          // blocker for its client, publish client.unlocked so portal
+          // and integrations can flip the gate without polling.
+          if (inv.payToUnlockAttachments) {
+            const stillBlocking = await deps.db
+              .select({ id: invoices.id, status: invoices.status })
+              .from(invoices)
+              .where(
+                and(eq(invoices.clientId, inv.clientId), eq(invoices.payToUnlockAttachments, true)),
+              )
+              .then((rows) =>
+                rows.filter((r) => r.id !== inv.id && r.status !== 'PAID' && r.status !== 'VOIDED'),
+              );
+            if (stillBlocking.length === 0) {
+              await publishWebhookEvent(deps.db, inv.firmId, 'client.unlocked', {
+                clientId: inv.clientId,
+                clearedInvoiceId: inv.id,
+              }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+            }
+          }
         }
       }
       return;

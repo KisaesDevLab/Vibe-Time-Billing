@@ -32,6 +32,7 @@ const KNOWN_EVENTS = [
   'adjustment.applied',
   'pre_bill.generated',
   'client.created',
+  'client.unlocked',
   'recurring_plan.invoice_generated',
 ] as const;
 
