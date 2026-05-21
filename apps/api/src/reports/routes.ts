@@ -13,6 +13,7 @@ import type { Database } from '@vibe/db';
 import {
   adjustmentAllocations,
   appUsers,
+  approvalRequests,
   billingBatches,
   clients,
   engagements,
@@ -1080,6 +1081,64 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           .filter((r) => r.totalHours > 0)
           .sort((a, b) => b.creepPct - a.creepPct)
           .slice(0, 100),
+      });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Approval metrics (Phase 18 #20): per-approver counts + average
+  // response time + approval/rejection rates over the last N days.
+  // -------------------------------------------------------------------
+  router.get(
+    '/approval-metrics',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const days = Math.min(
+        Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 7),
+        365,
+      );
+      const since = new Date(Date.now() - days * 86_400_000);
+      const rows = await deps.db
+        .select({
+          approverId: approvalRequests.approverId,
+          fullName: appUsers.fullName,
+          total: drz<number>`COUNT(*)`,
+          approved: drz<number>`COUNT(*) FILTER (WHERE ${approvalRequests.status} IN ('APPROVED', 'APPROVED_WITH_EDITS'))`,
+          rejected: drz<number>`COUNT(*) FILTER (WHERE ${approvalRequests.status} = 'REJECTED')`,
+          pending: drz<number>`COUNT(*) FILTER (WHERE ${approvalRequests.status} = 'PENDING')`,
+          avgResponseSeconds: drz<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${approvalRequests.respondedAt} - ${approvalRequests.requestedAt}))) FILTER (WHERE ${approvalRequests.respondedAt} IS NOT NULL), 0)`,
+        })
+        .from(approvalRequests)
+        .leftJoin(appUsers, eq(appUsers.id, approvalRequests.approverId))
+        .where(
+          and(
+            eq(appUsers.firmId, session.firmId),
+            drz`${approvalRequests.requestedAt} >= ${since.toISOString()}::timestamptz`,
+          ),
+        )
+        .groupBy(approvalRequests.approverId, appUsers.fullName);
+
+      res.json({
+        windowDays: days,
+        items: rows.map((r) => {
+          const decided = Number(r.approved) + Number(r.rejected);
+          return {
+            approverId: r.approverId,
+            approverName: r.fullName,
+            totalCount: Number(r.total),
+            approvedCount: Number(r.approved),
+            rejectedCount: Number(r.rejected),
+            pendingCount: Number(r.pending),
+            avgResponseSeconds: Math.round(Number(r.avgResponseSeconds)),
+            approvalRatePct: decided > 0 ? (Number(r.approved) / decided) * 100 : null,
+            rejectionRatePct: decided > 0 ? (Number(r.rejected) / decided) * 100 : null,
+          };
+        }),
       });
     },
   );
