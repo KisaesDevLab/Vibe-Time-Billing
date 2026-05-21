@@ -424,11 +424,60 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .from(clients)
         .where(eq(clients.id, inv.clientId))
         .limit(1);
-      const lines = await deps.db
+      const rawLines = await deps.db
         .select()
         .from(invoiceLineItems)
         .where(eq(invoiceLineItems.invoiceId, inv.id))
         .orderBy(invoiceLineItems.sortOrder);
+
+      // Mode picker — Phase 13 #9. Three modes:
+      //   summary       — single aggregate line per kind
+      //   by-line       — original line items (default)
+      //   full-detail   — line items + a footer listing the time-entry breakdown
+      const mode = typeof req.query['mode'] === 'string' ? req.query['mode'] : 'by-line';
+      let lines = rawLines;
+      let detailFooter: string | null = null;
+      if (mode === 'summary') {
+        const byKind = new Map<string, number>();
+        for (const l of rawLines) {
+          byKind.set(l.kind, (byKind.get(l.kind) ?? 0) + Number(l.amountCents));
+        }
+        lines = Array.from(byKind.entries()).map(([kind, amount], i) => ({
+          ...rawLines[0]!,
+          id: `summary-${i}`,
+          kind: kind as (typeof rawLines)[number]['kind'],
+          description: kind.replace(/_/g, ' '),
+          amountCents: amount,
+          sortOrder: i,
+        }));
+      } else if (mode === 'full-detail') {
+        // Read time entries linked through batch_entry rows.
+        const { sql: drz } = await import('drizzle-orm');
+        const detail = await deps.db.execute(drz`
+          SELECT te.entry_date::text AS d, te.hours, te.description, te.standard_amount_cents AS amt
+          FROM time_entry te
+          JOIN billing_batch_entry bbe ON bbe.time_entry_id = te.id
+          JOIN billing_batch bb ON bb.id = bbe.billing_batch_id
+          WHERE bb.engagement_id = ${inv.primaryEngagementId}
+          ORDER BY te.entry_date
+          LIMIT 500
+        `);
+        const rows =
+          (detail as unknown as { rows?: Array<Record<string, unknown>> }).rows ??
+          (detail as unknown as Array<Record<string, unknown>>);
+        if (rows && rows.length > 0) {
+          detailFooter =
+            '<h3 style="margin-top:24px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#666">Time entry detail</h3>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:11px"><tr><th style="text-align:left">Date</th><th style="text-align:left">Description</th><th style="text-align:right">Hours</th><th style="text-align:right">Amount</th></tr>' +
+            rows
+              .map(
+                (r) =>
+                  `<tr><td>${String(r['d'] ?? '')}</td><td>${String(r['description'] ?? '').slice(0, 80)}</td><td style="text-align:right">${Number(r['hours'] ?? 0).toFixed(2)}</td><td style="text-align:right">$${(Number(r['amt'] ?? 0) / 100).toFixed(2)}</td></tr>`,
+              )
+              .join('') +
+            '</table>';
+        }
+      }
 
       const html = renderInvoiceHtml({
         invoiceNumber: inv.invoiceNumber,
@@ -455,7 +504,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         subtotalCents: Number(inv.subtotalCents),
         processingFeeCents: Number(inv.feeCents),
         totalCents: Number(inv.totalCents),
-        notes: inv.notes ?? null,
+        notes: detailFooter ? `${inv.notes ?? ''}\n\n${detailFooter}` : (inv.notes ?? null),
       });
 
       const accept = req.header('accept') ?? '';

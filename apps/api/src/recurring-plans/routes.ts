@@ -676,6 +676,85 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
     },
   );
 
+  // -----------------------------------------------------------------
+  // Plan-change proration helper (Phase 10 #22). Given a plan and a
+  // target new amount + change date, compute the prorated credit/debit
+  // for the current billing period. Does NOT write — caller applies
+  // via /:id with PATCH + a credit-memo line item.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/proration-preview',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, prorationCents: 0 });
+        return;
+      }
+      const body = req.body as { newAmountCents?: unknown; changeDate?: unknown };
+      const newAmount = typeof body.newAmountCents === 'number' ? body.newAmountCents : NaN;
+      const changeDate =
+        typeof body.changeDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.changeDate)
+          ? body.changeDate
+          : null;
+      if (!Number.isFinite(newAmount) || !changeDate) {
+        res.status(400).json({ error: 'newAmountCents_and_changeDate_required' });
+        return;
+      }
+      const [plan] = await deps.db
+        .select()
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(recurringBillingPlans.id, req.params['id']!), eq(clients.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!plan) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const oldAmount = Number(plan.recurring_billing_plan.amountCents);
+      // Period length per frequency.
+      const periodDays =
+        plan.recurring_billing_plan.frequency === 'MONTHLY'
+          ? 30
+          : plan.recurring_billing_plan.frequency === 'QUARTERLY'
+            ? 91
+            : plan.recurring_billing_plan.frequency === 'ANNUAL'
+              ? 365
+              : plan.recurring_billing_plan.frequency === 'BIWEEKLY'
+                ? 14
+                : 7;
+      const change = new Date(changeDate);
+      const nextRun = new Date(plan.recurring_billing_plan.nextRunDate);
+      // Days into current period assumed = periodDays - daysRemaining.
+      const daysRemaining = Math.max(
+        0,
+        Math.floor((nextRun.getTime() - change.getTime()) / 86_400_000),
+      );
+      const daysUsed = Math.max(0, periodDays - daysRemaining);
+      // Credit for un-used portion of old + debit for un-used portion of new.
+      const oldUnused = Math.round((oldAmount * daysRemaining) / periodDays);
+      const newUnused = Math.round((newAmount * daysRemaining) / periodDays);
+      const prorationCents = newUnused - oldUnused;
+      res.json({
+        oldAmountCents: oldAmount,
+        newAmountCents: newAmount,
+        changeDate,
+        nextRunDate: plan.recurring_billing_plan.nextRunDate,
+        periodDays,
+        daysUsed,
+        daysRemaining,
+        prorationCents,
+        prorationDescription:
+          prorationCents >= 0
+            ? `Charge $${(prorationCents / 100).toFixed(2)} for plan upgrade (${daysRemaining} of ${periodDays} days remaining)`
+            : `Credit $${(Math.abs(prorationCents) / 100).toFixed(2)} for plan downgrade (${daysRemaining} of ${periodDays} days remaining)`,
+      });
+    },
+  );
+
   return router;
 }
 
