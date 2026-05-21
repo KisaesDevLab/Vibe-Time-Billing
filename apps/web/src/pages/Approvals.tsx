@@ -14,6 +14,8 @@ interface PendingRequest {
   status: string;
   requestedAt: string;
   comments: string | null;
+  currentStep: number;
+  totalSteps: number;
 }
 
 export function ApprovalsPage(): JSX.Element {
@@ -81,6 +83,18 @@ export function ApprovalsPage(): JSX.Element {
                 key: 'entity',
                 header: 'Entity',
                 render: (r) => <code style={{ fontSize: 11 }}>{r.entityId.slice(0, 8)}…</code>,
+              },
+              {
+                key: 'step',
+                header: 'Step',
+                render: (r) =>
+                  r.totalSteps > 1 ? (
+                    <Pill tone={r.currentStep === r.totalSteps ? 'warning' : 'neutral'}>
+                      {r.currentStep} / {r.totalSteps}
+                    </Pill>
+                  ) : (
+                    <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>—</span>
+                  ),
               },
               {
                 key: 'actions',

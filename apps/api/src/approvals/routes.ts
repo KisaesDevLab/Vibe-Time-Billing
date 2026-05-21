@@ -72,6 +72,8 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
           status: approvalRequests.status,
           requestedAt: approvalRequests.requestedAt,
           comments: approvalRequests.comments,
+          currentStep: approvalRequests.currentStep,
+          totalSteps: approvalRequests.totalSteps,
         })
         .from(approvalRequests)
         .innerJoin(appUsers, eq(appUsers.id, approvalRequests.requesterId))
