@@ -37,9 +37,32 @@ const NarrativeSchema = z.object({
   topDrivers: z.array(z.string()).max(20).optional(),
 });
 
+// Firm-level AI opt-in (Phase 23 #28). Defaults to true; firms can set
+// VIBE_AI_DISABLED=true in env to disable AI features entirely. Future
+// enhancement: persist as a firm_settings column with admin toggle.
+function firmOptedIn(): boolean {
+  return process.env['VIBE_AI_DISABLED'] !== 'true';
+}
+
 export function createAiRouter(deps: AiRoutesDeps): Router {
   const router = express.Router();
   const now = deps.now ?? (() => new Date());
+
+  // Status endpoint — UI uses this to hide AI panels on firms that have
+  // opted out or that have no provider wired.
+  router.get(
+    '/status',
+    requirePermission(deps, 'time_entry:create'),
+    async (_req: Request, res: Response) => {
+      const provider = await pickProvider(deps);
+      res.json({
+        enabled: firmOptedIn() && Boolean(provider),
+        optedIn: firmOptedIn(),
+        providerWired: Boolean(provider),
+        providerId: provider?.id ?? null,
+      });
+    },
+  );
 
   router.post(
     '/suggest-description',
