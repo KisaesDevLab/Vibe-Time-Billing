@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { tokens } from '@vibe/ui';
 
 import { AiUsagePage } from './AiUsage';
+import { ApiTokensPage } from './ApiTokens';
 import { BackupPage } from './Backup';
 import { CompliancePage } from './Compliance';
 import { ApprovalRulesPage } from './ApprovalRules';
@@ -51,6 +52,7 @@ const TABS = [
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
   { key: 'backup', label: 'Backup', href: '/admin/backup' },
   { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
+  { key: 'mcp-tokens', label: 'API tokens', href: '/admin/api-tokens' },
 ];
 
 export function AdminLayout(): JSX.Element {
@@ -103,6 +105,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="jobs" element={<JobsPage />} />
         <Route path="backup" element={<BackupPage />} />
         <Route path="compliance" element={<CompliancePage />} />
+        <Route path="api-tokens" element={<ApiTokensPage />} />
       </Routes>
     </div>
   );
