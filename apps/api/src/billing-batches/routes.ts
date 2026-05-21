@@ -34,7 +34,7 @@ const CreateSchema = z.object({
 
 const EntryActionSchema = z.object({
   timeEntryId: z.string().uuid(),
-  action: z.enum(['INCLUDE', 'DEFER', 'WRITE_OFF']),
+  action: z.enum(['INCLUDE', 'DEFER', 'WRITE_OFF', 'WRITE_OFF_HELD']),
   comment: z.string().max(500).optional(),
 });
 
@@ -243,9 +243,10 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
               ),
             );
           // Phase 11 #23 — DEFER releases the entry so a future batch
-          // can include it. Drop the billing_batch_id assignment on the
-          // entry while keeping the batch_entry row for audit history.
-          if (a.action === 'DEFER') {
+          // can include it. Phase 11 #6 — WRITE_OFF_HELD keeps the entry
+          // visible on WIP without immediate write-off; partner can
+          // revisit later. Drop the billing_batch_id assignment for both.
+          if (a.action === 'DEFER' || a.action === 'WRITE_OFF_HELD') {
             await tx
               .update(timeEntries)
               .set({ billingBatchId: null })

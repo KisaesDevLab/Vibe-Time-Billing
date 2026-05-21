@@ -142,6 +142,7 @@ export const billingBatchEntryAction = pgEnum('billing_batch_entry_action', [
   'INCLUDE',
   'DEFER',
   'WRITE_OFF',
+  'WRITE_OFF_HELD',
 ]);
 
 export const adjustmentMethod = pgEnum('adjustment_method', ['RATE', 'TIME', 'FEE']);

@@ -10,6 +10,7 @@ import { PortalInvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
 import { StatementPage } from './pages/Statement';
+import { SwitchEntityPage } from './pages/Switch';
 
 export function App(): JSX.Element {
   return (
@@ -26,6 +27,7 @@ export function App(): JSX.Element {
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
+                  <Route path="/switch" element={<SwitchEntityPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>
@@ -67,6 +69,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           label: 'Payment methods',
           href: '/payment-methods',
           active: location.pathname.startsWith('/payment-methods'),
+        },
+        {
+          label: 'Switch client',
+          href: '/switch',
+          active: location.pathname.startsWith('/switch'),
         },
       ]}
       trailing={

@@ -38,7 +38,7 @@ export function bucketize(
   return result;
 }
 
-export type EntryAction = 'INCLUDE' | 'DEFER' | 'WRITE_OFF';
+export type EntryAction = 'INCLUDE' | 'DEFER' | 'WRITE_OFF' | 'WRITE_OFF_HELD';
 
 /**
  * Pre-bill batch action applied per entry. Pure function — the API layer
@@ -66,6 +66,15 @@ export function applyEntryAction(args: { action: EntryAction; entryAmountCents: 
       return {
         batchedAmountCents: 0,
         carryForwardAmountCents: 0,
+        writtenOffAmountCents: args.entryAmountCents,
+      };
+    case 'WRITE_OFF_HELD':
+      // The entry is held aside for partner re-evaluation; it stays on
+      // WIP (carry-forward) but is also marked as written-off for
+      // realization reporting in the current period.
+      return {
+        batchedAmountCents: 0,
+        carryForwardAmountCents: args.entryAmountCents,
         writtenOffAmountCents: args.entryAmountCents,
       };
   }
