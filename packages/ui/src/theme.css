@@ -1,0 +1,37 @@
+/* SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0 */
+/* Dark palette is the default. [data-theme="light"] on <html> swaps. */
+
+:root,
+[data-theme='dark'] {
+  --vibe-color-bg: #0b0d10;
+  --vibe-color-surface: #11151b;
+  --vibe-color-border: #1f2630;
+  --vibe-color-text: #e6edf3;
+  --vibe-color-text-muted: #8b97a6;
+  --vibe-color-accent: #3b82f6;
+  --vibe-color-accent-muted: #1e3a8a;
+  --vibe-color-success: #22c55e;
+  --vibe-color-warning: #f59e0b;
+  --vibe-color-danger: #ef4444;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --vibe-color-bg: #ffffff;
+  --vibe-color-surface: #f6f8fa;
+  --vibe-color-border: #d0d7de;
+  --vibe-color-text: #0f1419;
+  --vibe-color-text-muted: #57606a;
+  --vibe-color-accent: #2563eb;
+  --vibe-color-accent-muted: #dbeafe;
+  --vibe-color-success: #16a34a;
+  --vibe-color-warning: #b45309;
+  --vibe-color-danger: #b91c1c;
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--vibe-color-bg);
+  color: var(--vibe-color-text);
+}

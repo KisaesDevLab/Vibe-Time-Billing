@@ -4,7 +4,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { api } from './api-client';
 
-import { AppShell, Button, Pill } from '@vibe/ui';
+import { AppShell, Button, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
 import { AltContactsPage } from './pages/AltContacts';
@@ -22,6 +22,7 @@ export function App(): JSX.Element {
     <AuthProvider>
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
+        <Route path="/auth/verify" element={<LoginPage />} />
         <Route
           path="*"
           element={
@@ -130,10 +131,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       trailing={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {me && (
-            <span style={{ fontSize: 12, color: '#8b97a6' }}>
+            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
               Client: <code>{me.activeClientId.slice(0, 8)}…</code>
             </span>
           )}
+          <ThemeToggle />
           <Button variant="secondary" size="sm" onClick={() => void logout()}>
             Sign out
           </Button>
@@ -153,7 +155,7 @@ function FullPageMsg({ children }: { children: ReactNode }): JSX.Element {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: '#8b97a6',
+        color: tokens.color.textMuted,
         fontFamily: '-apple-system, system-ui, sans-serif',
       }}
     >

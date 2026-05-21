@@ -2,7 +2,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { AuthLayout, Button, Input } from '@vibe/ui';
+import { AuthLayout, Button, Input, tokens } from '@vibe/ui';
 
 import { api, setCsrfToken } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -53,7 +53,7 @@ function RequestLinkPage(): JSX.Element {
             required
             placeholder="you@firm.example"
           />
-          {error && <div style={{ color: '#ef4444', fontSize: 12 }}>{error}</div>}
+          {error && <div style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</div>}
           <Button type="submit" disabled={status === 'sending' || email.length === 0}>
             {status === 'sending' ? 'Sending…' : 'Send sign-in link'}
           </Button>
@@ -98,7 +98,7 @@ function VerifyPage({ token }: { token: string }): JSX.Element {
           <Button onClick={verify} disabled={submitting}>
             {submitting ? 'Verifying…' : 'Continue'}
           </Button>
-          {error && <p style={{ color: '#ef4444', fontSize: 12 }}>{error}</p>}
+          {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         </>
       )}
     </AuthLayout>

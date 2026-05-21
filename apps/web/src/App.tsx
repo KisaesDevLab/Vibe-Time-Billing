@@ -2,7 +2,7 @@
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
-import { AppShell, Button, Pill } from '@vibe/ui';
+import { AppShell, Button, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { QuickFind } from './QuickFind';
 
@@ -34,6 +34,7 @@ export function App(): JSX.Element {
     <AuthProvider>
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
+        <Route path="/auth/verify" element={<LoginPage />} />
         <Route
           path="/auth/totp"
           element={
@@ -120,9 +121,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         { label: 'Account', href: '/account', active: location.pathname.startsWith('/account') },
       ]}
       trailing={
-        <Button variant="secondary" size="sm" onClick={() => void logout()}>
-          Sign out
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ThemeToggle />
+          <Button variant="secondary" size="sm" onClick={() => void logout()}>
+            Sign out
+          </Button>
+        </div>
       }
     >
       {children}
@@ -139,7 +143,7 @@ function FullPageMsg({ children }: { children: ReactNode }): JSX.Element {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: '#8b97a6',
+        color: tokens.color.textMuted,
         fontFamily: '-apple-system, system-ui, sans-serif',
       }}
     >
