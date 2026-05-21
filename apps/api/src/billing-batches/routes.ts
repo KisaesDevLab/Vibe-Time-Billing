@@ -78,6 +78,32 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         return;
       }
 
+      // NTE cap check (Phase 11 #18): if the engagement has a per-period
+      // NTE, reject the batch when its included entries would exceed it.
+      if (eng.nteCapCents != null && Number(eng.nteCapCents) > 0) {
+        const [projected] = await deps.db
+          .select({
+            total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+          })
+          .from(timeEntries)
+          .where(
+            and(
+              eq(timeEntries.engagementId, eng.id),
+              isNull(timeEntries.billingBatchId),
+              between(timeEntries.entryDate, parsed.data.periodStart, parsed.data.periodEnd),
+            ),
+          );
+        const projectedCents = Number(projected?.total ?? 0);
+        if (projectedCents > Number(eng.nteCapCents)) {
+          res.status(409).json({
+            error: 'nte_cap_exceeded',
+            capCents: Number(eng.nteCapCents),
+            projectedCents,
+          });
+          return;
+        }
+      }
+
       const batchId = await deps.db.transaction(async (tx) => {
         const [batch] = await tx
           .insert(billingBatches)
