@@ -238,6 +238,219 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // Pricing suggestion (Phase 23 #11). Given engagement type + service
+  // line context, returns a short pricing recommendation.
+  // -----------------------------------------------------------------
+  router.post(
+    '/pricing-suggestion',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const Schema = z.object({
+        engagementTypeName: z.string().max(120),
+        serviceLineName: z.string().max(120).optional(),
+        clientName: z.string().max(120).optional(),
+        complexity: z.enum(['LOW', 'MEDIUM', 'HIGH']).optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You are a CPA practice consultant. Given an engagement type, suggest a ' +
+            'fixed-fee range and a typical effort range. Output 3 short lines: ' +
+            '"Fee range:", "Effort:", "Notes:". Plain text, no preface.',
+          userPrompt: [
+            `Engagement type: ${parsed.data.engagementTypeName}`,
+            parsed.data.serviceLineName ? `Service line: ${parsed.data.serviceLineName}` : null,
+            parsed.data.clientName ? `Client: ${parsed.data.clientName}` : null,
+            parsed.data.complexity ? `Complexity: ${parsed.data.complexity}` : null,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          maxTokens: 200,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'pricing_suggestion',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ suggestion: result.text.trim(), providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'pricing_suggestion',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Write-down pattern analysis (Phase 23 #12).
+  // -----------------------------------------------------------------
+  router.post(
+    '/write-down-patterns',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const Schema = z.object({
+        samples: z
+          .array(
+            z.object({
+              reason: z.string().max(120).optional(),
+              amountCents: z.number().int(),
+              method: z.string().max(40),
+              engagementType: z.string().max(120).optional(),
+            }),
+          )
+          .min(1)
+          .max(50),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You analyze CPA write-down patterns. Given a sample of recent adjustments, ' +
+            'identify 2-4 short patterns (theme + frequency). No headers, no preface.',
+          userPrompt: JSON.stringify(parsed.data.samples).slice(0, 4000),
+          maxTokens: 300,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'write_down_patterns',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ patterns: result.text.trim(), providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'write_down_patterns',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Reason-code suggestion (Phase 23 #19). Picks one of the supplied
+  // catalog entries that best fits the supplied context.
+  // -----------------------------------------------------------------
+  router.post(
+    '/reason-code-suggest',
+    requirePermission(deps, 'adjustment:create'),
+    async (req: Request, res: Response) => {
+      const Schema = z.object({
+        context: z.string().max(1000),
+        amountCents: z.number().int().optional(),
+        availableReasons: z.array(z.string().max(80)).min(1).max(60),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You pick the best-matching reason code for a CPA write-down/up. Output exactly ' +
+            'one of the supplied options, verbatim. No explanation, no quotes.',
+          userPrompt:
+            `Context: ${parsed.data.context}\n` +
+            (parsed.data.amountCents != null ? `Amount cents: ${parsed.data.amountCents}\n` : '') +
+            `Options: ${parsed.data.availableReasons.join(' | ')}`,
+          maxTokens: 30,
+        });
+        const picked = result.text.trim().replace(/^"|"$/g, '');
+        const match = parsed.data.availableReasons.find((r) => r === picked) ?? null;
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'reason_code_suggest',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ pick: match, raw: picked, providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'reason_code_suggest',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
   router.get(
     '/request-log',
     requirePermission(deps, 'admin:ai:manage'),

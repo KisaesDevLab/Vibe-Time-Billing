@@ -242,6 +242,15 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
                 eq(billingBatchEntries.timeEntryId, a.timeEntryId),
               ),
             );
+          // Phase 11 #23 — DEFER releases the entry so a future batch
+          // can include it. Drop the billing_batch_id assignment on the
+          // entry while keeping the batch_entry row for audit history.
+          if (a.action === 'DEFER') {
+            await tx
+              .update(timeEntries)
+              .set({ billingBatchId: null })
+              .where(eq(timeEntries.id, a.timeEntryId));
+          }
         }
         await tx
           .update(billingBatches)

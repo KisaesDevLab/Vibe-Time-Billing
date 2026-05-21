@@ -234,6 +234,7 @@ export function createApp(deps: AppDeps): Express {
   const portalProfileRouter = createPortalProfileRouter({
     db: deps.db,
     requireAuth: portal.requireAuth,
+    sessionStore: deps.sessionStore,
   });
   app.use('/api/portal/profile', portalProfileRouter);
 

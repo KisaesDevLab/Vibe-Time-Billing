@@ -17,12 +17,16 @@ import {
   portalIdentity,
 } from '@vibe/db/schema';
 import { sql as drz } from 'drizzle-orm';
+import type { AnySession } from '@vibe/core/auth';
 
 import { logger } from '../logger';
 
 export interface PortalProfileDeps {
   db: Database | null;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  sessionStore?: {
+    put: (session: AnySession) => Promise<void>;
+  };
 }
 
 const PreferenceSchema = z.object({
@@ -259,6 +263,69 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       .orderBy(drz`${payments.receivedAt} DESC`)
       .limit(50);
     res.json({ items });
+  });
+
+  // ---------------------------------------------------------------
+  // Entity switcher (Phase 19 #21). List clients this identity has
+  // ACTIVE portal access to and switch the active one. The active
+  // client scopes every other portal endpoint.
+  // ---------------------------------------------------------------
+  router.get('/clients', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ items: [], activeClientId: session.activeClientId });
+      return;
+    }
+    const { clients } = await import('@vibe/db/schema');
+    const rows = await deps.db
+      .select({
+        id: clients.id,
+        name: clients.name,
+        role: clientPortalAccess.role,
+        accessId: clientPortalAccess.id,
+      })
+      .from(clientPortalAccess)
+      .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+      .where(
+        and(
+          eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+          eq(clientPortalAccess.status, 'ACTIVE'),
+        ),
+      );
+    res.json({ items: rows, activeClientId: session.activeClientId });
+  });
+
+  router.post('/clients/switch', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    const target = typeof req.body?.clientId === 'string' ? req.body.clientId : null;
+    if (!target) {
+      res.status(400).json({ error: 'clientId_required' });
+      return;
+    }
+    if (!deps.db || !deps.sessionStore) {
+      res.json({ ok: true, activeClientId: target });
+      return;
+    }
+    const [access] = await deps.db
+      .select({ clientId: clientPortalAccess.clientId })
+      .from(clientPortalAccess)
+      .where(
+        and(
+          eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+          eq(clientPortalAccess.clientId, target),
+          eq(clientPortalAccess.status, 'ACTIVE'),
+        ),
+      )
+      .limit(1);
+    if (!access) {
+      res.status(403).json({ error: 'no_access' });
+      return;
+    }
+    // Mutate the session in place. The session-store put() replaces the
+    // Redis blob with the same sid + new activeClientId.
+    const updated = { ...session, activeClientId: target };
+    await deps.sessionStore.put(updated);
+    res.json({ ok: true, activeClientId: target });
   });
 
   return router;
