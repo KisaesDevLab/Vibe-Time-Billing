@@ -6,6 +6,7 @@ import { AppShell, Button, Pill } from '@vibe/ui';
 
 import { AccountPage } from './pages/Account';
 import { AdminLayout } from './pages/admin';
+import { AlertsPage } from './pages/Alerts';
 import { ApprovalsPage } from './pages/Approvals';
 import { ArPage } from './pages/Ar';
 import { AuditPage } from './pages/Audit';
@@ -52,6 +53,7 @@ export function App(): JSX.Element {
                   <Route path="/ar" element={<ArPage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/audit" element={<AuditPage />} />
+                  <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
@@ -102,6 +104,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/approvals'),
         },
         { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
+        { label: 'Alerts', href: '/alerts', active: location.pathname.startsWith('/alerts') },
         { label: 'Audit', href: '/audit', active: location.pathname.startsWith('/audit') },
         { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
         { label: 'Account', href: '/account', active: location.pathname.startsWith('/account') },

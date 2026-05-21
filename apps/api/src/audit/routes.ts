@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, gte, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, type SQL } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { auditLog } from '@vibe/db/schema';
@@ -253,6 +253,41 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         `attachment; filename="audit-log-${new Date().toISOString().slice(0, 10)}.csv"`,
       );
       res.send(lines.join('\n') + '\n');
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Inbox: surfaces alerts emitted by the workers
+  // (audit_anomaly_alert, scope_creep_alert, wip_age_alert,
+  //  engagement_rollover). Read-only firm-scoped view.
+  // -----------------------------------------------------------------
+  router.get(
+    '/alerts',
+    requirePermission(deps, 'admin:audit:read'),
+    async (_req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const kinds = [
+        'audit_anomaly_alert',
+        'scope_creep_alert',
+        'wip_age_alert',
+        'engagement_rollover',
+      ];
+      const items = await deps.db
+        .select({
+          id: auditLog.id,
+          occurredAt: auditLog.occurredAt,
+          entityType: auditLog.entityType,
+          entityId: auditLog.entityId,
+          afterJson: auditLog.afterJson,
+        })
+        .from(auditLog)
+        .where(inArray(auditLog.entityType, kinds))
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(200);
+      res.json({ items });
     },
   );
 
