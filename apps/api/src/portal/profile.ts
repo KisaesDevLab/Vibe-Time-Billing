@@ -27,6 +27,8 @@ export interface PortalProfileDeps {
   sessionStore?: {
     put: (session: AnySession) => Promise<void>;
   };
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
 }
 
 const PreferenceSchema = z.object({
@@ -467,6 +469,202 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
     const updated = { ...session, activeClientId: target };
     await deps.sessionStore.put(updated);
     res.json({ ok: true, activeClientId: target });
+  });
+
+  // ---------------------------------------------------------------
+  // Alternate-contact OTP flow (Phase 19 #22). Identities can add
+  // secondary emails / phones, verify them with a one-time code, and
+  // remove them. Primary contact stays where it is on portal_identity.
+  // ---------------------------------------------------------------
+  const AltAddSchema = z.object({
+    channel: z.enum(['EMAIL', 'SMS']),
+    value: z.string().min(3).max(254),
+  });
+  const AltVerifySchema = z.object({ code: z.string().min(4).max(12) });
+
+  router.get('/alt-contacts', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    const { portalAltContact } = await import('@vibe/db/schema');
+    const rows = await deps.db
+      .select({
+        id: portalAltContact.id,
+        channel: portalAltContact.channel,
+        value: portalAltContact.value,
+        verifiedAt: portalAltContact.verifiedAt,
+        createdAt: portalAltContact.createdAt,
+      })
+      .from(portalAltContact)
+      .where(eq(portalAltContact.portalIdentityId, session.portalIdentityId));
+    res.json({ items: rows });
+  });
+
+  router.post('/alt-contacts', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    const parsed = AltAddSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const { portalAltContact } = await import('@vibe/db/schema');
+    const { createHash, randomInt } = await import('node:crypto');
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const hash = createHash('sha256').update(code).digest('hex');
+    const expires = new Date(Date.now() + 10 * 60_000);
+
+    // Upsert at the (identity, channel, value) grain — re-adding resets
+    // the OTP rather than duplicating the row.
+    const [existing] = await deps.db
+      .select({ id: portalAltContact.id, sentAt: portalAltContact.otpLastSentAt })
+      .from(portalAltContact)
+      .where(
+        and(
+          eq(portalAltContact.portalIdentityId, session.portalIdentityId),
+          eq(portalAltContact.channel, parsed.data.channel),
+          eq(portalAltContact.value, parsed.data.value),
+        ),
+      )
+      .limit(1);
+
+    // Sliding-window rate limit (Q29): one send per minute per row.
+    if (existing?.sentAt && Date.now() - existing.sentAt.getTime() < 60_000) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+
+    let rowId: string;
+    if (existing) {
+      await deps.db
+        .update(portalAltContact)
+        .set({
+          otpHash: hash,
+          otpExpiresAt: expires,
+          otpAttempts: 0,
+          otpLastSentAt: new Date(),
+          verifiedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(portalAltContact.id, existing.id));
+      rowId = existing.id;
+    } else {
+      const [inserted] = await deps.db
+        .insert(portalAltContact)
+        .values({
+          portalIdentityId: session.portalIdentityId,
+          channel: parsed.data.channel,
+          value: parsed.data.value,
+          otpHash: hash,
+          otpExpiresAt: expires,
+          otpLastSentAt: new Date(),
+        })
+        .returning({ id: portalAltContact.id });
+      rowId = inserted!.id;
+    }
+
+    // Dispatch the code. Best-effort; the row still exists if delivery
+    // fails so the identity can retry.
+    try {
+      if (parsed.data.channel === 'EMAIL' && deps.sendEmail) {
+        await deps.sendEmail({
+          to: parsed.data.value,
+          subject: 'Verify your contact',
+          body: `Your Vibe verification code: ${code}`,
+        });
+      } else if (parsed.data.channel === 'SMS' && deps.sendSms) {
+        await deps.sendSms({
+          to: parsed.data.value,
+          body: `Your Vibe verification code: ${code}`,
+        });
+      }
+    } catch (err) {
+      logger.error({ err }, 'alt-contact OTP dispatch failed');
+    }
+    res.json({ id: rowId, sent: true });
+  });
+
+  router.post('/alt-contacts/:id/verify', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    const parsed = AltVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const { portalAltContact } = await import('@vibe/db/schema');
+    const { createHash } = await import('node:crypto');
+    const [row] = await deps.db
+      .select()
+      .from(portalAltContact)
+      .where(
+        and(
+          eq(portalAltContact.id, req.params['id']!),
+          eq(portalAltContact.portalIdentityId, session.portalIdentityId),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (row.verifiedAt) {
+      res.json({ verified: true });
+      return;
+    }
+    if (!row.otpHash || !row.otpExpiresAt || row.otpExpiresAt.getTime() < Date.now()) {
+      res.status(410).json({ error: 'otp_expired' });
+      return;
+    }
+    if (row.otpAttempts >= 5) {
+      res.status(429).json({ error: 'too_many_attempts' });
+      return;
+    }
+    const hash = createHash('sha256').update(parsed.data.code).digest('hex');
+    if (hash !== row.otpHash) {
+      await deps.db
+        .update(portalAltContact)
+        .set({ otpAttempts: row.otpAttempts + 1, updatedAt: new Date() })
+        .where(eq(portalAltContact.id, row.id));
+      res.status(401).json({ error: 'invalid_code' });
+      return;
+    }
+    await deps.db
+      .update(portalAltContact)
+      .set({
+        verifiedAt: new Date(),
+        otpHash: null,
+        otpExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(portalAltContact.id, row.id));
+    res.json({ verified: true });
+  });
+
+  router.delete('/alt-contacts/:id', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const { portalAltContact } = await import('@vibe/db/schema');
+    await deps.db
+      .delete(portalAltContact)
+      .where(
+        and(
+          eq(portalAltContact.id, req.params['id']!),
+          eq(portalAltContact.portalIdentityId, session.portalIdentityId),
+        ),
+      );
+    res.json({ ok: true });
   });
 
   return router;

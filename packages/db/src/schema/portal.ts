@@ -246,6 +246,49 @@ export const portalIdentity = pgTable(
 );
 
 // =====================================================================
+// TABLE: portal_alt_contact
+//
+// Alternate (non-primary) contact addresses per identity. Each row holds
+// its own verification state + OTP material. Added Phase 19 #22.
+// =====================================================================
+
+export const portalAltContact = pgTable(
+  'portal_alt_contact',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+
+    portalIdentityId: uuid('portal_identity_id')
+      .notNull()
+      .references(() => portalIdentity.id, { onDelete: 'cascade' }),
+
+    channel: text('channel', { enum: ['EMAIL', 'SMS'] }).notNull(),
+    value: text('value').notNull(),
+
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+
+    otpHash: text('otp_hash'),
+    otpExpiresAt: timestamp('otp_expires_at', { withTimezone: true }),
+    otpAttempts: integer('otp_attempts').notNull().default(0),
+    otpLastSentAt: timestamp('otp_last_sent_at', { withTimezone: true }),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    identityIdx: index('portal_alt_contact_identity_idx').on(t.portalIdentityId),
+    uniqueTriplet: uniqueIndex('portal_alt_contact_unique').on(
+      t.portalIdentityId,
+      t.channel,
+      t.value,
+    ),
+  }),
+);
+
+// =====================================================================
 // TABLE: client_portal_access
 //
 // The join table between portal_identity and client. One row per
