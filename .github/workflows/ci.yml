@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  PNPM_VERSION: 8.15.0
+  PNPM_VERSION: 9.15.9
   NODE_VERSION: 24.4.0
 
 jobs:

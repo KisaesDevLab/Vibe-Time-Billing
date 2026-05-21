@@ -4,22 +4,19 @@
 
 # =============================================================================
 # Stage 1: Dependencies
+#
+# `.npmrc` has `inject-workspace-packages=true` so workspace packages need
+# to be physically present at install time (their content is hardlinked
+# into consumers' node_modules). Copy the full source here — we lose the
+# package.json-only caching layer but the install becomes correct.
 # =============================================================================
 FROM node:24-bookworm-slim AS deps
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
-COPY apps/web/package.json apps/web/
-COPY apps/portal/package.json apps/portal/
-COPY apps/api/package.json apps/api/
-COPY apps/worker/package.json apps/worker/
-COPY packages/db/package.json packages/db/
-COPY packages/types/package.json packages/types/
-COPY packages/ui/package.json packages/ui/
-COPY packages/core/package.json packages/core/
+COPY . .
 
 RUN pnpm install --frozen-lockfile
 
@@ -30,10 +27,9 @@ FROM node:24-bookworm-slim AS builder
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY --from=deps /app ./
 
 # Skip Chromium download — use system Chromium in runtime stage
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true

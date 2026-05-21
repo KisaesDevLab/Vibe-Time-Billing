@@ -8,7 +8,7 @@
     "node": ">=24.0.0",
     "pnpm": ">=8.0.0"
   },
-  "packageManager": "pnpm@8.15.0",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "pnpm -r --parallel --filter=\"./apps/**\" dev",
     "build": "pnpm -r build",
