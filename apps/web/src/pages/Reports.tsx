@@ -239,7 +239,7 @@ function RealizationCard({
     <Card
       title={`Realization${drillUser || drillEng || drillClient ? ' (drilled)' : ''}`}
       action={
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {(['firm', 'timekeeper', 'engagement', 'client'] as const).map((d) => (
             <Button
               key={d}
@@ -250,6 +250,21 @@ function RealizationCard({
               {d}
             </Button>
           ))}
+          <a
+            href={`${url}&format=csv`}
+            download
+            title="Download CSV"
+            style={{
+              padding: '4px 10px',
+              fontSize: 13,
+              borderRadius: tokens.radius.sm,
+              border: `1px solid ${tokens.color.border}`,
+              color: tokens.color.text,
+              textDecoration: 'none',
+            }}
+          >
+            ↓ CSV
+          </a>
         </div>
       }
     >

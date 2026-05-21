@@ -154,7 +154,33 @@ export function ClientDetailPage(): JSX.Element {
           </span>
         }
         action={
-          <span style={{ display: 'flex', gap: 6 }}>
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                window.location.href = `/engagements/new?clientId=${client.id}`;
+              }}
+              title="Start a new engagement scoped to this client"
+            >
+              + Engagement
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setTab('tasks')}
+              title="Open the Tasks tab to add a task"
+            >
+              + Task
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setTab('communications')}
+              title="Open the Communications tab to log an email/call"
+            >
+              ✉ Log email
+            </Button>
             {client.active === false && <Pill tone="warning">Inactive</Pill>}
             <Pill tone={client.status === 'ACTIVE' ? 'success' : 'neutral'}>{client.status}</Pill>
           </span>

@@ -43,7 +43,17 @@ const QuerySchema = z.object({
   appUserId: z.string().uuid().optional(),
   engagementId: z.string().uuid().optional(),
   clientId: z.string().uuid().optional(),
+  // v2 followup — CSV export (workstream 4). When format=csv the
+  // response body is text/csv instead of JSON, same shape otherwise.
+  format: z.enum(['json', 'csv']).default('json'),
 });
+
+function csvCell(s: string | number | null | undefined): string {
+  if (s == null) return '';
+  const str = String(s);
+  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
 
 export function createReportRouter(deps: ReportRoutesDeps): Router {
   const router = express.Router();
@@ -140,7 +150,26 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         }));
 
       if (parsed.data.dimension === 'firm') {
-        res.json({ dimension: 'firm', summary: rollup(allocationRows) });
+        const summary = rollup(allocationRows);
+        if (parsed.data.format === 'csv') {
+          const lines = [
+            ['dimension', 'original_cents', 'adjusted_cents', 'realization_pct'].join(','),
+            [
+              'firm',
+              summary.originalValueCents,
+              summary.adjustedValueCents,
+              summary.realizationPct,
+            ].join(','),
+          ];
+          res.setHeader('Content-Type', 'text/csv');
+          res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="realization-firm-${new Date().toISOString().slice(0, 10)}.csv"`,
+          );
+          res.send(lines.join('\n') + '\n');
+          return;
+        }
+        res.json({ dimension: 'firm', summary });
         return;
       }
 
@@ -185,6 +214,30 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           ...value,
         }))
         .sort((a, b) => a.realizationPct - b.realizationPct);
+      if (parsed.data.format === 'csv') {
+        const header = ['key', 'label', 'original_cents', 'adjusted_cents', 'realization_pct'];
+        const lines = [header.join(',')];
+        for (const it of items) {
+          lines.push(
+            [
+              csvCell(it.key),
+              csvCell(it.label ?? ''),
+              csvCell(it.originalValueCents),
+              csvCell(it.adjustedValueCents),
+              csvCell(it.realizationPct),
+            ].join(','),
+          );
+        }
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="realization-${parsed.data.dimension}-${new Date()
+            .toISOString()
+            .slice(0, 10)}.csv"`,
+        );
+        res.send(lines.join('\n') + '\n');
+        return;
+      }
       res.json({ dimension: parsed.data.dimension, items });
     },
   );
