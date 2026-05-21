@@ -16,6 +16,7 @@ import { HourBankTxPage } from './HourBankTx';
 import { JobsPage } from './Jobs';
 import { MilestonesPage } from './Milestones';
 import { NotificationsPage } from './Notifications';
+import { NotificationTemplatesPage } from './NotificationTemplates';
 import { OfficesPage } from './Offices';
 import { PermissionMatrixPage } from './PermissionMatrix';
 import { RatesPage } from './Rates';
@@ -49,6 +50,7 @@ const TABS = [
   { key: 'perms', label: 'Permissions', href: '/admin/permissions' },
   { key: 'roles', label: 'Roles', href: '/admin/roles' },
   { key: 'notifs', label: 'Notifications', href: '/admin/notifications' },
+  { key: 'notif-tpl', label: 'Notif templates', href: '/admin/notification-templates' },
   { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
   { key: 'backup', label: 'Backup', href: '/admin/backup' },
   { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
@@ -102,6 +104,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="permissions" element={<PermissionMatrixPage />} />
         <Route path="roles" element={<RolesPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="notification-templates" element={<NotificationTemplatesPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="backup" element={<BackupPage />} />
         <Route path="compliance" element={<CompliancePage />} />
