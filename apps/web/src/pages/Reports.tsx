@@ -84,14 +84,20 @@ export function ReportsPage(): JSX.Element {
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : dim === 'firm' ? (
           firmSummary ? (
-            <div style={{ display: 'flex', gap: 32 }}>
-              <Stat label="Standard WIP" value={formatCents(firmSummary.originalValueCents)} />
-              <Stat label="After adjustments" value={formatCents(firmSummary.adjustedValueCents)} />
-              <Stat
-                label="Realization"
-                value={formatPct(firmSummary.realizationPct)}
-                tone={firmSummary.realizationPct >= 0.9 ? 'success' : 'warning'}
-              />
+            <div>
+              <div style={{ display: 'flex', gap: 32 }}>
+                <Stat label="Standard WIP" value={formatCents(firmSummary.originalValueCents)} />
+                <Stat
+                  label="After adjustments"
+                  value={formatCents(firmSummary.adjustedValueCents)}
+                />
+                <Stat
+                  label="Realization"
+                  value={formatPct(firmSummary.realizationPct)}
+                  tone={firmSummary.realizationPct >= 0.9 ? 'success' : 'warning'}
+                />
+              </div>
+              <NarrativeButton realizationPct={firmSummary.realizationPct} />
             </div>
           ) : (
             <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No adjustment data yet.</p>
@@ -317,6 +323,50 @@ function BillableTargetsCard(): JSX.Element {
         empty="No billable hours yet this month."
       />
     </Card>
+  );
+}
+
+function NarrativeButton({ realizationPct }: { realizationPct: number }): JSX.Element {
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function ask(): Promise<void> {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ narrative: string }>('/api/staff/ai/realization-narrative', {
+        method: 'POST',
+        body: JSON.stringify({ realizationPct }),
+      });
+      setText(r.narrative);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Button size="sm" variant="secondary" onClick={() => void ask()} disabled={busy}>
+        {busy ? 'Asking AI…' : '✨ Explain this'}
+      </Button>
+      {text && (
+        <p
+          style={{
+            marginTop: 8,
+            fontSize: 13,
+            color: tokens.color.text,
+            background: tokens.color.surface,
+            padding: 12,
+            borderRadius: tokens.radius.sm,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {text}
+        </p>
+      )}
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+    </div>
   );
 }
 

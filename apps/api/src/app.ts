@@ -33,6 +33,7 @@ import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
+import { createConnectRouter } from './connect/routes';
 import { createStatsRouter } from './stats/routes';
 import { createEngagementLetterRouter } from './engagement-letters/routes';
 import { createRequiredFieldRulesRouter } from './required-field-rules/routes';
@@ -313,6 +314,14 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/compliance', auth.requireAuth, auth.requireCsrf, complianceRouter);
+
+  const connectRouter = createConnectRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    connectBaseUrl: process.env['VIBE_CONNECT_BASE_URL'] ?? null,
+    connectApiKey: process.env['VIBE_CONNECT_API_KEY'] ?? null,
+  });
+  app.use('/api/staff/connect', auth.requireAuth, auth.requireCsrf, connectRouter);
 
   // API token issuance — admin only.
   const apiTokenRouter = createApiTokenRouter({

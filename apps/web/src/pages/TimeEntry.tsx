@@ -168,13 +168,20 @@ export function TimeEntryPage(): JSX.Element {
             value={hours}
             onChange={(e) => setHours(e.target.value)}
           />
-          <Input
-            label="Description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="What you worked on"
-            style={{ gridColumn: 'span 3' }}
-          />
+          <div style={{ gridColumn: 'span 3', display: 'grid', gap: 6 }}>
+            <Input
+              label="Description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What you worked on"
+            />
+            <AiDescribeButton
+              engagementName={engagements.find((e) => e.id === engagementId)?.name}
+              workCodeName={workCodes.find((w) => w.id === workCodeId)?.name}
+              hours={hours ? parseFloat(hours) : undefined}
+              onPick={(s) => setDescription(s)}
+            />
+          </div>
           <Button type="submit" disabled={submitting || !engagementId}>
             {submitting ? 'Saving…' : 'Log'}
           </Button>
@@ -230,6 +237,46 @@ export function TimeEntryPage(): JSX.Element {
           />
         )}
       </Card>
+    </div>
+  );
+}
+
+function AiDescribeButton({
+  engagementName,
+  workCodeName,
+  hours,
+  onPick,
+}: {
+  engagementName: string | undefined;
+  workCodeName: string | undefined;
+  hours: number | undefined;
+  onPick: (s: string) => void;
+}): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function suggest(): Promise<void> {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ suggestion: string }>('/api/staff/ai/suggest-description', {
+        method: 'POST',
+        body: JSON.stringify({ engagementName, workCodeName, hours }),
+      });
+      if (r.suggestion) onPick(r.suggestion);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 }}>
+      <Button size="sm" variant="secondary" onClick={() => void suggest()} disabled={busy}>
+        {busy ? 'Asking AI…' : '✨ Suggest description'}
+      </Button>
+      {err && <span style={{ color: tokens.color.danger }}>{err}</span>}
     </div>
   );
 }
