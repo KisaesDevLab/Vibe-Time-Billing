@@ -191,7 +191,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
 
   router.get(
     '/realization-by-partner',
-    requirePermission(deps, 'report:realization:read'),
+    requirePermission(deps, 'report:partner-data:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
       if (!deps.db) {
@@ -825,7 +825,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   // -------------------------------------------------------------------
   router.get(
     '/book-of-business',
-    requirePermission(deps, 'report:realization:read'),
+    requirePermission(deps, 'report:partner-data:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
       if (!deps.db) {
@@ -903,7 +903,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   // -------------------------------------------------------------------
   router.get(
     '/firm-profitability',
-    requirePermission(deps, 'report:profitability:read'),
+    requirePermission(deps, 'report:partner-data:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
       if (!deps.db) {

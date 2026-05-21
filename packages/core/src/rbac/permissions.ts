@@ -69,6 +69,9 @@ export const PERMISSION_KEYS = [
   'report:utilization:read',
   'report:profitability:read',
   'report:ar:read',
+  // Phase 17 #29 — partner-level data (book-of-business, partner
+  // realization, partner profitability). Senior/staff don't get this.
+  'report:partner-data:read',
 
   // Approvals
   'approval:queue:read',
@@ -124,6 +127,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'report:utilization:read',
     'report:profitability:read',
     'report:ar:read',
+    'report:partner-data:read',
     'approval:queue:read',
     'approval:act',
     'admin:audit:read',

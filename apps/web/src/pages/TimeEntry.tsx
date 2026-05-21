@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 
-import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
+import { AiPanel, Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
 
 interface Engagement {
   id: string;
@@ -847,9 +848,11 @@ function AiDescribeButton({
   workCodeName: string | undefined;
   hours: number | undefined;
   onPick: (s: string) => void;
-}): JSX.Element {
+}): JSX.Element | null {
+  const aiStatus = useAiStatus();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [last, setLast] = useState<string | null>(null);
 
   async function suggest(): Promise<void> {
     setBusy(true);
@@ -859,7 +862,10 @@ function AiDescribeButton({
         method: 'POST',
         body: JSON.stringify({ engagementName, workCodeName, hours }),
       });
-      if (r.suggestion) onPick(r.suggestion);
+      if (r.suggestion) {
+        setLast(r.suggestion);
+        onPick(r.suggestion);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed');
     } finally {
@@ -867,12 +873,32 @@ function AiDescribeButton({
     }
   }
 
+  if (!aiUsable(aiStatus)) return null;
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 }}>
-      <Button size="sm" variant="secondary" onClick={() => void suggest()} disabled={busy}>
-        {busy ? 'Asking AI…' : '✨ Suggest description'}
-      </Button>
-      {err && <span style={{ color: tokens.color.danger }}>{err}</span>}
-    </div>
+    <AiPanel
+      title="Describe this entry"
+      providerId={aiStatus?.providerId ?? undefined}
+      busy={busy}
+      error={err}
+      action={
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => void suggest()}
+          disabled={busy || !engagementName}
+        >
+          {last ? 'Regenerate' : 'Suggest'}
+        </Button>
+      }
+    >
+      {last ? (
+        <p style={{ margin: 0, fontSize: 12 }}>{last}</p>
+      ) : (
+        <p style={{ margin: 0, fontSize: 11, color: tokens.color.textMuted }}>
+          Pick an engagement + work code, then ask the model for a description suggestion based on
+          recent entries.
+        </p>
+      )}
+    </AiPanel>
   );
 }
