@@ -428,6 +428,55 @@ export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
     },
   );
 
+  // Phase 10 #15 — configure auto-replenish settings.
+  router.patch(
+    '/:id/replenish-settings',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const bank = await bankForFirm(deps.db, session.firmId, req.params['id']!);
+      if (!bank) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const body = req.body as {
+        autoReplenishEnabled?: unknown;
+        autoReplenishThresholdHours?: unknown;
+        autoReplenishTargetHours?: unknown;
+        rolloverCapHours?: unknown;
+      };
+      const patch: Record<string, unknown> = {};
+      if (typeof body.autoReplenishEnabled === 'boolean') {
+        patch['autoReplenishEnabled'] = body.autoReplenishEnabled;
+      }
+      if (typeof body.autoReplenishThresholdHours === 'number') {
+        patch['autoReplenishThresholdHours'] = body.autoReplenishThresholdHours.toFixed(2);
+      } else if (body.autoReplenishThresholdHours === null) {
+        patch['autoReplenishThresholdHours'] = null;
+      }
+      if (typeof body.autoReplenishTargetHours === 'number') {
+        patch['autoReplenishTargetHours'] = body.autoReplenishTargetHours.toFixed(2);
+      } else if (body.autoReplenishTargetHours === null) {
+        patch['autoReplenishTargetHours'] = null;
+      }
+      if (typeof body.rolloverCapHours === 'number') {
+        patch['rolloverCapHours'] = body.rolloverCapHours.toFixed(2);
+      } else if (body.rolloverCapHours === null) {
+        patch['rolloverCapHours'] = null;
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'nothing_to_update' });
+        return;
+      }
+      await deps.db.update(hourBanks).set(patch).where(eq(hourBanks.id, bank.id));
+      res.json({ ok: true });
+    },
+  );
+
   return router;
 }
 
