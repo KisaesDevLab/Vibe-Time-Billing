@@ -10,6 +10,15 @@ interface Engagement {
   id: string;
   name: string;
   clientId: string;
+  // v2 Sprint E — needed for client-first filtering. Server already
+  // returns it on /engagements; older callers ignored it.
+  status?: string;
+}
+
+interface Client {
+  id: string;
+  name: string;
+  status?: string;
 }
 
 interface WorkCode {
@@ -78,16 +87,19 @@ export function TimeEntryPage(): JSX.Element {
   const [view, setView] = useState<ViewMode>('log');
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [e, w] = await Promise.all([
+        const [e, w, c] = await Promise.all([
           api<{ items: Engagement[] }>('/api/staff/engagements'),
           api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
+          api<{ items: Client[] }>('/api/staff/clients'),
         ]);
         setEngagements(e.items ?? []);
         setWorkCodes(w.items ?? []);
+        setClients(c.items ?? []);
       } catch {
         // Silent; child views render empty/error states themselves.
       }
@@ -97,13 +109,21 @@ export function TimeEntryPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <ViewTabs view={view} onChange={setView} />
-      {view === 'log' && <LogView engagements={engagements} workCodes={workCodes} />}
+      {view === 'log' && (
+        <LogView engagements={engagements} workCodes={workCodes} clients={clients} />
+      )}
       {view === 'day' && <DayView engagements={engagements} />}
       {view === 'week' && <WeekView engagements={engagements} />}
       {view === 'month' && <MonthView />}
     </div>
   );
 }
+
+// v2 Sprint E — last-used client persisted per timekeeper-day. Used by
+// the Quick log combobox so a CPA's first time entry of the day starts
+// where they left off the day before. Server-side preference comes in
+// a later sprint; localStorage is the v1 of this.
+const LAST_CLIENT_KEY = '__vibe_last_client_id';
 
 function ViewTabs({
   view,
@@ -162,20 +182,69 @@ function ViewTabs({
 function LogView({
   engagements,
   workCodes,
+  clients,
 }: {
   engagements: Engagement[];
   workCodes: WorkCode[];
+  clients: Client[];
 }): JSX.Element {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // v2 Sprint E — client-first workflow. The CPA picks a client, then
+  // engagement is filtered to that client's ACTIVE engagements. If the
+  // client has exactly one active engagement it auto-selects.
+  const [clientId, setClientId] = useState(() => {
+    try {
+      return localStorage.getItem(LAST_CLIENT_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
   const [engagementId, setEngagementId] = useState('');
   const [workCodeId, setWorkCodeId] = useState('');
   const [entryDate, setEntryDate] = useState(today());
   const [hours, setHours] = useState('1.00');
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Engagements for the picked client, ACTIVE only. ACTIVE filter is
+  // resilient: many existing engagements were created with status
+  // PROPOSED or no status at all — fall back to "include unless
+  // explicitly ARCHIVED or CLOSED" to avoid empty dropdowns.
+  const filteredEngagements = useMemo(() => {
+    if (!clientId) return [];
+    return engagements.filter(
+      (e) =>
+        e.clientId === clientId &&
+        e.status !== 'ARCHIVED' &&
+        e.status !== 'CLOSED' &&
+        e.status !== 'CANCELED',
+    );
+  }, [clientId, engagements]);
+
+  // Auto-select the engagement when the picked client has exactly one
+  // active engagement. If they have more, clear so the user picks.
+  useEffect(() => {
+    if (filteredEngagements.length === 1) {
+      setEngagementId(filteredEngagements[0]!.id);
+    } else if (!filteredEngagements.some((e) => e.id === engagementId)) {
+      // Current selection no longer belongs to this client.
+      setEngagementId('');
+    }
+  }, [filteredEngagements, engagementId]);
+
+  // Persist last-used client.
+  useEffect(() => {
+    if (clientId) {
+      try {
+        localStorage.setItem(LAST_CLIENT_KEY, clientId);
+      } catch {
+        // Storage might be disabled; non-fatal.
+      }
+    }
+  }, [clientId]);
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -192,6 +261,10 @@ function LogView({
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
+    if (!engagementId) {
+      setError('Pick a client + engagement first.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -218,6 +291,9 @@ function LogView({
   const totalHours = entries.reduce((s, e) => s + Number(e.hours), 0);
   const totalAmount = entries.reduce((s, e) => s + e.standardAmountCents, 0);
 
+  const clientHasNoActive = clientId && filteredEngagements.length === 0;
+  const activeClients = clients.filter((c) => c.status !== 'ARCHIVED');
+
   return (
     <>
       <Card title="Log time">
@@ -232,26 +308,47 @@ function LogView({
         >
           <label style={{ display: 'block' }}>
             <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-              Engagement
+              Client
             </div>
-            <Select value={engagementId} onChange={setEngagementId} required>
+            <Select
+              value={clientId}
+              onChange={(v) => {
+                setClientId(v);
+                setEngagementId('');
+              }}
+              required
+            >
               <option value="">— select —</option>
-              {engagements.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.name}
+              {activeClients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
                 </option>
               ))}
             </Select>
           </label>
           <label style={{ display: 'block' }}>
             <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-              Work code
+              Engagement
+              {filteredEngagements.length === 1 && clientId && (
+                <span style={{ color: tokens.color.accent, marginLeft: 6 }}>(auto-selected)</span>
+              )}
             </div>
-            <Select value={workCodeId} onChange={setWorkCodeId}>
-              <option value="">— none —</option>
-              {workCodes.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
+            <Select
+              value={engagementId}
+              onChange={setEngagementId}
+              required
+              disabled={!clientId || filteredEngagements.length === 0}
+            >
+              <option value="">
+                {!clientId
+                  ? '— pick client first —'
+                  : filteredEngagements.length === 0
+                    ? '— no active engagements —'
+                    : '— select —'}
+              </option>
+              {filteredEngagements.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.name}
                 </option>
               ))}
             </Select>
@@ -272,6 +369,19 @@ function LogView({
             onChange={(e) => setHours(e.target.value)}
           />
           <div style={{ gridColumn: 'span 3', display: 'grid', gap: 6 }}>
+            <label style={{ display: 'block' }}>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Work code
+              </div>
+              <Select value={workCodeId} onChange={setWorkCodeId}>
+                <option value="">— none —</option>
+                {workCodes.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </Select>
+            </label>
             <Input
               label="Description"
               value={description}
@@ -289,6 +399,27 @@ function LogView({
             {submitting ? 'Saving…' : 'Log'}
           </Button>
         </form>
+        {clientHasNoActive && (
+          <p
+            style={{
+              marginTop: 12,
+              padding: 10,
+              background: tokens.color.surface,
+              border: `1px dashed ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              fontSize: 13,
+              color: tokens.color.textMuted,
+            }}
+          >
+            This client has no active engagements.{' '}
+            <a
+              href={`/engagements/new?clientId=${clientId}`}
+              style={{ color: tokens.color.accent }}
+            >
+              Create one →
+            </a>
+          </p>
+        )}
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
       </Card>
 
@@ -790,11 +921,13 @@ function Select({
   value,
   onChange,
   required,
+  disabled,
   children,
 }: {
   value: string;
   onChange: (v: string) => void;
   required?: boolean;
+  disabled?: boolean;
   children: ReactNode;
 }): JSX.Element {
   return (
@@ -802,11 +935,12 @@ function Select({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
+      disabled={disabled}
       style={{
         width: '100%',
         padding: '10px 12px',
         background: tokens.color.surface,
-        color: tokens.color.text,
+        color: disabled ? tokens.color.textMuted : tokens.color.text,
         border: `1px solid ${tokens.color.border}`,
         borderRadius: tokens.radius.md,
         fontSize: 14,
