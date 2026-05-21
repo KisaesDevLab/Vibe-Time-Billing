@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
@@ -916,6 +916,82 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .set({ engagementId: toEngagementId })
         .where(eq(timeEntries.id, prior.id));
       res.json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Bulk cost-transfer (Phase 11 #12). Move many time entries to a
+  // different engagement in one call. Each entry gets a new version row
+  // and audit_log entry. Locked or billed entries are skipped.
+  // -----------------------------------------------------------------
+  router.post(
+    '/bulk-transfer',
+    requirePermission(deps, 'time_entry:update:any'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, transferred: 0, skipped: 0 });
+        return;
+      }
+      const body = req.body as { entryIds?: unknown; toEngagementId?: unknown };
+      if (
+        !Array.isArray(body.entryIds) ||
+        body.entryIds.length === 0 ||
+        typeof body.toEngagementId !== 'string'
+      ) {
+        res.status(400).json({ error: 'entryIds_and_toEngagementId_required' });
+        return;
+      }
+      const entryIds = body.entryIds.filter((x): x is string => typeof x === 'string');
+      const [target] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, body.toEngagementId))
+        .limit(1);
+      if (!target) {
+        res.status(404).json({ error: 'target_engagement_not_found' });
+        return;
+      }
+      const [targetClient] = await deps.db
+        .select({ firmId: clients.firmId })
+        .from(clients)
+        .where(eq(clients.id, target.clientId))
+        .limit(1);
+      if (!targetClient || targetClient.firmId !== session.firmId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const priors = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(inArray(timeEntries.id, entryIds));
+      let transferred = 0;
+      let skipped = 0;
+      for (const prior of priors) {
+        if (prior.lockedAt || prior.status === 'BILLED' || prior.status === 'LOCKED') {
+          skipped++;
+          continue;
+        }
+        const [maxVersion] = await deps.db
+          .select({ v: timeEntryVersions.version })
+          .from(timeEntryVersions)
+          .where(eq(timeEntryVersions.timeEntryId, prior.id))
+          .orderBy(desc(timeEntryVersions.version))
+          .limit(1);
+        const nextVersion = (maxVersion?.v ?? 0) + 1;
+        await deps.db.insert(timeEntryVersions).values({
+          timeEntryId: prior.id,
+          version: nextVersion,
+          fields: prior,
+          editedById: session.appUserId,
+        });
+        await deps.db
+          .update(timeEntries)
+          .set({ engagementId: body.toEngagementId })
+          .where(eq(timeEntries.id, prior.id));
+        transferred++;
+      }
+      res.json({ ok: true, transferred, skipped });
     },
   );
 

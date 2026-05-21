@@ -266,6 +266,66 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
   });
 
   // ---------------------------------------------------------------
+  // Notification preferences for the active client (Phase 16/19).
+  // ---------------------------------------------------------------
+  router.get('/notification-preferences', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ preferences: null });
+      return;
+    }
+    const [row] = await deps.db
+      .select({ prefs: clientPortalAccess.notificationPreferences })
+      .from(clientPortalAccess)
+      .where(
+        and(
+          eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+          eq(clientPortalAccess.clientId, session.activeClientId),
+        ),
+      )
+      .limit(1);
+    res.json({ preferences: row?.prefs ?? null });
+  });
+
+  router.patch(
+    '/notification-preferences',
+    deps.requireAuth,
+    async (req: Request, res: Response) => {
+      const session = req.portalSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { preferences?: unknown };
+      if (!body.preferences || typeof body.preferences !== 'object') {
+        res.status(400).json({ error: 'preferences_required' });
+        return;
+      }
+      const channels = (v: unknown): ('EMAIL' | 'SMS')[] =>
+        Array.isArray(v) ? v.filter((c): c is 'EMAIL' | 'SMS' => c === 'EMAIL' || c === 'SMS') : [];
+      const incoming = body.preferences as Record<string, unknown>;
+      const sanitized = {
+        newInvoice: channels(incoming['newInvoice']),
+        paymentConfirmation: channels(incoming['paymentConfirmation']),
+        paymentFailed: channels(incoming['paymentFailed']),
+        documentReady: channels(incoming['documentReady']),
+        autoPayUpcoming: channels(incoming['autoPayUpcoming']),
+        statementMonthly: channels(incoming['statementMonthly']),
+      };
+      await deps.db
+        .update(clientPortalAccess)
+        .set({ notificationPreferences: sanitized })
+        .where(
+          and(
+            eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+            eq(clientPortalAccess.clientId, session.activeClientId),
+          ),
+        );
+      res.json({ ok: true, preferences: sanitized });
+    },
+  );
+
+  // ---------------------------------------------------------------
   // Entity switcher (Phase 19 #21). List clients this identity has
   // ACTIVE portal access to and switch the active one. The active
   // client scopes every other portal endpoint.
