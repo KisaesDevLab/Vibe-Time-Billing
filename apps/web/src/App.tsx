@@ -21,6 +21,7 @@ import { ClientsPage } from './pages/Clients';
 import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
+import { EngagementsPage } from './pages/Engagements';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 import { OnboardingPage } from './pages/Onboarding';
@@ -53,6 +54,7 @@ export function App(): JSX.Element {
                   <Route path="/" element={<DashboardPage />} />
                   <Route path="/clients" element={<ClientsPage />} />
                   <Route path="/clients/:id" element={<ClientDetailPage />} />
+                  <Route path="/engagements" element={<EngagementsPage />} />
                   <Route path="/engagements/new" element={<EngagementCreatePage />} />
                   <Route path="/engagements/:id" element={<EngagementDetailPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
@@ -103,6 +105,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         { label: 'Dashboard', href: '/', active: location.pathname === '/' },
         { label: 'Clients', href: '/clients', active: location.pathname.startsWith('/clients') },
         { label: 'Time', href: '/time', active: location.pathname.startsWith('/time') },
+        {
+          label: 'Engagements',
+          href: '/engagements',
+          active: location.pathname.startsWith('/engagements'),
+        },
         { label: 'Billing', href: '/billing', active: location.pathname.startsWith('/billing') },
         { label: 'WIP', href: '/wip', active: location.pathname.startsWith('/wip') },
         {

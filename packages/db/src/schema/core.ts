@@ -96,6 +96,28 @@ export const engagementStatus = pgEnum('engagement_status', [
   'ARCHIVED',
 ]);
 
+// v2 Part 2 — operational workflow state, distinct from billing
+// lifecycle status. Drives the /engagements list view (Canopy-style).
+export const engagementWorkflowState = pgEnum('engagement_workflow_state', [
+  'NO_STATUS',
+  'NOT_STARTED',
+  'READY',
+  'IN_PROGRESS',
+  'ON_HOLD',
+  'NEEDS_REVIEW',
+  'WITH_CLIENT',
+  'COMPLETED',
+  'CANCELED',
+  'DRAFT',
+]);
+
+export const engagementPriority = pgEnum('engagement_priority', [
+  'LOW',
+  'MEDIUM',
+  'HIGH',
+  'URGENT',
+]);
+
 export const recurringFrequency = pgEnum('recurring_frequency', [
   'WEEKLY',
   'BIWEEKLY',
@@ -1001,6 +1023,10 @@ export const engagements = pgTable(
     scopeDefinition: text('scope_definition'),
 
     status: engagementStatus('status').notNull().default('PROPOSED'),
+    // v2 Part 2 — operational workflow + priority (distinct from
+    // lifecycle status above).
+    workflowState: engagementWorkflowState('workflow_state').notNull().default('NO_STATUS'),
+    priority: engagementPriority('priority').notNull().default('MEDIUM'),
     startDate: date('start_date'),
     endDate: date('end_date'),
     closedAt: timestamp('closed_at', { withTimezone: true }),

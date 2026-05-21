@@ -20,3 +20,9 @@ export { Tabs, type TabsProps, type TabSpec } from './Tabs';
 export { Wizard, type WizardProps, type WizardStep } from './Wizard';
 export { Combobox, type ComboboxProps, type ComboboxOption } from './Combobox';
 export { MultiCombobox, type MultiComboboxProps } from './MultiCombobox';
+export {
+  ColumnFilter,
+  type ColumnFilterProps,
+  type ColumnFilterValue,
+  type SortDir,
+} from './ColumnFilter';

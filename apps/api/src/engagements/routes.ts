@@ -4,7 +4,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -114,17 +114,10 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      // Scope: only engagements whose client belongs to this firm.
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, firmId));
-      const ids = firmClients.map((c) => c.id);
-      if (ids.length === 0) {
-        res.json({ items: [] });
-        return;
-      }
-      const conds = [inArray(engagements.clientId, ids)];
+      // Scope via inner join on client so we don't have to pre-fetch
+      // firm clients separately for big firms.
+      const conds = [eq(clients.firmId, firmId)];
+
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       const allowed = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'];
       if (status && allowed.includes(status)) {
@@ -135,10 +128,62 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           ),
         );
       }
+
+      // v2 Part 2 — workflow_state filter (CSV multi-select).
+      const wsRaw =
+        typeof req.query['workflowState'] === 'string' ? req.query['workflowState'] : '';
+      const wsAllowed = [
+        'NO_STATUS',
+        'NOT_STARTED',
+        'READY',
+        'IN_PROGRESS',
+        'ON_HOLD',
+        'NEEDS_REVIEW',
+        'WITH_CLIENT',
+        'COMPLETED',
+        'CANCELED',
+        'DRAFT',
+      ] as const;
+      type WorkflowState = (typeof wsAllowed)[number];
+      const wsValues = wsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s): s is WorkflowState => (wsAllowed as readonly string[]).includes(s));
+      if (wsValues.length > 0) {
+        conds.push(inArray(engagements.workflowState, wsValues));
+      }
+
+      // Priority filter (CSV multi-select).
+      const prRaw = typeof req.query['priority'] === 'string' ? req.query['priority'] : '';
+      const prAllowed = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;
+      type Priority = (typeof prAllowed)[number];
+      const prValues = prRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s): s is Priority => (prAllowed as readonly string[]).includes(s));
+      if (prValues.length > 0) {
+        conds.push(inArray(engagements.priority, prValues));
+      }
+
       const partnerId = typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : null;
       if (partnerId) conds.push(eq(engagements.partnerId, partnerId));
       const managerId = typeof req.query['managerId'] === 'string' ? req.query['managerId'] : null;
       if (managerId) conds.push(eq(engagements.managerId, managerId));
+
+      // v2 Part 2 — assigneeUserId matches partner OR manager.
+      const assigneeUserId =
+        typeof req.query['assigneeUserId'] === 'string' ? req.query['assigneeUserId'] : null;
+      if (assigneeUserId) {
+        const orExpr = or(
+          eq(engagements.partnerId, assigneeUserId),
+          eq(engagements.managerId, assigneeUserId),
+        );
+        if (orExpr) conds.push(orExpr);
+      }
+
+      const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+      if (clientId) conds.push(eq(engagements.clientId, clientId));
+
       const feeStructure =
         typeof req.query['feeStructure'] === 'string' ? req.query['feeStructure'] : null;
       const allowedFees = [
@@ -161,11 +206,79 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           ),
         );
       }
+
       const items = await deps.db
-        .select()
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          name: engagements.name,
+          status: engagements.status,
+          workflowState: engagements.workflowState,
+          priority: engagements.priority,
+          feeStructure: engagements.feeStructure,
+          feeAmountCents: engagements.feeAmountCents,
+          budgetHours: engagements.budgetHours,
+          partnerId: engagements.partnerId,
+          managerId: engagements.managerId,
+          startDate: engagements.startDate,
+          endDate: engagements.endDate,
+          engagementTypeId: engagements.engagementTypeId,
+          createdAt: engagements.createdAt,
+          // Joined fields so the UI doesn't need separate lookups.
+          clientName: clients.name,
+        })
         .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
         .where(and(...conds))
         .limit(500);
+
+      // CSV export — same shape, sent as text/csv.
+      if (req.query['format'] === 'csv') {
+        const header = [
+          'id',
+          'name',
+          'client',
+          'status',
+          'workflow_state',
+          'priority',
+          'fee_structure',
+          'fee_amount_cents',
+          'budget_hours',
+          'start_date',
+          'end_date',
+        ];
+        const lines = [header.join(',')];
+        const cell = (s: string | number | null | undefined): string => {
+          if (s == null) return '';
+          const str = String(s);
+          return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+        };
+        for (const it of items) {
+          lines.push(
+            [
+              cell(it.id),
+              cell(it.name),
+              cell(it.clientName),
+              cell(it.status),
+              cell(it.workflowState),
+              cell(it.priority),
+              cell(it.feeStructure),
+              cell(it.feeAmountCents),
+              cell(it.budgetHours),
+              cell(it.startDate),
+              cell(it.endDate),
+            ].join(','),
+          );
+        }
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="engagements-${new Date().toISOString().slice(0, 10)}.csv"`,
+        );
+        res.send(lines.join('\n') + '\n');
+        return;
+      }
+
       res.json({ items });
     },
   );
@@ -583,6 +696,88 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .values({ ...(clonable as typeof src), name: newName, status: 'PROPOSED' })
         .returning({ id: engagements.id });
       res.status(201).json({ id: row?.id });
+    },
+  );
+
+  // v2 Part 2 — operational workflow state, distinct from lifecycle
+  // /status above. Inline-edit from the engagements list view + the
+  // engagement detail header.
+  router.patch(
+    '/:id/workflow-state',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { workflowState?: unknown };
+      const ws = typeof body.workflowState === 'string' ? body.workflowState : '';
+      const allowed = [
+        'NO_STATUS',
+        'NOT_STARTED',
+        'READY',
+        'IN_PROGRESS',
+        'ON_HOLD',
+        'NEEDS_REVIEW',
+        'WITH_CLIENT',
+        'COMPLETED',
+        'CANCELED',
+        'DRAFT',
+      ] as const;
+      type WorkflowState = (typeof allowed)[number];
+      if (!(allowed as readonly string[]).includes(ws)) {
+        res.status(400).json({ error: 'invalid_workflow_state' });
+        return;
+      }
+      const session = req.staffSession!;
+      await deps.db
+        .update(engagements)
+        .set({ workflowState: ws as WorkflowState })
+        .where(eq(engagements.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { workflowState: ws },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.patch(
+    '/:id/priority',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { priority?: unknown };
+      const pr = typeof body.priority === 'string' ? body.priority : '';
+      const allowed = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;
+      type Priority = (typeof allowed)[number];
+      if (!(allowed as readonly string[]).includes(pr)) {
+        res.status(400).json({ error: 'invalid_priority' });
+        return;
+      }
+      const session = req.staffSession!;
+      await deps.db
+        .update(engagements)
+        .set({ priority: pr as Priority })
+        .where(eq(engagements.id, req.params['id']!));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { priority: pr },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 
