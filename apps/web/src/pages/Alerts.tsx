@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useState } from 'react';
 
-import { Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -59,6 +59,7 @@ export function AlertsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
+      <SummarizeButton alerts={items} />
       <Card title="Inbox · worker alerts">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
           Surfaces the recent alert events emitted by the background workers (audit anomalies, scope
@@ -97,5 +98,52 @@ export function AlertsPage(): JSX.Element {
         />
       </Card>
     </div>
+  );
+}
+
+function SummarizeButton({ alerts }: { alerts: AlertRow[] }): JSX.Element {
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function ask(): Promise<void> {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ narrative: string }>('/api/staff/ai/anomaly-summary', {
+        method: 'POST',
+        body: JSON.stringify({
+          alerts: alerts.map((a) => ({ entityType: a.entityType })),
+        }),
+      });
+      setText(r.narrative);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (alerts.length === 0) return <></>;
+  return (
+    <Card title="AI summary">
+      <Button size="sm" variant="secondary" onClick={() => void ask()} disabled={busy}>
+        {busy ? 'Asking AI…' : '✨ Summarize these alerts'}
+      </Button>
+      {text && (
+        <p
+          style={{
+            marginTop: 12,
+            fontSize: 13,
+            color: tokens.color.text,
+            background: tokens.color.surface,
+            padding: 12,
+            borderRadius: tokens.radius.sm,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {text}
+        </p>
+      )}
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+    </Card>
   );
 }

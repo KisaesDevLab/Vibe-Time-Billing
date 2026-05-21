@@ -451,6 +451,80 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     },
   );
 
+  // -----------------------------------------------------------------
+  // AI-augmented anomaly detection (Phase 23 #10). Combines the rule-
+  // based scope_creep + wip_age + audit_anomaly alerts from audit_log
+  // with an LLM summary that explains the patterns in partner-readable
+  // language. The LLM never sees PII — only aggregated counts.
+  // -----------------------------------------------------------------
+  router.post(
+    '/anomaly-summary',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const provider = await pickProvider(deps);
+      if (!provider) {
+        res.status(503).json({ error: 'no_ai_provider' });
+        return;
+      }
+      const budget = await loadBudget(deps, session.firmId, now());
+      if (budget.kind === 'exhausted') {
+        res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+        return;
+      }
+      const body = req.body as { alerts?: unknown };
+      if (!Array.isArray(body.alerts) || body.alerts.length === 0) {
+        res.status(400).json({ error: 'alerts_required' });
+        return;
+      }
+      // Strip ids; only types + counts go to the LLM.
+      const summary = body.alerts.reduce<Record<string, number>>((acc, a) => {
+        if (typeof a === 'object' && a !== null) {
+          const t = String((a as { entityType?: unknown }).entityType ?? 'unknown');
+          acc[t] = (acc[t] ?? 0) + 1;
+        }
+        return acc;
+      }, {});
+      const started = Date.now();
+      try {
+        const result = await provider.complete({
+          systemPrompt:
+            'You explain CPA practice anomalies to a partner. Output 2-3 short bullet ' +
+            'points listing the most concerning patterns and a one-line suggested action ' +
+            'for each. No PII.',
+          userPrompt:
+            'Alert counts by type:\n' +
+            Object.entries(summary)
+              .map(([k, v]) => `- ${k}: ${v}`)
+              .join('\n'),
+          maxTokens: 280,
+        });
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'anomaly_summary',
+          success: true,
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+          usage: result.usage,
+          costCents: result.costEstimateCents,
+        });
+        res.json({ summary, narrative: result.text.trim(), providerId: result.providerId });
+      } catch (err) {
+        await logAiRequest(deps, {
+          firmId: session.firmId,
+          providerId: provider.id,
+          feature: 'anomaly_summary',
+          success: false,
+          errorMessage: err instanceof Error ? err.message : 'unknown',
+          appUserId: session.appUserId,
+          latencyMs: Date.now() - started,
+        });
+        res.status(502).json({ error: 'ai_provider_failed' });
+      }
+    },
+  );
+
   router.get(
     '/request-log',
     requirePermission(deps, 'admin:ai:manage'),
