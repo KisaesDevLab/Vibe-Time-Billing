@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useState, type FormEvent } from 'react';
 
-import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -70,24 +70,20 @@ function ServiceLinesPanel(): JSX.Element {
     <Card title="Service lines">
       <form onSubmit={create} style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" required />
-        <select
-          value={cat}
-          onChange={(e) => setCat(e.target.value as ServiceLine['category'])}
-          style={{
-            background: tokens.color.surface,
-            color: tokens.color.text,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.md,
-            padding: '0 10px',
-            fontSize: 14,
-          }}
-        >
-          <option value="tax">Tax</option>
-          <option value="audit">Audit</option>
-          <option value="advisory">Advisory</option>
-          <option value="bookkeeping">Bookkeeping</option>
-          <option value="payroll">Payroll</option>
-        </select>
+        <div style={{ width: 180 }}>
+          <Combobox
+            ariaLabel="Category"
+            value={cat}
+            onChange={(v) => setCat(v as ServiceLine['category'])}
+            options={[
+              { value: 'tax', label: 'Tax' },
+              { value: 'audit', label: 'Audit' },
+              { value: 'advisory', label: 'Advisory' },
+              { value: 'bookkeeping', label: 'Bookkeeping' },
+              { value: 'payroll', label: 'Payroll' },
+            ]}
+          />
+        </div>
         <Button type="submit">Add</Button>
       </form>
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
@@ -231,22 +227,18 @@ function ReasonCodesPanel(): JSX.Element {
   return (
     <Card title="Reason codes">
       <form onSubmit={create} style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <select
-          value={cat}
-          onChange={(e) => setCat(e.target.value as ReasonCode['category'])}
-          style={{
-            background: tokens.color.surface,
-            color: tokens.color.text,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.md,
-            padding: '0 10px',
-            fontSize: 14,
-          }}
-        >
-          <option value="WRITE_DOWN">Write-down</option>
-          <option value="WRITE_UP">Write-up</option>
-          <option value="TRANSFER">Transfer</option>
-        </select>
+        <div style={{ width: 180 }}>
+          <Combobox
+            ariaLabel="Category"
+            value={cat}
+            onChange={(v) => setCat(v as ReasonCode['category'])}
+            options={[
+              { value: 'WRITE_DOWN', label: 'Write-down' },
+              { value: 'WRITE_UP', label: 'Write-up' },
+              { value: 'TRANSFER', label: 'Transfer' },
+            ]}
+          />
+        </div>
         <Input
           value={label}
           onChange={(e) => setLabel(e.target.value)}

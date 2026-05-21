@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -130,26 +130,28 @@ export function CommunicationsCard({ clientId }: Props): JSX.Element {
           }}
         >
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <select
+            <Combobox
+              ariaLabel="Channel"
               value={draft.channel}
-              onChange={(e) => setDraft({ ...draft, channel: e.target.value as Channel })}
-              style={fieldStyle}
-            >
-              <option value="CALL">Phone call</option>
-              <option value="MEETING">Meeting</option>
-              <option value="NOTE">Note</option>
-              <option value="EMAIL">Email (manual entry)</option>
-              <option value="SMS">SMS (manual entry)</option>
-            </select>
-            <select
+              onChange={(v) => setDraft({ ...draft, channel: v as Channel })}
+              options={[
+                { value: 'CALL', label: 'Phone call' },
+                { value: 'MEETING', label: 'Meeting' },
+                { value: 'NOTE', label: 'Note' },
+                { value: 'EMAIL', label: 'Email (manual entry)' },
+                { value: 'SMS', label: 'SMS (manual entry)' },
+              ]}
+            />
+            <Combobox
+              ariaLabel="Direction"
               value={draft.direction}
-              onChange={(e) => setDraft({ ...draft, direction: e.target.value as Direction })}
-              style={fieldStyle}
-            >
-              <option value="INBOUND">From client</option>
-              <option value="OUTBOUND">To client</option>
-              <option value="INTERNAL">Internal</option>
-            </select>
+              onChange={(v) => setDraft({ ...draft, direction: v as Direction })}
+              options={[
+                { value: 'INBOUND', label: 'From client' },
+                { value: 'OUTBOUND', label: 'To client' },
+                { value: 'INTERNAL', label: 'Internal' },
+              ]}
+            />
           </div>
           <input
             value={draft.subject}

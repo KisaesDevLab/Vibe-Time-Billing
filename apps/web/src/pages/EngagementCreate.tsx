@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -47,17 +47,6 @@ const FEE_STRUCTURES = [
   'RECURRING_SUBSCRIPTION',
 ] as const;
 type FeeStructure = (typeof FEE_STRUCTURES)[number];
-
-const fieldStyle: React.CSSProperties = {
-  padding: '8px 10px',
-  background: tokens.color.surface,
-  color: tokens.color.text,
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.md,
-  fontSize: 13,
-  width: '100%',
-  boxSizing: 'border-box',
-};
 
 export function EngagementCreatePage(): JSX.Element {
   const [search] = useSearchParams();
@@ -157,8 +146,8 @@ export function EngagementCreatePage(): JSX.Element {
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-          <label style={{ display: 'block' }}>
-            <span
+          <div>
+            <div
               style={{
                 fontSize: 11,
                 color: tokens.color.textMuted,
@@ -167,23 +156,18 @@ export function EngagementCreatePage(): JSX.Element {
               }}
             >
               Client *
-            </span>
-            <select
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
+            </div>
+            <Combobox
+              ariaLabel="Client"
               required
-              style={fieldStyle}
-            >
-              <option value="">— select —</option>
-              {activeClients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={{ display: 'block' }}>
-            <span
+              value={clientId}
+              onChange={setClientId}
+              options={activeClients.map<ComboboxOption>((c) => ({ value: c.id, label: c.name }))}
+              placeholder="— select —"
+            />
+          </div>
+          <div>
+            <div
               style={{
                 fontSize: 11,
                 color: tokens.color.textMuted,
@@ -192,21 +176,20 @@ export function EngagementCreatePage(): JSX.Element {
               }}
             >
               Start from template
-            </span>
-            <select
+            </div>
+            <Combobox
+              ariaLabel="Engagement template"
+              clearable
               value={pickedTemplateId}
-              onChange={(e) => applyTemplate(e.target.value)}
-              style={fieldStyle}
-            >
-              <option value="">— blank —</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                  {t.isSystem ? ' (system)' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={applyTemplate}
+              options={templates.map<ComboboxOption>((t) => ({
+                value: t.id,
+                label: t.name,
+                description: t.isSystem ? 'system' : undefined,
+              }))}
+              placeholder="— blank —"
+            />
+          </div>
         </div>
 
         {pickedTemplateId && (
@@ -219,8 +202,8 @@ export function EngagementCreatePage(): JSX.Element {
           <Input label="Name *" value={name} onChange={(e) => setName(e.target.value)} required />
 
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12 }}>
-            <label style={{ display: 'block' }}>
-              <span
+            <div>
+              <div
                 style={{
                   fontSize: 11,
                   color: tokens.color.textMuted,
@@ -229,19 +212,14 @@ export function EngagementCreatePage(): JSX.Element {
                 }}
               >
                 Fee structure
-              </span>
-              <select
+              </div>
+              <Combobox
+                ariaLabel="Fee structure"
                 value={feeStructure}
-                onChange={(e) => setFeeStructure(e.target.value as FeeStructure)}
-                style={fieldStyle}
-              >
-                {FEE_STRUCTURES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(v) => setFeeStructure(v as FeeStructure)}
+                options={FEE_STRUCTURES.map<ComboboxOption>((s) => ({ value: s, label: s }))}
+              />
+            </div>
             <Input
               type="number"
               min={0}

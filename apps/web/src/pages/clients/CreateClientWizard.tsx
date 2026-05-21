@@ -12,7 +12,15 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Input, Pill, Wizard, tokens, type WizardStep } from '@vibe/ui';
+import {
+  Combobox,
+  Input,
+  Pill,
+  Wizard,
+  tokens,
+  type ComboboxOption,
+  type WizardStep,
+} from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -289,22 +297,17 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <label style={{ display: 'block' }}>
+            <div>
               <span style={labelStyle}>Client owner *</span>
-              <select
-                value={partnerInChargeId}
-                onChange={(e) => setPartnerInChargeId(e.target.value)}
+              <Combobox
+                ariaLabel="Client owner"
                 required
-                style={fieldStyle}
-              >
-                <option value="">— select —</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.fullName}
-                  </option>
-                ))}
-              </select>
-            </label>
+                value={partnerInChargeId}
+                onChange={setPartnerInChargeId}
+                options={users.map<ComboboxOption>((u) => ({ value: u.id, label: u.fullName }))}
+                placeholder="— select —"
+              />
+            </div>
             <Input
               label="External ID"
               value={externalId}
@@ -315,37 +318,35 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             {clientType === 'INDIVIDUAL' && (
-              <label style={{ display: 'block' }}>
+              <div>
                 <span style={labelStyle}>Filing status</span>
-                <select
+                <Combobox
+                  ariaLabel="Filing status"
+                  clearable
                   value={filingStatus}
-                  onChange={(e) => setFilingStatus(e.target.value as FilingStatus)}
-                  style={fieldStyle}
-                >
-                  <option value="">— select —</option>
-                  <option value="SINGLE">Single</option>
-                  <option value="MFJ">Married filing jointly</option>
-                  <option value="MFS">Married filing separately</option>
-                  <option value="HOH">Head of household</option>
-                  <option value="QW">Qualifying widow(er)</option>
-                </select>
-              </label>
+                  onChange={(v) => setFilingStatus(v as FilingStatus)}
+                  options={[
+                    { value: 'SINGLE', label: 'Single' },
+                    { value: 'MFJ', label: 'Married filing jointly' },
+                    { value: 'MFS', label: 'Married filing separately' },
+                    { value: 'HOH', label: 'Head of household' },
+                    { value: 'QW', label: 'Qualifying widow(er)' },
+                  ]}
+                  placeholder="— select —"
+                />
+              </div>
             )}
-            <label style={{ display: 'block' }}>
+            <div>
               <span style={labelStyle}>Source</span>
-              <select
+              <Combobox
+                ariaLabel="Source"
+                clearable
                 value={sourceId}
-                onChange={(e) => setSourceId(e.target.value)}
-                style={fieldStyle}
-              >
-                <option value="">— select —</option>
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={setSourceId}
+                options={sources.map<ComboboxOption>((s) => ({ value: s.id, label: s.name }))}
+                placeholder="— select —"
+              />
+            </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -454,25 +455,19 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
                     )
                   }
                 />
-                <label style={{ display: 'block' }}>
+                <div>
                   <span style={labelStyle}>Role</span>
-                  <select
+                  <Combobox
+                    ariaLabel="Contact role"
+                    clearable
                     value={c.roleId}
-                    onChange={(e) =>
-                      setContacts(
-                        contacts.map((x, j) => (j === i ? { ...x, roleId: e.target.value } : x)),
-                      )
+                    onChange={(val) =>
+                      setContacts(contacts.map((x, j) => (j === i ? { ...x, roleId: val } : x)))
                     }
-                    style={fieldStyle}
-                  >
-                    <option value="">— select —</option>
-                    {roles.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    options={roles.map<ComboboxOption>((r) => ({ value: r.id, label: r.name }))}
+                    placeholder="— select —"
+                  />
+                </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
                 <Input
@@ -708,13 +703,3 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
     />
   );
 }
-
-const fieldStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '8px 10px',
-  background: tokens.color.surface,
-  color: tokens.color.text,
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.md,
-  fontSize: 13,
-};

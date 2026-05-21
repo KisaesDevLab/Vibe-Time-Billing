@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
-import { AiPanel, Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
+import {
+  AiPanel,
+  Button,
+  Card,
+  Combobox,
+  Input,
+  Pill,
+  Table,
+  tokens,
+  type ComboboxOption,
+} from '@vibe/ui';
 
 import { api } from '../api-client';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
@@ -363,7 +373,7 @@ function LogView({
             alignItems: 'end',
           }}
         >
-          <label style={{ display: 'block' }}>
+          <div>
             <div
               style={{
                 fontSize: 12,
@@ -400,50 +410,47 @@ function LogView({
                 </button>
               )}
             </div>
-            <Select
+            <Combobox
+              ariaLabel="Client"
+              required
               value={clientId}
               onChange={(v) => {
                 setClientId(v);
                 setEngagementId('');
               }}
-              required
-            >
-              <option value="">— select —</option>
-              {activeClients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {pinnedClientIds.has(c.id) ? '★ ' : ''}
-                  {c.name}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label style={{ display: 'block' }}>
+              options={activeClients.map<ComboboxOption>((c) => ({
+                value: c.id,
+                label: pinnedClientIds.has(c.id) ? `★ ${c.name}` : c.name,
+              }))}
+              placeholder="— select client —"
+            />
+          </div>
+          <div>
             <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
               Engagement
               {filteredEngagements.length === 1 && clientId && (
                 <span style={{ color: tokens.color.accent, marginLeft: 6 }}>(auto-selected)</span>
               )}
             </div>
-            <Select
-              value={engagementId}
-              onChange={setEngagementId}
+            <Combobox
+              ariaLabel="Engagement"
               required
               disabled={!clientId || filteredEngagements.length === 0}
-            >
-              <option value="">
-                {!clientId
+              value={engagementId}
+              onChange={setEngagementId}
+              options={filteredEngagements.map<ComboboxOption>((e) => ({
+                value: e.id,
+                label: e.name,
+              }))}
+              placeholder={
+                !clientId
                   ? '— pick client first —'
                   : filteredEngagements.length === 0
                     ? '— no active engagements —'
-                    : '— select —'}
-              </option>
-              {filteredEngagements.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.name}
-                </option>
-              ))}
-            </Select>
-          </label>
+                    : '— select —'
+              }
+            />
+          </div>
           <Input
             type="date"
             label="Date"
@@ -460,19 +467,19 @@ function LogView({
             onChange={(e) => setHours(e.target.value)}
           />
           <div style={{ gridColumn: 'span 3', display: 'grid', gap: 6 }}>
-            <label style={{ display: 'block' }}>
+            <div>
               <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
                 Work code
               </div>
-              <Select value={workCodeId} onChange={setWorkCodeId}>
-                <option value="">— none —</option>
-                {workCodes.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </Select>
-            </label>
+              <Combobox
+                ariaLabel="Work code"
+                clearable
+                value={workCodeId}
+                onChange={setWorkCodeId}
+                options={workCodes.map<ComboboxOption>((w) => ({ value: w.id, label: w.name }))}
+                placeholder="— none —"
+              />
+            </div>
             <Input
               label="Description"
               value={description}
@@ -1052,40 +1059,6 @@ const inputStyle = {
   borderRadius: tokens.radius.sm,
   fontSize: 13,
 } as const;
-
-function Select({
-  value,
-  onChange,
-  required,
-  disabled,
-  children,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  required?: boolean;
-  disabled?: boolean;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      required={required}
-      disabled={disabled}
-      style={{
-        width: '100%',
-        padding: '10px 12px',
-        background: tokens.color.surface,
-        color: disabled ? tokens.color.textMuted : tokens.color.text,
-        border: `1px solid ${tokens.color.border}`,
-        borderRadius: tokens.radius.md,
-        fontSize: 14,
-      }}
-    >
-      {children}
-    </select>
-  );
-}
 
 function th(align: 'left' | 'right'): React.CSSProperties {
   return {

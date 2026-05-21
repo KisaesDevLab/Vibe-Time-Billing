@@ -18,3 +18,5 @@ export { AuthLayout, type AuthLayoutProps } from './AuthLayout';
 export { ThemeToggle, useTheme, type ThemeToggleProps } from './ThemeToggle';
 export { Tabs, type TabsProps, type TabSpec } from './Tabs';
 export { Wizard, type WizardProps, type WizardStep } from './Wizard';
+export { Combobox, type ComboboxProps, type ComboboxOption } from './Combobox';
+export { MultiCombobox, type MultiComboboxProps } from './MultiCombobox';

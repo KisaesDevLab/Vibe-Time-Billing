@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -285,19 +285,20 @@ export function MessagingPage(): JSX.Element {
           Choose a provider and supply credentials. Saved credentials are encrypted at rest. Test
           before saving to verify connectivity. Clearing restores env-var defaults.
         </p>
-        <label style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
           <span style={labelStyle}>Provider</span>
-          <select
+          <Combobox
+            ariaLabel="Email provider"
             value={emailDraft.provider}
-            onChange={(e) => setEmailDraft(emptyEmailDraft(e.target.value as EmailProvider))}
-            style={fieldStyle}
-          >
-            <option value="smtp">SMTP</option>
-            <option value="postmark">Postmark</option>
-            <option value="resend">Resend</option>
-            <option value="ses">AWS SES</option>
-          </select>
-        </label>
+            onChange={(v) => setEmailDraft(emptyEmailDraft(v as EmailProvider))}
+            options={[
+              { value: 'smtp', label: 'SMTP' },
+              { value: 'postmark', label: 'Postmark' },
+              { value: 'resend', label: 'Resend' },
+              { value: 'ses', label: 'AWS SES' },
+            ]}
+          />
+        </div>
 
         <div style={{ display: 'grid', gap: 8 }}>
           <label style={{ display: 'grid', gap: 4 }}>
@@ -458,18 +459,19 @@ export function MessagingPage(): JSX.Element {
           Choose a provider and supply credentials. Test recipients should be in E.164 format (e.g.
           +12025551212).
         </p>
-        <label style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
           <span style={labelStyle}>Provider</span>
-          <select
+          <Combobox
+            ariaLabel="SMS provider"
             value={smsDraft.provider}
-            onChange={(e) => setSmsDraft(emptySmsDraft(e.target.value as SmsProvider))}
-            style={fieldStyle}
-          >
-            <option value="textlink">TextLink</option>
-            <option value="twilio">Twilio</option>
-            <option value="sns">AWS SNS</option>
-          </select>
-        </label>
+            onChange={(v) => setSmsDraft(emptySmsDraft(v as SmsProvider))}
+            options={[
+              { value: 'textlink', label: 'TextLink' },
+              { value: 'twilio', label: 'Twilio' },
+              { value: 'sns', label: 'AWS SNS' },
+            ]}
+          />
+        </div>
 
         <div style={{ display: 'grid', gap: 8 }}>
           {smsDraft.provider === 'textlink' && (

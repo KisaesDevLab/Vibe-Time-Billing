@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -151,18 +151,14 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
             />
           </Field>
           <Field label="Client owner">
-            <select
+            <Combobox
+              ariaLabel="Client owner"
+              clearable
               value={(v('partnerInChargeId') as string) ?? ''}
-              onChange={(e) => setDraft({ ...draft, partnerInChargeId: e.target.value })}
-              style={fieldStyle}
-            >
-              <option value="">— none —</option>
-              {partners.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.fullName}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setDraft({ ...draft, partnerInChargeId: val })}
+              options={partners.map<ComboboxOption>((p) => ({ value: p.id, label: p.fullName }))}
+              placeholder="— none —"
+            />
           </Field>
           <Field label="External ID">
             <input
@@ -172,53 +168,54 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
             />
           </Field>
           <Field label="Client type">
-            <select
+            <Combobox
+              ariaLabel="Client type"
               value={(v('clientType') as string) ?? 'BUSINESS'}
-              onChange={(e) =>
-                setDraft({ ...draft, clientType: e.target.value as 'INDIVIDUAL' | 'BUSINESS' })
+              onChange={(val) =>
+                setDraft({ ...draft, clientType: val as 'INDIVIDUAL' | 'BUSINESS' })
               }
-              style={fieldStyle}
-            >
-              <option value="INDIVIDUAL">Individual</option>
-              <option value="BUSINESS">Business</option>
-            </select>
+              options={[
+                { value: 'INDIVIDUAL', label: 'Individual' },
+                { value: 'BUSINESS', label: 'Business' },
+              ]}
+            />
           </Field>
           {(v('clientType') ?? 'BUSINESS') === 'INDIVIDUAL' && (
             <Field label="Filing status">
-              <select
+              <Combobox
+                ariaLabel="Filing status"
+                clearable
                 value={(v('filingStatus') as string) ?? ''}
-                onChange={(e) =>
+                onChange={(val) =>
                   setDraft({
                     ...draft,
-                    filingStatus: (e.target.value as Client['filingStatus']) || null,
+                    filingStatus: (val as Client['filingStatus']) || null,
                   })
                 }
-                style={fieldStyle}
-              >
-                <option value="">—</option>
-                <option value="SINGLE">Single</option>
-                <option value="MFJ">MFJ</option>
-                <option value="MFS">MFS</option>
-                <option value="HOH">Head of household</option>
-                <option value="QW">QW</option>
-              </select>
+                options={[
+                  { value: 'SINGLE', label: 'Single' },
+                  { value: 'MFJ', label: 'MFJ' },
+                  { value: 'MFS', label: 'MFS' },
+                  { value: 'HOH', label: 'Head of household' },
+                  { value: 'QW', label: 'QW' },
+                ]}
+                placeholder="—"
+              />
             </Field>
           )}
           <Field label="Pipeline">
-            <select
+            <Combobox
+              ariaLabel="Pipeline"
               value={(v('pipelineStage') as string) ?? 'CLIENT'}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  pipelineStage: e.target.value as Client['pipelineStage'],
-                })
+              onChange={(val) =>
+                setDraft({ ...draft, pipelineStage: val as Client['pipelineStage'] })
               }
-              style={fieldStyle}
-            >
-              <option value="CLIENT">Client</option>
-              <option value="OTHER">Other</option>
-              <option value="PROSPECT">Prospect</option>
-            </select>
+              options={[
+                { value: 'CLIENT', label: 'Client' },
+                { value: 'OTHER', label: 'Other' },
+                { value: 'PROSPECT', label: 'Prospect' },
+              ]}
+            />
           </Field>
           <Field label="Terms (days)">
             <input
@@ -230,19 +227,20 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
             />
           </Field>
           <Field label="Invoice consolidation">
-            <select
+            <Combobox
+              ariaLabel="Invoice consolidation"
               value={(v('invoiceConsolidationPreference') as string) ?? 'SEPARATE'}
-              onChange={(e) =>
+              onChange={(val) =>
                 setDraft({
                   ...draft,
-                  invoiceConsolidationPreference: e.target.value as 'CONSOLIDATED' | 'SEPARATE',
+                  invoiceConsolidationPreference: val as 'CONSOLIDATED' | 'SEPARATE',
                 })
               }
-              style={fieldStyle}
-            >
-              <option value="SEPARATE">Separate invoice per engagement</option>
-              <option value="CONSOLIDATED">Consolidated</option>
-            </select>
+              options={[
+                { value: 'SEPARATE', label: 'Separate invoice per engagement' },
+                { value: 'CONSOLIDATED', label: 'Consolidated' },
+              ]}
+            />
           </Field>
           <Field label="Active">
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>

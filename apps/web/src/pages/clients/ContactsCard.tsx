@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -172,18 +172,14 @@ export function ContactsCard({ clientId }: Props): JSX.Element {
               placeholder="Full name *"
               style={fieldStyle}
             />
-            <select
+            <Combobox
+              ariaLabel="Role"
+              clearable
               value={draft.roleId}
-              onChange={(e) => setDraft({ ...draft, roleId: e.target.value })}
-              style={fieldStyle}
-            >
-              <option value="">Role…</option>
-              {roles.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setDraft({ ...draft, roleId: val })}
+              options={roles.map<ComboboxOption>((r) => ({ value: r.id, label: r.name }))}
+              placeholder="Role…"
+            />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
             <input

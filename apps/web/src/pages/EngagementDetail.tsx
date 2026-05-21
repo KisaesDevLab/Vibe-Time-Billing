@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -236,19 +236,16 @@ export function EngagementDetailPage(): JSX.Element {
         }
         action={
           <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <select
-              value={engagement.status}
-              onChange={(e) => void changeStatus(e.target.value as EngagementStatusKind)}
-              disabled={savingStatus || editing}
-              aria-label="Engagement status"
-              style={editFieldStyle}
-            >
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+            <div style={{ width: 160 }}>
+              <Combobox
+                ariaLabel="Engagement status"
+                value={engagement.status}
+                onChange={(v) => void changeStatus(v as EngagementStatusKind)}
+                disabled={savingStatus || editing}
+                options={STATUSES.map<ComboboxOption>((s) => ({ value: s, label: s }))}
+                size="sm"
+              />
+            </div>
             <Pill tone="accent">{engagement.feeStructure}</Pill>
             {editing ? (
               <>
@@ -284,19 +281,12 @@ export function EngagementDetailPage(): JSX.Element {
         {editing && draft ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <Field label="Fee structure">
-              <select
+              <Combobox
+                ariaLabel="Fee structure"
                 value={draft.feeStructure}
-                onChange={(e) =>
-                  setDraft({ ...draft, feeStructure: e.target.value as FeeStructure })
-                }
-                style={editFieldStyle}
-              >
-                {FEE_STRUCTURES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setDraft({ ...draft, feeStructure: v as FeeStructure })}
+                options={FEE_STRUCTURES.map<ComboboxOption>((s) => ({ value: s, label: s }))}
+              />
             </Field>
             <Field label="Fee amount (cents)">
               <input
@@ -804,8 +794,8 @@ function LetterGenerator({
         </p>
       )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 10 }}>
-        <label style={{ flex: 1 }}>
-          <span
+        <div style={{ flex: 1 }}>
+          <div
             style={{
               fontSize: 11,
               color: tokens.color.textMuted,
@@ -814,21 +804,19 @@ function LetterGenerator({
             }}
           >
             Template
-          </span>
-          <select
+          </div>
+          <Combobox
+            ariaLabel="Letter template"
             value={pickedId}
-            onChange={(e) => setPickedId(e.target.value)}
-            style={editFieldStyle}
-          >
-            <option value="">— pick —</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-                {t.isSystem ? ' (system)' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={setPickedId}
+            options={templates.map<ComboboxOption>((t) => ({
+              value: t.id,
+              label: t.name,
+              description: t.isSystem ? 'system' : undefined,
+            }))}
+            placeholder="— pick —"
+          />
+        </div>
         <Button onClick={() => void generate()} disabled={busy || !pickedId}>
           {busy ? 'Saving…' : 'Save as draft'}
         </Button>

@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -244,18 +244,14 @@ export function UserDetailPage(): JSX.Element {
               Default office
             </div>
             {editing ? (
-              <select
-                defaultValue={user.defaultOfficeId ?? ''}
-                onChange={(e) => setDraft({ ...draft, defaultOfficeId: e.target.value || null })}
-                style={fieldStyle}
-              >
-                <option value="">— none —</option>
-                {offices.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
+              <Combobox
+                ariaLabel="Default office"
+                clearable
+                value={(draft.defaultOfficeId ?? user.defaultOfficeId ?? '') as string}
+                onChange={(val) => setDraft({ ...draft, defaultOfficeId: val || null })}
+                options={offices.map<ComboboxOption>((o) => ({ value: o.id, label: o.name }))}
+                placeholder="— none —"
+              />
             ) : (
               <div style={{ fontSize: 14 }}>
                 {offices.find((o) => o.id === user.defaultOfficeId)?.name ?? '—'}
@@ -315,23 +311,21 @@ export function UserDetailPage(): JSX.Element {
       <Card
         title="Roles"
         action={
-          <select
-            onChange={(e) => {
-              if (e.target.value) void assignRole(e.target.value);
-              e.target.value = '';
-            }}
-            disabled={busy}
-            style={{ ...fieldStyle, width: 'auto' }}
-          >
-            <option value="">+ Assign role…</option>
-            {allRoles
-              .filter((r) => !roles.some((cur) => cur.roleId === r.id))
-              .map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-          </select>
+          <div style={{ width: 220 }}>
+            <Combobox
+              ariaLabel="Assign role"
+              disabled={busy}
+              value=""
+              onChange={(val) => {
+                if (val) void assignRole(val);
+              }}
+              options={allRoles
+                .filter((r) => !roles.some((cur) => cur.roleId === r.id))
+                .map<ComboboxOption>((r) => ({ value: r.id, label: r.name }))}
+              placeholder="+ Assign role…"
+              size="sm"
+            />
+          </div>
         }
       >
         {roles.length === 0 ? (

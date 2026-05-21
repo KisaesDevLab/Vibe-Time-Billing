@@ -12,7 +12,15 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, Tabs, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, Tabs, tokens } from '@vibe/ui';
+
+const FEE_OPTIONS = [
+  { value: 'HOURLY', label: 'Hourly' },
+  { value: 'HOURLY_NTE', label: 'Hourly (NTE)' },
+  { value: 'FIXED_FEE', label: 'Fixed fee' },
+  { value: 'FIXED_FEE_WITH_MILESTONES', label: 'Fixed fee + milestones' },
+  { value: 'RECURRING_SUBSCRIPTION', label: 'Recurring subscription' },
+];
 
 import { api } from '../../api-client';
 
@@ -241,17 +249,12 @@ function EngagementTab(): JSX.Element {
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8 }}>
-            <select
+            <Combobox
+              ariaLabel="Default fee structure"
               value={draft.defaultFeeStructure}
-              onChange={(e) => setDraft({ ...draft, defaultFeeStructure: e.target.value })}
-              style={fieldStyle}
-            >
-              <option value="HOURLY">Hourly</option>
-              <option value="HOURLY_NTE">Hourly (NTE)</option>
-              <option value="FIXED_FEE">Fixed fee</option>
-              <option value="FIXED_FEE_WITH_MILESTONES">Fixed fee + milestones</option>
-              <option value="RECURRING_SUBSCRIPTION">Recurring subscription</option>
-            </select>
+              onChange={(v) => setDraft({ ...draft, defaultFeeStructure: v })}
+              options={FEE_OPTIONS}
+            />
             <input
               value={draft.defaultFeeAmountCents}
               onChange={(e) => setDraft({ ...draft, defaultFeeAmountCents: e.target.value })}
@@ -338,19 +341,12 @@ function EngagementTab(): JSX.Element {
                 </div>
                 {isEditing && (
                   <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8 }}>
-                    <select
+                    <Combobox
+                      ariaLabel="Default fee structure"
                       value={editDraft.defaultFeeStructure}
-                      onChange={(e) =>
-                        setEditDraft({ ...editDraft, defaultFeeStructure: e.target.value })
-                      }
-                      style={fieldStyle}
-                    >
-                      <option value="HOURLY">Hourly</option>
-                      <option value="HOURLY_NTE">Hourly (NTE)</option>
-                      <option value="FIXED_FEE">Fixed fee</option>
-                      <option value="FIXED_FEE_WITH_MILESTONES">Fixed fee + milestones</option>
-                      <option value="RECURRING_SUBSCRIPTION">Recurring subscription</option>
-                    </select>
+                      onChange={(v) => setEditDraft({ ...editDraft, defaultFeeStructure: v })}
+                      options={FEE_OPTIONS}
+                    />
                     <input
                       value={editDraft.defaultFeeAmountCents}
                       onChange={(e) =>
@@ -603,16 +599,15 @@ function ClientTab(): JSX.Element {
                   )}
                   <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
                   {isEditing ? (
-                    <select
+                    <Combobox
+                      ariaLabel="Client type"
                       value={editClientType}
-                      onChange={(e) =>
-                        setEditClientType(e.target.value as 'INDIVIDUAL' | 'BUSINESS')
-                      }
-                      style={fieldStyle}
-                    >
-                      <option value="INDIVIDUAL">Individual</option>
-                      <option value="BUSINESS">Business</option>
-                    </select>
+                      onChange={(v) => setEditClientType(v as 'INDIVIDUAL' | 'BUSINESS')}
+                      options={[
+                        { value: 'INDIVIDUAL', label: 'Individual' },
+                        { value: 'BUSINESS', label: 'Business' },
+                      ]}
+                    />
                   ) : (
                     <Pill>{t.clientType}</Pill>
                   )}

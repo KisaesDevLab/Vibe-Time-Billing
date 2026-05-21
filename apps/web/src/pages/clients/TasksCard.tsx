@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -194,34 +194,31 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
             style={{ ...fieldStyle, resize: 'vertical' }}
           />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-            <select
+            <Combobox
+              ariaLabel="Priority"
               value={draft.priority}
-              onChange={(e) => setDraft({ ...draft, priority: e.target.value as Priority })}
-              style={fieldStyle}
-            >
-              <option value="LOW">Low</option>
-              <option value="MEDIUM">Medium</option>
-              <option value="HIGH">High</option>
-              <option value="URGENT">Urgent</option>
-            </select>
+              onChange={(val) => setDraft({ ...draft, priority: val as Priority })}
+              options={[
+                { value: 'LOW', label: 'Low' },
+                { value: 'MEDIUM', label: 'Medium' },
+                { value: 'HIGH', label: 'High' },
+                { value: 'URGENT', label: 'Urgent' },
+              ]}
+            />
             <input
               type="date"
               value={draft.dueDate}
               onChange={(e) => setDraft({ ...draft, dueDate: e.target.value })}
               style={fieldStyle}
             />
-            <select
+            <Combobox
+              ariaLabel="Assignee"
+              clearable
               value={draft.assigneeUserId}
-              onChange={(e) => setDraft({ ...draft, assigneeUserId: e.target.value })}
-              style={fieldStyle}
-            >
-              <option value="">Assignee…</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.fullName}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setDraft({ ...draft, assigneeUserId: val })}
+              options={users.map<ComboboxOption>((u) => ({ value: u.id, label: u.fullName }))}
+              placeholder="Assignee…"
+            />
           </div>
           <div>
             <Button size="sm" onClick={() => void add()} disabled={busy || !draft.title.trim()}>
