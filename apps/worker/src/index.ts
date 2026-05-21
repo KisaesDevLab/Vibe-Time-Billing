@@ -21,6 +21,7 @@ import { runLateFeeAccrual } from './jobs/late-fee-accrual';
 import { runLateEntryAlert } from './jobs/late-entry-alert';
 import { runMilestoneDateTrigger } from './jobs/milestone-date-trigger';
 import { runHourBankExpiration } from './jobs/hour-bank-expiration';
+import { runHourBankReplenish } from './jobs/hour-bank-replenish';
 import { runApprovalEscalation } from './jobs/approval-escalation';
 import { runWebhookDispatch } from './jobs/webhook-dispatch';
 import { runAutoRolloverScan } from './jobs/auto-rollover';
@@ -101,6 +102,7 @@ const QUEUES = [
   'late-entry-alert',
   'milestone-date-trigger',
   'hour-bank-expiration',
+  'hour-bank-replenish',
   'approval-escalation',
   'webhook-dispatch',
   'auto-rollover-scan',
@@ -193,6 +195,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runHourBankExpiration(db, logger);
     logger.info({ jobId: job.id, ...result }, 'hour-bank-expiration complete');
   },
+  'hour-bank-replenish': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'hour-bank-replenish: no DB configured');
+      return;
+    }
+    const result = await runHourBankReplenish(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'hour-bank-replenish complete');
+  },
   'approval-escalation': async (job) => {
     if (!db) {
       logger.warn({ jobId: job.id }, 'approval-escalation: no DB configured');
@@ -276,6 +286,7 @@ const CRON: Record<QueueName, string> = {
   'late-entry-alert': '0 9 * * 1-5',
   'milestone-date-trigger': '5 1 * * *',
   'hour-bank-expiration': '10 1 * * *',
+  'hour-bank-replenish': '40 1 * * *',
   'approval-escalation': '20 * * * *',
   'webhook-dispatch': '*/2 * * * *',
   'auto-rollover-scan': '30 2 * * *',

@@ -26,6 +26,7 @@ type JobName =
   | 'late-entry-alert'
   | 'milestone-date-trigger'
   | 'hour-bank-expiration'
+  | 'hour-bank-replenish'
   | 'approval-escalation'
   | 'webhook-dispatch'
   | 'auto-rollover-scan'
@@ -45,6 +46,7 @@ const JOB_NAMES: readonly JobName[] = [
   'late-entry-alert',
   'milestone-date-trigger',
   'hour-bank-expiration',
+  'hour-bank-replenish',
   'approval-escalation',
   'webhook-dispatch',
   'auto-rollover-scan',

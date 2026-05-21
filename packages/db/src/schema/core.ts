@@ -866,6 +866,15 @@ export const hourBanks = pgTable('hour_bank', {
   expirationDate: date('expiration_date'),
   forfeitedAt: timestamp('forfeited_at', { withTimezone: true }),
   forfeitedAmountCents: bigint('forfeited_amount_cents', { mode: 'number' }),
+  // Phase 10 #15 — auto-replenish. When enabled and balance drops below
+  // threshold, the bank-monitor worker tops the bank up to target.
+  autoReplenishEnabled: boolean('auto_replenish_enabled').notNull().default(false),
+  autoReplenishThresholdHours: numeric('auto_replenish_threshold_hours', {
+    precision: 8,
+    scale: 2,
+  }),
+  autoReplenishTargetHours: numeric('auto_replenish_target_hours', { precision: 8, scale: 2 }),
+  autoReplenishLastRunAt: timestamp('auto_replenish_last_run_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
