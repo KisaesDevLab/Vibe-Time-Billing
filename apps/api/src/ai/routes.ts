@@ -74,7 +74,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'suggest-description');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -147,7 +147,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'realization-narrative');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -215,7 +215,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         res.status(400).json({ error: 'question_required' });
         return;
       }
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'plain-english-query');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -281,7 +281,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'pricing-suggestion');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -360,7 +360,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'write-down-patterns');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -424,7 +424,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'reason-code-suggest');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -498,7 +498,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'prebill-narrative');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -565,7 +565,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     requirePermission(deps, 'report:realization:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'anomaly-summary');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -645,7 +645,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps);
+      const provider = await pickProvider(deps, 'nl-to-filter');
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -808,7 +808,25 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
   return router;
 }
 
-async function pickProvider(deps: AiRoutesDeps): Promise<AiProvider | null> {
+// Phase 23 #7 — per-feature provider override. Default is local-first
+// (Q15). Each feature can pin to 'local' | 'cloud' via env var of the
+// form `VIBE_AI_FEATURE_<NAME>` (uppercased, dashes → underscores).
+// Examples:
+//   VIBE_AI_FEATURE_REALIZATION_NARRATIVE=cloud
+//   VIBE_AI_FEATURE_SUGGEST_DESCRIPTION=local
+// Unset values inherit the global default.
+function featureOverride(feature: string | undefined): 'local' | 'cloud' | null {
+  if (!feature) return null;
+  const key = `VIBE_AI_FEATURE_${feature.toUpperCase().replace(/-/g, '_')}`;
+  const v = process.env[key];
+  if (v === 'local' || v === 'cloud') return v;
+  return null;
+}
+
+async function pickProvider(deps: AiRoutesDeps, feature?: string): Promise<AiProvider | null> {
+  const override = featureOverride(feature);
+  if (override === 'cloud') return deps.cloudProvider ?? deps.localProvider ?? null;
+  if (override === 'local') return deps.localProvider ?? deps.cloudProvider ?? null;
   // Q15 — local preferred. Falls back to cloud per-feature.
   return deps.localProvider ?? deps.cloudProvider ?? null;
 }
