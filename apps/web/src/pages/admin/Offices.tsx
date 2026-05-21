@@ -13,12 +13,26 @@ interface Office {
   isDefault: boolean;
 }
 
+interface OverrideShape {
+  adjustmentApprovalThresholdCents: number | null;
+  timeEntryRoundingHours: string | null;
+  lateEntryAlertDays: number | null;
+  lateEntryLockoutDays: number | null;
+  invoiceNumberingPrefix: string | null;
+}
+
+interface SettingsView {
+  override: OverrideShape | null;
+  resolved: OverrideShape | null;
+}
+
 export function OfficesPage(): JSX.Element {
   const [offices, setOffices] = useState<Office[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [tz, setTz] = useState('America/Chicago');
   const [error, setError] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -81,6 +95,19 @@ export function OfficesPage(): JSX.Element {
                 header: 'Default',
                 render: (o) => (o.isDefault ? <Pill tone="accent">default</Pill> : null),
               },
+              {
+                key: 'actions',
+                header: '',
+                render: (o) => (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setActiveId(activeId === o.id ? null : o.id)}
+                  >
+                    {activeId === o.id ? 'Hide' : 'Settings'}
+                  </Button>
+                ),
+              },
             ]}
             rows={offices}
             rowKey={(o) => o.id}
@@ -88,6 +115,140 @@ export function OfficesPage(): JSX.Element {
           />
         )}
       </Card>
+
+      {activeId && <OfficeSettingsPanel officeId={activeId} />}
     </div>
+  );
+}
+
+function OfficeSettingsPanel({ officeId }: { officeId: string }): JSX.Element {
+  const [data, setData] = useState<SettingsView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  async function load(): Promise<void> {
+    setError(null);
+    try {
+      const r = await api<SettingsView>(`/api/staff/admin/offices/${officeId}/settings`);
+      setData(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, [officeId]);
+
+  async function save(field: keyof OverrideShape, value: number | string | null): Promise<void> {
+    setError(null);
+    setSaved(false);
+    try {
+      await api(`/api/staff/admin/offices/${officeId}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify({ [field]: value }),
+      });
+      setSaved(true);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  if (!data) {
+    return (
+      <Card title="Office settings">
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+      </Card>
+    );
+  }
+  const ov = data.override ?? ({} as OverrideShape);
+  const res = data.resolved ?? ({} as OverrideShape);
+  const Row = ({
+    label,
+    field,
+    kind = 'number',
+  }: {
+    label: string;
+    field: keyof OverrideShape;
+    kind?: 'number' | 'text';
+  }): JSX.Element => {
+    const ovVal = ov[field];
+    const resVal = res[field];
+    const [draft, setDraft] = useState<string>(ovVal == null ? '' : String(ovVal));
+    return (
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '2fr 1fr 1fr auto auto',
+          gap: 8,
+          alignItems: 'end',
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 12, color: tokens.color.textMuted }}>{label}</div>
+          <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+            Effective: {resVal == null ? '—' : String(resVal)}
+          </div>
+        </div>
+        <input
+          type={kind === 'number' ? 'number' : 'text'}
+          value={draft}
+          placeholder="(inherit)"
+          onChange={(e) => setDraft(e.target.value)}
+          style={{
+            padding: '8px 10px',
+            background: tokens.color.surface,
+            color: tokens.color.text,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            fontSize: 13,
+          }}
+        />
+        <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+          {ovVal == null ? 'inheriting' : 'overridden'}
+        </span>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            const v = draft.trim();
+            const parsed: number | string | null =
+              v === '' ? null : kind === 'number' ? Number(v) : v;
+            void save(field, parsed);
+          }}
+        >
+          Save
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setDraft('');
+            void save(field, null);
+          }}
+        >
+          Clear
+        </Button>
+      </div>
+    );
+  };
+
+  return (
+    <Card title="Office settings override">
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      {saved && (
+        <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }}>Saved.</p>
+      )}
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Row
+          label="Adjustment approval threshold (cents)"
+          field="adjustmentApprovalThresholdCents"
+        />
+        <Row label="Time entry rounding (hours)" field="timeEntryRoundingHours" kind="text" />
+        <Row label="Late-entry alert days" field="lateEntryAlertDays" />
+        <Row label="Late-entry lockout days" field="lateEntryLockoutDays" />
+        <Row label="Invoice numbering prefix" field="invoiceNumberingPrefix" kind="text" />
+      </div>
+    </Card>
   );
 }
