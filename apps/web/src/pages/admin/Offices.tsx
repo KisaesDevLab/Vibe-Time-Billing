@@ -164,75 +164,6 @@ function OfficeSettingsPanel({ officeId }: { officeId: string }): JSX.Element {
   }
   const ov = data.override ?? ({} as OverrideShape);
   const res = data.resolved ?? ({} as OverrideShape);
-  const Row = ({
-    label,
-    field,
-    kind = 'number',
-  }: {
-    label: string;
-    field: keyof OverrideShape;
-    kind?: 'number' | 'text';
-  }): JSX.Element => {
-    const ovVal = ov[field];
-    const resVal = res[field];
-    const [draft, setDraft] = useState<string>(ovVal == null ? '' : String(ovVal));
-    return (
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '2fr 1fr 1fr auto auto',
-          gap: 8,
-          alignItems: 'end',
-        }}
-      >
-        <div>
-          <div style={{ fontSize: 12, color: tokens.color.textMuted }}>{label}</div>
-          <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-            Effective: {resVal == null ? '—' : String(resVal)}
-          </div>
-        </div>
-        <input
-          type={kind === 'number' ? 'number' : 'text'}
-          value={draft}
-          placeholder="(inherit)"
-          onChange={(e) => setDraft(e.target.value)}
-          style={{
-            padding: '8px 10px',
-            background: tokens.color.surface,
-            color: tokens.color.text,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.md,
-            fontSize: 13,
-          }}
-        />
-        <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
-          {ovVal == null ? 'inheriting' : 'overridden'}
-        </span>
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => {
-            const v = draft.trim();
-            const parsed: number | string | null =
-              v === '' ? null : kind === 'number' ? Number(v) : v;
-            void save(field, parsed);
-          }}
-        >
-          Save
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => {
-            setDraft('');
-            void save(field, null);
-          }}
-        >
-          Clear
-        </Button>
-      </div>
-    );
-  };
 
   return (
     <Card title="Office settings override">
@@ -241,15 +172,134 @@ function OfficeSettingsPanel({ officeId }: { officeId: string }): JSX.Element {
         <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }}>Saved.</p>
       )}
       <div style={{ display: 'grid', gap: 12 }}>
-        <Row
+        <OverrideRow
           label="Adjustment approval threshold (cents)"
           field="adjustmentApprovalThresholdCents"
+          ov={ov}
+          res={res}
+          onSave={save}
         />
-        <Row label="Time entry rounding (hours)" field="timeEntryRoundingHours" kind="text" />
-        <Row label="Late-entry alert days" field="lateEntryAlertDays" />
-        <Row label="Late-entry lockout days" field="lateEntryLockoutDays" />
-        <Row label="Invoice numbering prefix" field="invoiceNumberingPrefix" kind="text" />
+        <OverrideRow
+          label="Time entry rounding (hours)"
+          field="timeEntryRoundingHours"
+          kind="text"
+          ov={ov}
+          res={res}
+          onSave={save}
+        />
+        <OverrideRow
+          label="Late-entry alert days"
+          field="lateEntryAlertDays"
+          ov={ov}
+          res={res}
+          onSave={save}
+        />
+        <OverrideRow
+          label="Late-entry lockout days"
+          field="lateEntryLockoutDays"
+          ov={ov}
+          res={res}
+          onSave={save}
+        />
+        <OverrideRow
+          label="Invoice numbering prefix"
+          field="invoiceNumberingPrefix"
+          kind="text"
+          ov={ov}
+          res={res}
+          onSave={save}
+        />
       </div>
     </Card>
+  );
+}
+
+function OverrideRow({
+  label,
+  field,
+  kind = 'number',
+  ov,
+  res,
+  onSave,
+}: {
+  label: string;
+  field: keyof OverrideShape;
+  kind?: 'number' | 'text';
+  ov: OverrideShape;
+  res: OverrideShape;
+  onSave: (field: keyof OverrideShape, value: number | string | null) => Promise<void>;
+}): JSX.Element {
+  const ovVal = ov[field];
+  const resVal = res[field];
+  const [draft, setDraft] = useState<string>(ovVal == null ? '' : String(ovVal));
+  const [pending, setPending] = useState(false);
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '2fr 1fr 1fr auto auto',
+        gap: 8,
+        alignItems: 'end',
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 12, color: tokens.color.textMuted }}>{label}</div>
+        <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+          Effective: {resVal == null ? '—' : String(resVal)}
+        </div>
+      </div>
+      <input
+        type={kind === 'number' ? 'number' : 'text'}
+        value={draft}
+        placeholder="(inherit)"
+        aria-label={label}
+        onChange={(e) => setDraft(e.target.value)}
+        style={{
+          padding: '8px 10px',
+          background: tokens.color.surface,
+          color: tokens.color.text,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.md,
+          fontSize: 13,
+        }}
+      />
+      <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+        {ovVal == null ? 'inheriting' : 'overridden'}
+      </span>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={pending}
+        onClick={async () => {
+          const v = draft.trim();
+          const parsed: number | string | null =
+            v === '' ? null : kind === 'number' ? Number(v) : v;
+          setPending(true);
+          try {
+            await onSave(field, parsed);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        {pending ? 'Saving…' : 'Save'}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={pending}
+        onClick={async () => {
+          setDraft('');
+          setPending(true);
+          try {
+            await onSave(field, null);
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        Clear
+      </Button>
+    </div>
   );
 }
