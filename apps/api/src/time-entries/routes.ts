@@ -1312,9 +1312,50 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.json({ running: false });
         return;
       }
-      const state = JSON.parse(v) as { startedAt: string; engagementId: string };
+      const state = JSON.parse(v) as {
+        startedAt: string;
+        engagementId: string;
+        lastHeartbeatAt?: string;
+      };
       const elapsedMs = Date.now() - Date.parse(state.startedAt);
-      res.json({ running: true, state, elapsedMs });
+      // Idle detection (Phase 9 #5): if no heartbeat in the last 15 min,
+      // flag the timer as idle so the UI can prompt the user.
+      const idleThresholdMs = 15 * 60_000;
+      const lastHeartbeat = state.lastHeartbeatAt
+        ? Date.parse(state.lastHeartbeatAt)
+        : Date.parse(state.startedAt);
+      const idleMs = Date.now() - lastHeartbeat;
+      res.json({
+        running: true,
+        state,
+        elapsedMs,
+        idle: idleMs > idleThresholdMs,
+        idleMs,
+        idleThresholdMs,
+      });
+    },
+  );
+
+  // Heartbeat — frontend posts this every minute while the timer is
+  // visible so the server knows the user is still active.
+  router.post(
+    '/timer/heartbeat',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.redis) {
+        res.json({ ok: true });
+        return;
+      }
+      const v = await deps.redis.get(timerKey(session.appUserId));
+      if (!v) {
+        res.status(404).json({ error: 'no_timer' });
+        return;
+      }
+      const state = JSON.parse(v) as Record<string, unknown>;
+      state['lastHeartbeatAt'] = new Date().toISOString();
+      await deps.redis.set(timerKey(session.appUserId), JSON.stringify(state), 'EX', 6 * 3600);
+      res.json({ ok: true });
     },
   );
 

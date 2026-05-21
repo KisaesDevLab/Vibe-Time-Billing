@@ -292,6 +292,107 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Recompute a batch (Phase 11 #21). Re-aggregates time-entry totals
+  // for the batch. Useful after a time entry was edited but the batch
+  // was already created. Read-only — returns the recomputed numbers,
+  // doesn't persist them (the next pre-bill regeneration will).
+  // -----------------------------------------------------------------
+  router.get(
+    '/:id/recompute',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          totalEntries: sql<number>`COUNT(*)`,
+          totalHours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          totalAmountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+          oldestDate: sql<string>`MIN(${timeEntries.entryDate})`,
+        })
+        .from(timeEntries)
+        .where(eq(timeEntries.billingBatchId, batch.billing_batch.id));
+      const r = rows[0]!;
+      res.json({
+        summary: {
+          batchId: batch.billing_batch.id,
+          totalEntries: Number(r.totalEntries),
+          totalHours: Number(r.totalHours),
+          totalAmountCents: Number(r.totalAmountCents),
+          oldestDate: r.oldestDate,
+          asOf: new Date().toISOString(),
+        },
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Budget compare for a batch (Phase 11 #20). Returns batch total vs
+  // engagement budget (hours + cents), with utilization pct.
+  // -----------------------------------------------------------------
+  router.get(
+    '/:id/budget-compare',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ summary: null });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [agg] = await deps.db
+        .select({
+          hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
+          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+        })
+        .from(timeEntries)
+        .where(eq(timeEntries.billingBatchId, batch.billing_batch.id));
+      const eng = batch.engagement;
+      const batchHours = Number(agg?.hours ?? 0);
+      const batchAmount = Number(agg?.amountCents ?? 0);
+      const budgetHours = eng.budgetHours != null ? Number(eng.budgetHours) : null;
+      const budgetAmount = eng.budgetAmountCents != null ? Number(eng.budgetAmountCents) : null;
+      res.json({
+        summary: {
+          batchId: batch.billing_batch.id,
+          batchHours,
+          batchAmountCents: batchAmount,
+          budgetHours,
+          budgetAmountCents: budgetAmount,
+          hoursUtilizationPct:
+            budgetHours && budgetHours > 0 ? (batchHours / budgetHours) * 100 : null,
+          amountUtilizationPct:
+            budgetAmount && budgetAmount > 0 ? (batchAmount / budgetAmount) * 100 : null,
+        },
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Period-close bulk pre-bill (Phase 11 #11). Creates one billing
   // batch per engagement that has unbilled, submitted time entries in
   // the period. Returns the list of created batch IDs.
