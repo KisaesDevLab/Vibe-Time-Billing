@@ -33,7 +33,8 @@ type JobName =
   | 'scope-creep-alert'
   | 'wip-age-alert'
   | 'audit-anomaly'
-  | 'saved-report-email';
+  | 'saved-report-email'
+  | 'email-in';
 
 const JOB_NAMES: readonly JobName[] = [
   'recurring-billing',
@@ -52,6 +53,7 @@ const JOB_NAMES: readonly JobName[] = [
   'wip-age-alert',
   'audit-anomaly',
   'saved-report-email',
+  'email-in',
 ];
 
 export function createAdminJobRouter(deps: AdminJobRoutesDeps): Router {

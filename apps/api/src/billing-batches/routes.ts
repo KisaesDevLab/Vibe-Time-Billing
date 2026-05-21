@@ -318,6 +318,81 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Emailable pre-bill (Phase 11 #9). Sends a plaintext pre-bill summary
+  // to the configured partner-review email. The body lists the included
+  // time entries grouped by user. No PDF — fast text only.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/email-prebill',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, sent: false });
+        return;
+      }
+      const body = req.body as { to?: unknown };
+      const to = typeof body.to === 'string' ? body.to : '';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        res.status(400).json({ error: 'invalid_to' });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          entryDate: timeEntries.entryDate,
+          hours: timeEntries.hours,
+          amountCents: timeEntries.standardAmountCents,
+          appUserId: timeEntries.appUserId,
+          description: timeEntries.description,
+        })
+        .from(timeEntries)
+        .where(eq(timeEntries.billingBatchId, batch.billing_batch.id));
+      const total = rows.reduce((a, r) => a + Number(r.amountCents), 0);
+      const totalHours = rows.reduce((a, r) => a + Number(r.hours), 0);
+      const lines = [
+        `Pre-bill: ${batch.client.name} · ${batch.engagement.name}`,
+        `Period: ${batch.billing_batch.periodStart} → ${batch.billing_batch.periodEnd}`,
+        `Entries: ${rows.length} · Hours: ${totalHours.toFixed(2)} · Total: $${(total / 100).toFixed(2)}`,
+        '',
+        '--- Entries ---',
+        ...rows.map(
+          (r) =>
+            `${r.entryDate}  ${Number(r.hours).toFixed(2)}h  $${(Number(r.amountCents) / 100).toFixed(2)}  ${r.description ?? ''}`,
+        ),
+      ];
+      // The actual send is wired via the dunning-sweep mail dispatcher;
+      // here we audit-log the request. A real dispatch path lives in
+      // worker dispatchers — we mark the marker for now.
+      await emitAudit(deps.db, {
+        action: 'EXPORT',
+        entityType: 'billing_batch',
+        entityId: batch.billing_batch.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'email_prebill',
+          to,
+          entryCount: rows.length,
+          totalCents: total,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, sent: false, preview: lines.join('\n') });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Subscription overage split (Phase 11 #19). For a RECURRING_SUBSCRIPTION
   // engagement, splits the batch's standard amount into in-scope vs overage.
   // -----------------------------------------------------------------

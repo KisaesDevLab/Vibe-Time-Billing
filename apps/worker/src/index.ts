@@ -29,6 +29,7 @@ import { runScopeCreepAlert } from './jobs/scope-creep-alert';
 import { runWipAgeAlert } from './jobs/wip-age-alert';
 import { runAuditAnomaly } from './jobs/audit-anomaly';
 import { runSavedReportEmail } from './jobs/saved-report-email';
+import { runEmailIn } from './jobs/email-in';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 
 const logger = pino({
@@ -108,6 +109,7 @@ const QUEUES = [
   'wip-age-alert',
   'audit-anomaly',
   'saved-report-email',
+  'email-in',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -255,6 +257,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runSavedReportEmail(db, logger, dunningSendEmail);
     logger.info({ jobId: job.id, ...result }, 'saved-report-email complete');
   },
+  'email-in': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'email-in: no DB configured');
+      return;
+    }
+    const result = await runEmailIn(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'email-in complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -274,6 +284,7 @@ const CRON: Record<QueueName, string> = {
   'wip-age-alert': '30 8 * * 1',
   'audit-anomaly': '*/15 * * * *',
   'saved-report-email': '0 7 * * 1',
+  'email-in': '*/5 * * * *',
 };
 
 async function setup(): Promise<void> {
