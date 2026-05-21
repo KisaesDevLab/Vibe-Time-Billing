@@ -7,6 +7,7 @@ import { api } from './api-client';
 import { AppShell, Button, Pill } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
+import { AltContactsPage } from './pages/AltContacts';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LettersPage } from './pages/Letters';
@@ -32,6 +33,7 @@ export function App(): JSX.Element {
                   <Route path="/letters" element={<LettersPage />} />
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
+                  <Route path="/alt-contacts" element={<AltContactsPage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
                   <Route path="/notifications" element={<NotificationPrefsPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
@@ -108,6 +110,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           label: 'Payment methods',
           href: '/payment-methods',
           active: location.pathname.startsWith('/payment-methods'),
+        },
+        {
+          label: 'Contacts',
+          href: '/alt-contacts',
+          active: location.pathname.startsWith('/alt-contacts'),
         },
         {
           label: 'Switch client',
