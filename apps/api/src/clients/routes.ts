@@ -28,6 +28,7 @@ import { logger } from '../logger';
 import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
 import { mountFileRoutes } from './files';
+import { mountFolderRoutes } from './folders';
 import { mountTaskRoutes } from './tasks';
 
 export interface ClientRoutesDeps extends RbacDeps {
@@ -741,6 +742,10 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     mountFileRoutes(router, { ...deps, storage: deps.storage });
   }
   mountCommunicationRoutes(router, deps);
+
+  // v2 Part 1 — folder CRUD + folder-template instantiation. Mounted
+  // after files so /clients/:id/folders sits alongside /clients/:id/files.
+  mountFolderRoutes(router, deps);
 
   return router;
 }

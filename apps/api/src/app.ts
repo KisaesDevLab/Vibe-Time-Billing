@@ -19,6 +19,8 @@ import { createTemplateRouter } from './admin/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
+import { createInternalFileRouter } from './internal-files/routes';
+import { createFolderTemplateRouter } from './admin/folder-templates';
 import { createEngagementRouter } from './engagements/routes';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
@@ -242,6 +244,25 @@ export function createApp(deps: AppDeps): Express {
     storage,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
+
+  // v2 Part 1 — firm-scoped internal files + folder-template admin.
+  const internalFileRouter = createInternalFileRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    storage,
+  });
+  app.use('/api/staff/internal-files', auth.requireAuth, auth.requireCsrf, internalFileRouter);
+
+  const folderTemplateRouter = createFolderTemplateRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/folder-templates',
+    auth.requireAuth,
+    auth.requireCsrf,
+    folderTemplateRouter,
+  );
 
   const engagementRouter = createEngagementRouter({
     db: deps.db,

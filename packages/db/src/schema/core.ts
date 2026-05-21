@@ -823,20 +823,75 @@ export const clientFiles = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
-    clientId: uuid('client_id')
-      .notNull()
-      .references(() => clients.id, { onDelete: 'cascade' }),
+    // v2 Part 1 — clientId is now nullable for internal-scoped files
+    // (is_internal=true). DB-level CHECK enforces one or the other.
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }),
     engagementId: uuid('engagement_id'),
+    // v2 Part 1 — folderId nullable; FK to client_folder added in 0037.
+    folderId: uuid('folder_id'),
     fileName: text('file_name').notNull(),
     mimeType: text('mime_type').notNull(),
     sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
-    storagePath: text('storage_path').notNull(),
+    // v2 Part 1 — storage_path nullable for Upload-link rows (which have
+    // external_url instead). DB-level CHECK enforces one or the other.
+    storagePath: text('storage_path'),
+    externalUrl: text('external_url'),
     uploadedById: uuid('uploaded_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     status: entityStatus('status').notNull().default('ACTIVE'),
+    visibleInPortal: boolean('visible_in_portal').notNull().default(false),
+    isInbox: boolean('is_inbox').notNull().default(false),
+    isInternal: boolean('is_internal').notNull().default(false),
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     clientIdx: index('client_file_client_idx').on(t.clientId, t.status, t.uploadedAt),
+  }),
+);
+
+// =====================================================================
+// v2 0037 — client_folder + client_folder_template (file manager).
+// =====================================================================
+
+export const clientFolders = pgTable(
+  'client_folder',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }),
+    // self-ref FK declared without circular reference; resolved at query time.
+    parentFolderId: uuid('parent_folder_id'),
+    name: text('name').notNull(),
+    position: integer('position').notNull().default(0),
+    isInternal: boolean('is_internal').notNull().default(false),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index('client_folder_client_idx').on(t.clientId),
+    parentIdx: index('client_folder_parent_idx').on(t.parentFolderId),
+  }),
+);
+
+export const clientFolderTemplates = pgTable(
+  'client_folder_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    structureJson: jsonb('structure_json').notNull().default([]),
+    isSystem: boolean('is_system').notNull().default(false),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('client_folder_template_firm_key_uk').on(t.firmId, t.key),
   }),
 );
 

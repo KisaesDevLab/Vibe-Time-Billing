@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Client files card (v2 Sprint C, workstream 1.4). Two modes:
-//   compact=true  — last 6 for the Home tab "Recent Files" card
-//   compact=false — full grid + drop-zone for the Files tab
+// Client files card. Two modes:
+//   compact=true  — last 6 for the Home tab "Recent Files" card (this file)
+//   compact=false — full Canopy-class manager (delegates to FileBrowser)
 
 import { useEffect, useRef, useState } from 'react';
 
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+
+import { FileBrowser } from './FileBrowser';
 
 interface FileMeta {
   id: string;
@@ -32,6 +34,14 @@ function humanSize(bytes: number): string {
 }
 
 export function FilesCard({ clientId, compact = false }: Props): JSX.Element {
+  // v2 Part 1 — full mode delegates to the Canopy-class FileBrowser.
+  if (!compact) {
+    return <FileBrowser scope="client" clientId={clientId} />;
+  }
+  return <FilesCardCompact clientId={clientId} />;
+}
+
+function FilesCardCompact({ clientId }: { clientId: string }): JSX.Element {
   const [items, setItems] = useState<FileMeta[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,23 +87,13 @@ export function FilesCard({ clientId, compact = false }: Props): JSX.Element {
     }
   }
 
-  async function remove(fileId: string): Promise<void> {
-    if (!confirm('Delete this file?')) return;
-    try {
-      await api(`/api/staff/clients/${clientId}/files/${fileId}`, { method: 'DELETE' });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'remove_failed');
-    }
-  }
-
-  const visible = compact ? items.slice(0, 6) : items;
+  const visible = items.slice(0, 6);
 
   return (
     <Card
       title={
         <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span>{compact ? 'Recent files' : 'Files'}</span>
+          <span>Recent files</span>
           <Pill>{items.length}</Pill>
         </span>
       }
@@ -148,11 +148,6 @@ export function FilesCard({ clientId, compact = false }: Props): JSX.Element {
               <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
                 {f.uploadedAt.slice(0, 10)}
               </span>
-              {!compact && (
-                <Button size="sm" variant="ghost" onClick={() => void remove(f.id)}>
-                  Remove
-                </Button>
-              )}
             </div>
           ))}
         </div>

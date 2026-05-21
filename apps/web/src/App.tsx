@@ -22,6 +22,7 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { EngagementsPage } from './pages/Engagements';
+import { FilesPage } from './pages/Files';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 import { OnboardingPage } from './pages/Onboarding';
@@ -69,6 +70,7 @@ export function App(): JSX.Element {
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
+                  <Route path="/files" element={<FilesPage />} />
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/onboarding" element={<OnboardingPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
@@ -124,6 +126,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/approvals'),
         },
         { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
+        { label: 'Files', href: '/files', active: location.pathname.startsWith('/files') },
         { label: 'Alerts', href: '/alerts', active: location.pathname.startsWith('/alerts') },
         { label: 'Audit', href: '/audit', active: location.pathname.startsWith('/audit') },
         { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
