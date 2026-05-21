@@ -107,7 +107,7 @@ These come from `QUESTIONS.md` and must be respected everywhere they touch.
 
 ## Tech stack (locked)
 
-- **Runtime:** Node.js 20 (`.nvmrc`)
+- **Runtime:** Node.js 24 (`.nvmrc`)
 - **Language:** TypeScript 5.x, `strict: true`, no `any` without explicit `// reason` comment
 - **Monorepo:** pnpm workspaces
 - **Web framework (staff):** React 18 + Vite + React Router 6

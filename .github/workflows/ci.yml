@@ -8,7 +8,7 @@ on:
 
 env:
   PNPM_VERSION: 8.15.0
-  NODE_VERSION: 20.11.1
+  NODE_VERSION: 24.4.0
 
 jobs:
   lint-and-typecheck:

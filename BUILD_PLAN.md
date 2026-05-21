@@ -27,7 +27,7 @@ Self-hosted Docker appliance for CPA practice time tracking, recurring billing, 
 ## Stack
 
 - React 18 + Vite + TypeScript strict
-- Node.js 20 + Express + tsx
+- Node.js 24 + Express + tsx
 - BullMQ workers + Redis 7
 - PostgreSQL 16 + Drizzle ORM
 - pnpm workspaces (monorepo)

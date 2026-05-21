@@ -24,7 +24,7 @@ Not a full practice-management suite. No workflow/task management, no CRM, no do
 
 ## Stack
 
-- TypeScript 5 · Node.js 20 · React 18 · Vite · Express · BullMQ
+- TypeScript 5 · Node.js 24 · React 18 · Vite · Express · BullMQ
 - PostgreSQL 16 · Redis 7 · Drizzle ORM · pnpm workspaces
 - Caddy v2 · Puppeteer · Docker (multi-arch)
 - Multi-provider AI: Anthropic Claude API, Ollama, OpenAI-compatible

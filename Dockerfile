@@ -5,7 +5,7 @@
 # =============================================================================
 # Stage 1: Dependencies
 # =============================================================================
-FROM node:20-bookworm-slim AS deps
+FROM node:24-bookworm-slim AS deps
 
 WORKDIR /app
 
@@ -26,7 +26,7 @@ RUN pnpm install --frozen-lockfile
 # =============================================================================
 # Stage 2: Builder
 # =============================================================================
-FROM node:20-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -46,7 +46,7 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 # =============================================================================
 # Stage 3: Runtime
 # =============================================================================
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 # Chromium for Puppeteer + fonts for invoice rendering
 RUN apt-get update && apt-get install -y --no-install-recommends \
