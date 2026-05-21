@@ -45,6 +45,11 @@ export interface AdjustmentRoutesDeps extends RbacDeps {
   // requires fresh TOTP. We apply step-up uniformly on the create endpoint;
   // the threshold check is then a soft signal in the approval workflow.
   requireStepUp: (req: Request, res: Response, next: () => void) => void;
+  // Phase 18 #8 — optional email dispatcher. When provided, the route
+  // notifies the assigned approver post-commit. No-op in dev/test if
+  // omitted; the audit emit still fires either way.
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  staffBaseUrl?: string;
 }
 
 const CreateSchema = z
@@ -210,24 +215,33 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         );
 
         // If approval is required, queue the partner-in-charge.
+        let assignedApproverId: string | null = null;
         if (decision.requiresApproval) {
+          assignedApproverId = decision.approverAppUserId ?? client.partnerInChargeId ?? null;
+          // Phase 18 #13 — set dueAt = now + 48h as the default SLA window.
+          // (Per-rule slaHours overrides this when the approval rule
+          // engine is plugged in past the firm-threshold stub.)
+          const dueAt = new Date(Date.now() + 48 * 3600 * 1000);
           await tx.insert(approvalRequests).values({
             entityType: 'ADJUSTMENT',
             entityId: adj.id,
             requesterId: session.appUserId,
-            approverId: decision.approverAppUserId ?? client.partnerInChargeId,
+            approverId: assignedApproverId,
             status: 'PENDING',
             comments: parsed.data.notes ?? null,
+            dueAt,
           });
         }
 
-        return adj.id;
+        return { adjId: adj.id, assignedApproverId };
       });
+      const adjId = result.adjId;
+      const assignedApproverId = result.assignedApproverId;
 
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'adjustment',
-        entityId: result,
+        entityId: adjId,
         actorAppUserId: session.appUserId,
         after: {
           method: parsed.data.method,
@@ -239,8 +253,51 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
+      // Phase 18 #8 — notify the assigned approver.
+      if (assignedApproverId && deps.sendEmail) {
+        try {
+          const [approver] = await deps.db
+            .select({
+              email: appUsersTable.email,
+              fullName: appUsersTable.fullName,
+            })
+            .from(appUsersTable)
+            .where(eq(appUsersTable.id, assignedApproverId))
+            .limit(1);
+          if (approver?.email) {
+            const dollars = (parsed.data.totalAmountCents / 100).toLocaleString('en-US', {
+              style: 'currency',
+              currency: 'USD',
+            });
+            const sign = parsed.data.totalAmountCents < 0 ? 'write-down' : 'write-up';
+            const link = deps.staffBaseUrl
+              ? `${deps.staffBaseUrl}/approvals?entityId=${adjId}`
+              : `/approvals?entityId=${adjId}`;
+            await deps.sendEmail({
+              to: approver.email,
+              subject: `Approval needed: ${sign} ${dollars} on engagement ${eng.name}`,
+              body: [
+                `Hi ${approver.fullName ?? 'there'},`,
+                ``,
+                `An adjustment requires your approval:`,
+                `  Engagement: ${eng.name}`,
+                `  Amount: ${dollars} (${sign})`,
+                `  Method: ${parsed.data.method} / ${parsed.data.allocationMethod}`,
+                parsed.data.notes ? `  Notes: ${parsed.data.notes}` : null,
+                ``,
+                `Open the approvals queue: ${link}`,
+              ]
+                .filter(Boolean)
+                .join('\n'),
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, approverId: assignedApproverId }, 'approval assignment email failed');
+        }
+      }
+
       res.status(201).json({
-        id: result,
+        id: adjId,
         requiresApproval: decision.requiresApproval,
         approverAppUserId: decision.approverAppUserId,
         allocationCount: allocation.length,

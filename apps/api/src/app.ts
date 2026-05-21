@@ -246,6 +246,8 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     requireStepUp: auth.requireStepUp,
+    sendEmail: deps.sendPortalEmail,
+    staffBaseUrl: config.APP_BASE_URL,
   });
   app.use('/api/staff/adjustments', auth.requireAuth, auth.requireCsrf, adjustmentRouter);
 
