@@ -26,6 +26,7 @@ export function RecurringPlansPage(): JSX.Element {
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [prorationFor, setProrationFor] = useState<Plan | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -124,6 +125,9 @@ export function RecurringPlansPage(): JSX.Element {
                         Run now
                       </Button>
                     )}
+                    <Button size="sm" variant="ghost" onClick={() => setProrationFor(p)}>
+                      Proration…
+                    </Button>
                   </div>
                 ),
               },
@@ -134,6 +138,126 @@ export function RecurringPlansPage(): JSX.Element {
           />
         )}
       </Card>
+      {prorationFor && (
+        <ProrationDialog plan={prorationFor} onClose={() => setProrationFor(null)} />
+      )}
+    </div>
+  );
+}
+
+function ProrationDialog({ plan, onClose }: { plan: Plan; onClose: () => void }): JSX.Element {
+  const [newAmount, setNewAmount] = useState(String(plan.amountCents / 100));
+  const [changeDate, setChangeDate] = useState(new Date().toISOString().slice(0, 10));
+  const [result, setResult] = useState<{
+    prorationCents: number;
+    oldUnusedCents: number;
+    newUnusedCents: number;
+    daysRemaining: number;
+  } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function preview(): Promise<void> {
+    setErr(null);
+    try {
+      const r = await api<typeof result>(
+        `/api/staff/recurring-plans/${plan.id}/proration-preview`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            newAmountCents: Math.round(Number(newAmount) * 100),
+            changeDate,
+          }),
+        },
+      );
+      setResult(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 100,
+      }}
+    >
+      <div style={{ minWidth: 480 }}>
+        <Card title={`Proration preview · ${plan.clientName}`}>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              Current amount: ${(plan.amountCents / 100).toFixed(2)} · {plan.frequency}
+            </label>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>New amount ($)</span>
+              <input
+                type="number"
+                step="0.01"
+                value={newAmount}
+                onChange={(e) => setNewAmount(e.target.value)}
+                style={{
+                  padding: '8px 10px',
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                }}
+              />
+            </label>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Change date</span>
+              <input
+                type="date"
+                value={changeDate}
+                onChange={(e) => setChangeDate(e.target.value)}
+                style={{
+                  padding: '8px 10px',
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                }}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button onClick={() => void preview()}>Compute</Button>
+              <Button variant="ghost" onClick={onClose}>
+                Close
+              </Button>
+            </div>
+            {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+            {result && (
+              <div
+                style={{
+                  background: tokens.color.surface,
+                  padding: 12,
+                  borderRadius: tokens.radius.md,
+                  fontSize: 13,
+                  display: 'grid',
+                  gap: 6,
+                }}
+              >
+                <div>Days remaining in period: {result.daysRemaining}</div>
+                <div>Old unused (credit): ${(result.oldUnusedCents / 100).toFixed(2)}</div>
+                <div>New unused (charge): ${(result.newUnusedCents / 100).toFixed(2)}</div>
+                <div style={{ fontWeight: 600 }}>
+                  Net proration:{' '}
+                  <span style={{ color: tokens.color.accent }}>
+                    ${(result.prorationCents / 100).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
