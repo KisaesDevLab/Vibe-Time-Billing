@@ -33,6 +33,7 @@ import {
   billingBatches as billingBatchesTable,
   billingBatchEntries as billingBatchEntriesTable,
   timeEntries as timeEntriesTable,
+  timekeeperRates as timekeeperRatesTable,
   adjustments as adjustmentsTable,
   adjustmentAllocations as adjustmentAllocationsTable,
 } from '../schema/core';
@@ -59,6 +60,10 @@ async function main(): Promise<void> {
       const firmId = await seedFirm(tx);
       const officeIds = await seedOffices(tx, firmId);
       const userIds = await seedUsers(tx, firmId, officeIds);
+      // QA fix — without timekeeper rates the API rejects every new
+      // time entry with `no_rate_resolves`. Seed one bill+cost rate per
+      // user so the rate resolver returns a candidate on Phase-9 calls.
+      await seedTimekeeperRates(tx, userIds);
       const serviceLineIds = await seedServiceLines(tx, firmId);
       await seedWorkCodes(tx, firmId, serviceLineIds);
       await seedEngagementTypes(tx, firmId, serviceLineIds);
@@ -128,6 +133,29 @@ async function seedUsers(tx: Tx, firmId: string, officeIds: string[]): Promise<s
     )
     .returning({ id: appUsers.id });
   return rows.map((r) => r.id);
+}
+
+// Ordered to match STAFF_SEED above. Rates in cents/hour.
+const SEED_RATES_PER_HOUR_CENTS = [
+  { bill: 50000, cost: 20000 }, // Sarah Chen (partner)
+  { bill: 30000, cost: 12000 }, // Mike Davis (manager)
+  { bill: 25000, cost: 10000 }, // Rachel Kim (senior)
+  { bill: 20000, cost: 8000 }, // Jenny Park (staff)
+  { bill: 45000, cost: 18000 }, // David Park (manager)
+  { bill: 40000, cost: 16000 }, // Linda Hayes (senior)
+  { bill: 18000, cost: 7000 }, // Tom Vance (staff)
+];
+
+async function seedTimekeeperRates(tx: Tx, userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  await tx.insert(timekeeperRatesTable).values(
+    userIds.map((id, i) => ({
+      appUserId: id,
+      billRateCents: SEED_RATES_PER_HOUR_CENTS[i]?.bill ?? 25000,
+      costRateCents: SEED_RATES_PER_HOUR_CENTS[i]?.cost ?? 10000,
+      effectiveStart: '2025-01-01',
+    })),
+  );
 }
 
 const SERVICE_LINES = [

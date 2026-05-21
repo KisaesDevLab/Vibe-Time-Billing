@@ -185,7 +185,14 @@ const app = createApp({
   sendPortalSms,
 });
 
-app.listen(config.PORT, () => {
+// QA fix — tsx watch's hot-restart races the dying listener: the new
+// process tries to bind the port before the OS releases the old socket,
+// crashes with EADDRINUSE, and pnpm sees a dead child. Frontend then
+// blows up with ECONNREFUSED on every API call. Retry on EADDRINUSE
+// with exponential backoff. In dev keep retrying indefinitely (the
+// previous process eventually releases the socket); in prod give up
+// after ~30s so the container orchestrator can take over.
+const server = app.listen(config.PORT, () => {
   logger.info(
     {
       port: config.PORT,
@@ -200,3 +207,35 @@ app.listen(config.PORT, () => {
     'vibe-tb-api listening',
   );
 });
+const isProd = config.NODE_ENV === 'production';
+const MAX_LISTEN_ATTEMPTS = isProd ? 16 : Number.POSITIVE_INFINITY;
+let listenAttempt = 0;
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE' && listenAttempt < MAX_LISTEN_ATTEMPTS) {
+    listenAttempt += 1;
+    const delayMs = Math.min(250 * Math.pow(1.5, listenAttempt - 1), 3000);
+    logger.warn(
+      { port: config.PORT, attempt: listenAttempt, delayMs },
+      'api port busy, retrying listen (likely tsx watch hot-reload race)',
+    );
+    setTimeout(() => server.listen(config.PORT), delayMs);
+    return;
+  }
+  logger.fatal({ err }, 'failed to bind api port — giving up');
+  process.exit(1);
+});
+
+// Graceful shutdown so a SIGTERM/SIGINT from tsx watch releases the
+// port promptly instead of leaving it bound until the OS reaps the
+// process. Without this the next tsx run wastes 5+ seconds in retries.
+function shutdownGracefully(signal: string): void {
+  logger.info({ signal }, 'received shutdown signal — closing api server');
+  server.close((err) => {
+    if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
+    process.exit(0);
+  });
+  // Hard exit if server.close hangs (e.g. lingering keep-alive sockets).
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+process.on('SIGTERM', () => shutdownGracefully('SIGTERM'));
+process.on('SIGINT', () => shutdownGracefully('SIGINT'));

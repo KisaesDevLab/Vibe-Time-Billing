@@ -421,7 +421,32 @@ function startHealthServer(): void {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end('{"error":"not_found"}');
   });
-  server.listen(port, () => logger.info({ port }, 'worker health server listening'));
+  // QA fix — see api/src/server.ts: tsx watch hot-restart races the
+  // dying listener; retry on EADDRINUSE indefinitely in dev (capped in
+  // prod) so the worker survives fast reloads.
+  const isProd = process.env['NODE_ENV'] === 'production';
+  const maxAttempts = isProd ? 16 : Number.POSITIVE_INFINITY;
+  let attempt = 0;
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && attempt < maxAttempts) {
+      attempt += 1;
+      const delayMs = Math.min(250 * Math.pow(1.5, attempt - 1), 3000);
+      logger.warn({ port, attempt, delayMs }, 'worker health port busy, retrying');
+      setTimeout(() => server.listen(port), delayMs);
+      return;
+    }
+    logger.fatal({ err }, 'worker health server failed to bind — exiting');
+    process.exit(1);
+  });
+  server.listen(port, () => logger.info({ port, attempt }, 'worker health server listening'));
+
+  function shutdownHealth(signal: string): void {
+    logger.info({ signal }, 'received shutdown signal — closing worker health server');
+    server.close(() => undefined);
+    setTimeout(() => undefined, 100).unref();
+  }
+  process.on('SIGTERM', () => shutdownHealth('SIGTERM'));
+  process.on('SIGINT', () => shutdownHealth('SIGINT'));
 }
 
 async function shutdown(): Promise<void> {
