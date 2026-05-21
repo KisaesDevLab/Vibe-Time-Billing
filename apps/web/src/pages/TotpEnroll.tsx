@@ -2,7 +2,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { AuthLayout, Button, Input } from '@vibe/ui';
+import QRCode from 'qrcode';
+
+import { AuthLayout, Button, Input, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -16,6 +18,7 @@ export function TotpEnrollPage(): JSX.Element {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const [enrollment, setEnrollment] = useState<EnrollmentResponse | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +29,8 @@ export function TotpEnrollPage(): JSX.Element {
       try {
         const r = await api<EnrollmentResponse>('/api/auth/totp/enroll', { method: 'POST' });
         setEnrollment(r);
+        const dataUrl = await QRCode.toDataURL(r.otpauthUri, { margin: 1, width: 224 });
+        setQrDataUrl(dataUrl);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'enrollment failed');
       }
@@ -63,18 +68,33 @@ export function TotpEnrollPage(): JSX.Element {
     >
       {enrollment && (
         <>
-          <pre
-            style={{
-              fontSize: 11,
-              wordBreak: 'break-all',
-              whiteSpace: 'pre-wrap',
-              background: '#11151b',
-              padding: 8,
-              borderRadius: 6,
-            }}
-          >
-            {enrollment.otpauthUri}
-          </pre>
+          {qrDataUrl && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+              <img
+                src={qrDataUrl}
+                alt="TOTP enrollment QR code"
+                width={224}
+                height={224}
+                style={{ borderRadius: 6, background: '#fff', padding: 8 }}
+              />
+            </div>
+          )}
+          <details style={{ marginBottom: 8, fontSize: 12 }}>
+            <summary>Can&apos;t scan? Show setup URI</summary>
+            <pre
+              style={{
+                fontSize: 11,
+                wordBreak: 'break-all',
+                whiteSpace: 'pre-wrap',
+                background: tokens.color.surface,
+                padding: 8,
+                borderRadius: 6,
+                marginTop: 8,
+              }}
+            >
+              {enrollment.otpauthUri}
+            </pre>
+          </details>
           <details style={{ marginTop: 12, fontSize: 13 }}>
             <summary>Recovery codes (save now)</summary>
             <ul style={{ paddingLeft: 18, marginTop: 8, fontFamily: 'monospace' }}>
@@ -101,7 +121,7 @@ export function TotpEnrollPage(): JSX.Element {
               placeholder="123456"
               required
             />
-            {error && <div style={{ color: '#ef4444', fontSize: 12 }}>{error}</div>}
+            {error && <div style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</div>}
             <Button type="submit" disabled={submitting || !acknowledged}>
               {submitting ? 'Verifying…' : 'Verify & finish'}
             </Button>

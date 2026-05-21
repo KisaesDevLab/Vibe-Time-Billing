@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --port 5173",
+    "preview": "vite preview --port 5195",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:unit": "vitest run --passWithNoTests",
@@ -16,12 +16,14 @@
   "dependencies": {
     "@vibe/types": "workspace:*",
     "@vibe/ui": "workspace:*",
+    "qrcode": "^1.5.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.23.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.45.0",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.3.0",
