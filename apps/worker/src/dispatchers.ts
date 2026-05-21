@@ -47,7 +47,6 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
     };
   }
   if (provider === 'smtp' && process.env['MAIL_SMTP_HOST']) {
-    // @ts-expect-error nodemailer is an optional runtime dependency.
     const nodemailer = await import('nodemailer');
     const transport = nodemailer.default.createTransport({
       host: process.env['MAIL_SMTP_HOST'],

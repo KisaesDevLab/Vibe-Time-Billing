@@ -48,7 +48,6 @@ export function createSmtpMailProvider(opts: SmtpOptions, log: Logger): MailProv
     async send(msg) {
       // Use dynamic import so dev environments without nodemailer still boot.
       try {
-        // @ts-expect-error nodemailer is an optional runtime dependency.
         const nodemailer = await import('nodemailer');
         const transport = nodemailer.default.createTransport({
           host: opts.host,
