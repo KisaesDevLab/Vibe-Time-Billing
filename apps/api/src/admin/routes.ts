@@ -39,6 +39,8 @@ const OfficeSchema = z.object({
   timezone: z.string().min(1).max(64),
   address: z.string().max(400).optional(),
   isDefault: z.boolean().optional(),
+  // Phase 4 #14 — inherited as partner_in_charge_id on new clients.
+  defaultPartnerInChargeId: z.string().uuid().nullable().optional(),
 });
 
 const FEE_STRUCTURES = [

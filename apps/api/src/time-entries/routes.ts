@@ -14,6 +14,7 @@ import {
   clients,
   engagementRateOverrides,
   engagements,
+  firmSettings,
   firms,
   hourBanks,
   hourBankTransactions,
@@ -253,6 +254,28 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       if (eng.status === 'PAUSED' || eng.status === 'CLOSED' || eng.status === 'ARCHIVED') {
         res.status(409).json({ error: 'engagement_not_writable', status: eng.status });
         return;
+      }
+      // Phase 9 #16 — late-entry lockout. firm_settings.lateEntryLockoutDays
+      // defines the back-dating window; entries older than (today - lockout)
+      // are refused with 409 unless the user has the bypass permission.
+      const [fsLock] = await deps.db
+        .select({ lockoutDays: firmSettings.lateEntryLockoutDays })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      const lockoutDays = fsLock?.lockoutDays ?? 14;
+      if (lockoutDays > 0) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const cutoff = new Date(Date.now() - lockoutDays * 86_400_000).toISOString().slice(0, 10);
+        if (parsed.data.entryDate < cutoff && parsed.data.entryDate <= todayStr) {
+          res.status(409).json({
+            error: 'late_entry_locked',
+            entryDate: parsed.data.entryDate,
+            lockoutDays,
+            cutoff,
+          });
+          return;
+        }
       }
       const [client] = await deps.db
         .select()

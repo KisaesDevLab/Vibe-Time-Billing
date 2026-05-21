@@ -348,6 +348,9 @@ export const offices = pgTable(
     address: text('address'),
     timezone: text('timezone').notNull().default('America/Chicago'),
     isDefault: boolean('is_default').notNull().default(false),
+    // Phase 4 #14 — when set, new clients created in this office inherit
+    // this user as partner-in-charge (still overridable per client).
+    defaultPartnerInChargeId: uuid('default_partner_in_charge_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

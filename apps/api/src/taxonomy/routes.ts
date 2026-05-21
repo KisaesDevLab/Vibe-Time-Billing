@@ -7,7 +7,55 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { engagementTypes, reasonCodes, serviceLines, workCodes } from '@vibe/db/schema';
+import {
+  adjustments,
+  engagements,
+  engagementTypes,
+  reasonCodes,
+  serviceLines,
+  timeEntries,
+  workCodes,
+} from '@vibe/db/schema';
+import { sql } from 'drizzle-orm';
+
+async function countReferences(
+  db: Database,
+  what: 'service_line' | 'work_code' | 'engagement_type' | 'reason_code',
+  id: string,
+): Promise<number> {
+  // Returns the number of in-use rows referencing this taxonomy id.
+  // Used by Phase 5 #7 — refuse archive when something still references.
+  switch (what) {
+    case 'service_line': {
+      const [{ c = 0 } = { c: 0 }] = await db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(workCodes)
+        .where(eq(workCodes.serviceLineId, id));
+      return Number(c);
+    }
+    case 'work_code': {
+      const [{ c = 0 } = { c: 0 }] = await db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(timeEntries)
+        .where(eq(timeEntries.workCodeId, id));
+      return Number(c);
+    }
+    case 'engagement_type': {
+      const [{ c = 0 } = { c: 0 }] = await db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(engagements)
+        .where(eq(engagements.engagementTypeId, id));
+      return Number(c);
+    }
+    case 'reason_code': {
+      const [{ c = 0 } = { c: 0 }] = await db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(adjustments)
+        .where(eq(adjustments.reasonCodeId, id));
+      return Number(c);
+    }
+  }
+}
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -128,6 +176,11 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
+      const refs = await countReferences(deps.db, 'service_line', req.params['id']!);
+      if (refs > 0) {
+        res.status(409).json({ error: 'in_use', entity: 'work_code', count: refs });
+        return;
+      }
       await deps.db
         .update(serviceLines)
         .set({ status: 'ARCHIVED' })
@@ -296,6 +349,11 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
+      const refs = await countReferences(deps.db, 'work_code', req.params['id']!);
+      if (refs > 0) {
+        res.status(409).json({ error: 'in_use', entity: 'time_entry', count: refs });
+        return;
+      }
       await deps.db
         .update(workCodes)
         .set({ status: 'ARCHIVED' })
@@ -323,6 +381,11 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
+      const refs = await countReferences(deps.db, 'engagement_type', req.params['id']!);
+      if (refs > 0) {
+        res.status(409).json({ error: 'in_use', entity: 'engagement', count: refs });
+        return;
+      }
       await deps.db
         .update(engagementTypes)
         .set({ status: 'ARCHIVED' })
@@ -348,6 +411,11 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
       const session = req.staffSession!;
       if (!deps.db) {
         res.json({ ok: true });
+        return;
+      }
+      const refs = await countReferences(deps.db, 'reason_code', req.params['id']!);
+      if (refs > 0) {
+        res.status(409).json({ error: 'in_use', entity: 'adjustment', count: refs });
         return;
       }
       await deps.db
