@@ -249,10 +249,15 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         return;
       }
 
-      // Aggregate INCLUDED time entry amounts.
-      const includedRows = await deps.db
+      // Aggregate INCLUDED time entry amounts, split by in_scope_flag so
+      // mixed-mode subscriptions can compose retainer + overage as two
+      // line items below (Phase 10 #10/#11).
+      const includedSplit = await deps.db
         .select({
-          amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+          inScope: sql<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
+          overage: sql<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
+          inScopeHours: sql<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.hours} ELSE 0 END), 0)`,
+          overageHours: sql<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.hours} END), 0)`,
         })
         .from(billingBatchEntries)
         .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
@@ -262,7 +267,10 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             eq(billingBatchEntries.action, 'INCLUDE'),
           ),
         );
-      const includedTotal = Number(includedRows[0]?.amountCents ?? 0);
+      const inScopeAmount = Number(includedSplit[0]?.inScope ?? 0);
+      const overageAmount = Number(includedSplit[0]?.overage ?? 0);
+      const overageHours = Number(includedSplit[0]?.overageHours ?? 0);
+      const includedTotal = inScopeAmount + overageAmount;
 
       // Net of any APPLIED adjustments against this batch.
       const adjRows = await deps.db
@@ -296,13 +304,42 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         issueDate,
       });
 
-      const lines: LineItem[] = [
-        {
-          kind: 'TIME_AGGREGATE',
-          description: `${eng.name} — ${batch.periodStart} to ${batch.periodEnd}`,
-          amountCents: lineAmount,
-        },
-      ];
+      // Phase 10 #10/#11 — mixed-mode invoice composer.
+      // For RECURRING_SUBSCRIPTION engagements with mixedModeEnabled=true,
+      // produce two lines: the retainer (engagement.feeAmountCents as
+      // RECURRING_FEE) and any out-of-scope hours rolled up as overage
+      // (TIME_AGGREGATE). In-scope hours are absorbed by the retainer
+      // (and already debited from the hour-bank if one exists).
+      // Adjustments still net into the OOS lane since in-scope WIP is
+      // not separately billed.
+      const isMixedMode = eng.mixedModeEnabled && eng.feeStructure === 'RECURRING_SUBSCRIPTION';
+      const lines: LineItem[] = isMixedMode
+        ? (() => {
+            const out: LineItem[] = [];
+            if (eng.feeAmountCents && Number(eng.feeAmountCents) > 0) {
+              out.push({
+                kind: 'RECURRING_FEE',
+                description: `${eng.name} — retainer · ${batch.periodStart} to ${batch.periodEnd}`,
+                amountCents: Number(eng.feeAmountCents),
+              });
+            }
+            const overageLineAmount = overageAmount + adjTotal;
+            if (overageLineAmount !== 0 || overageHours > 0) {
+              out.push({
+                kind: 'TIME_AGGREGATE',
+                description: `Out-of-scope overage — ${overageHours.toFixed(2)}h`,
+                amountCents: overageLineAmount,
+              });
+            }
+            return out;
+          })()
+        : [
+            {
+              kind: 'TIME_AGGREGATE',
+              description: `${eng.name} — ${batch.periodStart} to ${batch.periodEnd}`,
+              amountCents: lineAmount,
+            },
+          ];
       const totals = computeTotals(lines);
 
       const invoiceId = await deps.db.transaction(async (tx) => {
