@@ -359,6 +359,8 @@ function BatchDetailPage(): JSX.Element {
         />
       </Card>
 
+      <PrebillNarrativePanel batchId={detail.batch.id} />
+
       {showAdjustDialog && (
         <AdjustmentDialog
           billingBatchId={detail.batch.id}
@@ -371,6 +373,62 @@ function BatchDetailPage(): JSX.Element {
         />
       )}
     </div>
+  );
+}
+
+function PrebillNarrativePanel({ batchId }: { batchId: string }): JSX.Element | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [narrative, setNarrative] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const s = await api<{ enabled: boolean }>('/api/staff/ai/status');
+        setEnabled(s.enabled);
+      } catch {
+        setEnabled(false);
+      }
+    })();
+  }, []);
+
+  async function generate(): Promise<void> {
+    setLoading(true);
+    setErr(null);
+    try {
+      const r = await api<{ narrative: string }>('/api/staff/ai/prebill-narrative', {
+        method: 'POST',
+        body: JSON.stringify({ billingBatchId: batchId }),
+      });
+      setNarrative(r.narrative);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (enabled === null || enabled === false) return null;
+
+  return (
+    <Card
+      title="AI pre-bill narrative"
+      action={
+        <Button variant="secondary" size="sm" onClick={() => void generate()} disabled={loading}>
+          {loading ? 'Generating…' : narrative ? 'Regenerate' : 'Generate'}
+        </Button>
+      }
+    >
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+      {narrative ? (
+        <p style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.55 }}>{narrative}</p>
+      ) : (
+        <p style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+          Click Generate to draft a client-facing narrative summarizing this batch.
+        </p>
+      )}
+    </Card>
   );
 }
 
