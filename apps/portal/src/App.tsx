@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+
+import { api } from './api-client';
 
 import { AppShell, Button, Pill } from '@vibe/ui';
 
@@ -54,12 +56,44 @@ function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
   return children;
 }
 
+interface Branding {
+  displayName: string | null;
+  logoUrl: string | null;
+  accentColor: string | null;
+  supportEmail: string | null;
+  supportPhone: string | null;
+}
+
 function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { me, logout } = useAuth();
   const location = useLocation();
+  const [branding, setBranding] = useState<Branding | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ branding: Branding | null }>('/api/portal/profile/branding');
+        setBranding(r.branding);
+      } catch {
+        // ignore; branding is optional
+      }
+    })();
+  }, []);
+
+  const brandLabel = branding?.displayName ?? 'Client Portal';
+
   return (
     <AppShell
-      brand="Client Portal"
+      brand={
+        branding?.logoUrl ? (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <img src={branding.logoUrl} alt="" style={{ height: 24, maxWidth: 120 }} />
+            <span>{brandLabel}</span>
+          </span>
+        ) : (
+          brandLabel
+        )
+      }
       realmBadge={<Pill tone="success">portal</Pill>}
       nav={[
         { label: 'Overview', href: '/', active: location.pathname === '/' },

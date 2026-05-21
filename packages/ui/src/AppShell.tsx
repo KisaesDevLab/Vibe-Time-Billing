@@ -10,7 +10,7 @@ export interface NavItem {
 }
 
 export interface AppShellProps {
-  brand: string;
+  brand: ReactNode;
   realmBadge?: ReactNode;
   nav: NavItem[];
   trailing?: ReactNode;
