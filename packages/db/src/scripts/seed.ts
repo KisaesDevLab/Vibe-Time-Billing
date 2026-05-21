@@ -101,13 +101,13 @@ async function seedOffices(tx: Tx, firmId: string): Promise<string[]> {
 }
 
 const STAFF_SEED = [
-  { email: '[email protected]', fullName: 'Sarah Chen' },
-  { email: '[email protected]', fullName: 'Mike Davis' },
-  { email: '[email protected]', fullName: 'Rachel Kim' },
-  { email: '[email protected]', fullName: 'Jenny Park' },
-  { email: '[email protected]', fullName: 'David Park' },
-  { email: '[email protected]', fullName: 'Linda Hayes' },
-  { email: '[email protected]', fullName: 'Tom Vance' },
+  { email: 'sarah.chen@granitepeakcpa.example', fullName: 'Sarah Chen' },
+  { email: 'mike.davis@granitepeakcpa.example', fullName: 'Mike Davis' },
+  { email: 'rachel.kim@granitepeakcpa.example', fullName: 'Rachel Kim' },
+  { email: 'jenny.park@granitepeakcpa.example', fullName: 'Jenny Park' },
+  { email: 'david.park@granitepeakcpa.example', fullName: 'David Park' },
+  { email: 'linda.hayes@granitepeakcpa.example', fullName: 'Linda Hayes' },
+  { email: 'tom.staff@granitepeakcpa.example', fullName: 'Tom Vance' },
 ];
 
 async function seedUsers(tx: Tx, firmId: string, officeIds: string[]): Promise<string[]> {
@@ -280,7 +280,7 @@ async function seedPortalIdentities(
     .values({
       firmId,
       fullName: 'Tom Vance',
-      primaryEmail: '[email protected]',
+      primaryEmail: 'tom.vance@vanceholdings.example',
       primaryPhone: '+13125550148',
       preferredMethod: 'EMAIL',
     })
@@ -323,7 +323,7 @@ async function seedPortalIdentities(
     .values({
       firmId,
       fullName: 'Lisa Holland',
-      primaryEmail: '[email protected]',
+      primaryEmail: 'lisa.holland@hollandmfg.example',
       preferredMethod: 'EMAIL',
     })
     .returning({ id: portalIdentity.id });
