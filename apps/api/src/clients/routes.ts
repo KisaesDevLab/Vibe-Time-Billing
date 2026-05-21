@@ -7,7 +7,16 @@ import { z } from 'zod';
 import { and, eq, ilike, inArray, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientNotes, clients } from '@vibe/db/schema';
+import {
+  clientNotes,
+  clientPortalAccess,
+  clientRateOverrides,
+  clients,
+  engagements,
+  invoices,
+  portalInvitation,
+  portalSession,
+} from '@vibe/db/schema';
 import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
@@ -27,6 +36,12 @@ const ClientSchema = z.object({
   termsDays: z.number().int().min(0).max(365).optional(),
   invoiceConsolidationPreference: z.enum(['CONSOLIDATED', 'SEPARATE']).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
+  customFields: z.record(z.string(), z.unknown()).optional(),
+});
+
+const MergeSchema = z.object({
+  sourceId: z.string().uuid(),
+  reason: z.string().max(2000).optional(),
 });
 
 export function createClientRouter(deps: ClientRoutesDeps): Router {
@@ -443,6 +458,148 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         .values({ clientId: client.id, authorId: session.appUserId, body, pinned })
         .returning({ id: clientNotes.id });
       res.status(201).json({ id: row?.id });
+    },
+  );
+
+  // Phase 6 #8 — client merge / dedup tool.
+  // POST /:targetId/merge with body { sourceId, reason? }.
+  // Re-points every FK from source → target (engagements, invoices,
+  // client_rate_overrides, client_notes, client_portal_access,
+  // portal_invitation, portal_session.activeClientId), then archives
+  // source. Refuses if either client is legal-held. Audit log captures
+  // before/after on both clients + counts of moved rows.
+  router.post(
+    '/:id/merge',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const targetId = req.params['id']!;
+      const parsed = MergeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const sourceId = parsed.data.sourceId;
+      if (sourceId === targetId) {
+        res.status(400).json({ error: 'cannot_merge_into_self' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const both = await deps.db
+        .select({
+          id: clients.id,
+          name: clients.name,
+          legalHoldFlag: clients.legalHoldFlag,
+        })
+        .from(clients)
+        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, [sourceId, targetId])));
+      const target = both.find((c) => c.id === targetId);
+      const source = both.find((c) => c.id === sourceId);
+      if (!target || !source) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      if (target.legalHoldFlag || source.legalHoldFlag) {
+        res.status(409).json({ error: 'legal_hold_active' });
+        return;
+      }
+      const counts = await deps.db.transaction(async (tx) => {
+        const moved = {
+          engagements: 0,
+          invoices: 0,
+          clientRateOverrides: 0,
+          clientNotes: 0,
+          portalAccesses: 0,
+          portalInvitations: 0,
+          portalSessions: 0,
+        };
+        const upEngs = await tx
+          .update(engagements)
+          .set({ clientId: targetId })
+          .where(eq(engagements.clientId, sourceId))
+          .returning({ id: engagements.id });
+        moved.engagements = upEngs.length;
+
+        const upInvs = await tx
+          .update(invoices)
+          .set({ clientId: targetId })
+          .where(eq(invoices.clientId, sourceId))
+          .returning({ id: invoices.id });
+        moved.invoices = upInvs.length;
+
+        const upRates = await tx
+          .update(clientRateOverrides)
+          .set({ clientId: targetId })
+          .where(eq(clientRateOverrides.clientId, sourceId))
+          .returning({ id: clientRateOverrides.id });
+        moved.clientRateOverrides = upRates.length;
+
+        const upNotes = await tx
+          .update(clientNotes)
+          .set({ clientId: targetId })
+          .where(eq(clientNotes.clientId, sourceId))
+          .returning({ id: clientNotes.id });
+        moved.clientNotes = upNotes.length;
+
+        const upAccess = await tx
+          .update(clientPortalAccess)
+          .set({ clientId: targetId })
+          .where(eq(clientPortalAccess.clientId, sourceId))
+          .returning({ id: clientPortalAccess.id });
+        moved.portalAccesses = upAccess.length;
+
+        const upInvites = await tx
+          .update(portalInvitation)
+          .set({ clientId: targetId })
+          .where(eq(portalInvitation.clientId, sourceId))
+          .returning({ id: portalInvitation.id });
+        moved.portalInvitations = upInvites.length;
+
+        const upSessions = await tx
+          .update(portalSession)
+          .set({ activeClientId: targetId })
+          .where(eq(portalSession.activeClientId, sourceId))
+          .returning({ id: portalSession.id });
+        moved.portalSessions = upSessions.length;
+
+        await tx.update(clients).set({ status: 'ARCHIVED' }).where(eq(clients.id, sourceId));
+        return moved;
+      });
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        entityId: targetId,
+        actorAppUserId: session.appUserId,
+        before: { merged_source_id: sourceId, source_name: source.name },
+        after: {
+          kind: 'merge_target',
+          sourceId,
+          sourceName: source.name,
+          reason: parsed.data.reason ?? null,
+          moved: counts,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'client',
+        entityId: sourceId,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'merged_into',
+          targetId,
+          targetName: target.name,
+          reason: parsed.data.reason ?? null,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, targetId, sourceId, moved: counts });
     },
   );
 
