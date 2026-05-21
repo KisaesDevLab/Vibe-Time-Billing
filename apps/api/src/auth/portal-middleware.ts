@@ -4,12 +4,37 @@
 // share. Distinct cookie name, distinct JWT key, distinct session prefix.
 
 import type { NextFunction, Request, Response } from 'express';
+import { eq } from 'drizzle-orm';
 
 import type { PortalSession } from '@vibe/core/auth';
+import type { Database } from '@vibe/db';
+import { firmSettings } from '@vibe/db/schema';
 
 import { loadConfig } from '../config';
 import { readSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
+
+// Phase 16 #27 — small cached lookup so we don't hit the DB on every
+// portal request. Refreshes every 60 seconds; firm-settings changes
+// take effect within that window.
+let portalEnabledCache: { value: boolean | null; expiresAt: number } = {
+  value: null,
+  expiresAt: 0,
+};
+async function isPortalEnabled(db: Database, firmId: string): Promise<boolean> {
+  const now = Date.now();
+  if (portalEnabledCache.value !== null && portalEnabledCache.expiresAt > now) {
+    return portalEnabledCache.value;
+  }
+  const [row] = await db
+    .select({ enabled: firmSettings.portalEnabled })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firmId))
+    .limit(1);
+  const value = row?.enabled ?? true;
+  portalEnabledCache = { value, expiresAt: now + 60_000 };
+  return value;
+}
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -20,7 +45,7 @@ declare global {
   }
 }
 
-export function portalAuthDeps(store: SessionStore) {
+export function portalAuthDeps(store: SessionStore, db?: Database | null) {
   return {
     async requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
       // License gate (non-negotiable #6).
@@ -38,6 +63,16 @@ export function portalAuthDeps(store: SessionStore) {
       if (!s || s.realm !== 'portal') {
         res.status(401).json({ error: 'invalid_session' });
         return;
+      }
+      // Phase 16 #27 — firm toggle. After the session is resolved we
+      // know firmId and can short-circuit if the firm has disabled the
+      // portal in admin settings.
+      if (db) {
+        const enabled = await isPortalEnabled(db, s.firmId);
+        if (!enabled) {
+          res.status(503).json({ error: 'portal_disabled', reason: 'firm_disabled' });
+          return;
+        }
       }
       await store.touch('portal', sid);
       req.portalSession = s;

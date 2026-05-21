@@ -285,7 +285,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/staff/approvals', auth.requireAuth, auth.requireCsrf, approvalRouter);
 
   // Portal auth realm — distinct middleware, signing key, cookie.
-  const portal = portalAuthDeps(deps.sessionStore);
+  const portal = portalAuthDeps(deps.sessionStore, deps.db);
   const portalRouter = createPortalAuthRouter({
     db: deps.db,
     redis: deps.redis,
