@@ -245,7 +245,15 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
           usage: result.usage,
           costCents: result.costEstimateCents,
         });
-        res.json({ answer: result.text.trim(), providerId: result.providerId });
+        // Phase 23 #18 — surface citations so the UI can render
+        // clickable links to the underlying reports referenced by the
+        // model's plan. We mine the answer text for known report names.
+        const citations = inferCitations(result.text);
+        res.json({
+          answer: result.text.trim(),
+          providerId: result.providerId,
+          citations,
+        });
       } catch (err) {
         await logAiRequest(deps, {
           firmId: session.firmId,
@@ -815,6 +823,49 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
 //   VIBE_AI_FEATURE_REALIZATION_NARRATIVE=cloud
 //   VIBE_AI_FEATURE_SUGGEST_DESCRIPTION=local
 // Unset values inherit the global default.
+// Phase 23 #18 — map of report keywords to API endpoints. The UI uses
+// the returned `path` to render clickable links beside the answer.
+const REPORT_INDEX: ReadonlyArray<{ keywords: string[]; label: string; path: string }> = [
+  {
+    keywords: ['realization', 'wip'],
+    label: 'Realization report',
+    path: '/api/reports/realization',
+  },
+  {
+    keywords: ['aging', 'a/r', 'accounts receivable'],
+    label: 'A/R aging',
+    path: '/api/reports/ar-aging',
+  },
+  {
+    keywords: ['utilization', 'productivity'],
+    label: 'Utilization report',
+    path: '/api/reports/utilization',
+  },
+  {
+    keywords: ['write-down', 'write down', 'write-up', 'write up', 'adjustment'],
+    label: 'Adjustment history',
+    path: '/api/reports/adjustments',
+  },
+  { keywords: ['budget', 'over budget'], label: 'Budget vs actual', path: '/api/reports/budget' },
+  { keywords: ['invoice', 'billing'], label: 'Invoice list', path: '/api/invoices' },
+  {
+    keywords: ['time entry', 'time entries', 'hours'],
+    label: 'Time entries',
+    path: '/api/time-entries',
+  },
+];
+
+function inferCitations(answer: string): Array<{ label: string; path: string }> {
+  const lower = answer.toLowerCase();
+  const hits: Array<{ label: string; path: string }> = [];
+  for (const entry of REPORT_INDEX) {
+    if (entry.keywords.some((k) => lower.includes(k))) {
+      hits.push({ label: entry.label, path: entry.path });
+    }
+  }
+  return hits;
+}
+
 function featureOverride(feature: string | undefined): 'local' | 'cloud' | null {
   if (!feature) return null;
   const key = `VIBE_AI_FEATURE_${feature.toUpperCase().replace(/-/g, '_')}`;
