@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+#
+# Lighthouse CI — runs Lighthouse against the built staff and portal
+# apps on every PR. Performance + accessibility + best-practices are
+# gated; failures don't block merge but show on the PR check.
+#
+# Manually trigger:  gh workflow run lighthouse.yml
+# Local equivalent:  pnpm --filter @vibe/web preview & lhci autorun
+#
+# Phase 26 #1, #4 — Lighthouse audit + accessibility audit. We hold
+# the score targets in .lighthouserc.json so this workflow stays a
+# simple shell.
+
+name: Lighthouse CI
+
+on:
+  pull_request:
+    paths:
+      - 'apps/web/**'
+      - 'apps/portal/**'
+      - 'packages/ui/**'
+      - '.lighthouserc.json'
+      - '.github/workflows/lighthouse.yml'
+  workflow_dispatch:
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.4.0'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build staff app
+        run: pnpm --filter @vibe/web build
+
+      - name: Build portal app
+        run: pnpm --filter @vibe/portal build
+
+      - name: Install Lighthouse CI
+        run: npm install -g @lhci/cli@0.13.x
+
+      - name: Run Lighthouse — staff
+        run: lhci autorun --config=.lighthouserc.json
+        env:
+          LHCI_BUILD_CONTEXT__CURRENT_BRANCH: ${{ github.head_ref || github.ref_name }}
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: .lighthouseci/
+          retention-days: 14

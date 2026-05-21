@@ -1,0 +1,36 @@
+{
+  "$schema": "https://googlechrome.github.io/lighthouse-ci/configuration.schema.json",
+  "ci": {
+    "collect": {
+      "staticDistDir": "apps/web/dist",
+      "url": ["http://localhost/index.html"],
+      "numberOfRuns": 1,
+      "settings": {
+        "preset": "desktop",
+        "skipAudits": ["uses-http2", "is-on-https", "redirects-http"]
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:performance": ["warn", { "minScore": 0.85 }],
+        "categories:accessibility": ["error", { "minScore": 0.9 }],
+        "categories:best-practices": ["warn", { "minScore": 0.9 }],
+        "categories:seo": ["warn", { "minScore": 0.85 }],
+        "color-contrast": "error",
+        "image-alt": "error",
+        "label": "error",
+        "button-name": "error",
+        "link-name": "error",
+        "html-has-lang": "error",
+        "meta-viewport": "error",
+        "document-title": "error",
+        "heading-order": "warn",
+        "duplicate-id-active": "error"
+      }
+    },
+    "upload": {
+      "target": "filesystem",
+      "outputDir": ".lighthouseci"
+    }
+  }
+}
