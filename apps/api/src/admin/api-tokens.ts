@@ -118,6 +118,32 @@ export function createApiTokenRouter(deps: ApiTokenRoutesDeps): Router {
     },
   );
 
+  router.get(
+    '/:id/usage',
+    requirePermission(deps, 'admin:mcp:manage'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const { auditLog } = await import('@vibe/db/schema');
+      const { eq, desc } = await import('drizzle-orm');
+      const items = await deps.db
+        .select({
+          id: auditLog.id,
+          occurredAt: auditLog.occurredAt,
+          action: auditLog.action,
+          entityType: auditLog.entityType,
+          afterJson: auditLog.afterJson,
+        })
+        .from(auditLog)
+        .where(eq(auditLog.actorMcpTokenId, req.params['id']!))
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(200);
+      res.json({ items });
+    },
+  );
+
   router.post(
     '/:id/revoke',
     requirePermission(deps, 'admin:mcp:manage'),
