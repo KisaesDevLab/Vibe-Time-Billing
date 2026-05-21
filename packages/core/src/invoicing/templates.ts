@@ -14,6 +14,12 @@ export interface InvoiceTemplateInput {
   issueDate: IsoDate;
   dueDate: IsoDate;
   firm: { name: string; logoUrl?: string | null; address?: string | null };
+  branding?: {
+    accentColor?: string | null;
+    supportEmail?: string | null;
+    supportPhone?: string | null;
+    footerHtml?: string | null;
+  } | null;
   client: { name: string; billingAddress?: string | null };
   lines: LineItem[];
   subtotalCents: Cents;
@@ -33,6 +39,18 @@ export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
     )
     .join('');
 
+  const accent =
+    input.branding?.accentColor &&
+    /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(input.branding.accentColor)
+      ? input.branding.accentColor
+      : '#111';
+  const logo = input.firm.logoUrl
+    ? `<img src="${esc(input.firm.logoUrl)}" alt="" style="max-height: 48px; max-width: 220px; margin-bottom: 8px;" />`
+    : '';
+  const supportLine = [input.branding?.supportEmail, input.branding?.supportPhone]
+    .filter(Boolean)
+    .join(' · ');
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -40,8 +58,8 @@ export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
   <title>Invoice ${esc(input.invoiceNumber)}</title>
   <style>
     body { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #111; margin: 32px; }
-    header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
-    header h1 { font-size: 22px; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; border-bottom: 2px solid ${accent}; padding-bottom: 16px; }
+    header h1 { font-size: 22px; margin: 0; color: ${accent}; }
     header .meta { text-align: right; font-size: 12px; color: #444; }
     .parties { display: flex; gap: 48px; margin-bottom: 24px; }
     .parties h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #666; margin: 0 0 4px; }
@@ -52,13 +70,16 @@ export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
     tfoot td { border-bottom: none; border-top: 1px solid #ccc; padding-top: 12px; }
     .total { font-weight: 600; font-size: 16px; }
     .notes { margin-top: 24px; padding: 12px; background: #f7f7f8; border-radius: 4px; font-size: 12px; color: #444; white-space: pre-wrap; }
+    .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; font-size: 11px; color: #666; }
   </style>
 </head>
 <body>
   <header>
     <div>
+      ${logo}
       <h1>${esc(input.firm.name)}</h1>
       ${input.firm.address ? `<div>${esc(input.firm.address)}</div>` : ''}
+      ${supportLine ? `<div style="font-size: 11px; color: #666; margin-top: 4px;">${esc(supportLine)}</div>` : ''}
     </div>
     <div class="meta">
       <div><strong>Invoice #${esc(input.invoiceNumber)}</strong></div>
@@ -89,6 +110,7 @@ export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
     </tfoot>
   </table>
   ${input.notes ? `<div class="notes">${esc(input.notes)}</div>` : ''}
+  ${input.branding?.footerHtml ? `<div class="footer">${input.branding.footerHtml}</div>` : ''}
 </body>
 </html>`;
 }

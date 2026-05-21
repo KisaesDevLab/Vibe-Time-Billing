@@ -407,6 +407,18 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .from(firms)
         .where(eq(firms.id, inv.firmId))
         .limit(1);
+      const [branding] = await deps.db
+        .select({
+          displayName: firmSettings.brandDisplayName,
+          logoUrl: firmSettings.brandLogoUrl,
+          accentColor: firmSettings.brandAccentColor,
+          supportEmail: firmSettings.brandSupportEmail,
+          supportPhone: firmSettings.brandSupportPhone,
+          footerHtml: firmSettings.brandFooterHtml,
+        })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, inv.firmId))
+        .limit(1);
       const [client] = await deps.db
         .select({ name: clients.name, billingAddress: clients.billingAddress })
         .from(clients)
@@ -422,7 +434,18 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         invoiceNumber: inv.invoiceNumber,
         issueDate: inv.issueDate,
         dueDate: inv.dueDate,
-        firm: { name: firm?.name ?? 'Firm' },
+        firm: {
+          name: branding?.displayName || firm?.name || 'Firm',
+          logoUrl: branding?.logoUrl ?? null,
+        },
+        branding: branding
+          ? {
+              accentColor: branding.accentColor ?? null,
+              supportEmail: branding.supportEmail ?? null,
+              supportPhone: branding.supportPhone ?? null,
+              footerHtml: branding.footerHtml ?? null,
+            }
+          : null,
         client: { name: client?.name ?? 'Client', billingAddress: client?.billingAddress ?? null },
         lines: lines.map((l) => ({
           kind: l.kind,
