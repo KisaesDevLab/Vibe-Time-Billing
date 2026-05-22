@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -98,6 +98,154 @@ const ManualComposeSchema = z.object({
   notes: z.string().max(2000).optional(),
   lines: z.array(LineItemSchema).min(1).max(200),
 });
+
+// =====================================================================
+// Edit helpers — used by the line-item POST/PATCH/DELETE routes and
+// the reopen route. Centralizes the "is this invoice editable" gate
+// (paidCents === 0 && status !== VOIDED) and re-derives the tax +
+// surcharge lines from the engagement's current config after any line
+// change. Without the recompute, an invoice with tax/surcharge would
+// drift out of sync after a manual edit.
+// =====================================================================
+
+type InvoiceRow = typeof invoices.$inferSelect;
+
+function invoiceLockedReason(inv: InvoiceRow): string | null {
+  if (inv.status === 'VOIDED') return 'invoice_voided';
+  if (Number(inv.paidCents) > 0) return 'invoice_has_payments';
+  return null;
+}
+
+async function recomputeInvoiceTotals(tx: Database, invoiceId: string): Promise<void> {
+  const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  if (!inv) throw new Error('recompute: invoice_not_found');
+
+  // Fetch the engagement's current tax/surcharge config (if invoice is
+  // pinned to a single engagement — multi-engagement consolidated invoices
+  // have primaryEngagementId set as a convenience pointer).
+  let eng: {
+    taxEnabled: boolean;
+    taxRateBps: number;
+    taxLabel: string;
+    surchargeEnabled: boolean;
+    surchargeType: string;
+    surchargeValueBps: number;
+    surchargeAmountCents: number;
+    surchargeLabel: string | null;
+  } | null = null;
+  if (inv.primaryEngagementId) {
+    const [row] = await tx
+      .select({
+        taxEnabled: engagements.taxEnabled,
+        taxRateBps: engagements.taxRateBps,
+        taxLabel: engagements.taxLabel,
+        surchargeEnabled: engagements.surchargeEnabled,
+        surchargeType: engagements.surchargeType,
+        surchargeValueBps: engagements.surchargeValueBps,
+        surchargeAmountCents: engagements.surchargeAmountCents,
+        surchargeLabel: engagements.surchargeLabel,
+      })
+      .from(engagements)
+      .where(eq(engagements.id, inv.primaryEngagementId))
+      .limit(1);
+    if (row) eng = row;
+  }
+
+  // Drop existing auto-derived rows; we'll re-insert below if the
+  // engagement config still calls for them.
+  await tx
+    .delete(invoiceLineItems)
+    .where(
+      and(
+        eq(invoiceLineItems.invoiceId, invoiceId),
+        inArray(invoiceLineItems.kind, ['SURCHARGE', 'SALES_TAX']),
+      ),
+    );
+
+  // Bucket the surviving rows.
+  const baseLines = await tx
+    .select({ amountCents: invoiceLineItems.amountCents, kind: invoiceLineItems.kind })
+    .from(invoiceLineItems)
+    .where(eq(invoiceLineItems.invoiceId, invoiceId));
+
+  let subtotal = 0;
+  let processingFee = 0;
+  for (const l of baseLines) {
+    if (l.kind === 'PROCESSING_FEE') processingFee += Number(l.amountCents);
+    else subtotal += Number(l.amountCents);
+  }
+
+  async function nextSort(): Promise<number> {
+    const [row] = await tx
+      .select({ s: sql<number>`COALESCE(MAX(${invoiceLineItems.sortOrder}), 0)` })
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoiceId));
+    return Number(row?.s ?? 0) + 1;
+  }
+
+  // Surcharge — derived from the engagement's current config.
+  let surchargeAmount = 0;
+  if (eng?.surchargeEnabled) {
+    const [fs] = await tx
+      .select({ defaultSurchargeLabel: firmSettings.defaultSurchargeLabel })
+      .from(firmSettings)
+      .where(eq(firmSettings.firmId, inv.firmId))
+      .limit(1);
+    const label = eng.surchargeLabel ?? fs?.defaultSurchargeLabel ?? 'Surcharge';
+    const line = surchargeLine({
+      subtotalCents: subtotal,
+      type: eng.surchargeType as 'PERCENT' | 'FLAT_AMOUNT',
+      valueBps: eng.surchargeValueBps,
+      amountCents: Number(eng.surchargeAmountCents),
+      label,
+    });
+    if (line) {
+      await tx.insert(invoiceLineItems).values({
+        invoiceId,
+        kind: 'SURCHARGE',
+        description: line.description,
+        amountCents: line.amountCents,
+        engagementId: inv.primaryEngagementId,
+        sourceRefType: 'auto',
+        sortOrder: await nextSort(),
+      });
+      surchargeAmount = line.amountCents;
+    }
+  }
+
+  // Tax — computed against subtotal + surcharge (locked decision).
+  let taxAmount = 0;
+  if (eng?.taxEnabled && eng.taxRateBps > 0) {
+    const line = salesTaxLine({
+      taxBaseCents: subtotal + surchargeAmount,
+      rateBps: eng.taxRateBps,
+      label: eng.taxLabel,
+    });
+    if (line) {
+      await tx.insert(invoiceLineItems).values({
+        invoiceId,
+        kind: 'SALES_TAX',
+        description: line.description,
+        amountCents: line.amountCents,
+        engagementId: inv.primaryEngagementId,
+        sourceRefType: 'auto',
+        sortOrder: await nextSort(),
+      });
+      taxAmount = line.amountCents;
+    }
+  }
+
+  await tx
+    .update(invoices)
+    .set({
+      subtotalCents: subtotal,
+      surchargeCents: surchargeAmount,
+      taxCents: taxAmount,
+      feeCents: processingFee,
+      totalCents: subtotal + surchargeAmount + taxAmount + processingFee,
+    })
+    .where(eq(invoices.id, invoiceId));
+}
 
 export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   const router = express.Router();
@@ -746,8 +894,17 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      if (inv.status === 'PAID' || inv.status === 'PARTIALLY_PAID') {
-        res.status(409).json({ error: 'cannot_reopen_with_payments', status: inv.status });
+      // QA — explicit paidCents check defends against weird states
+      // where status didn't match (e.g. a payment reversed but status
+      // wasn't rolled back). Also still block PARTIALLY_PAID + VOIDED.
+      if (Number(inv.paidCents) > 0) {
+        res
+          .status(409)
+          .json({ error: 'cannot_reopen_with_payments', paidCents: Number(inv.paidCents) });
+        return;
+      }
+      if (inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'cannot_reopen_voided' });
         return;
       }
       const oldLines = await deps.db
@@ -768,6 +925,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             status: 'DRAFT',
             subtotalCents: inv.subtotalCents,
             feeCents: inv.feeCents,
+            // QA — carry forward tax + surcharge totals to the new
+            // draft. recomputeInvoiceTotals on the next edit will
+            // re-derive these from the current engagement config.
+            taxCents: inv.taxCents,
+            surchargeCents: inv.surchargeCents,
             totalCents: inv.totalCents,
             paidCents: 0,
             notes: inv.notes ?? null,
@@ -955,16 +1117,21 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
-        res.status(409).json({ error: 'invoice_immutable' });
+      const lockedReason = invoiceLockedReason(inv);
+      if (lockedReason) {
+        res.status(409).json({ error: 'invoice_locked', reason: lockedReason });
         return;
       }
-      const [maxSort] = await deps.db
-        .select({ s: sql<number>`COALESCE(MAX(${invoiceLineItems.sortOrder}), 0)` })
-        .from(invoiceLineItems)
-        .where(eq(invoiceLineItems.invoiceId, inv.id));
-      const sortOrder = Number(maxSort?.s ?? 0) + 1;
+      // QA — users add manual lines (FIXED_FEE / EXPENSE / CUSTOM /
+      // TIME_AGGREGATE / MILESTONE / RECURRING_FEE / PROCESSING_FEE).
+      // SURCHARGE + SALES_TAX are excluded by LineItemSchema's enum so
+      // the only way to create them is the auto-derive path in
+      // recomputeInvoiceTotals.
       await deps.db.transaction(async (tx) => {
+        const [maxSort] = await tx
+          .select({ s: sql<number>`COALESCE(MAX(${invoiceLineItems.sortOrder}), 0)` })
+          .from(invoiceLineItems)
+          .where(eq(invoiceLineItems.invoiceId, inv.id));
         await tx.insert(invoiceLineItems).values({
           invoiceId: inv.id,
           kind: parsed.data.kind,
@@ -972,22 +1139,20 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           amountCents: parsed.data.amountCents,
           engagementId: parsed.data.engagementId ?? null,
           sourceRefType: 'manual',
-          sortOrder,
+          sortOrder: Number(maxSort?.s ?? 0) + 1,
         });
-        await tx
-          .update(invoices)
-          .set({
-            subtotalCents: Number(inv.subtotalCents) + parsed.data.amountCents,
-            totalCents: Number(inv.totalCents) + parsed.data.amountCents,
-          })
-          .where(eq(invoices.id, inv.id));
+        await recomputeInvoiceTotals(tx as unknown as Database, inv.id);
       });
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'invoice',
         entityId: inv.id,
         actorAppUserId: session.appUserId,
-        after: { kind: 'line_item_add', amountCents: parsed.data.amountCents },
+        after: {
+          kind: 'line_item_add',
+          lineKind: parsed.data.kind,
+          amountCents: parsed.data.amountCents,
+        },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
@@ -1013,15 +1178,23 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
-        res.status(409).json({ error: 'invoice_immutable' });
+      const lockedReason = invoiceLockedReason(inv);
+      if (lockedReason) {
+        res.status(409).json({ error: 'invoice_locked', reason: lockedReason });
         return;
       }
-      const body = req.body as {
-        description?: unknown;
-        amountCents?: unknown;
-        sortOrder?: unknown;
-      };
+      const LineItemPatchSchema = z
+        .object({
+          description: z.string().min(1).max(400).optional(),
+          amountCents: z.number().int().optional(),
+          sortOrder: z.number().int().min(0).optional(),
+        })
+        .refine((d) => Object.keys(d).length > 0, { message: 'no_fields' });
+      const parsedPatch = LineItemPatchSchema.safeParse(req.body);
+      if (!parsedPatch.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsedPatch.error.issues });
+        return;
+      }
       const [orig] = await deps.db
         .select()
         .from(invoiceLineItems)
@@ -1036,31 +1209,32 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(404).json({ error: 'line_item_not_found' });
         return;
       }
-      const patch: Record<string, unknown> = {};
-      if (typeof body.description === 'string')
-        patch['description'] = body.description.slice(0, 400);
-      if (typeof body.sortOrder === 'number') patch['sortOrder'] = body.sortOrder;
-      let delta = 0;
-      if (typeof body.amountCents === 'number') {
-        patch['amountCents'] = body.amountCents;
-        delta = body.amountCents - Number(orig.amountCents);
-      }
-      if (Object.keys(patch).length === 0) {
-        res.status(400).json({ error: 'no_fields' });
+      // Tax + surcharge lines are auto-derived and cannot be edited.
+      if (orig.kind === 'SURCHARGE' || orig.kind === 'SALES_TAX') {
+        res.status(400).json({ error: 'auto_derived_kind', kind: orig.kind });
         return;
       }
       await deps.db.transaction(async (tx) => {
-        await tx.update(invoiceLineItems).set(patch).where(eq(invoiceLineItems.id, orig.id));
-        if (delta !== 0) {
-          await tx
-            .update(invoices)
-            .set({
-              subtotalCents: Number(inv.subtotalCents) + delta,
-              totalCents: Number(inv.totalCents) + delta,
-            })
-            .where(eq(invoices.id, inv.id));
-        }
+        await tx
+          .update(invoiceLineItems)
+          .set(parsedPatch.data)
+          .where(eq(invoiceLineItems.id, orig.id));
+        await recomputeInvoiceTotals(tx as unknown as Database, inv.id);
       });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        before: {
+          lineItemId: orig.id,
+          description: orig.description,
+          amountCents: Number(orig.amountCents),
+        },
+        after: { kind: 'line_item_edit', lineItemId: orig.id, ...parsedPatch.data },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
     },
   );
@@ -1083,8 +1257,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
-        res.status(409).json({ error: 'invoice_immutable' });
+      const lockedReason = invoiceLockedReason(inv);
+      if (lockedReason) {
+        res.status(409).json({ error: 'invoice_locked', reason: lockedReason });
         return;
       }
       const [line] = await deps.db
@@ -1101,22 +1276,25 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(404).json({ error: 'line_item_not_found' });
         return;
       }
+      if (line.kind === 'SURCHARGE' || line.kind === 'SALES_TAX') {
+        res.status(400).json({ error: 'auto_derived_kind', kind: line.kind });
+        return;
+      }
       await deps.db.transaction(async (tx) => {
         await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.id, line.id));
-        await tx
-          .update(invoices)
-          .set({
-            subtotalCents: Number(inv.subtotalCents) - Number(line.amountCents),
-            totalCents: Number(inv.totalCents) - Number(line.amountCents),
-          })
-          .where(eq(invoices.id, inv.id));
+        await recomputeInvoiceTotals(tx as unknown as Database, inv.id);
       });
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'invoice',
         entityId: inv.id,
         actorAppUserId: session.appUserId,
-        after: { kind: 'line_item_remove', lineItemId: line.id, amountCents: line.amountCents },
+        before: {
+          lineItemId: line.id,
+          description: line.description,
+          amountCents: Number(line.amountCents),
+        },
+        after: { kind: 'line_item_remove' },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));

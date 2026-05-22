@@ -108,6 +108,20 @@ export function InvoicesPage(): JSX.Element {
                       </Button>
                     )}
                     <a
+                      href={`/invoices/${i.id}`}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: 12,
+                        background: 'transparent',
+                        color: tokens.color.text,
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius: tokens.radius.sm,
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open
+                    </a>
+                    <a
                       href={`/api/staff/invoices/${i.id}/pdf`}
                       target="_blank"
                       rel="noreferrer"

@@ -23,6 +23,7 @@ import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { EngagementsPage } from './pages/Engagements';
 import { FilesPage } from './pages/Files';
+import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 import { OnboardingPage } from './pages/Onboarding';
@@ -62,6 +63,7 @@ export function App(): JSX.Element {
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/wip" element={<WipDashboardPage />} />
                   <Route path="/invoices" element={<InvoicesPage />} />
+                  <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
                   <Route path="/ar" element={<ArPage />} />
                   <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
                   <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
