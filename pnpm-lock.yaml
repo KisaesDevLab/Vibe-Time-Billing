@@ -53,6 +53,9 @@ importers:
       '@vibe/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@vibe/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@vibe/types':
         specifier: workspace:*
         version: link:../../packages/types

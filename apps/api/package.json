@@ -17,6 +17,7 @@
   "dependencies": {
     "@vibe/core": "workspace:*",
     "@vibe/db": "workspace:*",
+    "@vibe/storage": "workspace:*",
     "@vibe/types": "workspace:*",
     "bullmq": "^5.7.0",
     "cookie": "^0.6.0",

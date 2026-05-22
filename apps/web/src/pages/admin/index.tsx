@@ -32,6 +32,7 @@ import { RecurringPlansPage } from './RecurringPlans';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
+import { StorageOnboardingPage } from './StorageOnboarding';
 import { TaxonomyPage } from './Taxonomy';
 import { TemplatesPage } from './Templates';
 import { UsersPage } from './Users';
@@ -120,6 +121,7 @@ const GROUPS: Group[] = [
       { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
       { key: 'backup', label: 'Backup', href: '/admin/backup' },
       { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
+      { key: 'storage', label: 'Storage onboarding', href: '/admin/storage' },
     ],
   },
 ];
@@ -253,6 +255,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="backup" element={<BackupPage />} />
         <Route path="compliance" element={<CompliancePage />} />
         <Route path="api-tokens" element={<ApiTokensPage />} />
+        <Route path="storage" element={<StorageOnboardingPage />} />
       </Routes>
     </div>
   );

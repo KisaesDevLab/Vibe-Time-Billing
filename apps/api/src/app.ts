@@ -39,6 +39,7 @@ import { createPortalProfileRouter } from './portal/profile';
 import { createPortalLetterRouter } from './portal/letters';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
+import { createStorageOnboardingRouter } from './admin/storage-onboarding';
 import { createConnectRouter } from './connect/routes';
 import { createStatsRouter } from './stats/routes';
 import { createEngagementLetterRouter } from './engagement-letters/routes';
@@ -431,6 +432,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/compliance', auth.requireAuth, auth.requireCsrf, complianceRouter);
+
+  // Phase 4 of FILE_MANAGER_ADDENDUM.md — storage onboarding.
+  const storageOnboardingRouter = createStorageOnboardingRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/storage', auth.requireAuth, auth.requireCsrf, storageOnboardingRouter);
 
   const connectRouter = createConnectRouter({
     db: deps.db,
