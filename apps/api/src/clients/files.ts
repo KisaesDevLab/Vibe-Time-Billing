@@ -113,6 +113,8 @@ interface ResolvedFolder {
   clientFolderId: string;
   clientId: string;
   storagePath: string;
+  status: string;
+  lastSyncedAt: Date | null;
 }
 
 async function loadClientFolder(
@@ -126,6 +128,7 @@ async function loadClientFolder(
       clientId: clientFolders.clientId,
       storagePath: clientFolders.storagePath,
       status: clientFolders.status,
+      lastSyncedAt: clientFolders.lastSyncedAt,
     })
     .from(clientFolders)
     .innerJoin(clients, eq(clients.id, clientFolders.clientId))
@@ -142,6 +145,8 @@ async function loadClientFolder(
     clientFolderId: row.id,
     clientId: row.clientId,
     storagePath: row.storagePath,
+    status: row.status,
+    lastSyncedAt: row.lastSyncedAt,
   };
 }
 
@@ -221,6 +226,8 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
         items: rows,
         clientFolderId: folder.clientFolderId,
         storagePath: folder.storagePath,
+        status: folder.status,
+        lastSyncedAt: folder.lastSyncedAt,
       });
     },
   );

@@ -226,6 +226,47 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
     res.json({ ok: true, flipped: flipped.length, ids: flipped.map((f) => f.fileId) });
   });
 
+  // ----- Phase 10 — presigned GET for staff download ------------------
+  router.get(
+    '/:id/download-url',
+    requirePermission(deps, 'storage:folder:view'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      if (!deps.db) {
+        res.status(404).json({ error: 'no_db' });
+        return;
+      }
+      const storage = getStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .select({
+          id: files.id,
+          storageKey: files.storageKey,
+          originalFilename: files.originalFilename,
+          deletedAt: files.deletedAt,
+          pendingUpload: files.pendingUpload,
+        })
+        .from(files)
+        .where(and(eq(files.id, req.params['id']!), eq(files.firmId, firmId)))
+        .limit(1);
+      if (!row || row.deletedAt || row.pendingUpload) {
+        res.status(404).json({ error: 'file_not_found' });
+        return;
+      }
+      const ttlSeconds = 5 * 60;
+      const url = await storage.presignGet(row.storageKey, ttlSeconds);
+      res.json({
+        url,
+        expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+        filename: row.originalFilename,
+      });
+    },
+  );
+
   // ----- Phase 8 — confirm a presigned upload -------------------------
   router.post(
     '/:id/complete',

@@ -40,6 +40,7 @@ import { createPortalLetterRouter } from './portal/letters';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
 import { createStorageOnboardingRouter } from './admin/storage-onboarding';
+import { createStorageMockUploadRouter } from './admin/storage-mock-upload';
 import { createVisibilityRulesRouter } from './admin/visibility-rules';
 import { createFileVisibilityRouter } from './files/visibility';
 import { createConnectRouter } from './connect/routes';
@@ -442,6 +443,15 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/storage', auth.requireAuth, auth.requireCsrf, storageOnboardingRouter);
+
+  // Phase 10 of FILE_MANAGER_ADDENDUM.md — dev-only translator for
+  // mock-presign:// upload URLs. Refuses to run when STORAGE_PROVIDER
+  // isn't 'mock', so a B2 deploy can't accidentally land here.
+  const storageMockUploadRouter = createStorageMockUploadRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/storage', auth.requireAuth, auth.requireCsrf, storageMockUploadRouter);
 
   // Phase 6 of FILE_MANAGER_ADDENDUM.md — firm-level visibility rules.
   const visibilityRulesRouter = createVisibilityRulesRouter({
