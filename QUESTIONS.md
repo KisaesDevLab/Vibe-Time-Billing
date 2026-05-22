@@ -241,8 +241,24 @@ Read-receipt fires only when the client opens the invoice within the portal (set
 
 *Append questions encountered during the build here. Format: phase, item, question, options considered, default chosen, why. Decisions accumulate over time; this is the running deferral log, not a blocker.*
 
+## Q31 — File manager rebuild path [files phase 0]
+Context: `FILE_MANAGER_ADDENDUM.md` v1 specifies a B2-backed sentinel-bound file manager that fundamentally conflicts with the v1 implementation shipped under migrations 0037 + 0038 (`client_folder` hierarchical, `client_file` flat, no virtual-drive coexistence).
+Assumed default: Replace the existing implementation. Drop `client_folder`, `client_folder_template`, `client_file` and their code in Phase 0. Stub `apps/api/src/clients/files.ts` with `410 Gone` until Phase 8 reintroduces uploads against the new schema.
+Implication if wrong: If existing customer data lived in `client_file`, it's lost. Accepted because no real production data is at risk at this point.
+
+## Q32 — B2 storage stub for development [files phase 1]
+Context: Addendum requires B2 as the canonical storage. B2 credentials are not yet available.
+Assumed default: Ship a `MockStorageClient` that implements the same `StorageClient` interface but writes under `STORAGE_LOCAL_PATH` (default `/data/storage-mock`). Production deploys flip `STORAGE_PROVIDER=b2` + the `B2_*` vars; tests gate the real-B2 integration suite behind `B2_INTEGRATION=1`.
+Implication if wrong: B2-specific quirks (consistency semantics, multipart upload, ETag format) won't be exercised until real wiring lands. Acceptable for v1 dev; documented in the master plan as deferred work.
+
+## Q33 — Pending-upload column placement [files phase 5/8]
+Context: Phase 8 needs a `pending_upload` flag on `files` rows to mark in-flight presigned uploads.
+Assumed default: Add the column in the Phase 5 migration (`0046_files_storage_files.sql`) rather than a separate Phase 8 migration, since the schema for `files` is already being defined in that migration and adding the flag early is cheaper than a follow-up ALTER.
+Implication if wrong: If Phase 5 ships before Phase 8 we have a useless boolean column for ~one phase of life. Acceptable.
+
 ---
 
 # CHANGE LOG
 
 - 2026-05-19 — Initial 30 decisions locked at build kickoff.
+- 2026-05-22 — Q31/Q32/Q33 added for file-manager rebuild (see `FILE_MANAGER_ADDENDUM.md`).

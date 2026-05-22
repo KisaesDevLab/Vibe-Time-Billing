@@ -9,7 +9,8 @@ import { BillingCard } from './clients/BillingCard';
 import { ClientInfoCard } from './clients/ClientInfoCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 import { ContactsCard } from './clients/ContactsCard';
-import { FilesCard } from './clients/FilesCard';
+// File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
+// import { FilesCard } from './clients/FilesCard'; — removed
 import { NotesCard } from './clients/NotesCard';
 import { TasksCard } from './clients/TasksCard';
 
@@ -262,7 +263,7 @@ export function ClientDetailPage(): JSX.Element {
 
           <TasksCard clientId={client.id} compact users={staff} />
 
-          <FilesCard clientId={client.id} compact />
+          {/* Files card disabled — v2 (B2-backed) ships in Phase 10. */}
 
           <TagsCustomFieldsCard
             client={client}
@@ -275,7 +276,14 @@ export function ClientDetailPage(): JSX.Element {
 
       {tab === 'notes' && <NotesCard clientId={client.id} />}
 
-      {tab === 'files' && <FilesCard clientId={client.id} />}
+      {tab === 'files' && (
+        <Card title="Files">
+          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+            File manager v2 (Backblaze-backed) ships in a forthcoming phase. The v1 implementation
+            was removed in preparation. See <code>FILE_MANAGER_ADDENDUM.md</code>.
+          </p>
+        </Card>
+      )}
 
       {tab === 'tasks' && <TasksCard clientId={client.id} users={staff} />}
 

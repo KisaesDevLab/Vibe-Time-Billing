@@ -29,7 +29,7 @@ import { logger } from '../logger';
 import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
 import { mountFileRoutes } from './files';
-import { mountFolderRoutes } from './folders';
+// v1 folder routes removed (Phase 0); v2 (B2 + sentinels) lands in Phase 4.
 import { mountTaskRoutes } from './tasks';
 
 export interface ClientRoutesDeps extends RbacDeps {
@@ -745,9 +745,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   }
   mountCommunicationRoutes(router, deps);
 
-  // v2 Part 1 — folder CRUD + folder-template instantiation. Mounted
-  // after files so /clients/:id/folders sits alongside /clients/:id/files.
-  mountFolderRoutes(router, deps);
+  // v1 folder routes removed in Phase 0 of the file-manager rebuild.
+  // Phase 4 (storage onboarding) introduces a new admin-scoped route
+  // table; Phase 10 wires the per-client UI.
 
   return router;
 }

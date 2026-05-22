@@ -19,8 +19,8 @@ import { createTemplateRouter } from './admin/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
-import { createInternalFileRouter } from './internal-files/routes';
-import { createFolderTemplateRouter } from './admin/folder-templates';
+// internal-files + folder-templates routers removed in Phase 0 of the
+// file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
@@ -245,24 +245,9 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
 
-  // v2 Part 1 — firm-scoped internal files + folder-template admin.
-  const internalFileRouter = createInternalFileRouter({
-    db: deps.db,
-    fakeUserRoles: deps.fakeUserRoles,
-    storage,
-  });
-  app.use('/api/staff/internal-files', auth.requireAuth, auth.requireCsrf, internalFileRouter);
-
-  const folderTemplateRouter = createFolderTemplateRouter({
-    db: deps.db,
-    fakeUserRoles: deps.fakeUserRoles,
-  });
-  app.use(
-    '/api/staff/admin/folder-templates',
-    auth.requireAuth,
-    auth.requireCsrf,
-    folderTemplateRouter,
-  );
+  // v1 internal-files + folder-templates routers removed in Phase 0
+  // of the file-manager rebuild. Replacements ship in Phases 4 + 10
+  // (storage onboarding + per-client UI per FILE_MANAGER_ADDENDUM.md).
 
   const engagementRouter = createEngagementRouter({
     db: deps.db,

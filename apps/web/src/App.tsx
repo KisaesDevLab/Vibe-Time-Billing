@@ -22,7 +22,7 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { EngagementsPage } from './pages/Engagements';
-import { FilesPage } from './pages/Files';
+// FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
@@ -72,7 +72,7 @@ export function App(): JSX.Element {
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
-                  <Route path="/files" element={<FilesPage />} />
+                  {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/onboarding" element={<OnboardingPage />} />
                   <Route path="/admin/*" element={<AdminLayout />} />
@@ -128,7 +128,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/approvals'),
         },
         { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
-        { label: 'Files', href: '/files', active: location.pathname.startsWith('/files') },
+        // Top-level Files nav removed in Phase 0; the v2 file manager lives on the client-detail Files tab.
         { label: 'Alerts', href: '/alerts', active: location.pathname.startsWith('/alerts') },
         { label: 'Audit', href: '/audit', active: location.pathname.startsWith('/audit') },
         { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
