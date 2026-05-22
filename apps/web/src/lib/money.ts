@@ -38,3 +38,23 @@ export function formatCents(cents: number | null | undefined): string {
     maximumFractionDigits: 2,
   })}`;
 }
+
+// Percentage helpers — same shape as the dollars pair but for rates
+// stored as basis points (so 4.25% → 425 bps with no float drift).
+//   bpsToPercentInput(425)   === '4.25'
+//   percentInputToBps('4.25') === 425
+//   percentInputToBps('')     === null
+//   percentInputToBps('abc')  === null
+export function bpsToPercentInput(bps: number | null | undefined): string {
+  if (bps == null || bps === 0) return '';
+  const pct = bps / 100;
+  return pct.toFixed(pct % 1 === 0 ? 0 : 2);
+}
+
+export function percentInputToBps(input: string): number | null {
+  const trimmed = input.trim().replace(/[%\s]/g, '');
+  if (!trimmed) return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+}

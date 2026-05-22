@@ -15,7 +15,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
-import { centsToDollarsInput, dollarsInputToCents } from '../lib/money';
+import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../lib/money';
 
 interface Client {
   id: string;
@@ -75,6 +75,18 @@ export function EngagementCreatePage(): JSX.Element {
   const [mixedModeEnabled, setMixedModeEnabled] = useState(false);
   const [feePassthroughEnabled, setFeePassthroughEnabled] = useState(false);
 
+  // v2 — sales tax (per-engagement). UI shows %; we round-trip via bps.
+  const [taxEnabled, setTaxEnabled] = useState(false);
+  const [taxRatePercent, setTaxRatePercent] = useState('');
+  const [taxLabel, setTaxLabel] = useState('Sales tax');
+
+  // v2 — per-engagement surcharge. Type discriminates which input is live.
+  const [surchargeEnabled, setSurchargeEnabled] = useState(false);
+  const [surchargeType, setSurchargeType] = useState<'PERCENT' | 'FLAT_AMOUNT'>('PERCENT');
+  const [surchargePercent, setSurchargePercent] = useState('');
+  const [surchargeFlatDollars, setSurchargeFlatDollars] = useState('');
+  const [surchargeLabel, setSurchargeLabel] = useState('');
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -129,6 +141,24 @@ export function EngagementCreatePage(): JSX.Element {
       if (startDate) body.startDate = startDate;
       if (endDate) body.endDate = endDate;
       if (inScopeIds.length > 0) body.inScopeWorkCodeIds = inScopeIds;
+      // v2 — tax + surcharge payload.
+      body.taxEnabled = taxEnabled;
+      if (taxEnabled) {
+        body.taxRateBps = percentInputToBps(taxRatePercent) ?? 0;
+        if (taxLabel.trim()) body.taxLabel = taxLabel.trim();
+      }
+      body.surchargeEnabled = surchargeEnabled;
+      if (surchargeEnabled) {
+        body.surchargeType = surchargeType;
+        if (surchargeType === 'PERCENT') {
+          body.surchargeValueBps = percentInputToBps(surchargePercent) ?? 0;
+          body.surchargeAmountCents = 0;
+        } else {
+          body.surchargeAmountCents = dollarsInputToCents(surchargeFlatDollars) ?? 0;
+          body.surchargeValueBps = 0;
+        }
+        body.surchargeLabel = surchargeLabel.trim() || null;
+      }
       const r = await api<{ engagement: { id: string } }>('/api/staff/engagements', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -328,6 +358,125 @@ export function EngagementCreatePage(): JSX.Element {
               </span>
             </span>
           </label>
+
+          {/* v2 — sales tax (per-engagement). */}
+          <label
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              padding: 10,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+            }}
+            htmlFor="tax-enabled"
+          >
+            <input
+              id="tax-enabled"
+              type="checkbox"
+              aria-label="Charge sales tax"
+              checked={taxEnabled}
+              onChange={(e) => setTaxEnabled(e.target.checked)}
+            />
+            <span style={{ flex: 1 }}>
+              <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+                Charge sales tax
+              </span>
+              <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+                Adds a tax line on invoices (applied to subtotal + surcharge). For HI GET, NM GRT,
+                and other jurisdictions that tax professional services.
+              </span>
+            </span>
+          </label>
+          {taxEnabled && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Input
+                type="text"
+                inputMode="decimal"
+                label="Tax rate (%)"
+                value={taxRatePercent}
+                onChange={(e) => setTaxRatePercent(e.target.value)}
+                placeholder="4.25"
+              />
+              <Input
+                type="text"
+                label="Tax label"
+                value={taxLabel}
+                onChange={(e) => setTaxLabel(e.target.value)}
+                placeholder="Sales tax"
+                hint='Customizable: "GET", "GRT", "Sales tax", etc.'
+              />
+            </div>
+          )}
+
+          {/* v2 — per-engagement surcharge. */}
+          <label
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              padding: 10,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+            }}
+            htmlFor="surcharge-enabled"
+          >
+            <input
+              id="surcharge-enabled"
+              type="checkbox"
+              aria-label="Add surcharge"
+              checked={surchargeEnabled}
+              onChange={(e) => setSurchargeEnabled(e.target.checked)}
+            />
+            <span style={{ flex: 1 }}>
+              <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+                Add invoice surcharge
+              </span>
+              <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+                Firm-defined fee (e.g. technology fee, filing fee). Computed against the subtotal.
+              </span>
+            </span>
+          </label>
+          {surchargeEnabled && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: 12 }}>
+              <Combobox
+                ariaLabel="Surcharge type"
+                value={surchargeType}
+                onChange={(v) => setSurchargeType(v as 'PERCENT' | 'FLAT_AMOUNT')}
+                options={[
+                  { value: 'PERCENT', label: 'Percent of subtotal' },
+                  { value: 'FLAT_AMOUNT', label: 'Flat dollar amount' },
+                ]}
+              />
+              {surchargeType === 'PERCENT' ? (
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  label="Surcharge %"
+                  value={surchargePercent}
+                  onChange={(e) => setSurchargePercent(e.target.value)}
+                  placeholder="3.00"
+                />
+              ) : (
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  label="Surcharge ($)"
+                  value={surchargeFlatDollars}
+                  onChange={(e) => setSurchargeFlatDollars(e.target.value)}
+                  placeholder="50.00"
+                />
+              )}
+              <Input
+                type="text"
+                label="Surcharge label"
+                value={surchargeLabel}
+                onChange={(e) => setSurchargeLabel(e.target.value)}
+                placeholder="(uses firm default)"
+                hint="Override if this engagement needs a custom label."
+              />
+            </div>
+          )}
 
           {mixedModeEnabled && (
             <div>

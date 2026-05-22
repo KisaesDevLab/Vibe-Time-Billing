@@ -42,7 +42,29 @@ describe('invoice totals', () => {
       { kind: 'FIXED_FEE', description: 'Tax prep', amountCents: 50000 },
       { kind: 'PROCESSING_FEE', description: 'CC fee', amountCents: 4500 },
     ]);
-    expect(totals).toEqual({ subtotalCents: 150000, processingFeeCents: 4500, totalCents: 154500 });
+    expect(totals).toEqual({
+      subtotalCents: 150000,
+      surchargeCents: 0,
+      taxCents: 0,
+      processingFeeCents: 4500,
+      totalCents: 154500,
+    });
+  });
+
+  it('bucketizes surcharge + sales tax + processing fee separately', () => {
+    const totals = computeTotals([
+      { kind: 'TIME_AGGREGATE', description: 'Hours', amountCents: 100000 },
+      { kind: 'SURCHARGE', description: 'Technology fee', amountCents: 3000 },
+      { kind: 'SALES_TAX', description: 'GET (4.25%)', amountCents: 4378 },
+      { kind: 'PROCESSING_FEE', description: 'CC fee', amountCents: 4500 },
+    ]);
+    expect(totals).toEqual({
+      subtotalCents: 100000,
+      surchargeCents: 3000,
+      taxCents: 4378,
+      processingFeeCents: 4500,
+      totalCents: 111878,
+    });
   });
 });
 

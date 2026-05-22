@@ -5,7 +5,12 @@ import { useParams } from 'react-router-dom';
 import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
-import { centsToDollarsInput, dollarsInputToCents } from '../lib/money';
+import {
+  bpsToPercentInput,
+  centsToDollarsInput,
+  dollarsInputToCents,
+  percentInputToBps,
+} from '../lib/money';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -43,6 +48,15 @@ interface Engagement {
   inScopeWorkCodeIds: string[];
   nteCapCents: number | null;
   feePassthroughEnabled: boolean;
+  // v2 — sales tax + per-engagement surcharge.
+  taxEnabled: boolean;
+  taxRateBps: number;
+  taxLabel: string;
+  surchargeEnabled: boolean;
+  surchargeType: 'PERCENT' | 'FLAT_AMOUNT';
+  surchargeValueBps: number;
+  surchargeAmountCents: number;
+  surchargeLabel: string | null;
   partnerId: string | null;
   managerId: string | null;
   startDate: string | null;
@@ -101,6 +115,16 @@ interface EditDraft {
   endDate: string;
   mixedModeEnabled: boolean;
   feePassthroughEnabled: boolean;
+  // v2 — tax + surcharge drafts. UI binds to dollars + percent strings;
+  // saveEdit translates back to cents/bps before sending.
+  taxEnabled: boolean;
+  taxRatePercent: string;
+  taxLabel: string;
+  surchargeEnabled: boolean;
+  surchargeType: 'PERCENT' | 'FLAT_AMOUNT';
+  surchargePercent: string;
+  surchargeFlatDollars: string;
+  surchargeLabel: string;
 }
 
 function emptyDraftFrom(e: Engagement): EditDraft {
@@ -115,6 +139,14 @@ function emptyDraftFrom(e: Engagement): EditDraft {
     endDate: e.endDate ?? '',
     mixedModeEnabled: e.mixedModeEnabled,
     feePassthroughEnabled: e.feePassthroughEnabled,
+    taxEnabled: e.taxEnabled,
+    taxRatePercent: bpsToPercentInput(e.taxRateBps),
+    taxLabel: e.taxLabel,
+    surchargeEnabled: e.surchargeEnabled,
+    surchargeType: e.surchargeType,
+    surchargePercent: bpsToPercentInput(e.surchargeValueBps),
+    surchargeFlatDollars: centsToDollarsInput(e.surchargeAmountCents),
+    surchargeLabel: e.surchargeLabel ?? '',
   };
 }
 
@@ -175,6 +207,24 @@ export function EngagementDetailPage(): JSX.Element {
       if (nteCents != null) body.nteCapCents = nteCents;
       if (draft.startDate) body.startDate = draft.startDate;
       if (draft.endDate) body.endDate = draft.endDate;
+      // v2 — tax + surcharge.
+      body.taxEnabled = draft.taxEnabled;
+      if (draft.taxEnabled) {
+        body.taxRateBps = percentInputToBps(draft.taxRatePercent) ?? 0;
+        if (draft.taxLabel.trim()) body.taxLabel = draft.taxLabel.trim();
+      }
+      body.surchargeEnabled = draft.surchargeEnabled;
+      if (draft.surchargeEnabled) {
+        body.surchargeType = draft.surchargeType;
+        if (draft.surchargeType === 'PERCENT') {
+          body.surchargeValueBps = percentInputToBps(draft.surchargePercent) ?? 0;
+          body.surchargeAmountCents = 0;
+        } else {
+          body.surchargeAmountCents = dollarsInputToCents(draft.surchargeFlatDollars) ?? 0;
+          body.surchargeValueBps = 0;
+        }
+        body.surchargeLabel = draft.surchargeLabel.trim() || null;
+      }
       await api(`/api/staff/engagements/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -373,6 +423,98 @@ export function EngagementDetailPage(): JSX.Element {
                 Add processing fee line item on invoices
               </label>
             </Field>
+            <Field label="Sales tax">
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.taxEnabled}
+                  onChange={(e) => setDraft({ ...draft, taxEnabled: e.target.checked })}
+                />
+                Charge sales tax on invoices
+              </label>
+            </Field>
+            {draft.taxEnabled && (
+              <>
+                <Field label="Tax rate (%)">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={draft.taxRatePercent}
+                    onChange={(e) => setDraft({ ...draft, taxRatePercent: e.target.value })}
+                    placeholder="4.25"
+                    style={editFieldStyle}
+                  />
+                </Field>
+                <Field label="Tax label">
+                  <input
+                    type="text"
+                    value={draft.taxLabel}
+                    onChange={(e) => setDraft({ ...draft, taxLabel: e.target.value })}
+                    placeholder="Sales tax"
+                    style={editFieldStyle}
+                  />
+                </Field>
+              </>
+            )}
+            <Field label="Invoice surcharge">
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.surchargeEnabled}
+                  onChange={(e) => setDraft({ ...draft, surchargeEnabled: e.target.checked })}
+                />
+                Add a per-engagement surcharge line
+              </label>
+            </Field>
+            {draft.surchargeEnabled && (
+              <>
+                <Field label="Surcharge type">
+                  <Combobox
+                    ariaLabel="Surcharge type"
+                    value={draft.surchargeType}
+                    onChange={(v) =>
+                      setDraft({ ...draft, surchargeType: v as 'PERCENT' | 'FLAT_AMOUNT' })
+                    }
+                    options={[
+                      { value: 'PERCENT', label: 'Percent of subtotal' },
+                      { value: 'FLAT_AMOUNT', label: 'Flat dollar amount' },
+                    ]}
+                  />
+                </Field>
+                {draft.surchargeType === 'PERCENT' ? (
+                  <Field label="Surcharge %">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={draft.surchargePercent}
+                      onChange={(e) => setDraft({ ...draft, surchargePercent: e.target.value })}
+                      placeholder="3.00"
+                      style={editFieldStyle}
+                    />
+                  </Field>
+                ) : (
+                  <Field label="Surcharge ($)">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={draft.surchargeFlatDollars}
+                      onChange={(e) => setDraft({ ...draft, surchargeFlatDollars: e.target.value })}
+                      placeholder="50.00"
+                      style={editFieldStyle}
+                    />
+                  </Field>
+                )}
+                <Field label="Surcharge label">
+                  <input
+                    type="text"
+                    value={draft.surchargeLabel}
+                    onChange={(e) => setDraft({ ...draft, surchargeLabel: e.target.value })}
+                    placeholder="(uses firm default)"
+                    style={editFieldStyle}
+                  />
+                </Field>
+              </>
+            )}
           </div>
         ) : (
           <dl
@@ -408,6 +550,20 @@ export function EngagementDetailPage(): JSX.Element {
             <dd style={{ margin: 0 }}>{engagement.mixedModeEnabled ? 'yes' : 'no'}</dd>
             <dt style={{ color: tokens.color.textMuted }}>Fee passthrough</dt>
             <dd style={{ margin: 0 }}>{engagement.feePassthroughEnabled ? 'yes' : 'no'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>Sales tax</dt>
+            <dd style={{ margin: 0 }}>
+              {engagement.taxEnabled
+                ? `${engagement.taxLabel} ${bpsToPercentInput(engagement.taxRateBps)}%`
+                : 'no'}
+            </dd>
+            <dt style={{ color: tokens.color.textMuted }}>Surcharge</dt>
+            <dd style={{ margin: 0 }}>
+              {engagement.surchargeEnabled
+                ? engagement.surchargeType === 'PERCENT'
+                  ? `${bpsToPercentInput(engagement.surchargeValueBps)}% (${engagement.surchargeLabel ?? 'default'})`
+                  : `${formatCents(engagement.surchargeAmountCents)} flat (${engagement.surchargeLabel ?? 'default'})`
+                : 'no'}
+            </dd>
             <dt style={{ color: tokens.color.textMuted }}>Start</dt>
             <dd style={{ margin: 0 }}>{engagement.startDate ?? '—'}</dd>
             <dt style={{ color: tokens.color.textMuted }}>End</dt>

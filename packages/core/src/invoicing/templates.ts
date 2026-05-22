@@ -25,6 +25,10 @@ export interface InvoiceTemplateInput {
   client: { name: string; billingAddress?: string | null };
   lines: LineItem[];
   subtotalCents: Cents;
+  /** v2 — per-engagement surcharge total (sum of SURCHARGE lines). */
+  surchargeCents?: Cents;
+  /** v2 — sales/GET/GRT tax total (sum of SALES_TAX lines). */
+  taxCents?: Cents;
   processingFeeCents: Cents;
   totalCents: Cents;
   notes?: string | null;
@@ -43,13 +47,29 @@ export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
   return renderModern(input);
 }
 
+/**
+ * Find a label from the first matching line item, or fall back. The
+ * generator stamps the engagement-configured label in the line's
+ * description (e.g. "Technology fee" / "GET (4.25%)"), so the footer
+ * row reuses it verbatim.
+ */
+function labelFor(input: InvoiceTemplateInput, kind: LineItem['kind'], fallback: string): string {
+  return input.lines.find((l) => l.kind === kind)?.description ?? fallback;
+}
+
 function buildCommon(input: InvoiceTemplateInput): {
   linesHtml: string;
   accent: string;
   logo: string;
   supportLine: string;
 } {
-  const linesHtml = input.lines
+  // Surcharge + tax + processing-fee lines render in the totals footer,
+  // not in the line items table. Filter them out here so they don't
+  // appear twice on the PDF.
+  const itemLines = input.lines.filter(
+    (l) => l.kind !== 'SURCHARGE' && l.kind !== 'SALES_TAX' && l.kind !== 'PROCESSING_FEE',
+  );
+  const linesHtml = itemLines
     .map(
       (l) => `<tr><td>${esc(l.description)}</td><td class="amt">${cents(l.amountCents)}</td></tr>`,
     )
@@ -121,6 +141,16 @@ function renderModern(input: InvoiceTemplateInput): string {
     <tfoot>
       <tr><td>Subtotal</td><td class="amt">${cents(input.subtotalCents)}</td></tr>
       ${
+        (input.surchargeCents ?? 0) > 0
+          ? `<tr><td>${esc(labelFor(input, 'SURCHARGE', 'Surcharge'))}</td><td class="amt">${cents(input.surchargeCents ?? 0)}</td></tr>`
+          : ''
+      }
+      ${
+        (input.taxCents ?? 0) > 0
+          ? `<tr><td>${esc(labelFor(input, 'SALES_TAX', 'Sales tax'))}</td><td class="amt">${cents(input.taxCents ?? 0)}</td></tr>`
+          : ''
+      }
+      ${
         input.processingFeeCents > 0
           ? `<tr><td>Processing fee</td><td class="amt">${cents(input.processingFeeCents)}</td></tr>`
           : ''
@@ -187,6 +217,16 @@ function renderClassic(input: InvoiceTemplateInput): string {
     <tfoot>
       <tr><td>Subtotal</td><td class="amt">${cents(input.subtotalCents)}</td></tr>
       ${
+        (input.surchargeCents ?? 0) > 0
+          ? `<tr><td>${esc(labelFor(input, 'SURCHARGE', 'Surcharge'))}</td><td class="amt">${cents(input.surchargeCents ?? 0)}</td></tr>`
+          : ''
+      }
+      ${
+        (input.taxCents ?? 0) > 0
+          ? `<tr><td>${esc(labelFor(input, 'SALES_TAX', 'Sales tax'))}</td><td class="amt">${cents(input.taxCents ?? 0)}</td></tr>`
+          : ''
+      }
+      ${
         input.processingFeeCents > 0
           ? `<tr><td>Processing fee</td><td class="amt">${cents(input.processingFeeCents)}</td></tr>`
           : ''
@@ -233,6 +273,19 @@ function renderMinimal(input: InvoiceTemplateInput): string {
   <hr />
   <table>
     <tbody>${linesHtml}</tbody>
+    <tfoot>
+      <tr><td>Subtotal</td><td class="amt">${cents(input.subtotalCents)}</td></tr>
+      ${
+        (input.surchargeCents ?? 0) > 0
+          ? `<tr><td>${esc(labelFor(input, 'SURCHARGE', 'Surcharge'))}</td><td class="amt">${cents(input.surchargeCents ?? 0)}</td></tr>`
+          : ''
+      }
+      ${
+        (input.taxCents ?? 0) > 0
+          ? `<tr><td>${esc(labelFor(input, 'SALES_TAX', 'Sales tax'))}</td><td class="amt">${cents(input.taxCents ?? 0)}</td></tr>`
+          : ''
+      }
+    </tfoot>
   </table>
   ${
     input.processingFeeCents > 0

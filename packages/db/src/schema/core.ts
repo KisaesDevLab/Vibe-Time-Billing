@@ -215,6 +215,9 @@ export const invoiceLineItemKind = pgEnum('invoice_line_item_kind', [
   'EXPENSE',
   'PROCESSING_FEE',
   'CUSTOM',
+  // v2 — sales tax + per-engagement surcharge lines on the invoice.
+  'SALES_TAX',
+  'SURCHARGE',
 ]);
 
 export const consolidationPreference = pgEnum('consolidation_preference', [
@@ -366,6 +369,10 @@ export const firmSettings = pgTable('firm_settings', {
   brandSupportEmail: text('brand_support_email'),
   brandSupportPhone: text('brand_support_phone'),
   brandFooterHtml: text('brand_footer_html'),
+
+  // v2 — default surcharge label inherited by engagements whose
+  // surcharge_label is NULL. Lets a firm say "Technology fee" once.
+  defaultSurchargeLabel: text('default_surcharge_label').notNull().default('Surcharge'),
 
   // v2 Sprint A 0035 — DB-backed messaging provider config, encrypted
   // at rest with AES-256-GCM. NULL = inherit from env vars.
@@ -1072,6 +1079,25 @@ export const engagements = pgTable(
     // Q9 — fee passthrough
     feePassthroughEnabled: boolean('fee_passthrough_enabled').notNull().default(false),
 
+    // v2 — sales tax (per-engagement; opt-in). Rate stored as basis
+    // points (425 = 4.25%). Label is freeform so firms in HI/NM can
+    // put "GET" / "GRT" instead of "Sales tax".
+    taxEnabled: boolean('tax_enabled').notNull().default(false),
+    taxRateBps: integer('tax_rate_bps').notNull().default(0),
+    taxLabel: text('tax_label').notNull().default('Sales tax'),
+
+    // v2 — per-engagement surcharge. Type is PERCENT (uses
+    // surcharge_value_bps against subtotal) OR FLAT_AMOUNT (uses
+    // surcharge_amount_cents). Label falls back to
+    // firm_settings.default_surcharge_label when null at render time.
+    surchargeEnabled: boolean('surcharge_enabled').notNull().default(false),
+    surchargeType: text('surcharge_type').notNull().default('PERCENT'),
+    surchargeValueBps: integer('surcharge_value_bps').notNull().default(0),
+    surchargeAmountCents: bigint('surcharge_amount_cents', { mode: 'number' })
+      .notNull()
+      .default(0),
+    surchargeLabel: text('surcharge_label'),
+
     partnerId: uuid('partner_id').references(() => appUsers.id),
     managerId: uuid('manager_id').references(() => appUsers.id),
 
@@ -1555,6 +1581,10 @@ export const invoices = pgTable(
     dueDate: date('due_date').notNull(),
     subtotalCents: bigint('subtotal_cents', { mode: 'number' }).notNull(),
     feeCents: bigint('fee_cents', { mode: 'number' }).notNull().default(0),
+    // v2 — tax + surcharge breakdown persisted so the PDF + reports
+    // round-trip without re-deriving from line items.
+    taxCents: bigint('tax_cents', { mode: 'number' }).notNull().default(0),
+    surchargeCents: bigint('surcharge_cents', { mode: 'number' }).notNull().default(0),
     totalCents: bigint('total_cents', { mode: 'number' }).notNull(),
 
     status: invoiceStatus('status').notNull().default('DRAFT'),

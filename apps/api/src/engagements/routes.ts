@@ -55,6 +55,17 @@ const EngagementCreateSchema = z.object({
   nteCapCents: z.number().int().nonnegative().optional(),
   nteCapScope: z.enum(['PERIOD', 'LIFETIME']).optional(),
   feePassthroughEnabled: z.boolean().optional(),
+  // v2 — sales tax (per-engagement). Rate in basis points 0..10000.
+  taxEnabled: z.boolean().optional(),
+  taxRateBps: z.number().int().min(0).max(10_000).optional(),
+  taxLabel: z.string().min(1).max(80).optional(),
+  // v2 — per-engagement surcharge. Type discriminator picks which
+  // value field is read at invoice-generation time.
+  surchargeEnabled: z.boolean().optional(),
+  surchargeType: z.enum(['PERCENT', 'FLAT_AMOUNT']).optional(),
+  surchargeValueBps: z.number().int().min(0).max(10_000).optional(),
+  surchargeAmountCents: z.number().int().nonnegative().optional(),
+  surchargeLabel: z.string().min(1).max(80).nullable().optional(),
   partnerId: z.string().uuid().optional(),
   managerId: z.string().uuid().optional(),
   scopeDefinition: z.string().max(10_000).optional(),

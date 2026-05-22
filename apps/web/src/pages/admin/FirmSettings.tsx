@@ -53,6 +53,8 @@ interface Settings {
   billableTargetHoursPerMonth: number;
   aiProvider: 'local' | 'cloud' | null;
   invoiceTemplateStyle: 'modern' | 'classic' | 'minimal';
+  // v2 — firm-wide default for the surcharge line label.
+  defaultSurchargeLabel: string;
 }
 
 const MONTHS = [
@@ -113,6 +115,7 @@ export function FirmSettingsPage(): JSX.Element {
           billableTargetHoursPerMonth: s.billableTargetHoursPerMonth,
           aiProvider: s.aiProvider,
           invoiceTemplateStyle: s.invoiceTemplateStyle,
+          defaultSurchargeLabel: s.defaultSurchargeLabel,
           brandDisplayName: s.brandDisplayName || null,
           brandLogoUrl: s.brandLogoUrl || null,
           brandAccentColor: s.brandAccentColor || null,
@@ -213,6 +216,14 @@ export function FirmSettingsPage(): JSX.Element {
             max={220}
             value={s.billableTargetHoursPerMonth}
             onChange={(e) => setS({ ...s, billableTargetHoursPerMonth: Number(e.target.value) })}
+          />
+          <Input
+            label="Default invoice surcharge label"
+            type="text"
+            value={s.defaultSurchargeLabel ?? ''}
+            placeholder="e.g. Technology fee"
+            onChange={(e) => setS({ ...s, defaultSurchargeLabel: e.target.value })}
+            hint="Shown on invoices when an engagement has surcharge enabled but no override label."
           />
         </div>
       </Card>

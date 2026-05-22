@@ -28,6 +28,8 @@ import {
   computeTotals,
   formatInvoiceNumber,
   renderInvoiceHtml,
+  salesTaxLine,
+  surchargeLine,
   type LineItem,
   type NumberingConfig,
 } from '@vibe/core/invoicing';
@@ -382,6 +384,39 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
               amountCents: lineAmount,
             },
           ];
+      // v2 — append per-engagement surcharge + sales tax. Order
+      // matters: surcharge is computed against the pre-tax subtotal,
+      // then tax is computed against (subtotal + surcharge).
+      const preExtrasTotals = computeTotals(lines);
+      if (eng.surchargeEnabled) {
+        // Resolve label: engagement override → firm default → 'Surcharge'.
+        const [fsRow] = await deps.db
+          .select({ defaultSurchargeLabel: firmSettings.defaultSurchargeLabel })
+          .from(firmSettings)
+          .where(eq(firmSettings.firmId, session.firmId))
+          .limit(1);
+        const label = eng.surchargeLabel ?? fsRow?.defaultSurchargeLabel ?? 'Surcharge';
+        const line = surchargeLine({
+          subtotalCents: preExtrasTotals.subtotalCents,
+          type: eng.surchargeType as 'PERCENT' | 'FLAT_AMOUNT',
+          valueBps: eng.surchargeValueBps,
+          amountCents: Number(eng.surchargeAmountCents),
+          label,
+        });
+        if (line) lines.push(line);
+      }
+      if (eng.taxEnabled && eng.taxRateBps > 0) {
+        const surchargeSoFar = lines
+          .filter((l) => l.kind === 'SURCHARGE')
+          .reduce((s, l) => s + l.amountCents, 0);
+        const taxBase = preExtrasTotals.subtotalCents + surchargeSoFar;
+        const line = salesTaxLine({
+          taxBaseCents: taxBase,
+          rateBps: eng.taxRateBps,
+          label: eng.taxLabel,
+        });
+        if (line) lines.push(line);
+      }
       const totals = computeTotals(lines);
 
       const invoiceId = await deps.db.transaction(async (tx) => {
@@ -396,6 +431,8 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             dueDate,
             subtotalCents: totals.subtotalCents,
             feeCents: totals.processingFeeCents,
+            taxCents: totals.taxCents,
+            surchargeCents: totals.surchargeCents,
             totalCents: totals.totalCents,
             status: 'DRAFT',
           })
@@ -591,6 +628,8 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           amountCents: Number(l.amountCents),
         })),
         subtotalCents: Number(inv.subtotalCents),
+        surchargeCents: Number(inv.surchargeCents ?? 0),
+        taxCents: Number(inv.taxCents ?? 0),
         processingFeeCents: Number(inv.feeCents),
         totalCents: Number(inv.totalCents),
         notes: detailFooter ? `${inv.notes ?? ''}\n\n${detailFooter}` : (inv.notes ?? null),

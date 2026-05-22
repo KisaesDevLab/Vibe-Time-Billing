@@ -94,6 +94,9 @@ const FirmSettingsPatchSchema = z
     aiProvider: z.enum(['local', 'cloud']).nullable().optional(),
     // Phase 13 #6 — invoice template picker.
     invoiceTemplateStyle: z.enum(['modern', 'classic', 'minimal']).optional(),
+    // v2 — firm-default surcharge label inherited by engagements
+    // whose surcharge_label is null. Engagement can still override.
+    defaultSurchargeLabel: z.string().min(1).max(80).optional(),
   })
   .strict();
 

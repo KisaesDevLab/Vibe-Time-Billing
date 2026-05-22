@@ -12,7 +12,10 @@ export type LineItemKind =
   | 'RECURRING_FEE'
   | 'EXPENSE'
   | 'PROCESSING_FEE'
-  | 'CUSTOM';
+  | 'CUSTOM'
+  // v2 — per-engagement surcharge + sales-tax lines on the invoice.
+  | 'SURCHARGE'
+  | 'SALES_TAX';
 
 export interface LineItem {
   kind: LineItemKind;
@@ -23,21 +26,32 @@ export interface LineItem {
 
 export interface InvoiceTotals {
   subtotalCents: Cents;
+  /** Per-engagement surcharge (firm-defined: technology fee, etc.). */
+  surchargeCents: Cents;
+  /** Sales/GET/GRT tax on (subtotal + surcharge). */
+  taxCents: Cents;
+  /** Stripe-style card-processing passthrough (Q9). */
   processingFeeCents: Cents;
   totalCents: Cents;
 }
 
 export function computeTotals(lines: LineItem[]): InvoiceTotals {
   let subtotal = 0;
+  let surcharge = 0;
+  let tax = 0;
   let processingFee = 0;
   for (const l of lines) {
     if (l.kind === 'PROCESSING_FEE') processingFee += l.amountCents;
+    else if (l.kind === 'SURCHARGE') surcharge += l.amountCents;
+    else if (l.kind === 'SALES_TAX') tax += l.amountCents;
     else subtotal += l.amountCents;
   }
   return {
     subtotalCents: subtotal,
+    surchargeCents: surcharge,
+    taxCents: tax,
     processingFeeCents: processingFee,
-    totalCents: subtotal + processingFee,
+    totalCents: subtotal + surcharge + tax + processingFee,
   };
 }
 
@@ -77,5 +91,56 @@ export function processingFeeLine(args: {
     kind: 'PROCESSING_FEE',
     description: 'Payment processing fee',
     amountCents: amount,
+  };
+}
+
+/**
+ * Per-engagement surcharge line. Returns `null` when the configured
+ * surcharge would resolve to $0 so callers can splat with a falsy
+ * filter without checking each branch.
+ */
+export function surchargeLine(args: {
+  subtotalCents: Cents;
+  type: 'PERCENT' | 'FLAT_AMOUNT';
+  valueBps?: number;
+  amountCents?: Cents;
+  label: string;
+}): LineItem | null {
+  let amount = 0;
+  if (args.type === 'PERCENT') {
+    const bps = args.valueBps ?? 0;
+    if (bps <= 0) return null;
+    amount = Math.round(args.subtotalCents * (bps / 10_000));
+  } else {
+    amount = args.amountCents ?? 0;
+  }
+  if (amount <= 0) return null;
+  return {
+    kind: 'SURCHARGE',
+    description: args.label,
+    amountCents: amount,
+    meta: { type: args.type, valueBps: args.valueBps ?? null },
+  };
+}
+
+/**
+ * Sales-tax line. Tax base must be precomputed by the caller — typically
+ * subtotal + surcharge per the v2 locked decision. Returns null when the
+ * rate or base resolves to $0.
+ */
+export function salesTaxLine(args: {
+  taxBaseCents: Cents;
+  rateBps: number;
+  label: string;
+}): LineItem | null {
+  if (args.rateBps <= 0 || args.taxBaseCents <= 0) return null;
+  const amount = Math.round(args.taxBaseCents * (args.rateBps / 10_000));
+  if (amount <= 0) return null;
+  const ratePct = (args.rateBps / 100).toFixed(args.rateBps % 100 === 0 ? 0 : 2);
+  return {
+    kind: 'SALES_TAX',
+    description: `${args.label} (${ratePct}%)`,
+    amountCents: amount,
+    meta: { rateBps: args.rateBps },
   };
 }
