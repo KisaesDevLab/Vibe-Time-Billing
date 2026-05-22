@@ -713,6 +713,12 @@ export const clients = pgTable(
     legalHoldReason: text('legal_hold_reason'),
     legalHoldSetAt: timestamp('legal_hold_set_at', { withTimezone: true }),
 
+    // File-manager v2 (0043) — opaque identifiers from the firm's tax
+    // software used for onboarding fuzzy-match against existing B2
+    // folder names. See FILE_MANAGER_ADDENDUM.md §3.1.
+    taxSoftwareId: text('tax_software_id'),
+    taxSoftwareKind: text('tax_software_kind'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -725,6 +731,82 @@ export const clients = pgTable(
     externalIdUk: uniqueIndex('client_firm_external_id_uk')
       .on(t.firmId, t.externalId)
       .where(sql`external_id IS NOT NULL`),
+    taxSoftwareIdx: index('idx_client_tax_software_id')
+      .on(t.firmId, t.taxSoftwareId)
+      .where(sql`tax_software_id IS NOT NULL`),
+  }),
+);
+
+// =====================================================================
+// File-manager v2 (0044) — client_folders. One row per client; binds
+// the client to its top-level B2 folder via the storage_path string +
+// the in-folder sentinel file (_Vibe/client.json). Identity lives in
+// the sentinel, not the path, so File-Explorer renames re-bind via the
+// sync worker. See FILE_MANAGER_ADDENDUM.md §3.2.
+// =====================================================================
+
+export const clientFolders = pgTable(
+  'client_folders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    storagePath: text('storage_path').notNull(),
+    sentinelEtag: text('sentinel_etag'),
+    // status vocabulary: active | renaming | missing | conflict | orphan
+    // Soft enum (TEXT + CHECK in SQL) so new states don't require a
+    // schema migration.
+    status: text('status').notNull().default('active'),
+    lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmPathUk: uniqueIndex('client_folders_firm_path_uk').on(t.firmId, t.storagePath),
+    clientUk: uniqueIndex('client_folders_client_uk').on(t.clientId),
+    statusIdx: index('idx_client_folders_status')
+      .on(t.firmId, t.status)
+      .where(sql`status <> 'active'`),
+  }),
+);
+
+// =====================================================================
+// File-manager v2 (0045) — folder_sync_events. Append-only audit log
+// of every state transition the sync worker observes. Admin drains
+// unresolved rows from the Storage Conflicts panel (Phase 4/9).
+// See FILE_MANAGER_ADDENDUM.md §3.3.
+//
+// event_type vocabulary:
+//   discovered | renamed | missing | sentinel_changed | sentinel_lost
+//   | conflict | orphan | restored
+// =====================================================================
+
+export const folderSyncEvents = pgTable(
+  'folder_sync_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    clientFolderId: uuid('client_folder_id').references(() => clientFolders.id),
+    eventType: text('event_type').notNull(),
+    pathBefore: text('path_before'),
+    pathAfter: text('path_after'),
+    sentinelPayload: jsonb('sentinel_payload'),
+    detectedAt: timestamp('detected_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolvedBy: uuid('resolved_by').references(() => appUsers.id),
+    resolution: text('resolution'),
+    notes: text('notes'),
+  },
+  (t) => ({
+    openEventsIdx: index('idx_folder_sync_events_open')
+      .on(t.firmId, t.detectedAt)
+      .where(sql`resolved_at IS NULL`),
   }),
 );
 
@@ -2104,6 +2186,11 @@ export type Client = typeof clients.$inferSelect;
 export type NewClient = typeof clients.$inferInsert;
 export type Engagement = typeof engagements.$inferSelect;
 export type NewEngagement = typeof engagements.$inferInsert;
+
+export type ClientFolder = typeof clientFolders.$inferSelect;
+export type NewClientFolder = typeof clientFolders.$inferInsert;
+export type FolderSyncEvent = typeof folderSyncEvents.$inferSelect;
+export type NewFolderSyncEvent = typeof folderSyncEvents.$inferInsert;
 
 export type TimekeeperRate = typeof timekeeperRates.$inferSelect;
 export type TimeEntry = typeof timeEntries.$inferSelect;

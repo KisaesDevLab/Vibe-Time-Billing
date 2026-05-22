@@ -10,7 +10,8 @@
     ".": "./src/index.ts",
     "./paths": "./src/paths.ts",
     "./mock": "./src/mock.ts",
-    "./b2": "./src/b2.ts"
+    "./b2": "./src/b2.ts",
+    "./sentinel": "./src/sentinel.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

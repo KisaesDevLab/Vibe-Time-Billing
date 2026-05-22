@@ -13,6 +13,7 @@ import { MockStorageClient, type MockStorageClientOpts } from './mock';
 
 export * from './client';
 export * from './paths';
+export * from './sentinel';
 export { MockStorageClient, parseMockPresignUrl } from './mock';
 export { B2StorageClient } from './b2';
 
