@@ -1,0 +1,159 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+#
+# Local-only compose for running the appliance image (built from the local
+# Dockerfile, tagged vibe-time-billing:local) against the dev infra
+# (postgres/redis/mailhog already running from docker-compose.dev.yml).
+#
+# Usage:
+#   docker build -t vibe-time-billing:local .            # build image first
+#   docker compose -f ops/docker/docker-compose.local.yml up -d
+#
+# Joins the `docker_default` network (where vibe-tb-postgres + vibe-tb-redis
+# live from docker-compose.dev.yml) via external network reference so DNS
+# names `postgres` and `redis` resolve.
+#
+# Ports preserve the existing native-dev URLs:
+#   http://localhost:5195 — staff app
+#   http://localhost:5196 — client portal
+#   http://localhost:3001 — API direct (debugging / curl)
+
+services:
+  init-static:
+    # One-shot. Copies the image's bundled web + portal dists into a shared
+    # volume so the caddy container can serve them. Re-runs on every `up`
+    # so a fresh image rebuild propagates to the volume without manual
+    # `docker volume rm`.
+    image: vibe-time-billing:local
+    container_name: vibe-tb-init-static
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        rm -rf /static-out/web /static-out/portal
+        cp -r /app/apps/web/dist /static-out/web
+        cp -r /app/apps/portal/dist /static-out/portal
+        echo "init-static: copied web + portal dists"
+    volumes:
+      - static-content:/static-out
+    restart: 'no'
+
+  api:
+    image: vibe-time-billing:local
+    container_name: vibe-tb-api
+    depends_on:
+      init-static:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
+      REDIS_URL: redis://redis:6379
+      STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:?STAFF_JWT_SECRET required (export from .env)}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?PORTAL_JWT_SECRET required (export from .env)}
+      KMS_KEY: ${KMS_KEY:?KMS_KEY required (export from .env, 32 bytes base64)}
+      APP_BASE_URL: http://localhost:5195
+      PORTAL_BASE_URL: http://localhost:5196
+      COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
+      MAIL_PROVIDER: smtp
+      MAIL_FROM: 'Vibe Dev <dev@localhost>'
+      MAIL_SMTP_HOST: mailhog
+      MAIL_SMTP_PORT: '1025'
+      MAIL_SMTP_SECURE: 'false'
+      SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      FILE_STORAGE: local
+      FILE_LOCAL_PATH: /data/files
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Inline the migrate-then-serve sequence (the appliance image doesn't
+    # ship ops/docker/ — only ops/scripts/, so the prod compose's entrypoint
+    # path won't resolve here).
+    # tsc preserves the source tree under dist/, so the entry point lives at
+    # apps/api/dist/apps/api/src/server.js — not apps/api/dist/server.js.
+    # --import the ESM resolve hook so extensionless dist imports load
+    # cleanly under Node 24 (the bundler-mode build doesn't append .js).
+    entrypoint: ['/usr/bin/tini', '--', '/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        cd /app
+        echo "vibe-tb-api: applying migrations..."
+        node --experimental-transform-types --import /opt/hooks/esm-resolve-hook.mjs packages/db/dist/scripts/migrate.js
+        echo "vibe-tb-api: migrations done. starting server."
+        exec node --experimental-transform-types --import /opt/hooks/esm-resolve-hook.mjs apps/api/dist/apps/api/src/server.js
+    ports:
+      - '3001:3001'
+    volumes:
+      - file-storage:/data/files
+      - storage-mock:/data/storage-mock
+      - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - default
+
+  worker:
+    image: vibe-time-billing:local
+    container_name: vibe-tb-worker
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    entrypoint: ['/usr/bin/tini', '--']
+    command:
+      [
+        'node',
+        '--experimental-transform-types',
+        '--import',
+        '/opt/hooks/esm-resolve-hook.mjs',
+        'apps/worker/dist/apps/worker/src/index.js',
+      ]
+    volumes:
+      - storage-mock:/data/storage-mock
+      - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+    restart: unless-stopped
+    networks:
+      - default
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: vibe-tb-caddy
+    depends_on:
+      api:
+        condition: service_healthy
+      init-static:
+        condition: service_completed_successfully
+    ports:
+      - '5195:5195'
+      - '5196:5196'
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - static-content:/srv:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    networks:
+      - default
+
+volumes:
+  static-content:
+  file-storage:
+  storage-mock:
+  caddy-data:
+  caddy-config:
+
+# Join the docker_default network where vibe-tb-postgres + vibe-tb-redis +
+# vibe-tb-mailhog already live (from docker-compose.dev.yml). The network
+# name is the literal compose-default name Docker assigned when those
+# containers came up without an explicit network in their compose file.
+networks:
+  default:
+    name: docker_default
+    external: true

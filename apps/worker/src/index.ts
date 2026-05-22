@@ -609,6 +609,20 @@ setup().catch((err: unknown) => {
   process.exit(1);
 });
 
+// QA fix — keep the worker process alive on stray unhandled rejections
+// (e.g. a downstream API call that throws past a forgotten `.catch`).
+// BullMQ already retries job failures; we only need to make sure the
+// outer node process doesn't exit between ticks.
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error(
+    { reason, promise: String(promise) },
+    'unhandled promise rejection — kept worker alive',
+  );
+});
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, 'uncaught exception — kept worker alive');
+});
+
 process.on('SIGINT', () => {
   shutdown()
     .catch((err: unknown) => logger.error({ err }, 'shutdown error'))

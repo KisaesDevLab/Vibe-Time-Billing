@@ -33,6 +33,32 @@ export type ThemeMode = 'light' | 'dark';
 
 export const THEME_STORAGE_KEY = 'vibe-theme';
 
+/** Discrete font-scale steps wired to the FontSizeControl. 1.0 is
+ *  the design baseline; the others apply via `body { zoom: N }` so
+ *  every descendant scales uniformly without depending on rem usage. */
+export const FONT_SCALE_STEPS = [0.9, 1.0, 1.15, 1.3] as const;
+export type FontScale = (typeof FONT_SCALE_STEPS)[number];
+export const DEFAULT_FONT_SCALE: FontScale = 1.0;
+export const FONT_SCALE_STORAGE_KEY = 'vibe-font-scale';
+
+/** Pre-React inline-script body that applies the persisted font-scale
+ *  before paint, mirroring themeBootstrapScript. Saves a FOUC where
+ *  the page flashes at 1.0 and snaps to the user's preferred size. */
+export const fontScaleBootstrapScript = `
+(function() {
+  try {
+    var raw = localStorage.getItem(${JSON.stringify(FONT_SCALE_STORAGE_KEY)});
+    var allowed = ${JSON.stringify(FONT_SCALE_STEPS)};
+    var n = raw ? parseFloat(raw) : 1;
+    if (!isFinite(n) || allowed.indexOf(n) === -1) n = 1;
+    document.documentElement.style.setProperty('--vibe-font-scale', String(n));
+    if (document.body) document.body.style.zoom = String(n);
+  } catch (e) {
+    /* ignore */
+  }
+})();
+`.trim();
+
 /**
  * Read-then-apply helper for the pre-React inline script. Inlined in
  * index.html avoids the FOUC where the page paints with the default

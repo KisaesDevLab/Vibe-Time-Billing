@@ -24,6 +24,20 @@
     </script>
   </head>
   <body>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('vibe-font-scale');
+          var allowed = [0.9, 1, 1.15, 1.3];
+          var n = raw ? parseFloat(raw) : 1;
+          if (!isFinite(n) || allowed.indexOf(n) === -1) n = 1;
+          document.documentElement.style.setProperty('--vibe-font-scale', String(n));
+          document.body.style.zoom = String(n);
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

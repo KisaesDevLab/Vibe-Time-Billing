@@ -152,10 +152,22 @@ const sendMagicLink = async (args: {
   firmId: string;
   link: string;
 }): Promise<void> => {
+  // Escape the URL for HTML attribute safety. The token is a JWT (no
+  // <,>,",&) but defense in depth keeps a malformed token from
+  // smuggling markup.
+  const escaped = args.link
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
   await mailer.send({
     to: args.email,
     subject: 'Your sign-in link',
     body: `Click here to sign in: ${args.link}\n\nThis link expires in ${config.MAGIC_LINK_TTL_MINUTES} minutes.`,
+    html:
+      `<p>Click here to sign in:</p>` +
+      `<p><a href="${escaped}">${escaped}</a></p>` +
+      `<p style="color:#666;font-size:13px">This link expires in ${config.MAGIC_LINK_TTL_MINUTES} minutes.</p>`,
   });
 };
 
@@ -223,6 +235,21 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   }
   logger.fatal({ err }, 'failed to bind api port — giving up');
   process.exit(1);
+});
+
+// QA fix — Node 24 terminates on unhandled promise rejection by default,
+// which is too aggressive for an HTTP server: a bug in one handler's
+// async path takes down every other request in flight. Log it loudly
+// and keep serving; the calling request will already have surfaced a
+// 5xx (or whatever express's default error handler emitted).
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error(
+    { reason, promise: String(promise) },
+    'unhandled promise rejection — kept process alive',
+  );
+});
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, 'uncaught exception — kept process alive');
 });
 
 // Graceful shutdown so a SIGTERM/SIGINT from tsx watch releases the

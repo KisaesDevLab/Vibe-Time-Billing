@@ -2,7 +2,7 @@
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
-import { AppShell, Button, Pill, ThemeToggle, tokens } from '@vibe/ui';
+import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { QuickFind } from './QuickFind';
 
@@ -104,38 +104,83 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   return (
     <AppShell
       brand="Vibe Time & Billing"
+      collapseStorageKey="__vibe_staff_sidebar_collapsed"
       realmBadge={<Pill tone="accent">staff</Pill>}
       nav={[
-        { label: 'Dashboard', href: '/', active: location.pathname === '/' },
-        { label: 'Clients', href: '/clients', active: location.pathname.startsWith('/clients') },
-        { label: 'Time', href: '/time', active: location.pathname.startsWith('/time') },
+        { label: 'Dashboard', href: '/', icon: '⌂', active: location.pathname === '/' },
+        {
+          label: 'Clients',
+          href: '/clients',
+          icon: '◯',
+          active: location.pathname.startsWith('/clients'),
+        },
+        {
+          label: 'Time',
+          href: '/time',
+          icon: '◷',
+          active: location.pathname.startsWith('/time'),
+        },
         {
           label: 'Engagements',
           href: '/engagements',
+          icon: '❖',
           active: location.pathname.startsWith('/engagements'),
         },
-        { label: 'Billing', href: '/billing', active: location.pathname.startsWith('/billing') },
-        { label: 'WIP', href: '/wip', active: location.pathname.startsWith('/wip') },
+        {
+          label: 'Billing',
+          href: '/billing',
+          icon: '▤',
+          active: location.pathname.startsWith('/billing'),
+        },
+        { label: 'WIP', href: '/wip', icon: '⊞', active: location.pathname.startsWith('/wip') },
         {
           label: 'Invoices',
           href: '/invoices',
+          icon: '⎙',
           active: location.pathname.startsWith('/invoices'),
         },
-        { label: 'AR', href: '/ar', active: location.pathname.startsWith('/ar') },
+        { label: 'AR', href: '/ar', icon: '$', active: location.pathname.startsWith('/ar') },
         {
           label: 'Approvals',
           href: '/approvals',
+          icon: '✓',
           active: location.pathname.startsWith('/approvals'),
         },
-        { label: 'Reports', href: '/reports', active: location.pathname.startsWith('/reports') },
+        {
+          label: 'Reports',
+          href: '/reports',
+          icon: '▦',
+          active: location.pathname.startsWith('/reports'),
+        },
         // Top-level Files nav removed in Phase 0; the v2 file manager lives on the client-detail Files tab.
-        { label: 'Alerts', href: '/alerts', active: location.pathname.startsWith('/alerts') },
-        { label: 'Audit', href: '/audit', active: location.pathname.startsWith('/audit') },
-        { label: 'Admin', href: '/admin', active: location.pathname.startsWith('/admin') },
-        { label: 'Account', href: '/account', active: location.pathname.startsWith('/account') },
+        {
+          label: 'Alerts',
+          href: '/alerts',
+          icon: '⚠︎',
+          active: location.pathname.startsWith('/alerts'),
+        },
+        {
+          label: 'Audit',
+          href: '/audit',
+          icon: '⊙',
+          active: location.pathname.startsWith('/audit'),
+        },
+        {
+          label: 'Admin',
+          href: '/admin',
+          icon: '⚙︎',
+          active: location.pathname.startsWith('/admin'),
+        },
+        {
+          label: 'Account',
+          href: '/account',
+          icon: '◐',
+          active: location.pathname.startsWith('/account'),
+        },
       ]}
       trailing={
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <FontSizeControl />
           <ThemeToggle />
           <Button variant="secondary" size="sm" onClick={() => void logout()}>
             Sign out

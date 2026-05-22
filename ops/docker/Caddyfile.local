@@ -1,0 +1,65 @@
+# Local-only Caddyfile — serves the appliance image's web + portal SPAs and
+# proxies /api/* + /portal-api/* to the api container.
+#
+# Two distinct ports preserve the realm split (cookies + CSRF) used in dev:
+#   :5195 → staff app   (APP_BASE_URL)
+#   :5196 → client portal (PORTAL_BASE_URL)
+#
+# Static dists are copied from the image into the `static-content` volume by
+# the `init-static` service in docker-compose.local.yml. Caddy serves them
+# read-only.
+#
+# `handle` blocks are mutually exclusive — the first matching block wins
+# and no other top-level handler runs. We MUST use `handle` (not bare
+# directives) because `try_files` is a rewrite that runs before
+# `reverse_proxy` in Caddy's directive order; without `handle` it would
+# rewrite /api/* paths to /index.html before the @api matcher saw them.
+
+{
+  auto_https off
+  admin off
+}
+
+:5195 {
+  encode gzip zstd
+
+  # Staff API + portal API both run on the api container on port 3001.
+  # The realm hint lets the API distinguish staff vs portal requests via
+  # the X-Vibe-Realm header pattern used in the LAN/domain templates.
+  handle /api/* {
+    reverse_proxy api:3001 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Vibe-Realm app
+      transport http {
+        read_timeout 120s
+      }
+    }
+  }
+
+  # Staff SPA — fall through to index.html for client-side routes.
+  handle {
+    root * /srv/web
+    try_files {path} /index.html
+    file_server
+  }
+}
+
+:5196 {
+  encode gzip zstd
+
+  handle /api/* {
+    reverse_proxy api:3001 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Vibe-Realm portal
+      transport http {
+        read_timeout 120s
+      }
+    }
+  }
+
+  handle {
+    root * /srv/portal
+    try_files {path} /index.html
+    file_server
+  }
+}

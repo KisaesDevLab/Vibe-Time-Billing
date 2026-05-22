@@ -10,7 +10,12 @@
 export interface MailMessage {
   to: string;
   subject: string;
-  body: string; // plain text; HTML provided by template engine separately
+  body: string; // plain text fallback
+  /** Optional HTML body. When provided, mail clients (including MailHog
+   *  in dev) render this version instead of the plain-text body, so
+   *  long URLs stay clickable and unbroken across quoted-printable
+   *  line wraps. */
+  html?: string;
 }
 
 export interface MailProvider {
@@ -60,6 +65,7 @@ export function createSmtpMailProvider(opts: SmtpOptions, log: Logger): MailProv
           to: msg.to,
           subject: msg.subject,
           text: msg.body,
+          ...(msg.html ? { html: msg.html } : {}),
         });
         return { ok: true, messageId: info.messageId };
       } catch (err) {

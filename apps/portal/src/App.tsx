@@ -4,7 +4,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { api } from './api-client';
 
-import { AppShell, Button, Pill, ThemeToggle, tokens } from '@vibe/ui';
+import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
 import { AltContactsPage } from './pages/AltContacts';
@@ -129,6 +129,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
 
   return (
     <AppShell
+      collapseStorageKey="__vibe_portal_sidebar_collapsed"
       brand={
         branding?.logoUrl ? (
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -141,33 +142,53 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       }
       realmBadge={<Pill tone="success">portal</Pill>}
       nav={[
-        { label: 'Overview', href: '/', active: location.pathname === '/' },
-        { label: 'Invoices', href: '/invoices', active: location.pathname.startsWith('/invoices') },
-        { label: 'Letters', href: '/letters', active: location.pathname.startsWith('/letters') },
-        { label: 'Files', href: '/files', active: location.pathname.startsWith('/files') },
+        { label: 'Overview', href: '/', icon: '⌂', active: location.pathname === '/' },
+        {
+          label: 'Invoices',
+          href: '/invoices',
+          icon: '⎙',
+          active: location.pathname.startsWith('/invoices'),
+        },
+        {
+          label: 'Letters',
+          href: '/letters',
+          icon: '✉',
+          active: location.pathname.startsWith('/letters'),
+        },
+        {
+          label: 'Files',
+          href: '/files',
+          icon: '▥',
+          active: location.pathname.startsWith('/files'),
+        },
         {
           label: 'Statement',
           href: '/statement',
+          icon: '▦',
           active: location.pathname.startsWith('/statement'),
         },
         {
           label: 'Payment methods',
           href: '/payment-methods',
+          icon: '$',
           active: location.pathname.startsWith('/payment-methods'),
         },
         {
           label: 'Contacts',
           href: '/alt-contacts',
+          icon: '☏',
           active: location.pathname.startsWith('/alt-contacts'),
         },
         {
           label: 'Switch client',
           href: '/switch',
+          icon: '⇄',
           active: location.pathname.startsWith('/switch'),
         },
         {
           label: 'Notifications',
           href: '/notifications',
+          icon: '⚠︎',
           active: location.pathname.startsWith('/notifications'),
         },
       ]}
@@ -178,6 +199,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
               Client: <code>{me.activeClientId.slice(0, 8)}…</code>
             </span>
           )}
+          <FontSizeControl />
           <ThemeToggle />
           <Button variant="secondary" size="sm" onClick={() => void logout()}>
             Sign out

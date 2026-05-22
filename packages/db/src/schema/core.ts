@@ -792,7 +792,12 @@ export const folderSyncEvents = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id),
-    clientFolderId: uuid('client_folder_id').references(() => clientFolders.id),
+    // ON DELETE SET NULL (migration 0049) — preserves the audit row
+    // while allowing the parent client_folders row to be deleted
+    // (e.g. via admin Unbind).
+    clientFolderId: uuid('client_folder_id').references(() => clientFolders.id, {
+      onDelete: 'set null',
+    }),
     eventType: text('event_type').notNull(),
     pathBefore: text('path_before'),
     pathAfter: text('path_after'),
