@@ -245,6 +245,7 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     storage,
+    redis: deps.redis,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
 

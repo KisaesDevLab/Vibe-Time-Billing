@@ -38,6 +38,7 @@ import { runEmailIn } from './jobs/email-in';
 import { runStorageSyncTick } from './jobs/storage-sync';
 import { runHashFileTick } from './jobs/hash-file';
 import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
+import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
@@ -460,9 +461,73 @@ async function setup(): Promise<void> {
       },
     );
   }
+
+  // Phase 9 of FILE_MANAGER_ADDENDUM.md — parameterized storage-mutation
+  // queue. Distinct from the cron-tick queues above: jobs are enqueued
+  // on demand by the API with rich payloads, never on a schedule. Holds
+  // a dedicated IORedis publisher for storage-progress:{id} channel.
+  setupStorageMutationQueue();
+
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
   startHealthServer();
 }
+
+function setupStorageMutationQueue(): void {
+  if (!db || !storage) {
+    logger.warn(
+      { dbConfigured: Boolean(db), storageConfigured: Boolean(storage) },
+      'storage-mutation queue not registered — db or storage missing',
+    );
+    return;
+  }
+  const queueName = 'storage-mutation';
+  const publishConn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const mutationQueue = new Queue<FolderRenamePayload>(queueName, { connection });
+  const mutationEvents = new QueueEvents(queueName, { connection });
+  mutationEvents.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: queueName, failedReason }, 'storage-mutation job failed');
+  });
+  const mutationWorker = new Worker<FolderRenamePayload>(
+    queueName,
+    async (job) => {
+      if (job.name !== 'folder-rename') {
+        logger.warn({ jobId: job.id, name: job.name }, 'storage-mutation: unknown job name');
+        return;
+      }
+      const result = await runFolderRename(
+        {
+          db: db!,
+          storage: storage!,
+          log: logger,
+          publish: async (channel, message) => {
+            await publishConn.publish(channel, message);
+          },
+        },
+        job.data,
+      );
+      logger.info({ jobId: job.id, ...result }, 'storage-mutation folder-rename complete');
+    },
+    {
+      connection,
+      // One mutation per folder at a time is enforced by the
+      // status='renaming' CAS in the orchestrator. Worker concurrency
+      // of 2 lets renames on distinct folders run in parallel.
+      concurrency: 2,
+    },
+  );
+  // Track for graceful shutdown.
+  mutationWorkerRef = mutationWorker;
+  mutationQueueRef = mutationQueue;
+  mutationEventsRef = mutationEvents;
+  publishConnRef = publishConn;
+  logger.info({ queueName }, 'storage-mutation queue registered');
+}
+
+// Refs for graceful shutdown of the parameterized queue.
+let mutationWorkerRef: Worker<FolderRenamePayload> | null = null;
+let mutationQueueRef: Queue<FolderRenamePayload> | null = null;
+let mutationEventsRef: QueueEvents | null = null;
+let publishConnRef: IORedis | null = null;
 
 // Phase 25 #11 — per-service health probe. Tiny HTTP listener that
 // exposes /health for k8s/docker healthchecks against the worker
@@ -524,6 +589,10 @@ async function shutdown(): Promise<void> {
   for (const w of workers.values()) await w.close();
   for (const q of queues.values()) await q.close();
   for (const e of events.values()) await e.close();
+  if (mutationWorkerRef) await mutationWorkerRef.close();
+  if (mutationQueueRef) await mutationQueueRef.close();
+  if (mutationEventsRef) await mutationEventsRef.close();
+  if (publishConnRef) await publishConnRef.quit();
   await connection.quit();
   if (closeDb) await closeDb();
 }

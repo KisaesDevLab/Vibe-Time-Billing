@@ -29,13 +29,20 @@ import { logger } from '../logger';
 import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
 import { mountFileRoutes } from './files';
-// v1 folder routes removed (Phase 0); v2 (B2 + sentinels) lands in Phase 4.
+// Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
+// was removed in Phase 0.
+import { mountFolderRoutes } from './folder';
 import { mountTaskRoutes } from './tasks';
+
+import type { Redis } from 'ioredis';
 
 export interface ClientRoutesDeps extends RbacDeps {
   db: Database | null;
   /** v2 Sprint C — file storage adapter for /clients/:id/files. */
   storage?: StorageAdapter;
+  /** Phase 9 — required to enqueue folder-mutation jobs + drive the SSE
+   *  progress channel. The api passes deps.redis straight through. */
+  redis?: Redis;
 }
 
 const ClientSchema = z.object({
@@ -745,6 +752,12 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // (Mock in dev, B2 in prod) so we don't depend on the legacy
   // storage adapter that backs v1 attachments.
   mountFileRoutes(router, { ...deps });
+  // Phase 9 of FILE_MANAGER_ADDENDUM.md — folder-rename + SSE progress.
+  // Skipped when redis is missing (tests with no real Redis); the
+  // routes 503 if the queue can't be built lazily either way.
+  if (deps.redis) {
+    mountFolderRoutes(router, { ...deps, redis: deps.redis });
+  }
   mountCommunicationRoutes(router, deps);
 
   // v1 folder routes removed in Phase 0 of the file-manager rebuild.
