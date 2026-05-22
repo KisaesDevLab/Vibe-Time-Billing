@@ -23,6 +23,7 @@ const FEE_OPTIONS = [
 ];
 
 import { api } from '../../api-client';
+import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
 
 type Kind = 'engagement' | 'letter' | 'client';
 
@@ -69,7 +70,8 @@ const fieldStyle: React.CSSProperties = {
 };
 
 function formatCents(c: number | null): string {
-  return c == null ? '—' : `$${(c / 100).toLocaleString()}`;
+  if (c == null) return '—';
+  return `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function TemplatesPage(): JSX.Element {
@@ -97,22 +99,27 @@ function EngagementTab(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // QA fix — these string drafts now hold the *dollars* representation
+  // typed in the input ("750.00"), not the cents string ("75000"). We
+  // translate via dollarsInputToCents on submit. Earlier the field said
+  // "Fee (cents)" and accepted 75000 to mean $750 which was confusing
+  // for any user not steeped in the storage shape.
   const [editDraft, setEditDraft] = useState<{
     name: string;
     defaultFeeStructure: string;
-    defaultFeeAmountCents: string;
+    defaultFeeAmountDollars: string;
     defaultBudgetHours: string;
   }>({
     name: '',
     defaultFeeStructure: 'FIXED_FEE',
-    defaultFeeAmountCents: '',
+    defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
   });
   const [draft, setDraft] = useState({
     key: '',
     name: '',
     defaultFeeStructure: 'FIXED_FEE',
-    defaultFeeAmountCents: '',
+    defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
   });
 
@@ -137,9 +144,7 @@ function EngagementTab(): JSX.Element {
           key: draft.key.trim(),
           name: draft.name.trim(),
           defaultFeeStructure: draft.defaultFeeStructure,
-          defaultFeeAmountCents: draft.defaultFeeAmountCents
-            ? Number(draft.defaultFeeAmountCents)
-            : null,
+          defaultFeeAmountCents: dollarsInputToCents(draft.defaultFeeAmountDollars),
           defaultBudgetHours: draft.defaultBudgetHours ? Number(draft.defaultBudgetHours) : null,
         }),
       });
@@ -147,7 +152,7 @@ function EngagementTab(): JSX.Element {
         key: '',
         name: '',
         defaultFeeStructure: 'FIXED_FEE',
-        defaultFeeAmountCents: '',
+        defaultFeeAmountDollars: '',
         defaultBudgetHours: '',
       });
       setAdding(false);
@@ -181,7 +186,7 @@ function EngagementTab(): JSX.Element {
     setEditDraft({
       name: t.name,
       defaultFeeStructure: t.defaultFeeStructure,
-      defaultFeeAmountCents: t.defaultFeeAmountCents != null ? String(t.defaultFeeAmountCents) : '',
+      defaultFeeAmountDollars: centsToDollarsInput(t.defaultFeeAmountCents),
       defaultBudgetHours: t.defaultBudgetHours ?? '',
     });
   }
@@ -194,9 +199,7 @@ function EngagementTab(): JSX.Element {
         body: JSON.stringify({
           name: editDraft.name.trim(),
           defaultFeeStructure: editDraft.defaultFeeStructure,
-          defaultFeeAmountCents: editDraft.defaultFeeAmountCents
-            ? Number(editDraft.defaultFeeAmountCents)
-            : null,
+          defaultFeeAmountCents: dollarsInputToCents(editDraft.defaultFeeAmountDollars),
           defaultBudgetHours: editDraft.defaultBudgetHours
             ? Number(editDraft.defaultBudgetHours)
             : null,
@@ -256,9 +259,12 @@ function EngagementTab(): JSX.Element {
               options={FEE_OPTIONS}
             />
             <input
-              value={draft.defaultFeeAmountCents}
-              onChange={(e) => setDraft({ ...draft, defaultFeeAmountCents: e.target.value })}
-              placeholder="Fee (cents)"
+              type="text"
+              inputMode="decimal"
+              value={draft.defaultFeeAmountDollars}
+              onChange={(e) => setDraft({ ...draft, defaultFeeAmountDollars: e.target.value })}
+              placeholder="Fee ($)"
+              aria-label="Default fee in dollars"
               style={fieldStyle}
             />
             <input
@@ -348,11 +354,14 @@ function EngagementTab(): JSX.Element {
                       options={FEE_OPTIONS}
                     />
                     <input
-                      value={editDraft.defaultFeeAmountCents}
+                      type="text"
+                      inputMode="decimal"
+                      value={editDraft.defaultFeeAmountDollars}
                       onChange={(e) =>
-                        setEditDraft({ ...editDraft, defaultFeeAmountCents: e.target.value })
+                        setEditDraft({ ...editDraft, defaultFeeAmountDollars: e.target.value })
                       }
-                      placeholder="Fee (cents)"
+                      placeholder="Fee ($)"
+                      aria-label="Default fee in dollars"
                       style={fieldStyle}
                     />
                     <input

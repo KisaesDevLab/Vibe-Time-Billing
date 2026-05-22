@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -226,18 +227,29 @@ export function FirmSettingsPage(): JSX.Element {
       >
         <div style={{ display: 'grid', gap: 16, maxWidth: 480 }}>
           <Input
-            label="Adjustment approval threshold (cents) — Q27"
-            type="number"
-            value={s.adjustmentApprovalThresholdCents}
+            label="Adjustment approval threshold ($) — Q27"
+            type="text"
+            inputMode="decimal"
+            value={centsToDollarsInput(s.adjustmentApprovalThresholdCents)}
             onChange={(e) =>
-              setS({ ...s, adjustmentApprovalThresholdCents: Number(e.target.value) })
+              setS({
+                ...s,
+                adjustmentApprovalThresholdCents:
+                  dollarsInputToCents(e.target.value) ?? s.adjustmentApprovalThresholdCents,
+              })
             }
           />
           <Input
-            label="AI monthly budget (cents) — Q14"
-            type="number"
-            value={s.aiMonthlyBudgetCents}
-            onChange={(e) => setS({ ...s, aiMonthlyBudgetCents: Number(e.target.value) })}
+            label="AI monthly budget ($) — Q14"
+            type="text"
+            inputMode="decimal"
+            value={centsToDollarsInput(s.aiMonthlyBudgetCents)}
+            onChange={(e) =>
+              setS({
+                ...s,
+                aiMonthlyBudgetCents: dollarsInputToCents(e.target.value) ?? s.aiMonthlyBudgetCents,
+              })
+            }
           />
           <Select
             label="AI provider preference — Q15 / Phase 23 #6"

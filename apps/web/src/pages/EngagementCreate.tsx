@@ -15,6 +15,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { centsToDollarsInput, dollarsInputToCents } from '../lib/money';
 
 interface Client {
   id: string;
@@ -61,9 +62,13 @@ export function EngagementCreatePage(): JSX.Element {
   const [clientId, setClientId] = useState(initialClientId);
   const [name, setName] = useState('');
   const [feeStructure, setFeeStructure] = useState<FeeStructure>('FIXED_FEE');
-  const [feeAmountCents, setFeeAmountCents] = useState('');
+  // QA fix — these strings hold the dollars representation shown in the
+  // inputs ("750.00") rather than the cents value the API expects.
+  // Translation happens in applyTemplate (cents → dollars) and submit
+  // (dollars → cents) so users don't have to do mental math.
+  const [feeAmountDollars, setFeeAmountDollars] = useState('');
   const [budgetHours, setBudgetHours] = useState('');
-  const [nteCapCents, setNteCapCents] = useState('');
+  const [nteCapDollars, setNteCapDollars] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [inScopeIds, setInScopeIds] = useState<string[]>([]);
@@ -96,7 +101,7 @@ export function EngagementCreatePage(): JSX.Element {
     if (!tpl) return;
     if (!name.trim()) setName(tpl.name);
     setFeeStructure(tpl.defaultFeeStructure);
-    setFeeAmountCents(tpl.defaultFeeAmountCents != null ? String(tpl.defaultFeeAmountCents) : '');
+    setFeeAmountDollars(centsToDollarsInput(tpl.defaultFeeAmountCents));
     setBudgetHours(tpl.defaultBudgetHours ?? '');
     setInScopeIds(tpl.inScopeWorkCodeIds ?? []);
   }
@@ -116,9 +121,11 @@ export function EngagementCreatePage(): JSX.Element {
         mixedModeEnabled,
         feePassthroughEnabled,
       };
-      if (feeAmountCents.trim()) body.feeAmountCents = Number(feeAmountCents);
+      const feeCents = dollarsInputToCents(feeAmountDollars);
+      if (feeCents != null) body.feeAmountCents = feeCents;
       if (budgetHours.trim()) body.budgetHours = Number(budgetHours);
-      if (nteCapCents.trim()) body.nteCapCents = Number(nteCapCents);
+      const nteCents = dollarsInputToCents(nteCapDollars);
+      if (nteCents != null) body.nteCapCents = nteCents;
       if (startDate) body.startDate = startDate;
       if (endDate) body.endDate = endDate;
       if (inScopeIds.length > 0) body.inScopeWorkCodeIds = inScopeIds;
@@ -221,11 +228,12 @@ export function EngagementCreatePage(): JSX.Element {
               />
             </div>
             <Input
-              type="number"
-              min={0}
-              label="Fee amount (cents)"
-              value={feeAmountCents}
-              onChange={(e) => setFeeAmountCents(e.target.value)}
+              type="text"
+              inputMode="decimal"
+              label="Fee amount ($)"
+              value={feeAmountDollars}
+              onChange={(e) => setFeeAmountDollars(e.target.value)}
+              placeholder="0.00"
             />
             <Input
               type="number"
@@ -239,11 +247,12 @@ export function EngagementCreatePage(): JSX.Element {
 
           {feeStructure === 'HOURLY_NTE' && (
             <Input
-              type="number"
-              min={0}
-              label="NTE cap (cents)"
-              value={nteCapCents}
-              onChange={(e) => setNteCapCents(e.target.value)}
+              type="text"
+              inputMode="decimal"
+              label="NTE cap ($)"
+              value={nteCapDollars}
+              onChange={(e) => setNteCapDollars(e.target.value)}
+              placeholder="0.00"
               hint="Hard cap on billable amount for an HOURLY_NTE engagement."
             />
           )}

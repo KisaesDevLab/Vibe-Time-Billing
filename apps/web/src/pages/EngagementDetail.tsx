@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { centsToDollarsInput, dollarsInputToCents } from '../lib/money';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -82,15 +83,20 @@ interface HourBank {
   forfeitedAt: string | null;
 }
 
-const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
+const formatCents = (c: number): string =>
+  `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// QA fix — draft fields now hold dollars representation; renamed
+// from *Cents to *Dollars so it's obvious. Translation happens in
+// emptyDraftFrom (cents → dollars) and the save handler (dollars →
+// cents).
 interface EditDraft {
   name: string;
   feeStructure: FeeStructure;
-  feeAmountCents: string;
+  feeAmountDollars: string;
   budgetHours: string;
-  budgetAmountCents: string;
-  nteCapCents: string;
+  budgetAmountDollars: string;
+  nteCapDollars: string;
   startDate: string;
   endDate: string;
   mixedModeEnabled: boolean;
@@ -101,10 +107,10 @@ function emptyDraftFrom(e: Engagement): EditDraft {
   return {
     name: e.name,
     feeStructure: e.feeStructure as FeeStructure,
-    feeAmountCents: e.feeAmountCents != null ? String(e.feeAmountCents) : '',
+    feeAmountDollars: centsToDollarsInput(e.feeAmountCents),
     budgetHours: e.budgetHours ?? '',
-    budgetAmountCents: e.budgetAmountCents != null ? String(e.budgetAmountCents) : '',
-    nteCapCents: e.nteCapCents != null ? String(e.nteCapCents) : '',
+    budgetAmountDollars: centsToDollarsInput(e.budgetAmountCents),
+    nteCapDollars: centsToDollarsInput(e.nteCapCents),
     startDate: e.startDate ?? '',
     endDate: e.endDate ?? '',
     mixedModeEnabled: e.mixedModeEnabled,
@@ -160,10 +166,13 @@ export function EngagementDetailPage(): JSX.Element {
         mixedModeEnabled: draft.mixedModeEnabled,
         feePassthroughEnabled: draft.feePassthroughEnabled,
       };
-      if (draft.feeAmountCents.trim()) body.feeAmountCents = Number(draft.feeAmountCents);
+      const feeCents = dollarsInputToCents(draft.feeAmountDollars);
+      if (feeCents != null) body.feeAmountCents = feeCents;
       if (draft.budgetHours.trim()) body.budgetHours = Number(draft.budgetHours);
-      if (draft.budgetAmountCents.trim()) body.budgetAmountCents = Number(draft.budgetAmountCents);
-      if (draft.nteCapCents.trim()) body.nteCapCents = Number(draft.nteCapCents);
+      const budgetCents = dollarsInputToCents(draft.budgetAmountDollars);
+      if (budgetCents != null) body.budgetAmountCents = budgetCents;
+      const nteCents = dollarsInputToCents(draft.nteCapDollars);
+      if (nteCents != null) body.nteCapCents = nteCents;
       if (draft.startDate) body.startDate = draft.startDate;
       if (draft.endDate) body.endDate = draft.endDate;
       await api(`/api/staff/engagements/${id}`, {
@@ -288,12 +297,13 @@ export function EngagementDetailPage(): JSX.Element {
                 options={FEE_STRUCTURES.map<ComboboxOption>((s) => ({ value: s, label: s }))}
               />
             </Field>
-            <Field label="Fee amount (cents)">
+            <Field label="Fee amount ($)">
               <input
-                type="number"
-                min={0}
-                value={draft.feeAmountCents}
-                onChange={(e) => setDraft({ ...draft, feeAmountCents: e.target.value })}
+                type="text"
+                inputMode="decimal"
+                value={draft.feeAmountDollars}
+                onChange={(e) => setDraft({ ...draft, feeAmountDollars: e.target.value })}
+                placeholder="0.00"
                 style={editFieldStyle}
               />
             </Field>
@@ -307,21 +317,23 @@ export function EngagementDetailPage(): JSX.Element {
                 style={editFieldStyle}
               />
             </Field>
-            <Field label="Budget $ (cents)">
+            <Field label="Budget ($)">
               <input
-                type="number"
-                min={0}
-                value={draft.budgetAmountCents}
-                onChange={(e) => setDraft({ ...draft, budgetAmountCents: e.target.value })}
+                type="text"
+                inputMode="decimal"
+                value={draft.budgetAmountDollars}
+                onChange={(e) => setDraft({ ...draft, budgetAmountDollars: e.target.value })}
+                placeholder="0.00"
                 style={editFieldStyle}
               />
             </Field>
-            <Field label="NTE cap (cents)">
+            <Field label="NTE cap ($)">
               <input
-                type="number"
-                min={0}
-                value={draft.nteCapCents}
-                onChange={(e) => setDraft({ ...draft, nteCapCents: e.target.value })}
+                type="text"
+                inputMode="decimal"
+                value={draft.nteCapDollars}
+                onChange={(e) => setDraft({ ...draft, nteCapDollars: e.target.value })}
+                placeholder="0.00"
                 style={editFieldStyle}
               />
             </Field>
@@ -741,9 +753,7 @@ function LetterGenerator({
     const tpl = templates.find((t) => t.id === pickedId);
     if (!tpl) return;
     const feeStr =
-      engagement.feeAmountCents != null
-        ? `$${(engagement.feeAmountCents / 100).toLocaleString()}`
-        : 'TBD';
+      engagement.feeAmountCents != null ? formatCents(engagement.feeAmountCents) : 'TBD';
     setPreview(
       substituteVars(tpl.bodyHtml, {
         'client.name': client?.name ?? '',
