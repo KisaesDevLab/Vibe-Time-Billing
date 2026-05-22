@@ -85,7 +85,10 @@ const LineItemSchema = z.object({
   ]),
   description: z.string().min(1).max(400),
   amountCents: z.number().int(),
-  engagementId: z.string().uuid().optional(),
+  // Optional — null accepted from FE when the invoice isn't pinned
+  // to a single engagement (consolidated invoice path). Treated as
+  // undefined downstream.
+  engagementId: z.string().uuid().nullable().optional(),
 });
 
 const ManualComposeSchema = z.object({
