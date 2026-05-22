@@ -28,7 +28,15 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { clientFolders, clients, files, firms, folderSyncEvents } from '@vibe/db/schema';
+import {
+  clientFolders,
+  clients,
+  files,
+  firmFolderVisibilityRules,
+  firms,
+  folderSyncEvents,
+} from '@vibe/db/schema';
+import { storage as coreStorage } from '@vibe/core';
 import {
   readSentinel,
   SENTINEL_FILE_DEFAULT,
@@ -440,8 +448,9 @@ export interface FileInsert {
   sizeBytes: number;
   etag: string;
   mimeType: string | null;
-  // Visibility defaults to 'private' in Phase 5; Phase 6 swaps in the
-  // rule-resolver and feeds it through this field.
+  // Visibility is resolved by the firm's rule pack (Phase 6); the
+  // planner stays pure by accepting a per-call resolver via
+  // DecideFileSyncPlanInput.visibilityResolver.
   visibility: 'private' | 'client_visible';
   source: 'explorer';
 }
@@ -478,6 +487,10 @@ export interface DecideFileSyncPlanInput {
   sentinelFolder: string;
   observed: ObservedFile[];
   existing: ExistingFileRow[];
+  /** Per-call default-visibility resolver. Phase 6 swaps the previous
+   *  hard-coded 'private' for the firm's rule pack. Defaults to
+   *  'private' when omitted so legacy callers keep working. */
+  resolveVisibility?: (subfolderPath: string) => 'private' | 'client_visible';
 }
 
 /**
@@ -530,6 +543,9 @@ export function decideFileSyncPlan(input: DecideFileSyncPlanInput): FileSyncPlan
 
     const row = existingByKey.get(obs.storageKey);
     if (!row) {
+      const visibility = input.resolveVisibility
+        ? input.resolveVisibility(classified.subfolderPath)
+        : 'private';
       plan.inserts.push({
         storageKey: obs.storageKey,
         subfolderPath: classified.subfolderPath,
@@ -537,7 +553,7 @@ export function decideFileSyncPlan(input: DecideFileSyncPlanInput): FileSyncPlan
         sizeBytes: obs.sizeBytes,
         etag: obs.etag,
         mimeType: obs.contentType ?? null,
-        visibility: 'private',
+        visibility,
         source: 'explorer',
       });
       continue;
@@ -755,7 +771,7 @@ export async function runStorageSyncTick(
     }
   });
 
-  // ----- File-level diff (Phase 5) -------------------------------------
+  // ----- File-level diff (Phase 5) + visibility (Phase 6) --------------
   // Read back the firm's `active` folders post-reconciliation so the file
   // diff sees fresh storage paths after a rename in this same tick.
   const folderRows = await db
@@ -767,6 +783,27 @@ export async function runStorageSyncTick(
     })
     .from(clientFolders)
     .where(and(eq(clientFolders.firmId, firmId), eq(clientFolders.status, 'active')));
+
+  // Snapshot the firm's visibility rules once per tick. The resolver
+  // closes over the snapshot so every per-file insert evaluates against
+  // a consistent rule pack even if the admin edits rules mid-tick.
+  const visibilityRuleRows = await db
+    .select({
+      subfolderPattern: firmFolderVisibilityRules.subfolderPattern,
+      defaultVisibility: firmFolderVisibilityRules.defaultVisibility,
+      priority: firmFolderVisibilityRules.priority,
+      enabled: firmFolderVisibilityRules.enabled,
+    })
+    .from(firmFolderVisibilityRules)
+    .where(eq(firmFolderVisibilityRules.firmId, firmId));
+  const visibilityRules: coreStorage.VisibilityRule[] = visibilityRuleRows.map((r) => ({
+    subfolderPattern: r.subfolderPattern,
+    defaultVisibility: r.defaultVisibility as 'private' | 'client_visible',
+    priority: r.priority,
+    enabled: r.enabled,
+  }));
+  const resolveVisibility = (subfolderPath: string): 'private' | 'client_visible' =>
+    coreStorage.resolveDefaultVisibility(subfolderPath, visibilityRules);
 
   let fileInserts = 0;
   let fileUpdates = 0;
@@ -813,6 +850,7 @@ export async function runStorageSyncTick(
         deletedAt: r.deletedAt,
         pendingUpload: r.pendingUpload,
       })),
+      resolveVisibility,
     });
 
     if (

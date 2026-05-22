@@ -40,6 +40,8 @@ import { createPortalLetterRouter } from './portal/letters';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
 import { createStorageOnboardingRouter } from './admin/storage-onboarding';
+import { createVisibilityRulesRouter } from './admin/visibility-rules';
+import { createFileVisibilityRouter } from './files/visibility';
 import { createConnectRouter } from './connect/routes';
 import { createStatsRouter } from './stats/routes';
 import { createEngagementLetterRouter } from './engagement-letters/routes';
@@ -439,6 +441,25 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/storage', auth.requireAuth, auth.requireCsrf, storageOnboardingRouter);
+
+  // Phase 6 of FILE_MANAGER_ADDENDUM.md — firm-level visibility rules.
+  const visibilityRulesRouter = createVisibilityRulesRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/visibility-rules',
+    auth.requireAuth,
+    auth.requireCsrf,
+    visibilityRulesRouter,
+  );
+
+  // Phase 6 of FILE_MANAGER_ADDENDUM.md — per-file visibility flips.
+  const fileVisibilityRouter = createFileVisibilityRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/files', auth.requireAuth, auth.requireCsrf, fileVisibilityRouter);
 
   const connectRouter = createConnectRouter({
     db: deps.db,

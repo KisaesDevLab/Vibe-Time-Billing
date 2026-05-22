@@ -823,6 +823,53 @@ export const folderSyncEvents = pgTable(
 // client actually writes the object.
 // =====================================================================
 
+// =====================================================================
+// File-manager v2 (0047) — visibility model.
+//
+//   firm_folder_visibility_rules — per-firm default-visibility policy.
+//   file_visibility_events       — append-only history of changes.
+//
+// See FILE_MANAGER_ADDENDUM.md §3.5 + §3.6.
+// =====================================================================
+
+export const firmFolderVisibilityRules = pgTable(
+  'firm_folder_visibility_rules',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    subfolderPattern: text('subfolder_pattern').notNull(),
+    defaultVisibility: text('default_visibility').notNull(),
+    priority: integer('priority').notNull().default(0),
+    enabled: boolean('enabled').notNull().default(true),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    lookupIdx: index('idx_firm_visibility_rules_lookup').on(t.firmId, t.enabled, t.priority),
+  }),
+);
+
+export const fileVisibilityEvents = pgTable(
+  'file_visibility_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    fileId: uuid('file_id').notNull(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    oldValue: text('old_value').notNull(),
+    newValue: text('new_value').notNull(),
+    changedBy: uuid('changed_by').references(() => appUsers.id),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+    reason: text('reason'),
+  },
+  (t) => ({
+    fileIdx: index('idx_file_visibility_events_file').on(t.fileId, t.changedAt),
+  }),
+);
+
 export const files = pgTable(
   'files',
   {
@@ -2252,6 +2299,10 @@ export type FolderSyncEvent = typeof folderSyncEvents.$inferSelect;
 export type NewFolderSyncEvent = typeof folderSyncEvents.$inferInsert;
 export type FileRow = typeof files.$inferSelect;
 export type NewFileRow = typeof files.$inferInsert;
+export type FirmFolderVisibilityRule = typeof firmFolderVisibilityRules.$inferSelect;
+export type NewFirmFolderVisibilityRule = typeof firmFolderVisibilityRules.$inferInsert;
+export type FileVisibilityEvent = typeof fileVisibilityEvents.$inferSelect;
+export type NewFileVisibilityEvent = typeof fileVisibilityEvents.$inferInsert;
 
 export type TimekeeperRate = typeof timekeeperRates.$inferSelect;
 export type TimeEntry = typeof timeEntries.$inferSelect;
