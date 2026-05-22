@@ -738,11 +738,13 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // v2 Sprint B — multi-contact CRUD endpoints (workstream 1.2).
   mountContactRoutes(router, deps);
 
-  // v2 Sprint C — tasks (1.3) + files (1.4) + communications (1.5).
+  // v2 Sprint C — tasks (1.3) + communications (1.5).
   mountTaskRoutes(router, deps);
-  if (deps.storage) {
-    mountFileRoutes(router, { ...deps, storage: deps.storage });
-  }
+  // Phase 8 of FILE_MANAGER_ADDENDUM.md — app upload path. The new
+  // file-routes module builds its own StorageClient via buildStorageClient
+  // (Mock in dev, B2 in prod) so we don't depend on the legacy
+  // storage adapter that backs v1 attachments.
+  mountFileRoutes(router, { ...deps });
   mountCommunicationRoutes(router, deps);
 
   // v1 folder routes removed in Phase 0 of the file-manager rebuild.

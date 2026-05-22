@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// File visibility endpoints (Phase 6 of FILE_MANAGER_ADDENDUM.md).
+// File visibility + completion endpoints.
 //
-//   PATCH /:id/visibility           — single-file flip
-//   POST  /bulk-visibility          — multi-file flip
+//   PATCH /:id/visibility           — Phase 6, single-file flip
+//   POST  /bulk-visibility          — Phase 6, multi-file flip
+//   POST  /:id/complete             — Phase 8, confirm a presigned upload
 //
-// Every successful change appends a row to file_visibility_events so
-// the portal "First viewed" audit, the staff "what's visible" filter,
-// and compliance exports can reconstruct the visibility history.
+// Visibility writes append a row to file_visibility_events so the
+// portal "First viewed" audit and compliance exports can reconstruct
+// the timeline. Asymmetric publish/unpublish per addendum §3.7.
 //
-// Permission gating uses `client:write` for now. Phase 7 swaps to
-// `storage.file.publish` (for private → client_visible) and
-// `storage.file.unpublish` (for the reverse) per the addendum's
-// asymmetric-permission rule.
+// /complete is the second leg of the Phase-8 presigned-PUT upload:
+// the FE PUTs the body directly to storage, then POSTs here so the
+// server HEADs the object, picks up etag + actual size, and clears
+// pending_upload. If the object isn't there yet, the row stays
+// pending and the janitor sweeps it after 30 minutes.
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
@@ -27,12 +29,16 @@ import {
   type RoleSlug,
 } from '@vibe/core/rbac';
 import { roles, userRoles } from '@vibe/db/schema';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
-import { type RbacDeps } from '../auth/rbac-middleware';
+import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export interface FileVisibilityRoutesDeps extends RbacDeps {
   db: Database | null;
+  /** Pre-built storage client. When omitted, the factory is invoked
+   *  with process.env — useful for tests. */
+  storageClient?: StorageClient;
 }
 
 const VISIBILITY_VALUES = ['private', 'client_visible'] as const;
@@ -220,5 +226,78 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
     res.json({ ok: true, flipped: flipped.length, ids: flipped.map((f) => f.fileId) });
   });
 
+  // ----- Phase 8 — confirm a presigned upload -------------------------
+  router.post(
+    '/:id/complete',
+    requirePermission(deps, 'storage:folder:edit'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      const actorId = session.appUserId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const storage = getStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .select({
+          id: files.id,
+          storageKey: files.storageKey,
+          pendingUpload: files.pendingUpload,
+        })
+        .from(files)
+        .where(and(eq(files.id, req.params['id']!), eq(files.firmId, firmId)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'file_not_found' });
+        return;
+      }
+      if (!row.pendingUpload) {
+        // Already completed — idempotent.
+        res.json({ ok: true, alreadyComplete: true });
+        return;
+      }
+      const meta = await storage.head(row.storageKey);
+      if (!meta) {
+        res.status(409).json({ error: 'object_not_yet_landed', storageKey: row.storageKey });
+        return;
+      }
+      await deps.db
+        .update(files)
+        .set({
+          etag: meta.etag,
+          sizeBytes: meta.sizeBytes,
+          pendingUpload: false,
+          modifiedAt: new Date(),
+        })
+        .where(eq(files.id, row.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'file',
+        entityId: row.id,
+        actorAppUserId: actorId,
+        after: {
+          completed: true,
+          etag: meta.etag,
+          sizeBytes: meta.sizeBytes,
+        },
+      }).catch(() => undefined);
+      res.json({ ok: true, etag: meta.etag, sizeBytes: meta.sizeBytes });
+    },
+  );
+
   return router;
+}
+
+function getStorage(deps: FileVisibilityRoutesDeps): StorageClient | null {
+  if (deps.storageClient) return deps.storageClient;
+  try {
+    return buildStorageClient(process.env);
+  } catch {
+    return null;
+  }
 }

@@ -37,6 +37,7 @@ import { runSavedReportEmail } from './jobs/saved-report-email';
 import { runEmailIn } from './jobs/email-in';
 import { runStorageSyncTick } from './jobs/storage-sync';
 import { runHashFileTick } from './jobs/hash-file';
+import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
@@ -133,6 +134,7 @@ const QUEUES = [
   'email-in',
   'storage-sync',
   'hash-file',
+  'pending-upload-sweep',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -339,6 +341,18 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runHashFileTick(db, storage, logger);
     logger.info({ jobId: job.id, ...result }, 'hash-file complete');
   },
+  'pending-upload-sweep': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'pending-upload-sweep: no DB configured');
+      return;
+    }
+    if (!storage) {
+      logger.warn({ jobId: job.id }, 'pending-upload-sweep: no storage client configured');
+      return;
+    }
+    const result = await runPendingUploadSweep(db, storage, logger);
+    logger.info({ jobId: job.id, ...result }, 'pending-upload-sweep complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -369,6 +383,10 @@ const CRON: Record<QueueName, string> = {
   // often than the sync tick (every 5 min) because it streams bodies
   // and is bounded by HASH_BATCH_SIZE per tick.
   'hash-file': '*/5 * * * *',
+  // Phase 8 of FILE_MANAGER_ADDENDUM.md — pending-upload reservation
+  // sweep. Runs every 5 min; deletes any pending_upload row older than
+  // PENDING_UPLOAD_MAX_AGE_MIN (default 30) whose body never landed.
+  'pending-upload-sweep': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {
