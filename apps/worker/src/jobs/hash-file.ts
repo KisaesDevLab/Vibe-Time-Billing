@@ -25,6 +25,8 @@ import type { Database } from '@vibe/db';
 import { files } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
+import { incCounter, setGauge } from '../metrics';
+
 const DEFAULT_BATCH_SIZE = 50;
 const DEFAULT_SIZE_LIMIT_BYTES = 100 * 1024 * 1024;
 
@@ -98,6 +100,12 @@ export async function runHashFileTick(
     }
   }
 
+  if (hashed > 0) incCounter('storage_files_hashed_total', undefined, hashed);
+  // Refresh the gauge: candidates seen this tick ≤ backlog. Not exact;
+  // an exact "remaining" would require another COUNT(*) which is the
+  // same query without LIMIT — not worth the round-trip when the
+  // batched run drains in 5-min ticks.
+  setGauge('storage_hash_pending_files', Math.max(rows.length - hashed, 0));
   log.info({ hashed, failed, candidates: rows.length }, 'hash-file tick complete');
   // Silence sql import — kept for future raw-SQL diagnostics.
   void sql;

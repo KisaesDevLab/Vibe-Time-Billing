@@ -45,6 +45,8 @@ import type { Database } from '@vibe/db';
 import { clientFolders, files, folderSyncEvents } from '@vibe/db/schema';
 import { sanitizeForWindows, sentinelKey, updateSentinel, type StorageClient } from '@vibe/storage';
 
+import { incCounter, observeDurationSeconds } from '../metrics';
+
 export interface FolderRenameDeps {
   db: Database;
   storage: StorageClient;
@@ -111,6 +113,7 @@ export async function runFolderRename(
   deps: FolderRenameDeps,
   payload: FolderRenamePayload,
 ): Promise<FolderRenameResult> {
+  const startedAt = Date.now();
   const { db, storage, log } = deps;
   const concurrency =
     deps.concurrency ?? (parseInt(process.env['STORAGE_SYNC_CONCURRENCY'] ?? '', 10) || 8);
@@ -304,6 +307,11 @@ export async function runFolderRename(
       total: sourceObjects.length,
       done: sourceObjects.length,
     });
+    observeDurationSeconds(
+      'storage_folder_rename_duration_seconds',
+      (Date.now() - startedAt) / 1000,
+    );
+    incCounter('storage_folder_renames_total', { outcome: 'ok' });
     log.info(
       { clientFolderId: folder.id, oldPath, newPath, count: sourceObjects.length },
       'folder-rename complete',
@@ -317,6 +325,7 @@ export async function runFolderRename(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    incCounter('storage_folder_renames_total', { outcome: 'failed' });
     log.error({ err, clientFolderId: folder.id, oldPath, newPath }, 'folder-rename failed');
     // Leave status='renaming' so the admin can resume/rollback. Write
     // a failure marker into folder_sync_events.

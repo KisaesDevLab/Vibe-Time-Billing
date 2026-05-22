@@ -39,6 +39,7 @@ import { runStorageSyncTick } from './jobs/storage-sync';
 import { runHashFileTick } from './jobs/hash-file';
 import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
+import { renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
@@ -552,6 +553,12 @@ function startHealthServer(): void {
           uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
         }),
       );
+      return;
+    }
+    if (req.url === '/metrics') {
+      // Phase 12 of FILE_MANAGER_ADDENDUM.md — Prometheus exposition.
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
+      res.end(renderPrometheusText());
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });

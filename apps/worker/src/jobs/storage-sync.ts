@@ -27,6 +27,8 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
+import { incCounter, observeDurationSeconds } from '../metrics';
+
 import type { Database } from '@vibe/db';
 import {
   clientFolders,
@@ -605,6 +607,7 @@ export async function runStorageSyncTick(
   log: Logger,
   opts: RunStorageSyncTickOpts = {},
 ): Promise<StorageSyncResult> {
+  const tickStart = Date.now();
   const topPrefix = opts.topPrefix ?? process.env['STORAGE_TOP_PREFIX'] ?? '';
   const systemPrefix =
     opts.systemPrefix ?? process.env['STORAGE_SYSTEM_PREFIX'] ?? SYSTEM_PREFIX_DEFAULT;
@@ -754,6 +757,7 @@ export async function runStorageSyncTick(
         sentinelPayload: ev.sentinelPayload as unknown,
       });
       eventCount += 1;
+      incCounter('storage_sync_events_total', { event_type: ev.eventType });
     }
 
     // 4) Touch last_synced_at on every existing row that was observed but
@@ -918,6 +922,15 @@ export async function runStorageSyncTick(
     });
   }
 
+  const durationSeconds = (Date.now() - tickStart) / 1000;
+  observeDurationSeconds('storage_sync_duration_seconds', durationSeconds);
+  if (fileInserts > 0)
+    incCounter('storage_files_inserted_total', { source: 'explorer' }, fileInserts);
+  if (fileUpdates > 0) incCounter('storage_files_updated_total', undefined, fileUpdates);
+  if (fileSoftDeletes > 0)
+    incCounter('storage_files_soft_deleted_total', undefined, fileSoftDeletes);
+  if (fileUndeletes > 0) incCounter('storage_files_undeleted_total', undefined, fileUndeletes);
+
   log.info(
     {
       firmId,
@@ -930,6 +943,7 @@ export async function runStorageSyncTick(
       fileUpdates,
       fileSoftDeletes,
       fileUndeletes,
+      durationSeconds,
     },
     'storage-sync tick complete',
   );

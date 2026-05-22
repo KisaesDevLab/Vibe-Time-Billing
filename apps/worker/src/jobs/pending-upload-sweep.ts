@@ -25,6 +25,8 @@ import type { Database } from '@vibe/db';
 import { files } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
+import { incCounter } from '../metrics';
+
 const DEFAULT_MAX_AGE_MINUTES = 30;
 const DEFAULT_BATCH_SIZE = 100;
 
@@ -78,6 +80,7 @@ export async function runPendingUploadSweep(
     deleted += 1;
   }
 
+  if (deleted > 0) incCounter('storage_pending_uploads_swept_total', undefined, deleted);
   log.info(
     { scanned: stale.length, deleted, storageErrors, cutoff: cutoff.toISOString() },
     'pending-upload-sweep tick complete',
