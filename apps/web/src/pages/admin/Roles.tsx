@@ -165,7 +165,7 @@ export function RolesPage(): JSX.Element {
                 key={p}
                 style={{
                   fontSize: 11,
-                  fontFamily: 'monospace',
+                  fontFamily: tokens.font.mono,
                   padding: '4px 8px',
                   borderRadius: tokens.radius.pill,
                   border: `1px solid ${editPerms.has(p) ? tokens.color.accent : tokens.color.border}`,

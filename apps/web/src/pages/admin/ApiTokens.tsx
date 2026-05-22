@@ -104,7 +104,7 @@ export function ApiTokensPage(): JSX.Element {
                   key={t}
                   style={{
                     fontSize: 11,
-                    fontFamily: 'monospace',
+                    fontFamily: tokens.font.mono,
                     padding: '4px 8px',
                     borderRadius: tokens.radius.pill,
                     border: `1px solid ${selected.has(t) ? tokens.color.accent : tokens.color.border}`,
@@ -144,7 +144,7 @@ export function ApiTokensPage(): JSX.Element {
                 display: 'block',
                 marginTop: 6,
                 wordBreak: 'break-all',
-                fontFamily: 'monospace',
+                fontFamily: tokens.font.mono,
               }}
             >
               {createdToken}

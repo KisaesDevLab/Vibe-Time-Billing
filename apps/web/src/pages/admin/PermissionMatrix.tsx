@@ -85,7 +85,7 @@ export function PermissionMatrixPage(): JSX.Element {
                   style={{
                     padding: '6px 12px',
                     borderBottom: `1px solid ${tokens.color.border}`,
-                    fontFamily: 'monospace',
+                    fontFamily: tokens.font.mono,
                     fontSize: 11,
                   }}
                 >

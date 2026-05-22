@@ -242,7 +242,7 @@ export function StorageOnboardingPage(): JSX.Element {
                       gap: 8,
                     }}
                   >
-                    <span style={{ fontSize: 13, fontFamily: 'monospace' }}>{f.path}</span>
+                    <span style={{ fontSize: 13, fontFamily: tokens.font.mono }}>{f.path}</span>
                     {top ? (
                       <Pill tone={top.confidence >= AUTO_BIND_THRESHOLD ? 'success' : 'neutral'}>
                         {Math.round(top.confidence * 100)}%
@@ -402,7 +402,7 @@ export function StorageOnboardingPage(): JSX.Element {
                   fontSize: 13,
                 }}
               >
-                <span style={{ fontFamily: 'monospace' }}>{b.path}</span>
+                <span style={{ fontFamily: tokens.font.mono }}>{b.path}</span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ color: tokens.color.textMuted }}>{b.clientName}</span>
                   <Button
@@ -434,7 +434,7 @@ export function StorageOnboardingPage(): JSX.Element {
                   fontSize: 13,
                 }}
               >
-                <span style={{ fontFamily: 'monospace' }}>{p.path}</span>
+                <span style={{ fontFamily: tokens.font.mono }}>{p.path}</span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <Pill
                     tone={

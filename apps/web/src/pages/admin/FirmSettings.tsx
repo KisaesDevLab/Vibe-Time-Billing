@@ -401,7 +401,7 @@ export function FirmSettingsPage(): JSX.Element {
               style={{
                 marginTop: 4,
                 width: '100%',
-                fontFamily: 'monospace',
+                fontFamily: tokens.font.mono,
                 fontSize: 12,
                 padding: 8,
                 borderRadius: tokens.radius.sm,

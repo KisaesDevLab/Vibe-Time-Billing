@@ -221,7 +221,7 @@ function FullPageMsg({ children }: { children: ReactNode }): JSX.Element {
         alignItems: 'center',
         justifyContent: 'center',
         color: tokens.color.textMuted,
-        fontFamily: '-apple-system, system-ui, sans-serif',
+        fontFamily: tokens.font.body,
       }}
     >
       {children}

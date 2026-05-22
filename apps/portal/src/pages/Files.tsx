@@ -206,7 +206,7 @@ export function FilesPage(): JSX.Element {
                 render: (r) => (
                   <span
                     style={{
-                      fontFamily: 'monospace',
+                      fontFamily: tokens.font.mono,
                       fontSize: 11,
                       color: tokens.color.textMuted,
                     }}

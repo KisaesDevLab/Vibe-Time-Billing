@@ -97,7 +97,7 @@ export function TotpEnrollPage(): JSX.Element {
           </details>
           <details style={{ marginTop: 12, fontSize: 13 }}>
             <summary>Recovery codes (save now)</summary>
-            <ul style={{ paddingLeft: 18, marginTop: 8, fontFamily: 'monospace' }}>
+            <ul style={{ paddingLeft: 18, marginTop: 8, fontFamily: tokens.font.mono }}>
               {enrollment.recoveryCodes.map((c) => (
                 <li key={c}>{c}</li>
               ))}

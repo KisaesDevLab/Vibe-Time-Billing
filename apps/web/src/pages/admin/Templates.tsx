@@ -476,7 +476,7 @@ function LetterTab(): JSX.Element {
                 rows={10}
                 style={{
                   ...fieldStyle,
-                  fontFamily: 'ui-monospace, monospace',
+                  fontFamily: tokens.font.mono,
                   resize: 'vertical',
                 }}
               />
@@ -489,7 +489,7 @@ function LetterTab(): JSX.Element {
                   border: `1px solid ${tokens.color.border}`,
                   borderRadius: tokens.radius.sm,
                   fontSize: 11,
-                  fontFamily: 'ui-monospace, monospace',
+                  fontFamily: tokens.font.mono,
                   whiteSpace: 'pre-wrap',
                   maxHeight: 160,
                   overflow: 'auto',
@@ -658,7 +658,7 @@ function ClientTab(): JSX.Element {
                     rows={6}
                     style={{
                       ...fieldStyle,
-                      fontFamily: 'ui-monospace, monospace',
+                      fontFamily: tokens.font.mono,
                       fontSize: 11,
                       resize: 'vertical',
                     }}

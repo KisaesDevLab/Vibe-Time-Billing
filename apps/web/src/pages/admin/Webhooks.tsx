@@ -185,7 +185,7 @@ export function WebhooksPage(): JSX.Element {
                 display: 'block',
                 marginTop: 6,
                 wordBreak: 'break-all',
-                fontFamily: 'monospace',
+                fontFamily: tokens.font.mono,
               }}
             >
               {createdSecret}

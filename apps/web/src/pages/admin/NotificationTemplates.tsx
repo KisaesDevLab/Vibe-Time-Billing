@@ -233,7 +233,7 @@ export function NotificationTemplatesPage(): JSX.Element {
                     color: tokens.color.text,
                     border: `1px solid ${tokens.color.border}`,
                     borderRadius: tokens.radius.md,
-                    fontFamily: 'ui-monospace, monospace',
+                    fontFamily: tokens.font.mono,
                     fontSize: 13,
                   }}
                 />
@@ -266,7 +266,7 @@ export function NotificationTemplatesPage(): JSX.Element {
                       background: 'transparent',
                       border: `1px solid ${tokens.color.border}`,
                       color: tokens.color.text,
-                      fontFamily: 'ui-monospace, monospace',
+                      fontFamily: tokens.font.mono,
                       cursor: 'pointer',
                     }}
                   >

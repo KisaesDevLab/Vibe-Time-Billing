@@ -252,7 +252,7 @@ export function ClientFilesTab({ clientId }: { clientId: string }): JSX.Element 
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
-            <code style={{ fontFamily: 'monospace' }}>{data.storagePath}</code>
+            <code style={{ fontFamily: tokens.font.mono }}>{data.storagePath}</code>
             <div
               style={{
                 display: 'flex',
@@ -340,7 +340,7 @@ export function ClientFilesTab({ clientId }: { clientId: string }): JSX.Element 
                     border: 'none',
                     cursor: 'pointer',
                     fontSize: 13,
-                    fontFamily: 'monospace',
+                    fontFamily: tokens.font.mono,
                   }}
                 >
                   {label} <span style={{ color: tokens.color.textMuted }}>({count})</span>
@@ -418,7 +418,7 @@ export function ClientFilesTab({ clientId }: { clientId: string }): JSX.Element 
                 key: 'name',
                 header: 'Name',
                 render: (r) => (
-                  <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                  <span style={{ fontFamily: tokens.font.mono, fontSize: 12 }}>
                     {r.originalFilename}
                     {r.pendingUpload && <Pill tone="warning">pending</Pill>}
                   </span>
@@ -429,7 +429,11 @@ export function ClientFilesTab({ clientId }: { clientId: string }): JSX.Element 
                 header: 'Subfolder',
                 render: (r) => (
                   <span
-                    style={{ fontFamily: 'monospace', fontSize: 11, color: tokens.color.textMuted }}
+                    style={{
+                      fontFamily: tokens.font.mono,
+                      fontSize: 11,
+                      color: tokens.color.textMuted,
+                    }}
                   >
                     {r.subfolderPath || '(root)'}
                   </span>
