@@ -811,6 +811,65 @@ export const folderSyncEvents = pgTable(
 );
 
 // =====================================================================
+// File-manager v2 (0046) — files. One row per object in storage,
+// scoped to the client folder it lives inside. subfolder_path stores
+// the relative path within the folder ('', 'Invoices/', '2024/Returns/').
+// Identity is (firm_id, storage_key) — UNIQUE so a stray duplicate
+// observation can't double-insert. See FILE_MANAGER_ADDENDUM.md §3.4.
+//
+// pending_upload is the Phase-8 reservation flag: the API INSERTs the
+// row with pending_upload=true when it hands out a presigned PUT URL,
+// preventing a concurrent sync tick from soft-deleting it before the
+// client actually writes the object.
+// =====================================================================
+
+export const files = pgTable(
+  'files',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    clientFolderId: uuid('client_folder_id')
+      .notNull()
+      .references(() => clientFolders.id, { onDelete: 'cascade' }),
+    subfolderPath: text('subfolder_path').notNull().default(''),
+    originalFilename: text('original_filename').notNull(),
+    storageKey: text('storage_key').notNull(),
+    mimeType: text('mime_type'),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    sha256: text('sha256'),
+    etag: text('etag'),
+    category: text('category'),
+    source: text('source').notNull().default('explorer'),
+    visibility: text('visibility').notNull().default('private'),
+    uploadedBy: uuid('uploaded_by').references(() => appUsers.id),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
+    modifiedAt: timestamp('modified_at', { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    pendingUpload: boolean('pending_upload').notNull().default(false),
+  },
+  (t) => ({
+    firmKeyUk: uniqueIndex('files_firm_storage_key_uk').on(t.firmId, t.storageKey),
+    clientVisibilityIdx: index('idx_files_client_visibility')
+      .on(t.clientId, t.visibility)
+      .where(sql`deleted_at IS NULL`),
+    folderSubfolderIdx: index('idx_files_folder_subfolder')
+      .on(t.clientFolderId, t.subfolderPath)
+      .where(sql`deleted_at IS NULL`),
+    sha256PendingIdx: index('idx_files_sha256_pending')
+      .on(t.firmId, t.sizeBytes)
+      .where(sql`sha256 IS NULL AND deleted_at IS NULL AND pending_upload = false`),
+    pendingUploadIdx: index('idx_files_pending_upload')
+      .on(t.uploadedAt)
+      .where(sql`pending_upload = true`),
+  }),
+);
+
+// =====================================================================
 // v2 0027 — client_contact (one-to-many). Replaces the legacy single-
 // row billing_contact_* columns; each client has at least one row.
 // At most one isPrimary and at most one isBilling per client (partial
@@ -2191,6 +2250,8 @@ export type ClientFolder = typeof clientFolders.$inferSelect;
 export type NewClientFolder = typeof clientFolders.$inferInsert;
 export type FolderSyncEvent = typeof folderSyncEvents.$inferSelect;
 export type NewFolderSyncEvent = typeof folderSyncEvents.$inferInsert;
+export type FileRow = typeof files.$inferSelect;
+export type NewFileRow = typeof files.$inferInsert;
 
 export type TimekeeperRate = typeof timekeeperRates.$inferSelect;
 export type TimeEntry = typeof timeEntries.$inferSelect;

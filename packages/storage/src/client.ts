@@ -53,6 +53,10 @@ export interface ListOpts {
   /** Yields 'prefix' entries for keys that share this delimiter
    *  segment after the listed prefix. Default `/`. */
   delimiter?: string;
+  /** When true, the client ignores `delimiter` and yields every object
+   *  under the prefix as flat 'object' entries (no 'prefix' yields).
+   *  Used by the file-level sync worker. */
+  recursive?: boolean;
   /** Cap on entries yielded. The iterable still completes cleanly. */
   maxItems?: number;
 }

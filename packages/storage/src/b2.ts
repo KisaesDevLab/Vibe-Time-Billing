@@ -134,7 +134,9 @@ export class B2StorageClient implements StorageClient {
   async *list(prefix: string, opts?: ListOpts): AsyncIterable<StorageObject> {
     const { ListObjectsV2Command } = await loadS3Module();
     const client = await this.client();
-    const delimiter = opts?.delimiter ?? '/';
+    // Recursive listing omits Delimiter entirely so B2 returns every
+    // object below the prefix in a single sweep (no CommonPrefixes).
+    const delimiter = opts?.recursive ? undefined : (opts?.delimiter ?? '/');
     const maxItems = opts?.maxItems ?? Number.POSITIVE_INFINITY;
     let token: string | undefined = undefined;
     let yielded = 0;

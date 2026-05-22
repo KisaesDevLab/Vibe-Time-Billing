@@ -28,7 +28,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { clientFolders, clients, firms, folderSyncEvents } from '@vibe/db/schema';
+import { clientFolders, clients, files, firms, folderSyncEvents } from '@vibe/db/schema';
 import {
   readSentinel,
   SENTINEL_FILE_DEFAULT,
@@ -401,8 +401,180 @@ export interface StorageSyncResult {
   markMissing: number;
   markStatus: number;
   events: number;
+  fileInserts: number;
+  fileUpdates: number;
+  fileSoftDeletes: number;
+  fileUndeletes: number;
   skipped: boolean;
   skipReason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// File-level diff (Phase 5)
+// ---------------------------------------------------------------------------
+
+/** What the storage layer observed for one file in a folder scan. */
+export interface ObservedFile {
+  /** Full storage key. Always under the folder root. */
+  storageKey: string;
+  sizeBytes: number;
+  etag: string;
+  lastModified: Date;
+  contentType?: string;
+}
+
+/** Existing files-row snapshot used by the diff planner. */
+export interface ExistingFileRow {
+  id: string;
+  storageKey: string;
+  etag: string | null;
+  sizeBytes: number;
+  deletedAt: Date | null;
+  pendingUpload: boolean;
+}
+
+export interface FileInsert {
+  storageKey: string;
+  subfolderPath: string;
+  originalFilename: string;
+  sizeBytes: number;
+  etag: string;
+  mimeType: string | null;
+  // Visibility defaults to 'private' in Phase 5; Phase 6 swaps in the
+  // rule-resolver and feeds it through this field.
+  visibility: 'private' | 'client_visible';
+  source: 'explorer';
+}
+
+export interface FileUpdate {
+  rowId: string;
+  sizeBytes: number;
+  etag: string;
+}
+
+export interface FileSoftDelete {
+  rowId: string;
+}
+
+export interface FileUndelete {
+  rowId: string;
+  sizeBytes: number;
+  etag: string;
+}
+
+export interface FileSyncPlan {
+  inserts: FileInsert[];
+  updates: FileUpdate[];
+  softDeletes: FileSoftDelete[];
+  undeletes: FileUndelete[];
+}
+
+export interface DecideFileSyncPlanInput {
+  /** Folder root, with trailing slash (e.g. 'Smith, John & Mary/'). */
+  folderRoot: string;
+  /** Configured sentinel folder name (e.g. '_Vibe'). Files under this
+   *  subtree are skipped — they're internal control objects, not
+   *  client-facing artifacts. */
+  sentinelFolder: string;
+  observed: ObservedFile[];
+  existing: ExistingFileRow[];
+}
+
+/**
+ * Derives subfolder_path + filename from a full storage key relative to
+ * the folder root. Returns null when the key isn't under the root or
+ * sits inside the sentinel subtree.
+ */
+export function classifyObservedKey(
+  storageKey: string,
+  folderRoot: string,
+  sentinelFolder: string,
+): { subfolderPath: string; filename: string } | null {
+  if (!storageKey.startsWith(folderRoot)) return null;
+  const rel = storageKey.slice(folderRoot.length);
+  if (rel.length === 0) return null;
+  // Excludes the sentinel folder and anything nested in it.
+  if (rel === `${sentinelFolder}/` || rel.startsWith(`${sentinelFolder}/`)) return null;
+  const lastSlash = rel.lastIndexOf('/');
+  if (lastSlash < 0) return { subfolderPath: '', filename: rel };
+  return {
+    subfolderPath: rel.slice(0, lastSlash + 1),
+    filename: rel.slice(lastSlash + 1),
+  };
+}
+
+/**
+ * Diff observed storage objects against the current files rows for one
+ * folder. Pure: zero IO.
+ *
+ * Idempotency: an observation that matches an existing row exactly
+ * (etag + size + not-deleted) produces no plan items.
+ */
+export function decideFileSyncPlan(input: DecideFileSyncPlanInput): FileSyncPlan {
+  const plan: FileSyncPlan = {
+    inserts: [],
+    updates: [],
+    softDeletes: [],
+    undeletes: [],
+  };
+
+  const existingByKey = new Map<string, ExistingFileRow>();
+  for (const row of input.existing) existingByKey.set(row.storageKey, row);
+
+  const observedKeys = new Set<string>();
+
+  for (const obs of input.observed) {
+    const classified = classifyObservedKey(obs.storageKey, input.folderRoot, input.sentinelFolder);
+    if (!classified) continue;
+    observedKeys.add(obs.storageKey);
+
+    const row = existingByKey.get(obs.storageKey);
+    if (!row) {
+      plan.inserts.push({
+        storageKey: obs.storageKey,
+        subfolderPath: classified.subfolderPath,
+        originalFilename: classified.filename,
+        sizeBytes: obs.sizeBytes,
+        etag: obs.etag,
+        mimeType: obs.contentType ?? null,
+        visibility: 'private',
+        source: 'explorer',
+      });
+      continue;
+    }
+    // Existing pending_upload rows are off-limits to the sync diff —
+    // they're reservation slots from the Phase-8 presigned-PUT flow and
+    // will be reconciled by the `complete` endpoint or the janitor.
+    if (row.pendingUpload) continue;
+
+    if (row.deletedAt) {
+      // Object returned after a soft-delete — undelete.
+      plan.undeletes.push({
+        rowId: row.id,
+        sizeBytes: obs.sizeBytes,
+        etag: obs.etag,
+      });
+      continue;
+    }
+
+    if (row.etag !== obs.etag || row.sizeBytes !== obs.sizeBytes) {
+      plan.updates.push({
+        rowId: row.id,
+        sizeBytes: obs.sizeBytes,
+        etag: obs.etag,
+      });
+    }
+  }
+
+  // Soft-delete rows whose key wasn't observed.
+  for (const row of input.existing) {
+    if (observedKeys.has(row.storageKey)) continue;
+    if (row.deletedAt) continue;
+    if (row.pendingUpload) continue;
+    plan.softDeletes.push({ rowId: row.id });
+  }
+
+  return plan;
 }
 
 const SYSTEM_PREFIX_DEFAULT = '_system/';
@@ -439,6 +611,10 @@ export async function runStorageSyncTick(
       markMissing: 0,
       markStatus: 0,
       events: 0,
+      fileInserts: 0,
+      fileUpdates: 0,
+      fileSoftDeletes: 0,
+      fileUndeletes: 0,
       skipped: true,
       skipReason: 'no_firm',
     };
@@ -579,6 +755,131 @@ export async function runStorageSyncTick(
     }
   });
 
+  // ----- File-level diff (Phase 5) -------------------------------------
+  // Read back the firm's `active` folders post-reconciliation so the file
+  // diff sees fresh storage paths after a rename in this same tick.
+  const folderRows = await db
+    .select({
+      id: clientFolders.id,
+      clientId: clientFolders.clientId,
+      storagePath: clientFolders.storagePath,
+      status: clientFolders.status,
+    })
+    .from(clientFolders)
+    .where(and(eq(clientFolders.firmId, firmId), eq(clientFolders.status, 'active')));
+
+  let fileInserts = 0;
+  let fileUpdates = 0;
+  let fileSoftDeletes = 0;
+  let fileUndeletes = 0;
+
+  for (const folder of folderRows) {
+    // List every object under this folder, flat (recursive).
+    const observedFiles: ObservedFile[] = [];
+    for await (const entry of storage.list(folder.storagePath, { recursive: true })) {
+      if (entry.kind !== 'object' || !entry.meta) continue;
+      observedFiles.push({
+        storageKey: entry.key,
+        sizeBytes: entry.meta.sizeBytes,
+        etag: entry.meta.etag,
+        lastModified: entry.meta.lastModified,
+        contentType: entry.meta.contentType,
+      });
+    }
+
+    // Snapshot current files rows for this folder (including soft-deleted
+    // so we can detect undelete).
+    const existingFileRows = await db
+      .select({
+        id: files.id,
+        storageKey: files.storageKey,
+        etag: files.etag,
+        sizeBytes: files.sizeBytes,
+        deletedAt: files.deletedAt,
+        pendingUpload: files.pendingUpload,
+      })
+      .from(files)
+      .where(eq(files.clientFolderId, folder.id));
+
+    const filePlan = decideFileSyncPlan({
+      folderRoot: folder.storagePath,
+      sentinelFolder,
+      observed: observedFiles,
+      existing: existingFileRows.map((r) => ({
+        id: r.id,
+        storageKey: r.storageKey,
+        etag: r.etag,
+        sizeBytes: r.sizeBytes,
+        deletedAt: r.deletedAt,
+        pendingUpload: r.pendingUpload,
+      })),
+    });
+
+    if (
+      filePlan.inserts.length === 0 &&
+      filePlan.updates.length === 0 &&
+      filePlan.softDeletes.length === 0 &&
+      filePlan.undeletes.length === 0
+    ) {
+      continue;
+    }
+
+    await db.transaction(async (tx) => {
+      for (const ins of filePlan.inserts) {
+        const [row] = await tx
+          .insert(files)
+          .values({
+            firmId: firmId!,
+            clientId: folder.clientId,
+            clientFolderId: folder.id,
+            storageKey: ins.storageKey,
+            subfolderPath: ins.subfolderPath,
+            originalFilename: ins.originalFilename,
+            sizeBytes: ins.sizeBytes,
+            etag: ins.etag,
+            mimeType: ins.mimeType,
+            visibility: ins.visibility,
+            source: ins.source,
+            uploadedAt: new Date(),
+            modifiedAt: new Date(),
+            pendingUpload: false,
+          })
+          .onConflictDoNothing({ target: [files.firmId, files.storageKey] })
+          .returning({ id: files.id });
+        if (row) fileInserts += 1;
+      }
+      for (const upd of filePlan.updates) {
+        await tx
+          .update(files)
+          .set({
+            etag: upd.etag,
+            sizeBytes: upd.sizeBytes,
+            sha256: null, // bytes changed → invalidate hash
+            modifiedAt: new Date(),
+          })
+          .where(eq(files.id, upd.rowId));
+        fileUpdates += 1;
+      }
+      for (const sd of filePlan.softDeletes) {
+        await tx.update(files).set({ deletedAt: new Date() }).where(eq(files.id, sd.rowId));
+        fileSoftDeletes += 1;
+      }
+      for (const ud of filePlan.undeletes) {
+        await tx
+          .update(files)
+          .set({
+            deletedAt: null,
+            etag: ud.etag,
+            sizeBytes: ud.sizeBytes,
+            sha256: null,
+            modifiedAt: new Date(),
+          })
+          .where(eq(files.id, ud.rowId));
+        fileUndeletes += 1;
+      }
+    });
+  }
+
   log.info(
     {
       firmId,
@@ -587,6 +888,10 @@ export async function runStorageSyncTick(
       markMissing: markMissingCount,
       markStatus: markStatusCount,
       events: eventCount,
+      fileInserts,
+      fileUpdates,
+      fileSoftDeletes,
+      fileUndeletes,
     },
     'storage-sync tick complete',
   );
@@ -598,6 +903,10 @@ export async function runStorageSyncTick(
     markMissing: markMissingCount,
     markStatus: markStatusCount,
     events: eventCount,
+    fileInserts,
+    fileUpdates,
+    fileSoftDeletes,
+    fileUndeletes,
     skipped: false,
   };
 }

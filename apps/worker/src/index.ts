@@ -36,6 +36,7 @@ import { runAuditAnomaly } from './jobs/audit-anomaly';
 import { runSavedReportEmail } from './jobs/saved-report-email';
 import { runEmailIn } from './jobs/email-in';
 import { runStorageSyncTick } from './jobs/storage-sync';
+import { runHashFileTick } from './jobs/hash-file';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
@@ -131,6 +132,7 @@ const QUEUES = [
   'saved-report-email',
   'email-in',
   'storage-sync',
+  'hash-file',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -325,6 +327,18 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runStorageSyncTick(db, storage, logger);
     logger.info({ jobId: job.id, ...result }, 'storage-sync complete');
   },
+  'hash-file': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'hash-file: no DB configured');
+      return;
+    }
+    if (!storage) {
+      logger.warn({ jobId: job.id }, 'hash-file: no storage client configured');
+      return;
+    }
+    const result = await runHashFileTick(db, storage, logger);
+    logger.info({ jobId: job.id, ...result }, 'hash-file complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -351,6 +365,10 @@ const CRON: Record<QueueName, string> = {
   // Phase 3 of FILE_MANAGER_ADDENDUM.md — sync cadence honors
   // SYNC_INTERVAL_SECONDS via cron rounding (default 120s → */2 min).
   'storage-sync': storageSyncCron(),
+  // Phase 5 of FILE_MANAGER_ADDENDUM.md — SHA-256 hashing. Runs less
+  // often than the sync tick (every 5 min) because it streams bodies
+  // and is bounded by HASH_BATCH_SIZE per tick.
+  'hash-file': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {

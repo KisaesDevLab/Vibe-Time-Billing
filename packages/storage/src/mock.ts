@@ -65,7 +65,7 @@ export class MockStorageClient implements StorageClient {
   }
 
   async *list(prefix: string, opts?: ListOpts): AsyncIterable<StorageObject> {
-    const delimiter = opts?.delimiter ?? '/';
+    const delimiter = opts?.recursive ? '' : (opts?.delimiter ?? '/');
     const maxItems = opts?.maxItems ?? Number.POSITIVE_INFINITY;
     const normalizedPrefix = prefix.replace(/^\/+/, '');
     const absPrefix = this.resolveKey(normalizedPrefix);
