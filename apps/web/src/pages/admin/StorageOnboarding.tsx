@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, Combobox, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { usePermission } from '../../auth-context';
 
 interface MatchCandidate {
   clientId: string;
@@ -63,6 +64,10 @@ interface ScanResult {
 const AUTO_BIND_THRESHOLD = 0.9;
 
 export function StorageOnboardingPage(): JSX.Element {
+  const canView = usePermission('storage:folder:view');
+  const canBind = usePermission('storage:folder:bind');
+  const bindTooltip = canBind ? undefined : 'You need storage:folder:bind to bind folders';
+
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -192,12 +197,13 @@ export function StorageOnboardingPage(): JSX.Element {
             {scan.unmatchedClients.length} clients without folders
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <Button onClick={() => void load()} disabled={busy}>
+            <Button onClick={() => void load()} disabled={busy || !canView}>
               Refresh
             </Button>
             <Button
               onClick={() => void autoBindHighConfidence()}
-              disabled={busy || autoCandidates.length === 0}
+              disabled={busy || autoCandidates.length === 0 || !canBind}
+              title={bindTooltip}
               variant="primary"
             >
               Auto-bind ≥ 90% ({autoCandidates.length})
@@ -298,7 +304,8 @@ export function StorageOnboardingPage(): JSX.Element {
                         </div>
                         <Button
                           onClick={() => void bind(selectedFolder.path, c.clientId)}
-                          disabled={busy}
+                          disabled={busy || !canBind}
+                          title={bindTooltip}
                         >
                           Bind
                         </Button>
@@ -328,7 +335,8 @@ export function StorageOnboardingPage(): JSX.Element {
                   placeholder="Search clients without folders…"
                 />
                 <Button
-                  disabled={busy || !manualClientId}
+                  disabled={busy || !manualClientId || !canBind}
+                  title={bindTooltip}
                   onClick={() => void bind(selectedFolder.path, manualClientId)}
                   variant="primary"
                 >
@@ -397,7 +405,11 @@ export function StorageOnboardingPage(): JSX.Element {
                 <span style={{ fontFamily: 'monospace' }}>{b.path}</span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ color: tokens.color.textMuted }}>{b.clientName}</span>
-                  <Button onClick={() => void unbind(b.clientFolderId)} disabled={busy}>
+                  <Button
+                    onClick={() => void unbind(b.clientFolderId)}
+                    disabled={busy || !canBind}
+                    title={bindTooltip}
+                  >
                     Unbind
                   </Button>
                 </div>

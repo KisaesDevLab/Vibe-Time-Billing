@@ -84,6 +84,17 @@ export const PERMISSION_KEYS = [
   'admin:audit:read',
   'admin:audit:export',
   'admin:backup:manage',
+
+  // File-manager v2 (Phase 7 of FILE_MANAGER_ADDENDUM.md §3.7).
+  // Asymmetric publish/unpublish on file.* so a junior can revoke a
+  // mistake but can't expose anything new.
+  'storage:folder:view',
+  'storage:folder:edit',
+  'storage:folder:rename',
+  'storage:folder:bind',
+  'storage:folder:reconcile',
+  'storage:file:publish',
+  'storage:file:unpublish',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -131,6 +142,14 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'approval:queue:read',
     'approval:act',
     'admin:audit:read',
+    // Storage v2 — Owner row in addendum §3.7 default matrix.
+    'storage:folder:view',
+    'storage:folder:edit',
+    'storage:folder:rename',
+    'storage:folder:bind',
+    'storage:folder:reconcile',
+    'storage:file:publish',
+    'storage:file:unpublish',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -158,6 +177,13 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'report:ar:read',
     'approval:queue:read',
     'approval:act',
+    // Storage v2 — Manager row. No reconcile (owner only).
+    'storage:folder:view',
+    'storage:folder:edit',
+    'storage:folder:rename',
+    'storage:folder:bind',
+    'storage:file:publish',
+    'storage:file:unpublish',
   ]),
 
   senior: new Set<PermissionKey>([
@@ -172,6 +198,12 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'invoice:read',
     'report:realization:read',
     'report:utilization:read',
+    // Storage v2 — Bookkeeper row in addendum §3.7. View + edit
+    // only; no rename/bind/publish. Keeps `unpublish` so a junior can
+    // revoke a mistake.
+    'storage:folder:view',
+    'storage:folder:edit',
+    'storage:file:unpublish',
   ]),
 
   staff: new Set<PermissionKey>([
@@ -182,6 +214,11 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'time_entry:create',
     'time_entry:read:own',
     'time_entry:update:own',
+    // Storage v2 — Staff row. View + edit, unpublish-only on
+    // visibility flips.
+    'storage:folder:view',
+    'storage:folder:edit',
+    'storage:file:unpublish',
   ]),
 };
 

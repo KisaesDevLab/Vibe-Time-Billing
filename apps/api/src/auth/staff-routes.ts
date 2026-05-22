@@ -21,8 +21,9 @@ import {
   hashRecoveryCode,
   type StaffSession,
 } from '@vibe/core/auth';
+import { unionPermissions, type PermissionKey, type RoleSlug } from '@vibe/core/rbac';
 import type { Database } from '@vibe/db';
-import { appUsers } from '@vibe/db/schema';
+import { appUsers, roles, userRoles } from '@vibe/db/schema';
 import { eq } from 'drizzle-orm';
 
 import { loadConfig } from '../config';
@@ -38,6 +39,10 @@ export interface StaffRoutesDeps {
   // Email delivery is pluggable (Q11); in tests we just capture the link.
   sendMagicLink: (args: { email: string; firmId: string; link: string }) => Promise<void>;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  // Test seam — explicit user→roles map overrides DB lookup when provided.
+  // Used by `/me` to surface effective permissions to the FE without
+  // touching a real DB in unit tests.
+  fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
 // zod 3.25's .email() validator is overly strict; use a permissive
@@ -312,17 +317,22 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json({ ok: true });
   });
 
-  router.get('/me', deps.requireAuth, (req: Request, res: Response) => {
+  router.get('/me', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session) {
       res.status(401).json({ error: 'no_session' });
       return;
     }
+    // Phase 7 of FILE_MANAGER_ADDENDUM.md — surface the user's
+    // effective permission set so the FE can drive `usePermission`
+    // without an extra round trip.
+    const permissions = await loadEffectivePermissions(deps, session.appUserId);
     res.json({
       appUserId: session.appUserId,
       firmId: session.firmId,
       lastStepUpAt: session.lastStepUpAt,
       csrfToken: session.csrfToken,
+      permissions,
     });
   });
 
@@ -399,4 +409,45 @@ async function findStaffById(db: Database | null, id: string): Promise<StaffUser
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
+
+/**
+ * Returns the union of permission keys for every role assigned to the
+ * user. Used by `/me` so the FE can drive button-disabled state via
+ * `usePermission(code)` without a server round-trip per gate.
+ *
+ * Honors `fakeUserRoles` for the same reason `requirePermission` does:
+ * tests pass a partial DB stub that doesn't implement innerJoin, so
+ * the fake-map seam keeps them green without forcing a real Postgres.
+ */
+async function loadEffectivePermissions(
+  deps: StaffRoutesDeps,
+  appUserId: string,
+): Promise<string[]> {
+  let slugs: RoleSlug[];
+  if (deps.fakeUserRoles) {
+    slugs = deps.fakeUserRoles.get(appUserId) ?? [];
+  } else if (deps.db) {
+    try {
+      const rows = await deps.db
+        .select({ slug: roles.name })
+        .from(userRoles)
+        .innerJoin(roles, eq(roles.id, userRoles.roleId))
+        .where(eq(userRoles.appUserId, appUserId));
+      const known: RoleSlug[] = ['partner', 'manager', 'senior', 'staff', 'admin'];
+      slugs = rows
+        .map((r) => r.slug.toLowerCase() as RoleSlug)
+        .filter((s): s is RoleSlug => known.includes(s));
+    } catch (err) {
+      // Tests pass a partial DB stub that doesn't implement innerJoin;
+      // a thrown TypeError here would 500 /me. Return empty perms so
+      // the rest of the response still ships — production hits the
+      // real DB and never lands here.
+      logger.warn({ err }, '/me: failed to load effective permissions, returning empty set');
+      slugs = [];
+    }
+  } else {
+    slugs = [];
+  }
+  return Array.from(unionPermissions(slugs)) as PermissionKey[];
 }

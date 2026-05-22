@@ -20,9 +20,16 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { fileVisibilityEvents, files } from '@vibe/db/schema';
+import {
+  hasPermission,
+  unionPermissions,
+  type PermissionKey,
+  type RoleSlug,
+} from '@vibe/core/rbac';
+import { roles, userRoles } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
-import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { type RbacDeps } from '../auth/rbac-middleware';
 
 export interface FileVisibilityRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -85,87 +92,133 @@ async function flipFiles(
   return flipped;
 }
 
+/**
+ * Returns the required permission for a visibility flip. Asymmetric per
+ * addendum §3.7: a user with `publish` but not `unpublish` can only
+ * expose files, never revoke; a user with `unpublish` but not `publish`
+ * can revoke a mistake but not expose new things.
+ */
+function requiredVisibilityPermission(target: VisibilityValue): PermissionKey {
+  return target === 'client_visible' ? 'storage:file:publish' : 'storage:file:unpublish';
+}
+
+async function userHasPermission(
+  deps: FileVisibilityRoutesDeps,
+  appUserId: string,
+  key: PermissionKey,
+): Promise<boolean> {
+  let slugs: RoleSlug[];
+  if (deps.fakeUserRoles) {
+    slugs = deps.fakeUserRoles.get(appUserId) ?? [];
+  } else if (deps.db) {
+    const rows = await deps.db
+      .select({ slug: roles.name })
+      .from(userRoles)
+      .innerJoin(roles, eq(roles.id, userRoles.roleId))
+      .where(eq(userRoles.appUserId, appUserId));
+    const known: RoleSlug[] = ['partner', 'manager', 'senior', 'staff', 'admin'];
+    slugs = rows
+      .map((r) => r.slug.toLowerCase() as RoleSlug)
+      .filter((s): s is RoleSlug => known.includes(s));
+  } else {
+    slugs = [];
+  }
+  return hasPermission(unionPermissions(slugs), key);
+}
+
 export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Router {
   const router = express.Router();
 
-  router.patch(
-    '/:id/visibility',
-    requirePermission(deps, 'client:write'),
-    async (req: Request, res: Response) => {
-      const parsed = PatchSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
-        return;
-      }
-      const firmId = req.staffSession?.firmId;
-      const actorId = req.staffSession?.appUserId ?? null;
-      if (!firmId || !deps.db) {
-        res.json({ ok: true, flipped: 0 });
-        return;
-      }
-      const flipped = await flipFiles(
-        deps.db,
-        firmId,
-        [req.params['id']!],
-        parsed.data.visibility,
-        actorId,
-        parsed.data.reason ?? null,
-      );
-      for (const f of flipped) {
-        await emitAudit(deps.db, {
-          action: 'UPDATE',
-          entityType: 'file',
-          entityId: f.fileId,
-          actorAppUserId: actorId,
-          before: { visibility: f.oldValue },
-          after: { visibility: f.newValue, reason: parsed.data.reason ?? null },
-        }).catch(() => undefined);
-      }
-      res.json({ ok: true, flipped: flipped.length });
-    },
-  );
+  router.patch('/:id/visibility', async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const parsed = PatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+    const required = requiredVisibilityPermission(parsed.data.visibility);
+    if (!(await userHasPermission(deps, session.appUserId, required))) {
+      res.status(403).json({ error: 'forbidden', required });
+      return;
+    }
+    const firmId = session.firmId;
+    const actorId = session.appUserId;
+    if (!deps.db) {
+      res.json({ ok: true, flipped: 0 });
+      return;
+    }
+    const flipped = await flipFiles(
+      deps.db,
+      firmId,
+      [req.params['id']!],
+      parsed.data.visibility,
+      actorId,
+      parsed.data.reason ?? null,
+    );
+    for (const f of flipped) {
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'file',
+        entityId: f.fileId,
+        actorAppUserId: actorId,
+        before: { visibility: f.oldValue },
+        after: { visibility: f.newValue, reason: parsed.data.reason ?? null },
+      }).catch(() => undefined);
+    }
+    res.json({ ok: true, flipped: flipped.length });
+  });
 
-  router.post(
-    '/bulk-visibility',
-    requirePermission(deps, 'client:write'),
-    async (req: Request, res: Response) => {
-      const parsed = BulkSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
-        return;
-      }
-      const firmId = req.staffSession?.firmId;
-      const actorId = req.staffSession?.appUserId ?? null;
-      if (!firmId || !deps.db) {
-        res.json({ ok: true, flipped: 0 });
-        return;
-      }
-      const flipped = await flipFiles(
-        deps.db,
-        firmId,
-        parsed.data.fileIds,
-        parsed.data.visibility,
-        actorId,
-        parsed.data.reason ?? null,
-      );
-      // Bulk audit summary — one row per actor batch keeps the audit
-      // log readable when the admin pushes 500 files at once.
-      if (flipped.length > 0) {
-        await emitAudit(deps.db, {
-          action: 'UPDATE',
-          entityType: 'file_bulk_visibility',
-          entityId: null,
-          actorAppUserId: actorId,
-          after: {
-            count: flipped.length,
-            visibility: parsed.data.visibility,
-            reason: parsed.data.reason ?? null,
-          },
-        }).catch(() => undefined);
-      }
-      res.json({ ok: true, flipped: flipped.length, ids: flipped.map((f) => f.fileId) });
-    },
-  );
+  router.post('/bulk-visibility', async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const parsed = BulkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+    const required = requiredVisibilityPermission(parsed.data.visibility);
+    if (!(await userHasPermission(deps, session.appUserId, required))) {
+      res.status(403).json({ error: 'forbidden', required });
+      return;
+    }
+    const firmId = session.firmId;
+    const actorId = session.appUserId;
+    if (!deps.db) {
+      res.json({ ok: true, flipped: 0 });
+      return;
+    }
+    const flipped = await flipFiles(
+      deps.db,
+      firmId,
+      parsed.data.fileIds,
+      parsed.data.visibility,
+      actorId,
+      parsed.data.reason ?? null,
+    );
+    // Bulk audit summary — one row per actor batch keeps the audit
+    // log readable when the admin pushes 500 files at once.
+    if (flipped.length > 0) {
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'file_bulk_visibility',
+        entityId: null,
+        actorAppUserId: actorId,
+        after: {
+          count: flipped.length,
+          visibility: parsed.data.visibility,
+          reason: parsed.data.reason ?? null,
+        },
+      }).catch(() => undefined);
+    }
+    res.json({ ok: true, flipped: flipped.length, ids: flipped.map((f) => f.fileId) });
+  });
 
   return router;
 }

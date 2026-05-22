@@ -100,7 +100,7 @@ export function createStorageOnboardingRouter(deps: StorageOnboardingDeps): Rout
 
   router.get(
     '/scan',
-    requirePermission(deps, 'client:read'),
+    requirePermission(deps, 'storage:folder:view'),
     async (req: Request, res: Response) => {
       const firmId = req.staffSession?.firmId;
       if (!firmId || !deps.db) {
@@ -282,7 +282,7 @@ export function createStorageOnboardingRouter(deps: StorageOnboardingDeps): Rout
 
   router.post(
     '/bind',
-    requirePermission(deps, 'client:write'),
+    requirePermission(deps, 'storage:folder:bind'),
     async (req: Request, res: Response) => {
       const parsed = BindSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -444,7 +444,7 @@ export function createStorageOnboardingRouter(deps: StorageOnboardingDeps): Rout
 
   router.post(
     '/unbind',
-    requirePermission(deps, 'client:write'),
+    requirePermission(deps, 'storage:folder:bind'),
     async (req: Request, res: Response) => {
       const parsed = UnbindSchema.safeParse(req.body);
       if (!parsed.success) {
