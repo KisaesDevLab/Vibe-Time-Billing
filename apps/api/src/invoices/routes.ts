@@ -117,7 +117,18 @@ function invoiceLockedReason(inv: InvoiceRow): string | null {
 }
 
 async function recomputeInvoiceTotals(tx: Database, invoiceId: string): Promise<void> {
-  const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  // QA — take a row-level lock on the invoice so concurrent PATCHes
+  // can't race-insert duplicate SURCHARGE/SALES_TAX rows. Under READ
+  // COMMITTED (Postgres default), two parallel recomputes would each
+  // see no surcharge row (their DELETEs only see committed rows),
+  // each insert one, both commit → two SURCHARGE rows. FOR UPDATE
+  // forces serialization on the invoice id.
+  const [inv] = await tx
+    .select()
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .for('update')
+    .limit(1);
   if (!inv) throw new Error('recompute: invoice_not_found');
 
   // Fetch the engagement's current tax/surcharge config (if invoice is
@@ -907,10 +918,19 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(409).json({ error: 'cannot_reopen_voided' });
         return;
       }
+      // QA — only copy manual lines. SURCHARGE + SALES_TAX are auto-
+      // derived; we'll regenerate them inside the transaction from
+      // the engagement's *current* config (which may have changed
+      // since the original invoice was generated).
       const oldLines = await deps.db
         .select()
         .from(invoiceLineItems)
-        .where(eq(invoiceLineItems.invoiceId, inv.id));
+        .where(
+          and(
+            eq(invoiceLineItems.invoiceId, inv.id),
+            sql`${invoiceLineItems.kind} NOT IN ('SURCHARGE', 'SALES_TAX')`,
+          ),
+        );
       const newId = await deps.db.transaction(async (tx) => {
         await tx.update(invoices).set({ status: 'VOIDED' }).where(eq(invoices.id, inv.id));
         const [created] = await tx
@@ -923,14 +943,13 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             issueDate: new Date().toISOString().slice(0, 10),
             dueDate: inv.dueDate,
             status: 'DRAFT',
-            subtotalCents: inv.subtotalCents,
-            feeCents: inv.feeCents,
-            // QA — carry forward tax + surcharge totals to the new
-            // draft. recomputeInvoiceTotals on the next edit will
-            // re-derive these from the current engagement config.
-            taxCents: inv.taxCents,
-            surchargeCents: inv.surchargeCents,
-            totalCents: inv.totalCents,
+            // Header cents land at 0 here; recomputeInvoiceTotals
+            // below sets them from the just-copied manual lines.
+            subtotalCents: 0,
+            feeCents: 0,
+            taxCents: 0,
+            surchargeCents: 0,
+            totalCents: 0,
             paidCents: 0,
             notes: inv.notes ?? null,
           })
@@ -947,6 +966,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             sortOrder: l.sortOrder,
           });
         }
+        await recomputeInvoiceTotals(tx as unknown as Database, created.id);
         return created.id;
       });
       await emitAudit(deps.db, {
