@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import express, { type Express, type Request, type Response } from 'express';
+// QA fix — express-async-errors patches Express 4's Layer.handle to
+// await async handlers and forward rejections to the error
+// middleware. Without it, an async handler that throws (e.g. a
+// failed DB query) just sits — the response is never sent and the
+// client hangs. Must be imported BEFORE express is used.
+import 'express-async-errors';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import pinoHttp from 'pino-http';
 import type { Redis } from 'ioredis';
 import { sql as drizzleSql } from 'drizzle-orm';
@@ -571,6 +577,30 @@ export function createApp(deps: AppDeps): Express {
       webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
     }),
   );
+
+  // QA fix — Express 4 error-handler middleware. Paired with
+  // express-async-errors at the top of this file: any thrown
+  // exception or rejected promise inside a route handler lands here
+  // instead of stranding the request. Returns a generic 500 with the
+  // request id; full detail is in the log so we don't leak stack
+  // traces to clients.
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+    const requestId = (req as Request & { id?: string }).id;
+    logger.error(
+      {
+        err,
+        url: req.url,
+        method: req.method,
+        requestId,
+      },
+      'unhandled error in route handler',
+    );
+    if (res.headersSent) return;
+    res.status(500).json({
+      error: 'internal_error',
+      requestId: requestId ?? null,
+    });
+  });
 
   return app;
 }
