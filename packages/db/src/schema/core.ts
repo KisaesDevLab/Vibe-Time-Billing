@@ -870,6 +870,37 @@ export const fileVisibilityEvents = pgTable(
   }),
 );
 
+// =====================================================================
+// File-manager v2 (0048) — file_access_log. Append-only log of portal
+// file accesses. Each row records who looked at what + outcome (allow
+// or which denial reason). Powers the "First viewed in portal" staff
+// view + compliance exports. See FILE_MANAGER_ADDENDUM.md §4 Phase 11.
+// =====================================================================
+
+export const fileAccessLog = pgTable(
+  'file_access_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    fileId: uuid('file_id'),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    portalIdentityId: uuid('portal_identity_id'),
+    requestedStorageKey: text('requested_storage_key'),
+    outcome: text('outcome').notNull(),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    fileIdx: index('idx_file_access_log_file').on(t.fileId, t.occurredAt),
+    clientIdx: index('idx_file_access_log_client').on(t.clientId, t.occurredAt),
+  }),
+);
+
 export const files = pgTable(
   'files',
   {
@@ -2303,6 +2334,8 @@ export type FirmFolderVisibilityRule = typeof firmFolderVisibilityRules.$inferSe
 export type NewFirmFolderVisibilityRule = typeof firmFolderVisibilityRules.$inferInsert;
 export type FileVisibilityEvent = typeof fileVisibilityEvents.$inferSelect;
 export type NewFileVisibilityEvent = typeof fileVisibilityEvents.$inferInsert;
+export type FileAccessLogRow = typeof fileAccessLog.$inferSelect;
+export type NewFileAccessLogRow = typeof fileAccessLog.$inferInsert;
 
 export type TimekeeperRate = typeof timekeeperRates.$inferSelect;
 export type TimeEntry = typeof timeEntries.$inferSelect;

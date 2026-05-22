@@ -8,6 +8,7 @@ import { AppShell, Button, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
 import { AltContactsPage } from './pages/AltContacts';
+import { FilesPage } from './pages/Files';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LettersPage } from './pages/Letters';
@@ -56,6 +57,7 @@ export function App(): JSX.Element {
                   <Route path="/" element={<HomePage />} />
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
                   <Route path="/letters" element={<LettersPage />} />
+                  <Route path="/files" element={<FilesPage />} />
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/alt-contacts" element={<AltContactsPage />} />
@@ -142,6 +144,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         { label: 'Overview', href: '/', active: location.pathname === '/' },
         { label: 'Invoices', href: '/invoices', active: location.pathname.startsWith('/invoices') },
         { label: 'Letters', href: '/letters', active: location.pathname.startsWith('/letters') },
+        { label: 'Files', href: '/files', active: location.pathname.startsWith('/files') },
         {
           label: 'Statement',
           href: '/statement',

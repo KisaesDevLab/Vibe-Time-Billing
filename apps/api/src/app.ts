@@ -37,6 +37,7 @@ import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createPortalLetterRouter } from './portal/letters';
+import { createPortalFileRouter } from './portal/files';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
 import { createStorageOnboardingRouter } from './admin/storage-onboarding';
@@ -372,6 +373,15 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/letters', portalLetterRouter);
+
+  // Phase 11 of FILE_MANAGER_ADDENDUM.md — portal file listing +
+  // presigned downloads with rate limiting + access log.
+  const portalFileRouter = createPortalFileRouter({
+    db: deps.db,
+    redis: deps.redis,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/files', portalFileRouter);
 
   // REST v1 — token-authenticated integrator surface.
   app.use('/api/v1', createRestV1Router({ db: deps.db, redis: deps.redis }));
