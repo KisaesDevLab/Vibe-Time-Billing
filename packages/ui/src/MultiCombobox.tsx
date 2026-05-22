@@ -15,9 +15,13 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import { tokens } from './tokens';
 import type { ComboboxOption } from './Combobox';
+import { usePopoverPosition } from './usePopoverPosition';
+
+const POPOVER_MAX_HEIGHT = 320;
 
 export interface MultiComboboxProps {
   options: ComboboxOption[];
@@ -63,6 +67,14 @@ export function MultiCombobox({
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
+
+  // QA fix — portal-rendered popover with viewport-aware positioning,
+  // mirrors Combobox. Escapes overflow clipping from scrolling parents.
+  const popoverPos = usePopoverPosition({
+    triggerRef,
+    open,
+    popoverMaxHeight: POPOVER_MAX_HEIGHT,
+  });
 
   const filtered = useMemo(
     () => options.filter((o) => filterFn(o, query)),
@@ -212,118 +224,123 @@ export function MultiCombobox({
           ▾
         </span>
       </button>
-      {open && (
-        <div
-          ref={popoverRef}
-          role="listbox"
-          aria-multiselectable
-          id={listboxId}
-          tabIndex={-1}
-          aria-activedescendant={
-            filtered[highlightIndex] ? `${listboxId}-opt-${highlightIndex}` : undefined
-          }
-          style={{
-            position: 'absolute',
-            zIndex: 50,
-            top: 'calc(100% + 4px)',
-            left: 0,
-            right: 0,
-            background: tokens.color.surface,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.md,
-            boxShadow: '0 12px 32px rgba(0,0,0,0.25)',
-            maxHeight: 320,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-        >
-          <div style={{ padding: 6, borderBottom: `1px solid ${tokens.color.border}` }}>
-            <input
-              ref={inputRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search…"
-              aria-label="Filter options"
-              style={{
-                width: '100%',
-                padding: '6px 8px',
-                background: tokens.color.bg,
-                color: tokens.color.text,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.sm,
-                fontSize: 13,
-                fontFamily: tokens.font.body,
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
-          <div style={{ overflowY: 'auto', flex: 1 }}>
-            {filtered.length === 0 ? (
-              <p
+      {open &&
+        popoverPos &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            role="listbox"
+            aria-multiselectable
+            id={listboxId}
+            tabIndex={-1}
+            aria-activedescendant={
+              filtered[highlightIndex] ? `${listboxId}-opt-${highlightIndex}` : undefined
+            }
+            onKeyDown={onKey}
+            style={{
+              position: 'fixed',
+              zIndex: 9999,
+              top: popoverPos.top,
+              left: popoverPos.left,
+              width: popoverPos.width,
+              background: tokens.color.surface,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              boxShadow: '0 12px 32px rgba(0,0,0,0.25)',
+              maxHeight: POPOVER_MAX_HEIGHT,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ padding: 6, borderBottom: `1px solid ${tokens.color.border}` }}>
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search…"
+                aria-label="Filter options"
                 style={{
-                  margin: 0,
-                  padding: 12,
-                  fontSize: 12,
-                  color: tokens.color.textMuted,
-                  textAlign: 'center',
+                  width: '100%',
+                  padding: '6px 8px',
+                  background: tokens.color.bg,
+                  color: tokens.color.text,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  fontSize: 13,
+                  fontFamily: tokens.font.body,
+                  boxSizing: 'border-box',
                 }}
-              >
-                {emptyLabel}
-              </p>
-            ) : (
-              filtered.map((opt, i) => {
-                const highlighted = i === highlightIndex;
-                const isSelected = selectedSet.has(opt.value);
-                return (
-                  <div
-                    key={opt.value}
-                    id={`${listboxId}-opt-${i}`}
-                    role="option"
-                    aria-selected={isSelected}
-                    aria-disabled={opt.disabled}
-                    onPointerEnter={() => setHighlightIndex(i)}
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      toggle(opt);
-                    }}
-                    style={{
-                      padding: '6px 10px',
-                      cursor: opt.disabled ? 'not-allowed' : 'pointer',
-                      background: highlighted ? tokens.color.accentMuted : 'transparent',
-                      color: opt.disabled ? tokens.color.textMuted : tokens.color.text,
-                      fontSize: 13,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      readOnly
-                      tabIndex={-1}
-                      style={{ pointerEvents: 'none' }}
-                    />
-                    {renderOption ? (
-                      renderOption(opt, { highlighted })
-                    ) : (
-                      <>
-                        <span style={{ flex: 1 }}>{opt.label}</span>
-                        {opt.description && (
-                          <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                            {opt.description}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
+              />
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {filtered.length === 0 ? (
+                <p
+                  style={{
+                    margin: 0,
+                    padding: 12,
+                    fontSize: 12,
+                    color: tokens.color.textMuted,
+                    textAlign: 'center',
+                  }}
+                >
+                  {emptyLabel}
+                </p>
+              ) : (
+                filtered.map((opt, i) => {
+                  const highlighted = i === highlightIndex;
+                  const isSelected = selectedSet.has(opt.value);
+                  return (
+                    <div
+                      key={opt.value}
+                      id={`${listboxId}-opt-${i}`}
+                      role="option"
+                      aria-selected={isSelected}
+                      aria-disabled={opt.disabled}
+                      onPointerEnter={() => setHighlightIndex(i)}
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        toggle(opt);
+                      }}
+                      style={{
+                        padding: '6px 10px',
+                        cursor: opt.disabled ? 'not-allowed' : 'pointer',
+                        background: highlighted ? tokens.color.accentMuted : 'transparent',
+                        color: opt.disabled ? tokens.color.textMuted : tokens.color.text,
+                        fontSize: 13,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        readOnly
+                        tabIndex={-1}
+                        style={{ pointerEvents: 'none' }}
+                      />
+                      {renderOption ? (
+                        renderOption(opt, { highlighted })
+                      ) : (
+                        <>
+                          <span style={{ flex: 1 }}>{opt.label}</span>
+                          {opt.description && (
+                            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                              {opt.description}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

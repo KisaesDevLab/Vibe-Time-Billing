@@ -11,8 +11,12 @@
 //   [Apply]   Cancel   Clear
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 import { tokens } from './tokens';
+import { usePopoverPosition } from './usePopoverPosition';
+
+const POPOVER_MAX_HEIGHT = 400;
 
 export type SortDir = 'asc' | 'desc' | null;
 
@@ -58,6 +62,17 @@ export function ColumnFilter({
   const [query, setQuery] = useState('');
   const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // QA fix — portal-rendered popover with viewport-aware positioning so
+  // the popover isn't clipped by any scrolling ancestor (the table
+  // wrapper around Engagements uses overflow-x:auto which traps inline
+  // popovers).
+  const popoverPos = usePopoverPosition({
+    triggerRef,
+    open,
+    popoverMaxHeight: POPOVER_MAX_HEIGHT,
+    minWidth: 260,
+  });
 
   // QA fix — only sync draft state when the popover *opens*. Previously
   // `selected` and `sort` were in the deps, so any parent re-render that
@@ -160,199 +175,203 @@ export function ColumnFilter({
           </span>
         )}
       </button>
-      {open && (
-        <div
-          ref={popoverRef}
-          role="dialog"
-          aria-label={ariaLabel ?? 'Column filter'}
-          style={{
-            position: 'absolute',
-            zIndex: 60,
-            top: 'calc(100% + 4px)',
-            left: 0,
-            minWidth: 240,
-            background: tokens.color.surface,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.md,
-            boxShadow: '0 12px 32px rgba(0,0,0,0.25)',
-            padding: 8,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setDraftSort('asc');
-            }}
-            style={{
-              ...buttonReset,
-              textAlign: 'left',
-              padding: '6px 8px',
-              borderRadius: tokens.radius.sm,
-              background: draftSort === 'asc' ? tokens.color.accentMuted : 'transparent',
-              color: draftSort === 'asc' ? tokens.color.accent : tokens.color.text,
-              fontSize: 13,
-            }}
-          >
-            Sort <strong>A → Z</strong>
-          </button>
-          <button
-            type="button"
-            onClick={() => setDraftSort('desc')}
-            style={{
-              ...buttonReset,
-              textAlign: 'left',
-              padding: '6px 8px',
-              borderRadius: tokens.radius.sm,
-              background: draftSort === 'desc' ? tokens.color.accentMuted : 'transparent',
-              color: draftSort === 'desc' ? tokens.color.accent : tokens.color.text,
-              fontSize: 13,
-            }}
-          >
-            Sort <strong>Z → A</strong>
-          </button>
-
-          {searchable && (
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search values"
-              aria-label="Search values"
-              style={{
-                marginTop: 4,
-                padding: '6px 8px',
-                background: tokens.color.bg,
-                color: tokens.color.text,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.sm,
-                fontSize: 13,
-                boxSizing: 'border-box',
-              }}
-            />
-          )}
-
+      {open &&
+        popoverPos &&
+        typeof document !== 'undefined' &&
+        createPortal(
           <div
+            ref={popoverRef}
+            role="dialog"
+            aria-label={ariaLabel ?? 'Column filter'}
             style={{
+              position: 'fixed',
+              zIndex: 9999,
+              top: popoverPos.top,
+              left: popoverPos.left,
+              width: popoverPos.width,
+              background: tokens.color.surface,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              boxShadow: '0 12px 32px rgba(0,0,0,0.25)',
+              padding: 8,
               display: 'flex',
-              justifyContent: 'space-between',
-              gap: 8,
-              padding: '0 4px',
-              fontSize: 11,
-            }}
-          >
-            <button
-              type="button"
-              onClick={uncheckAll}
-              style={{
-                ...buttonReset,
-                textDecoration: 'underline',
-                color: tokens.color.text,
-              }}
-            >
-              Uncheck all
-            </button>
-            <button
-              type="button"
-              onClick={checkAll}
-              style={{
-                ...buttonReset,
-                textDecoration: 'underline',
-                color: tokens.color.text,
-              }}
-            >
-              Check all
-            </button>
-          </div>
-
-          <div style={{ maxHeight: 180, overflowY: 'auto', display: 'grid', gap: 2 }}>
-            {filtered.length === 0 ? (
-              <p style={{ margin: 0, padding: 8, fontSize: 12, color: tokens.color.textMuted }}>
-                No matches
-              </p>
-            ) : (
-              filtered.map((v) => {
-                const checked = draftSelected.has(v.value);
-                return (
-                  <label
-                    key={v.value}
-                    htmlFor={`colf-${v.value}`}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '4px 8px',
-                      fontSize: 13,
-                      cursor: 'pointer',
-                      borderRadius: tokens.radius.sm,
-                    }}
-                  >
-                    <input
-                      id={`colf-${v.value}`}
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggle(v.value)}
-                    />
-                    {v.label}
-                  </label>
-                );
-              })
-            )}
-          </div>
-
-          <div
-            style={{
-              display: 'flex',
+              flexDirection: 'column',
               gap: 6,
-              borderTop: `1px solid ${tokens.color.border}`,
-              paddingTop: 6,
             }}
           >
             <button
               type="button"
-              onClick={apply}
+              onClick={() => {
+                setDraftSort('asc');
+              }}
               style={{
-                padding: '6px 12px',
-                background: tokens.color.accent,
-                color: tokens.color.bg,
-                border: 'none',
+                ...buttonReset,
+                textAlign: 'left',
+                padding: '6px 8px',
                 borderRadius: tokens.radius.sm,
+                background: draftSort === 'asc' ? tokens.color.accentMuted : 'transparent',
+                color: draftSort === 'asc' ? tokens.color.accent : tokens.color.text,
                 fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
               }}
             >
-              Apply
+              Sort <strong>A → Z</strong>
             </button>
             <button
               type="button"
-              onClick={cancel}
+              onClick={() => setDraftSort('desc')}
               style={{
                 ...buttonReset,
-                padding: '6px 12px',
-                color: tokens.color.accent,
+                textAlign: 'left',
+                padding: '6px 8px',
+                borderRadius: tokens.radius.sm,
+                background: draftSort === 'desc' ? tokens.color.accentMuted : 'transparent',
+                color: draftSort === 'desc' ? tokens.color.accent : tokens.color.text,
                 fontSize: 13,
               }}
             >
-              Cancel
+              Sort <strong>Z → A</strong>
             </button>
-            <button
-              type="button"
-              onClick={clear}
+
+            {searchable && (
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search values"
+                aria-label="Search values"
+                style={{
+                  marginTop: 4,
+                  padding: '6px 8px',
+                  background: tokens.color.bg,
+                  color: tokens.color.text,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  fontSize: 13,
+                  boxSizing: 'border-box',
+                }}
+              />
+            )}
+
+            <div
               style={{
-                ...buttonReset,
-                padding: '6px 12px',
-                color: tokens.color.accent,
-                fontSize: 13,
-                marginLeft: 'auto',
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 8,
+                padding: '0 4px',
+                fontSize: 11,
               }}
             >
-              Clear
-            </button>
-          </div>
-        </div>
-      )}
+              <button
+                type="button"
+                onClick={uncheckAll}
+                style={{
+                  ...buttonReset,
+                  textDecoration: 'underline',
+                  color: tokens.color.text,
+                }}
+              >
+                Uncheck all
+              </button>
+              <button
+                type="button"
+                onClick={checkAll}
+                style={{
+                  ...buttonReset,
+                  textDecoration: 'underline',
+                  color: tokens.color.text,
+                }}
+              >
+                Check all
+              </button>
+            </div>
+
+            <div style={{ maxHeight: 180, overflowY: 'auto', display: 'grid', gap: 2 }}>
+              {filtered.length === 0 ? (
+                <p style={{ margin: 0, padding: 8, fontSize: 12, color: tokens.color.textMuted }}>
+                  No matches
+                </p>
+              ) : (
+                filtered.map((v) => {
+                  const checked = draftSelected.has(v.value);
+                  return (
+                    <label
+                      key={v.value}
+                      htmlFor={`colf-${v.value}`}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '4px 8px',
+                        fontSize: 13,
+                        cursor: 'pointer',
+                        borderRadius: tokens.radius.sm,
+                      }}
+                    >
+                      <input
+                        id={`colf-${v.value}`}
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(v.value)}
+                      />
+                      {v.label}
+                    </label>
+                  );
+                })
+              )}
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                gap: 6,
+                borderTop: `1px solid ${tokens.color.border}`,
+                paddingTop: 6,
+              }}
+            >
+              <button
+                type="button"
+                onClick={apply}
+                style={{
+                  padding: '6px 12px',
+                  background: tokens.color.accent,
+                  color: tokens.color.bg,
+                  border: 'none',
+                  borderRadius: tokens.radius.sm,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Apply
+              </button>
+              <button
+                type="button"
+                onClick={cancel}
+                style={{
+                  ...buttonReset,
+                  padding: '6px 12px',
+                  color: tokens.color.accent,
+                  fontSize: 13,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={clear}
+                style={{
+                  ...buttonReset,
+                  padding: '6px 12px',
+                  color: tokens.color.accent,
+                  fontSize: 13,
+                  marginLeft: 'auto',
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }
