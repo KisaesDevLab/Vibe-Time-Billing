@@ -118,6 +118,15 @@ services:
     volumes:
       - storage-mock:/data/storage-mock
       - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+    # The image's default HEALTHCHECK probes port 3001 (the api's
+    # health surface). The worker listens on 3003 — override here so
+    # `docker compose ps` reflects worker health correctly.
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:3003/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
     networks:
       - default

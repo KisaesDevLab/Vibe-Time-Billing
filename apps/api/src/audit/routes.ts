@@ -10,6 +10,7 @@ import { and, desc, eq, gte, inArray, lte, type SQL } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { auditLog } from '@vibe/db/schema';
 
+import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export interface AuditRoutesDeps extends RbacDeps {
@@ -274,21 +275,32 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { ilike, or } = await import('drizzle-orm');
-      const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
-      const match = or(
-        ilike(auditLog.entityType, like),
-        ilike(auditLog.entityId, like),
-        ilike(auditLog.ip, like),
-        ilike(auditLog.userAgent, like),
-      );
-      const items = await deps.db
-        .select()
-        .from(auditLog)
-        .where(match)
-        .orderBy(desc(auditLog.occurredAt))
-        .limit(200);
-      res.json({ items });
+      // QA fix — entityId is uuid in Postgres, which has no ILIKE
+      // operator. Postgres throws 42883 and (until the unhandled-
+      // rejection handler was added) the request hung. Cast the
+      // uuid column to text before the comparison, and wrap the
+      // whole handler in try/catch so future query failures return
+      // a 500 instead of stranding the connection.
+      try {
+        const { ilike, or, sql: sqlRaw } = await import('drizzle-orm');
+        const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
+        const match = or(
+          ilike(auditLog.entityType, like),
+          sqlRaw`${auditLog.entityId}::text ILIKE ${like}`,
+          ilike(auditLog.ip, like),
+          ilike(auditLog.userAgent, like),
+        );
+        const items = await deps.db
+          .select()
+          .from(auditLog)
+          .where(match)
+          .orderBy(desc(auditLog.occurredAt))
+          .limit(200);
+        res.json({ items });
+      } catch (err) {
+        logger.error({ err }, 'audit search failed');
+        res.status(500).json({ error: 'search_failed' });
+      }
     },
   );
 
