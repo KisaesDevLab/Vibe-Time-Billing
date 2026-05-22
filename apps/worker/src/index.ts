@@ -35,7 +35,9 @@ import { runWipAgeAlert } from './jobs/wip-age-alert';
 import { runAuditAnomaly } from './jobs/audit-anomaly';
 import { runSavedReportEmail } from './jobs/saved-report-email';
 import { runEmailIn } from './jobs/email-in';
+import { runStorageSyncTick } from './jobs/storage-sync';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 const logger = pino({
   level: process.env['LOG_LEVEL'] ?? 'info',
@@ -92,6 +94,16 @@ const chargeInvoice = stripe
 const dunningSendEmail = await buildMailDispatch(logger);
 const dunningSendSms = buildSmsDispatch(logger);
 
+// Storage client (B2 in prod, MockStorageClient in dev) — used by the
+// storage-sync queue handler. Built lazily so a missing optional dep
+// or absent env doesn't fail the worker boot.
+let storage: StorageClient | null = null;
+try {
+  storage = buildStorageClient(process.env);
+} catch (err) {
+  logger.warn({ err }, 'storage client unavailable — storage-sync will skip');
+}
+
 interface JobPayload {
   reason: string;
   scheduledFor: string;
@@ -118,6 +130,7 @@ const QUEUES = [
   'audit-anomaly',
   'saved-report-email',
   'email-in',
+  'storage-sync',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -300,6 +313,18 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runEmailIn(db, logger);
     logger.info({ jobId: job.id, ...result }, 'email-in complete');
   },
+  'storage-sync': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'storage-sync: no DB configured');
+      return;
+    }
+    if (!storage) {
+      logger.warn({ jobId: job.id }, 'storage-sync: no storage client configured');
+      return;
+    }
+    const result = await runStorageSyncTick(db, storage, logger);
+    logger.info({ jobId: job.id, ...result }, 'storage-sync complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -323,7 +348,17 @@ const CRON: Record<QueueName, string> = {
   'audit-anomaly': '*/15 * * * *',
   'saved-report-email': '0 7 * * 1',
   'email-in': '*/5 * * * *',
+  // Phase 3 of FILE_MANAGER_ADDENDUM.md — sync cadence honors
+  // SYNC_INTERVAL_SECONDS via cron rounding (default 120s → */2 min).
+  'storage-sync': storageSyncCron(),
 };
+
+function storageSyncCron(): string {
+  const seconds = parseInt(process.env['SYNC_INTERVAL_SECONDS'] ?? '120', 10);
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 120;
+  const minutes = Math.max(1, Math.round(safe / 60));
+  return `*/${minutes} * * * *`;
+}
 
 async function setup(): Promise<void> {
   for (const name of QUEUES) {
