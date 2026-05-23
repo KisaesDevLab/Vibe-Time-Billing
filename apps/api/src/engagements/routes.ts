@@ -8,7 +8,9 @@ import { and, eq, inArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  appUsers,
   clients,
+  engagementAssignments,
   engagementNotes,
   engagements,
   firmSettings,
@@ -77,9 +79,17 @@ const EngagementCreateSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
+  // 0051 — external deadline.
+  dueDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
   autoRolloverEnabled: z.boolean().optional(),
   // Phase 7 #13 — premium/discount multiplier in basis points (10000 = 1.0x).
   rateMultiplierBps: z.number().int().min(1000).max(50000).optional(),
+  // 0054 — drives staff_rate_snapshot lookup. NULL = StandardRate fallback.
+  defaultRateCodeId: z.string().uuid().nullable().optional(),
   // Optional hour-bank attachment. When supplied, the engagement is
   // created and an hour_bank row is inserted in the same transaction.
   // Phase 8 #8 — bank-bearing engagements no longer need a second POST.
@@ -93,6 +103,17 @@ const EngagementCreateSchema = z.object({
         .regex(/^\d{4}-\d{2}-\d{2}$/)
         .optional(),
     })
+    .optional(),
+  // 0050 — staff assignments at create time (in addition to or instead
+  // of partnerId/managerId). Inserted into engagement_assignment.
+  assignments: z
+    .array(
+      z.object({
+        appUserId: z.string().uuid(),
+        role: z.enum(['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF']),
+      }),
+    )
+    .max(50)
     .optional(),
 });
 
@@ -183,19 +204,27 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       const managerId = typeof req.query['managerId'] === 'string' ? req.query['managerId'] : null;
       if (managerId) conds.push(eq(engagements.managerId, managerId));
 
-      // v2 Part 2 — assigneeUserId matches partner OR manager.
+      // 0050 — assigneeUserId now matches partner OR manager OR a row
+      // in engagement_assignment (multi-staff per engagement).
       const assigneeUserId =
         typeof req.query['assigneeUserId'] === 'string' ? req.query['assigneeUserId'] : null;
       if (assigneeUserId) {
         const orExpr = or(
           eq(engagements.partnerId, assigneeUserId),
           eq(engagements.managerId, assigneeUserId),
+          sql`EXISTS (SELECT 1 FROM engagement_assignment ea WHERE ea.engagement_id = ${engagements.id} AND ea.app_user_id = ${assigneeUserId})`,
         );
         if (orExpr) conds.push(orExpr);
       }
 
       const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
       if (clientId) conds.push(eq(engagements.clientId, clientId));
+
+      // 0050 — filter to engagements whose client has a given owner
+      // (client.partnerInChargeId). Surfaced across the UI as a chip.
+      const clientOwnerId =
+        typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+      if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
 
       const feeStructure =
         typeof req.query['feeStructure'] === 'string' ? req.query['feeStructure'] : null;
@@ -235,6 +264,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           managerId: engagements.managerId,
           startDate: engagements.startDate,
           endDate: engagements.endDate,
+          dueDate: engagements.dueDate,
           engagementTypeId: engagements.engagementTypeId,
           createdAt: engagements.createdAt,
           // Joined fields so the UI doesn't need separate lookups.
@@ -259,6 +289,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           'budget_hours',
           'start_date',
           'end_date',
+          'due_date',
         ];
         const lines = [header.join(',')];
         const cell = (s: string | number | null | undefined): string => {
@@ -280,6 +311,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
               cell(it.budgetHours),
               cell(it.startDate),
               cell(it.endDate),
+              cell(it.dueDate),
             ].join(','),
           );
         }
@@ -336,7 +368,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const { hourBank, ...engagementFields } = parsed.data;
+      const { hourBank, assignments, ...engagementFields } = parsed.data;
       const insertVals = {
         ...engagementFields,
         budgetHours: engagementFields.budgetHours?.toString(),
@@ -359,6 +391,17 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
             })
             .returning({ id: hourBanks.id });
           bankId = bank?.id ?? null;
+        }
+        if (assignments && assignments.length > 0 && eng?.id) {
+          const rows = assignments.map((a) => ({
+            engagementId: eng.id,
+            appUserId: a.appUserId,
+            role: a.role,
+            assignedById: session.appUserId,
+          }));
+          // onConflictDoNothing — the (engagement,user,role) unique
+          // index makes duplicates a no-op rather than an error.
+          await tx.insert(engagementAssignments).values(rows).onConflictDoNothing();
         }
         return { engagementId: eng?.id, hourBankId: bankId };
       });
@@ -417,7 +460,21 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .from(clients)
         .where(eq(clients.id, eng.clientId))
         .limit(1);
-      res.json({ engagement: eng, client });
+      // 0050 — join assignments with app_user names for the detail UI.
+      const assignments = await deps.db
+        .select({
+          id: engagementAssignments.id,
+          appUserId: engagementAssignments.appUserId,
+          role: engagementAssignments.role,
+          assignedAt: engagementAssignments.assignedAt,
+          fullName: appUsers.fullName,
+          email: appUsers.email,
+        })
+        .from(engagementAssignments)
+        .innerJoin(appUsers, eq(appUsers.id, engagementAssignments.appUserId))
+        .where(eq(engagementAssignments.engagementId, eng.id))
+        .orderBy(engagementAssignments.assignedAt);
+      res.json({ engagement: eng, client, assignments });
     },
   );
 
@@ -714,11 +771,13 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
 
   // v2 Part 2 — operational workflow state, distinct from lifecycle
   // /status above. Inline-edit from the engagements list view + the
-  // engagement detail header.
+  // engagement detail header. Single canonical handler — duplicate at
+  // the kanban-drag layer (0050) was merged here.
   router.patch(
     '/:id/workflow-state',
     requirePermission(deps, 'engagement:write'),
     async (req: Request, res: Response) => {
+      const session = req.staffSession!;
       if (!deps.db) {
         res.json({ ok: true });
         return;
@@ -742,16 +801,31 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_workflow_state' });
         return;
       }
-      const session = req.staffSession!;
+      // 0050 — scope check (engagement must belong to firm) + before/after
+      // capture so the audit row is reversible.
+      const [eng] = await deps.db
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          prev: engagements.workflowState,
+        })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       await deps.db
         .update(engagements)
-        .set({ workflowState: ws as WorkflowState })
-        .where(eq(engagements.id, req.params['id']!));
+        .set({ workflowState: ws as WorkflowState, updatedAt: new Date() })
+        .where(eq(engagements.id, eng.id));
       await emitAudit(deps.db, {
         action: 'UPDATE',
-        entityType: 'engagement',
-        entityId: req.params['id']!,
+        entityType: 'engagement_workflow_state',
+        entityId: eng.id,
         actorAppUserId: session.appUserId,
+        before: { workflowState: eng.prev },
         after: { workflowState: ws },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
@@ -911,7 +985,11 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      const patch: Record<string, unknown> = { ...parsed.data };
+      // Pluck non-column keys out of the spread so update() only sees
+      // engagement-table columns. (assignments + hourBank live on
+      // sibling tables and are handled at create-time only.)
+      const { assignments: _assignments, hourBank: _hourBank, ...colsOnly } = parsed.data;
+      const patch: Record<string, unknown> = { ...colsOnly };
       if (parsed.data.budgetHours != null) {
         patch['budgetHours'] = parsed.data.budgetHours.toString();
       }
@@ -1371,17 +1449,16 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      const { timekeeperRates, invoices } = await import('@vibe/db/schema');
+      const { staffRateSnapshots, invoices } = await import('@vibe/db/schema');
       const [cost] = await deps.db
         .select({
           c: sql<number>`
             COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE((
-              SELECT ${timekeeperRates.costRateCents}
-              FROM ${timekeeperRates}
-              WHERE ${timekeeperRates.appUserId} = ${timeEntries.appUserId}
-                AND ${timekeeperRates.effectiveStart} <= ${timeEntries.entryDate}
-                AND (${timekeeperRates.effectiveEnd} IS NULL OR ${timekeeperRates.effectiveEnd} >= ${timeEntries.entryDate})
-              ORDER BY ${timekeeperRates.effectiveStart} DESC
+              SELECT ${staffRateSnapshots.costRateCents}
+              FROM ${staffRateSnapshots}
+              WHERE ${staffRateSnapshots.appUserId} = ${timeEntries.appUserId}
+                AND ${staffRateSnapshots.effectiveDate} <= ${timeEntries.entryDate}
+              ORDER BY ${staffRateSnapshots.effectiveDate} DESC
               LIMIT 1
             ), 0)), 0)::bigint
           `,
@@ -1462,6 +1539,193 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         wipHours: Number(wip?.hours ?? 0),
         gapCents: wipCents - fee,
       });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 0050 — engagement assignments (multi-staff). partner_id / manager_id
+  // stay on the engagement row for backwards-compat; this layer adds
+  // additional staff with explicit roles and widens "My Work".
+  // ------------------------------------------------------------------
+  const AssignmentCreateSchema = z.object({
+    appUserId: z.string().uuid(),
+    role: z.enum(['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF']),
+  });
+
+  router.post(
+    '/:id/assignments',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const parsed = AssignmentCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Verify the target user belongs to the same firm.
+      const [user] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, parsed.data.appUserId), eq(appUsers.firmId, session.firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'user_not_found' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(engagementAssignments)
+        .values({
+          engagementId: eng.id,
+          appUserId: parsed.data.appUserId,
+          role: parsed.data.role,
+          assignedById: session.appUserId,
+        })
+        .onConflictDoNothing()
+        .returning({ id: engagementAssignments.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'engagement_assignment',
+        entityId: row?.id ?? null,
+        actorAppUserId: session.appUserId,
+        after: { engagementId: eng.id, ...parsed.data },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ id: row?.id ?? null });
+    },
+  );
+
+  router.delete(
+    '/:id/assignments/:assignmentId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const removed = await deps.db
+        .delete(engagementAssignments)
+        .where(
+          and(
+            eq(engagementAssignments.id, req.params['assignmentId']!),
+            eq(engagementAssignments.engagementId, eng.id),
+          ),
+        )
+        .returning({ id: engagementAssignments.id });
+      if (removed.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'engagement_assignment',
+        entityId: req.params['assignmentId']!,
+        actorAppUserId: session.appUserId,
+        after: { engagementId: eng.id },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // 0050 — retainer lock toggle. When retainer_locked_at is set, time
+  // entries on this engagement are refused (409 retainer_locked from
+  // time-entries POST/PATCH). Lock + unlock are idempotent — second call
+  // is a no-op so the UI doesn't need to read state-before-toggle.
+  // ------------------------------------------------------------------
+  router.post(
+    '/:id/retainer/lock',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const lockedAt = new Date();
+      await deps.db
+        .update(engagements)
+        .set({ retainerLockedAt: lockedAt, updatedAt: lockedAt })
+        .where(eq(engagements.id, eng.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_retainer_lock',
+        entityId: eng.id,
+        actorAppUserId: session.appUserId,
+        after: { retainerLockedAt: lockedAt.toISOString() },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, retainerLockedAt: lockedAt.toISOString() });
+    },
+  );
+
+  router.post(
+    '/:id/retainer/unlock',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(engagements)
+        .set({ retainerLockedAt: null, updatedAt: new Date() })
+        .where(eq(engagements.id, eng.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_retainer_lock',
+        entityId: eng.id,
+        actorAppUserId: session.appUserId,
+        after: { retainerLockedAt: null },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 

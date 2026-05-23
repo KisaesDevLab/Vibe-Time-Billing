@@ -10,6 +10,7 @@ import { and, between, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  adjustments,
   appUsers,
   billingBatchEntries,
   billingBatches,
@@ -35,6 +36,10 @@ const CreateSchema = z.object({
   engagementId: z.string().uuid(),
   periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  // 0050 — kind defaults to STANDARD. A RETAINER batch must declare a
+  // positive target (DB check constraint enforces the invariant).
+  kind: z.enum(['STANDARD', 'RETAINER']).optional(),
+  retainerTargetAmountCents: z.number().int().positive().optional(),
 });
 
 const EntryActionSchema = z.object({
@@ -110,6 +115,17 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         }
       }
 
+      // 0050 — retainer validation. Kind defaults to STANDARD.
+      const kind = parsed.data.kind ?? 'STANDARD';
+      if (kind === 'RETAINER' && !parsed.data.retainerTargetAmountCents) {
+        res.status(400).json({ error: 'retainer_target_required' });
+        return;
+      }
+      if (kind === 'STANDARD' && parsed.data.retainerTargetAmountCents != null) {
+        res.status(400).json({ error: 'standard_batch_no_target' });
+        return;
+      }
+
       const batchId = await deps.db.transaction(async (tx) => {
         const [batch] = await tx
           .insert(billingBatches)
@@ -118,11 +134,15 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
             periodStart: parsed.data.periodStart,
             periodEnd: parsed.data.periodEnd,
             createdById: session.appUserId,
+            kind,
+            retainerTargetAmountCents:
+              kind === 'RETAINER' ? parsed.data.retainerTargetAmountCents! : null,
           })
           .returning({ id: billingBatches.id });
         if (!batch) throw new Error('batch insert failed');
 
-        // Pull unbilled time entries in the period.
+        // Pull unbilled time entries in the period. 0050 — exclude
+        // soft-deleted entries.
         const rows = await tx
           .select({ id: timeEntries.id })
           .from(timeEntries)
@@ -131,6 +151,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
               eq(timeEntries.engagementId, eng.id),
               isNull(timeEntries.billingBatchId),
               between(timeEntries.entryDate, parsed.data.periodStart, parsed.data.periodEnd),
+              sql`${timeEntries.status} <> 'ARCHIVED'`,
             ),
           );
 
@@ -234,17 +255,59 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           hours: timeEntries.hours,
           standardAmountCents: timeEntries.standardAmountCents,
           action: billingBatchEntries.action,
+          appUserId: timeEntries.appUserId,
+          // 0050 — surface timekeeper name + engagement client on each row
+          // so the batch detail UI can render "Staff" and client columns
+          // without a second roundtrip.
+          staffName: appUsers.fullName,
+          description: timeEntries.description,
         })
         .from(billingBatchEntries)
         .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
+        .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
         .where(eq(billingBatchEntries.billingBatchId, batch.id));
+
+      // 0050 — join engagement + client for the batch header.
+      const [eng] = await deps.db
+        .select({
+          id: engagements.id,
+          name: engagements.name,
+          clientId: clients.id,
+          clientName: clients.name,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(engagements.id, batch.engagementId))
+        .limit(1);
 
       const aging = bucketize(
         entries.map((e) => ({ entryDate: e.entryDate, amountCents: e.standardAmountCents })),
         new Date().toISOString().slice(0, 10),
       );
 
-      res.json({ batch, entries, aging });
+      // 0052 — sum existing approved/applied adjustments on this batch
+      // so the UI can show a true "Total to invoice" = INCLUDE sum +
+      // signed adjustment total. Draft/Rejected/Reversed don't apply.
+      const [adjSum] = await deps.db
+        .select({
+          total: sql<number>`COALESCE(SUM(${adjustments.totalAmountCents}), 0)`.as('total'),
+        })
+        .from(adjustments)
+        .where(
+          and(
+            eq(adjustments.billingBatchId, batch.id),
+            inArray(adjustments.status, ['APPROVED', 'APPLIED']),
+          ),
+        );
+      const adjustmentTotalCents = Number(adjSum?.total ?? 0);
+
+      res.json({
+        batch,
+        entries,
+        aging,
+        engagement: eng ?? null,
+        adjustmentTotalCents,
+      });
     },
   );
 
@@ -978,12 +1041,24 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      // 0050 — accept clientId, engagementId, clientOwnerId filters.
+      const conds = [eq(clients.firmId, session.firmId), eq(engagements.status, 'ACTIVE')];
+      const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+      const engagementId =
+        typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
+      const clientOwnerId =
+        typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+      if (clientId) conds.push(eq(clients.id, clientId));
+      if (engagementId) conds.push(eq(engagements.id, engagementId));
+      if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
+
       const rows = await deps.db
         .select({
           engagementId: engagements.id,
           engagementName: engagements.name,
           clientId: clients.id,
           clientName: clients.name,
+          clientOwnerId: clients.partnerInChargeId,
           hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
           amountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
           entryCount: sql<number>`COUNT(${timeEntries.id})`,
@@ -993,9 +1068,14 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         .innerJoin(clients, eq(clients.id, engagements.clientId))
         .leftJoin(
           timeEntries,
-          and(eq(timeEntries.engagementId, engagements.id), isNull(timeEntries.billingBatchId)),
+          and(
+            eq(timeEntries.engagementId, engagements.id),
+            isNull(timeEntries.billingBatchId),
+            // 0050 — exclude soft-deleted entries.
+            sql`${timeEntries.status} <> 'ARCHIVED'`,
+          ),
         )
-        .where(and(eq(clients.firmId, session.firmId), eq(engagements.status, 'ACTIVE')))
+        .where(and(...conds))
         .groupBy(engagements.id, engagements.name, clients.id, clients.name);
       res.json({
         asOf: new Date().toISOString().slice(0, 10),
@@ -1005,6 +1085,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
             engagementName: r.engagementName,
             clientId: r.clientId,
             clientName: r.clientName,
+            clientOwnerId: r.clientOwnerId,
             hours: Number(r.hours),
             amountCents: Number(r.amountCents),
             entryCount: Number(r.entryCount),
@@ -1013,6 +1094,330 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           .filter((r) => r.entryCount > 0)
           .sort((a, b) => b.amountCents - a.amountCents),
       });
+    },
+  );
+
+  // 0050 — bulk create billing batches (one per engagement) in a single
+  // transaction. All-or-nothing: if any insert fails we roll back the
+  // whole set so the caller sees a clean state.
+  const BulkBatchSchema = z.object({
+    engagements: z
+      .array(
+        z.object({
+          engagementId: z.string().uuid(),
+          periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        }),
+      )
+      .min(1)
+      .max(200),
+  });
+
+  router.post(
+    '/bulk',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = BulkBatchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(201).json({ ok: true, created: 0, ids: [] });
+        return;
+      }
+      // Scope check: each engagement must belong to a firm-owned client.
+      const ids = parsed.data.engagements.map((e) => e.engagementId);
+      const allowed = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(inArray(engagements.id, ids), eq(clients.firmId, session.firmId)));
+      const allowedSet = new Set(allowed.map((r) => r.id));
+      const filtered = parsed.data.engagements.filter((e) => allowedSet.has(e.engagementId));
+      if (filtered.length === 0) {
+        res.status(404).json({ error: 'no_valid_engagements' });
+        return;
+      }
+      const created = await deps.db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(billingBatches)
+          .values(
+            filtered.map((e) => ({
+              engagementId: e.engagementId,
+              periodStart: e.periodStart,
+              periodEnd: e.periodEnd,
+              createdById: session.appUserId,
+            })),
+          )
+          .returning({ id: billingBatches.id, engagementId: billingBatches.engagementId });
+        // 0050 — for each created batch, pull unbilled (non-archived)
+        // time entries in the period and attach them. Mirrors the
+        // single-batch POST so "Bill selected" produces batches with
+        // their WIP, not empty shells.
+        for (const batch of rows) {
+          const req = filtered.find((e) => e.engagementId === batch.engagementId);
+          if (!req) continue;
+          const entries = await tx
+            .select({ id: timeEntries.id })
+            .from(timeEntries)
+            .where(
+              and(
+                eq(timeEntries.engagementId, batch.engagementId),
+                isNull(timeEntries.billingBatchId),
+                between(timeEntries.entryDate, req.periodStart, req.periodEnd),
+                sql`${timeEntries.status} <> 'ARCHIVED'`,
+              ),
+            );
+          if (entries.length > 0) {
+            await tx.insert(billingBatchEntries).values(
+              entries.map((r) => ({
+                billingBatchId: batch.id,
+                timeEntryId: r.id,
+                action: 'INCLUDE' as const,
+              })),
+            );
+            for (const r of entries) {
+              await tx
+                .update(timeEntries)
+                .set({ billingBatchId: batch.id })
+                .where(eq(timeEntries.id, r.id));
+            }
+          }
+        }
+        return rows;
+      });
+      for (const row of created) {
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'billing_batch',
+          entityId: row.id,
+          actorAppUserId: session.appUserId,
+          after: { engagementId: row.engagementId, source: 'bulk' },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      }
+      res.status(201).json({ ok: true, created: created.length, ids: created.map((r) => r.id) });
+    },
+  );
+
+  // 0052 — auto-adjust to target. User declares an invoice total; the
+  // server creates a single signed adjustment whose magnitude is the
+  // delta between the current INCLUDE-sum and the target. Direction
+  // (write-down vs write-up) is derived. Allocation defaults to
+  // PRO_RATA_BY_VALUE. Reason code is required.
+  const SetTargetSchema = z.object({
+    targetAmountCents: z.number().int().nonnegative(),
+    reasonCodeId: z.string().uuid(),
+    notes: z.string().max(2000).optional(),
+    allocationMethod: z
+      .enum([
+        'SPECIFIC_ENTRIES',
+        'PRO_RATA_BY_VALUE',
+        'PRO_RATA_BY_HOURS',
+        'PARTNER_ABSORBS',
+        'HIERARCHICAL_CASCADE',
+        'CUSTOM_WEIGHTED',
+      ])
+      .optional(),
+  });
+
+  router.post(
+    '/:id/set-target',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = SetTargetSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ ok: true, deltaCents: 0 });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .where(eq(billingBatches.id, req.params['id']!))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Compute current INCLUDE total + signed adjustment total.
+      const [includeSum] = await deps.db
+        .select({
+          total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as('total'),
+        })
+        .from(billingBatchEntries)
+        .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
+        .where(
+          and(
+            eq(billingBatchEntries.billingBatchId, batch.id),
+            eq(billingBatchEntries.action, 'INCLUDE'),
+          ),
+        );
+      const [adjSum] = await deps.db
+        .select({
+          total: sql<number>`COALESCE(SUM(${adjustments.totalAmountCents}), 0)`.as('total'),
+        })
+        .from(adjustments)
+        .where(
+          and(
+            eq(adjustments.billingBatchId, batch.id),
+            inArray(adjustments.status, ['APPROVED', 'APPLIED']),
+          ),
+        );
+      const includeCents = Number(includeSum?.total ?? 0);
+      const currentBilled = includeCents + Number(adjSum?.total ?? 0);
+      // Signed delta — negative means write-down, positive means write-up.
+      const deltaCents = parsed.data.targetAmountCents - currentBilled;
+      if (deltaCents === 0) {
+        res.json({ ok: true, deltaCents: 0, message: 'already at target' });
+        return;
+      }
+      const [adj] = await deps.db
+        .insert(adjustments)
+        .values({
+          billingBatchId: batch.id,
+          method: 'FEE',
+          allocationMethod: parsed.data.allocationMethod ?? 'PRO_RATA_BY_VALUE',
+          totalAmountCents: deltaCents,
+          reasonCodeId: parsed.data.reasonCodeId,
+          notes: parsed.data.notes ?? null,
+          status: 'APPROVED',
+          createdById: session.appUserId,
+          approverId: session.appUserId,
+          approvedAt: new Date(),
+        })
+        .returning({ id: adjustments.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'adjustment',
+        entityId: adj?.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          source: 'set_target',
+          targetAmountCents: parsed.data.targetAmountCents,
+          deltaCents,
+          previousBilledCents: currentBilled,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({
+        ok: true,
+        adjustmentId: adj?.id,
+        deltaCents,
+        direction: deltaCents < 0 ? 'WRITE_DOWN' : 'WRITE_UP',
+      });
+    },
+  );
+
+  // 0052 — save invoice composition on the batch. UI editor allows the
+  // CPA to set a custom invoice memo and split the bill into N line
+  // items. We validate that line items sum to the current billed total
+  // (INCLUDE + signed adjustments) so the invoice can't render with a
+  // mismatch.
+  const InvoiceCompositionSchema = z.object({
+    invoiceDescription: z.string().max(4000).nullable().optional(),
+    invoiceLineItems: z
+      .array(
+        z.object({
+          description: z.string().min(1).max(500),
+          amountCents: z.number().int(),
+        }),
+      )
+      .max(50)
+      .nullable()
+      .optional(),
+  });
+
+  router.patch(
+    '/:id/invoice-composition',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = InvoiceCompositionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .where(eq(billingBatches.id, req.params['id']!))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // If line items are present, verify the sum matches billed total.
+      if (parsed.data.invoiceLineItems && parsed.data.invoiceLineItems.length > 0) {
+        const lineSum = parsed.data.invoiceLineItems.reduce((s, l) => s + l.amountCents, 0);
+        const [includeSum] = await deps.db
+          .select({
+            total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as('total'),
+          })
+          .from(billingBatchEntries)
+          .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
+          .where(
+            and(
+              eq(billingBatchEntries.billingBatchId, batch.id),
+              eq(billingBatchEntries.action, 'INCLUDE'),
+            ),
+          );
+        const [adjSum] = await deps.db
+          .select({
+            total: sql<number>`COALESCE(SUM(${adjustments.totalAmountCents}), 0)`.as('total'),
+          })
+          .from(adjustments)
+          .where(
+            and(
+              eq(adjustments.billingBatchId, batch.id),
+              inArray(adjustments.status, ['APPROVED', 'APPLIED']),
+            ),
+          );
+        const billed = Number(includeSum?.total ?? 0) + Number(adjSum?.total ?? 0);
+        if (lineSum !== billed) {
+          res.status(422).json({
+            error: 'lines_dont_match_billed',
+            lineSum,
+            billed,
+            delta: billed - lineSum,
+          });
+          return;
+        }
+      }
+      const patch: Record<string, unknown> = {};
+      if (parsed.data.invoiceDescription !== undefined) {
+        patch['invoiceDescription'] = parsed.data.invoiceDescription;
+      }
+      if (parsed.data.invoiceLineItems !== undefined) {
+        patch['invoiceLineItems'] = parsed.data.invoiceLineItems;
+      }
+      if (Object.keys(patch).length === 0) {
+        res.status(400).json({ error: 'no_fields' });
+        return;
+      }
+      await deps.db.update(billingBatches).set(patch).where(eq(billingBatches.id, batch.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'billing_batch_invoice_composition',
+        entityId: batch.id,
+        actorAppUserId: session.appUserId,
+        after: patch,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 

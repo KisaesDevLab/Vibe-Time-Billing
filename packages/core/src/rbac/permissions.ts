@@ -64,6 +64,10 @@ export const PERMISSION_KEYS = [
   'payment:write',
   'payment:refund',
 
+  // Credit memos (0056). Read = list/get; write = create + apply + void.
+  'credit:read',
+  'credit:write',
+
   // Reporting
   'report:realization:read',
   'report:utilization:read',
@@ -134,6 +138,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'payment:read',
     'payment:write',
     'payment:refund',
+    'credit:read',
+    'credit:write',
     'report:realization:read',
     'report:utilization:read',
     'report:profitability:read',
@@ -171,6 +177,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'invoice:read',
     'invoice:write',
     'payment:read',
+    'credit:read',
+    'credit:write',
     'report:realization:read',
     'report:utilization:read',
     'report:profitability:read',

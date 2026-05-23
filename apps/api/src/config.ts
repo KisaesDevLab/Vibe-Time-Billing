@@ -50,6 +50,10 @@ const Schema = z.object({
   // Provider secrets — all optional; presence drives wiring in server.ts.
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  // 0055 — surfaced to the staff Receive-Payment page via /payments/config
+  // so Stripe Elements can initialize without baking the key into the Vite
+  // build (rotation would otherwise require a redeploy).
+  STRIPE_PUBLISHABLE_KEY: z.string().optional(),
   AI_CLOUD_API_KEY: z.string().optional(),
   AI_CLOUD_MODEL: z.string().default('claude-opus-4-7'),
   AI_LOCAL_URL: z.string().default('http://localhost:11434'),

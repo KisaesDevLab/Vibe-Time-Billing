@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Rate management endpoints (Phase 7). The effective-dated history view
-// lets staff see every rate that resolved for a given timekeeper over
-// time — useful for audit/reconciliation of historical invoices.
+// Rate management endpoints (Phase 7, rewritten for 0054 rate codes).
+//
+// The flat /rates/timekeeper POST is gone — snapshot creation now lives
+// under /admin/users/:id/rate-snapshots (append-only). Bulk update,
+// loaded margin, resolve-debug, history, and the override endpoints
+// still live here and have been rewired to the new snapshot model.
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -15,24 +18,20 @@ import {
   clients,
   engagementRateOverrides,
   engagements,
+  rateCodes,
   serviceLineRates,
   serviceLines,
-  timekeeperRates,
+  staffRateSnapshotEntries,
+  staffRateSnapshots,
 } from '@vibe/db/schema';
 import { resolveRate, type RateCandidate } from '@vibe/core/rates';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-const TimekeeperRateSchema = z.object({
-  appUserId: z.string().uuid(),
-  billRateCents: z.number().int().positive(),
-  costRateCents: z.number().int().nonnegative().optional(),
-  effectiveStart: z.string().regex(DATE_RE),
-});
 
 const ClientOverrideSchema = z.object({
   clientId: z.string().uuid(),
@@ -63,14 +62,18 @@ export interface RateRoutesDeps extends RbacDeps {
 
 export function createRateRouter(deps: RateRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
+  // -----------------------------------------------------------------
+  // GET /history — staff snapshot rows + per-level overrides for one user
+  // -----------------------------------------------------------------
   router.get(
     '/history',
     requirePermission(deps, 'rate:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
       if (!deps.db) {
-        res.json({ timekeeper: [], client: [], engagement: [], serviceLine: [] });
+        res.json({ snapshots: [], client: [], engagement: [], serviceLine: [] });
         return;
       }
       const appUserId = typeof req.query['appUserId'] === 'string' ? req.query['appUserId'] : null;
@@ -79,7 +82,6 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         return;
       }
 
-      // Confirm the user belongs to the requester's firm.
       const [user] = await deps.db
         .select({ id: appUsers.id })
         .from(appUsers)
@@ -90,11 +92,25 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         return;
       }
 
-      const tk = await deps.db
-        .select()
-        .from(timekeeperRates)
-        .where(eq(timekeeperRates.appUserId, appUserId))
-        .orderBy(desc(timekeeperRates.effectiveStart));
+      // Snapshots flattened with one row per (snapshot, code).
+      const snap = await deps.db
+        .select({
+          snapshotId: staffRateSnapshots.id,
+          effectiveDate: staffRateSnapshots.effectiveDate,
+          costRateCents: staffRateSnapshots.costRateCents,
+          rateCodeId: staffRateSnapshotEntries.rateCodeId,
+          code: rateCodes.code,
+          description: rateCodes.description,
+          billRateCents: staffRateSnapshotEntries.billRateCents,
+        })
+        .from(staffRateSnapshots)
+        .innerJoin(
+          staffRateSnapshotEntries,
+          eq(staffRateSnapshotEntries.snapshotId, staffRateSnapshots.id),
+        )
+        .innerJoin(rateCodes, eq(rateCodes.id, staffRateSnapshotEntries.rateCodeId))
+        .where(eq(staffRateSnapshots.appUserId, appUserId))
+        .orderBy(desc(staffRateSnapshots.effectiveDate), rateCodes.sortOrder);
 
       const cl = await deps.db
         .select({
@@ -142,10 +158,13 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         .where(eq(serviceLines.firmId, session.firmId))
         .orderBy(desc(serviceLineRates.effectiveStart));
 
-      res.json({ timekeeper: tk, client: cl, engagement: eng, serviceLine: sl });
+      res.json({ snapshots: snap, client: cl, engagement: eng, serviceLine: sl });
     },
   );
 
+  // -----------------------------------------------------------------
+  // POST /bulk-update/preview — proposed StandardRate-only changes
+  // -----------------------------------------------------------------
   router.post(
     '/bulk-update/preview',
     requirePermission(deps, 'rate:read'),
@@ -164,111 +183,118 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
       const userIdFilter = Array.isArray(body.appUserIds)
         ? body.appUserIds.filter((x): x is string => typeof x === 'string')
         : null;
-      const currentConds = [eq(appUsers.firmId, session.firmId)];
-      if (userIdFilter && userIdFilter.length > 0) {
-        // intentionally restrict to provided users in firm scope
-      }
-      const users = await deps.db
-        .select({ id: appUsers.id, fullName: appUsers.fullName })
-        .from(appUsers)
-        .where(and(...currentConds));
-      const rates = await deps.db.select().from(timekeeperRates);
-      const byUser = new Map<string, (typeof rates)[number][]>();
-      for (const r of rates) {
-        const list = byUser.get(r.appUserId) ?? [];
-        list.push(r);
-        byUser.set(r.appUserId, list);
-      }
-      const today = new Date().toISOString().slice(0, 10);
-      const rows = users
-        .filter((u) => !userIdFilter || userIdFilter.includes(u.id))
-        .map((u) => {
-          const userRates = byUser.get(u.id) ?? [];
-          const current = userRates
-            .filter(
-              (r) => r.effectiveStart <= today && (!r.effectiveEnd || r.effectiveEnd >= today),
-            )
-            .sort((a, b) => (a.effectiveStart < b.effectiveStart ? 1 : -1))[0];
-          if (!current) return null;
-          const currentCents = current.billRateCents;
-          const newCents = Math.round(currentCents * (1 + pct / 100));
+
+      const standardRows = await currentStandardRateRows(deps.db, session.firmId);
+      const rows = standardRows
+        .filter((r) => !userIdFilter || userIdFilter.includes(r.appUserId))
+        .map((r) => {
+          const newCents = Math.round(r.billRateCents * (1 + pct / 100));
           return {
-            appUserId: u.id,
-            fullName: u.fullName,
-            currentBillRateCents: currentCents,
+            appUserId: r.appUserId,
+            fullName: r.fullName,
+            currentBillRateCents: r.billRateCents,
             proposedBillRateCents: newCents,
-            deltaCents: newCents - currentCents,
+            deltaCents: newCents - r.billRateCents,
           };
-        })
-        .filter((r): r is NonNullable<typeof r> => r !== null);
+        });
       res.json({ rows, pctChange: pct });
     },
   );
 
+  // -----------------------------------------------------------------
+  // POST /bulk-update/commit — opens a new snapshot per user with the
+  // multiplied StandardRate; non-StandardRate entries copy forward.
+  // -----------------------------------------------------------------
   router.post(
-    '/timekeeper',
+    '/bulk-update/commit',
     requirePermission(deps, 'rate:write'),
     async (req: Request, res: Response) => {
-      const parsed = TimekeeperRateSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload' });
-        return;
-      }
       const session = req.staffSession!;
       if (!deps.db) {
-        res.status(201).json({ ok: true });
+        res.json({ ok: true, updated: 0 });
         return;
       }
-      const [user] = await deps.db
-        .select({ id: appUsers.id })
-        .from(appUsers)
-        .where(and(eq(appUsers.id, parsed.data.appUserId), eq(appUsers.firmId, session.firmId)))
-        .limit(1);
-      if (!user) {
-        res.status(404).json({ error: 'user_not_found' });
+      const body = req.body as {
+        pctChange?: unknown;
+        effectiveStart?: unknown;
+        appUserIds?: unknown;
+      };
+      const pct = typeof body.pctChange === 'number' ? body.pctChange : NaN;
+      const effectiveDate = typeof body.effectiveStart === 'string' ? body.effectiveStart : null;
+      if (!Number.isFinite(pct) || !effectiveDate || !DATE_RE.test(effectiveDate)) {
+        res.status(400).json({ error: 'pct_change_and_effective_start_required' });
         return;
       }
-      const newId = await deps.db.transaction(async (tx) => {
-        // Cap the prior open-ended rate (effective_end is NULL) at the day
-        // before the new effective_start.
-        const dayBefore = new Date(
-          Date.parse(parsed.data.effectiveStart + 'T00:00:00Z') - 86_400_000,
-        )
-          .toISOString()
-          .slice(0, 10);
-        await tx
-          .update(timekeeperRates)
-          .set({ effectiveEnd: dayBefore })
-          .where(
-            and(
-              eq(timekeeperRates.appUserId, parsed.data.appUserId),
-              isNull(timekeeperRates.effectiveEnd),
-            ),
-          );
-        const [row] = await tx
-          .insert(timekeeperRates)
-          .values({
-            appUserId: parsed.data.appUserId,
-            billRateCents: parsed.data.billRateCents,
-            costRateCents: parsed.data.costRateCents ?? null,
-            effectiveStart: parsed.data.effectiveStart,
-          })
-          .returning({ id: timekeeperRates.id });
-        return row?.id;
-      });
+      const userIdFilter = Array.isArray(body.appUserIds)
+        ? body.appUserIds.filter((x): x is string => typeof x === 'string')
+        : null;
+
+      const standardRows = await currentStandardRateRows(deps.db, session.firmId);
+      const targets = standardRows.filter(
+        (r) => !userIdFilter || userIdFilter.includes(r.appUserId),
+      );
+      let updated = 0;
+      for (const r of targets) {
+        const newStandard = Math.round(r.billRateCents * (1 + pct / 100));
+        try {
+          await createSnapshot(deps.db, {
+            appUserId: r.appUserId,
+            effectiveDate,
+            costRateCents: r.costRateCents,
+            entriesFromPrior: true,
+            standardRateCodeId: r.standardRateCodeId,
+            standardBillRateCents: newStandard,
+          });
+          updated++;
+        } catch (err) {
+          logger.warn({ err, userId: r.appUserId }, 'bulk snapshot insert failed');
+        }
+      }
       await emitAudit(deps.db, {
-        action: 'CREATE',
-        entityType: 'timekeeper_rate',
-        entityId: newId,
+        action: 'UPDATE',
+        entityType: 'staff_rate_snapshot',
         actorAppUserId: session.appUserId,
-        after: parsed.data,
+        after: { kind: 'bulk_update', pctChange: pct, effectiveDate, updated },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.status(201).json({ id: newId });
+      res.json({ ok: true, updated });
     },
   );
 
+  // -----------------------------------------------------------------
+  // GET /loaded-margin — current StandardRate bill vs snapshot cost
+  // -----------------------------------------------------------------
+  router.get(
+    '/loaded-margin',
+    requirePermission(deps, 'rate:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await currentStandardRateRows(deps.db, session.firmId);
+      const items = rows.map((r) => {
+        const bill = r.billRateCents;
+        const cost = r.costRateCents;
+        const marginPct = cost == null || bill <= 0 ? null : (bill - cost) / bill;
+        return {
+          appUserId: r.appUserId,
+          fullName: r.fullName,
+          billCents: bill,
+          costCents: cost,
+          marginPct,
+          effectiveStart: r.effectiveDate,
+        };
+      });
+      res.json({ items });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // client-override / engagement-override / service-line — unchanged
+  // -----------------------------------------------------------------
   router.post(
     '/client-override',
     requirePermission(deps, 'rate:write'),
@@ -324,7 +350,6 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
-      // Scope: client must belong to firm.
       const [row] = await deps.db
         .select({ id: clientRateOverrides.id, clientId: clientRateOverrides.clientId })
         .from(clientRateOverrides)
@@ -571,119 +596,9 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
     },
   );
 
-  router.post(
-    '/bulk-update/commit',
-    requirePermission(deps, 'rate:write'),
-    async (req: Request, res: Response) => {
-      const session = req.staffSession!;
-      if (!deps.db) {
-        res.json({ ok: true, updated: 0 });
-        return;
-      }
-      const body = req.body as {
-        pctChange?: unknown;
-        effectiveStart?: unknown;
-        appUserIds?: unknown;
-      };
-      const pct = typeof body.pctChange === 'number' ? body.pctChange : NaN;
-      const effectiveStart = typeof body.effectiveStart === 'string' ? body.effectiveStart : null;
-      if (!Number.isFinite(pct) || !effectiveStart || !DATE_RE.test(effectiveStart)) {
-        res.status(400).json({ error: 'pct_change_and_effective_start_required' });
-        return;
-      }
-      const userIdFilter = Array.isArray(body.appUserIds)
-        ? body.appUserIds.filter((x): x is string => typeof x === 'string')
-        : null;
-      const users = await deps.db
-        .select({ id: appUsers.id })
-        .from(appUsers)
-        .where(eq(appUsers.firmId, session.firmId));
-      const inScope = users
-        .map((u) => u.id)
-        .filter((id) => !userIdFilter || userIdFilter.includes(id));
-      const dayBefore = new Date(Date.parse(effectiveStart + 'T00:00:00Z') - 86_400_000)
-        .toISOString()
-        .slice(0, 10);
-      let updated = 0;
-      for (const userId of inScope) {
-        const [current] = await deps.db
-          .select()
-          .from(timekeeperRates)
-          .where(and(eq(timekeeperRates.appUserId, userId), isNull(timekeeperRates.effectiveEnd)))
-          .orderBy(desc(timekeeperRates.effectiveStart))
-          .limit(1);
-        if (!current) continue;
-        const newRate = Math.round(Number(current.billRateCents) * (1 + pct / 100));
-        await deps.db.transaction(async (tx) => {
-          await tx
-            .update(timekeeperRates)
-            .set({ effectiveEnd: dayBefore })
-            .where(eq(timekeeperRates.id, current.id));
-          await tx.insert(timekeeperRates).values({
-            appUserId: userId,
-            billRateCents: newRate,
-            costRateCents: current.costRateCents ?? null,
-            effectiveStart,
-          });
-        });
-        updated++;
-      }
-      await emitAudit(deps.db, {
-        action: 'UPDATE',
-        entityType: 'timekeeper_rate',
-        actorAppUserId: session.appUserId,
-        after: { kind: 'bulk_update', pctChange: pct, effectiveStart, updated },
-        ip: clientIp(req),
-        userAgent: req.header('user-agent') ?? null,
-      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.json({ ok: true, updated });
-    },
-  );
-
-  router.get(
-    '/loaded-margin',
-    requirePermission(deps, 'rate:read'),
-    async (req: Request, res: Response) => {
-      const session = req.staffSession!;
-      if (!deps.db) {
-        res.json({ items: [] });
-        return;
-      }
-      // Loaded margin = (bill - cost) / bill for the current open-ended
-      // timekeeper rate. We list every staff user with both rates set.
-      const rows = await deps.db
-        .select({
-          appUserId: appUsers.id,
-          fullName: appUsers.fullName,
-          billCents: timekeeperRates.billRateCents,
-          costCents: timekeeperRates.costRateCents,
-          effectiveStart: timekeeperRates.effectiveStart,
-        })
-        .from(timekeeperRates)
-        .innerJoin(appUsers, eq(appUsers.id, timekeeperRates.appUserId))
-        .where(and(eq(appUsers.firmId, session.firmId), isNull(timekeeperRates.effectiveEnd)));
-      const items = rows.map((r) => {
-        const bill = Number(r.billCents ?? 0);
-        const cost = r.costCents == null ? null : Number(r.costCents);
-        const marginPct = cost == null || bill <= 0 ? null : (bill - cost) / bill;
-        return {
-          appUserId: r.appUserId,
-          fullName: r.fullName,
-          billCents: bill,
-          costCents: cost,
-          marginPct,
-          effectiveStart: r.effectiveStart,
-        };
-      });
-      res.json({ items });
-    },
-  );
-
-  // Phase 7 #17 — rate resolution debug panel.
-  // Given (appUserId, engagementId, serviceDate), load every candidate
-  // the time-entry POST would, run resolveRate, return resolved level +
-  // candidates considered + trace. Partners ask "why is this rate $X" —
-  // this endpoint answers.
+  // -----------------------------------------------------------------
+  // GET /resolve-debug — replays resolver for (user, engagement, date)
+  // -----------------------------------------------------------------
   router.get(
     '/resolve-debug',
     requirePermission(deps, 'rate:read'),
@@ -700,7 +615,6 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         res.status(400).json({ error: 'appUserId_engagementId_serviceDate_required' });
         return;
       }
-      // Scope: user must belong to firm and engagement's client must too.
       const [user] = await deps.db
         .select({ id: appUsers.id })
         .from(appUsers)
@@ -716,6 +630,7 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
           clientId: engagements.clientId,
           name: engagements.name,
           rateMultiplierBps: engagements.rateMultiplierBps,
+          defaultRateCodeId: engagements.defaultRateCodeId,
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))
@@ -727,18 +642,33 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
       }
 
       const candidates: RateCandidate[] = [];
-      const tk = await deps.db
-        .select()
-        .from(timekeeperRates)
-        .where(eq(timekeeperRates.appUserId, appUserId));
-      for (const r of tk) {
+      const snap = await deps.db
+        .select({
+          effectiveDate: staffRateSnapshots.effectiveDate,
+          costRateCents: staffRateSnapshots.costRateCents,
+          rateCodeId: staffRateSnapshotEntries.rateCodeId,
+          billRateCents: staffRateSnapshotEntries.billRateCents,
+          code: rateCodes.code,
+        })
+        .from(staffRateSnapshots)
+        .innerJoin(
+          staffRateSnapshotEntries,
+          eq(staffRateSnapshotEntries.snapshotId, staffRateSnapshots.id),
+        )
+        .innerJoin(rateCodes, eq(rateCodes.id, staffRateSnapshotEntries.rateCodeId))
+        .where(
+          and(eq(staffRateSnapshots.appUserId, appUserId), eq(rateCodes.firmId, session.firmId)),
+        );
+      for (const r of snap) {
         candidates.push({
-          level: 'timekeeper',
+          level: 'staff_rate',
           appUserId,
+          rateCodeId: r.rateCodeId,
+          isStandardCode: r.code === 'StandardRate',
           billRateCents: r.billRateCents,
           costRateCents: r.costRateCents ?? null,
-          effectiveStart: r.effectiveStart,
-          effectiveEnd: r.effectiveEnd ?? null,
+          effectiveStart: r.effectiveDate,
+          effectiveEnd: null,
         });
       }
       const cl = await deps.db
@@ -785,6 +715,7 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         engagementId,
         clientId: eng.clientId,
         serviceLineId: null,
+        rateCodeId: eng.defaultRateCodeId ?? null,
         candidates,
         firmDefaultBillRateCents: 0,
       });
@@ -796,6 +727,7 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
           id: eng.id,
           name: eng.name,
           rateMultiplierBps: multiplierBps,
+          defaultRateCodeId: eng.defaultRateCodeId,
         },
         effectiveRateCents,
         candidates,
@@ -806,10 +738,157 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
   return router;
 }
 
+// ---------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------
+
+interface CurrentStandardRow {
+  appUserId: string;
+  fullName: string;
+  billRateCents: number;
+  costRateCents: number | null;
+  effectiveDate: string;
+  standardRateCodeId: string;
+}
+
+async function currentStandardRateRows(
+  db: Database,
+  firmId: string,
+): Promise<CurrentStandardRow[]> {
+  // For each staff user, find the latest snapshot (effective_date <= today)
+  // and its StandardRate entry. SQL-side via a window function would scale
+  // better, but firms are small enough that a per-user lookup is fine.
+  const today = new Date().toISOString().slice(0, 10);
+  const users = await db
+    .select({ id: appUsers.id, fullName: appUsers.fullName })
+    .from(appUsers)
+    .where(eq(appUsers.firmId, firmId));
+  const [stdCode] = await db
+    .select({ id: rateCodes.id })
+    .from(rateCodes)
+    .where(and(eq(rateCodes.firmId, firmId), eq(rateCodes.code, 'StandardRate')))
+    .limit(1);
+  if (!stdCode) return [];
+  const out: CurrentStandardRow[] = [];
+  for (const u of users) {
+    const [snap] = await db
+      .select({
+        id: staffRateSnapshots.id,
+        effectiveDate: staffRateSnapshots.effectiveDate,
+        costRateCents: staffRateSnapshots.costRateCents,
+      })
+      .from(staffRateSnapshots)
+      .where(
+        and(
+          eq(staffRateSnapshots.appUserId, u.id),
+          sql`${staffRateSnapshots.effectiveDate} <= ${today}`,
+        ),
+      )
+      .orderBy(desc(staffRateSnapshots.effectiveDate))
+      .limit(1);
+    if (!snap) continue;
+    const [entry] = await db
+      .select({ billRateCents: staffRateSnapshotEntries.billRateCents })
+      .from(staffRateSnapshotEntries)
+      .where(
+        and(
+          eq(staffRateSnapshotEntries.snapshotId, snap.id),
+          eq(staffRateSnapshotEntries.rateCodeId, stdCode.id),
+        ),
+      )
+      .limit(1);
+    if (!entry) continue;
+    out.push({
+      appUserId: u.id,
+      fullName: u.fullName,
+      billRateCents: entry.billRateCents,
+      costRateCents: snap.costRateCents ?? null,
+      effectiveDate: snap.effectiveDate,
+      standardRateCodeId: stdCode.id,
+    });
+  }
+  return out;
+}
+
+/**
+ * Append-only snapshot creation. When `entriesFromPrior` is true the new
+ * snapshot copies forward every entry from the immediately-prior snapshot
+ * for this user, with the StandardRate entry overridden by
+ * `standardBillRateCents`. Used by bulk-update.
+ *
+ * For the regular per-user snapshot create flow (UserDetail UI), pass
+ * `entries` directly and leave `entriesFromPrior=false`.
+ */
+export async function createSnapshot(
+  db: Database,
+  args: {
+    appUserId: string;
+    effectiveDate: string;
+    costRateCents: number | null;
+    entries?: { rateCodeId: string; billRateCents: number }[];
+    entriesFromPrior?: boolean;
+    standardRateCodeId?: string;
+    standardBillRateCents?: number;
+  },
+): Promise<string> {
+  return db.transaction(async (tx) => {
+    const [snap] = await tx
+      .insert(staffRateSnapshots)
+      .values({
+        appUserId: args.appUserId,
+        effectiveDate: args.effectiveDate,
+        costRateCents: args.costRateCents,
+      })
+      .returning({ id: staffRateSnapshots.id });
+    if (!snap) throw new Error('snapshot_insert_failed');
+    let entries = args.entries ?? [];
+    if (args.entriesFromPrior) {
+      const prior = await tx
+        .select({
+          id: staffRateSnapshots.id,
+        })
+        .from(staffRateSnapshots)
+        .where(
+          and(
+            eq(staffRateSnapshots.appUserId, args.appUserId),
+            sql`${staffRateSnapshots.effectiveDate} < ${args.effectiveDate}`,
+          ),
+        )
+        .orderBy(desc(staffRateSnapshots.effectiveDate))
+        .limit(1);
+      const priorId = prior[0]?.id;
+      if (priorId) {
+        const priorEntries = await tx
+          .select({
+            rateCodeId: staffRateSnapshotEntries.rateCodeId,
+            billRateCents: staffRateSnapshotEntries.billRateCents,
+          })
+          .from(staffRateSnapshotEntries)
+          .where(eq(staffRateSnapshotEntries.snapshotId, priorId));
+        entries = priorEntries.map((e) =>
+          args.standardRateCodeId === e.rateCodeId && args.standardBillRateCents != null
+            ? { rateCodeId: e.rateCodeId, billRateCents: args.standardBillRateCents }
+            : e,
+        );
+      } else if (args.standardRateCodeId && args.standardBillRateCents != null) {
+        entries = [
+          { rateCodeId: args.standardRateCodeId, billRateCents: args.standardBillRateCents },
+        ];
+      }
+    }
+    if (entries.length > 0) {
+      await tx.insert(staffRateSnapshotEntries).values(
+        entries.map((e) => ({
+          snapshotId: snap.id,
+          rateCodeId: e.rateCodeId,
+          billRateCents: e.billRateCents,
+        })),
+      );
+    }
+    return snap.id;
+  });
+}
+
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
 }
-
-// Silence unused-import warnings — `or`, `sql` are used in future filters.
-void or;
-void sql;

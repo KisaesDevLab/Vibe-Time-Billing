@@ -14,11 +14,9 @@ let cached: AnyBrowser | null = null;
 
 async function getBrowser(): Promise<AnyBrowser> {
   if (cached) return cached;
-  // @ts-expect-error - puppeteer is an optional runtime dependency wired in
-  // the production Docker image. Dev environments may not have it installed.
   const puppeteer = await import('puppeteer');
   cached = await puppeteer.default.launch({
-    headless: 'new',
+    headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     executablePath: process.env['PUPPETEER_EXECUTABLE_PATH'] || undefined,
   });

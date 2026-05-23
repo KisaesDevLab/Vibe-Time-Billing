@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   AiPanel,
@@ -39,13 +40,19 @@ interface WorkCode {
 interface TimeEntry {
   id: string;
   engagementId: string;
+  engagementName?: string;
+  clientId?: string;
+  clientName?: string;
   workCodeId?: string | null;
   entryDate: string;
   hours: string;
   standardAmountCents: number;
   billableFlag: boolean;
   inScopeFlag: boolean;
+  outOfScopeOverride?: boolean;
   description: string;
+  lockedAt?: string | null;
+  billingBatchId?: string | null;
 }
 
 interface DayTotal {
@@ -188,6 +195,31 @@ export function TimeEntryPage(): JSX.Element {
 // a later sprint; localStorage is the v1 of this.
 const LAST_CLIENT_KEY = '__vibe_last_client_id';
 
+// 0050 — inline edit input style for the entries table.
+const inlineInputStyle: React.CSSProperties = {
+  padding: '4px 6px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 13,
+  width: 80,
+  boxSizing: 'border-box',
+};
+
+// 0050 — sortable column-header button style. Looks like a plain header
+// label but is keyboard-focusable and triggers toggleSort.
+const tableHeaderBtn: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  padding: 0,
+  fontFamily: 'inherit',
+  fontWeight: 'inherit',
+  fontSize: 'inherit',
+  color: 'inherit',
+  cursor: 'pointer',
+};
+
 function ViewTabs({
   view,
   onChange,
@@ -262,19 +294,112 @@ function LogView({
   // v2 Sprint E — client-first workflow. The CPA picks a client, then
   // engagement is filtered to that client's ACTIVE engagements. If the
   // client has exactly one active engagement it auto-selects.
+  // 0050 — read query params for dashboard "Time" button prefill. URL
+  // params override the persisted last-used client on first render.
+  const [searchParams] = useSearchParams();
+  const initialClientId = searchParams.get('clientId') ?? '';
+  const initialEngagementId = searchParams.get('engagementId') ?? '';
   const [clientId, setClientId] = useState(() => {
+    if (initialClientId) return initialClientId;
     try {
       return localStorage.getItem(LAST_CLIENT_KEY) ?? '';
     } catch {
       return '';
     }
   });
-  const [engagementId, setEngagementId] = useState('');
+  const [engagementId, setEngagementId] = useState(initialEngagementId);
   const [workCodeId, setWorkCodeId] = useState('');
   const [entryDate, setEntryDate] = useState(today());
   const [hours, setHours] = useState('1.00');
   const [description, setDescription] = useState('');
+  // 0050 — user-controlled out-of-scope override.
+  const [outOfScope, setOutOfScope] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // 0050 — inline edit state for "My entries". Click Edit on a row to
+  // populate the draft; Save PATCHes the entry; Cancel discards.
+  interface EditDraft {
+    hours: string;
+    description: string;
+    billableFlag: boolean;
+    outOfScopeOverride: boolean;
+    workCodeId: string;
+  }
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // 0050 — filter/sort/pagination state for "My entries". Mirrors the
+  // pattern on the Engagements list (URL-synced via component state).
+  type SortCol = 'entryDate' | 'hours' | 'amount' | 'client' | 'engagement' | 'billable';
+  const [filterClientId, setFilterClientId] = useState('');
+  const [filterEngagementId, setFilterEngagementId] = useState('');
+  const [filterStart, setFilterStart] = useState('');
+  const [filterEnd, setFilterEnd] = useState('');
+  const [filterBillable, setFilterBillable] = useState<'' | 'true' | 'false'>('');
+  const [filterOOS, setFilterOOS] = useState<'' | 'true' | 'false'>('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({
+    col: 'entryDate',
+    dir: 'desc',
+  });
+
+  function toggleSort(col: SortCol): void {
+    setSort((p) =>
+      p.col === col ? { col, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' },
+    );
+    setPage(1);
+  }
+  const sortIcon = (col: SortCol): string =>
+    sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+
+  function beginEdit(e: TimeEntry): void {
+    setEditingId(e.id);
+    setEditDraft({
+      hours: String(e.hours),
+      description: e.description ?? '',
+      billableFlag: e.billableFlag,
+      outOfScopeOverride: Boolean(e.outOfScopeOverride),
+      workCodeId: e.workCodeId ?? '',
+    });
+    setError(null);
+  }
+
+  function cancelEdit(): void {
+    setEditingId(null);
+    setEditDraft(null);
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (!editingId || !editDraft) return;
+    const hours = Number(editDraft.hours);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
+      setError('Hours must be a positive number ≤ 24.');
+      return;
+    }
+    setSavingEdit(true);
+    setError(null);
+    try {
+      await api(`/api/staff/time-entries/${editingId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          hours,
+          description: editDraft.description,
+          billableFlag: editDraft.billableFlag,
+          outOfScopeOverride: editDraft.outOfScopeOverride,
+          workCodeId: editDraft.workCodeId || null,
+        }),
+      });
+      cancelEdit();
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_failed');
+    } finally {
+      setSavingEdit(false);
+    }
+  }
 
   // Engagements for the picked client, ACTIVE only. ACTIVE filter is
   // resilient: many existing engagements were created with status
@@ -293,14 +418,18 @@ function LogView({
 
   // Auto-select the engagement when the picked client has exactly one
   // active engagement. If they have more, clear so the user picks.
+  // 0050 — skip while the engagements list is still loading so a URL-
+  // supplied engagementId (from the dashboard Time button) doesn't get
+  // wiped on first render.
   useEffect(() => {
+    if (engagements.length === 0) return;
     if (filteredEngagements.length === 1) {
       setEngagementId(filteredEngagements[0]!.id);
-    } else if (!filteredEngagements.some((e) => e.id === engagementId)) {
+    } else if (engagementId && !filteredEngagements.some((e) => e.id === engagementId)) {
       // Current selection no longer belongs to this client.
       setEngagementId('');
     }
-  }, [filteredEngagements, engagementId]);
+  }, [filteredEngagements, engagementId, engagements.length]);
 
   // Persist last-used client.
   useEffect(() => {
@@ -316,15 +445,42 @@ function LogView({
   async function load(): Promise<void> {
     setLoading(true);
     try {
-      const t = await api<{ items: TimeEntry[] }>('/api/staff/time-entries/mine');
-      setEntries(t.items ?? []);
+      const params = new URLSearchParams();
+      if (filterClientId) params.set('clientId', filterClientId);
+      if (filterEngagementId) params.set('engagementId', filterEngagementId);
+      if (filterStart) params.set('startDate', filterStart);
+      if (filterEnd) params.set('endDate', filterEnd);
+      if (filterBillable) params.set('billable', filterBillable);
+      if (filterOOS) params.set('outOfScope', filterOOS);
+      params.set('page', String(page));
+      params.set('pageSize', String(pageSize));
+      params.set('sort', sort.col);
+      params.set('dir', sort.dir);
+      const t = await api<{ rows: TimeEntry[]; total: number }>(
+        `/api/staff/time-entries/list?${params.toString()}`,
+      );
+      setEntries(t.rows ?? []);
+      setTotal(t.total ?? 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'load_failed');
     } finally {
       setLoading(false);
     }
   }
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    filterClientId,
+    filterEngagementId,
+    filterStart,
+    filterEnd,
+    filterBillable,
+    filterOOS,
+    page,
+    pageSize,
+    sort,
+  ]);
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -343,10 +499,12 @@ function LogView({
           entryDate,
           hours: Number(hours),
           description,
+          outOfScopeOverride: outOfScope,
         }),
       });
       setHours('1.00');
       setDescription('');
+      setOutOfScope(false);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
@@ -492,6 +650,27 @@ function LogView({
               hours={hours ? parseFloat(hours) : undefined}
               onPick={(s) => setDescription(s)}
             />
+            <label
+              htmlFor="oos-override"
+              style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+                fontSize: 13,
+                color: tokens.color.textMuted,
+              }}
+            >
+              <input
+                id="oos-override"
+                type="checkbox"
+                checked={outOfScope}
+                aria-label="Out of scope"
+                onChange={(e) => setOutOfScope(e.target.checked)}
+              />
+              <span>
+                Out of scope <span style={{ fontSize: 11 }}>(flag this entry for review)</span>
+              </span>
+            </label>
           </div>
           <Button type="submit" disabled={submitting || !engagementId}>
             {submitting ? 'Saving…' : 'Log'}
@@ -522,46 +701,351 @@ function LogView({
       </Card>
 
       <Card
-        title="My entries"
+        title={`My entries — ${total.toLocaleString()}`}
         action={
-          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-            {totalHours.toFixed(2)}h • ${(totalAmount / 100).toLocaleString()}
+          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+            <span style={{ color: tokens.color.textMuted }}>
+              {totalHours.toFixed(2)}h • ${(totalAmount / 100).toLocaleString()} (page)
+            </span>
+            <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              Page size
+              <select
+                aria-label="Page size"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+                style={{ padding: '4px 6px' }}
+              >
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
+              </select>
+            </label>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              ← Prev
+            </Button>
+            <span style={{ color: tokens.color.textMuted }}>
+              Page {page} / {Math.max(1, Math.ceil(total / pageSize))}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={page >= Math.ceil(total / pageSize)}
+              onClick={() =>
+                setPage((p) => Math.min(Math.max(1, Math.ceil(total / pageSize)), p + 1))
+              }
+            >
+              Next →
+            </Button>
           </span>
         }
       >
+        {/* 0050 — filter row */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(6, 1fr)',
+            gap: 8,
+            marginBottom: 12,
+          }}
+        >
+          <Combobox
+            ariaLabel="Filter client"
+            clearable
+            value={filterClientId}
+            onChange={(v) => {
+              setFilterClientId(v);
+              setFilterEngagementId('');
+              setPage(1);
+            }}
+            options={clients.map((c) => ({ value: c.id, label: c.name }))}
+            placeholder="Any client"
+            size="sm"
+          />
+          <Combobox
+            ariaLabel="Filter engagement"
+            clearable
+            value={filterEngagementId}
+            onChange={(v) => {
+              setFilterEngagementId(v);
+              setPage(1);
+            }}
+            options={engagements
+              .filter((e) => !filterClientId || e.clientId === filterClientId)
+              .map((e) => ({ value: e.id, label: e.name }))}
+            placeholder="Any engagement"
+            size="sm"
+          />
+          <input
+            type="date"
+            aria-label="From date"
+            value={filterStart}
+            onChange={(e) => {
+              setFilterStart(e.target.value);
+              setPage(1);
+            }}
+            style={inlineInputStyle}
+          />
+          <input
+            type="date"
+            aria-label="To date"
+            value={filterEnd}
+            onChange={(e) => {
+              setFilterEnd(e.target.value);
+              setPage(1);
+            }}
+            style={inlineInputStyle}
+          />
+          <Combobox
+            ariaLabel="Filter billable"
+            clearable
+            value={filterBillable}
+            onChange={(v) => {
+              setFilterBillable(v as '' | 'true' | 'false');
+              setPage(1);
+            }}
+            options={[
+              { value: 'true', label: 'Billable only' },
+              { value: 'false', label: 'Non-billable only' },
+            ]}
+            placeholder="All"
+            size="sm"
+          />
+          <Combobox
+            ariaLabel="Filter OOS"
+            clearable
+            value={filterOOS}
+            onChange={(v) => {
+              setFilterOOS(v as '' | 'true' | 'false');
+              setPage(1);
+            }}
+            options={[
+              { value: 'true', label: 'OOS only' },
+              { value: 'false', label: 'In-scope only' },
+            ]}
+            placeholder="All"
+            size="sm"
+          />
+        </div>
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
           <Table<TimeEntry>
             columns={[
-              { key: 'date', header: 'Date', render: (e) => e.entryDate },
+              {
+                key: 'date',
+                header: (
+                  <button
+                    type="button"
+                    style={tableHeaderBtn}
+                    onClick={() => toggleSort('entryDate')}
+                  >
+                    Date{sortIcon('entryDate')}
+                  </button>
+                ) as unknown as string,
+                render: (e) => e.entryDate,
+              },
+              {
+                key: 'client',
+                header: (
+                  <button type="button" style={tableHeaderBtn} onClick={() => toggleSort('client')}>
+                    Client{sortIcon('client')}
+                  </button>
+                ) as unknown as string,
+                render: (e) =>
+                  e.clientId && e.clientName ? (
+                    <a href={`/clients/${e.clientId}`}>{e.clientName}</a>
+                  ) : (
+                    '—'
+                  ),
+              },
+              {
+                key: 'engagement',
+                header: (
+                  <button
+                    type="button"
+                    style={tableHeaderBtn}
+                    onClick={() => toggleSort('engagement')}
+                  >
+                    Engagement{sortIcon('engagement')}
+                  </button>
+                ) as unknown as string,
+                render: (e) =>
+                  e.engagementName ? (
+                    <a href={`/engagements/${e.engagementId}`}>{e.engagementName}</a>
+                  ) : (
+                    '—'
+                  ),
+              },
               {
                 key: 'hours',
-                header: 'Hours',
+                header: (
+                  <button type="button" style={tableHeaderBtn} onClick={() => toggleSort('hours')}>
+                    Hours{sortIcon('hours')}
+                  </button>
+                ) as unknown as string,
                 align: 'right',
-                render: (e) => Number(e.hours).toFixed(2),
+                render: (e) => {
+                  if (editingId === e.id && editDraft) {
+                    return (
+                      <input
+                        type="number"
+                        step={0.25}
+                        min={0.25}
+                        max={24}
+                        value={editDraft.hours}
+                        onChange={(ev) => setEditDraft({ ...editDraft, hours: ev.target.value })}
+                        aria-label="Hours"
+                        style={inlineInputStyle}
+                      />
+                    );
+                  }
+                  return Number(e.hours).toFixed(2);
+                },
               },
               {
                 key: 'amount',
-                header: 'Amount',
+                header: (
+                  <button type="button" style={tableHeaderBtn} onClick={() => toggleSort('amount')}>
+                    Amount{sortIcon('amount')}
+                  </button>
+                ) as unknown as string,
                 align: 'right',
                 render: (e) => `$${(e.standardAmountCents / 100).toLocaleString()}`,
               },
               {
                 key: 'flags',
-                header: 'Flags',
-                render: (e) => (
-                  <span style={{ display: 'flex', gap: 4 }}>
-                    {e.billableFlag ? (
-                      <Pill tone="success">billable</Pill>
-                    ) : (
-                      <Pill tone="neutral">non-bill</Pill>
-                    )}
-                    {!e.inScopeFlag && <Pill tone="warning">OOS</Pill>}
-                  </span>
-                ),
+                header: (
+                  <button
+                    type="button"
+                    style={tableHeaderBtn}
+                    onClick={() => toggleSort('billable')}
+                  >
+                    Flags{sortIcon('billable')}
+                  </button>
+                ) as unknown as string,
+                render: (e) => {
+                  if (editingId === e.id && editDraft) {
+                    return (
+                      <span style={{ display: 'flex', gap: 8, fontSize: 12, alignItems: 'center' }}>
+                        <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <input
+                            type="checkbox"
+                            checked={editDraft.billableFlag}
+                            onChange={(ev) =>
+                              setEditDraft({ ...editDraft, billableFlag: ev.target.checked })
+                            }
+                          />
+                          billable
+                        </label>
+                        <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <input
+                            type="checkbox"
+                            checked={editDraft.outOfScopeOverride}
+                            onChange={(ev) =>
+                              setEditDraft({
+                                ...editDraft,
+                                outOfScopeOverride: ev.target.checked,
+                              })
+                            }
+                          />
+                          OOS
+                        </label>
+                      </span>
+                    );
+                  }
+                  return (
+                    <span style={{ display: 'flex', gap: 4 }}>
+                      {e.billableFlag ? (
+                        <Pill tone="success">billable</Pill>
+                      ) : (
+                        <Pill tone="neutral">non-bill</Pill>
+                      )}
+                      {(!e.inScopeFlag || e.outOfScopeOverride) && <Pill tone="warning">OOS</Pill>}
+                      {(e.lockedAt || e.billingBatchId) && <Pill tone="neutral">billed</Pill>}
+                    </span>
+                  );
+                },
               },
-              { key: 'desc', header: 'Description', render: (e) => e.description },
+              {
+                key: 'desc',
+                header: 'Description',
+                render: (e) => {
+                  if (editingId === e.id && editDraft) {
+                    return (
+                      <input
+                        value={editDraft.description}
+                        onChange={(ev) =>
+                          setEditDraft({ ...editDraft, description: ev.target.value })
+                        }
+                        aria-label="Description"
+                        style={{ ...inlineInputStyle, width: '100%' }}
+                      />
+                    );
+                  }
+                  return e.description;
+                },
+              },
+              {
+                key: 'actions',
+                header: '',
+                align: 'right',
+                render: (e) => {
+                  const editable = !e.lockedAt && !e.billingBatchId;
+                  if (!editable) return null;
+                  if (editingId === e.id) {
+                    return (
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        <Button size="sm" disabled={savingEdit} onClick={() => void saveEdit()}>
+                          {savingEdit ? 'Saving…' : 'Save'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={cancelEdit}
+                          disabled={savingEdit}
+                        >
+                          Cancel
+                        </Button>
+                      </span>
+                    );
+                  }
+                  return (
+                    <span style={{ display: 'inline-flex', gap: 4 }}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => beginEdit(e)}
+                        disabled={editingId !== null}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={editingId !== null}
+                        onClick={() => {
+                          if (!confirm('Delete this time entry?')) return;
+                          void api(`/api/staff/time-entries/${e.id}`, { method: 'DELETE' })
+                            .then(() => load())
+                            .catch((err) =>
+                              setError(err instanceof Error ? err.message : 'delete_failed'),
+                            );
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </span>
+                  );
+                },
+              },
             ]}
             rows={entries}
             rowKey={(e) => e.id}

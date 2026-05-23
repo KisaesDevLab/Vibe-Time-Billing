@@ -20,6 +20,7 @@ import {
   firmSettings,
   firms,
   invoiceLineItems,
+  invoiceReminderLog,
   invoices,
   payments,
   timeEntries,
@@ -274,12 +275,15 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     const q = String(req.query['q'] ?? '').trim();
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
     const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+    // 0050 — filter by client owner + date range
+    const clientOwnerId =
+      typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+    const startDate = typeof req.query['startDate'] === 'string' ? req.query['startDate'] : null;
+    const endDate = typeof req.query['endDate'] === 'string' ? req.query['endDate'] : null;
+
     const conds = [eq(invoices.firmId, session.firmId)];
     if (q) {
       const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
-      // Phase 13 #22 — broaden the free-text reach to invoice notes
-      // and id-prefix lookups so partners can paste any visible string
-      // and have it resolve.
       const search = or(
         ilike(invoices.invoiceNumber, like),
         ilike(clients.name, like),
@@ -298,25 +302,78 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       conds.push(eq(invoices.status, status));
     }
     if (clientId) conds.push(eq(invoices.clientId, clientId));
-    const items = await deps.db
+    if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
+    if (startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate))
+      conds.push(sql`${invoices.issueDate} >= ${startDate}`);
+    if (endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate))
+      conds.push(sql`${invoices.issueDate} <= ${endDate}`);
+
+    // 0050 — pagination + sort. Legacy shape when `page` isn't provided.
+    const paginated = req.query['page'] != null;
+    const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+    const pageSize = Math.min(
+      500,
+      Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50),
+    );
+    const sortCol = String(req.query['sort'] ?? 'issueDate');
+    const sortDir = String(req.query['dir'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+    const sortMap: Record<string, ReturnType<typeof sql>> = {
+      invoiceNumber: sql`${invoices.invoiceNumber}`,
+      clientName: sql`${clients.name}`,
+      issueDate: sql`${invoices.issueDate}`,
+      dueDate: sql`${invoices.dueDate}`,
+      total: sql`${invoices.totalCents}`,
+      paid: sql`${invoices.paidCents}`,
+      status: sql`${invoices.status}`,
+    };
+    const orderExpr = sortMap[sortCol] ?? sortMap['issueDate']!;
+
+    const selectQ = deps.db
       .select({
         id: invoices.id,
         invoiceNumber: invoices.invoiceNumber,
         clientId: invoices.clientId,
         clientName: clients.name,
+        clientOwnerId: clients.partnerInChargeId,
         issueDate: invoices.issueDate,
         dueDate: invoices.dueDate,
         totalCents: invoices.totalCents,
         paidCents: invoices.paidCents,
         status: invoices.status,
         firstViewedAt: invoices.firstViewedAt,
+        // 0050 — most-recent reminder timestamp; UI uses this to render
+        // the cooldown state on the Send-reminder button.
+        lastReminderAt: sql<string | null>`(
+          SELECT MAX(sent_at) FROM invoice_reminder_log
+          WHERE invoice_id = ${invoices.id}
+        )`,
       })
       .from(invoices)
+      .innerJoin(clients, eq(clients.id, invoices.clientId));
+
+    if (!paginated) {
+      const items = await selectQ
+        .where(and(...conds))
+        .orderBy(sortDir === 'asc' ? orderExpr : desc(orderExpr))
+        .limit(500);
+      res.json({ items });
+      return;
+    }
+
+    const totalRows = await deps.db
+      .select({ total: sql<number>`COUNT(*)`.as('total') })
+      .from(invoices)
       .innerJoin(clients, eq(clients.id, invoices.clientId))
+      .where(and(...conds));
+    const total = Number(totalRows[0]?.total ?? 0);
+
+    const rows = await selectQ
       .where(and(...conds))
-      .orderBy(desc(invoices.issueDate))
-      .limit(500);
-    res.json({ items });
+      .orderBy(sortDir === 'asc' ? orderExpr : desc(orderExpr))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+
+    res.json({ rows, items: rows, total, page, pageSize });
   });
 
   router.get(
@@ -510,42 +567,66 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         issueDate,
       });
 
-      // Phase 10 #10/#11 — mixed-mode invoice composer.
-      // For RECURRING_SUBSCRIPTION engagements with mixedModeEnabled=true,
-      // produce two lines: the retainer (engagement.feeAmountCents as
-      // RECURRING_FEE) and any out-of-scope hours rolled up as overage
-      // (TIME_AGGREGATE). In-scope hours are absorbed by the retainer
-      // (and already debited from the hour-bank if one exists).
-      // Adjustments still net into the OOS lane since in-scope WIP is
-      // not separately billed.
-      const isMixedMode = eng.mixedModeEnabled && eng.feeStructure === 'RECURRING_SUBSCRIPTION';
-      const lines: LineItem[] = isMixedMode
-        ? (() => {
-            const out: LineItem[] = [];
-            if (eng.feeAmountCents && Number(eng.feeAmountCents) > 0) {
-              out.push({
-                kind: 'RECURRING_FEE',
-                description: `${eng.name} — retainer · ${batch.periodStart} to ${batch.periodEnd}`,
-                amountCents: Number(eng.feeAmountCents),
-              });
-            }
-            const overageLineAmount = overageAmount + adjTotal;
-            if (overageLineAmount !== 0 || overageHours > 0) {
-              out.push({
+      // 0052 — if the batch carries an invoice composition (line items
+      // user-defined via the batch editor), use those verbatim. We
+      // re-verify the sum equals the current billed total so a race
+      // with later actions can't ship a mismatched invoice.
+      const savedLines = batch.invoiceLineItems ?? null;
+      let lines: LineItem[];
+      if (savedLines && savedLines.length > 0) {
+        const savedSum = savedLines.reduce((s, l) => s + l.amountCents, 0);
+        if (savedSum !== lineAmount) {
+          res.status(422).json({
+            error: 'invoice_lines_mismatch',
+            savedSum,
+            billed: lineAmount,
+            delta: lineAmount - savedSum,
+          });
+          return;
+        }
+        lines = savedLines.map((l) => ({
+          kind: 'CUSTOM' as const,
+          description: l.description,
+          amountCents: l.amountCents,
+        }));
+      } else {
+        // Phase 10 #10/#11 — mixed-mode invoice composer.
+        // For RECURRING_SUBSCRIPTION engagements with mixedModeEnabled=true,
+        // produce two lines: the retainer (engagement.feeAmountCents as
+        // RECURRING_FEE) and any out-of-scope hours rolled up as overage
+        // (TIME_AGGREGATE). In-scope hours are absorbed by the retainer
+        // (and already debited from the hour-bank if one exists).
+        // Adjustments still net into the OOS lane since in-scope WIP is
+        // not separately billed.
+        const isMixedMode = eng.mixedModeEnabled && eng.feeStructure === 'RECURRING_SUBSCRIPTION';
+        lines = isMixedMode
+          ? (() => {
+              const out: LineItem[] = [];
+              if (eng.feeAmountCents && Number(eng.feeAmountCents) > 0) {
+                out.push({
+                  kind: 'RECURRING_FEE',
+                  description: `${eng.name} — retainer · ${batch.periodStart} to ${batch.periodEnd}`,
+                  amountCents: Number(eng.feeAmountCents),
+                });
+              }
+              const overageLineAmount = overageAmount + adjTotal;
+              if (overageLineAmount !== 0 || overageHours > 0) {
+                out.push({
+                  kind: 'TIME_AGGREGATE',
+                  description: `Out-of-scope overage — ${overageHours.toFixed(2)}h`,
+                  amountCents: overageLineAmount,
+                });
+              }
+              return out;
+            })()
+          : [
+              {
                 kind: 'TIME_AGGREGATE',
-                description: `Out-of-scope overage — ${overageHours.toFixed(2)}h`,
-                amountCents: overageLineAmount,
-              });
-            }
-            return out;
-          })()
-        : [
-            {
-              kind: 'TIME_AGGREGATE',
-              description: `${eng.name} — ${batch.periodStart} to ${batch.periodEnd}`,
-              amountCents: lineAmount,
-            },
-          ];
+                description: `${eng.name} — ${batch.periodStart} to ${batch.periodEnd}`,
+                amountCents: lineAmount,
+              },
+            ];
+      }
       // v2 — append per-engagement surcharge + sales tax. Order
       // matters: surcharge is computed against the pre-tax subtotal,
       // then tax is computed against (subtotal + surcharge).
@@ -597,6 +678,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             surchargeCents: totals.surchargeCents,
             totalCents: totals.totalCents,
             status: 'DRAFT',
+            // 0052 — carry the batch-level invoice memo onto the invoice
+            // when one was saved on the composition editor.
+            notes: batch.invoiceDescription ?? null,
           })
           .returning({ id: invoices.id });
         if (!inv) throw new Error('invoice insert failed');
@@ -692,17 +776,44 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           accentColor: firmSettings.brandAccentColor,
           supportEmail: firmSettings.brandSupportEmail,
           supportPhone: firmSettings.brandSupportPhone,
+          supportFax: firmSettings.brandSupportFax,
+          supportWeb: firmSettings.brandSupportWeb,
           footerHtml: firmSettings.brandFooterHtml,
+          // 0053 — A/R terms text overrides footerHtml when present.
+          arTermsText: firmSettings.arTermsText,
           templateStyle: firmSettings.invoiceTemplateStyle,
         })
         .from(firmSettings)
         .where(eq(firmSettings.firmId, inv.firmId))
         .limit(1);
+      // 0052 — pull structured mailing address + externalId for the
+      // recipient block on the new pro PDF template.
       const [client] = await deps.db
-        .select({ name: clients.name, billingAddress: clients.billingAddress })
+        .select({
+          name: clients.name,
+          billingAddress: clients.billingAddress,
+          mailingStreet1: clients.mailingStreet1,
+          mailingStreet2: clients.mailingStreet2,
+          mailingCity: clients.mailingCity,
+          mailingState: clients.mailingState,
+          mailingPostal: clients.mailingPostal,
+          mailingCountry: clients.mailingCountry,
+          externalId: clients.externalId,
+        })
         .from(clients)
         .where(eq(clients.id, inv.clientId))
         .limit(1);
+      // Reference: engagement.name when we have an engagement; else
+      // fall back to invoice number.
+      let engagementName: string | null = null;
+      if (inv.primaryEngagementId) {
+        const [eng] = await deps.db
+          .select({ name: engagements.name })
+          .from(engagements)
+          .where(eq(engagements.id, inv.primaryEngagementId))
+          .limit(1);
+        engagementName = eng?.name ?? null;
+      }
       const rawLines = await deps.db
         .select()
         .from(invoiceLineItems)
@@ -780,10 +891,32 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
               accentColor: branding.accentColor ?? null,
               supportEmail: branding.supportEmail ?? null,
               supportPhone: branding.supportPhone ?? null,
-              footerHtml: branding.footerHtml ?? null,
+              supportFax: branding.supportFax ?? null,
+              supportWeb: branding.supportWeb ?? null,
+              // 0053 — A/R terms wins over generic footer when both set.
+              footerHtml: branding.arTermsText
+                ? branding.arTermsText
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/\n/g, '<br />')
+                : (branding.footerHtml ?? null),
             }
           : null,
-        client: { name: client?.name ?? 'Client', billingAddress: client?.billingAddress ?? null },
+        reference: inv.invoiceNumber,
+        engagementName,
+        client: {
+          name: client?.name ?? 'Client',
+          billingAddress: client?.billingAddress ?? null,
+          mailingStreet1: client?.mailingStreet1 ?? null,
+          mailingStreet2: client?.mailingStreet2 ?? null,
+          mailingCity: client?.mailingCity ?? null,
+          mailingState: client?.mailingState ?? null,
+          mailingPostal: client?.mailingPostal ?? null,
+          mailingCountry: client?.mailingCountry ?? null,
+          externalId: client?.externalId ?? null,
+        },
         lines: lines.map((l) => ({
           kind: l.kind,
           description: l.description,
@@ -1558,76 +1691,100 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     },
   );
 
-  router.post(
-    '/:id/dunning',
-    requirePermission(deps, 'invoice:write'),
-    async (req: Request, res: Response) => {
-      const session = req.staffSession!;
-      if (!deps.db) {
-        res.json({ ok: true });
-        return;
-      }
-      const [inv] = await deps.db
-        .select({
-          id: invoices.id,
-          invoiceNumber: invoices.invoiceNumber,
-          totalCents: invoices.totalCents,
-          paidCents: invoices.paidCents,
-          dueDate: invoices.dueDate,
-          status: invoices.status,
-          clientId: invoices.clientId,
-        })
-        .from(invoices)
-        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
-        .limit(1);
-      if (!inv) {
-        res.status(404).json({ error: 'not_found' });
-        return;
-      }
-      if (inv.status === 'PAID' || inv.status === 'VOIDED') {
-        res.status(409).json({ error: 'invoice_not_collectible', status: inv.status });
-        return;
-      }
-      const [client] = await deps.db
-        .select({ name: clients.name })
-        .from(clients)
-        .where(eq(clients.id, inv.clientId))
-        .limit(1);
-      const billingContact = await getBillingContact(deps.db, inv.clientId);
-      if (!deps.sendEmail || !billingContact?.email) {
-        res.status(409).json({ error: 'no_email_destination' });
-        return;
-      }
-      void client;
-      const balance = Number(inv.totalCents) - Number(inv.paidCents);
-      const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
-      const body =
-        `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
-        `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
-        (link ? `View/pay: ${link}\n\n` : '') +
-        `Please reach out if you have any questions.`;
-      try {
-        await deps.sendEmail({
-          to: billingContact.email,
-          subject: `Reminder: invoice ${inv.invoiceNumber}`,
-          body,
-        });
-      } catch (err) {
-        res.status(502).json({ error: 'email_dispatch_failed' });
-        return;
-      }
-      await emitAudit(deps.db, {
-        action: 'UPDATE',
-        entityType: 'invoice',
-        entityId: inv.id,
+  // POST /:id/dunning sends a one-off reminder email. 0050 added a
+  // 24h cooldown read from invoice_reminder_log and a row written on
+  // success. Same handler is mounted at /:id/remind as an alias.
+  const remindHandler = async (req: Request, res: Response): Promise<void> => {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.json({ ok: true });
+      return;
+    }
+    const [inv] = await deps.db
+      .select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        totalCents: invoices.totalCents,
+        paidCents: invoices.paidCents,
+        dueDate: invoices.dueDate,
+        status: invoices.status,
+        clientId: invoices.clientId,
+      })
+      .from(invoices)
+      .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+      .limit(1);
+    if (!inv) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+      res.status(409).json({ error: 'invoice_not_collectible', status: inv.status });
+      return;
+    }
+    // 0050 — 24h manual cooldown. Hit invoice_reminder_log; reject if a
+    // row exists within the past 24h regardless of AUTO vs MANUAL.
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [recent] = await deps.db
+      .select({ sentAt: invoiceReminderLog.sentAt })
+      .from(invoiceReminderLog)
+      .where(
+        and(
+          eq(invoiceReminderLog.invoiceId, inv.id),
+          sql`${invoiceReminderLog.sentAt} > ${cutoff.toISOString()}`,
+        ),
+      )
+      .orderBy(desc(invoiceReminderLog.sentAt))
+      .limit(1);
+    if (recent) {
+      res.status(429).json({ error: 'reminder_cooldown', lastSentAt: recent.sentAt });
+      return;
+    }
+    const billingContact = await getBillingContact(deps.db, inv.clientId);
+    if (!deps.sendEmail || !billingContact?.email) {
+      res.status(409).json({ error: 'no_email_destination' });
+      return;
+    }
+    const balance = Number(inv.totalCents) - Number(inv.paidCents);
+    const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+    const body =
+      `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
+      `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
+      (link ? `View/pay: ${link}\n\n` : '') +
+      `Please reach out if you have any questions.`;
+    try {
+      await deps.sendEmail({
+        to: billingContact.email,
+        subject: `Reminder: invoice ${inv.invoiceNumber}`,
+        body,
+      });
+    } catch (err) {
+      res.status(502).json({ error: 'email_dispatch_failed' });
+      return;
+    }
+    await deps.db
+      .insert(invoiceReminderLog)
+      .values({
+        invoiceId: inv.id,
         actorAppUserId: session.appUserId,
-        after: { kind: 'manual_dunning', sentTo: billingContact.email },
-        ip: clientIp(req),
-        userAgent: req.header('user-agent') ?? null,
-      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.json({ ok: true, sentTo: billingContact.email });
-    },
-  );
+        kind: 'MANUAL',
+        template: 'REMINDER_FRIENDLY',
+        sentAt: new Date(),
+      })
+      .catch((err: unknown) => logger.error({ err }, 'reminder log write failed'));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'invoice',
+      entityId: inv.id,
+      actorAppUserId: session.appUserId,
+      after: { kind: 'manual_dunning', sentTo: billingContact.email },
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.json({ ok: true, sentTo: billingContact.email });
+  };
+
+  router.post('/:id/dunning', requirePermission(deps, 'invoice:write'), remindHandler);
+  router.post('/:id/remind', requirePermission(deps, 'invoice:write'), remindHandler);
 
   router.post(
     '/:id/refund',

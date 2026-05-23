@@ -63,6 +63,58 @@ describe('stripe provider', () => {
     ).toBe(true);
   });
 
+  it('createIntent posts payment_intents with the right shape and returns the client secret', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ id: 'pi_test_99', client_secret: 'pi_test_99_secret_abc' }), {
+          status: 200,
+        }),
+    );
+    const provider = createStripeProvider({ secretKey: 'sk_test_x', fetchImpl });
+    const result = await provider.createIntent!({
+      amountCents: 250000,
+      currency: 'USD',
+      description: 'Receipt 11111111-1111-1111-1111-111111111111 (Card via Stripe)',
+      paymentMethodTypes: ['card'],
+      metadata: {
+        receiptId: '11111111-1111-1111-1111-111111111111',
+        firmId: 'firm_1',
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.providerChargeId).toBe('pi_test_99');
+    expect(result.clientSecret).toBe('pi_test_99_secret_abc');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const calls = fetchImpl.mock.calls as unknown as any[][];
+    const call = calls[0]!;
+    expect(String(call[0])).toContain('/payment_intents');
+    expect(call[1].body).toContain('amount=250000');
+    expect(call[1].body).toContain('payment_method_types%5B0%5D=card');
+    expect(call[1].body).toContain('metadata%5BreceiptId%5D=');
+    // The intent flow must NOT include confirm=true or a payment_method —
+    // Stripe Elements confirms client-side with the returned client_secret.
+    expect(call[1].body).not.toContain('confirm=true');
+    expect(call[1].body).not.toContain('payment_method=');
+  });
+
+  it('createIntent surfaces Stripe errors without throwing', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { message: 'invalid_amount' } }), { status: 400 }),
+    );
+    const provider = createStripeProvider({ secretKey: 'sk_test_x', fetchImpl });
+    const result = await provider.createIntent!({
+      amountCents: 0,
+      currency: 'USD',
+      description: 'bad',
+      paymentMethodTypes: ['card'],
+      metadata: {},
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errorMessage).toBe('invalid_amount');
+    expect(result.clientSecret).toBe('');
+  });
+
   it('rejects tampered webhook payloads', () => {
     const provider = createStripeProvider({
       secretKey: 'sk_x',

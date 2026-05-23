@@ -20,6 +20,7 @@ import { normalizePhone } from '@vibe/core/auth';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { recordOutbound } from '../clients/communications';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface PortalInviteDeps extends RbacDeps {
@@ -44,6 +45,7 @@ const InviteSchema = z
 
 export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.post(
     '/',

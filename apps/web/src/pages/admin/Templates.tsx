@@ -35,8 +35,15 @@ interface EngagementTpl {
   defaultFeeAmountCents: number | null;
   defaultBudgetHours: string | null;
   defaultLetterTemplateId: string | null;
+  defaultRateCodeId: string | null;
   isSystem: boolean;
   status: string;
+}
+
+interface RateCode {
+  id: string;
+  code: string;
+  active: boolean;
 }
 
 interface LetterTpl {
@@ -104,16 +111,19 @@ function EngagementTab(): JSX.Element {
   // translate via dollarsInputToCents on submit. Earlier the field said
   // "Fee (cents)" and accepted 75000 to mean $750 which was confusing
   // for any user not steeped in the storage shape.
+  const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [editDraft, setEditDraft] = useState<{
     name: string;
     defaultFeeStructure: string;
     defaultFeeAmountDollars: string;
     defaultBudgetHours: string;
+    defaultRateCodeId: string;
   }>({
     name: '',
     defaultFeeStructure: 'FIXED_FEE',
     defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
+    defaultRateCodeId: '',
   });
   const [draft, setDraft] = useState({
     key: '',
@@ -121,12 +131,17 @@ function EngagementTab(): JSX.Element {
     defaultFeeStructure: 'FIXED_FEE',
     defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
+    defaultRateCodeId: '',
   });
 
   async function load(): Promise<void> {
     try {
-      const r = await api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement');
+      const [r, rc] = await Promise.all([
+        api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement'),
+        api<{ items: RateCode[] }>('/api/staff/admin/rate-codes').catch(() => ({ items: [] })),
+      ]);
       setItems(r.items ?? []);
+      setRateCodes((rc.items ?? []).filter((c) => c.active));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
     }
@@ -146,6 +161,7 @@ function EngagementTab(): JSX.Element {
           defaultFeeStructure: draft.defaultFeeStructure,
           defaultFeeAmountCents: dollarsInputToCents(draft.defaultFeeAmountDollars),
           defaultBudgetHours: draft.defaultBudgetHours ? Number(draft.defaultBudgetHours) : null,
+          defaultRateCodeId: draft.defaultRateCodeId || null,
         }),
       });
       setDraft({
@@ -154,6 +170,7 @@ function EngagementTab(): JSX.Element {
         defaultFeeStructure: 'FIXED_FEE',
         defaultFeeAmountDollars: '',
         defaultBudgetHours: '',
+        defaultRateCodeId: '',
       });
       setAdding(false);
       await load();
@@ -188,6 +205,7 @@ function EngagementTab(): JSX.Element {
       defaultFeeStructure: t.defaultFeeStructure,
       defaultFeeAmountDollars: centsToDollarsInput(t.defaultFeeAmountCents),
       defaultBudgetHours: t.defaultBudgetHours ?? '',
+      defaultRateCodeId: t.defaultRateCodeId ?? '',
     });
   }
 
@@ -203,6 +221,7 @@ function EngagementTab(): JSX.Element {
           defaultBudgetHours: editDraft.defaultBudgetHours
             ? Number(editDraft.defaultBudgetHours)
             : null,
+          defaultRateCodeId: editDraft.defaultRateCodeId || null,
         }),
       });
       setEditingId(null);
@@ -274,6 +293,19 @@ function EngagementTab(): JSX.Element {
               style={fieldStyle}
             />
           </div>
+          <select
+            value={draft.defaultRateCodeId}
+            onChange={(e) => setDraft({ ...draft, defaultRateCodeId: e.target.value })}
+            aria-label="Default rate code"
+            style={fieldStyle}
+          >
+            <option value="">— StandardRate (default) —</option>
+            {rateCodes.map((rc) => (
+              <option key={rc.id} value={rc.id}>
+                {rc.code}
+              </option>
+            ))}
+          </select>
           <div>
             <Button size="sm" onClick={() => void add()}>
               Create
@@ -346,7 +378,7 @@ function EngagementTab(): JSX.Element {
                   </span>
                 </div>
                 {isEditing && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 8 }}>
                     <Combobox
                       ariaLabel="Default fee structure"
                       value={editDraft.defaultFeeStructure}
@@ -372,6 +404,21 @@ function EngagementTab(): JSX.Element {
                       placeholder="Budget hours"
                       style={fieldStyle}
                     />
+                    <select
+                      value={editDraft.defaultRateCodeId}
+                      onChange={(e) =>
+                        setEditDraft({ ...editDraft, defaultRateCodeId: e.target.value })
+                      }
+                      aria-label="Default rate code"
+                      style={fieldStyle}
+                    >
+                      <option value="">— StandardRate (default) —</option>
+                      {rateCodes.map((rc) => (
+                        <option key={rc.id} value={rc.id}>
+                          {rc.code}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 )}
               </div>

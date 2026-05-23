@@ -7,6 +7,15 @@
 // All four implementations share the same interface so app.ts swaps
 // them based on MAIL_PROVIDER env.
 
+export interface MailAttachment {
+  /** Filename presented to the recipient (e.g. "statement.pdf"). */
+  filename: string;
+  /** Raw bytes. */
+  content: Buffer;
+  /** MIME type — defaults to application/octet-stream when omitted. */
+  contentType?: string;
+}
+
 export interface MailMessage {
   to: string;
   subject: string;
@@ -16,6 +25,10 @@ export interface MailMessage {
    *  long URLs stay clickable and unbroken across quoted-printable
    *  line wraps. */
   html?: string;
+  /** 0054 — file attachments. SMTP + console honor these; Postmark /
+   *  Resend / SES drop attachments silently (extend per-provider when
+   *  the firm actually uses one). */
+  attachments?: MailAttachment[];
 }
 
 export interface MailProvider {
@@ -30,7 +43,12 @@ export function createConsoleMailProvider(log: Logger): MailProvider {
     id: 'console',
     async send(msg) {
       log.info(
-        { to: msg.to, subject: msg.subject, preview: msg.body.slice(0, 200) },
+        {
+          to: msg.to,
+          subject: msg.subject,
+          preview: msg.body.slice(0, 200),
+          attachments: msg.attachments?.map((a) => a.filename) ?? [],
+        },
         'mail (console)',
       );
       return { ok: true, messageId: `console_${Date.now()}` };
@@ -60,16 +78,37 @@ export function createSmtpMailProvider(opts: SmtpOptions, log: Logger): MailProv
           secure: opts.secure ?? false,
           auth: opts.user ? { user: opts.user, pass: opts.pass } : undefined,
         });
+        // Defensive log to help debug envelope failures — print what
+        // we're handing to nodemailer (sans attachment bytes).
+        log.info(
+          {
+            to: msg.to,
+            from: opts.from,
+            subject: msg.subject,
+            attachmentCount: msg.attachments?.length ?? 0,
+            attachmentFilenames: msg.attachments?.map((a) => a.filename) ?? [],
+          },
+          'smtp send begin',
+        );
         const info = await transport.sendMail({
           from: opts.from,
           to: msg.to,
           subject: msg.subject,
           text: msg.body,
           ...(msg.html ? { html: msg.html } : {}),
+          ...(msg.attachments && msg.attachments.length > 0
+            ? {
+                attachments: msg.attachments.map((a) => ({
+                  filename: a.filename,
+                  content: a.content,
+                  contentType: a.contentType ?? 'application/octet-stream',
+                })),
+              }
+            : {}),
         });
         return { ok: true, messageId: info.messageId };
       } catch (err) {
-        log.error({ err }, 'smtp send failed');
+        log.error({ err, to: msg.to, from: opts.from }, 'smtp send failed');
         return { ok: false, error: err instanceof Error ? err.message : 'smtp_failed' };
       }
     },

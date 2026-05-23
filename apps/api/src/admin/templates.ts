@@ -17,6 +17,7 @@ import { clientTemplates, engagementLetterTemplates, engagementTemplates } from 
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface TemplateRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -43,6 +44,8 @@ const EngagementSchema = z.object({
   defaultBudgetHours: z.number().nonnegative().nullable().optional(),
   inScopeWorkCodeIds: z.array(z.string().uuid()).optional(),
   defaultLetterTemplateId: z.string().uuid().nullable().optional(),
+  // 0054 — engagements created from this template inherit this code.
+  defaultRateCodeId: z.string().uuid().nullable().optional(),
   customFieldsSchema: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -80,6 +83,7 @@ function extractVariables(text: string): string[] {
 
 export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   // ----- Engagement templates -----
   router.get(
@@ -126,6 +130,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultBudgetHours: d.defaultBudgetHours != null ? String(d.defaultBudgetHours) : null,
           inScopeWorkCodeIds: d.inScopeWorkCodeIds ?? [],
           defaultLetterTemplateId: d.defaultLetterTemplateId ?? null,
+          defaultRateCodeId: d.defaultRateCodeId ?? null,
           customFieldsSchema: d.customFieldsSchema ?? {},
           isSystem: false,
         })
@@ -169,6 +174,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
       if (d.inScopeWorkCodeIds !== undefined) updates.inScopeWorkCodeIds = d.inScopeWorkCodeIds;
       if (d.defaultLetterTemplateId !== undefined)
         updates.defaultLetterTemplateId = d.defaultLetterTemplateId;
+      if (d.defaultRateCodeId !== undefined) updates.defaultRateCodeId = d.defaultRateCodeId;
       if (d.customFieldsSchema !== undefined) updates.customFieldsSchema = d.customFieldsSchema;
       await deps.db
         .update(engagementTemplates)
@@ -254,6 +260,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultBudgetHours: src.defaultBudgetHours,
           inScopeWorkCodeIds: src.inScopeWorkCodeIds,
           defaultLetterTemplateId: src.defaultLetterTemplateId,
+          defaultRateCodeId: src.defaultRateCodeId,
           customFieldsSchema: src.customFieldsSchema,
           isSystem: false,
         })

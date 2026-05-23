@@ -58,7 +58,6 @@ export async function runWipAgeAlert(
       action: 'CREATE',
       entityType: 'wip_age_alert',
       entityId: r.engagementId,
-      actorMcpTokenId: 'wip-age-worker',
       afterJson: {
         engagementId: r.engagementId,
         clientId: r.clientId,

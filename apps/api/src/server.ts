@@ -179,6 +179,22 @@ const sendPortalEmail = async (args: {
   await mailer.send(args);
 };
 
+// 0054 — full-payload mail surface (attachments, HTML body) used by
+// statement + invoice email flows. Wraps the same provider so the
+// console/MailHog/SMTP/Postmark/Resend swap still applies.
+const sendStaffMail = async (args: {
+  to: string;
+  subject: string;
+  body: string;
+  html?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
+}): Promise<void> => {
+  const r = await mailer.send(args);
+  if (!r.ok) {
+    throw new Error(r.error ?? 'mail_send_failed');
+  }
+};
+
 const sendPortalSms = async (args: { to: string; body: string }): Promise<void> => {
   await smsProvider.send(args);
 };
@@ -194,6 +210,7 @@ const app = createApp({
   stripeWebhookSecret: config.STRIPE_WEBHOOK_SECRET ?? null,
   sendMagicLink,
   sendPortalEmail,
+  sendStaffMail,
   sendPortalSms,
 });
 

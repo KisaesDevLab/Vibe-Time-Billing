@@ -14,6 +14,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ChargeRequest,
   ChargeResult,
+  CreateIntentRequest,
+  CreateIntentResult,
   PaymentProvider,
   RefundRequest,
   RefundResult,
@@ -108,6 +110,42 @@ export function createStripeProvider(opts: StripeProviderOptions): PaymentProvid
       const a = Buffer.from(expected, 'hex');
       const b = Buffer.from(match[2]!, 'hex');
       return a.length === b.length && timingSafeEqual(a, b);
+    },
+
+    async createIntent(req: CreateIntentRequest): Promise<CreateIntentResult> {
+      const params: Record<string, string> = {
+        amount: String(req.amountCents),
+        currency: req.currency.toLowerCase(),
+        description: req.description,
+      };
+      req.paymentMethodTypes.forEach((t, i) => {
+        params[`payment_method_types[${i}]`] = t;
+      });
+      for (const [k, v] of Object.entries(req.metadata)) {
+        params[`metadata[${k}]`] = v;
+      }
+      try {
+        const json = (await postForm('/payment_intents', params)) as {
+          id: string;
+          client_secret: string;
+        };
+        return {
+          ok: true,
+          providerChargeId: json.id,
+          clientSecret: json.client_secret,
+        };
+      } catch (err) {
+        if (err instanceof StripeError) {
+          return {
+            ok: false,
+            providerChargeId: '',
+            clientSecret: '',
+            errorCode: String(err.statusCode),
+            errorMessage: err.message,
+          };
+        }
+        throw err;
+      }
     },
   };
 }

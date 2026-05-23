@@ -45,6 +45,9 @@ ollama-models/
 # Husky temp
 .husky/_/
 
+# Claude Code agent state (per-session, not for source control)
+.claude/
+
 # Stop-state markers (these belong at repo root when present, gitignored otherwise)
 STOPPED_BECAUSE.md
 .eslintcache

@@ -277,6 +277,21 @@ export const webhookDeliveryStatus = pgEnum('webhook_delivery_status', [
 
 export const aiProvider = pgEnum('ai_provider', ['LOCAL_OLLAMA', 'LOCAL_LLAMACPP', 'ANTHROPIC', 'OPENAI_COMPATIBLE']);
 
+// 0050 — retainer billing batch kind.
+export const billingBatchKind = pgEnum('billing_batch_kind', ['STANDARD', 'RETAINER']);
+
+// 0050 — engagement assignment role (multi-staff join table).
+export const engagementAssignmentRole = pgEnum('engagement_assignment_role', [
+  'PARTNER',
+  'MANAGER',
+  'REVIEWER',
+  'PREPARER',
+  'STAFF',
+]);
+
+// 0050 — invoice reminder log kind (auto dunning vs staff-triggered).
+export const invoiceReminderKind = pgEnum('invoice_reminder_kind', ['AUTO', 'MANUAL']);
+
 // =====================================================================
 // TABLE: firm
 //
@@ -369,6 +384,26 @@ export const firmSettings = pgTable('firm_settings', {
   brandSupportEmail: text('brand_support_email'),
   brandSupportPhone: text('brand_support_phone'),
   brandFooterHtml: text('brand_footer_html'),
+
+  // 0053 — Billing + A/R block (legacy "Firm — Billing and A/R" tab).
+  brandSupportFax: text('brand_support_fax'),
+  brandSupportWeb: text('brand_support_web'),
+  arTermsText: text('ar_terms_text'),
+  statementEmailMessage: text('statement_email_message'),
+  defaultStatementFormat: text('default_statement_format')
+    .notNull()
+    .default('detailed_open_amounts'),
+  achProcessingEnabled: boolean('ach_processing_enabled').notNull().default(false),
+  creditCardProcessingEnabled: boolean('credit_card_processing_enabled')
+    .notNull()
+    .default(false),
+  assessServiceChargesEnabled: boolean('assess_service_charges_enabled').notNull().default(false),
+  serviceChargeRateBps: integer('service_charge_rate_bps').notNull().default(0),
+  dunningMessage1: text('dunning_message_1'),
+  dunningMessage2: text('dunning_message_2'),
+  dunningMessage3: text('dunning_message_3'),
+  dunningMessage4: text('dunning_message_4'),
+  dunningMessage5: text('dunning_message_5'),
 
   // v2 — default surcharge label inherited by engagements whose
   // surcharge_label is NULL. Lets a firm say "Technology fee" once.
@@ -485,6 +520,26 @@ export const appUsers = pgTable(
     // Phase 20 #8 — per-user billable target override. NULL = inherit
     // firm_settings.billable_target_hours_per_month.
     billableTargetHoursPerMonth: integer('billable_target_hours_per_month'),
+
+    // 0054 — structured profile (Main + Contact Info tabs). full_name
+    // stays as the canonical display field and is recomputed from parts
+    // when first/last are present.
+    firstName: text('first_name'),
+    middleName: text('middle_name'),
+    lastName: text('last_name'),
+    title: text('title'),
+    salutation: text('salutation'),
+    businessPhone: text('business_phone'),
+    homePhone: text('home_phone'),
+    faxPhone: text('fax_phone'),
+    mobilePhone: text('mobile_phone'),
+    addressLine1: text('address_line1'),
+    addressLine2: text('address_line2'),
+    city: text('city'),
+    state: text('state'),
+    zip: text('zip'),
+    hiredDate: date('hired_date'),
+    leftDate: date('left_date'),
 
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -696,6 +751,15 @@ export const clients = pgTable(
     // billingContactName/Email/Phone migrated to client_contact in 0027.
     billingAddress: text('billing_address'),
 
+    // 0050 — structured mailing address. Separate from billingAddress
+    // (single text) so PDFs/exports can render components.
+    mailingStreet1: text('mailing_street1'),
+    mailingStreet2: text('mailing_street2'),
+    mailingCity: text('mailing_city'),
+    mailingState: text('mailing_state'),
+    mailingPostal: text('mailing_postal'),
+    mailingCountry: text('mailing_country'),
+
     termsDays: integer('terms_days').notNull().default(30),
 
     // Q26
@@ -734,6 +798,8 @@ export const clients = pgTable(
     taxSoftwareIdx: index('idx_client_tax_software_id')
       .on(t.firmId, t.taxSoftwareId)
       .where(sql`tax_software_id IS NOT NULL`),
+    // 0050 — GIN index on custom_fields is created by migration
+    // (drizzle-orm IndexBuilder in use lacks .using('gin', ...) here).
   }),
 );
 
@@ -1131,6 +1197,8 @@ export const engagementTemplates = pgTable(
     defaultFeeAmountCents: bigint('default_fee_amount_cents', { mode: 'number' }),
     defaultBudgetHours: numeric('default_budget_hours', { precision: 8, scale: 2 }),
     inScopeWorkCodeIds: jsonb('in_scope_work_code_ids').$type<string[]>().notNull().default([]),
+    // 0054 — NULL means resolver falls back to firm's StandardRate.
+    defaultRateCodeId: uuid('default_rate_code_id'),
     // FK added in 0033 after the letter table exists; declared here as
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),
@@ -1249,6 +1317,10 @@ export const engagements = pgTable(
     partnerId: uuid('partner_id').references(() => appUsers.id),
     managerId: uuid('manager_id').references(() => appUsers.id),
 
+    // 0050 — when set, time-entry create/update on this engagement is
+    // rejected (409). Toggled via /engagements/:id/retainer/lock|unlock.
+    retainerLockedAt: timestamp('retainer_locked_at', { withTimezone: true }),
+
     scopeDefinition: text('scope_definition'),
 
     status: engagementStatus('status').notNull().default('PROPOSED'),
@@ -1258,6 +1330,9 @@ export const engagements = pgTable(
     priority: engagementPriority('priority').notNull().default('MEDIUM'),
     startDate: date('start_date'),
     endDate: date('end_date'),
+    // 0051 — external deadline (filing date, audit report date, etc).
+    // Distinct from end_date (which is internal work-completion target).
+    dueDate: date('due_date'),
     closedAt: timestamp('closed_at', { withTimezone: true }),
     closedReason: text('closed_reason'),
 
@@ -1273,6 +1348,10 @@ export const engagements = pgTable(
     // snapshot capture on time entries.
     rateMultiplierBps: integer('rate_multiplier_bps').notNull().default(10000),
 
+    // 0054 — drives staff_rate_snapshot lookup at time-entry create.
+    // NULL = resolver falls back to firm's StandardRate code.
+    defaultRateCodeId: uuid('default_rate_code_id'),
+
     customFields: jsonb('custom_fields').notNull().default({}),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1283,6 +1362,7 @@ export const engagements = pgTable(
     statusIdx: index('engagement_status_idx').on(t.status),
     partnerIdx: index('engagement_partner_idx').on(t.partnerId),
     feeStructureIdx: index('engagement_fee_structure_idx').on(t.feeStructure),
+    defaultRateCodeIdx: index('engagement_default_rate_code_idx').on(t.defaultRateCodeId),
   }),
 );
 
@@ -1291,27 +1371,72 @@ export const engagements = pgTable(
 //
 // Resolution order (highest to lowest precedence):
 //   engagement_rate_override → client_rate_override → service_line_rate
-//     → timekeeper_rate → firm default
+//     → staff_rate_snapshot row for engagement.default_rate_code_id
+//     → staff_rate_snapshot row for firm's 'StandardRate' code
+//     → firm default (0)
+//
+// 0054 — flat timekeeper_rate replaced with per-code snapshots. Each
+// firm has a catalog of rate_codes (StandardRate seeded as system).
+// Staff have effective-dated snapshots; each snapshot has one cost
+// rate + one bill rate per code.
 // =====================================================================
 
-export const timekeeperRates = pgTable(
-  'timekeeper_rate',
+export const rateCodes = pgTable(
+  'rate_code',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    code: text('code').notNull(),
+    description: text('description'),
+    active: boolean('active').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmCodeUnique: uniqueIndex('rate_code_firm_code_uk').on(t.firmId, t.code),
+    firmActiveIdx: index('rate_code_firm_active_idx').on(t.firmId, t.active),
+  }),
+);
+
+export const staffRateSnapshots = pgTable(
+  'staff_rate_snapshot',
   {
     id: uuid('id').defaultRandom().primaryKey(),
     appUserId: uuid('app_user_id')
       .notNull()
       .references(() => appUsers.id, { onDelete: 'cascade' }),
-    billRateCents: bigint('bill_rate_cents', { mode: 'number' }).notNull(),
+    effectiveDate: date('effective_date').notNull(),
     costRateCents: bigint('cost_rate_cents', { mode: 'number' }),
-    effectiveStart: date('effective_start').notNull(),
-    effectiveEnd: date('effective_end'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    userEffectiveIdx: index('timekeeper_rate_user_effective_idx').on(
+    userDateUnique: uniqueIndex('staff_rate_snapshot_user_date_uk').on(
       t.appUserId,
-      t.effectiveStart,
+      t.effectiveDate,
     ),
+    userIdx: index('staff_rate_snapshot_user_idx').on(t.appUserId, t.effectiveDate),
+  }),
+);
+
+export const staffRateSnapshotEntries = pgTable(
+  'staff_rate_snapshot_entry',
+  {
+    snapshotId: uuid('snapshot_id')
+      .notNull()
+      .references(() => staffRateSnapshots.id, { onDelete: 'cascade' }),
+    rateCodeId: uuid('rate_code_id')
+      .notNull()
+      .references(() => rateCodes.id, { onDelete: 'restrict' }),
+    billRateCents: bigint('bill_rate_cents', { mode: 'number' }).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.snapshotId, t.rateCodeId] }),
+    codeIdx: index('staff_rate_snapshot_entry_code_idx').on(t.rateCodeId),
+    billNonNeg: check('staff_rate_snapshot_entry_bill_nonneg', sql`${t.billRateCents} >= 0`),
   }),
 );
 
@@ -1389,9 +1514,16 @@ export const timeEntries = pgTable(
     entryDate: date('entry_date').notNull(),
     hours: numeric('hours', { precision: 6, scale: 2 }).notNull(),
 
+    // User-settable at write time; defaults true. May be seeded from
+    // workCode.billableDefault at create time by the API. Reporting
+    // treats this as authoritative — it is not recomputed.
     billableFlag: boolean('billable_flag').notNull().default(true),
-    // Q20 — set at write time via in_scope_work_code_ids on engagement
+    // Q20 — set at write time via in_scope_work_code_ids on engagement.
+    // Never user-editable; provenance preserved.
     inScopeFlag: boolean('in_scope_flag').notNull().default(true),
+    // 0050 — user-controlled OOS veto on top of computed inScopeFlag.
+    // Effective scope in reporting = inScopeFlag AND NOT outOfScopeOverride.
+    outOfScopeOverride: boolean('out_of_scope_override').notNull().default(false),
 
     description: text('description').notNull().default(''),
 
@@ -1584,6 +1716,16 @@ export const billingBatches = pgTable(
     periodStart: date('period_start').notNull(),
     periodEnd: date('period_end').notNull(),
     status: billingBatchStatus('status').notNull().default('DRAFT'),
+    // 0050 — retainer billing batches carry a target dollar amount;
+    // allocations across selected entries must sum to it.
+    kind: billingBatchKind('kind').notNull().default('STANDARD'),
+    retainerTargetAmountCents: bigint('retainer_target_amount_cents', { mode: 'number' }),
+    // 0052 — invoice composition saved on the batch, applied when the
+    // batch is finalized + an invoice is generated.
+    invoiceDescription: text('invoice_description'),
+    invoiceLineItems: jsonb('invoice_line_items').$type<
+      Array<{ description: string; amountCents: number }>
+    >(),
     // Phase 10 #35 — explicit idempotency key. Set deterministically by
     // the recurring tick to 'recurring:<plan_id>:<period_start>' so
     // double-runs are dropped at the UNIQUE constraint. NULL for
@@ -1610,6 +1752,12 @@ export const billingBatches = pgTable(
       t.periodStart,
     ),
     statusIdx: index('billing_batch_status_idx').on(t.status),
+    kindIdx: index('billing_batch_kind_idx').on(t.kind),
+    // 0050 — retainer batches must declare a target; standard must not.
+    retainerTargetPresent: check(
+      'billing_batch_retainer_target_present',
+      sql`(${t.kind} = 'RETAINER' AND ${t.retainerTargetAmountCents} IS NOT NULL AND ${t.retainerTargetAmountCents} > 0) OR (${t.kind} = 'STANDARD' AND ${t.retainerTargetAmountCents} IS NULL)`,
+    ),
   }),
 );
 
@@ -1782,6 +1930,55 @@ export const invoiceLineItems = pgTable(
   }),
 );
 
+// 0055 — Receive-Payment feature. paymentReceipts is the parent row
+// for the N payment rows that come from one "receive" operation. The
+// receipt holds payer + method + reference + provider charge id; the
+// N child payments hold the per-invoice allocation.
+export const paymentReceipts = pgTable(
+  'payment_receipt',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    payerClientId: uuid('payer_client_id')
+      .notNull()
+      .references(() => clients.id),
+    paymentDate: date('payment_date').notNull(),
+    reference: text('reference'),
+    paymentMethod: text('payment_method').notNull(),
+    mode: text('mode').notNull(), // 'RECORD' | 'CHARGE'
+    totalCents: bigint('total_cents', { mode: 'number' }).notNull(),
+    provider: text('provider').notNull(), // 'STRIPE' | 'CPACHARGE' | 'MANUAL'
+    providerChargeId: text('provider_charge_id'),
+    status: text('status').notNull().default('PENDING'),
+    // Allocations stashed only while status='PENDING'. Webhook reads this
+    // to materialize payment rows on intent.succeeded.
+    allocationsPending: jsonb('allocations_pending').$type<
+      { invoiceId: string; amountCents: number }[]
+    >(),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmDateIdx: index('payment_receipt_firm_date_idx').on(t.firmId, t.paymentDate),
+    payerIdx: index('payment_receipt_payer_idx').on(t.payerClientId, t.paymentDate),
+    providerChargeIdx: index('payment_receipt_provider_charge_idx').on(t.providerChargeId),
+    statusIdx: index('payment_receipt_status_idx').on(t.status),
+    modeCk: check('payment_receipt_mode_ck', sql`${t.mode} IN ('RECORD', 'CHARGE')`),
+    statusCk: check(
+      'payment_receipt_status_ck',
+      sql`${t.status} IN ('PENDING', 'SUCCEEDED', 'FAILED', 'VOIDED')`,
+    ),
+    providerCk: check(
+      'payment_receipt_provider_ck',
+      sql`${t.provider} IN ('STRIPE', 'CPACHARGE', 'MANUAL', 'CREDIT')`,
+    ),
+    totalNonNeg: check('payment_receipt_total_nonneg', sql`${t.totalCents} >= 0`),
+  }),
+);
+
 export const payments = pgTable(
   'payment',
   {
@@ -1803,11 +2000,106 @@ export const payments = pgTable(
     // should pick this row up. Cleared on SUCCEEDED transition.
     retryCount: integer('retry_count').notNull().default(0),
     nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+    // 0055 — links the N payments from a single receive operation.
+    // NULL for legacy /auto-apply rows and any payment created before
+    // the receipt parent table existed.
+    receiptId: uuid('receipt_id').references(() => paymentReceipts.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     invoiceIdx: index('payment_invoice_idx').on(t.invoiceId),
     providerChargeIdx: index('payment_provider_charge_idx').on(t.providerChargeId),
+    receiptIdx: index('payment_receipt_idx').on(t.receiptId),
+    providerCk: check(
+      'payment_provider_ck',
+      sql`${t.provider} IN ('STRIPE', 'CPACHARGE', 'MANUAL', 'CREDIT')`,
+    ),
+  }),
+);
+
+// 0056 — credit memos. Open credits the client has on file. Three
+// sources: MANUAL (staff entry), OVERPAYMENT (auto from /receive when
+// amount_received > sum of allocations), REFUND_EXCESS (auto from
+// Stripe webhook when a refund exceeds invoice recoverable). Cross-
+// entity application allowed within firm (see /credits router).
+export const creditMemos = pgTable(
+  'credit_memo',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id),
+    issuedDate: date('issued_date').notNull(),
+    originalAmountCents: bigint('original_amount_cents', { mode: 'number' }).notNull(),
+    source: text('source').notNull(), // 'MANUAL' | 'OVERPAYMENT' | 'REFUND_EXCESS'
+    reference: text('reference'),
+    notes: text('notes'),
+    status: text('status').notNull().default('OPEN'),
+    sourceReceiptId: uuid('source_receipt_id').references(() => paymentReceipts.id, {
+      onDelete: 'set null',
+    }),
+    sourcePaymentId: uuid('source_payment_id').references(() => payments.id, {
+      onDelete: 'set null',
+    }),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    voidedById: uuid('voided_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    voidReason: text('void_reason'),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmClientStatusIdx: index('credit_memo_firm_client_status_idx').on(
+      t.firmId,
+      t.clientId,
+      t.status,
+    ),
+    sourceReceiptIdx: index('credit_memo_source_receipt_idx').on(t.sourceReceiptId),
+    sourcePaymentIdx: index('credit_memo_source_payment_idx').on(t.sourcePaymentId),
+    amountPositive: check('credit_memo_amount_positive', sql`${t.originalAmountCents} > 0`),
+    sourceCk: check(
+      'credit_memo_source_ck',
+      sql`${t.source} IN ('MANUAL', 'OVERPAYMENT', 'REFUND_EXCESS')`,
+    ),
+    statusCk: check(
+      'credit_memo_status_ck',
+      sql`${t.status} IN ('OPEN', 'PARTIALLY_APPLIED', 'FULLY_APPLIED', 'VOIDED')`,
+    ),
+  }),
+);
+
+// One row per (credit, invoice) application. payment_id is the sibling
+// provider='CREDIT' payment row that handles the invoice-side ledger.
+// Void path: flip voided_at, flip payment.status to REFUNDED, recompute
+// invoice.paid_cents and credit_memo.status.
+export const creditApplications = pgTable(
+  'credit_application',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    creditMemoId: uuid('credit_memo_id')
+      .notNull()
+      .references(() => creditMemos.id, { onDelete: 'restrict' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'restrict' }),
+    paymentId: uuid('payment_id')
+      .notNull()
+      .references(() => payments.id, { onDelete: 'restrict' }),
+    amountCents: bigint('amount_cents', { mode: 'number' }).notNull(),
+    appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
+    appliedById: uuid('applied_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    receiptId: uuid('receipt_id').references(() => paymentReceipts.id, { onDelete: 'set null' }),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    voidedById: uuid('voided_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+  },
+  (t) => ({
+    creditMemoActiveIdx: index('credit_application_credit_memo_active_idx').on(t.creditMemoId),
+    invoiceIdx: index('credit_application_invoice_idx').on(t.invoiceId),
+    receiptIdx: index('credit_application_receipt_idx').on(t.receiptId),
+    amountPositive: check('credit_application_amount_positive', sql`${t.amountCents} > 0`),
   }),
 );
 
@@ -2307,6 +2599,78 @@ export const invoiceRelations = relations(invoices, ({ one, many }) => ({
 }));
 
 // =====================================================================
+// 0050 — TIER 1–3 SWEEP TABLES
+// =====================================================================
+
+// engagement_assignment — multi-staff per engagement. partnerId /
+// managerId on engagement stay for backwards-compat; "My Work" filter
+// widens to also match rows here.
+export const engagementAssignments = pgTable(
+  'engagement_assignment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    role: engagementAssignmentRole('role').notNull().default('STAFF'),
+    assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
+    assignedById: uuid('assigned_by_id').references(() => appUsers.id),
+  },
+  (t) => ({
+    naturalKey: uniqueIndex('engagement_assignment_uk').on(t.engagementId, t.appUserId, t.role),
+    engagementIdx: index('engagement_assignment_engagement_idx').on(t.engagementId),
+    userIdx: index('engagement_assignment_user_idx').on(t.appUserId, t.engagementId),
+  }),
+);
+
+// engagement_status_config — per-firm × workflow_state presentation +
+// automation flags. Seeded by migration; no insert/delete from app.
+export const engagementStatusConfig = pgTable(
+  'engagement_status_config',
+  {
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    workflowState: engagementWorkflowState('workflow_state').notNull(),
+    label: text('label').notNull(),
+    color: text('color').notNull().default('#6b7280'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    kanbanVisible: boolean('kanban_visible').notNull().default(true),
+    triggersClientComm: boolean('triggers_client_comm').notNull().default(false),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.firmId, t.workflowState] }),
+    firmSortIdx: index('engagement_status_config_firm_sort_idx').on(t.firmId, t.sortOrder),
+  }),
+);
+
+// invoice_reminder_log — manual reminders are rate-limited via a
+// per-invoice cooldown read from this log; automated dunning runs are
+// also recorded for audit / UI display.
+export const invoiceReminderLog = pgTable(
+  'invoice_reminder_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    actorAppUserId: uuid('actor_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    kind: invoiceReminderKind('kind').notNull(),
+    template: text('template').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    invoiceSentIdx: index('invoice_reminder_log_invoice_sent_idx').on(t.invoiceId, t.sentAt),
+  }),
+);
+
+// =====================================================================
 // INFERRED TYPES
 // =====================================================================
 
@@ -2342,7 +2706,13 @@ export type NewFileVisibilityEvent = typeof fileVisibilityEvents.$inferInsert;
 export type FileAccessLogRow = typeof fileAccessLog.$inferSelect;
 export type NewFileAccessLogRow = typeof fileAccessLog.$inferInsert;
 
-export type TimekeeperRate = typeof timekeeperRates.$inferSelect;
+export type RateCode = typeof rateCodes.$inferSelect;
+export type NewRateCode = typeof rateCodes.$inferInsert;
+export type StaffRateSnapshot = typeof staffRateSnapshots.$inferSelect;
+export type NewStaffRateSnapshot = typeof staffRateSnapshots.$inferInsert;
+export type StaffRateSnapshotEntry = typeof staffRateSnapshotEntries.$inferSelect;
+export type NewStaffRateSnapshotEntry = typeof staffRateSnapshotEntries.$inferInsert;
+
 export type TimeEntry = typeof timeEntries.$inferSelect;
 export type NewTimeEntry = typeof timeEntries.$inferInsert;
 
@@ -2361,6 +2731,13 @@ export type Invoice = typeof invoices.$inferSelect;
 export type NewInvoice = typeof invoices.$inferInsert;
 export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
+export type NewPayment = typeof payments.$inferInsert;
+export type PaymentReceipt = typeof paymentReceipts.$inferSelect;
+export type NewPaymentReceipt = typeof paymentReceipts.$inferInsert;
+export type CreditMemo = typeof creditMemos.$inferSelect;
+export type NewCreditMemo = typeof creditMemos.$inferInsert;
+export type CreditApplication = typeof creditApplications.$inferSelect;
+export type NewCreditApplication = typeof creditApplications.$inferInsert;
 
 export type ApprovalRule = typeof approvalRules.$inferSelect;
 export type ApprovalRequest = typeof approvalRequests.$inferSelect;
@@ -2372,6 +2749,14 @@ export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type McpToken = typeof mcpTokens.$inferSelect;
 export type AiRequestLogRow = typeof aiRequestLog.$inferSelect;
+
+// 0050 — tier 1-3 sweep
+export type EngagementAssignment = typeof engagementAssignments.$inferSelect;
+export type NewEngagementAssignment = typeof engagementAssignments.$inferInsert;
+export type EngagementStatusConfig = typeof engagementStatusConfig.$inferSelect;
+export type NewEngagementStatusConfig = typeof engagementStatusConfig.$inferInsert;
+export type InvoiceReminderLogRow = typeof invoiceReminderLog.$inferSelect;
+export type NewInvoiceReminderLogRow = typeof invoiceReminderLog.$inferInsert;
 
 // =====================================================================
 // MIGRATION ORDER NOTES
@@ -2385,7 +2770,8 @@ export type AiRequestLogRow = typeof aiRequestLog.$inferSelect;
 //   5. service_line, work_code, engagement_type, reason_code
 //   6. client
 //   7. engagement
-//   8. timekeeper_rate, client_rate_override, engagement_rate_override, service_line_rate
+//   8. rate_code, staff_rate_snapshot, staff_rate_snapshot_entry,
+//      client_rate_override, engagement_rate_override, service_line_rate
 //   9. time_entry, time_entry_version
 //   10. recurring_billing_plan, recurring_billing_plan_service
 //   11. milestone_plan, milestone

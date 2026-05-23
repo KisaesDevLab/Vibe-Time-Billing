@@ -24,6 +24,13 @@ interface Client {
   filingStatus?: 'SINGLE' | 'MFJ' | 'MFS' | 'HOH' | 'QW' | null;
   pipelineStage?: 'PROSPECT' | 'CLIENT' | 'OTHER';
   active?: boolean;
+  // 0050 — structured mailing address.
+  mailingStreet1?: string | null;
+  mailingStreet2?: string | null;
+  mailingCity?: string | null;
+  mailingState?: string | null;
+  mailingPostal?: string | null;
+  mailingCountry?: string | null;
 }
 
 interface Partner {
@@ -252,6 +259,64 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
               Visible in time entry + dashboards
             </label>
           </Field>
+          {/* 0050 — structured mailing address */}
+          <div style={{ gridColumn: 'span 2', marginTop: 4 }}>
+            <div
+              style={{
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+                marginBottom: 6,
+              }}
+            >
+              Mailing address
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <Field label="Street 1">
+                <input
+                  value={(v('mailingStreet1') as string) ?? ''}
+                  onChange={(e) => setDraft({ ...draft, mailingStreet1: e.target.value || null })}
+                  style={fieldStyle}
+                />
+              </Field>
+              <Field label="Street 2">
+                <input
+                  value={(v('mailingStreet2') as string) ?? ''}
+                  onChange={(e) => setDraft({ ...draft, mailingStreet2: e.target.value || null })}
+                  style={fieldStyle}
+                />
+              </Field>
+              <Field label="City">
+                <input
+                  value={(v('mailingCity') as string) ?? ''}
+                  onChange={(e) => setDraft({ ...draft, mailingCity: e.target.value || null })}
+                  style={fieldStyle}
+                />
+              </Field>
+              <Field label="State / Province">
+                <input
+                  value={(v('mailingState') as string) ?? ''}
+                  onChange={(e) => setDraft({ ...draft, mailingState: e.target.value || null })}
+                  style={fieldStyle}
+                />
+              </Field>
+              <Field label="Postal code">
+                <input
+                  value={(v('mailingPostal') as string) ?? ''}
+                  onChange={(e) => setDraft({ ...draft, mailingPostal: e.target.value || null })}
+                  style={fieldStyle}
+                />
+              </Field>
+              <Field label="Country">
+                <input
+                  value={(v('mailingCountry') as string) ?? ''}
+                  onChange={(e) => setDraft({ ...draft, mailingCountry: e.target.value || null })}
+                  style={fieldStyle}
+                />
+              </Field>
+            </div>
+          </div>
         </div>
       ) : (
         <dl
@@ -293,10 +358,35 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
           <dd style={{ margin: 0 }}>{client.invoiceConsolidationPreference}</dd>
           <dt style={{ color: tokens.color.textMuted }}>Created</dt>
           <dd style={{ margin: 0 }}>{client.createdAt.slice(0, 10)}</dd>
+          {hasMailingAddress(client) && (
+            <>
+              <dt style={{ color: tokens.color.textMuted }}>Mailing</dt>
+              <dd style={{ margin: 0, whiteSpace: 'pre-line' }}>{formatAddress(client)}</dd>
+            </>
+          )}
         </dl>
       )}
     </Card>
   );
+}
+
+function hasMailingAddress(c: Client): boolean {
+  return Boolean(
+    c.mailingStreet1 ||
+    c.mailingStreet2 ||
+    c.mailingCity ||
+    c.mailingState ||
+    c.mailingPostal ||
+    c.mailingCountry,
+  );
+}
+
+function formatAddress(c: Client): string {
+  const line1 = c.mailingStreet1 ?? '';
+  const line2 = c.mailingStreet2 ?? '';
+  const cityState = [c.mailingCity, c.mailingState].filter(Boolean).join(', ');
+  const lastLine = [cityState, c.mailingPostal].filter(Boolean).join(' ');
+  return [line1, line2, lastLine, c.mailingCountry].filter(Boolean).join('\n');
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {

@@ -16,6 +16,7 @@ import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface ArRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -33,6 +34,7 @@ interface ClientAging {
 
 export function createArRouter(deps: ArRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/aging',
@@ -47,9 +49,53 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         });
         return;
       }
+      // 0050 — accept clientOwnerId as a synonym for partnerId.
+      const ownerFilter =
+        (typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : undefined) ??
+        (typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : undefined);
+      const clientIdFilter =
+        typeof req.query['clientId'] === 'string' ? req.query['clientId'] : undefined;
       const data = await loadAging(deps.db, session.firmId, {
-        partnerId: typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : undefined,
+        partnerId: ownerFilter,
+        clientId: clientIdFilter,
       });
+
+      // 0050 — sort + pagination on the aggregated client rows.
+      const sortCol = String(req.query['sort'] ?? 'total');
+      const sortDir = String(req.query['dir'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+      const sign = sortDir === 'asc' ? 1 : -1;
+      const sortFn = (a: ClientAging, b: ClientAging): number => {
+        switch (sortCol) {
+          case 'clientName':
+            return sign * a.clientName.localeCompare(b.clientName);
+          case 'b1':
+            return sign * (a.buckets['0-30'] - b.buckets['0-30']);
+          case 'b2':
+            return sign * (a.buckets['31-60'] - b.buckets['31-60']);
+          case 'b3':
+            return sign * (a.buckets['61-90'] - b.buckets['61-90']);
+          case 'b4':
+            return sign * (a.buckets['90+'] - b.buckets['90+']);
+          case 'total':
+          default:
+            return sign * (a.total - b.total);
+        }
+      };
+      data.clients = [...data.clients].sort(sortFn);
+
+      const paginated = req.query['page'] != null;
+      const total = data.clients.length;
+      if (paginated) {
+        const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+        const pageSize = Math.min(
+          500,
+          Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50),
+        );
+        const slice = data.clients.slice((page - 1) * pageSize, page * pageSize);
+        res.json({ ...data, clients: slice, rows: slice, total, page, pageSize });
+        return;
+      }
+
       const format = String(req.query['format'] ?? '').toLowerCase();
       if (format === 'csv') {
         res.setHeader('Content-Type', 'text/csv');
@@ -460,7 +506,7 @@ export function createArRouter(deps: ArRoutesDeps): Router {
 async function loadAging(
   db: Database,
   firmId: string,
-  opts: { partnerId?: string } = {},
+  opts: { partnerId?: string; clientId?: string } = {},
 ): Promise<{ asOf: string; totals: Record<AgingBucket, number>; clients: ClientAging[] }> {
   const today = new Date().toISOString().slice(0, 10);
   const conds = [
@@ -470,6 +516,9 @@ async function loadAging(
   ];
   if (opts.partnerId) {
     conds.push(eq(clients.partnerInChargeId, opts.partnerId));
+  }
+  if (opts.clientId) {
+    conds.push(eq(clients.id, opts.clientId));
   }
   const outstanding = await db
     .select({

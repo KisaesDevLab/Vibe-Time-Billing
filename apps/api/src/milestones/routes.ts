@@ -22,6 +22,7 @@ import { sql as drizzleSql } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface MilestoneRoutesDeps extends RbacDeps {
@@ -51,6 +52,7 @@ const PlanCreateSchema = z.object({
 
 export function createMilestoneRouter(deps: MilestoneRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/by-engagement/:engagementId',

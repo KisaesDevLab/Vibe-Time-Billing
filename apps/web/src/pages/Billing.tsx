@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState, type FormEvent } from 'react';
-import { Link, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { AdjustmentDialog } from './AdjustmentDialog';
@@ -15,9 +15,20 @@ interface BatchRow {
   periodStart: string;
   periodEnd: string;
   status: 'DRAFT' | 'IN_REVIEW' | 'APPROVED' | 'INVOICED' | 'CANCELLED';
+  kind?: 'STANDARD' | 'RETAINER';
+  retainerTargetAmountCents?: number | null;
+  // 0052 — invoice composition saved on the batch.
+  invoiceDescription?: string | null;
+  invoiceLineItems?: Array<{ description: string; amountCents: number }> | null;
 }
 
 interface Engagement {
+  id: string;
+  name: string;
+  clientId: string;
+}
+
+interface ClientLite {
   id: string;
   name: string;
 }
@@ -28,12 +39,22 @@ interface BatchEntry {
   hours: string;
   standardAmountCents: number;
   action: 'INCLUDE' | 'DEFER' | 'WRITE_OFF';
+  staffName?: string | null;
+  description?: string | null;
 }
 
 interface BatchDetail {
   batch: BatchRow;
   entries: BatchEntry[];
   aging: Record<string, number>;
+  engagement?: { id: string; name: string; clientId: string; clientName: string } | null;
+  adjustmentTotalCents?: number;
+}
+
+interface ReasonCode {
+  id: string;
+  category: 'WRITE_DOWN' | 'WRITE_UP' | 'TRANSFER';
+  label: string;
 }
 
 export function BillingBatchesPage(): JSX.Element {
@@ -48,22 +69,37 @@ export function BillingBatchesPage(): JSX.Element {
 function BatchListPage(): JSX.Element {
   const [items, setItems] = useState<BatchRow[]>([]);
   const [engagements, setEngagements] = useState<Engagement[]>([]);
+  const [clients, setClients] = useState<ClientLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [engagementId, setEngagementId] = useState('');
-  const [periodStart, setPeriodStart] = useState('2026-05-01');
-  const [periodEnd, setPeriodEnd] = useState('2026-05-31');
+  const [search] = useSearchParams();
+  // 0050 — client → engagement order. URL params from WIP "Bill" buttons
+  // prefill all four fields.
+  const [clientId, setClientId] = useState(search.get('clientId') ?? '');
+  const [engagementId, setEngagementId] = useState(search.get('engagementId') ?? '');
+  const [periodStart, setPeriodStart] = useState(
+    search.get('periodStart') ??
+      new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+  );
+  const [periodEnd, setPeriodEnd] = useState(
+    search.get('periodEnd') ?? new Date().toISOString().slice(0, 10),
+  );
+  // 0050 — batch kind picker (Standard vs Retainer)
+  const [kind, setKind] = useState<'STANDARD' | 'RETAINER'>('STANDARD');
+  const [retainerTargetDollars, setRetainerTargetDollars] = useState('');
   const navigate = useNavigate();
 
   async function load(): Promise<void> {
     setLoading(true);
     try {
-      const [b, e] = await Promise.all([
+      const [b, e, c] = await Promise.all([
         api<{ items: BatchRow[] }>('/api/staff/billing-batches'),
         api<{ items: Engagement[] }>('/api/staff/engagements'),
+        api<{ items: ClientLite[] }>('/api/staff/clients'),
       ]);
       setItems(b.items ?? []);
       setEngagements(e.items ?? []);
+      setClients(c.items ?? []);
     } finally {
       setLoading(false);
     }
@@ -72,13 +108,34 @@ function BatchListPage(): JSX.Element {
     void load();
   }, []);
 
+  const filteredEngagements = useMemo(
+    () => engagements.filter((e) => !clientId || e.clientId === clientId),
+    [engagements, clientId],
+  );
+
+  // If the selected engagement no longer belongs to the picked client, clear it.
+  useEffect(() => {
+    if (engagementId && !filteredEngagements.some((e) => e.id === engagementId)) {
+      setEngagementId('');
+    }
+  }, [filteredEngagements, engagementId]);
+
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
     try {
+      const body: Record<string, unknown> = { engagementId, periodStart, periodEnd, kind };
+      if (kind === 'RETAINER') {
+        const cents = Math.round(Number(retainerTargetDollars) * 100);
+        if (!Number.isFinite(cents) || cents <= 0) {
+          setError('Retainer target amount is required.');
+          return;
+        }
+        body.retainerTargetAmountCents = cents;
+      }
       const r = await api<{ id: string }>('/api/staff/billing-batches', {
         method: 'POST',
-        body: JSON.stringify({ engagementId, periodStart, periodEnd }),
+        body: JSON.stringify(body),
       });
       navigate(`/billing/${r.id}`);
     } catch (err) {
@@ -93,37 +150,37 @@ function BatchListPage(): JSX.Element {
           onSubmit={create}
           style={{
             display: 'grid',
-            gridTemplateColumns: '2fr 1fr 1fr auto',
+            gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr auto',
             gap: 12,
             alignItems: 'end',
           }}
         >
-          <label style={{ display: 'block', fontFamily: tokens.font.body }}>
+          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
+            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+              Client
+            </div>
+            <Combobox
+              ariaLabel="Client"
+              required
+              value={clientId}
+              onChange={setClientId}
+              options={clients.map((c) => ({ value: c.id, label: c.name }))}
+              placeholder="— select —"
+            />
+          </div>
+          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
             <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
               Engagement
             </div>
-            <select
-              value={engagementId}
-              onChange={(e) => setEngagementId(e.target.value)}
+            <Combobox
+              ariaLabel="Engagement"
               required
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                background: tokens.color.surface,
-                color: tokens.color.text,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                fontSize: 14,
-              }}
-            >
-              <option value="">— select —</option>
-              {engagements.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              value={engagementId}
+              onChange={setEngagementId}
+              options={filteredEngagements.map((e) => ({ value: e.id, label: e.name }))}
+              placeholder={clientId ? '— select —' : 'Pick a client first'}
+            />
+          </div>
           <Input
             type="date"
             label="Period start"
@@ -136,9 +193,33 @@ function BatchListPage(): JSX.Element {
             value={periodEnd}
             onChange={(e) => setPeriodEnd(e.target.value)}
           />
-          <Button type="submit" disabled={!engagementId}>
+          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
+            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+              Batch type
+            </div>
+            <Combobox
+              ariaLabel="Batch type"
+              value={kind}
+              onChange={(v) => setKind(v as 'STANDARD' | 'RETAINER')}
+              options={[
+                { value: 'STANDARD', label: 'Standard' },
+                { value: 'RETAINER', label: 'Retainer' },
+              ]}
+            />
+          </div>
+          <Button type="submit" disabled={!engagementId || !clientId}>
             Create
           </Button>
+          {kind === 'RETAINER' && (
+            <Input
+              type="text"
+              inputMode="decimal"
+              label="Retainer target ($)"
+              value={retainerTargetDollars}
+              onChange={(e) => setRetainerTargetDollars(e.target.value)}
+              placeholder="0.00"
+            />
+          )}
         </form>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
       </Card>
@@ -197,6 +278,20 @@ function BatchDetailPage(): JSX.Element {
   const [finalizing, setFinalizing] = useState(false);
   const [showAdjustDialog, setShowAdjustDialog] = useState(false);
 
+  // 0052 — set-target form
+  const [targetDollars, setTargetDollars] = useState('');
+  const [targetReasonId, setTargetReasonId] = useState('');
+  const [targetNotes, setTargetNotes] = useState('');
+  const [reasonCodes, setReasonCodes] = useState<ReasonCode[]>([]);
+  const [settingTarget, setSettingTarget] = useState(false);
+
+  // 0052 — invoice composition draft
+  const [invoiceDescription, setInvoiceDescription] = useState('');
+  const [invoiceLines, setInvoiceLines] = useState<Array<{ description: string; dollars: string }>>(
+    [],
+  );
+  const [savingComposition, setSavingComposition] = useState(false);
+
   async function load(): Promise<void> {
     setLoading(true);
     try {
@@ -205,6 +300,13 @@ function BatchDetailPage(): JSX.Element {
       const m = new Map<string, BatchEntry['action']>();
       for (const e of d.entries) m.set(e.timeEntryId, e.action);
       setActions(m);
+      setInvoiceDescription(d.batch.invoiceDescription ?? '');
+      setInvoiceLines(
+        (d.batch.invoiceLineItems ?? []).map((l) => ({
+          description: l.description,
+          dollars: (l.amountCents / 100).toFixed(2),
+        })),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     } finally {
@@ -215,6 +317,20 @@ function BatchDetailPage(): JSX.Element {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Pull write-down/up reason codes for the set-target form.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ items: ReasonCode[] }>('/api/staff/taxonomy/reason-codes');
+        setReasonCodes(
+          (r.items ?? []).filter((c) => c.category === 'WRITE_DOWN' || c.category === 'WRITE_UP'),
+        );
+      } catch {
+        // Non-fatal.
+      }
+    })();
+  }, []);
 
   async function finalize(): Promise<void> {
     if (!detail) return;
@@ -238,6 +354,62 @@ function BatchDetailPage(): JSX.Element {
     }
   }
 
+  async function applyTarget(): Promise<void> {
+    if (!targetDollars || !targetReasonId) {
+      setError('Target amount and reason code are required.');
+      return;
+    }
+    const cents = Math.round(Number(targetDollars) * 100);
+    if (!Number.isFinite(cents) || cents < 0) {
+      setError('Target amount must be a non-negative number.');
+      return;
+    }
+    setSettingTarget(true);
+    setError(null);
+    try {
+      await api(`/api/staff/billing-batches/${id}/set-target`, {
+        method: 'POST',
+        body: JSON.stringify({
+          targetAmountCents: cents,
+          reasonCodeId: targetReasonId,
+          notes: targetNotes || undefined,
+        }),
+      });
+      setTargetDollars('');
+      setTargetNotes('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'set_target_failed');
+    } finally {
+      setSettingTarget(false);
+    }
+  }
+
+  async function saveComposition(): Promise<void> {
+    setSavingComposition(true);
+    setError(null);
+    try {
+      const lines = invoiceLines
+        .filter((l) => l.description.trim() && l.dollars.trim())
+        .map((l) => ({
+          description: l.description.trim(),
+          amountCents: Math.round(Number(l.dollars) * 100),
+        }));
+      await api(`/api/staff/billing-batches/${id}/invoice-composition`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          invoiceDescription: invoiceDescription || null,
+          invoiceLineItems: lines.length > 0 ? lines : null,
+        }),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_composition_failed');
+    } finally {
+      setSavingComposition(false);
+    }
+  }
+
   if (loading || !detail) {
     return <p style={{ color: tokens.color.textMuted }}>Loading…</p>;
   }
@@ -252,21 +424,69 @@ function BatchDetailPage(): JSX.Element {
     },
     { included: 0, deferred: 0, writtenOff: 0 },
   );
+  // 0052 — billed = INCLUDE total + signed approved adjustments.
+  const adjustmentTotalCents = detail.adjustmentTotalCents ?? 0;
+  const billedCents = totals.included + adjustmentTotalCents;
+  const lineSumCents = invoiceLines.reduce(
+    (s, l) => s + (Number.isFinite(Number(l.dollars)) ? Math.round(Number(l.dollars) * 100) : 0),
+    0,
+  );
+  const compositionMismatch =
+    invoiceLines.filter((l) => l.description.trim() || l.dollars.trim()).length > 0 &&
+    lineSumCents !== billedCents;
+  const fmtCents = (c: number): string =>
+    `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <Card
-        title={`Batch ${detail.batch.id.slice(0, 8)} — ${detail.batch.periodStart} → ${detail.batch.periodEnd}`}
+        title={
+          detail.engagement
+            ? `${detail.engagement.clientName} · ${detail.engagement.name}`
+            : `Batch ${detail.batch.id.slice(0, 8)}`
+        }
         action={
-          <Pill tone={detail.batch.status === 'APPROVED' ? 'success' : 'neutral'}>
-            {detail.batch.status}
-          </Pill>
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            {detail.batch.kind === 'RETAINER' && <Pill tone="accent">Retainer</Pill>}
+            <Pill tone={detail.batch.status === 'APPROVED' ? 'success' : 'neutral'}>
+              {detail.batch.status}
+            </Pill>
+          </span>
         }
       >
-        <div style={{ display: 'flex', gap: 24, fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: 24, fontSize: 13, flexWrap: 'wrap' }}>
           <div>
-            <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Include</div>
+            <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Period</div>
+            <strong>
+              {detail.batch.periodStart} → {detail.batch.periodEnd}
+            </strong>
+          </div>
+          <div>
+            <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+              Standard WIP (include)
+            </div>
             <strong>${(totals.included / 100).toLocaleString()}</strong>
+          </div>
+          {adjustmentTotalCents !== 0 && (
+            <div>
+              <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+                Adjustments (write {adjustmentTotalCents < 0 ? 'down' : 'up'})
+              </div>
+              <strong
+                style={{
+                  color: adjustmentTotalCents < 0 ? tokens.color.danger : tokens.color.success,
+                }}
+              >
+                {adjustmentTotalCents < 0 ? '−' : '+'}$
+                {(Math.abs(adjustmentTotalCents) / 100).toLocaleString()}
+              </strong>
+            </div>
+          )}
+          <div>
+            <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Total to invoice</div>
+            <strong style={{ fontSize: 18 }}>
+              ${(billedCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </strong>
           </div>
           <div>
             <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Defer (carry-forward)</div>
@@ -276,6 +496,17 @@ function BatchDetailPage(): JSX.Element {
             <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Write off</div>
             <strong>${(totals.writtenOff / 100).toLocaleString()}</strong>
           </div>
+          {detail.batch.kind === 'RETAINER' && detail.batch.retainerTargetAmountCents != null && (
+            <div>
+              <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Retainer target</div>
+              <strong>${(detail.batch.retainerTargetAmountCents / 100).toLocaleString()}</strong>
+              {totals.included !== detail.batch.retainerTargetAmountCents && (
+                <div style={{ color: tokens.color.warning, fontSize: 11 }}>
+                  Include total ≠ target
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </Card>
 
@@ -289,6 +520,237 @@ function BatchDetailPage(): JSX.Element {
           ))}
         </div>
       </Card>
+
+      {/* 0052 — set the invoice target, server creates the write-up/down
+          adjustment automatically. Hidden once batch is INVOICED. */}
+      {(detail.batch.status === 'DRAFT' || detail.batch.status === 'IN_REVIEW') && (
+        <Card title="Set target invoice amount">
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            Enter the amount you want to bill — we&apos;ll auto-create a write-down or write-up
+            adjustment for the delta against the current total to invoice ({fmtCents(billedCents)}).
+          </p>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 2fr auto',
+              gap: 12,
+              alignItems: 'end',
+            }}
+          >
+            <Input
+              type="text"
+              inputMode="decimal"
+              label="Target ($)"
+              value={targetDollars}
+              onChange={(e) => setTargetDollars(e.target.value)}
+              placeholder={(billedCents / 100).toFixed(2)}
+            />
+            <div>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Reason code
+              </div>
+              <Combobox
+                ariaLabel="Reason code"
+                value={targetReasonId}
+                onChange={setTargetReasonId}
+                options={reasonCodes.map((r) => ({
+                  value: r.id,
+                  label: `${r.label} (${r.category})`,
+                }))}
+                placeholder="— select —"
+              />
+            </div>
+            <Input
+              label="Notes (optional)"
+              value={targetNotes}
+              onChange={(e) => setTargetNotes(e.target.value)}
+              placeholder="Why are we writing up/down?"
+            />
+            <Button
+              onClick={() => void applyTarget()}
+              disabled={settingTarget || !targetDollars || !targetReasonId}
+            >
+              {settingTarget ? 'Applying…' : 'Apply'}
+            </Button>
+          </div>
+          {targetDollars && Number.isFinite(Number(targetDollars)) && (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8 }}>
+              Delta: {fmtCents(Math.round(Number(targetDollars) * 100) - billedCents)} (
+              {Math.round(Number(targetDollars) * 100) - billedCents >= 0
+                ? 'write-up'
+                : 'write-down'}
+              )
+            </p>
+          )}
+        </Card>
+      )}
+
+      {/* 0052 — invoice composition editor. Description seeds invoice
+          notes; line items override the auto-generated single line.
+          Sum of line amounts must equal the billed total. */}
+      {(detail.batch.status === 'DRAFT' ||
+        detail.batch.status === 'IN_REVIEW' ||
+        detail.batch.status === 'APPROVED') && (
+        <Card
+          title="Invoice composition"
+          action={
+            <Button
+              size="sm"
+              onClick={() => void saveComposition()}
+              disabled={savingComposition || compositionMismatch}
+            >
+              {savingComposition ? 'Saving…' : 'Save composition'}
+            </Button>
+          }
+        >
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            Customize the invoice memo and split the bill into multiple line items. Leave the line
+            items empty to use the default single line.
+          </p>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <label
+              style={{
+                display: 'block',
+                fontSize: 12,
+                color: tokens.color.textMuted,
+              }}
+            >
+              Invoice description (memo)
+              <textarea
+                value={invoiceDescription}
+                onChange={(e) => setInvoiceDescription(e.target.value)}
+                rows={2}
+                placeholder="Optional memo that lands on the invoice header"
+                style={{
+                  width: '100%',
+                  marginTop: 4,
+                  padding: '6px 8px',
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  fontSize: 13,
+                  boxSizing: 'border-box',
+                  fontFamily: 'inherit',
+                }}
+              />
+            </label>
+            <div style={{ marginTop: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 6,
+                }}
+              >
+                <strong style={{ fontSize: 13 }}>Line items</strong>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setInvoiceLines((p) => [...p, { description: '', dollars: '' }])}
+                >
+                  + Add line
+                </Button>
+              </div>
+              {invoiceLines.length === 0 ? (
+                <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                  No custom line items — the invoice will be generated with a single auto line for{' '}
+                  {fmtCents(billedCents)}.
+                </p>
+              ) : (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {invoiceLines.map((l, idx) => (
+                    <div
+                      key={idx}
+                      style={{ display: 'grid', gridTemplateColumns: '3fr 1fr auto', gap: 6 }}
+                    >
+                      <input
+                        value={l.description}
+                        onChange={(e) => {
+                          const next = [...invoiceLines];
+                          next[idx] = { ...next[idx]!, description: e.target.value };
+                          setInvoiceLines(next);
+                        }}
+                        placeholder={`Line ${idx + 1} description`}
+                        style={{
+                          padding: '6px 8px',
+                          background: tokens.color.surface,
+                          color: tokens.color.text,
+                          border: `1px solid ${tokens.color.border}`,
+                          borderRadius: tokens.radius.sm,
+                          fontSize: 13,
+                        }}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={l.dollars}
+                        onChange={(e) => {
+                          const next = [...invoiceLines];
+                          next[idx] = { ...next[idx]!, dollars: e.target.value };
+                          setInvoiceLines(next);
+                        }}
+                        placeholder="0.00"
+                        style={{
+                          padding: '6px 8px',
+                          background: tokens.color.surface,
+                          color: tokens.color.text,
+                          border: `1px solid ${tokens.color.border}`,
+                          borderRadius: tokens.radius.sm,
+                          fontSize: 13,
+                          textAlign: 'right',
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setInvoiceLines((p) => p.filter((_, i) => i !== idx))}
+                        aria-label={`Remove line ${idx + 1}`}
+                      >
+                        ×
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {invoiceLines.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: 8,
+                    borderRadius: tokens.radius.sm,
+                    background: compositionMismatch
+                      ? 'rgba(239, 68, 68, 0.08)'
+                      : tokens.color.surface,
+                    border: `1px solid ${compositionMismatch ? tokens.color.danger : tokens.color.border}`,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: 13,
+                  }}
+                >
+                  <span>
+                    Lines total: <strong>{fmtCents(lineSumCents)}</strong>
+                  </span>
+                  <span>
+                    Total to invoice: <strong>{fmtCents(billedCents)}</strong>
+                  </span>
+                  <span
+                    style={{
+                      color: compositionMismatch ? tokens.color.danger : tokens.color.success,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {compositionMismatch
+                      ? `Delta ${fmtCents(billedCents - lineSumCents)} — must equal 0`
+                      : 'Balanced ✓'}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
 
       <Card
         title="Entries"
@@ -326,6 +788,7 @@ function BatchDetailPage(): JSX.Element {
         <Table<BatchEntry>
           columns={[
             { key: 'date', header: 'Date', render: (e) => e.entryDate },
+            { key: 'staff', header: 'Staff', render: (e) => e.staffName ?? '—' },
             {
               key: 'hours',
               header: 'Hours',
@@ -337,6 +800,11 @@ function BatchDetailPage(): JSX.Element {
               header: 'Standard',
               align: 'right',
               render: (e) => `$${(e.standardAmountCents / 100).toLocaleString()}`,
+            },
+            {
+              key: 'desc',
+              header: 'Description',
+              render: (e) => e.description ?? '',
             },
             {
               key: 'action',

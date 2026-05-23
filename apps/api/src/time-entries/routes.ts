@@ -18,11 +18,13 @@ import {
   firms,
   hourBanks,
   hourBankTransactions,
+  rateCodes,
   requiredFieldRules,
   serviceLineRates,
+  staffRateSnapshotEntries,
+  staffRateSnapshots,
   timeEntries,
   timeEntryVersions,
-  timekeeperRates,
   workCodes,
 } from '@vibe/db/schema';
 import { captureRateSnapshot, resolveRate, type RateCandidate } from '@vibe/core/rates';
@@ -59,6 +61,8 @@ const CreateSchema = z.object({
   hours: z.number().positive().max(24),
   billableFlag: z.boolean().optional(),
   description: z.string().max(2000).optional(),
+  // 0050 — user-controlled OOS veto on top of computed in_scope_flag.
+  outOfScopeOverride: z.boolean().optional(),
 });
 
 const UpdateSchema = z.object({
@@ -66,6 +70,7 @@ const UpdateSchema = z.object({
   workCodeId: z.string().uuid().nullable().optional(),
   description: z.string().max(2000).optional(),
   billableFlag: z.boolean().optional(),
+  outOfScopeOverride: z.boolean().optional(),
 });
 
 const BulkFromTemplateSchema = z.object({
@@ -75,6 +80,7 @@ const BulkFromTemplateSchema = z.object({
     hours: z.number().positive().max(24),
     description: z.string().max(2000).optional(),
     billableFlag: z.boolean().optional(),
+    outOfScopeOverride: z.boolean().optional(),
   }),
   dates: z
     .array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/))
@@ -84,22 +90,47 @@ const BulkFromTemplateSchema = z.object({
 
 async function loadRateCandidates(
   db: Database,
-  args: { appUserId: string; engagementId: string; clientId: string; serviceLineId: string | null },
+  args: {
+    firmId: string;
+    appUserId: string;
+    engagementId: string;
+    clientId: string;
+    serviceLineId: string | null;
+  },
 ): Promise<RateCandidate[]> {
   const out: RateCandidate[] = [];
 
-  const tk = await db
-    .select()
-    .from(timekeeperRates)
-    .where(eq(timekeeperRates.appUserId, args.appUserId));
-  for (const r of tk) {
+  // 0054 — staff snapshots: one effective-dated row per staff, with one
+  // entry per rate code. We tag the StandardRate entries so the resolver
+  // can fall back when the engagement's rate code has no entry.
+  const snap = await db
+    .select({
+      snapshotId: staffRateSnapshots.id,
+      effectiveDate: staffRateSnapshots.effectiveDate,
+      costRateCents: staffRateSnapshots.costRateCents,
+      rateCodeId: staffRateSnapshotEntries.rateCodeId,
+      billRateCents: staffRateSnapshotEntries.billRateCents,
+      codeStr: rateCodes.code,
+    })
+    .from(staffRateSnapshots)
+    .innerJoin(
+      staffRateSnapshotEntries,
+      eq(staffRateSnapshotEntries.snapshotId, staffRateSnapshots.id),
+    )
+    .innerJoin(rateCodes, eq(rateCodes.id, staffRateSnapshotEntries.rateCodeId))
+    .where(
+      and(eq(staffRateSnapshots.appUserId, args.appUserId), eq(rateCodes.firmId, args.firmId)),
+    );
+  for (const r of snap) {
     out.push({
-      level: 'timekeeper',
+      level: 'staff_rate',
       appUserId: args.appUserId,
+      rateCodeId: r.rateCodeId,
+      isStandardCode: r.codeStr === 'StandardRate',
       billRateCents: r.billRateCents,
       costRateCents: r.costRateCents ?? null,
-      effectiveStart: r.effectiveStart,
-      effectiveEnd: r.effectiveEnd ?? null,
+      effectiveStart: r.effectiveDate,
+      effectiveEnd: null,
     });
   }
 
@@ -257,6 +288,12 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(409).json({ error: 'engagement_not_writable', status: eng.status });
         return;
       }
+      // 0050 — retainer lock: when a retainer billing batch is locking
+      // the engagement, no new time may be logged against it.
+      if (eng.retainerLockedAt) {
+        res.status(409).json({ error: 'retainer_locked', lockedAt: eng.retainerLockedAt });
+        return;
+      }
       // Phase 9 #16 — late-entry lockout. firm_settings.lateEntryLockoutDays
       // defines the back-dating window; entries older than (today - lockout)
       // are refused with 409 unless the user has the bypass permission.
@@ -317,6 +354,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
 
       const candidates = await loadRateCandidates(deps.db, {
+        firmId: session.firmId,
         appUserId: session.appUserId,
         engagementId: eng.id,
         clientId: client.id,
@@ -333,15 +371,15 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         return;
       }
       // Firm default bill rate isn't on the schema (deliberately — every
-      // staff user has a timekeeper rate). We fall back to a sentinel 0
-      // if nothing resolves; the API should never store that, so we
-      // refuse the entry.
+      // staff has at least a StandardRate snapshot entry). We fall back
+      // to a sentinel 0 if nothing resolves; the API refuses the entry.
       const resolved = resolveRate({
         serviceDate: parsed.data.entryDate,
         appUserId: session.appUserId,
         engagementId: eng.id,
         clientId: client.id,
         serviceLineId,
+        rateCodeId: eng.defaultRateCodeId ?? null,
         candidates,
         firmDefaultBillRateCents: 0,
       });
@@ -405,6 +443,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           hours: parsed.data.hours.toString(),
           billableFlag: parsed.data.billableFlag ?? true,
           inScopeFlag: inScope,
+          outOfScopeOverride: parsed.data.outOfScopeOverride ?? false,
           description: parsed.data.description ?? '',
           standardRateSnapshotCents: snapshot.rateCents,
           standardAmountCents: snapshot.amountCents,
@@ -814,7 +853,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
       const start = (req.query['start'] ?? '').toString();
       const end = (req.query['end'] ?? '').toString();
-      const conds = [eq(timeEntries.appUserId, session.appUserId)];
+      // 0050 — exclude soft-deleted entries from "my entries".
+      const conds = [
+        eq(timeEntries.appUserId, session.appUserId),
+        sql`${timeEntries.status} <> 'ARCHIVED'`,
+      ];
       if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
       if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
       const items = await deps.db
@@ -823,6 +866,104 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .where(and(...conds))
         .limit(500);
       res.json({ items });
+    },
+  );
+
+  // 0050 — Rich list endpoint backing the /time "My entries" view.
+  // Always scoped to the current user (mirrors /mine permission) — a
+  // future cross-user variant can layer on top using read:all. Returns
+  // { rows, total, page, pageSize } with filters: date range, client,
+  // engagement, billable, OOS. Sort + pagination supported.
+  router.get(
+    '/list',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ rows: [], total: 0, page: 1, pageSize: 50 });
+        return;
+      }
+      const q = req.query;
+      const conds = [
+        eq(clients.firmId, session.firmId),
+        eq(timeEntries.appUserId, session.appUserId),
+        sql`${timeEntries.status} <> 'ARCHIVED'`,
+      ];
+      const start = typeof q['startDate'] === 'string' ? q['startDate'] : '';
+      const end = typeof q['endDate'] === 'string' ? q['endDate'] : '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end)) conds.push(lte(timeEntries.entryDate, end));
+      if (typeof q['clientId'] === 'string' && q['clientId'])
+        conds.push(eq(engagements.clientId, q['clientId']));
+      if (typeof q['engagementId'] === 'string' && q['engagementId'])
+        conds.push(eq(timeEntries.engagementId, q['engagementId']));
+      if (typeof q['billable'] === 'string') {
+        if (q['billable'] === 'true') conds.push(eq(timeEntries.billableFlag, true));
+        if (q['billable'] === 'false') conds.push(eq(timeEntries.billableFlag, false));
+      }
+      if (typeof q['outOfScope'] === 'string') {
+        if (q['outOfScope'] === 'true') conds.push(eq(timeEntries.outOfScopeOverride, true));
+        if (q['outOfScope'] === 'false') conds.push(eq(timeEntries.outOfScopeOverride, false));
+      }
+      const page = Math.max(1, parseInt(String(q['page'] ?? '1'), 10) || 1);
+      const pageSize = Math.min(
+        500,
+        Math.max(1, parseInt(String(q['pageSize'] ?? '50'), 10) || 50),
+      );
+      const sortCol = String(q['sort'] ?? 'entryDate');
+      const sortDir = String(q['dir'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+      const sortMap: Record<string, ReturnType<typeof sql>> = {
+        entryDate: sql`${timeEntries.entryDate}`,
+        hours: sql`${timeEntries.hours}`,
+        amount: sql`${timeEntries.standardAmountCents}`,
+        client: sql`${clients.name}`,
+        engagement: sql`${engagements.name}`,
+        billable: sql`${timeEntries.billableFlag}`,
+        description: sql`${timeEntries.description}`,
+      };
+      const orderExpr = sortMap[sortCol] ?? sortMap['entryDate']!;
+
+      const totalRows = await deps.db
+        .select({ total: sql<number>`COUNT(*)`.as('total') })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(...conds));
+      const total = totalRows[0]?.total ?? 0;
+
+      // Field names align with the existing TimeEntry interface
+      // (standardAmountCents, billableFlag, inScopeFlag) so the same
+      // row shape works for inline edit + Quick Log views.
+      const rows = await deps.db
+        .select({
+          id: timeEntries.id,
+          entryDate: timeEntries.entryDate,
+          hours: timeEntries.hours,
+          standardAmountCents: timeEntries.standardAmountCents,
+          standardRateSnapshotCents: timeEntries.standardRateSnapshotCents,
+          billableFlag: timeEntries.billableFlag,
+          inScopeFlag: timeEntries.inScopeFlag,
+          outOfScopeOverride: timeEntries.outOfScopeOverride,
+          status: timeEntries.status,
+          description: timeEntries.description,
+          billingBatchId: timeEntries.billingBatchId,
+          lockedAt: timeEntries.lockedAt,
+          appUserId: timeEntries.appUserId,
+          workCodeId: timeEntries.workCodeId,
+          engagementId: engagements.id,
+          engagementName: engagements.name,
+          clientId: clients.id,
+          clientName: clients.name,
+        })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(...conds))
+        .orderBy(sortDir === 'asc' ? orderExpr : desc(orderExpr))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+
+      res.json({ rows, total: Number(total), page, pageSize });
     },
   );
 
@@ -854,8 +995,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      if (prior.lockedAt) {
-        res.status(409).json({ error: 'locked' });
+      // Once attached to a billing batch OR soft-deleted, the entry is
+      // read-only.
+      if (prior.lockedAt || prior.billingBatchId) {
+        res.status(409).json({ error: 'locked', billingBatchId: prior.billingBatchId });
+        return;
+      }
+      if (prior.status === 'ARCHIVED') {
+        res.status(409).json({ error: 'archived' });
         return;
       }
 
@@ -884,9 +1031,74 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       if (parsed.data.workCodeId !== undefined) patch['workCodeId'] = parsed.data.workCodeId;
       if (parsed.data.description !== undefined) patch['description'] = parsed.data.description;
       if (parsed.data.billableFlag !== undefined) patch['billableFlag'] = parsed.data.billableFlag;
+      if (parsed.data.outOfScopeOverride !== undefined) {
+        patch['outOfScopeOverride'] = parsed.data.outOfScopeOverride;
+      }
 
       await deps.db.update(timeEntries).set(patch).where(eq(timeEntries.id, prior.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'time_entry',
+        entityId: prior.id,
+        actorAppUserId: session.appUserId,
+        before: prior,
+        after: patch,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true, version: nextVersion });
+    },
+  );
+
+  // 0050 — soft-delete a time entry (per CLAUDE.md #3). Status flips to
+  // ARCHIVED so the row + its time_entry_version history are preserved
+  // for audit; the entry disappears from /mine and /list. Refused if
+  // the entry was already added to a billing batch.
+  router.delete(
+    '/:id',
+    requirePermission(deps, 'time_entry:update:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [prior] = await deps.db
+        .select()
+        .from(timeEntries)
+        .where(eq(timeEntries.id, req.params['id']!))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (prior.appUserId !== session.appUserId) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      if (prior.lockedAt || prior.billingBatchId) {
+        res.status(409).json({ error: 'locked', billingBatchId: prior.billingBatchId });
+        return;
+      }
+      if (prior.status === 'ARCHIVED') {
+        res.json({ ok: true, alreadyArchived: true });
+        return;
+      }
+      await deps.db
+        .update(timeEntries)
+        .set({ status: 'ARCHIVED', updatedAt: new Date() })
+        .where(eq(timeEntries.id, prior.id));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'time_entry',
+        entityId: prior.id,
+        actorAppUserId: session.appUserId,
+        before: prior,
+        after: { status: 'ARCHIVED' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 
@@ -933,6 +1145,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         serviceLineId = wc?.serviceLineId ?? null;
       }
       const candidates = await loadRateCandidates(deps.db, {
+        firmId: session.firmId,
         appUserId: session.appUserId,
         engagementId: eng.id,
         clientId: client.id,
@@ -948,6 +1161,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           engagementId: eng.id,
           clientId: client.id,
           serviceLineId,
+          rateCodeId: eng.defaultRateCodeId ?? null,
           candidates,
           firmDefaultBillRateCents: 0,
         });
@@ -964,6 +1178,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           hours: t.hours.toString(),
           billableFlag: t.billableFlag ?? true,
           inScopeFlag: inScope,
+          outOfScopeOverride: t.outOfScopeOverride ?? false,
           description: t.description ?? '',
           standardRateSnapshotCents: snapshot.rateCents,
           standardAmountCents: snapshot.amountCents,

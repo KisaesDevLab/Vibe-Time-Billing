@@ -65,7 +65,6 @@ export async function runAutoRolloverScan(
       action: 'CREATE',
       entityType: 'engagement_rollover',
       entityId: eng.id,
-      actorMcpTokenId: 'auto-rollover-worker',
       afterJson: {
         engagementId: eng.id,
         clientId: eng.clientId,

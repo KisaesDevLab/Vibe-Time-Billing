@@ -31,13 +31,37 @@ interface EngagementTpl {
   defaultBudgetHours: string | null;
   inScopeWorkCodeIds: string[];
   defaultLetterTemplateId: string | null;
+  // 0054 — engagements created from this template inherit this code.
+  defaultRateCodeId: string | null;
   isSystem: boolean;
   status: string;
+}
+
+interface RateCode {
+  id: string;
+  code: string;
+  description: string | null;
+  active: boolean;
 }
 
 interface WorkCode {
   id: string;
   name: string;
+}
+
+interface FirmUser {
+  id: string;
+  fullName: string;
+  email: string;
+  status: string;
+}
+
+type AssignmentRole = 'PARTNER' | 'MANAGER' | 'REVIEWER' | 'PREPARER' | 'STAFF';
+const ASSIGNMENT_ROLES: AssignmentRole[] = ['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF'];
+
+interface AssignmentDraft {
+  appUserId: string;
+  role: AssignmentRole;
 }
 
 const FEE_STRUCTURES = [
@@ -57,10 +81,22 @@ export function EngagementCreatePage(): JSX.Element {
   const [clients, setClients] = useState<Client[]>([]);
   const [templates, setTemplates] = useState<EngagementTpl[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
+  const [firmUsers, setFirmUsers] = useState<FirmUser[]>([]);
   const [pickedTemplateId, setPickedTemplateId] = useState<string>('');
+
+  // 0050 — assignee fields. partnerId / managerId remain authoritative
+  // for billing-side defaults; `assignments` adds additional staff with
+  // explicit roles and widens "My Work".
+  const [partnerId, setPartnerId] = useState<string>('');
+  const [managerId, setManagerId] = useState<string>('');
+  const [assignments, setAssignments] = useState<AssignmentDraft[]>([]);
+  const [pickedStaffId, setPickedStaffId] = useState<string>('');
+  const [pickedRole, setPickedRole] = useState<AssignmentRole>('STAFF');
 
   const [clientId, setClientId] = useState(initialClientId);
   const [name, setName] = useState('');
+  const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
+  const [defaultRateCodeId, setDefaultRateCodeId] = useState<string>('');
   const [feeStructure, setFeeStructure] = useState<FeeStructure>('FIXED_FEE');
   // QA fix — these strings hold the dollars representation shown in the
   // inputs ("750.00") rather than the cents value the API expects.
@@ -71,6 +107,7 @@ export function EngagementCreatePage(): JSX.Element {
   const [nteCapDollars, setNteCapDollars] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [dueDate, setDueDate] = useState('');
   const [inScopeIds, setInScopeIds] = useState<string[]>([]);
   const [mixedModeEnabled, setMixedModeEnabled] = useState(false);
   const [feePassthroughEnabled, setFeePassthroughEnabled] = useState(false);
@@ -93,14 +130,22 @@ export function EngagementCreatePage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [c, t, w] = await Promise.all([
-          api<{ items: Client[] }>('/api/staff/clients'),
-          api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement'),
-          api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
+        const [c, t, w, u, rc] = await Promise.all([
+          api<{ items: Client[] }>('/api/staff/clients').catch(() => ({ items: [] })),
+          api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement').catch(() => ({
+            items: [],
+          })),
+          api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes').catch(() => ({
+            items: [],
+          })),
+          api<{ users: FirmUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
+          api<{ items: RateCode[] }>('/api/staff/admin/rate-codes').catch(() => ({ items: [] })),
         ]);
         setClients(c.items ?? []);
         setTemplates((t.items ?? []).filter((tpl) => tpl.status === 'ACTIVE'));
         setWorkCodes(w.items ?? []);
+        setFirmUsers((u.users ?? []).filter((x) => x.status === 'ACTIVE'));
+        setRateCodes((rc.items ?? []).filter((x) => x.active));
       } catch (e) {
         setError(e instanceof Error ? e.message : 'load_failed');
       }
@@ -116,6 +161,7 @@ export function EngagementCreatePage(): JSX.Element {
     setFeeAmountDollars(centsToDollarsInput(tpl.defaultFeeAmountCents));
     setBudgetHours(tpl.defaultBudgetHours ?? '');
     setInScopeIds(tpl.inScopeWorkCodeIds ?? []);
+    if (tpl.defaultRateCodeId) setDefaultRateCodeId(tpl.defaultRateCodeId);
   }
 
   async function submit(): Promise<void> {
@@ -140,7 +186,12 @@ export function EngagementCreatePage(): JSX.Element {
       if (nteCents != null) body.nteCapCents = nteCents;
       if (startDate) body.startDate = startDate;
       if (endDate) body.endDate = endDate;
+      if (dueDate) body.dueDate = dueDate;
       if (inScopeIds.length > 0) body.inScopeWorkCodeIds = inScopeIds;
+      if (defaultRateCodeId) body.defaultRateCodeId = defaultRateCodeId;
+      if (partnerId) body.partnerId = partnerId;
+      if (managerId) body.managerId = managerId;
+      if (assignments.length > 0) body.assignments = assignments;
       // v2 — tax + surcharge payload.
       body.taxEnabled = taxEnabled;
       if (taxEnabled) {
@@ -159,11 +210,11 @@ export function EngagementCreatePage(): JSX.Element {
         }
         body.surchargeLabel = surchargeLabel.trim() || null;
       }
-      const r = await api<{ engagement: { id: string } }>('/api/staff/engagements', {
+      const r = await api<{ id: string }>('/api/staff/engagements', {
         method: 'POST',
         body: JSON.stringify(body),
       });
-      navigate(`/engagements/${r.engagement.id}`);
+      navigate(`/engagements/${r.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'create_failed');
     } finally {
@@ -287,7 +338,36 @@ export function EngagementCreatePage(): JSX.Element {
             />
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                display: 'block',
+                marginBottom: 4,
+              }}
+            >
+              Default rate code
+            </div>
+            <Combobox
+              ariaLabel="Default rate code"
+              clearable
+              value={defaultRateCodeId}
+              onChange={(v) => setDefaultRateCodeId(v || '')}
+              options={rateCodes.map<ComboboxOption>((rc) => ({
+                value: rc.id,
+                label: rc.code,
+                description: rc.description ?? undefined,
+              }))}
+              placeholder="StandardRate (default)"
+            />
+            <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '4px 0 0' }}>
+              Drives which billing rate is pulled from each staff member&apos;s snapshot. Leave
+              blank to fall back to StandardRate.
+            </p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             <Input
               type="date"
               label="Start date"
@@ -300,6 +380,151 @@ export function EngagementCreatePage(): JSX.Element {
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
             />
+            <Input
+              type="date"
+              label="Due date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              hint="External deadline (filing date, audit report due, etc)."
+            />
+          </div>
+
+          {/* 0050 — partner/manager + additional staff assignments. */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  display: 'block',
+                  marginBottom: 4,
+                }}
+              >
+                Partner
+              </div>
+              <Combobox
+                ariaLabel="Partner"
+                clearable
+                value={partnerId}
+                onChange={setPartnerId}
+                options={firmUsers.map<ComboboxOption>((u) => ({
+                  value: u.id,
+                  label: u.fullName,
+                  description: u.email,
+                }))}
+                placeholder="— none —"
+              />
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  display: 'block',
+                  marginBottom: 4,
+                }}
+              >
+                Manager
+              </div>
+              <Combobox
+                ariaLabel="Manager"
+                clearable
+                value={managerId}
+                onChange={setManagerId}
+                options={firmUsers.map<ComboboxOption>((u) => ({
+                  value: u.id,
+                  label: u.fullName,
+                  description: u.email,
+                }))}
+                placeholder="— none —"
+              />
+            </div>
+          </div>
+
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                marginBottom: 4,
+                textTransform: 'uppercase',
+              }}
+            >
+              Additional staff ({assignments.length})
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 8 }}>
+              <div style={{ flex: 1 }}>
+                <Combobox
+                  ariaLabel="Staff"
+                  value={pickedStaffId}
+                  onChange={setPickedStaffId}
+                  options={[
+                    { value: '', label: '— select staff —' },
+                    ...firmUsers
+                      .filter((u) => !assignments.some((a) => a.appUserId === u.id))
+                      .map<ComboboxOption>((u) => ({
+                        value: u.id,
+                        label: u.fullName,
+                        description: u.email,
+                      })),
+                  ]}
+                  size="sm"
+                />
+              </div>
+              <div style={{ width: 140 }}>
+                <Combobox
+                  ariaLabel="Role"
+                  value={pickedRole}
+                  onChange={(v) => setPickedRole(v as AssignmentRole)}
+                  options={ASSIGNMENT_ROLES.map<ComboboxOption>((r) => ({ value: r, label: r }))}
+                  size="sm"
+                />
+              </div>
+              <Button
+                size="sm"
+                disabled={!pickedStaffId}
+                onClick={() => {
+                  if (!pickedStaffId) return;
+                  setAssignments([...assignments, { appUserId: pickedStaffId, role: pickedRole }]);
+                  setPickedStaffId('');
+                  setPickedRole('STAFF');
+                }}
+              >
+                Add
+              </Button>
+            </div>
+            {assignments.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {assignments.map((a) => {
+                  const u = firmUsers.find((x) => x.id === a.appUserId);
+                  return (
+                    <Pill key={`${a.appUserId}:${a.role}`} tone="accent">
+                      {u?.fullName ?? a.appUserId} · {a.role}
+                      <button
+                        type="button"
+                        aria-label="Remove"
+                        onClick={() =>
+                          setAssignments(
+                            assignments.filter(
+                              (x) => !(x.appUserId === a.appUserId && x.role === a.role),
+                            ),
+                          )
+                        }
+                        style={{
+                          marginLeft: 6,
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'inherit',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ×
+                      </button>
+                    </Pill>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <label

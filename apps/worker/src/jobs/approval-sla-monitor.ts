@@ -68,7 +68,6 @@ export async function runApprovalSlaMonitor(
       action: 'CREATE',
       entityType: 'approval_sla_breach',
       entityId: r.id,
-      actorMcpTokenId: 'approval-sla-worker',
       afterJson: {
         approvalRequestId: r.id,
         entityType: r.entityType,

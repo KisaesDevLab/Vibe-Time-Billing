@@ -9,6 +9,7 @@ const baseInput = {
   engagementId: 'e-1',
   clientId: 'c-1',
   serviceLineId: 'sl-tax',
+  rateCodeId: 'rc-standard',
   firmDefaultBillRateCents: 25000,
 };
 
@@ -20,7 +21,7 @@ describe('resolveRate', () => {
     expect(r.trace.at(-1)).toEqual({ level: 'firm', status: 'win' });
   });
 
-  it('picks engagement override over client and timekeeper', () => {
+  it('picks engagement override over client and staff_rate', () => {
     const candidates: RateCandidate[] = [
       {
         level: 'engagement',
@@ -37,8 +38,10 @@ describe('resolveRate', () => {
         effectiveStart: '2026-01-01',
       },
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 35000,
         effectiveStart: '2026-01-01',
       },
@@ -58,14 +61,16 @@ describe('resolveRate', () => {
         effectiveStart: '2026-07-01',
       },
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 35000,
         effectiveStart: '2026-01-01',
       },
     ];
     const r = resolveRate({ ...baseInput, candidates });
-    expect(r.level).toBe('timekeeper');
+    expect(r.level).toBe('staff_rate');
     expect(r.billRateCents).toBe(35000);
   });
 
@@ -80,33 +85,82 @@ describe('resolveRate', () => {
         effectiveEnd: '2026-01-01',
       },
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 35000,
         effectiveStart: '2026-01-01',
       },
     ];
     const r = resolveRate({ ...baseInput, candidates });
-    expect(r.level).toBe('timekeeper');
+    expect(r.level).toBe('staff_rate');
   });
 
   it('picks most-recently-started when two effective rates overlap at the same level', () => {
     const candidates: RateCandidate[] = [
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 30000,
         effectiveStart: '2025-01-01',
       },
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 35000,
         effectiveStart: '2026-01-01',
       },
     ];
     const r = resolveRate({ ...baseInput, candidates });
     expect(r.billRateCents).toBe(35000);
+  });
+
+  it('prefers engagement rate code over StandardRate when both exist', () => {
+    const candidates: RateCandidate[] = [
+      {
+        level: 'staff_rate',
+        appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
+        billRateCents: 35000,
+        effectiveStart: '2026-01-01',
+      },
+      {
+        level: 'staff_rate',
+        appUserId: 'u-sarah',
+        rateCodeId: 'rc-payroll',
+        isStandardCode: false,
+        billRateCents: 18000,
+        effectiveStart: '2026-01-01',
+      },
+    ];
+    const r = resolveRate({ ...baseInput, rateCodeId: 'rc-payroll', candidates });
+    expect(r.level).toBe('staff_rate');
+    expect(r.rateCodeId).toBe('rc-payroll');
+    expect(r.billRateCents).toBe(18000);
+  });
+
+  it('falls back to StandardRate when the engagement rate code has no entry', () => {
+    const candidates: RateCandidate[] = [
+      {
+        level: 'staff_rate',
+        appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
+        billRateCents: 35000,
+        effectiveStart: '2026-01-01',
+      },
+    ];
+    const r = resolveRate({ ...baseInput, rateCodeId: 'rc-payroll', candidates });
+    expect(r.level).toBe('staff_rate');
+    expect(r.rateCodeId).toBe('rc-standard');
+    expect(r.billRateCents).toBe(35000);
+    expect(r.trace.at(-1)).toEqual({ level: 'staff_rate', status: 'fallback' });
   });
 
   it('captureRateSnapshot rounds to integer cents', () => {
@@ -127,8 +181,10 @@ describe('resolveRate', () => {
     // resolution (CLAUDE.md non-negotiable #3).
     const candidatesOld: RateCandidate[] = [
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 35000,
         effectiveStart: '2026-01-01',
       },
@@ -138,8 +194,10 @@ describe('resolveRate', () => {
     const candidatesNew: RateCandidate[] = [
       ...candidatesOld,
       {
-        level: 'timekeeper',
+        level: 'staff_rate',
         appUserId: 'u-sarah',
+        rateCodeId: 'rc-standard',
+        isStandardCode: true,
         billRateCents: 42000,
         effectiveStart: '2026-07-01',
       },

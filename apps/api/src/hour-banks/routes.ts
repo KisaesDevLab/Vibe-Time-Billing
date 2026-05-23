@@ -14,6 +14,7 @@ import { clients, engagements, hourBanks, hourBankTransactions } from '@vibe/db/
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface HourBankRoutesDeps extends RbacDeps {
@@ -36,6 +37,7 @@ const DebitSchema = z.object({
 
 export function createHourBankRouter(deps: HourBankRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.post(
     '/',

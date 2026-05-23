@@ -15,6 +15,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface EngagementLetterDeps extends RbacDeps {
@@ -30,6 +31,7 @@ const CreateSchema = z.object({
 
 export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/',

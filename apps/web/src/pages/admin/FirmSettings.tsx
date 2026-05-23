@@ -48,6 +48,8 @@ interface Settings {
   brandAccentColor: string | null;
   brandSupportEmail: string | null;
   brandSupportPhone: string | null;
+  brandSupportFax: string | null;
+  brandSupportWeb: string | null;
   brandFooterHtml: string | null;
   enabledFeeStructures: FeeStructure[];
   billableTargetHoursPerMonth: number;
@@ -55,6 +57,19 @@ interface Settings {
   invoiceTemplateStyle: 'modern' | 'classic' | 'minimal';
   // v2 — firm-wide default for the surcharge line label.
   defaultSurchargeLabel: string;
+  // 0053 — Billing + A/R
+  arTermsText: string | null;
+  statementEmailMessage: string | null;
+  defaultStatementFormat: string;
+  achProcessingEnabled: boolean;
+  creditCardProcessingEnabled: boolean;
+  assessServiceChargesEnabled: boolean;
+  serviceChargeRateBps: number;
+  dunningMessage1: string | null;
+  dunningMessage2: string | null;
+  dunningMessage3: string | null;
+  dunningMessage4: string | null;
+  dunningMessage5: string | null;
 }
 
 const MONTHS = [
@@ -121,7 +136,22 @@ export function FirmSettingsPage(): JSX.Element {
           brandAccentColor: s.brandAccentColor || null,
           brandSupportEmail: s.brandSupportEmail || null,
           brandSupportPhone: s.brandSupportPhone || null,
+          brandSupportFax: s.brandSupportFax || null,
+          brandSupportWeb: s.brandSupportWeb || null,
           brandFooterHtml: s.brandFooterHtml || null,
+          // 0053 — Billing + A/R
+          arTermsText: s.arTermsText || null,
+          statementEmailMessage: s.statementEmailMessage || null,
+          defaultStatementFormat: s.defaultStatementFormat || 'detailed_open_amounts',
+          achProcessingEnabled: s.achProcessingEnabled,
+          creditCardProcessingEnabled: s.creditCardProcessingEnabled,
+          assessServiceChargesEnabled: s.assessServiceChargesEnabled,
+          serviceChargeRateBps: s.serviceChargeRateBps,
+          dunningMessage1: s.dunningMessage1 || null,
+          dunningMessage2: s.dunningMessage2 || null,
+          dunningMessage3: s.dunningMessage3 || null,
+          dunningMessage4: s.dunningMessage4 || null,
+          dunningMessage5: s.dunningMessage5 || null,
           // Firm-table fields — server splits the body across tables.
           defaultAllocationMethod: f.defaultAllocationMethod,
           fiscalYearStartMonth: f.fiscalYearStartMonth,
@@ -392,6 +422,18 @@ export function FirmSettingsPage(): JSX.Element {
             onChange={(e) => setS({ ...s, brandSupportPhone: e.target.value })}
             placeholder="(555) 555-5555"
           />
+          <Input
+            label="Support fax"
+            value={s.brandSupportFax ?? ''}
+            onChange={(e) => setS({ ...s, brandSupportFax: e.target.value })}
+            placeholder="(555) 555-5556"
+          />
+          <Input
+            label="Website"
+            value={s.brandSupportWeb ?? ''}
+            onChange={(e) => setS({ ...s, brandSupportWeb: e.target.value })}
+            placeholder="www.example.com"
+          />
           <label style={{ fontSize: 13 }}>
             Footer HTML (rendered on invoice PDFs)
             <textarea
@@ -414,6 +456,162 @@ export function FirmSettingsPage(): JSX.Element {
         </div>
       </Card>
 
+      {/* 0053 — Billing and A/R block, mirrors legacy Firm settings tab. */}
+      <Card title="Billing and A/R">
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+          Firm-wide invoice + statement defaults. The A/R Terms text prints at the bottom of every
+          invoice PDF; dunning messages feed the automated dunning sweep at each period age.
+        </p>
+        <div style={{ display: 'grid', gap: 16, maxWidth: 720 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Select
+              label="Default invoice format (new clients)"
+              value={s.invoiceTemplateStyle}
+              onChange={(v) =>
+                setS({ ...s, invoiceTemplateStyle: v as 'modern' | 'classic' | 'minimal' })
+              }
+              options={[
+                { value: 'modern', label: 'Modern (professional letterhead — default)' },
+                { value: 'classic', label: 'Classic (centered, serif)' },
+                { value: 'minimal', label: 'Minimal (compact)' },
+              ]}
+            />
+            <Input
+              label="Number of days until invoice is due"
+              type="number"
+              min={0}
+              max={365}
+              value={f.defaultTermsDays}
+              onChange={(e) => setF({ ...f, defaultTermsDays: Number(e.target.value) })}
+            />
+          </div>
+
+          <h3
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              margin: '12px 0 0',
+              textTransform: 'uppercase',
+              letterSpacing: 0.5,
+            }}
+          >
+            A/R options
+          </h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Input
+              label="Default statement format (new clients)"
+              value={s.defaultStatementFormat ?? ''}
+              onChange={(e) => setS({ ...s, defaultStatementFormat: e.target.value })}
+              placeholder="detailed_open_amounts"
+              hint="Preset key used when generating client statements."
+            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 18 }}>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={s.achProcessingEnabled}
+                  onChange={(e) => setS({ ...s, achProcessingEnabled: e.target.checked })}
+                />
+                Enable ACH processing
+              </label>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={s.creditCardProcessingEnabled}
+                  onChange={(e) => setS({ ...s, creditCardProcessingEnabled: e.target.checked })}
+                />
+                Enable credit card processing
+              </label>
+            </div>
+          </div>
+
+          <label style={{ fontSize: 13 }}>
+            Statement e-mail message
+            <textarea
+              value={s.statementEmailMessage ?? ''}
+              onChange={(e) => setS({ ...s, statementEmailMessage: e.target.value })}
+              rows={2}
+              placeholder="Standing message attached to outbound statement emails."
+              style={textareaStyle}
+            />
+          </label>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={s.assessServiceChargesEnabled}
+                onChange={(e) => setS({ ...s, assessServiceChargesEnabled: e.target.checked })}
+              />
+              Assess service charges
+            </label>
+            <span style={{ fontSize: 13, color: tokens.color.textMuted }}>at rate</span>
+            <Input
+              type="number"
+              min={0}
+              max={100}
+              step={0.01}
+              value={(s.serviceChargeRateBps / 100).toString()}
+              onChange={(e) =>
+                setS({ ...s, serviceChargeRateBps: Math.round(Number(e.target.value) * 100) })
+              }
+              disabled={!s.assessServiceChargesEnabled}
+              style={{ maxWidth: 80 }}
+            />
+            <span style={{ fontSize: 13, color: tokens.color.textMuted }}>% annually</span>
+          </div>
+
+          <h3
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              margin: '12px 0 0',
+              textTransform: 'uppercase',
+              letterSpacing: 0.5,
+            }}
+          >
+            Dunning messages
+          </h3>
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+            Used by the automated dunning sweep when an invoice ages into each bucket.
+          </p>
+          {([1, 2, 3, 4, 5] as const).map((n) => {
+            const key = `dunningMessage${n}` as
+              | 'dunningMessage1'
+              | 'dunningMessage2'
+              | 'dunningMessage3'
+              | 'dunningMessage4'
+              | 'dunningMessage5';
+            return (
+              <Input
+                key={n}
+                label={n === 5 ? `${n} Periods or older` : `${n} Period${n === 1 ? '' : 's'} old`}
+                value={s[key] ?? ''}
+                onChange={(e) => setS({ ...s, [key]: e.target.value })}
+                placeholder={
+                  n === 1
+                    ? 'You have a balance over 30 days old. Please remit…'
+                    : n === 5
+                      ? 'Services are suspended until payment is made.'
+                      : ''
+                }
+              />
+            );
+          })}
+
+          <label style={{ fontSize: 13 }}>
+            A/R Terms (printed at the bottom of every invoice PDF)
+            <textarea
+              value={s.arTermsText ?? ''}
+              onChange={(e) => setS({ ...s, arTermsText: e.target.value })}
+              rows={4}
+              placeholder="PLEASE MAIL PAYMENTS TO: …  EIN: …  Thank you for your business. Payment is due upon presentation of this invoice. There will be a 1.5% interest charge per month on late invoices…"
+              style={textareaStyle}
+            />
+          </label>
+        </div>
+      </Card>
+
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
         <Button type="submit" disabled={saving}>
           {saving ? 'Saving…' : 'Save'}
@@ -428,6 +626,19 @@ export function FirmSettingsPage(): JSX.Element {
     </form>
   );
 }
+
+const textareaStyle: React.CSSProperties = {
+  marginTop: 4,
+  width: '100%',
+  fontFamily: 'inherit',
+  fontSize: 13,
+  padding: 8,
+  borderRadius: tokens.radius.sm,
+  border: `1px solid ${tokens.color.border}`,
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  boxSizing: 'border-box',
+};
 
 function Select({
   label,

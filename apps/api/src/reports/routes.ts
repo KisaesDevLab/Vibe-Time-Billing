@@ -312,7 +312,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       // Profit = invoiced - cost approximation. We don't track cost
-      // explicitly per time entry; use timekeeper_rate.cost_rate_cents.
+      // explicitly per time entry; use staff_rate_snapshot.cost_rate_cents.
       // For brevity this returns invoiced minus a flat-cost stub.
       const firmClientIds = (
         await deps.db
@@ -963,7 +963,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [], totals: null });
         return;
       }
-      const { timekeeperRates } = await import('@vibe/db/schema');
+      const { staffRateSnapshots } = await import('@vibe/db/schema');
       const rows = await deps.db
         .select({
           engagementId: engagements.id,
@@ -971,12 +971,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           clientName: clients.name,
           costCents: drz<number>`
             COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE((
-              SELECT ${timekeeperRates.costRateCents}
-              FROM ${timekeeperRates}
-              WHERE ${timekeeperRates.appUserId} = ${timeEntries.appUserId}
-                AND ${timekeeperRates.effectiveStart} <= ${timeEntries.entryDate}
-                AND (${timekeeperRates.effectiveEnd} IS NULL OR ${timekeeperRates.effectiveEnd} >= ${timeEntries.entryDate})
-              ORDER BY ${timekeeperRates.effectiveStart} DESC
+              SELECT ${staffRateSnapshots.costRateCents}
+              FROM ${staffRateSnapshots}
+              WHERE ${staffRateSnapshots.appUserId} = ${timeEntries.appUserId}
+                AND ${staffRateSnapshots.effectiveDate} <= ${timeEntries.entryDate}
+              ORDER BY ${staffRateSnapshots.effectiveDate} DESC
               LIMIT 1
             ), 0)), 0)::bigint`,
         })

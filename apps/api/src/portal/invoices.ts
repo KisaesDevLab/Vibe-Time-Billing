@@ -138,14 +138,27 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
         accentColor: firmSettings.brandAccentColor,
         supportEmail: firmSettings.brandSupportEmail,
         supportPhone: firmSettings.brandSupportPhone,
+        supportFax: firmSettings.brandSupportFax,
+        supportWeb: firmSettings.brandSupportWeb,
         footerHtml: firmSettings.brandFooterHtml,
+        arTermsText: firmSettings.arTermsText,
         templateStyle: firmSettings.invoiceTemplateStyle,
       })
       .from(firmSettings)
       .where(eq(firmSettings.firmId, inv.firmId))
       .limit(1);
     const [client] = await deps.db
-      .select({ name: clients.name, billingAddress: clients.billingAddress })
+      .select({
+        name: clients.name,
+        billingAddress: clients.billingAddress,
+        mailingStreet1: clients.mailingStreet1,
+        mailingStreet2: clients.mailingStreet2,
+        mailingCity: clients.mailingCity,
+        mailingState: clients.mailingState,
+        mailingPostal: clients.mailingPostal,
+        mailingCountry: clients.mailingCountry,
+        externalId: clients.externalId,
+      })
       .from(clients)
       .where(eq(clients.id, inv.clientId))
       .limit(1);
@@ -172,10 +185,30 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
             accentColor: branding.accentColor ?? null,
             supportEmail: branding.supportEmail ?? null,
             supportPhone: branding.supportPhone ?? null,
-            footerHtml: branding.footerHtml ?? null,
+            supportFax: branding.supportFax ?? null,
+            supportWeb: branding.supportWeb ?? null,
+            footerHtml: branding.arTermsText
+              ? branding.arTermsText
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;')
+                  .replace(/"/g, '&quot;')
+                  .replace(/\n/g, '<br />')
+              : (branding.footerHtml ?? null),
           }
         : null,
-      client: { name: client?.name ?? 'Client', billingAddress: client?.billingAddress ?? null },
+      reference: inv.invoiceNumber,
+      client: {
+        name: client?.name ?? 'Client',
+        billingAddress: client?.billingAddress ?? null,
+        mailingStreet1: client?.mailingStreet1 ?? null,
+        mailingStreet2: client?.mailingStreet2 ?? null,
+        mailingCity: client?.mailingCity ?? null,
+        mailingState: client?.mailingState ?? null,
+        mailingPostal: client?.mailingPostal ?? null,
+        mailingCountry: client?.mailingCountry ?? null,
+        externalId: client?.externalId ?? null,
+      },
       lines: lines.map((l) => ({
         kind: l.kind,
         description: l.description,

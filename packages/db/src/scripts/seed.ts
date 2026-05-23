@@ -33,7 +33,9 @@ import {
   billingBatches as billingBatchesTable,
   billingBatchEntries as billingBatchEntriesTable,
   timeEntries as timeEntriesTable,
-  timekeeperRates as timekeeperRatesTable,
+  rateCodes as rateCodesTable,
+  staffRateSnapshots as staffRateSnapshotsTable,
+  staffRateSnapshotEntries as staffRateSnapshotEntriesTable,
   adjustments as adjustmentsTable,
   adjustmentAllocations as adjustmentAllocationsTable,
 } from '../schema/core';
@@ -60,10 +62,11 @@ async function main(): Promise<void> {
       const firmId = await seedFirm(tx);
       const officeIds = await seedOffices(tx, firmId);
       const userIds = await seedUsers(tx, firmId, officeIds);
-      // QA fix — without timekeeper rates the API rejects every new
-      // time entry with `no_rate_resolves`. Seed one bill+cost rate per
-      // user so the rate resolver returns a candidate on Phase-9 calls.
-      await seedTimekeeperRates(tx, userIds);
+      // 0054 — seed firm's StandardRate code, then one staff_rate_snapshot
+      // per user with a StandardRate entry. Without this every new time
+      // entry would fail rate resolution.
+      const standardRateCodeId = await seedRateCodes(tx, firmId);
+      await seedStaffRateSnapshots(tx, userIds, standardRateCodeId);
       const serviceLineIds = await seedServiceLines(tx, firmId);
       await seedWorkCodes(tx, firmId, serviceLineIds);
       await seedEngagementTypes(tx, firmId, serviceLineIds);
@@ -146,15 +149,46 @@ const SEED_RATES_PER_HOUR_CENTS = [
   { bill: 18000, cost: 7000 }, // Tom Vance (staff)
 ];
 
-async function seedTimekeeperRates(tx: Tx, userIds: string[]): Promise<void> {
+async function seedRateCodes(tx: Tx, firmId: string): Promise<string> {
+  const [row] = await tx
+    .insert(rateCodesTable)
+    .values({
+      firmId,
+      code: 'StandardRate',
+      description: 'Default billing rate',
+      sortOrder: 0,
+      isSystem: true,
+    })
+    .returning({ id: rateCodesTable.id });
+  if (!row) throw new Error('failed to insert StandardRate');
+  return row.id;
+}
+
+async function seedStaffRateSnapshots(
+  tx: Tx,
+  userIds: string[],
+  standardRateCodeId: string,
+): Promise<void> {
   if (userIds.length === 0) return;
-  await tx.insert(timekeeperRatesTable).values(
-    userIds.map((id, i) => ({
-      appUserId: id,
-      billRateCents: SEED_RATES_PER_HOUR_CENTS[i]?.bill ?? 25000,
-      costRateCents: SEED_RATES_PER_HOUR_CENTS[i]?.cost ?? 10000,
-      effectiveStart: '2025-01-01',
-    })),
+  const snapshots = await tx
+    .insert(staffRateSnapshotsTable)
+    .values(
+      userIds.map((id, i) => ({
+        appUserId: id,
+        effectiveDate: '2025-01-01',
+        costRateCents: SEED_RATES_PER_HOUR_CENTS[i]?.cost ?? 10000,
+      })),
+    )
+    .returning({ id: staffRateSnapshotsTable.id, appUserId: staffRateSnapshotsTable.appUserId });
+  await tx.insert(staffRateSnapshotEntriesTable).values(
+    snapshots.map((s) => {
+      const i = userIds.indexOf(s.appUserId);
+      return {
+        snapshotId: s.id,
+        rateCodeId: standardRateCodeId,
+        billRateCents: SEED_RATES_PER_HOUR_CENTS[i]?.bill ?? 25000,
+      };
+    }),
   );
 }
 

@@ -62,15 +62,30 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
+# Root workspace files — needed so pnpm can recognise the workspace layout
+# and so the per-package node_modules symlinks resolve.
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/pnpm-lock.yaml ./
+COPY --from=builder /app/.npmrc ./
+COPY --from=builder /app/tsconfig.base.json ./
 COPY --from=builder /app/node_modules ./node_modules
+
+# Per-app dist + package.json + the workspace-local node_modules symlink
+# trees that pnpm (inject-workspace-packages=true) sets up. Without these
+# symlinks Node can't find `express` etc. from within apps/api/dist.
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --from=builder /app/apps/api/package.json ./apps/api/
+COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=builder /app/apps/worker/dist ./apps/worker/dist
 COPY --from=builder /app/apps/worker/package.json ./apps/worker/
+COPY --from=builder /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=builder /app/apps/web/dist ./apps/web/dist
 COPY --from=builder /app/apps/portal/dist ./apps/portal/dist
 COPY --from=builder /app/packages ./packages
 COPY ops/scripts ./ops/scripts
+# ops/docker contains entrypoint-api.sh referenced by docker-compose.prod.yml.
+COPY ops/docker ./ops/docker
 COPY seed ./seed
 
 EXPOSE 3001 3002

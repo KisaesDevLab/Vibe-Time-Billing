@@ -16,6 +16,7 @@ import {
   clients,
   dunningHistory,
   engagements,
+  invoiceReminderLog,
   invoices,
 } from '@vibe/db/schema';
 import { stepsDueOn, type DunningStepKind } from '@vibe/core/dunning';
@@ -175,6 +176,21 @@ export async function runDunningSweep(
       } catch (err) {
         log.error({ err, invoiceId: inv.id, step: step.kind }, 'dunning ledger write failed');
       }
+      // 0050 — mirror AUTO sends into invoice_reminder_log so the manual
+      // cooldown reads see both auto + manual reminders.
+      if (outcome === 'SENT') {
+        try {
+          await db.insert(invoiceReminderLog).values({
+            invoiceId: inv.id,
+            actorAppUserId: null,
+            kind: 'AUTO',
+            template: step.kind,
+            sentAt: new Date(),
+          });
+        } catch (err) {
+          log.warn({ err, invoiceId: inv.id }, 'reminder log write failed');
+        }
+      }
       // Phase 15 #11 — PARTNER_NOTIFY: also send to the engagement's
       // partner-in-charge (not just the client billing contact). The
       // primary engagement on the invoice points us at the partner.
@@ -223,7 +239,6 @@ export async function runDunningSweep(
             action: 'UPDATE',
             entityType: 'engagement',
             entityId: inv.primaryEngagementId,
-            actorMcpTokenId: 'dunning-sweep-worker',
             beforeJson: { status: 'ACTIVE' },
             afterJson: {
               status: 'PAUSED',

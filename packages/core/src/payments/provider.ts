@@ -36,6 +36,28 @@ export interface ChargeResult {
   errorMessage?: string;
 }
 
+/**
+ * Create a PaymentIntent without confirming it. The client confirms
+ * later via Elements with the returned client_secret. Used by the
+ * staff-side Receive Payment flow.
+ */
+export interface CreateIntentRequest {
+  amountCents: Cents;
+  currency: 'USD';
+  description: string;
+  metadata: Record<string, string>;
+  /** Allowed Stripe payment method types for this intent (e.g. ['card']). */
+  paymentMethodTypes: string[];
+}
+
+export interface CreateIntentResult {
+  ok: boolean;
+  providerChargeId: string; // payment_intent id
+  clientSecret: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
 export interface RefundRequest {
   providerChargeId: string;
   amountCents?: Cents; // omit for full refund
@@ -54,4 +76,10 @@ export interface PaymentProvider {
   refund(req: RefundRequest): Promise<RefundResult>;
   /** Verify the webhook signature for incoming events. */
   verifyWebhookSignature(args: { payload: string; signature: string; secret: string }): boolean;
+  /**
+   * Optional: create an unconfirmed PaymentIntent so the client can
+   * confirm with Stripe Elements / equivalent. Providers without an
+   * intent-style flow may omit this; callers must feature-detect.
+   */
+  createIntent?(req: CreateIntentRequest): Promise<CreateIntentResult>;
 }

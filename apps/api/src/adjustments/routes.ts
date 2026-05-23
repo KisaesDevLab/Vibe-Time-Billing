@@ -37,6 +37,7 @@ import { evaluate, type ApprovalRule } from '@vibe/core/approvals';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface AdjustmentRoutesDeps extends RbacDeps {
@@ -79,6 +80,7 @@ const CreateSchema = z
 
 export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.post(
     '/',

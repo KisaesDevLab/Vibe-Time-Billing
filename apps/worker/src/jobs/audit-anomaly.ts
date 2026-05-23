@@ -67,7 +67,6 @@ export async function runAuditAnomaly(
       action: 'CREATE',
       entityType: 'audit_anomaly_alert',
       entityId: actorId,
-      actorMcpTokenId: 'audit-anomaly-worker',
       afterJson: {
         actorKind: kind,
         actorId,

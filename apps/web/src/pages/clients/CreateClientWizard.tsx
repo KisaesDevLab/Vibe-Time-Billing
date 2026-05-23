@@ -162,7 +162,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
       // the dedicated wizard endpoint added later in Sprint B). For
       // now: persist what the backend accepts, surface the rest to
       // the user via the detail page on next render.
-      const created = await api<{ client: { id: string } }>('/api/staff/clients', {
+      const created = await api<{ id: string }>('/api/staff/clients', {
         method: 'POST',
         body: JSON.stringify({
           name: name.trim(),
@@ -173,7 +173,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
         }),
       });
 
-      const clientId = created.client.id;
+      const clientId = created.id;
 
       // Step 2 — apply v2-only fields via PATCH (backend ignores
       // unknown keys today; once the schema accepts them in Sprint B's

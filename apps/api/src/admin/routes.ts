@@ -5,25 +5,31 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  engagementStatusConfig,
   firms,
   firmSettings,
   notificationTemplates,
   officeSettings,
   offices,
+  rateCodes,
   rolePermissions,
   roles,
+  staffRateSnapshotEntries,
+  staffRateSnapshots,
   userRoles,
 } from '@vibe/db/schema';
+import { createSnapshot } from '../rates/routes';
 import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
 import { seedNotificationTemplates } from '@vibe/db/seed-helpers';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface AdminRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -85,7 +91,22 @@ const FirmSettingsPatchSchema = z
       .optional(),
     brandSupportEmail: z.string().email().max(254).nullable().optional(),
     brandSupportPhone: z.string().max(40).nullable().optional(),
+    brandSupportFax: z.string().max(40).nullable().optional(),
+    brandSupportWeb: z.string().max(254).nullable().optional(),
     brandFooterHtml: z.string().max(4000).nullable().optional(),
+    // 0053 — Billing + A/R block.
+    arTermsText: z.string().max(4000).nullable().optional(),
+    statementEmailMessage: z.string().max(4000).nullable().optional(),
+    defaultStatementFormat: z.string().max(80).optional(),
+    achProcessingEnabled: z.boolean().optional(),
+    creditCardProcessingEnabled: z.boolean().optional(),
+    assessServiceChargesEnabled: z.boolean().optional(),
+    serviceChargeRateBps: z.number().int().min(0).max(10_000).optional(),
+    dunningMessage1: z.string().max(2000).nullable().optional(),
+    dunningMessage2: z.string().max(2000).nullable().optional(),
+    dunningMessage3: z.string().max(2000).nullable().optional(),
+    dunningMessage4: z.string().max(2000).nullable().optional(),
+    dunningMessage5: z.string().max(2000).nullable().optional(),
     // Phase 20 #4 — fee structures the firm wants to expose.
     enabledFeeStructures: z.array(z.enum(FEE_STRUCTURES)).min(1).max(5).optional(),
     // Phase 20 #8 — firm-wide billable target.
@@ -113,6 +134,7 @@ const FirmPatchSchema = z
 
 export function createAdminRouter(deps: AdminRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/firm-settings',
@@ -248,8 +270,26 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           id: appUsers.id,
           email: appUsers.email,
           fullName: appUsers.fullName,
+          firstName: appUsers.firstName,
+          middleName: appUsers.middleName,
+          lastName: appUsers.lastName,
+          title: appUsers.title,
+          salutation: appUsers.salutation,
+          businessPhone: appUsers.businessPhone,
+          homePhone: appUsers.homePhone,
+          faxPhone: appUsers.faxPhone,
+          mobilePhone: appUsers.mobilePhone,
+          addressLine1: appUsers.addressLine1,
+          addressLine2: appUsers.addressLine2,
+          city: appUsers.city,
+          state: appUsers.state,
+          zip: appUsers.zip,
+          hiredDate: appUsers.hiredDate,
+          leftDate: appUsers.leftDate,
           status: appUsers.status,
           defaultOfficeId: appUsers.defaultOfficeId,
+          standardHoursPerWeek: appUsers.standardHoursPerWeek,
+          billableTargetHoursPerMonth: appUsers.billableTargetHoursPerMonth,
           totpEnrolledAt: appUsers.totpEnrolledAt,
           createdAt: appUsers.createdAt,
         })
@@ -312,40 +352,86 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
-      const body = req.body as {
-        fullName?: unknown;
-        defaultOfficeId?: unknown;
-        status?: unknown;
-        standardHoursPerWeek?: unknown;
-        billableTargetHoursPerMonth?: unknown;
-      };
+      const body = req.body as Record<string, unknown>;
       const patch: Record<string, unknown> = {};
-      if (typeof body.fullName === 'string' && body.fullName.trim()) {
-        patch['fullName'] = body.fullName.slice(0, 200);
+      // Identity (Main tab)
+      const str = (k: string, max = 200): void => {
+        const v = body[k];
+        if (v === null) patch[k] = null;
+        else if (typeof v === 'string') {
+          const trimmed = v.slice(0, max);
+          patch[k] = trimmed.trim() === '' ? null : trimmed;
+        }
+      };
+      str('firstName');
+      str('middleName');
+      str('lastName');
+      str('title');
+      str('salutation', 40);
+      // Contact Info tab
+      str('businessPhone', 40);
+      str('homePhone', 40);
+      str('faxPhone', 40);
+      str('mobilePhone', 40);
+      str('addressLine1', 200);
+      str('addressLine2', 200);
+      str('city', 120);
+      str('state', 40);
+      str('zip', 20);
+      // Dates
+      const date = (k: string): void => {
+        const v = body[k];
+        if (v === null) patch[k] = null;
+        else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) patch[k] = v;
+      };
+      date('hiredDate');
+      date('leftDate');
+      // Existing fields
+      if (typeof body['fullName'] === 'string' && (body['fullName'] as string).trim()) {
+        patch['fullName'] = (body['fullName'] as string).slice(0, 200);
       }
-      if (typeof body.defaultOfficeId === 'string') {
-        patch['defaultOfficeId'] = body.defaultOfficeId;
+      if (typeof body['defaultOfficeId'] === 'string') {
+        patch['defaultOfficeId'] = body['defaultOfficeId'];
       }
-      if (body.status === 'ACTIVE' || body.status === 'INACTIVE' || body.status === 'ARCHIVED') {
-        patch['status'] = body.status;
+      if (
+        body['status'] === 'ACTIVE' ||
+        body['status'] === 'INACTIVE' ||
+        body['status'] === 'ARCHIVED'
+      ) {
+        patch['status'] = body['status'];
       }
       // Phase 20 #7 — standard hours per week (utilization denominator).
       if (
-        typeof body.standardHoursPerWeek === 'number' &&
-        body.standardHoursPerWeek >= 0 &&
-        body.standardHoursPerWeek <= 80
+        typeof body['standardHoursPerWeek'] === 'number' &&
+        (body['standardHoursPerWeek'] as number) >= 0 &&
+        (body['standardHoursPerWeek'] as number) <= 80
       ) {
-        patch['standardHoursPerWeek'] = body.standardHoursPerWeek.toFixed(2);
+        patch['standardHoursPerWeek'] = (body['standardHoursPerWeek'] as number).toFixed(2);
       }
       // Phase 20 #8 — per-user billable target override.
-      if (body.billableTargetHoursPerMonth === null) {
+      if (body['billableTargetHoursPerMonth'] === null) {
         patch['billableTargetHoursPerMonth'] = null;
       } else if (
-        typeof body.billableTargetHoursPerMonth === 'number' &&
-        body.billableTargetHoursPerMonth >= 0 &&
-        body.billableTargetHoursPerMonth <= 300
+        typeof body['billableTargetHoursPerMonth'] === 'number' &&
+        (body['billableTargetHoursPerMonth'] as number) >= 0 &&
+        (body['billableTargetHoursPerMonth'] as number) <= 300
       ) {
-        patch['billableTargetHoursPerMonth'] = Math.round(body.billableTargetHoursPerMonth);
+        patch['billableTargetHoursPerMonth'] = Math.round(
+          body['billableTargetHoursPerMonth'] as number,
+        );
+      }
+      // 0054 — when first/middle/last are supplied, recompute fullName so
+      // every display that still reads fullName stays in sync.
+      const fn = (patch['firstName'] ?? null) as string | null;
+      const mn = (patch['middleName'] ?? null) as string | null;
+      const ln = (patch['lastName'] ?? null) as string | null;
+      if (
+        patch['firstName'] !== undefined ||
+        patch['lastName'] !== undefined ||
+        patch['middleName'] !== undefined
+      ) {
+        const parts = [fn, mn, ln].filter((p): p is string => !!p && p.length > 0);
+        if (parts.length > 0) patch['fullName'] = parts.join(' ');
       }
       if (Object.keys(patch).length === 0) {
         res.status(400).json({ error: 'no_fields_to_update' });
@@ -1105,6 +1191,438 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         actorAppUserId: req.staffSession!.appUserId,
       }).catch(() => undefined);
       res.json({ ok: true });
+    },
+  );
+
+  // ----------------------------------------------------------------
+  // 0050 — engagement_status_config. Per-firm presentation +
+  // automation flags layered over the workflow_state enum. Seeded by
+  // migration; only GET/PATCH exposed (no insert/delete — enum bound).
+  // ----------------------------------------------------------------
+  router.get(
+    '/engagement-statuses',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(engagementStatusConfig)
+        .where(eq(engagementStatusConfig.firmId, firmId))
+        .orderBy(engagementStatusConfig.sortOrder);
+      res.json({ items });
+    },
+  );
+
+  const StatusConfigPatchSchema = z
+    .object({
+      label: z.string().min(1).max(60).optional(),
+      color: z
+        .string()
+        .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
+        .optional(),
+      sortOrder: z.number().int().min(0).max(9999).optional(),
+      kanbanVisible: z.boolean().optional(),
+      triggersClientComm: z.boolean().optional(),
+    })
+    .strict();
+
+  const WORKFLOW_STATES = [
+    'NO_STATUS',
+    'NOT_STARTED',
+    'READY',
+    'IN_PROGRESS',
+    'ON_HOLD',
+    'NEEDS_REVIEW',
+    'WITH_CLIENT',
+    'COMPLETED',
+    'CANCELED',
+    'DRAFT',
+  ] as const;
+  type WorkflowState = (typeof WORKFLOW_STATES)[number];
+
+  router.patch(
+    '/engagement-statuses/:state',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const state = req.params['state'] as string;
+      if (!(WORKFLOW_STATES as readonly string[]).includes(state)) {
+        res.status(400).json({ error: 'invalid_state' });
+        return;
+      }
+      const parsed = StatusConfigPatchSchema.safeParse(req.body);
+      if (!parsed.success || Object.keys(parsed.data).length === 0) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      await deps.db
+        .update(engagementStatusConfig)
+        .set({ ...parsed.data, updatedAt: new Date() })
+        .where(
+          and(
+            eq(engagementStatusConfig.firmId, firmId),
+            eq(engagementStatusConfig.workflowState, state as WorkflowState),
+          ),
+        );
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'engagement_status_config',
+        entityId: state,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: parsed.data,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // ----------------------------------------------------------------
+  // 0054 — rate_code CRUD. Firm-scoped catalog. StandardRate is system:
+  // can be renamed (description) but not deleted, and its `code` is
+  // immutable (the resolver fallback path looks it up by literal name).
+  // ----------------------------------------------------------------
+  const RateCodeCreateSchema = z.object({
+    code: z
+      .string()
+      .min(1)
+      .max(40)
+      .regex(/^[A-Za-z0-9_-]+$/, 'code must be alphanumeric, dash, or underscore'),
+    description: z.string().max(200).nullable().optional(),
+    sortOrder: z.number().int().min(0).max(9999).optional(),
+  });
+  const RateCodePatchSchema = z.object({
+    code: z
+      .string()
+      .min(1)
+      .max(40)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+    description: z.string().max(200).nullable().optional(),
+    sortOrder: z.number().int().min(0).max(9999).optional(),
+    active: z.boolean().optional(),
+  });
+
+  router.get(
+    '/rate-codes',
+    requirePermission(deps, 'rate:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(rateCodes)
+        .where(eq(rateCodes.firmId, firmId))
+        .orderBy(rateCodes.sortOrder, rateCodes.code);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/rate-codes',
+    requirePermission(deps, 'rate:write'),
+    async (req: Request, res: Response) => {
+      const parsed = RateCodeCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      try {
+        const [row] = await deps.db
+          .insert(rateCodes)
+          .values({
+            firmId,
+            code: parsed.data.code,
+            description: parsed.data.description ?? null,
+            sortOrder: parsed.data.sortOrder ?? 0,
+            isSystem: false,
+          })
+          .returning({ id: rateCodes.id });
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'rate_code',
+          entityId: row?.id,
+          actorAppUserId: req.staffSession!.appUserId,
+          after: parsed.data,
+        }).catch(() => undefined);
+        res.status(201).json({ id: row?.id });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'insert_failed';
+        if (/unique|duplicate/i.test(msg)) {
+          res.status(409).json({ error: 'duplicate_code' });
+          return;
+        }
+        res.status(500).json({ error: 'insert_failed' });
+      }
+    },
+  );
+
+  router.patch(
+    '/rate-codes/:id',
+    requirePermission(deps, 'rate:write'),
+    async (req: Request, res: Response) => {
+      const parsed = RateCodePatchSchema.safeParse(req.body);
+      if (!parsed.success || Object.keys(parsed.data).length === 0) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [existing] = await deps.db
+        .select()
+        .from(rateCodes)
+        .where(and(eq(rateCodes.id, req.params['id']!), eq(rateCodes.firmId, firmId)))
+        .limit(1);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // System codes: `code` is immutable. Description / sort / active OK.
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (parsed.data.code != null) {
+        if (existing.isSystem) {
+          res.status(409).json({ error: 'system_code_immutable' });
+          return;
+        }
+        patch['code'] = parsed.data.code;
+      }
+      if (parsed.data.description !== undefined) patch['description'] = parsed.data.description;
+      if (parsed.data.sortOrder != null) patch['sortOrder'] = parsed.data.sortOrder;
+      if (parsed.data.active != null) {
+        if (existing.isSystem && parsed.data.active === false) {
+          res.status(409).json({ error: 'system_code_cannot_deactivate' });
+          return;
+        }
+        patch['active'] = parsed.data.active;
+      }
+      try {
+        await deps.db.update(rateCodes).set(patch).where(eq(rateCodes.id, existing.id));
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'rate_code',
+          entityId: existing.id,
+          actorAppUserId: req.staffSession!.appUserId,
+          before: existing,
+          after: patch,
+        }).catch(() => undefined);
+        res.json({ ok: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'update_failed';
+        if (/unique|duplicate/i.test(msg)) {
+          res.status(409).json({ error: 'duplicate_code' });
+          return;
+        }
+        res.status(500).json({ error: 'update_failed' });
+      }
+    },
+  );
+
+  router.delete(
+    '/rate-codes/:id',
+    requirePermission(deps, 'rate:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [existing] = await deps.db
+        .select()
+        .from(rateCodes)
+        .where(and(eq(rateCodes.id, req.params['id']!), eq(rateCodes.firmId, firmId)))
+        .limit(1);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (existing.isSystem) {
+        res.status(409).json({ error: 'system_code_cannot_be_deleted' });
+        return;
+      }
+      // RESTRICT FK on staff_rate_snapshot_entry.rate_code_id means a code
+      // in use cannot be deleted. Surface that cleanly.
+      try {
+        await deps.db.delete(rateCodes).where(eq(rateCodes.id, existing.id));
+        await emitAudit(deps.db, {
+          action: 'ARCHIVE',
+          entityType: 'rate_code',
+          entityId: existing.id,
+          actorAppUserId: req.staffSession!.appUserId,
+          before: existing,
+          after: { deleted: true },
+        }).catch(() => undefined);
+        res.json({ ok: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'delete_failed';
+        if (/foreign key|fk|violates/i.test(msg)) {
+          res.status(409).json({ error: 'rate_code_in_use' });
+          return;
+        }
+        res.status(500).json({ error: 'delete_failed' });
+      }
+    },
+  );
+
+  // ----------------------------------------------------------------
+  // 0054 — staff rate snapshots. Append-only. POST creates a new
+  // effective_date snapshot with the supplied (code → bill rate) entries.
+  // Editing a past snapshot is forbidden (rate-change history is the
+  // entire point).
+  // ----------------------------------------------------------------
+  router.get(
+    '/users/:id/rate-snapshots',
+    requirePermission(deps, 'rate:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ snapshots: [], codes: [] });
+        return;
+      }
+      const [user] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'user_not_found' });
+        return;
+      }
+      const codes = await deps.db
+        .select()
+        .from(rateCodes)
+        .where(eq(rateCodes.firmId, firmId))
+        .orderBy(rateCodes.sortOrder, rateCodes.code);
+      const snaps = await deps.db
+        .select()
+        .from(staffRateSnapshots)
+        .where(eq(staffRateSnapshots.appUserId, user.id))
+        .orderBy(desc(staffRateSnapshots.effectiveDate));
+      const entries = snaps.length
+        ? await deps.db
+            .select()
+            .from(staffRateSnapshotEntries)
+            .where(
+              inArray(
+                staffRateSnapshotEntries.snapshotId,
+                snaps.map((s) => s.id),
+              ),
+            )
+        : [];
+      const byId = new Map<string, { rateCodeId: string; billRateCents: number }[]>();
+      for (const e of entries) {
+        const list = byId.get(e.snapshotId) ?? [];
+        list.push({ rateCodeId: e.rateCodeId, billRateCents: e.billRateCents });
+        byId.set(e.snapshotId, list);
+      }
+      res.json({
+        codes,
+        snapshots: snaps.map((s) => ({
+          id: s.id,
+          effectiveDate: s.effectiveDate,
+          costRateCents: s.costRateCents,
+          createdAt: s.createdAt,
+          entries: byId.get(s.id) ?? [],
+        })),
+      });
+    },
+  );
+
+  const SnapshotCreateSchema = z.object({
+    effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    costRateCents: z.number().int().nonnegative().nullable().optional(),
+    entries: z
+      .array(
+        z.object({
+          rateCodeId: z.string().uuid(),
+          billRateCents: z.number().int().nonnegative(),
+        }),
+      )
+      .min(1),
+  });
+
+  router.post(
+    '/users/:id/rate-snapshots',
+    requirePermission(deps, 'rate:write'),
+    async (req: Request, res: Response) => {
+      const parsed = SnapshotCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+      const [user] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'user_not_found' });
+        return;
+      }
+      // Every rate_code_id must belong to this firm (don't allow snapshots
+      // to reference a code from another firm).
+      const codeIds = Array.from(new Set(parsed.data.entries.map((e) => e.rateCodeId)));
+      const codes = await deps.db
+        .select({ id: rateCodes.id, code: rateCodes.code })
+        .from(rateCodes)
+        .where(and(eq(rateCodes.firmId, firmId), inArray(rateCodes.id, codeIds)));
+      if (codes.length !== codeIds.length) {
+        res.status(400).json({ error: 'rate_code_not_in_firm' });
+        return;
+      }
+      // Require StandardRate to be present — every snapshot must carry
+      // the resolver-fallback entry, even if zero.
+      const standardId = codes.find((c) => c.code === 'StandardRate')?.id;
+      if (!standardId || !parsed.data.entries.some((e) => e.rateCodeId === standardId)) {
+        res.status(400).json({ error: 'standard_rate_required' });
+        return;
+      }
+      try {
+        const id = await createSnapshot(deps.db, {
+          appUserId: user.id,
+          effectiveDate: parsed.data.effectiveDate,
+          costRateCents: parsed.data.costRateCents ?? null,
+          entries: parsed.data.entries,
+        });
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'staff_rate_snapshot',
+          entityId: id,
+          actorAppUserId: req.staffSession!.appUserId,
+          after: parsed.data,
+        }).catch(() => undefined);
+        res.status(201).json({ id });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'insert_failed';
+        if (/unique|duplicate/i.test(msg)) {
+          res.status(409).json({ error: 'snapshot_for_date_exists' });
+          return;
+        }
+        res.status(500).json({ error: 'insert_failed' });
+      }
     },
   );
 

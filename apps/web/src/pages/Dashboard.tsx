@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useAuth } from '../auth-context';
 
 interface RealizationItem {
   key: string;
@@ -22,20 +23,109 @@ interface FirmSummary {
   wipAmountCents: number;
 }
 
+interface MyEngagement {
+  id: string;
+  clientId: string;
+  clientName: string;
+  name: string;
+  workflowState: string;
+  priority: string;
+  engagementTypeId: string | null;
+  dueDate: string | null;
+}
+
+interface EngagementType {
+  id: string;
+  name: string;
+}
+
+type MySortCol = 'name' | 'client' | 'workflowState' | 'priority' | 'dueDate';
+
 const formatPct = (p: number): string => `${(p * 100).toFixed(1)}%`;
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
+// 0050 — realization date presets.
+type Preset = 'MTD' | 'QTD' | 'YTD' | 'LAST30' | 'CUSTOM';
+const PRESETS: { id: Preset; label: string }[] = [
+  { id: 'MTD', label: 'MTD' },
+  { id: 'QTD', label: 'QTD' },
+  { id: 'YTD', label: 'YTD' },
+  { id: 'LAST30', label: 'Last 30' },
+  { id: 'CUSTOM', label: 'Custom' },
+];
+
+function computeRange(
+  preset: Preset,
+  custom: { start: string; end: string },
+): { start: string; end: string } {
+  const today = new Date();
+  const iso = (d: Date): string => d.toISOString().slice(0, 10);
+  const todayStr = iso(today);
+  if (preset === 'CUSTOM') return custom;
+  if (preset === 'LAST30') {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 30);
+    return { start: iso(start), end: todayStr };
+  }
+  if (preset === 'MTD') {
+    return { start: iso(new Date(today.getFullYear(), today.getMonth(), 1)), end: todayStr };
+  }
+  if (preset === 'QTD') {
+    const q = Math.floor(today.getMonth() / 3) * 3;
+    return { start: iso(new Date(today.getFullYear(), q, 1)), end: todayStr };
+  }
+  // YTD
+  return { start: iso(new Date(today.getFullYear(), 0, 1)), end: todayStr };
+}
+
+function daysFromToday(iso: string | null): number | null {
+  if (!iso) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(`${iso}T00:00:00`);
+  return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+}
+
 export function DashboardPage(): JSX.Element {
+  const { me } = useAuth();
   const [items, setItems] = useState<RealizationItem[]>([]);
   const [summary, setSummary] = useState<FirmSummary | null>(null);
+  const [myEngagements, setMyEngagements] = useState<MyEngagement[]>([]);
+  const [engTypes, setEngTypes] = useState<EngagementType[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // 0050 — date range for realization. Default MTD.
+  const [preset, setPreset] = useState<Preset>('MTD');
+  const [customRange, setCustomRange] = useState({
+    start: new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10),
+    end: new Date().toISOString().slice(0, 10),
+  });
+  const range = useMemo(() => computeRange(preset, customRange), [preset, customRange]);
+
+  // 0051 — My Work filters + sort + pagination (client-side since the
+  // set is bounded to "assigned to me" + ACTIVE).
+  const [filterClientId, setFilterClientId] = useState('');
+  const [filterTypeId, setFilterTypeId] = useState('');
+  const [filterState, setFilterState] = useState('');
+  const [filterPriority, setFilterPriority] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [sort, setSort] = useState<{ col: MySortCol; dir: 'asc' | 'desc' }>({
+    col: 'dueDate',
+    dir: 'asc',
+  });
 
   useEffect(() => {
     void (async () => {
       try {
+        const params = new URLSearchParams({
+          dimension: 'timekeeper',
+          start: range.start,
+          end: range.end,
+        });
         const [r, s] = await Promise.all([
-          api<{ items: RealizationItem[] }>('/api/staff/reports/realization?dimension=timekeeper'),
+          api<{ items: RealizationItem[] }>(`/api/staff/reports/realization?${params}`),
           api<{ summary: FirmSummary | null }>('/api/staff/stats/firm'),
         ]);
         setItems(r.items ?? []);
@@ -46,7 +136,92 @@ export function DashboardPage(): JSX.Element {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [range.start, range.end]);
+
+  useEffect(() => {
+    if (!me?.appUserId) return;
+    void (async () => {
+      try {
+        const [r, t] = await Promise.all([
+          api<{ items: MyEngagement[] }>(
+            `/api/staff/engagements?assigneeUserId=${me.appUserId}&status=ACTIVE&limit=500`,
+          ),
+          api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
+            items: [],
+          })),
+        ]);
+        setMyEngagements(r.items ?? []);
+        setEngTypes(t.items ?? []);
+      } catch {
+        // Non-fatal.
+      }
+    })();
+  }, [me?.appUserId]);
+
+  // Reset to page 1 when any filter / sort changes.
+  useEffect(() => {
+    setPage(1);
+  }, [filterClientId, filterTypeId, filterState, filterPriority, sort]);
+
+  // Distinct workflow states + clients drawn from the loaded set so
+  // the filter dropdowns don't show empty options.
+  const stateOpts = useMemo(() => {
+    const set = new Set(myEngagements.map((e) => e.workflowState));
+    return Array.from(set).map((s) => ({ value: s, label: s }));
+  }, [myEngagements]);
+  const clientOpts = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of myEngagements) m.set(e.clientId, e.clientName);
+    return Array.from(m.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [myEngagements]);
+
+  const filtered = useMemo(() => {
+    let arr = myEngagements;
+    if (filterClientId) arr = arr.filter((e) => e.clientId === filterClientId);
+    if (filterTypeId) arr = arr.filter((e) => e.engagementTypeId === filterTypeId);
+    if (filterState) arr = arr.filter((e) => e.workflowState === filterState);
+    if (filterPriority) arr = arr.filter((e) => e.priority === filterPriority);
+    const sign = sort.dir === 'asc' ? 1 : -1;
+    return [...arr].sort((a, b) => {
+      switch (sort.col) {
+        case 'name':
+          return sign * a.name.localeCompare(b.name);
+        case 'client':
+          return sign * a.clientName.localeCompare(b.clientName);
+        case 'workflowState':
+          return sign * a.workflowState.localeCompare(b.workflowState);
+        case 'priority':
+          return sign * a.priority.localeCompare(b.priority);
+        case 'dueDate': {
+          // Empty due dates sort last regardless of direction so they
+          // don't clutter the top of the list.
+          const ad = a.dueDate ?? '';
+          const bd = b.dueDate ?? '';
+          if (!ad && !bd) return 0;
+          if (!ad) return 1;
+          if (!bd) return -1;
+          return sign * ad.localeCompare(bd);
+        }
+      }
+    });
+  }, [myEngagements, filterClientId, filterTypeId, filterState, filterPriority, sort]);
+
+  const totalMy = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(totalMy / pageSize));
+  const pageRows = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize],
+  );
+
+  function toggleSort(col: MySortCol): void {
+    setSort((p) =>
+      p.col === col ? { col, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' },
+    );
+  }
+  const sortIcon = (col: MySortCol): string =>
+    sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
@@ -71,7 +246,60 @@ export function DashboardPage(): JSX.Element {
           </div>
         </Card>
       )}
-      <Card title="Realization by timekeeper" action={<Pill tone="accent">live</Pill>}>
+
+      {/* 0051 — realization card moved above My active engagements. */}
+      <Card
+        title="Realization by timekeeper"
+        action={
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <span
+              style={{
+                display: 'inline-flex',
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+              }}
+            >
+              {PRESETS.map((p) => (
+                <Button
+                  key={p.id}
+                  size="sm"
+                  variant={preset === p.id ? 'secondary' : 'ghost'}
+                  onClick={() => setPreset(p.id)}
+                  aria-pressed={preset === p.id}
+                >
+                  {p.label}
+                </Button>
+              ))}
+            </span>
+            <Pill tone="accent">live</Pill>
+          </span>
+        }
+      >
+        {preset === 'CUSTOM' && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, fontSize: 13 }}>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              From
+              <input
+                type="date"
+                value={customRange.start}
+                onChange={(e) => setCustomRange((r) => ({ ...r, start: e.target.value }))}
+                style={inputStyle}
+              />
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              To
+              <input
+                type="date"
+                value={customRange.end}
+                onChange={(e) => setCustomRange((r) => ({ ...r, end: e.target.value }))}
+                style={inputStyle}
+              />
+            </label>
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '0 0 8px 0' }}>
+          {range.start} → {range.end}
+        </p>
         {error && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>}
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
@@ -104,6 +332,219 @@ export function DashboardPage(): JSX.Element {
           />
         )}
       </Card>
+
+      {/* 0050 — My active engagements card (now below realization). */}
+      <Card
+        title={`My active engagements — ${totalMy.toLocaleString()}`}
+        action={
+          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+            <a href="/engagements" style={{ color: tokens.color.accent }}>
+              View all →
+            </a>
+            <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              Page size
+              <select
+                aria-label="Page size"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+                style={{ padding: '4px 6px' }}
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </label>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              ← Prev
+            </Button>
+            <span style={{ color: tokens.color.textMuted }}>
+              Page {page} / {pageCount}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={page >= pageCount}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            >
+              Next →
+            </Button>
+          </span>
+        }
+      >
+        {/* 0051 — per-column filter row. Each picker re-filters the
+            already-loaded set; no server roundtrip per click. */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, 1fr)',
+            gap: 8,
+            marginBottom: 12,
+          }}
+        >
+          <Combobox
+            ariaLabel="Filter client"
+            clearable
+            value={filterClientId}
+            onChange={setFilterClientId}
+            options={clientOpts}
+            placeholder="Any client"
+            size="sm"
+          />
+          <Combobox
+            ariaLabel="Filter type"
+            clearable
+            value={filterTypeId}
+            onChange={setFilterTypeId}
+            options={engTypes.map((t) => ({ value: t.id, label: t.name }))}
+            placeholder="Any type"
+            size="sm"
+          />
+          <Combobox
+            ariaLabel="Filter status"
+            clearable
+            value={filterState}
+            onChange={setFilterState}
+            options={stateOpts}
+            placeholder="Any status"
+            size="sm"
+          />
+          <Combobox
+            ariaLabel="Filter priority"
+            clearable
+            value={filterPriority}
+            onChange={setFilterPriority}
+            options={[
+              { value: 'LOW', label: 'Low' },
+              { value: 'MEDIUM', label: 'Medium' },
+              { value: 'HIGH', label: 'High' },
+              { value: 'URGENT', label: 'Urgent' },
+            ]}
+            placeholder="Any priority"
+            size="sm"
+          />
+        </div>
+        {pageRows.length === 0 ? (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            {myEngagements.length === 0
+              ? 'You have no active engagements assigned. Ask a partner to assign you, or open the engagements list to claim work.'
+              : 'No engagements match the current filters.'}
+          </p>
+        ) : (
+          <Table<MyEngagement>
+            columns={[
+              {
+                key: 'name',
+                header: (
+                  <button type="button" style={headerBtn} onClick={() => toggleSort('name')}>
+                    Engagement{sortIcon('name')}
+                  </button>
+                ) as unknown as string,
+                render: (r) => <a href={`/engagements/${r.id}`}>{r.name}</a>,
+              },
+              {
+                key: 'client',
+                header: (
+                  <button type="button" style={headerBtn} onClick={() => toggleSort('client')}>
+                    Client{sortIcon('client')}
+                  </button>
+                ) as unknown as string,
+                render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
+              },
+              {
+                key: 'state',
+                header: (
+                  <button
+                    type="button"
+                    style={headerBtn}
+                    onClick={() => toggleSort('workflowState')}
+                  >
+                    Status{sortIcon('workflowState')}
+                  </button>
+                ) as unknown as string,
+                render: (r) => <Pill>{r.workflowState}</Pill>,
+              },
+              {
+                key: 'pri',
+                header: (
+                  <button type="button" style={headerBtn} onClick={() => toggleSort('priority')}>
+                    Priority{sortIcon('priority')}
+                  </button>
+                ) as unknown as string,
+                render: (r) => <Pill>{r.priority}</Pill>,
+              },
+              {
+                key: 'due',
+                header: (
+                  <button type="button" style={headerBtn} onClick={() => toggleSort('dueDate')}>
+                    Due{sortIcon('dueDate')}
+                  </button>
+                ) as unknown as string,
+                render: (r) => {
+                  if (!r.dueDate) return <span style={{ color: tokens.color.textMuted }}>—</span>;
+                  const days = daysFromToday(r.dueDate);
+                  const tone =
+                    days == null
+                      ? 'neutral'
+                      : days < 0
+                        ? 'danger'
+                        : days <= 7
+                          ? 'warning'
+                          : 'neutral';
+                  const label =
+                    days == null
+                      ? ''
+                      : days < 0
+                        ? `${Math.abs(days)}d overdue`
+                        : days === 0
+                          ? 'today'
+                          : `in ${days}d`;
+                  return (
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <span>{r.dueDate}</span>
+                      <Pill tone={tone}>{label}</Pill>
+                    </span>
+                  );
+                },
+              },
+              {
+                key: 'actions',
+                header: '',
+                align: 'right',
+                render: (r) => (
+                  <span style={{ display: 'inline-flex', gap: 6 }}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => (window.location.href = `/engagements/${r.id}`)}
+                    >
+                      Open
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        (window.location.href = `/time?clientId=${r.clientId}&engagementId=${r.id}`)
+                      }
+                    >
+                      Time
+                    </Button>
+                  </span>
+                ),
+              },
+            ]}
+            rows={pageRows}
+            rowKey={(r) => r.id}
+          />
+        )}
+      </Card>
+
       <Card title="What's next">
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: tokens.color.textMuted }}>
           <li>Set up service lines and work codes under Admin → Taxonomy</li>
@@ -150,3 +591,23 @@ function Stat({ label, value }: { label: string; value: string }): JSX.Element {
     </div>
   );
 }
+
+const inputStyle: React.CSSProperties = {
+  padding: '4px 8px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 13,
+};
+
+const headerBtn: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  padding: 0,
+  fontFamily: 'inherit',
+  fontWeight: 'inherit',
+  fontSize: 'inherit',
+  color: 'inherit',
+  cursor: 'pointer',
+};

@@ -21,6 +21,7 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface ApprovalRoutesDeps extends RbacDeps {
@@ -34,6 +35,7 @@ const DecideSchema = z.object({
 
 export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/pending',

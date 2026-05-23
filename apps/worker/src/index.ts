@@ -437,7 +437,6 @@ async function setup(): Promise<void> {
             action: 'CREATE',
             entityType: 'worker_job_failure',
             entityId: null,
-            actorMcpTokenId: 'worker',
             afterJson: { queue: name, jobId, failedReason },
           });
         } catch (err) {

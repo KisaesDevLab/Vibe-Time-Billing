@@ -39,14 +39,16 @@ export interface AuditEvent {
 }
 
 export async function emitAudit(db: Database | null, event: AuditEvent): Promise<void> {
-  // Belt-and-suspenders: enforce single-actor invariant in code too (DB
-  // already enforces it via CHECK constraint).
+  // At most one actor — staff, portal, and MCP token are mutually exclusive.
+  // Zero is allowed for system-emitted events (Stripe / CPACharge webhooks,
+  // worker-driven sweeps). The actor_mcp_token_id column is a UUID FK, so
+  // we can't smuggle a string sentinel through it the way prior code tried.
   const actorCount =
     Number(event.actorAppUserId != null) +
     Number(event.actorPortalIdentityId != null) +
     Number(event.actorMcpTokenId != null);
-  if (actorCount !== 1) {
-    throw new Error(`audit emit: exactly one actor required, got ${actorCount}`);
+  if (actorCount > 1) {
+    throw new Error(`audit emit: at most one actor allowed, got ${actorCount}`);
   }
 
   if (!db) {

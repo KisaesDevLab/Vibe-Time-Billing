@@ -65,7 +65,6 @@ export async function runScopeCreepAlert(
       action: 'CREATE',
       entityType: 'scope_creep_alert',
       entityId: r.engagementId,
-      actorMcpTokenId: 'scope-creep-worker',
       afterJson: {
         engagementId: r.engagementId,
         clientId: r.clientId,

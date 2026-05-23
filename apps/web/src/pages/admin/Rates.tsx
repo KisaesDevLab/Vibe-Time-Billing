@@ -24,13 +24,18 @@ interface HistoryRow {
   id?: string;
   billRateCents: number;
   costRateCents?: number | null;
-  effectiveStart: string;
+  effectiveStart?: string;
+  effectiveDate?: string;
   effectiveEnd?: string | null;
   clientName?: string | null;
+  code?: string;
 }
 
 interface HistoryResponse {
-  timekeeper: HistoryRow[];
+  // 0054 — staff_rate_snapshot rows replace the old timekeeper rate
+  // history. One row per (snapshot, rate code) so partners can see how
+  // each code's rate moved across effective periods.
+  snapshots: HistoryRow[];
   client: HistoryRow[];
   engagement: HistoryRow[];
   serviceLine: HistoryRow[];
@@ -46,15 +51,22 @@ interface ResolveDebug {
     level: string;
     billRateCents: number;
     costRateCents: number | null;
-    trace: { level: string; status: 'win' | 'no-match' }[];
+    rateCodeId?: string | null;
+    trace: { level: string; status: 'win' | 'no-match' | 'fallback' }[];
   } | null;
-  engagement: { id: string; name: string; rateMultiplierBps: number } | null;
+  engagement: {
+    id: string;
+    name: string;
+    rateMultiplierBps: number;
+    defaultRateCodeId?: string | null;
+  } | null;
   effectiveRateCents?: number;
   candidates: {
     level: string;
     billRateCents: number;
     effectiveStart: string;
     effectiveEnd?: string | null;
+    rateCodeId?: string | null;
   }[];
 }
 
@@ -63,10 +75,6 @@ const formatCents = (c: number): string => `$${(c / 100).toFixed(2)}`;
 export function RatesPage(): JSX.Element {
   const [margins, setMargins] = useState<Margin[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [userId, setUserId] = useState('');
-  const [bill, setBill] = useState('');
-  const [cost, setCost] = useState('');
-  const [effective, setEffective] = useState('');
   const [bulkPct, setBulkPct] = useState('5');
   const [bulkEffective, setBulkEffective] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +122,7 @@ export function RatesPage(): JSX.Element {
       );
       setHistory(r);
     } catch (e) {
-      setHistory({ timekeeper: [], client: [], engagement: [], serviceLine: [] });
+      setHistory({ snapshots: [], client: [], engagement: [], serviceLine: [] });
       setError(e instanceof Error ? e.message : 'history failed');
     }
   }
@@ -130,31 +138,6 @@ export function RatesPage(): JSX.Element {
       setDebugResult(r);
     } catch (err) {
       setDebugErr(err instanceof Error ? err.message : 'failed');
-    }
-  }
-
-  async function addRate(e: FormEvent): Promise<void> {
-    e.preventDefault();
-    setError(null);
-    setStatus(null);
-    try {
-      await api('/api/staff/rates/timekeeper', {
-        method: 'POST',
-        body: JSON.stringify({
-          appUserId: userId,
-          billRateCents: Math.round(parseFloat(bill) * 100),
-          costRateCents: cost ? Math.round(parseFloat(cost) * 100) : undefined,
-          effectiveStart: effective,
-        }),
-      });
-      setBill('');
-      setCost('');
-      setUserId('');
-      setEffective('');
-      setStatus('Rate added.');
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed');
     }
   }
 
@@ -178,69 +161,20 @@ export function RatesPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <Card title="Add timekeeper rate">
-        <form
-          onSubmit={addRate}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '2fr 1fr 1fr 1fr auto',
-            gap: 12,
-            alignItems: 'end',
-          }}
-        >
-          <label style={{ fontSize: 13 }}>
-            Timekeeper
-            <select
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-              required
-              style={{
-                marginTop: 4,
-                padding: '6px 8px',
-                width: '100%',
-                borderRadius: tokens.radius.sm,
-                border: `1px solid ${tokens.color.border}`,
-              }}
-            >
-              <option value="">— Pick one —</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.fullName} ({u.email})
-                </option>
-              ))}
-            </select>
-          </label>
-          <Input
-            label="Bill / hr"
-            type="number"
-            step="0.01"
-            value={bill}
-            onChange={(e) => setBill(e.target.value)}
-            required
-          />
-          <Input
-            label="Cost / hr"
-            type="number"
-            step="0.01"
-            value={cost}
-            onChange={(e) => setCost(e.target.value)}
-          />
-          <Input
-            label="Effective"
-            type="date"
-            value={effective}
-            onChange={(e) => setEffective(e.target.value)}
-            required
-          />
-          <Button type="submit">Add</Button>
-        </form>
+      <Card title="Per-staff rate management">
+        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+          Individual staff rates (one snapshot per effective date, with a billing rate per rate
+          code) live on each user&apos;s detail page — open a user from{' '}
+          <a href="/admin/users">Users</a>. The catalog of rate codes is managed at{' '}
+          <a href="/admin/rate-codes">Rate codes</a>.
+        </p>
         {status && (
           <p style={{ color: tokens.color.success, fontSize: 12, marginTop: 8 }}>{status}</p>
         )}
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
       </Card>
 
-      <Card title="Bulk rate update (current open-ended timekeeper rates)">
+      <Card title="Bulk update (StandardRate, all staff)">
         <div
           style={{
             display: 'grid',
@@ -265,12 +199,13 @@ export function RatesPage(): JSX.Element {
           <Button onClick={() => void bulkApply()}>Apply</Button>
         </div>
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8 }}>
-          Closes each current rate the day before the new effective date and opens a fresh row at
-          the multiplied amount. Cost rates carry forward.
+          Opens a new effective-dated snapshot for each staff member where the StandardRate billing
+          rate is multiplied by the percent change. Non-StandardRate codes and the cost rate copy
+          forward unchanged.
         </p>
       </Card>
 
-      <Card title="Loaded margin (current open-ended rates)">
+      <Card title="Loaded margin (current StandardRate vs cost)">
         <Table<Margin>
           columns={[
             { key: 'name', header: 'Name', render: (m) => m.fullName ?? m.appUserId.slice(0, 8) },
@@ -319,16 +254,16 @@ export function RatesPage(): JSX.Element {
           ]}
           rows={margins}
           rowKey={(m) => m.appUserId}
-          empty="No open-ended timekeeper rates yet."
+          empty="No staff snapshots yet."
         />
       </Card>
 
       <Card title="Resolve-debug — why is this rate $X">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 12 }}>
-          Reproduces the rate-resolution logic for a specific (timekeeper, engagement, service
-          date). Shows which level (engagement override → client override → service-line →
-          timekeeper → firm) won and what the engagement&apos;s premium/discount multiplier did to
-          the final stored rate.
+          Reproduces the rate-resolution logic for a specific (staff, engagement, service date).
+          Shows which level (engagement override → client override → service-line → staff rate for
+          the engagement&apos;s code → StandardRate fallback → firm) won and what the
+          engagement&apos;s premium/discount multiplier did to the final stored rate.
         </p>
         <form
           onSubmit={runResolveDebug}
@@ -565,7 +500,11 @@ function HistoryModal({
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
           <>
-            <HistorySection title="Timekeeper rates" rows={history.timekeeper} />
+            <HistorySection
+              title="Staff snapshots (per rate code)"
+              rows={history.snapshots}
+              showCode
+            />
             <HistorySection title="Client overrides" rows={history.client} showClient />
             <HistorySection title="Engagement overrides" rows={history.engagement} />
             <HistorySection title="Service line rates" rows={history.serviceLine} />
@@ -580,10 +519,12 @@ function HistorySection({
   title,
   rows,
   showClient,
+  showCode,
 }: {
   title: string;
   rows: HistoryRow[];
   showClient?: boolean;
+  showCode?: boolean;
 }): JSX.Element {
   return (
     <Card title={title}>
@@ -595,6 +536,15 @@ function HistorySection({
                   key: 'client',
                   header: 'Client',
                   render: (r: HistoryRow) => r.clientName ?? '—',
+                },
+              ]
+            : []),
+          ...(showCode
+            ? [
+                {
+                  key: 'code',
+                  header: 'Code',
+                  render: (r: HistoryRow) => r.code ?? '—',
                 },
               ]
             : []),
@@ -611,15 +561,25 @@ function HistorySection({
             render: (r: HistoryRow) =>
               r.costRateCents == null ? '—' : formatCents(r.costRateCents),
           },
-          { key: 'start', header: 'Effective', render: (r: HistoryRow) => r.effectiveStart },
           {
-            key: 'end',
-            header: 'Ended',
-            render: (r: HistoryRow) => r.effectiveEnd ?? <Pill tone="success">current</Pill>,
+            key: 'start',
+            header: 'Effective',
+            render: (r: HistoryRow) => r.effectiveDate ?? r.effectiveStart ?? '—',
           },
+          ...(showCode
+            ? []
+            : [
+                {
+                  key: 'end',
+                  header: 'Ended',
+                  render: (r: HistoryRow) => r.effectiveEnd ?? <Pill tone="success">current</Pill>,
+                },
+              ]),
         ]}
         rows={rows}
-        rowKey={(r) => r.id ?? `${r.effectiveStart}-${r.billRateCents}`}
+        rowKey={(r) =>
+          r.id ?? `${r.effectiveDate ?? r.effectiveStart}-${r.code ?? ''}-${r.billRateCents}`
+        }
         empty="No rows."
       />
     </Card>

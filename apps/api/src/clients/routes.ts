@@ -4,10 +4,11 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, ilike, inArray, or } from 'drizzle-orm';
+import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  appUsers,
   clientContacts,
   clientNotes,
   clientPortalAccess,
@@ -19,7 +20,7 @@ import {
   portalSession,
   userPinnedClients,
 } from '@vibe/db/schema';
-import { desc } from 'drizzle-orm';
+import { asc, desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -62,6 +63,13 @@ const ClientSchema = z.object({
   sourceId: z.string().uuid().nullable().optional(),
   pipelineStage: z.enum(['PROSPECT', 'CLIENT', 'OTHER']).optional(),
   active: z.boolean().optional(),
+  // 0050 — structured mailing address. All optional, nullable.
+  mailingStreet1: z.string().max(200).nullable().optional(),
+  mailingStreet2: z.string().max(200).nullable().optional(),
+  mailingCity: z.string().max(120).nullable().optional(),
+  mailingState: z.string().max(120).nullable().optional(),
+  mailingPostal: z.string().max(40).nullable().optional(),
+  mailingCountry: z.string().max(120).nullable().optional(),
 });
 
 const MergeSchema = z.object({
@@ -82,10 +90,32 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     const q = (req.query['q'] ?? '').toString().trim();
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
     const partnerId = typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : null;
+    // 0050 — new filters
+    const clientOwnerId =
+      typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+    const externalId = typeof req.query['externalId'] === 'string' ? req.query['externalId'] : null;
+    const clientType = typeof req.query['clientType'] === 'string' ? req.query['clientType'] : null;
+
     const conds = [eq(clients.firmId, firmId)];
     if (q) {
-      const like = or(ilike(clients.name, `%${q}%`));
-      if (like) conds.push(like);
+      // 0050 — expand search to name, externalId, custom_fields (any
+      // value, via jsonb::text cast), and contacts (email/phone) via
+      // EXISTS subquery. GIN index keeps the custom-fields path cheap.
+      const like = `%${q}%`;
+      const contactMatch = sql`EXISTS (
+        SELECT 1 FROM client_contact cc
+        WHERE cc.client_id = ${clients.id}
+        AND (cc.email ILIKE ${like} OR cc.phone ILIKE ${like} OR cc.mobile ILIKE ${like})
+      )`;
+      const customMatch = sql`${clients.customFields}::text ILIKE ${like}`;
+      const expr = or(
+        ilike(clients.name, like),
+        ilike(clients.externalId, like),
+        ilike(clients.clientFacingName, like),
+        contactMatch,
+        customMatch,
+      );
+      if (expr) conds.push(expr);
     }
     if (
       status === 'ACTIVE' ||
@@ -96,12 +126,72 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       conds.push(eq(clients.status, status));
     }
     if (partnerId) conds.push(eq(clients.partnerInChargeId, partnerId));
-    const items = await deps.db
-      .select()
+    if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
+    if (externalId) conds.push(eq(clients.externalId, externalId));
+    if (clientType === 'INDIVIDUAL' || clientType === 'BUSINESS') {
+      conds.push(eq(clients.clientType, clientType));
+    }
+
+    // Pagination + sort. If no `page` is supplied, we keep the legacy
+    // shape (just `items`, limit 500) so existing callers don't break.
+    const paginated = req.query['page'] != null;
+    const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+    const pageSize = Math.min(
+      500,
+      Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50),
+    );
+    const sortCol = String(req.query['sort'] ?? 'name');
+    const sortDir = String(req.query['dir'] ?? 'asc') === 'desc' ? 'desc' : 'asc';
+    const sortMap: Record<string, ReturnType<typeof sql>> = {
+      name: sql`${clients.name}`,
+      externalId: sql`${clients.externalId}`,
+      clientType: sql`${clients.clientType}`,
+      status: sql`${clients.status}`,
+      createdAt: sql`${clients.createdAt}`,
+      partnerName: sql`${appUsers.fullName}`,
+    };
+    const orderExpr = sortMap[sortCol] ?? sortMap['name']!;
+
+    const baseSelect = deps.db
+      .select({
+        id: clients.id,
+        name: clients.name,
+        status: clients.status,
+        clientType: clients.clientType,
+        externalId: clients.externalId,
+        partnerInChargeId: clients.partnerInChargeId,
+        partnerName: appUsers.fullName,
+        termsDays: clients.termsDays,
+        invoiceConsolidationPreference: clients.invoiceConsolidationPreference,
+        createdAt: clients.createdAt,
+        mailingCity: clients.mailingCity,
+        mailingState: clients.mailingState,
+      })
       .from(clients)
+      .leftJoin(appUsers, eq(appUsers.id, clients.partnerInChargeId));
+
+    if (!paginated) {
+      const items = await baseSelect
+        .where(and(...conds))
+        .orderBy(sortDir === 'asc' ? asc(orderExpr) : desc(orderExpr))
+        .limit(500);
+      res.json({ items });
+      return;
+    }
+
+    const totalRows = await deps.db
+      .select({ total: sql<number>`COUNT(*)`.as('total') })
+      .from(clients)
+      .where(and(...conds));
+    const total = Number(totalRows[0]?.total ?? 0);
+
+    const rows = await baseSelect
       .where(and(...conds))
-      .limit(500);
-    res.json({ items });
+      .orderBy(sortDir === 'asc' ? asc(orderExpr) : desc(orderExpr))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+
+    res.json({ rows, items: rows, total, page, pageSize });
   });
 
   router.get(

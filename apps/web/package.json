@@ -14,6 +14,8 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@stripe/react-stripe-js": "^2.7.0",
+    "@stripe/stripe-js": "^4.1.0",
     "@vibe/types": "workspace:*",
     "@vibe/ui": "workspace:*",
     "qrcode": "^1.5.3",

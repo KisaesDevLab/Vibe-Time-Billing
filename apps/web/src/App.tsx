@@ -27,6 +27,7 @@ import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
 import { OnboardingPage } from './pages/Onboarding';
+import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
 import { TimeEntryPage } from './pages/TimeEntry';
@@ -67,6 +68,7 @@ export function App(): JSX.Element {
                   <Route path="/ar" element={<ArPage />} />
                   <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
                   <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
+                  <Route path="/payments/new" element={<PaymentReceivePage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />

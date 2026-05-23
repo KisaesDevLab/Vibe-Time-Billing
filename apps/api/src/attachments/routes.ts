@@ -13,6 +13,7 @@ import { attachments } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface AttachmentRoutesDeps extends RbacDeps {
@@ -30,6 +31,7 @@ const CreateSchema = z.object({
 
 export function createAttachmentRouter(deps: AttachmentRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/by-owner/:ownerType/:ownerId',

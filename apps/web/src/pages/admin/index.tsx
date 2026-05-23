@@ -16,6 +16,7 @@ import { BackupPage } from './Backup';
 import { CompliancePage } from './Compliance';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
+import { EngagementStatusesPage } from './EngagementStatuses';
 import { FirmSettingsPage } from './FirmSettings';
 import { HolidaysPage } from './Holidays';
 import { HourBanksPage } from './HourBanks';
@@ -27,6 +28,7 @@ import { NotificationsPage } from './Notifications';
 import { NotificationTemplatesPage } from './NotificationTemplates';
 import { OfficesPage } from './Offices';
 import { PermissionMatrixPage } from './PermissionMatrix';
+import { RateCodesPage } from './RateCodes';
 import { RatesPage } from './Rates';
 import { RecurringPlansPage } from './RecurringPlans';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
@@ -77,6 +79,7 @@ const GROUPS: Group[] = [
     label: 'Catalog',
     tabs: [
       { key: 'taxonomy', label: 'Taxonomy', href: '/admin/taxonomy' },
+      { key: 'statuses', label: 'Engagement statuses', href: '/admin/engagement-statuses' },
       { key: 'tpl', label: 'Templates', href: '/admin/templates' },
       { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
       { key: 'letters', label: 'Engagement letters', href: '/admin/letters' },
@@ -87,6 +90,7 @@ const GROUPS: Group[] = [
     label: 'Billing',
     defaultOpen: true,
     tabs: [
+      { key: 'rate-codes', label: 'Rate codes', href: '/admin/rate-codes' },
       { key: 'rates', label: 'Rates', href: '/admin/rates' },
       { key: 'plans', label: 'Recurring plans', href: '/admin/recurring-plans' },
       { key: 'banks', label: 'Hour banks', href: '/admin/hour-banks' },
@@ -233,7 +237,9 @@ export function AdminLayout(): JSX.Element {
         <Route path="users" element={<UsersPage />} />
         <Route path="users/:id" element={<UserDetailPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
+        <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
         <Route path="templates" element={<TemplatesPage />} />
+        <Route path="rate-codes" element={<RateCodesPage />} />
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />

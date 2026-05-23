@@ -57,10 +57,22 @@ interface Engagement {
   surchargeValueBps: number;
   surchargeAmountCents: number;
   surchargeLabel: string | null;
+  // 0054 — drives staff_rate_snapshot lookup at time-entry create.
+  defaultRateCodeId: string | null;
   partnerId: string | null;
   managerId: string | null;
   startDate: string | null;
   endDate: string | null;
+  // 0051 — external deadline (separate from end_date).
+  dueDate: string | null;
+  retainerLockedAt: string | null;
+}
+
+interface RateCode {
+  id: string;
+  code: string;
+  description: string | null;
+  active: boolean;
 }
 
 interface Summary {
@@ -97,6 +109,25 @@ interface HourBank {
   forfeitedAt: string | null;
 }
 
+type AssignmentRole = 'PARTNER' | 'MANAGER' | 'REVIEWER' | 'PREPARER' | 'STAFF';
+const ASSIGNMENT_ROLES: AssignmentRole[] = ['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF'];
+
+interface AssignmentRow {
+  id: string;
+  appUserId: string;
+  role: AssignmentRole;
+  fullName: string;
+  email: string;
+  assignedAt: string;
+}
+
+interface FirmUser {
+  id: string;
+  fullName: string;
+  email: string;
+  status: string;
+}
+
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -113,6 +144,7 @@ interface EditDraft {
   nteCapDollars: string;
   startDate: string;
   endDate: string;
+  dueDate: string;
   mixedModeEnabled: boolean;
   feePassthroughEnabled: boolean;
   // v2 — tax + surcharge drafts. UI binds to dollars + percent strings;
@@ -125,6 +157,7 @@ interface EditDraft {
   surchargePercent: string;
   surchargeFlatDollars: string;
   surchargeLabel: string;
+  defaultRateCodeId: string;
 }
 
 function emptyDraftFrom(e: Engagement): EditDraft {
@@ -137,6 +170,7 @@ function emptyDraftFrom(e: Engagement): EditDraft {
     nteCapDollars: centsToDollarsInput(e.nteCapCents),
     startDate: e.startDate ?? '',
     endDate: e.endDate ?? '',
+    dueDate: e.dueDate ?? '',
     mixedModeEnabled: e.mixedModeEnabled,
     feePassthroughEnabled: e.feePassthroughEnabled,
     taxEnabled: e.taxEnabled,
@@ -147,6 +181,7 @@ function emptyDraftFrom(e: Engagement): EditDraft {
     surchargePercent: bpsToPercentInput(e.surchargeValueBps),
     surchargeFlatDollars: centsToDollarsInput(e.surchargeAmountCents),
     surchargeLabel: e.surchargeLabel ?? '',
+    defaultRateCodeId: e.defaultRateCodeId ?? '',
   };
 }
 
@@ -156,6 +191,9 @@ export function EngagementDetailPage(): JSX.Element {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [banks, setBanks] = useState<HourBank[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [firmUsers, setFirmUsers] = useState<FirmUser[]>([]);
+  const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditDraft | null>(null);
@@ -165,20 +203,69 @@ export function EngagementDetailPage(): JSX.Element {
   async function reload(): Promise<void> {
     if (!id) return;
     try {
-      const [e, s, m, b] = await Promise.all([
-        api<{ engagement: Engagement }>(`/api/staff/engagements/${id}`),
+      const [e, s, m, b, u, rc] = await Promise.all([
+        api<{ engagement: Engagement; assignments?: AssignmentRow[] }>(
+          `/api/staff/engagements/${id}`,
+        ),
         api<{ summary: Summary | null }>(`/api/staff/stats/engagement/${id}`),
         api<{ milestones: Milestone[] }>(`/api/staff/milestones/by-engagement/${id}`),
         api<{ bank: HourBank | null }>(`/api/staff/hour-banks/by-engagement/${id}`).catch(() => ({
           bank: null,
         })),
+        api<{ users: FirmUser[] }>(`/api/staff/admin/users`).catch(() => ({ users: [] })),
+        api<{ items: RateCode[] }>(`/api/staff/admin/rate-codes`).catch(() => ({ items: [] })),
       ]);
       setEngagement(e.engagement);
       setSummary(s.summary);
       setMilestones(m.milestones ?? []);
       setBanks(b.bank ? [b.bank] : []);
+      setAssignments(e.assignments ?? []);
+      setFirmUsers((u.users ?? []).filter((x) => x.status === 'ACTIVE'));
+      setRateCodes((rc.items ?? []).filter((x) => x.active));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  async function addAssignment(appUserId: string, role: AssignmentRole): Promise<void> {
+    if (!id) return;
+    try {
+      await api(`/api/staff/engagements/${id}/assignments`, {
+        method: 'POST',
+        body: JSON.stringify({ appUserId, role }),
+      });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'add_assignment_failed');
+    }
+  }
+
+  async function removeAssignment(assignmentId: string): Promise<void> {
+    if (!id) return;
+    try {
+      await api(`/api/staff/engagements/${id}/assignments/${assignmentId}`, {
+        method: 'DELETE',
+      });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'remove_assignment_failed');
+    }
+  }
+
+  async function toggleRetainerLock(): Promise<void> {
+    if (!id || !engagement) return;
+    const action = engagement.retainerLockedAt ? 'unlock' : 'lock';
+    if (
+      action === 'lock' &&
+      !confirm('Lock this engagement? Time entries will be refused until unlocked.')
+    ) {
+      return;
+    }
+    try {
+      await api(`/api/staff/engagements/${id}/retainer/${action}`, { method: 'POST' });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'retainer_lock_failed');
     }
   }
 
@@ -207,6 +294,8 @@ export function EngagementDetailPage(): JSX.Element {
       if (nteCents != null) body.nteCapCents = nteCents;
       if (draft.startDate) body.startDate = draft.startDate;
       if (draft.endDate) body.endDate = draft.endDate;
+      body.dueDate = draft.dueDate || null;
+      body.defaultRateCodeId = draft.defaultRateCodeId || null;
       // v2 — tax + surcharge.
       body.taxEnabled = draft.taxEnabled;
       if (draft.taxEnabled) {
@@ -306,6 +395,19 @@ export function EngagementDetailPage(): JSX.Element {
               />
             </div>
             <Pill tone="accent">{engagement.feeStructure}</Pill>
+            {engagement.retainerLockedAt && <Pill tone="warning">retainer locked</Pill>}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void toggleRetainerLock()}
+              title={
+                engagement.retainerLockedAt
+                  ? 'Unlock so new time can be logged'
+                  : 'Lock so no new time can be logged'
+              }
+            >
+              {engagement.retainerLockedAt ? 'Unlock retainer' : 'Lock retainer'}
+            </Button>
             {editing ? (
               <>
                 <Button size="sm" onClick={() => void saveEdit()} disabled={savingEdit}>
@@ -402,6 +504,29 @@ export function EngagementDetailPage(): JSX.Element {
                 onChange={(e) => setDraft({ ...draft, endDate: e.target.value })}
                 style={editFieldStyle}
               />
+            </Field>
+            <Field label="Due date">
+              <input
+                type="date"
+                value={draft.dueDate}
+                onChange={(e) => setDraft({ ...draft, dueDate: e.target.value })}
+                style={editFieldStyle}
+              />
+            </Field>
+            <Field label="Default rate code">
+              <select
+                value={draft.defaultRateCodeId}
+                onChange={(e) => setDraft({ ...draft, defaultRateCodeId: e.target.value })}
+                style={editFieldStyle}
+              >
+                <option value="">— StandardRate (default) —</option>
+                {rateCodes.map((rc) => (
+                  <option key={rc.id} value={rc.id}>
+                    {rc.code}
+                    {rc.description ? ` — ${rc.description}` : ''}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Mixed mode">
               <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
@@ -568,9 +693,25 @@ export function EngagementDetailPage(): JSX.Element {
             <dd style={{ margin: 0 }}>{engagement.startDate ?? '—'}</dd>
             <dt style={{ color: tokens.color.textMuted }}>End</dt>
             <dd style={{ margin: 0 }}>{engagement.endDate ?? '—'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>Due</dt>
+            <dd style={{ margin: 0 }}>{engagement.dueDate ?? '—'}</dd>
+            <dt style={{ color: tokens.color.textMuted }}>Rate code</dt>
+            <dd style={{ margin: 0 }}>
+              {engagement.defaultRateCodeId
+                ? (rateCodes.find((rc) => rc.id === engagement.defaultRateCodeId)?.code ??
+                  engagement.defaultRateCodeId)
+                : 'StandardRate'}
+            </dd>
           </dl>
         )}
       </Card>
+
+      <AssignmentsCard
+        rows={assignments}
+        users={firmUsers}
+        onAdd={(u, r) => void addAssignment(u, r)}
+        onRemove={(aid) => void removeAssignment(aid)}
+      />
 
       {summary && (
         <Card title="Activity">
@@ -840,6 +981,97 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       </span>
       {children}
     </label>
+  );
+}
+
+// =====================================================================
+// AssignmentsCard — 0050. Multi-staff per engagement with named roles.
+// Partner/manager FK fields on the engagement row are still authoritative
+// for billing-side defaults; this surface adds team membership and feeds
+// the "My Work" filter.
+// =====================================================================
+
+function AssignmentsCard({
+  rows,
+  users,
+  onAdd,
+  onRemove,
+}: {
+  rows: AssignmentRow[];
+  users: FirmUser[];
+  onAdd: (appUserId: string, role: AssignmentRole) => void;
+  onRemove: (assignmentId: string) => void;
+}): JSX.Element {
+  const [picked, setPicked] = useState<string>('');
+  const [role, setRole] = useState<AssignmentRole>('STAFF');
+  const userOpts: ComboboxOption[] = [
+    { value: '', label: 'Pick staff…' },
+    ...users.map((u) => ({ value: u.id, label: `${u.fullName} <${u.email}>` })),
+  ];
+  return (
+    <Card title={`Assignments (${rows.length})`}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'flex-end' }}>
+        <div style={{ width: 320 }}>
+          <Field label="Add staff">
+            <Combobox
+              ariaLabel="Staff"
+              value={picked}
+              onChange={(v) => setPicked(v)}
+              options={userOpts}
+              size="sm"
+            />
+          </Field>
+        </div>
+        <div style={{ width: 160 }}>
+          <Field label="Role">
+            <Combobox
+              ariaLabel="Role"
+              value={role}
+              onChange={(v) => setRole(v as AssignmentRole)}
+              options={ASSIGNMENT_ROLES.map<ComboboxOption>((r) => ({ value: r, label: r }))}
+              size="sm"
+            />
+          </Field>
+        </div>
+        <Button
+          size="sm"
+          disabled={!picked}
+          onClick={() => {
+            if (!picked) return;
+            onAdd(picked, role);
+            setPicked('');
+          }}
+        >
+          Add
+        </Button>
+      </div>
+      {rows.length === 0 ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13, margin: 0 }}>
+          No additional staff assigned. Partner and manager on the engagement still count toward My
+          Work.
+        </p>
+      ) : (
+        <Table<AssignmentRow>
+          columns={[
+            { key: 'name', header: 'Name', render: (r) => r.fullName },
+            { key: 'email', header: 'Email', render: (r) => r.email },
+            { key: 'role', header: 'Role', render: (r) => <Pill>{r.role}</Pill> },
+            {
+              key: 'remove',
+              header: '',
+              align: 'right',
+              render: (r) => (
+                <Button size="sm" variant="ghost" onClick={() => onRemove(r.id)}>
+                  Remove
+                </Button>
+              ),
+            },
+          ]}
+          rows={rows}
+          rowKey={(r) => r.id}
+        />
+      )}
+    </Card>
   );
 }
 

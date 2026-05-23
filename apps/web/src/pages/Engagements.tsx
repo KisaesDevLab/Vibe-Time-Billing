@@ -12,6 +12,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Tabs, tokens, type SortDir 
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
+import { EngagementsKanban, type StatusColumn } from './EngagementsKanban';
 
 type WorkflowState =
   | 'NO_STATUS'
@@ -41,6 +42,7 @@ interface EngagementRow {
   managerId: string | null;
   startDate: string | null;
   endDate: string | null;
+  dueDate: string | null;
   engagementTypeId: string | null;
   clientName: string;
 }
@@ -100,7 +102,8 @@ export function EngagementsPage(): JSX.Element {
   const { me } = useAuth();
   const currentUserId = me?.appUserId ?? '';
   const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>('active');
+  // 0050 — default = My Work. Was 'active'.
+  const [tab, setTab] = useState<Tab>('mine');
   const [rows, setRows] = useState<EngagementRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +117,18 @@ export function EngagementsPage(): JSX.Element {
   const [clientFilter, setClientFilter] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
+  // 0050 — filter by client owner (client.partnerInChargeId).
+  const [clientOwnerId, setClientOwnerId] = useState<string>('');
+  // 0050 — List | Kanban view toggle. Persisted in localStorage so users
+  // don't have to re-pick on each session.
+  const [view, setView] = useState<'list' | 'kanban'>(() => {
+    try {
+      return (localStorage.getItem('__vibe_eng_view') as 'list' | 'kanban') || 'list';
+    } catch {
+      return 'list';
+    }
+  });
+  const [statusCols, setStatusCols] = useState<StatusColumn[]>([]);
 
   const [sortBy, setSortBy] = useState<{ col: string; dir: SortDir }>({ col: '', dir: null });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -140,6 +155,7 @@ export function EngagementsPage(): JSX.Element {
       if (priorityFilter.size > 0) params.set('priority', Array.from(priorityFilter).join(','));
       if (tab === 'mine' && currentUserId) params.set('assigneeUserId', currentUserId);
       if (clientFilter.size > 0) params.set('clientId', Array.from(clientFilter).join(','));
+      if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
 
       const r = await api<{ items: EngagementRow[] }>(
         `/api/staff/engagements?${params.toString()}`,
@@ -155,22 +171,65 @@ export function EngagementsPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, workflowFilter, priorityFilter, clientFilter, assigneeFilter]);
+  }, [
+    tab,
+    workflowFilter,
+    priorityFilter,
+    clientFilter,
+    assigneeFilter,
+    clientOwnerId,
+    // 0050 — when auth resolves and default tab is 'mine', refetch.
+    currentUserId,
+  ]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [u, t] = await Promise.all([
-          api<{ users: AppUser[] }>('/api/staff/admin/users'),
-          api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types'),
+        // Each sub-call .catch'd individually so a single permission
+        // denial (e.g. staff without app_user:read) doesn't blank out
+        // all three filter sources.
+        const [u, t, s] = await Promise.all([
+          api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
+          api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
+            items: [],
+          })),
+          api<{
+            items: Array<{
+              workflowState: WorkflowState;
+              label: string;
+              color: string;
+              sortOrder: number;
+              kanbanVisible: boolean;
+            }>;
+          }>('/api/staff/admin/engagement-statuses').catch(() => ({ items: [] })),
         ]);
         setUsers(u.users ?? []);
         setTypes(t.items ?? []);
+        setStatusCols(
+          (s.items ?? [])
+            .filter((row) => row.kanbanVisible)
+            .sort((a, b) => a.sortOrder - b.sortOrder)
+            .map<StatusColumn>((row) => ({
+              workflowState: row.workflowState,
+              label: row.label,
+              color: row.color,
+              sortOrder: row.sortOrder,
+            })),
+        );
       } catch {
         // Non-fatal.
       }
     })();
   }, []);
+
+  function changeView(next: 'list' | 'kanban'): void {
+    setView(next);
+    try {
+      localStorage.setItem('__vibe_eng_view', next);
+    } catch {
+      // Non-fatal.
+    }
+  }
 
   // Client-side filter on type + assignee (server doesn't filter these);
   // and client-side sort because the server returns max 500.
@@ -211,6 +270,10 @@ export function EngagementsPage(): JSX.Element {
           case 'startDate':
             av = a.startDate ?? '';
             bv = b.startDate ?? '';
+            break;
+          case 'dueDate':
+            av = a.dueDate ?? '';
+            bv = b.dueDate ?? '';
             break;
           case 'endDate':
             av = a.endDate ?? '';
@@ -314,6 +377,7 @@ export function EngagementsPage(): JSX.Element {
     if (priorityFilter.size > 0) params.set('priority', Array.from(priorityFilter).join(','));
     if (tab === 'mine' && currentUserId) params.set('assigneeUserId', currentUserId);
     if (clientFilter.size > 0) params.set('clientId', Array.from(clientFilter).join(','));
+    if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
     params.set('format', 'csv');
     window.location.href = `/api/staff/engagements?${params.toString()}`;
   }
@@ -333,15 +397,42 @@ export function EngagementsPage(): JSX.Element {
           </span>
         }
         action={
-          <span style={{ display: 'flex', gap: 6 }}>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => alert('Kanban view coming soon')}
-              title="Kanban view (coming soon)"
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <div style={{ width: 200 }}>
+              <Combobox
+                ariaLabel="Client owner"
+                clearable
+                value={clientOwnerId}
+                onChange={setClientOwnerId}
+                options={users.map((u) => ({ value: u.id, label: u.fullName }))}
+                placeholder="Any owner"
+                size="sm"
+              />
+            </div>
+            <span
+              style={{
+                display: 'inline-flex',
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+              }}
             >
-              ▦ Board
-            </Button>
+              <Button
+                size="sm"
+                variant={view === 'list' ? 'secondary' : 'ghost'}
+                onClick={() => changeView('list')}
+                aria-pressed={view === 'list'}
+              >
+                ☰ List
+              </Button>
+              <Button
+                size="sm"
+                variant={view === 'kanban' ? 'secondary' : 'ghost'}
+                onClick={() => changeView('kanban')}
+                aria-pressed={view === 'kanban'}
+              >
+                ▦ Board
+              </Button>
+            </span>
             <Button size="sm" variant="ghost" onClick={exportCsv}>
               ↓ CSV
             </Button>
@@ -398,6 +489,20 @@ export function EngagementsPage(): JSX.Element {
 
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+        ) : view === 'kanban' ? (
+          <EngagementsKanban
+            rows={visible.map((r) => ({
+              id: r.id,
+              clientId: r.clientId,
+              name: r.name,
+              workflowState: r.workflowState,
+              priority: r.priority,
+              clientName: r.clientName,
+            }))}
+            columns={statusCols}
+            onMoved={() => void load()}
+            onError={(m) => setError(m)}
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table
@@ -500,9 +605,9 @@ export function EngagementsPage(): JSX.Element {
                       values={[]}
                       selected={new Set()}
                       searchable={false}
-                      sort={sortBy.col === 'endDate' ? sortBy.dir : null}
+                      sort={sortBy.col === 'dueDate' ? sortBy.dir : null}
                       onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'endDate', dir });
+                        if (dir) setSortBy({ col: 'dueDate', dir });
                       }}
                     />
                   </th>
@@ -581,7 +686,7 @@ export function EngagementsPage(): JSX.Element {
                           {assigneeNames.length > 0 ? assigneeNames.join(', ') : '—'}
                         </td>
                         <td style={td()}>{r.startDate ?? '—'}</td>
-                        <td style={td()}>{r.endDate ?? '—'}</td>
+                        <td style={td()}>{r.dueDate ?? '—'}</td>
                         <td style={td()}>
                           <InlinePriorityEdit
                             value={r.priority}

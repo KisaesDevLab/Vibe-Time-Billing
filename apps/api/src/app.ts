@@ -39,6 +39,7 @@ import { createSavedReportsRouter } from './reports/saved';
 import { createSearchRouter } from './search/routes';
 import { createInvoiceRouter } from './invoices/routes';
 import { createArRouter } from './ar/routes';
+import { createStatementsRouter } from './statements/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
@@ -66,6 +67,7 @@ import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createPaymentRouter } from './payments/routes';
+import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
 import { createHolidayRouter } from './holidays/routes';
 import { createMilestoneRouter } from './milestones/routes';
@@ -79,6 +81,14 @@ export interface AppDeps {
   sessionStore: SessionStore;
   sendMagicLink?: StaffRoutesDeps['sendMagicLink'];
   sendPortalEmail?: PortalRoutesDeps['sendEmail'];
+  /** 0054 — full-payload mail (HTML body, attachments) for statement + invoice emails. */
+  sendStaffMail?: (args: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: string;
+    attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
+  }) => Promise<void>;
   sendPortalSms?: PortalRoutesDeps['sendSms'];
   // Optional payment provider hook. In dev/test the portal pay endpoint
   // returns 402 if no provider is wired; production injects the Stripe
@@ -322,6 +332,14 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/ar', auth.requireAuth, auth.requireCsrf, arRouter);
 
+  // 0054 — Statement of Account routes (single + bulk + email).
+  const statementsRouter = createStatementsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendStaffMail: deps.sendStaffMail,
+  });
+  app.use('/api/staff/statements', auth.requireAuth, auth.requireCsrf, statementsRouter);
+
   const approvalRouter = createApprovalRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
@@ -517,9 +535,17 @@ export function createApp(deps: AppDeps): Express {
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,
+    stripe: deps.stripeProvider ?? null,
+    stripePublishableKey: config.STRIPE_PUBLISHABLE_KEY ?? null,
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/payments', auth.requireAuth, auth.requireCsrf, paymentRouter);
+
+  const creditRouter = createCreditRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/credits', auth.requireAuth, auth.requireCsrf, creditRouter);
 
   const rateRouter = createRateRouter({
     db: deps.db,
