@@ -15,6 +15,7 @@ import { webhookDeliveries, webhookEndpoints } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface WebhookRoutesDeps extends RbacDeps {
@@ -58,6 +59,7 @@ const PatchSchema = z
 
 export function createWebhookRouter(deps: WebhookRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/known-events',

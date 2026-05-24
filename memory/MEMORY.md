@@ -1,0 +1,3 @@
+- [Product independence](feedback_product_independence.md) — sibling products (TB ↔ Connect) ship as independent runtime artifacts; code can be lifted from one repo into the other but no runtime cross-product dependency.
+- [IA separation](feedback_ia_separation.md) — distinct features get distinct nav sections; default to splitting over nesting. Requests get their own tab, not folded under Messages or Vault.
+- [Check existing before proposing](feedback_check_existing_before_proposing.md) — before introducing a new module/table/feature from an external proposal, grep TB for what already covers the use case; default to extending. Files v2 already exists — there's no "vault" to build, just zones to add.

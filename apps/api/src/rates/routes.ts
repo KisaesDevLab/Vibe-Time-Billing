@@ -28,7 +28,7 @@ import { resolveRate, type RateCandidate } from '@vibe/core/rates';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -76,7 +76,11 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         res.json({ snapshots: [], client: [], engagement: [], serviceLine: [] });
         return;
       }
-      const appUserId = typeof req.query['appUserId'] === 'string' ? req.query['appUserId'] : null;
+      const appUserId = uuidQueryParam(req.query['appUserId']);
+      if (appUserId === 'invalid') {
+        res.status(400).json({ error: 'invalid_app_user_id' });
+        return;
+      }
       if (!appUserId) {
         res.status(400).json({ error: 'app_user_id_required' });
         return;
@@ -608,9 +612,13 @@ export function createRateRouter(deps: RateRoutesDeps): Router {
         res.json({ resolved: null, candidates: [], engagement: null });
         return;
       }
-      const appUserId = String(req.query['appUserId'] ?? '');
-      const engagementId = String(req.query['engagementId'] ?? '');
+      const appUserId = uuidQueryParam(req.query['appUserId']);
+      const engagementId = uuidQueryParam(req.query['engagementId']);
       const serviceDate = String(req.query['serviceDate'] ?? '');
+      if (appUserId === 'invalid' || engagementId === 'invalid') {
+        res.status(400).json({ error: 'invalid_uuid_param' });
+        return;
+      }
       if (!appUserId || !engagementId || !DATE_RE.test(serviceDate)) {
         res.status(400).json({ error: 'appUserId_engagementId_serviceDate_required' });
         return;

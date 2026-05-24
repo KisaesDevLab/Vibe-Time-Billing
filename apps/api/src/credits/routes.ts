@@ -13,9 +13,10 @@
 // + sibling payment row in one transaction). This router just handles
 // list, manual create, and the two void actions.
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
 import { clients, creditApplications, creditMemos, invoices, payments } from '@vibe/db/schema';
@@ -28,6 +29,8 @@ import { recomputeInvoicePaid } from '../payments/routes';
 
 export interface CreditRoutesDeps extends RbacDeps {
   db: Database | null;
+  redis?: Redis;
+  requireStepUp?: (req: Request, res: Response, next: NextFunction) => unknown;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -51,6 +54,12 @@ const VoidApplicationSchema = z.object({
 export function createCreditRouter(deps: CreditRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // Stage 1B — step-up gating for sensitive credit ops. Void operations
+  // always require fresh TOTP. If no step-up middleware is wired (tests
+  // / mocked env), fall through to a permissive pass-through.
+  const requireStepUp =
+    deps.requireStepUp ?? ((_req: Request, _res: Response, next: NextFunction) => next());
 
   // =================================================================
   // GET / — list credits (with remaining balance)
@@ -246,6 +255,7 @@ export function createCreditRouter(deps: CreditRoutesDeps): Router {
   // =================================================================
   router.post(
     '/:id/void',
+    requireStepUp,
     requirePermission(deps, 'credit:write'),
     async (req: Request, res: Response) => {
       const parsed = VoidMemoSchema.safeParse(req.body);
@@ -330,6 +340,7 @@ export function createCreditRouter(deps: CreditRoutesDeps): Router {
   // =================================================================
   router.post(
     '/:id/applications/:applicationId/void',
+    requireStepUp,
     requirePermission(deps, 'credit:write'),
     async (req: Request, res: Response) => {
       const parsed = VoidApplicationSchema.safeParse(req.body ?? {});

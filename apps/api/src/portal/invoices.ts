@@ -19,6 +19,7 @@ import {
 import { renderInvoiceHtml } from '@vibe/core/invoicing';
 
 import { emitAudit } from '../auth/audit';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface PortalInvoiceRoutesDeps {
@@ -39,6 +40,7 @@ const PaySchema = z.object({
 
 export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get('/', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;

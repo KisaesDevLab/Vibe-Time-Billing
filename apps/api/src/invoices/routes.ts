@@ -4,7 +4,7 @@
 // billing batch by aggregating the included time entries net of any
 // adjustments. Numbering uses @vibe/core/invoicing.formatInvoiceNumber.
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
@@ -40,7 +40,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
@@ -50,6 +50,9 @@ export interface InvoiceRoutesDeps extends RbacDeps {
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
   paymentProvider?: PaymentProvider | null;
+  // Stage 1B — step-up gate for void/refund actions. Optional so tests
+  // can mount the router without an auth stack.
+  requireStepUp?: (req: Request, res: Response, next: NextFunction) => unknown;
 }
 
 const GenerateSchema = z.object({
@@ -266,6 +269,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
 
+  // Stage 1B — step-up gating for void/refund. Pass-through if no
+  // middleware was injected.
+  const requireStepUp =
+    deps.requireStepUp ?? ((_req: Request, _res: Response, next: NextFunction) => next());
+
   router.get('/', requirePermission(deps, 'invoice:read'), async (req: Request, res: Response) => {
     const session = req.staffSession!;
     if (!deps.db) {
@@ -274,10 +282,17 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     }
     const q = String(req.query['q'] ?? '').trim();
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
-    const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+    const clientId = uuidQueryParam(req.query['clientId']);
+    if (clientId === 'invalid') {
+      res.status(400).json({ error: 'invalid_client_id' });
+      return;
+    }
     // 0050 — filter by client owner + date range
-    const clientOwnerId =
-      typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+    const clientOwnerId = uuidQueryParam(req.query['clientOwnerId']);
+    if (clientOwnerId === 'invalid') {
+      res.status(400).json({ error: 'invalid_client_owner_id' });
+      return;
+    }
     const startDate = typeof req.query['startDate'] === 'string' ? req.query['startDate'] : null;
     const endDate = typeof req.query['endDate'] === 'string' ? req.query['endDate'] : null;
 
@@ -1120,6 +1135,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
 
   router.post(
     '/:id/void',
+    requireStepUp,
     requirePermission(deps, 'invoice:write'),
     async (req: Request, res: Response) => {
       const parsed = VoidSchema.safeParse(req.body);
@@ -1788,6 +1804,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
 
   router.post(
     '/:id/refund',
+    requireStepUp,
     requirePermission(deps, 'invoice:write'),
     async (req: Request, res: Response) => {
       const parsed = RefundSchema.safeParse(req.body);

@@ -24,6 +24,10 @@ import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
 import { recomputeInvoicePaid } from '../payments/routes';
+import {
+  promoteEscrowFilesForInvoice,
+  revertEscrowFilesForInvoice,
+} from '../files/promote-on-paid';
 import { publishWebhookEvent } from './publish';
 
 export interface StripeWebhookDeps {
@@ -206,6 +210,16 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
             invoiceId: pay.invoiceId,
             totalCents: inv.totalCents,
           }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+          // Stage 3 — flip escrow files gated by this invoice to
+          // client_visible. Best-effort: log + continue on failure.
+          try {
+            await promoteEscrowFilesForInvoice(deps.db!, {
+              firmId: inv.firmId,
+              invoiceId: inv.id,
+            });
+          } catch (err) {
+            logger.error({ err, invoiceId: inv.id }, 'escrow promote failed');
+          }
           // Phase 14 #14 — pay-to-unlock signal. If this invoice gated
           // attachment access and was the last unpaid pay-to-unlock
           // blocker for its client, publish client.unlocked so portal
@@ -326,6 +340,16 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         .where(eq(invoices.id, pay.invoiceId))
         .limit(1);
       if (inv) {
+        // Stage 3 — revert any escrow files previously auto-promoted by
+        // this invoice's payment. Best-effort.
+        try {
+          await revertEscrowFilesForInvoice(deps.db, {
+            firmId: inv.firmId,
+            invoiceId: inv.id,
+          });
+        } catch (err) {
+          logger.error({ err, invoiceId: inv.id }, 'escrow revert failed');
+        }
         // After this refund clears, the invoice's effective recoverable
         // need = totalCents - (otherPaid). If the refund > what this
         // payment had actually applied to the invoice's needed amount,

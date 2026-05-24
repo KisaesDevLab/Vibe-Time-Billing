@@ -33,6 +33,7 @@ import {
   portalIdentity,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
+import { promoteEscrowFilesForInvoice } from '../files/promote-on-paid';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -508,8 +509,23 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           }
 
           // ---- recompute paid_cents on every touched invoice ----
+          const promotedInvoiceIds = new Set<string>();
           for (const id of allInvoiceIds) {
-            await recomputeInvoicePaid(tx, id);
+            const wasFullyPaid = await recomputeInvoicePaidReturnsFullyPaid(tx, id);
+            if (wasFullyPaid) promotedInvoiceIds.add(id);
+          }
+          // Stage 3 — promote escrow files gated by any invoice that
+          // tipped over to fully-paid in this transaction.
+          for (const invId of promotedInvoiceIds) {
+            try {
+              await promoteEscrowFilesForInvoice(tx, {
+                firmId: session.firmId,
+                invoiceId: invId,
+                actorAppUserId: session.appUserId,
+              });
+            } catch (err) {
+              logger.error({ err, invoiceId: invId }, 'escrow promote in /receive failed');
+            }
           }
 
           // ---- recompute memo statuses on every touched memo ----
@@ -1058,6 +1074,18 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
  * row goes from PAID back to PARTIALLY_PAID (e.g., after a refund).
  */
 export async function recomputeInvoicePaid(tx: Database, invoiceId: string): Promise<void> {
+  await recomputeInvoicePaidReturnsFullyPaid(tx, invoiceId);
+}
+
+/**
+ * Same as recomputeInvoicePaid but reports whether the invoice
+ * transitioned to (or remains) PAID after recompute. Used by /receive
+ * to decide which invoices to fire the escrow-promote hook on.
+ */
+export async function recomputeInvoicePaidReturnsFullyPaid(
+  tx: Database,
+  invoiceId: string,
+): Promise<boolean> {
   const [agg] = await tx
     .select({
       paidCents: sql<number>`COALESCE(SUM(${payments.amountCents}), 0)::bigint`,
@@ -1069,7 +1097,7 @@ export async function recomputeInvoicePaid(tx: Database, invoiceId: string): Pro
     .from(invoices)
     .where(eq(invoices.id, invoiceId))
     .limit(1);
-  if (!inv) return;
+  if (!inv) return false;
   const paidCents = Number(agg?.paidCents ?? 0);
   const total = Number(inv.total);
   const nextStatus =
@@ -1082,6 +1110,7 @@ export async function recomputeInvoicePaid(tx: Database, invoiceId: string): Pro
       paidAt: nextStatus === 'PAID' ? new Date() : null,
     })
     .where(eq(invoices.id, invoiceId));
+  return nextStatus === 'PAID';
 }
 
 /**

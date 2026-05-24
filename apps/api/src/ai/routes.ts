@@ -14,6 +14,7 @@ import { aiRequestLog, firmSettings } from '@vibe/db/schema';
 import { checkBudget, type AiProvider } from '@vibe/core/ai';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface AiRoutesDeps extends RbacDeps {
@@ -869,7 +870,11 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         180,
       );
       const feature = typeof req.query['feature'] === 'string' ? req.query['feature'] : null;
-      const userId = typeof req.query['appUserId'] === 'string' ? req.query['appUserId'] : null;
+      const userId = uuidQueryParam(req.query['appUserId']);
+      if (userId === 'invalid') {
+        res.status(400).json({ error: 'invalid_app_user_id' });
+        return;
+      }
       const since = new Date(Date.now() - days * 86_400_000);
       const conds = [eq(aiRequestLog.firmId, session.firmId), gte(aiRequestLog.occurredAt, since)];
       if (feature) conds.push(eq(aiRequestLog.feature, feature));

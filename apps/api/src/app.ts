@@ -19,6 +19,10 @@ import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
+import { createUnlockRouter, createLockMiddleware } from './admin/unlock';
+import { requireStepUpWithLockout } from './auth/step-up-middleware';
+import { createEngagementMessagingRouter } from './engagement-messaging/routes';
+import { createRequestRouter } from './requests/routes';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createTemplateRouter } from './admin/templates';
@@ -45,6 +49,8 @@ import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createPortalLetterRouter } from './portal/letters';
 import { createPortalFileRouter } from './portal/files';
+import { createPortalMessagingRouter } from './portal/messaging';
+import { createPortalRequestsRouter } from './portal/requests';
 import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
 import { createStorageOnboardingRouter } from './admin/storage-onboarding';
@@ -218,6 +224,26 @@ export function createApp(deps: AppDeps): Express {
   // Authenticated auth surface: /totp/enroll, /totp/verify, /logout, /me
   const auth = staffAuthDeps(deps.sessionStore);
 
+  // Stage 1B — appliance unlock surface. Mounted BEFORE the global
+  // /api/staff auth gate because /status and /unlock have to work pre-
+  // login (the appliance might still be locked, in which case no
+  // session can be issued anyway). /lock inside this router opts back
+  // into auth via the requireAuth/requireCsrf chain.
+  const unlockRouter = createUnlockRouter({
+    db: deps.db,
+    redis: deps.redis,
+    fakeUserRoles: deps.fakeUserRoles,
+    requireAuth: auth.requireAuth,
+    requireCsrf: auth.requireCsrf,
+  });
+  app.use('/api/staff/admin/unlock', unlockRouter);
+
+  // Stage 1B — lock middleware. Once mounted, every request below this
+  // point gets a 503 if the appliance is locked. The middleware
+  // allowlist covers /health/*, /metrics, /api/staff/admin/unlock,
+  // and /api/auth (so login flows still work).
+  app.use(createLockMiddleware());
+
   const authRouter = createStaffAuthRouter({
     ...deps,
     sendMagicLink: deps.sendMagicLink ?? (async () => undefined),
@@ -277,6 +303,27 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/engagements', auth.requireAuth, auth.requireCsrf, engagementRouter);
 
+  // Stage 2 — engagement-level messaging. Distinct prefix from the
+  // legacy /messaging/ provider config router (which lives under
+  // /api/staff/admin/messaging).
+  const engagementMessagingRouter = createEngagementMessagingRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/engagement-messaging',
+    auth.requireAuth,
+    auth.requireCsrf,
+    engagementMessagingRouter,
+  );
+
+  // Stage 3 — client requests workflow.
+  const requestRouter = createRequestRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/requests', auth.requireAuth, auth.requireCsrf, requestRouter);
+
   const timeEntryRouter = createTimeEntryRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
@@ -294,10 +341,15 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/billing-batches', auth.requireAuth, auth.requireCsrf, billingBatchRouter);
 
+  // Stage 1B — fresh-TOTP step-up with Redis lockout for sensitive ops.
+  // Declared here so adjustments + invoices + credits below can share
+  // a single instance.
+  const stepUpGuard = requireStepUpWithLockout(deps.redis);
+
   const adjustmentRouter = createAdjustmentRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
-    requireStepUp: auth.requireStepUp,
+    requireStepUp: stepUpGuard,
     sendEmail: deps.sendPortalEmail,
     staffBaseUrl: config.APP_BASE_URL,
   });
@@ -321,6 +373,7 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendPortalEmail,
     portalBaseUrl: config.PORTAL_BASE_URL,
     paymentProvider: deps.stripeProvider ?? null,
+    requireStepUp: stepUpGuard,
   });
   app.use('/api/staff/invoices', auth.requireAuth, auth.requireCsrf, invoiceRouter);
 
@@ -406,6 +459,19 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/files', portalFileRouter);
+
+  // Stage 4 — portal-side messaging and requests.
+  const portalMessagingRouter = createPortalMessagingRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/messaging', portalMessagingRouter);
+
+  const portalRequestsRouter = createPortalRequestsRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/requests', portalRequestsRouter);
 
   // REST v1 — token-authenticated integrator surface.
   app.use('/api/v1', createRestV1Router({ db: deps.db, redis: deps.redis }));
@@ -544,6 +610,8 @@ export function createApp(deps: AppDeps): Express {
   const creditRouter = createCreditRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    redis: deps.redis,
+    requireStepUp: stepUpGuard,
   });
   app.use('/api/staff/credits', auth.requireAuth, auth.requireCsrf, creditRouter);
 

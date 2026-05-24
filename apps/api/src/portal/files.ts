@@ -35,6 +35,8 @@ import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import type { Redis } from 'ioredis';
 
+import { addUuidIdGuard } from '../lib/uuid-guard';
+
 export interface PortalFileRoutesDeps {
   db: Database | null;
   redis: Redis;
@@ -98,6 +100,7 @@ async function logAccess(
 
 export function createPortalFileRouter(deps: PortalFileRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get('/', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;

@@ -26,14 +26,26 @@ interface User {
   title: string | null;
   salutation: string | null;
   businessPhone: string | null;
+  businessPhoneExt: string | null;
   homePhone: string | null;
+  homePhoneExt: string | null;
   faxPhone: string | null;
+  faxPhoneExt: string | null;
   mobilePhone: string | null;
+  mobilePhoneExt: string | null;
+  secondaryEmail: string | null;
   addressLine1: string | null;
   addressLine2: string | null;
   city: string | null;
   state: string | null;
   zip: string | null;
+  addressCountry: string | null;
+  homeAddressLine1: string | null;
+  homeAddressLine2: string | null;
+  homeCity: string | null;
+  homeState: string | null;
+  homeZip: string | null;
+  homeCountry: string | null;
   hiredDate: string | null;
   leftDate: string | null;
   defaultOfficeId: string | null;
@@ -41,8 +53,42 @@ interface User {
   totpEnrolledAt: string | null;
   standardHoursPerWeek: string;
   billableTargetHoursPerMonth: number | null;
+  // 0062 — profile expansion
+  // (0063 dropped costRateCents — the per-snapshot cost rate is the
+  //  source of truth, edited via the snapshot create form below.)
+  displayId: string | null;
+  description: string | null;
+  photoUrl: string | null;
+  internalNotes: string | null;
   lastLoginAt: string | null;
   createdAt: string;
+}
+
+interface StaffSkillRow {
+  id: string;
+  workCodeId: string;
+  workCodeKey: string;
+  workCodeName: string;
+  proficiency: 'LEARNING' | 'COMPETENT' | 'PROFICIENT' | 'EXPERT';
+  notes: string | null;
+  updatedAt: string;
+}
+
+interface WorkCodeOption {
+  id: string;
+  key: string;
+  name: string;
+}
+
+interface StaffTargetRow {
+  id: string;
+  targetYear: number;
+  annualBillableHours: string | null;
+  annualTotalHours: string | null;
+  targetRealizationPctBps: number | null;
+  targetUtilizationPctBps: number | null;
+  notes: string | null;
+  updatedAt: string;
 }
 
 interface RoleAssignment {
@@ -84,7 +130,7 @@ interface Snapshot {
   entries: SnapshotEntry[];
 }
 
-type Tab = 'main' | 'contact' | 'rates';
+type Tab = 'main' | 'contact' | 'rates' | 'skills' | 'targets' | 'notes';
 
 const fieldStyle: React.CSSProperties = {
   padding: '6px 10px',
@@ -333,6 +379,15 @@ export function UserDetailPage(): JSX.Element {
         <TabButton current={tab} value="rates" onSelect={setTab}>
           Rates
         </TabButton>
+        <TabButton current={tab} value="skills" onSelect={setTab}>
+          Skill Set
+        </TabButton>
+        <TabButton current={tab} value="targets" onSelect={setTab}>
+          Targets
+        </TabButton>
+        <TabButton current={tab} value="notes" onSelect={setTab}>
+          Notes
+        </TabButton>
       </div>
 
       {tab === 'main' && (
@@ -372,6 +427,19 @@ export function UserDetailPage(): JSX.Element {
           setSnapCostDollars={setSnapCostDollars}
           snapEntryDollars={snapEntryDollars}
           setSnapEntryDollars={setSnapEntryDollars}
+          busy={busy}
+        />
+      )}
+      {tab === 'skills' && id && <SkillsTab userId={id} />}
+      {tab === 'targets' && id && <TargetsTab userId={id} />}
+      {tab === 'notes' && (
+        <NotesTab
+          user={user}
+          draft={draft}
+          setDraft={setDraft}
+          editing={editingProfile}
+          setEditing={setEditingProfile}
+          onSave={() => void saveProfile()}
           busy={busy}
         />
       )}
@@ -570,6 +638,59 @@ function MainTab({
         />
       }
     >
+      {/* 0062 — ID + Description + Photo (top row, matches CCH Main tab) */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '180px 1fr 120px',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <Field label="ID">
+          {editing ? (
+            <input
+              value={v('displayId')}
+              onChange={(e) => setDraft({ ...draft, displayId: e.target.value })}
+              placeholder="e.g. SCHEN"
+              style={fieldStyle}
+              maxLength={40}
+            />
+          ) : (
+            <Plain>{user.displayId}</Plain>
+          )}
+        </Field>
+        <Field label="Description">
+          {editing ? (
+            <input
+              value={v('description')}
+              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+              placeholder="Display label (e.g. Partner)"
+              style={fieldStyle}
+            />
+          ) : (
+            <Plain>{user.description}</Plain>
+          )}
+        </Field>
+        <Field label="Photo">
+          {editing ? (
+            <input
+              value={v('photoUrl')}
+              onChange={(e) => setDraft({ ...draft, photoUrl: e.target.value })}
+              placeholder="URL"
+              style={fieldStyle}
+            />
+          ) : user.photoUrl ? (
+            <img
+              src={user.photoUrl}
+              alt=""
+              style={{ width: 56, height: 56, borderRadius: 4, objectFit: 'cover' }}
+            />
+          ) : (
+            <Plain>—</Plain>
+          )}
+        </Field>
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
         <Field label="First">
           {editing ? (
@@ -750,17 +871,55 @@ function ContactTab({
           <Field label="Email">
             <Plain>{user.email}</Plain>
           </Field>
+          <Field label="Secondary email">{inp('secondaryEmail')}</Field>
           <Field label="Title">{inp('title')}</Field>
           <Field label="Salutation">{inp('salutation')}</Field>
         </div>
         <div style={{ display: 'grid', gap: 12 }}>
-          <Field label="Business phone">{inp('businessPhone')}</Field>
-          <Field label="Home phone">{inp('homePhone')}</Field>
-          <Field label="Mobile phone">{inp('mobilePhone')}</Field>
-          <Field label="Fax">{inp('faxPhone')}</Field>
+          {/* Phone + extension pairs */}
+          <PhoneWithExt
+            label="Business"
+            phoneKey="businessPhone"
+            extKey="businessPhoneExt"
+            user={user}
+            draft={draft}
+            setDraft={setDraft}
+            editing={editing}
+          />
+          <PhoneWithExt
+            label="Home"
+            phoneKey="homePhone"
+            extKey="homePhoneExt"
+            user={user}
+            draft={draft}
+            setDraft={setDraft}
+            editing={editing}
+          />
+          <PhoneWithExt
+            label="Mobile"
+            phoneKey="mobilePhone"
+            extKey="mobilePhoneExt"
+            user={user}
+            draft={draft}
+            setDraft={setDraft}
+            editing={editing}
+          />
+          <PhoneWithExt
+            label="Fax"
+            phoneKey="faxPhone"
+            extKey="faxPhoneExt"
+            user={user}
+            draft={draft}
+            setDraft={setDraft}
+            editing={editing}
+          />
         </div>
       </div>
-      <div style={{ marginTop: 16, display: 'grid', gap: 12 }}>
+      {/* Business address */}
+      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 13, color: tokens.color.textMuted }}>
+        Business address
+      </h4>
+      <div style={{ display: 'grid', gap: 12 }}>
         <Field label="Address line 1">{inp('addressLine1')}</Field>
         <Field label="Address line 2">{inp('addressLine2')}</Field>
       </div>
@@ -768,15 +927,87 @@ function ContactTab({
         style={{
           marginTop: 12,
           display: 'grid',
-          gridTemplateColumns: '2fr 100px 100px',
+          gridTemplateColumns: '2fr 100px 100px 1fr',
           gap: 12,
         }}
       >
         <Field label="City">{inp('city')}</Field>
         <Field label="State">{inp('state')}</Field>
         <Field label="Zip">{inp('zip')}</Field>
+        <Field label="Country">{inp('addressCountry')}</Field>
+      </div>
+      {/* Home address — separate section */}
+      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 13, color: tokens.color.textMuted }}>
+        Home address
+      </h4>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Field label="Address line 1">{inp('homeAddressLine1')}</Field>
+        <Field label="Address line 2">{inp('homeAddressLine2')}</Field>
+      </div>
+      <div
+        style={{
+          marginTop: 12,
+          display: 'grid',
+          gridTemplateColumns: '2fr 100px 100px 1fr',
+          gap: 12,
+        }}
+      >
+        <Field label="City">{inp('homeCity')}</Field>
+        <Field label="State">{inp('homeState')}</Field>
+        <Field label="Zip">{inp('homeZip')}</Field>
+        <Field label="Country">{inp('homeCountry')}</Field>
       </div>
     </Card>
+  );
+}
+
+function PhoneWithExt({
+  label,
+  phoneKey,
+  extKey,
+  user,
+  draft,
+  setDraft,
+  editing,
+}: {
+  label: string;
+  phoneKey: keyof User;
+  extKey: keyof User;
+  user: User;
+  draft: Partial<User>;
+  setDraft: (d: Partial<User>) => void;
+  editing: boolean;
+}): JSX.Element {
+  const phoneVal =
+    (draft[phoneKey] as string | null | undefined) ?? (user[phoneKey] as string | null) ?? '';
+  const extVal =
+    (draft[extKey] as string | null | undefined) ?? (user[extKey] as string | null) ?? '';
+  return (
+    <Field label={label}>
+      {editing ? (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 6 }}>
+          <input
+            value={phoneVal}
+            onChange={(e) =>
+              setDraft({ ...draft, [phoneKey]: e.target.value || null } as Partial<User>)
+            }
+            style={fieldStyle}
+            placeholder="Number"
+          />
+          <input
+            value={extVal}
+            onChange={(e) =>
+              setDraft({ ...draft, [extKey]: e.target.value || null } as Partial<User>)
+            }
+            style={fieldStyle}
+            placeholder="Ext"
+            maxLength={12}
+          />
+        </div>
+      ) : (
+        <Plain>{phoneVal || extVal ? `${phoneVal}${extVal ? ' x' + extVal : ''}` : null}</Plain>
+      )}
+    </Field>
   );
 }
 
@@ -810,8 +1041,27 @@ function RatesTab({
   busy: boolean;
 }): JSX.Element {
   const activeCodes = codes.filter((c) => c.active);
+  // 0063 — current cost rate is shown as a banner derived from the
+  // latest snapshot. To change it, the user appends a new snapshot
+  // (immutability is the whole point — see migration 0063 header).
+  const latestSnap = snapshots[0];
   return (
     <>
+      <Card title="Current cost rate">
+        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0, marginBottom: 8 }}>
+          What the firm pays this staff person per hour. Derived from the most recent rate snapshot
+          below. Snapshots are append-only; to change the cost rate, add a new effective period.
+        </p>
+        <div style={{ fontSize: 22, fontWeight: 600 }}>
+          {latestSnap ? dollars(latestSnap.costRateCents) : <Plain>—</Plain>}
+        </div>
+        {latestSnap && (
+          <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 4 }}>
+            Effective {latestSnap.effectiveDate}
+          </div>
+        )}
+      </Card>
+
       <Card
         title="Effective-dated billing rates"
         action={
@@ -966,4 +1216,551 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Plain({ children }: { children: string | null | undefined }): JSX.Element {
   return <div style={{ fontSize: 14 }}>{children && children.length > 0 ? children : '—'}</div>;
+}
+
+// =====================================================================
+// 0062 — Skill Set tab
+// =====================================================================
+
+const PROFICIENCY_OPTIONS: Array<{
+  value: 'LEARNING' | 'COMPETENT' | 'PROFICIENT' | 'EXPERT';
+  label: string;
+}> = [
+  { value: 'LEARNING', label: 'Learning' },
+  { value: 'COMPETENT', label: 'Competent' },
+  { value: 'PROFICIENT', label: 'Proficient' },
+  { value: 'EXPERT', label: 'Expert' },
+];
+
+function proficiencyTone(p: string): 'neutral' | 'warning' | 'success' | 'accent' {
+  switch (p) {
+    case 'LEARNING':
+      return 'warning';
+    case 'COMPETENT':
+      return 'neutral';
+    case 'PROFICIENT':
+      return 'accent';
+    case 'EXPERT':
+      return 'success';
+    default:
+      return 'neutral';
+  }
+}
+
+function SkillsTab({ userId }: { userId: string }): JSX.Element {
+  const [items, setItems] = useState<StaffSkillRow[]>([]);
+  const [workCodes, setWorkCodes] = useState<WorkCodeOption[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [newCodeId, setNewCodeId] = useState('');
+  const [newProficiency, setNewProficiency] = useState<StaffSkillRow['proficiency']>('COMPETENT');
+  const [newNotes, setNewNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function load(): Promise<void> {
+    setError(null);
+    try {
+      const [s, wc] = await Promise.all([
+        api<{ items: StaffSkillRow[] }>(`/api/staff/admin/users/${userId}/skills`),
+        api<{ items: WorkCodeOption[] }>('/api/staff/taxonomy/work-codes'),
+      ]);
+      setItems(s.items ?? []);
+      setWorkCodes(wc.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  async function addSkill(): Promise<void> {
+    if (!newCodeId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/admin/users/${userId}/skills`, {
+        method: 'POST',
+        body: JSON.stringify({
+          workCodeId: newCodeId,
+          proficiency: newProficiency,
+          notes: newNotes || null,
+        }),
+      });
+      setAdding(false);
+      setNewCodeId('');
+      setNewProficiency('COMPETENT');
+      setNewNotes('');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'add_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSkill(skillId: string): Promise<void> {
+    if (!confirm('Remove this skill?')) return;
+    setBusy(true);
+    try {
+      await api(`/api/staff/admin/users/${userId}/skills/${skillId}`, { method: 'DELETE' });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'delete_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const assignedIds = new Set(items.map((i) => i.workCodeId));
+  const available = workCodes.filter((w) => !assignedIds.has(w.id));
+
+  return (
+    <Card
+      title="Skill Set"
+      action={
+        adding ? null : (
+          <Button size="sm" onClick={() => setAdding(true)} disabled={available.length === 0}>
+            + Add skill
+          </Button>
+        )
+      }
+    >
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0, marginBottom: 12 }}>
+          {error}
+        </p>
+      )}
+      <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0, marginBottom: 12 }}>
+        Work codes this staff member is qualified to perform. Used by engagement assignment
+        suggestions and capacity planning.
+      </p>
+      {adding && (
+        <div
+          style={{
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            padding: 12,
+            marginBottom: 16,
+            display: 'grid',
+            gap: 12,
+          }}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <Field label="Work code">
+              <Combobox
+                ariaLabel="Work code"
+                value={newCodeId}
+                onChange={setNewCodeId}
+                options={available.map<ComboboxOption>((w) => ({
+                  value: w.id,
+                  label: `${w.key} — ${w.name}`,
+                }))}
+                placeholder="Pick a work code"
+              />
+            </Field>
+            <Field label="Proficiency">
+              <select
+                value={newProficiency}
+                onChange={(e) => setNewProficiency(e.target.value as StaffSkillRow['proficiency'])}
+                style={fieldStyle}
+              >
+                {PROFICIENCY_OPTIONS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <Field label="Notes (optional)">
+            <input
+              value={newNotes}
+              onChange={(e) => setNewNotes(e.target.value)}
+              style={fieldStyle}
+              maxLength={1000}
+            />
+          </Field>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button onClick={() => void addSkill()} disabled={busy || !newCodeId}>
+              {busy ? 'Adding…' : 'Add'}
+            </Button>
+            <Button variant="secondary" onClick={() => setAdding(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      <Table<StaffSkillRow>
+        rows={items}
+        rowKey={(r) => r.id}
+        empty="No skills recorded. Click + Add skill to tag work codes."
+        columns={[
+          {
+            key: 'code',
+            header: 'Work code',
+            render: (r) => (
+              <span>
+                <code style={{ fontSize: 11 }}>{r.workCodeKey}</code> {r.workCodeName}
+              </span>
+            ),
+          },
+          {
+            key: 'prof',
+            header: 'Proficiency',
+            render: (r) => <Pill tone={proficiencyTone(r.proficiency)}>{r.proficiency}</Pill>,
+          },
+          {
+            key: 'notes',
+            header: 'Notes',
+            render: (r) => (
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{r.notes ?? '—'}</span>
+            ),
+          },
+          {
+            key: 'actions',
+            header: '',
+            render: (r) => (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void removeSkill(r.id)}
+                disabled={busy}
+              >
+                Remove
+              </Button>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+// =====================================================================
+// 0062 — Targets tab
+// =====================================================================
+
+function bpsToPct(bps: number | null | undefined): string {
+  if (bps == null) return '';
+  return (bps / 100).toFixed(1);
+}
+
+function TargetsTab({ userId }: { userId: string }): JSX.Element {
+  const [items, setItems] = useState<StaffTargetRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [draftYear, setDraftYear] = useState(new Date().getFullYear());
+  const [draftBillable, setDraftBillable] = useState('');
+  const [draftTotal, setDraftTotal] = useState('');
+  const [draftRealization, setDraftRealization] = useState('');
+  const [draftUtilization, setDraftUtilization] = useState('');
+  const [draftNotes, setDraftNotes] = useState('');
+
+  async function load(): Promise<void> {
+    setError(null);
+    try {
+      const r = await api<{ items: StaffTargetRow[] }>(`/api/staff/admin/users/${userId}/targets`);
+      setItems(r.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  function resetDraft(): void {
+    setDraftYear(new Date().getFullYear());
+    setDraftBillable('');
+    setDraftTotal('');
+    setDraftRealization('');
+    setDraftUtilization('');
+    setDraftNotes('');
+  }
+
+  function startEdit(row: StaffTargetRow): void {
+    setDraftYear(row.targetYear);
+    setDraftBillable(row.annualBillableHours ?? '');
+    setDraftTotal(row.annualTotalHours ?? '');
+    setDraftRealization(bpsToPct(row.targetRealizationPctBps));
+    setDraftUtilization(bpsToPct(row.targetUtilizationPctBps));
+    setDraftNotes(row.notes ?? '');
+    setAdding(true);
+  }
+
+  async function saveTarget(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: Record<string, unknown> = { targetYear: draftYear };
+      if (draftBillable.trim()) payload['annualBillableHours'] = parseFloat(draftBillable);
+      if (draftTotal.trim()) payload['annualTotalHours'] = parseFloat(draftTotal);
+      if (draftRealization.trim())
+        payload['targetRealizationPctBps'] = Math.round(parseFloat(draftRealization) * 100);
+      if (draftUtilization.trim())
+        payload['targetUtilizationPctBps'] = Math.round(parseFloat(draftUtilization) * 100);
+      if (draftNotes.trim()) payload['notes'] = draftNotes;
+      await api(`/api/staff/admin/users/${userId}/targets`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setAdding(false);
+      resetDraft();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeTarget(targetId: string): Promise<void> {
+    if (!confirm('Remove this target?')) return;
+    setBusy(true);
+    try {
+      await api(`/api/staff/admin/users/${userId}/targets/${targetId}`, { method: 'DELETE' });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'delete_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card
+      title="Annual targets"
+      action={
+        adding ? null : (
+          <Button
+            size="sm"
+            onClick={() => {
+              resetDraft();
+              setAdding(true);
+            }}
+          >
+            + New target year
+          </Button>
+        )
+      }
+    >
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0, marginBottom: 12 }}>
+          {error}
+        </p>
+      )}
+      <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0, marginBottom: 12 }}>
+        One row per year. Realization and utilization are stored as percentages (0–100).
+      </p>
+      {adding && (
+        <div
+          style={{
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            padding: 12,
+            marginBottom: 16,
+            display: 'grid',
+            gap: 12,
+          }}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 12 }}>
+            <Field label="Year">
+              <input
+                type="number"
+                value={draftYear}
+                onChange={(e) => setDraftYear(parseInt(e.target.value, 10) || draftYear)}
+                style={fieldStyle}
+                min={2000}
+                max={2100}
+              />
+            </Field>
+            <Field label="Annual billable hours">
+              <input
+                type="number"
+                step="0.5"
+                value={draftBillable}
+                onChange={(e) => setDraftBillable(e.target.value)}
+                style={fieldStyle}
+                placeholder="e.g. 1800"
+              />
+            </Field>
+            <Field label="Annual total hours">
+              <input
+                type="number"
+                step="0.5"
+                value={draftTotal}
+                onChange={(e) => setDraftTotal(e.target.value)}
+                style={fieldStyle}
+                placeholder="e.g. 2080"
+              />
+            </Field>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Realization target (%)">
+              <input
+                type="number"
+                step="0.1"
+                min={0}
+                max={100}
+                value={draftRealization}
+                onChange={(e) => setDraftRealization(e.target.value)}
+                style={fieldStyle}
+                placeholder="e.g. 90"
+              />
+            </Field>
+            <Field label="Utilization target (%)">
+              <input
+                type="number"
+                step="0.1"
+                min={0}
+                max={100}
+                value={draftUtilization}
+                onChange={(e) => setDraftUtilization(e.target.value)}
+                style={fieldStyle}
+                placeholder="e.g. 80"
+              />
+            </Field>
+          </div>
+          <Field label="Notes (optional)">
+            <textarea
+              value={draftNotes}
+              onChange={(e) => setDraftNotes(e.target.value)}
+              style={{ ...fieldStyle, fontFamily: tokens.font.body }}
+              rows={2}
+              maxLength={2000}
+            />
+          </Field>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button onClick={() => void saveTarget()} disabled={busy || !draftYear}>
+              {busy ? 'Saving…' : 'Save target'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setAdding(false);
+                resetDraft();
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      <Table<StaffTargetRow>
+        rows={items}
+        rowKey={(r) => r.id}
+        empty="No targets yet."
+        columns={[
+          { key: 'year', header: 'Year', render: (r) => <strong>{r.targetYear}</strong> },
+          {
+            key: 'bill',
+            header: 'Billable',
+            render: (r) => <span>{r.annualBillableHours ?? '—'}</span>,
+          },
+          {
+            key: 'total',
+            header: 'Total',
+            render: (r) => <span>{r.annualTotalHours ?? '—'}</span>,
+          },
+          {
+            key: 'real',
+            header: 'Realization %',
+            render: (r) => <span>{bpsToPct(r.targetRealizationPctBps) || '—'}</span>,
+          },
+          {
+            key: 'util',
+            header: 'Utilization %',
+            render: (r) => <span>{bpsToPct(r.targetUtilizationPctBps) || '—'}</span>,
+          },
+          {
+            key: 'actions',
+            header: '',
+            render: (r) => (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <Button size="sm" variant="secondary" onClick={() => startEdit(r)} disabled={busy}>
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void removeTarget(r.id)}
+                  disabled={busy}
+                >
+                  Remove
+                </Button>
+              </div>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+// =====================================================================
+// 0062 — Notes tab
+// =====================================================================
+
+function NotesTab({
+  user,
+  draft,
+  setDraft,
+  editing,
+  setEditing,
+  onSave,
+  busy,
+}: {
+  user: User;
+  draft: Partial<User>;
+  setDraft: (d: Partial<User>) => void;
+  editing: boolean;
+  setEditing: (v: boolean) => void;
+  onSave: () => void;
+  busy: boolean;
+}): JSX.Element {
+  return (
+    <Card
+      title="Internal notes"
+      action={
+        <ProfileEditButtons
+          editing={editing}
+          setEditing={setEditing}
+          onSave={onSave}
+          setDraftReset={() => setDraft({})}
+          busy={busy}
+        />
+      }
+    >
+      <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0, marginBottom: 12 }}>
+        Internal notes about this staff member. Visible to admins only; never shown to clients.
+      </p>
+      {editing ? (
+        <textarea
+          value={(draft.internalNotes as string | null | undefined) ?? user.internalNotes ?? ''}
+          onChange={(e) => setDraft({ ...draft, internalNotes: e.target.value || null })}
+          style={{ ...fieldStyle, fontFamily: tokens.font.body, minHeight: 200 }}
+          rows={10}
+          maxLength={5000}
+        />
+      ) : user.internalNotes ? (
+        <pre
+          style={{
+            fontFamily: tokens.font.body,
+            fontSize: 13,
+            whiteSpace: 'pre-wrap',
+            margin: 0,
+          }}
+        >
+          {user.internalNotes}
+        </pre>
+      ) : (
+        <Plain>—</Plain>
+      )}
+    </Card>
+  );
 }

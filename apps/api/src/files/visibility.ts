@@ -33,6 +33,7 @@ import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface FileVisibilityRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -41,19 +42,35 @@ export interface FileVisibilityRoutesDeps extends RbacDeps {
   storageClient?: StorageClient;
 }
 
-const VISIBILITY_VALUES = ['private', 'client_visible'] as const;
+// 0060 — added 'escrow'. Files in escrow are uploaded but gated by an
+// invoice payment; the Stripe webhook + /payments/receive promote them
+// to client_visible when the gating invoice clears.
+const VISIBILITY_VALUES = ['private', 'client_visible', 'escrow'] as const;
 type VisibilityValue = (typeof VISIBILITY_VALUES)[number];
 
-const PatchSchema = z.object({
-  visibility: z.enum(VISIBILITY_VALUES),
-  reason: z.string().max(500).optional(),
-});
+const PatchSchema = z
+  .object({
+    visibility: z.enum(VISIBILITY_VALUES),
+    reason: z.string().max(500).optional(),
+    // Required when visibility === 'escrow'.
+    invoiceId: z.string().uuid().optional(),
+  })
+  .refine((d) => d.visibility !== 'escrow' || d.invoiceId, {
+    message: 'invoiceId required for escrow',
+    path: ['invoiceId'],
+  });
 
-const BulkSchema = z.object({
-  fileIds: z.array(z.string().uuid()).min(1).max(500),
-  visibility: z.enum(VISIBILITY_VALUES),
-  reason: z.string().max(500).optional(),
-});
+const BulkSchema = z
+  .object({
+    fileIds: z.array(z.string().uuid()).min(1).max(500),
+    visibility: z.enum(VISIBILITY_VALUES),
+    reason: z.string().max(500).optional(),
+    invoiceId: z.string().uuid().optional(),
+  })
+  .refine((d) => d.visibility !== 'escrow' || d.invoiceId, {
+    message: 'invoiceId required for escrow',
+    path: ['invoiceId'],
+  });
 
 interface FlipResult {
   fileId: string;
@@ -68,6 +85,7 @@ async function flipFiles(
   newValue: VisibilityValue,
   actorId: string | null,
   reason: string | null,
+  invoiceId?: string | null,
 ): Promise<FlipResult[]> {
   const flipped: FlipResult[] = [];
   await db.transaction(async (tx) => {
@@ -77,13 +95,20 @@ async function flipFiles(
       .where(and(inArray(files.id, fileIds), eq(files.firmId, firmId), isNull(files.deletedAt)));
     for (const row of rows) {
       const current = row.visibility as VisibilityValue;
-      // No-op when already at target — per spec, never write an event
-      // for a no-op flip.
       if (current === newValue) continue;
-      await tx
-        .update(files)
-        .set({ visibility: newValue, modifiedAt: new Date() })
-        .where(eq(files.id, row.id));
+      const patch: Record<string, unknown> = {
+        visibility: newValue,
+        modifiedAt: new Date(),
+      };
+      // 0060 — escrow requires invoice_id by DB constraint. Manual
+      // flips OUT of escrow clear the gating invoice id so the row
+      // doesn't carry stale metadata.
+      if (newValue === 'escrow') {
+        patch['invoiceId'] = invoiceId ?? null;
+      } else if (current === 'escrow') {
+        patch['invoiceId'] = null;
+      }
+      await tx.update(files).set(patch).where(eq(files.id, row.id));
       await tx.insert(fileVisibilityEvents).values({
         fileId: row.id,
         firmId,
@@ -134,6 +159,7 @@ async function userHasPermission(
 
 export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.patch('/:id/visibility', async (req: Request, res: Response) => {
     const session = req.staffSession;
@@ -164,6 +190,7 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
       parsed.data.visibility,
       actorId,
       parsed.data.reason ?? null,
+      parsed.data.invoiceId ?? null,
     );
     for (const f of flipped) {
       await emitAudit(deps.db, {
@@ -207,6 +234,7 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
       parsed.data.visibility,
       actorId,
       parsed.data.reason ?? null,
+      parsed.data.invoiceId ?? null,
     );
     // Bulk audit summary — one row per actor batch keeps the audit
     // log readable when the admin pushes 500 files at once.

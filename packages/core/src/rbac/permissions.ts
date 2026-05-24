@@ -99,6 +99,22 @@ export const PERMISSION_KEYS = [
   'storage:folder:reconcile',
   'storage:file:publish',
   'storage:file:unpublish',
+
+  // Stage 1B — envelope encryption lifecycle. Unlock = enter the
+  // admin passphrase at boot. Rotate = generate a new MFK and re-wrap
+  // every T-DEK. Both gated to admin + partner.
+  'crypto:unlock',
+  'crypto:rotate',
+
+  // Stage 2 — engagement messaging. Read/write split so a junior can
+  // post in a thread without being able to remove members.
+  'messaging:read',
+  'messaging:write',
+
+  // Stage 3 — client requests (document/info requests fulfilled by
+  // staff or the client). 'manage' covers create/update/dismiss.
+  'requests:read',
+  'requests:manage',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -156,6 +172,12 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:folder:reconcile',
     'storage:file:publish',
     'storage:file:unpublish',
+    'crypto:unlock',
+    'crypto:rotate',
+    'messaging:read',
+    'messaging:write',
+    'requests:read',
+    'requests:manage',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -192,6 +214,10 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:folder:bind',
     'storage:file:publish',
     'storage:file:unpublish',
+    'messaging:read',
+    'messaging:write',
+    'requests:read',
+    'requests:manage',
   ]),
 
   senior: new Set<PermissionKey>([
@@ -212,6 +238,10 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:folder:view',
     'storage:folder:edit',
     'storage:file:unpublish',
+    'messaging:read',
+    'messaging:write',
+    'requests:read',
+    'requests:manage',
   ]),
 
   staff: new Set<PermissionKey>([
@@ -227,6 +257,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:folder:view',
     'storage:folder:edit',
     'storage:file:unpublish',
+    'messaging:read',
+    'messaging:write',
+    'requests:read',
   ]),
 };
 

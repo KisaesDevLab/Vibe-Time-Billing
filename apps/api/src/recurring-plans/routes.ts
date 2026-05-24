@@ -22,7 +22,7 @@ import { desc as drzDesc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface RecurringPlanRoutesDeps extends RbacDeps {
@@ -55,8 +55,11 @@ export function createRecurringPlanRouter(deps: RecurringPlanRoutesDeps): Router
         return;
       }
       const conds = [eq(clients.firmId, session.firmId)];
-      const engId =
-        typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
+      const engId = uuidQueryParam(req.query['engagementId']);
+      if (engId === 'invalid') {
+        res.status(400).json({ error: 'invalid_engagement_id' });
+        return;
+      }
       if (engId) conds.push(eq(recurringBillingPlans.engagementId, engId));
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       if (status === 'ACTIVE' || status === 'PAUSED' || status === 'CANCELLED') {

@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import { savedReports } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface SavedReportRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -32,6 +33,7 @@ const PatchSchema = z.object({
 
 export function createSavedReportsRouter(deps: SavedReportRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/',

@@ -62,6 +62,9 @@ services:
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       FILE_STORAGE: local
       FILE_LOCAL_PATH: /data/files
+      # Stage 1B — persist the sealed firm key under the dedicated
+      # volume mount.
+      FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
       LOG_LEVEL: ${LOG_LEVEL:-info}
     # Inline the migrate-then-serve sequence (the appliance image doesn't
     # ship ops/docker/ — only ops/scripts/, so the prod compose's entrypoint
@@ -84,6 +87,12 @@ services:
     volumes:
       - file-storage:/data/files
       - storage-mock:/data/storage-mock
+      # Stage 1B — persist sealed firm key envelope across container
+      # recreates. Without this, the seal file at /data/.firm-key.seal
+      # lives on the ephemeral overlay FS and the appliance has to
+      # re-bootstrap a new MFK every time, orphaning any encrypted
+      # data already in the DB.
+      - firm-key:/data/firm-key
       - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
@@ -155,6 +164,7 @@ volumes:
   static-content:
   file-storage:
   storage-mock:
+  firm-key:
   caddy-data:
   caddy-config:
 

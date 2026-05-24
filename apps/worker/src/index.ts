@@ -17,6 +17,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 
 import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
+import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
 import { runLateFeeAccrual } from './jobs/late-fee-accrual';
@@ -137,6 +138,7 @@ const QUEUES = [
   'storage-sync',
   'hash-file',
   'pending-upload-sweep',
+  'request-suggestion-sweep',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -355,6 +357,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runPendingUploadSweep(db, storage, logger);
     logger.info({ jobId: job.id, ...result }, 'pending-upload-sweep complete');
   },
+  'request-suggestion-sweep': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'request-suggestion-sweep: no DB configured');
+      return;
+    }
+    const result = await runRequestSuggestionSweep(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'request-suggestion-sweep complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -389,6 +399,11 @@ const CRON: Record<QueueName, string> = {
   // sweep. Runs every 5 min; deletes any pending_upload row older than
   // PENDING_UPLOAD_MAX_AGE_MIN (default 30) whose body never landed.
   'pending-upload-sweep': '*/5 * * * *',
+  // Stage 3 — expire stale client-request time-entry suggestions
+  // hourly. The window is firm-configurable (firm_config.
+  // suggestion_expiration_days; default 7) but the sweep cadence is
+  // global.
+  'request-suggestion-sweep': '30 * * * *',
 };
 
 function storageSyncCron(): string {

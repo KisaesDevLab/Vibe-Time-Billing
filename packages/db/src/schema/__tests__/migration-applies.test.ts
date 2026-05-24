@@ -38,9 +38,10 @@ describe('migrations apply on a fresh db', () => {
     const applied = await applyAllMigrations(db);
     expect(applied.length).toBeGreaterThanOrEqual(3);
 
-    // Sanity-check a couple of tables exist
+    // Sanity-check a couple of tables exist. Migration 0057 moves them
+    // from `public` to `vibetb`, so the assertion targets the new home.
     const tableRows = await db.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name`,
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'vibetb' ORDER BY table_name`,
     );
     const names = tableRows.rows.map((r) => r.table_name);
     expect(names).toContain('firm');

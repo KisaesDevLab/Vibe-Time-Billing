@@ -13,8 +13,10 @@ import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LettersPage } from './pages/Letters';
 import { LoginPage } from './pages/Login';
+import { MessagesPage } from './pages/Messages';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
+import { RequestsPage } from './pages/Requests';
 import { StatementPage } from './pages/Statement';
 import { SwitchEntityPage } from './pages/Switch';
 
@@ -56,6 +58,8 @@ export function App(): JSX.Element {
                 <Routes>
                   <Route path="/" element={<HomePage />} />
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
+                  <Route path="/messages" element={<MessagesPage />} />
+                  <Route path="/requests" element={<RequestsPage />} />
                   <Route path="/letters" element={<LettersPage />} />
                   <Route path="/files" element={<FilesPage />} />
                   <Route path="/statement" element={<StatementPage />} />
@@ -148,6 +152,18 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/invoices',
           icon: '⎙',
           active: location.pathname.startsWith('/invoices'),
+        },
+        {
+          label: 'Messages',
+          href: '/messages',
+          icon: '💬',
+          active: location.pathname.startsWith('/messages'),
+        },
+        {
+          label: 'Requests',
+          href: '/requests',
+          icon: '☑',
+          active: location.pathname.startsWith('/requests'),
         },
         {
           label: 'Letters',

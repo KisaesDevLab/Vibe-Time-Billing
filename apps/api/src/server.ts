@@ -11,6 +11,7 @@ import { logger } from './logger';
 import { getRedis } from './auth/redis-client';
 import { createSessionStore } from './auth/session-store';
 import { createDb } from '@vibe/db';
+import { bootCrypto } from './crypto/boot';
 
 import { createStripeProvider } from './payments/stripe';
 import { createAnthropicProvider } from './ai/anthropic';
@@ -235,6 +236,16 @@ const server = app.listen(config.PORT, () => {
     },
     'vibe-tb-api listening',
   );
+});
+
+// Stage 1B — boot-time crypto unseal. Fire-and-forget; the lock
+// middleware reads the resulting state via getApplianceLockState(),
+// so even if this is still in flight when the first request arrives
+// the appliance behaves as locked (503) until unseal resolves. Errors
+// are logged but don't crash the process — the operator can investigate
+// via /api/staff/admin/unlock/status.
+void bootCrypto(db).catch((err) => {
+  logger.error({ err }, 'crypto boot failed — appliance will report locked');
 });
 const isProd = config.NODE_ENV === 'production';
 const MAX_LISTEN_ATTEMPTS = isProd ? 16 : Number.POSITIVE_INFINITY;

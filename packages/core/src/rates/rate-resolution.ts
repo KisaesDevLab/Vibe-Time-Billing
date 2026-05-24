@@ -176,25 +176,35 @@ function pickMostRecent(matches: RateCandidate[]): RateCandidate {
 
 /**
  * Snapshot a rate at the time of writing a time entry. Stored on
- * `time_entry.standard_rate_snapshot_cents` and `standard_amount_cents`.
- * Historical reports never shift when rates change (CLAUDE.md
- * non-negotiable #3).
+ *   time_entry.standard_rate_snapshot_cents — bill rate (post-multiplier)
+ *   time_entry.standard_amount_cents       — hours × bill rate
+ *   time_entry.cost_rate_snapshot_cents    — raw cost rate (NO multiplier)
+ *
+ * Historical reports never shift when staff_rate_snapshot rows change
+ * (CLAUDE.md non-negotiable #3). Migration 0063 extended this lock to
+ * the cost side; prior to 0063 cost was recomputed at read time via a
+ * LATERAL join on staff_rate_snapshot, which let backdated snapshot
+ * edits rewrite history.
  *
  * Optional `multiplierBps` (Phase 7 #13) is the engagement-level
  * premium/discount in basis points: 10000 = 1.0x (default), 11000 =
- * +10% premium, 8500 = 15% discount. Applied to the resolved rate
- * BEFORE rounding so a 15% discount on a $420/hr rate snapshots as
- * $357/hr (not $420 stored then $357 displayed elsewhere).
+ * +10% premium, 8500 = 15% discount. Applied to the BILL rate BEFORE
+ * rounding so a 15% discount on a $420/hr rate snapshots as $357/hr
+ * (not $420 stored then $357 displayed elsewhere).
+ *
+ * The cost rate is NOT multiplier-adjusted — premium/discount is a
+ * client-pricing concept, not a firm-internal cost.
  */
 export function captureRateSnapshot(args: {
   rate: ResolvedRate;
   hours: number;
   multiplierBps?: number;
-}): { rateCents: Cents; amountCents: Cents } {
+}): { rateCents: Cents; amountCents: Cents; costRateCents: Cents | null } {
   const bps = args.multiplierBps ?? 10000;
   const effectiveRate = Math.round((args.rate.billRateCents * bps) / 10000);
   return {
     rateCents: effectiveRate,
     amountCents: Math.round(effectiveRate * args.hours),
+    costRateCents: args.rate.costRateCents ?? null,
   };
 }

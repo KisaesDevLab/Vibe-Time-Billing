@@ -963,21 +963,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [], totals: null });
         return;
       }
-      const { staffRateSnapshots } = await import('@vibe/db/schema');
+      // 0063 — cost is now snapshotted on time_entry.cost_rate_snapshot_cents.
+      // No more correlated SELECT against staff_rate_snapshot at read
+      // time; historical profitability is locked at the write moment.
       const rows = await deps.db
         .select({
           engagementId: engagements.id,
           engagementName: engagements.name,
           clientName: clients.name,
-          costCents: drz<number>`
-            COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE((
-              SELECT ${staffRateSnapshots.costRateCents}
-              FROM ${staffRateSnapshots}
-              WHERE ${staffRateSnapshots.appUserId} = ${timeEntries.appUserId}
-                AND ${staffRateSnapshots.effectiveDate} <= ${timeEntries.entryDate}
-              ORDER BY ${staffRateSnapshots.effectiveDate} DESC
-              LIMIT 1
-            ), 0)), 0)::bigint`,
+          costCents: drz<number>`COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)), 0)::bigint`,
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))

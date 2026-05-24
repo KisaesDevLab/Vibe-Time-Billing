@@ -22,7 +22,7 @@ import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billin
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { renderHtmlToPdf } from '../pdf/render';
 
@@ -1043,11 +1043,13 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
       }
       // 0050 — accept clientId, engagementId, clientOwnerId filters.
       const conds = [eq(clients.firmId, session.firmId), eq(engagements.status, 'ACTIVE')];
-      const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
-      const engagementId =
-        typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
-      const clientOwnerId =
-        typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+      const clientId = uuidQueryParam(req.query['clientId']);
+      const engagementId = uuidQueryParam(req.query['engagementId']);
+      const clientOwnerId = uuidQueryParam(req.query['clientOwnerId']);
+      if (clientId === 'invalid' || engagementId === 'invalid' || clientOwnerId === 'invalid') {
+        res.status(400).json({ error: 'invalid_uuid_param' });
+        return;
+      }
       if (clientId) conds.push(eq(clients.id, clientId));
       if (engagementId) conds.push(eq(engagements.id, engagementId));
       if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));

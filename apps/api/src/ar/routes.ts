@@ -16,7 +16,7 @@ import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 
 export interface ArRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -50,11 +50,15 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         return;
       }
       // 0050 — accept clientOwnerId as a synonym for partnerId.
-      const ownerFilter =
-        (typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : undefined) ??
-        (typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : undefined);
-      const clientIdFilter =
-        typeof req.query['clientId'] === 'string' ? req.query['clientId'] : undefined;
+      const ownerRaw = uuidQueryParam(req.query['clientOwnerId']);
+      const partnerRaw = uuidQueryParam(req.query['partnerId']);
+      const clientIdFilterRaw = uuidQueryParam(req.query['clientId']);
+      if (ownerRaw === 'invalid' || partnerRaw === 'invalid' || clientIdFilterRaw === 'invalid') {
+        res.status(400).json({ error: 'invalid_uuid_param' });
+        return;
+      }
+      const ownerFilter = ownerRaw ?? partnerRaw ?? undefined;
+      const clientIdFilter = clientIdFilterRaw ?? undefined;
       const data = await loadAging(deps.db, session.firmId, {
         partnerId: ownerFilter,
         clientId: clientIdFilter,

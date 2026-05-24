@@ -16,6 +16,7 @@ import { MCP_TOOL_KEYS } from '@vibe/core/mcp';
 import { emitAudit } from '../auth/audit';
 import { hashToken } from '../auth/api-token';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface ApiTokenRoutesDeps extends RbacDeps {
@@ -39,6 +40,7 @@ const KNOWN_SCOPES = new Set<string>([
 
 export function createApiTokenRouter(deps: ApiTokenRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/',

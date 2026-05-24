@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import { clientPortalAccess, engagementLetters, engagements, invoices } from '@vibe/db/schema';
 import { sql } from 'drizzle-orm';
 
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 /**
@@ -42,6 +43,7 @@ export interface PortalLetterDeps {
 
 export function createPortalLetterRouter(deps: PortalLetterDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get('/awaiting', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;

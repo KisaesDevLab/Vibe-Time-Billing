@@ -21,7 +21,10 @@ import {
   roles,
   staffRateSnapshotEntries,
   staffRateSnapshots,
+  staffSkills,
+  staffTargets,
   userRoles,
+  workCodes,
 } from '@vibe/db/schema';
 import { createSnapshot } from '../rates/routes';
 import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
@@ -134,7 +137,7 @@ const FirmPatchSchema = z
 
 export function createAdminRouter(deps: AdminRoutesDeps): Router {
   const router = express.Router();
-  addUuidIdGuard(router);
+  addUuidIdGuard(router, ['skillId', 'targetId']);
 
   router.get(
     '/firm-settings',
@@ -276,14 +279,26 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           title: appUsers.title,
           salutation: appUsers.salutation,
           businessPhone: appUsers.businessPhone,
+          businessPhoneExt: appUsers.businessPhoneExt,
           homePhone: appUsers.homePhone,
+          homePhoneExt: appUsers.homePhoneExt,
           faxPhone: appUsers.faxPhone,
+          faxPhoneExt: appUsers.faxPhoneExt,
           mobilePhone: appUsers.mobilePhone,
+          mobilePhoneExt: appUsers.mobilePhoneExt,
+          secondaryEmail: appUsers.secondaryEmail,
           addressLine1: appUsers.addressLine1,
           addressLine2: appUsers.addressLine2,
           city: appUsers.city,
           state: appUsers.state,
           zip: appUsers.zip,
+          addressCountry: appUsers.addressCountry,
+          homeAddressLine1: appUsers.homeAddressLine1,
+          homeAddressLine2: appUsers.homeAddressLine2,
+          homeCity: appUsers.homeCity,
+          homeState: appUsers.homeState,
+          homeZip: appUsers.homeZip,
+          homeCountry: appUsers.homeCountry,
           hiredDate: appUsers.hiredDate,
           leftDate: appUsers.leftDate,
           status: appUsers.status,
@@ -291,6 +306,12 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           standardHoursPerWeek: appUsers.standardHoursPerWeek,
           billableTargetHoursPerMonth: appUsers.billableTargetHoursPerMonth,
           totpEnrolledAt: appUsers.totpEnrolledAt,
+          // 0062 — profile expansion fields
+          displayId: appUsers.displayId,
+          description: appUsers.description,
+          photoUrl: appUsers.photoUrl,
+          // (0063 dropped costRateCents — see migration header)
+          internalNotes: appUsers.internalNotes,
           createdAt: appUsers.createdAt,
         })
         .from(appUsers)
@@ -368,16 +389,33 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       str('lastName');
       str('title');
       str('salutation', 40);
+      // 0062 — Main tab additions
+      str('displayId', 40);
+      str('description');
+      str('photoUrl', 1000);
+      str('internalNotes', 5000);
       // Contact Info tab
       str('businessPhone', 40);
+      str('businessPhoneExt', 12);
       str('homePhone', 40);
+      str('homePhoneExt', 12);
       str('faxPhone', 40);
+      str('faxPhoneExt', 12);
       str('mobilePhone', 40);
+      str('mobilePhoneExt', 12);
+      str('secondaryEmail', 254);
       str('addressLine1', 200);
       str('addressLine2', 200);
       str('city', 120);
       str('state', 40);
       str('zip', 20);
+      str('addressCountry', 60);
+      str('homeAddressLine1', 200);
+      str('homeAddressLine2', 200);
+      str('homeCity', 120);
+      str('homeState', 40);
+      str('homeZip', 20);
+      str('homeCountry', 60);
       // Dates
       const date = (k: string): void => {
         const v = body[k];
@@ -420,6 +458,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           body['billableTargetHoursPerMonth'] as number,
         );
       }
+      // (0063 dropped the app_user.cost_rate_cents handler — cost rate
+      // lives on staff_rate_snapshot now, edited via the snapshot
+      // create/list endpoints. The column is gone, so accepting it here
+      // would silently no-op.)
       // 0054 — when first/middle/last are supplied, recompute fullName so
       // every display that still reads fullName stays in sync.
       const fn = (patch['firstName'] ?? null) as string | null;
@@ -437,10 +479,24 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.status(400).json({ error: 'no_fields_to_update' });
         return;
       }
-      await deps.db
-        .update(appUsers)
-        .set(patch)
-        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
+      try {
+        await deps.db
+          .update(appUsers)
+          .set(patch)
+          .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
+      } catch (err) {
+        // Map Postgres unique-violation on (firm_id, display_id) to 409
+        // instead of bubbling up as a generic 500.
+        const pgCode =
+          err && typeof err === 'object' && 'code' in err
+            ? (err as { code: unknown }).code
+            : undefined;
+        if (pgCode === '23505') {
+          res.status(409).json({ error: 'display_id_taken' });
+          return;
+        }
+        throw err;
+      }
       res.json({ ok: true });
     },
   );
@@ -1623,6 +1679,266 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }
         res.status(500).json({ error: 'insert_failed' });
       }
+    },
+  );
+
+  // =================================================================
+  // 0062 — Skill Set tab
+  // =================================================================
+  router.get(
+    '/users/:id/skills',
+    requirePermission(deps, 'app_user:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: staffSkills.id,
+          workCodeId: staffSkills.workCodeId,
+          workCodeKey: workCodes.key,
+          workCodeName: workCodes.name,
+          proficiency: staffSkills.proficiency,
+          notes: staffSkills.notes,
+          updatedAt: staffSkills.updatedAt,
+        })
+        .from(staffSkills)
+        .innerJoin(workCodes, eq(workCodes.id, staffSkills.workCodeId))
+        .innerJoin(appUsers, eq(appUsers.id, staffSkills.appUserId))
+        .where(and(eq(staffSkills.appUserId, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .orderBy(workCodes.name);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/users/:id/skills',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      const session = req.staffSession!;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const Schema = z.object({
+        workCodeId: z.string().uuid(),
+        proficiency: z.enum(['LEARNING', 'COMPETENT', 'PROFICIENT', 'EXPERT']).default('COMPETENT'),
+        notes: z.string().max(1000).nullable().optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      // Scope check: the target user must belong to the same firm.
+      const [user] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'user_not_found' });
+        return;
+      }
+      // Validate the work code belongs to this firm — defends against
+      // cross-firm references and gives a clean 400 instead of a 500
+      // from a FK violation.
+      const [wc] = await deps.db
+        .select({ id: workCodes.id })
+        .from(workCodes)
+        .where(and(eq(workCodes.id, parsed.data.workCodeId), eq(workCodes.firmId, firmId)))
+        .limit(1);
+      if (!wc) {
+        res.status(400).json({ error: 'work_code_not_found' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(staffSkills)
+        .values({
+          appUserId: req.params['id']!,
+          workCodeId: parsed.data.workCodeId,
+          proficiency: parsed.data.proficiency,
+          notes: parsed.data.notes ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [staffSkills.appUserId, staffSkills.workCodeId],
+          set: {
+            proficiency: parsed.data.proficiency,
+            notes: parsed.data.notes ?? null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning({ id: staffSkills.id });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'staff_skill',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          targetUserId: req.params['id']!,
+          workCodeId: parsed.data.workCodeId,
+          proficiency: parsed.data.proficiency,
+        },
+      }).catch(() => undefined);
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.delete(
+    '/users/:id/skills/:skillId',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      const session = req.staffSession!;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      // Scope check via app_user.firm_id.
+      const deleted = await deps.db
+        .delete(staffSkills)
+        .where(
+          and(
+            eq(staffSkills.id, req.params['skillId']!),
+            eq(staffSkills.appUserId, req.params['id']!),
+          ),
+        )
+        .returning({ id: staffSkills.id });
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'staff_skill',
+        entityId: req.params['skillId']!,
+        actorAppUserId: session.appUserId,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // =================================================================
+  // 0062 — Targets tab
+  // =================================================================
+  router.get(
+    '/users/:id/targets',
+    requirePermission(deps, 'app_user:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(staffTargets)
+        .innerJoin(appUsers, eq(appUsers.id, staffTargets.appUserId))
+        .where(and(eq(staffTargets.appUserId, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .orderBy(desc(staffTargets.targetYear));
+      res.json({ items: items.map((r) => r.staff_target) });
+    },
+  );
+
+  router.post(
+    '/users/:id/targets',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      const session = req.staffSession!;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const Schema = z.object({
+        targetYear: z.number().int().min(2000).max(2100),
+        annualBillableHours: z.number().nonnegative().max(99999).nullable().optional(),
+        annualTotalHours: z.number().nonnegative().max(99999).nullable().optional(),
+        targetRealizationPctBps: z.number().int().min(0).max(10000).nullable().optional(),
+        targetUtilizationPctBps: z.number().int().min(0).max(10000).nullable().optional(),
+        notes: z.string().max(2000).nullable().optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [user] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!user) {
+        res.status(404).json({ error: 'user_not_found' });
+        return;
+      }
+      const [row] = await deps.db
+        .insert(staffTargets)
+        .values({
+          appUserId: req.params['id']!,
+          targetYear: parsed.data.targetYear,
+          annualBillableHours: parsed.data.annualBillableHours?.toString() ?? null,
+          annualTotalHours: parsed.data.annualTotalHours?.toString() ?? null,
+          targetRealizationPctBps: parsed.data.targetRealizationPctBps ?? null,
+          targetUtilizationPctBps: parsed.data.targetUtilizationPctBps ?? null,
+          notes: parsed.data.notes ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [staffTargets.appUserId, staffTargets.targetYear],
+          set: {
+            annualBillableHours: parsed.data.annualBillableHours?.toString() ?? null,
+            annualTotalHours: parsed.data.annualTotalHours?.toString() ?? null,
+            targetRealizationPctBps: parsed.data.targetRealizationPctBps ?? null,
+            targetUtilizationPctBps: parsed.data.targetUtilizationPctBps ?? null,
+            notes: parsed.data.notes ?? null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning({ id: staffTargets.id });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'staff_target',
+        entityId: row?.id,
+        actorAppUserId: session.appUserId,
+        after: { targetUserId: req.params['id']!, ...parsed.data },
+      }).catch(() => undefined);
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.delete(
+    '/users/:id/targets/:targetId',
+    requirePermission(deps, 'app_user:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      const session = req.staffSession!;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const deleted = await deps.db
+        .delete(staffTargets)
+        .where(
+          and(
+            eq(staffTargets.id, req.params['targetId']!),
+            eq(staffTargets.appUserId, req.params['id']!),
+          ),
+        )
+        .returning({ id: staffTargets.id });
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'staff_target',
+        entityId: req.params['targetId']!,
+        actorAppUserId: session.appUserId,
+      }).catch(() => undefined);
+      res.json({ ok: true });
     },
   );
 

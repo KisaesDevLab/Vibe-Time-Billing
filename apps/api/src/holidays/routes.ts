@@ -13,6 +13,7 @@ import { appUsers, holidayCalendar } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface HolidayRoutesDeps extends RbacDeps {
@@ -30,6 +31,7 @@ const CreateSchema = z.object({
 
 export function createHolidayRouter(deps: HolidayRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get('/', requirePermission(deps, 'app_user:read'), async (req: Request, res: Response) => {
     const session = req.staffSession!;
@@ -39,7 +41,11 @@ export function createHolidayRouter(deps: HolidayRoutesDeps): Router {
     }
     const start = typeof req.query['start'] === 'string' ? req.query['start'] : null;
     const end = typeof req.query['end'] === 'string' ? req.query['end'] : null;
-    const userId = typeof req.query['appUserId'] === 'string' ? req.query['appUserId'] : null;
+    const userId = uuidQueryParam(req.query['appUserId']);
+    if (userId === 'invalid') {
+      res.status(400).json({ error: 'invalid_app_user_id' });
+      return;
+    }
     const conds = [eq(holidayCalendar.firmId, session.firmId)];
     if (start && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
       conds.push(gte(holidayCalendar.endDate, start));

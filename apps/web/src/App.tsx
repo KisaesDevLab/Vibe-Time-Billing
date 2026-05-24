@@ -30,6 +30,7 @@ import { OnboardingPage } from './pages/Onboarding';
 import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
+import { RequestsPage } from './pages/Requests';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 import { WipDashboardPage } from './pages/Wip';
@@ -70,6 +71,7 @@ export function App(): JSX.Element {
                   <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
                   <Route path="/payments/new" element={<PaymentReceivePage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
+                  <Route path="/requests" element={<RequestsPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
@@ -147,6 +149,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/approvals',
           icon: '✓',
           active: location.pathname.startsWith('/approvals'),
+        },
+        {
+          label: 'Requests',
+          href: '/requests',
+          icon: '☑',
+          active: location.pathname.startsWith('/requests'),
         },
         {
           label: 'Reports',

@@ -168,11 +168,41 @@ describe('resolveRate', () => {
     expect(captureRateSnapshot({ rate: r, hours: 2.5 })).toEqual({
       rateCents: 25000,
       amountCents: 62500,
+      // 0063 — cost snapshot follows resolver's costRateCents. Pure
+      // firm-fallback in this test has no cost rate plumbed in.
+      costRateCents: null,
     });
     expect(captureRateSnapshot({ rate: r, hours: 1.234 })).toEqual({
       rateCents: 25000,
       amountCents: 30850,
+      costRateCents: null,
     });
+  });
+
+  it('captureRateSnapshot carries cost rate through (NOT multiplier-adjusted)', () => {
+    // 0063 — cost rate is firm-internal and should NOT be discounted by
+    // the engagement multiplier. A 15% client discount must not look
+    // like the staff is suddenly cheaper to employ.
+    const r = resolveRate({
+      ...baseInput,
+      candidates: [
+        {
+          level: 'staff_rate',
+          appUserId: baseInput.appUserId,
+          rateCodeId: 'rc-standard',
+          isStandardCode: true,
+          billRateCents: 40000, // $400/hr
+          costRateCents: 12000, // $120/hr cost
+          effectiveStart: '2026-01-01',
+        },
+      ],
+    });
+    const snap = captureRateSnapshot({ rate: r, hours: 1, multiplierBps: 8500 });
+    // Bill rate gets the multiplier (15% discount → $340)
+    expect(snap.rateCents).toBe(34000);
+    expect(snap.amountCents).toBe(34000);
+    // Cost rate stays at the raw value — no multiplier
+    expect(snap.costRateCents).toBe(12000);
   });
 
   it('historical rates do not shift when a newer rate is added', () => {

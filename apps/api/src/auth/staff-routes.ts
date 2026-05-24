@@ -283,6 +283,9 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
       return;
     }
     await deps.redis.del(`lockout-attempts:staff:totp:${session.appUserId}`);
+    // Stage 1B — clear any pending step-up failure counter on success.
+    // Best-effort; lockouts auto-expire via the Redis TTL regardless.
+    await deps.redis.del(`step-up:failures:${session.appUserId}`).catch(() => undefined);
 
     session.lastStepUpAt = Date.now();
     await deps.sessionStore.put(session);

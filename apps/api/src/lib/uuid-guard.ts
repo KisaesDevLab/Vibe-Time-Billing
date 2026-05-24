@@ -63,3 +63,22 @@ export function addUuidIdGuard(router: Router, extraParams: string[] = []): void
     router.param(name, handler);
   }
 }
+
+/**
+ * Validate a *query string* value as a UUID. Path params get protected
+ * by `addUuidIdGuard`; query params have to opt in per-handler because
+ * Express has no `app.query(name, fn)` equivalent. Returns the value
+ * unchanged when valid, null when missing, or `'invalid'` when present
+ * but malformed (caller responds 400). Use:
+ *
+ *     const cid = uuidQueryParam(req.query['clientId']);
+ *     if (cid === 'invalid') { res.status(400).json({error:'invalid_client_id'}); return; }
+ *     // cid is null | string (a valid uuid) from here
+ */
+export function uuidQueryParam(value: unknown): string | null | 'invalid' {
+  if (value == null) return null;
+  if (typeof value !== 'string') return 'invalid';
+  if (value.trim() === '') return null;
+  if (!UUID_RE.test(value)) return 'invalid';
+  return value;
+}

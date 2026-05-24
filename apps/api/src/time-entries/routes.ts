@@ -13,17 +13,21 @@ import {
   clientRateOverrides,
   clients,
   engagementRateOverrides,
+  engagementThreadLinks,
   engagements,
   firmSettings,
   firms,
   hourBanks,
   hourBankTransactions,
+  messages,
   rateCodes,
   requiredFieldRules,
   serviceLineRates,
   staffRateSnapshotEntries,
   staffRateSnapshots,
+  threadMembers,
   timeEntries,
+  timeEntryMessageLinks,
   timeEntryVersions,
   workCodes,
 } from '@vibe/db/schema';
@@ -48,6 +52,58 @@ function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
 }
 
+/**
+ * Stage 2 — validate + insert time_entry_message_link rows. Each
+ * message must belong to the engagement's thread AND the user must be
+ * a member of that thread. Returns the number of links written.
+ * Returns -1 if validation fails (caller should respond 403).
+ */
+async function linkTimeEntryMessages(
+  db: Database,
+  args: {
+    engagementId: string;
+    timeEntryId: string;
+    messageIds: ReadonlyArray<string>;
+    appUserId: string;
+  },
+): Promise<number> {
+  if (args.messageIds.length === 0) return 0;
+  const [link] = await db
+    .select({ threadId: engagementThreadLinks.threadId })
+    .from(engagementThreadLinks)
+    .where(eq(engagementThreadLinks.engagementId, args.engagementId))
+    .limit(1);
+  if (!link) return -1;
+  const [member] = await db
+    .select({ id: threadMembers.id })
+    .from(threadMembers)
+    .where(
+      and(eq(threadMembers.threadId, link.threadId), eq(threadMembers.appUserId, args.appUserId)),
+    )
+    .limit(1);
+  if (!member) return -1;
+  // All cited messages must be in this thread.
+  const found = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(
+      and(inArray(messages.id, args.messageIds as string[]), eq(messages.threadId, link.threadId)),
+    );
+  if (found.length !== args.messageIds.length) return -1;
+
+  const rows = args.messageIds.map((mid, i) => ({
+    timeEntryId: args.timeEntryId,
+    messageId: mid,
+    sequence: i,
+  }));
+  const inserted = await db
+    .insert(timeEntryMessageLinks)
+    .values(rows)
+    .onConflictDoNothing()
+    .returning({ id: timeEntryMessageLinks.id });
+  return inserted.length;
+}
+
 const TimerStartSchema = z.object({
   engagementId: z.string().uuid(),
   workCodeId: z.string().uuid().optional(),
@@ -63,6 +119,10 @@ const CreateSchema = z.object({
   description: z.string().max(2000).optional(),
   // 0050 — user-controlled OOS veto on top of computed in_scope_flag.
   outOfScopeOverride: z.boolean().optional(),
+  // Stage 2 — caller cites the message(s) that drove this work. Each
+  // id must belong to the engagement's thread AND the user must be a
+  // member of that thread. Validated server-side.
+  linkedMessageIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 const UpdateSchema = z.object({
@@ -71,6 +131,7 @@ const UpdateSchema = z.object({
   description: z.string().max(2000).optional(),
   billableFlag: z.boolean().optional(),
   outOfScopeOverride: z.boolean().optional(),
+  linkedMessageIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 const BulkFromTemplateSchema = z.object({
@@ -447,6 +508,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           description: parsed.data.description ?? '',
           standardRateSnapshotCents: snapshot.rateCents,
           standardAmountCents: snapshot.amountCents,
+          // 0063 — lock the cost rate at write time alongside the bill
+          // rate. snapshot.costRateCents is null when no
+          // staff_rate_snapshot exists for the user; downstream sums
+          // COALESCE to 0 in that case.
+          costRateSnapshotCents: snapshot.costRateCents,
         })
         .returning({ id: timeEntries.id });
 
@@ -538,12 +604,36 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         }
       }
 
+      // Stage 2 — wire any cited messages to this time entry. Validation
+      // failures bubble out as 403 so the caller knows the entry was
+      // created but links were rejected; the entry row stays in the DB
+      // (the partner can manually link via update later).
+      let linkedMessages = 0;
+      if (row?.id && parsed.data.linkedMessageIds && parsed.data.linkedMessageIds.length > 0) {
+        const n = await linkTimeEntryMessages(deps.db, {
+          engagementId: eng.id,
+          timeEntryId: row.id,
+          messageIds: parsed.data.linkedMessageIds,
+          appUserId: session.appUserId,
+        });
+        if (n === -1) {
+          res.status(403).json({
+            error: 'message_link_forbidden',
+            timeEntryId: row.id,
+            reason: 'not_a_thread_member_or_messages_out_of_thread',
+          });
+          return;
+        }
+        linkedMessages = n;
+      }
+
       res.status(201).json({
         id: row?.id,
         rateSnapshot: snapshot.rateCents,
         amount: snapshot.amountCents,
         resolutionLevel: resolved.level,
         hourBankDebit,
+        linkedMessages,
       });
     },
   );
@@ -1046,7 +1136,32 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.json({ ok: true, version: nextVersion });
+
+      // Stage 2 — replace linked messages if caller supplied a new set.
+      let linkedMessages = 0;
+      if (parsed.data.linkedMessageIds) {
+        await deps.db
+          .delete(timeEntryMessageLinks)
+          .where(eq(timeEntryMessageLinks.timeEntryId, prior.id));
+        if (parsed.data.linkedMessageIds.length > 0) {
+          const n = await linkTimeEntryMessages(deps.db, {
+            engagementId: prior.engagementId,
+            timeEntryId: prior.id,
+            messageIds: parsed.data.linkedMessageIds,
+            appUserId: session.appUserId,
+          });
+          if (n === -1) {
+            res.status(403).json({
+              error: 'message_link_forbidden',
+              reason: 'not_a_thread_member_or_messages_out_of_thread',
+            });
+            return;
+          }
+          linkedMessages = n;
+        }
+      }
+
+      res.json({ ok: true, version: nextVersion, linkedMessages });
     },
   );
 
@@ -1182,6 +1297,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           description: t.description ?? '',
           standardRateSnapshotCents: snapshot.rateCents,
           standardAmountCents: snapshot.amountCents,
+          costRateSnapshotCents: snapshot.costRateCents,
         });
       }
       const inserted = await deps.db
@@ -1361,6 +1477,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         return;
       }
       const rate = prior.standardRateSnapshotCents;
+      // 0063 — split entries inherit the parent's locked cost rate.
+      // Treating splits as logical re-slicing of the same hour, not as
+      // fresh time entries that would re-resolve cost from current
+      // snapshots.
+      const costRate = prior.costRateSnapshotCents;
       const created: string[] = [];
       await deps.db.transaction(async (tx) => {
         for (const s of splits) {
@@ -1377,6 +1498,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
               description: s.description ?? prior.description,
               standardRateSnapshotCents: rate,
               standardAmountCents: Math.round(rate * s.hours),
+              costRateSnapshotCents: costRate,
             })
             .returning({ id: timeEntries.id });
           if (row) created.push(row.id);

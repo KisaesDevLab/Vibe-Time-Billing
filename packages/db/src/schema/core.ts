@@ -37,8 +37,18 @@ import {
   uniqueIndex,
   check,
   primaryKey,
+  customType,
 } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
+
+// Drizzle has no built-in bytea type. Define it once and reuse.
+// 0058 — Master Firm Key envelope + sentinel ciphertext both need
+// binary columns; future messaging/file encryption will too.
+const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+  dataType: () => 'bytea',
+  toDriver: (v) => Buffer.from(v),
+  fromDriver: (v) => new Uint8Array(v),
+});
 
 // =====================================================================
 // ENUMS
@@ -419,6 +429,58 @@ export const firmSettings = pgTable('firm_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// 0058 — firm_config: per-firm tunables for the absorbed Connect-style
+// feature set. One row per firm; seeded on firm creation. Defaults
+// match the addendum's locked decisions (Q1/Q3/Q4/I.8). Distinct from
+// firm_settings, which holds the billing/email/branding knobs.
+export const firmConfig = pgTable(
+  'firm_config',
+  {
+    firmId: uuid('firm_id')
+      .primaryKey()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    unlockMode: text('unlock_mode').notNull().default('sealed-on-disk'),
+    suggestionExpirationDays: integer('suggestion_expiration_days').notNull().default(7),
+    escrowVisibility: text('escrow_visibility').notNull().default('engagement-access'),
+    writeOffStepUpThresholdCents: bigint('write_off_step_up_threshold_cents', { mode: 'number' })
+      .notNull()
+      .default(50000),
+    creditStepUpThresholdCents: bigint('credit_step_up_threshold_cents', { mode: 'number' })
+      .notNull()
+      .default(50000),
+    aiEgressEnabled: boolean('ai_egress_enabled').notNull().default(false),
+    vibeShieldEndpoint: text('vibe_shield_endpoint'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unlockModeCk: check(
+      'firm_config_unlock_mode_ck',
+      sql`${t.unlockMode} IN ('sealed-on-disk', 'admin-passphrase')`,
+    ),
+    escrowVisibilityCk: check(
+      'firm_config_escrow_visibility_ck',
+      sql`${t.escrowVisibility} IN ('engagement-access', 'partner-and-assigned-only')`,
+    ),
+  }),
+);
+
+// 0058 — firm_key_envelope: persists the MFK wrapped by the KEK, plus
+// metadata about KEK derivation and a sentinel ciphertext used to
+// verify the MFK at startup. Empty until FirmKeyManager.bootstrap()
+// writes a row on first API boot.
+export const firmKeyEnvelope = pgTable('firm_key_envelope', {
+  firmId: uuid('firm_id')
+    .primaryKey()
+    .references(() => firms.id, { onDelete: 'cascade' }),
+  wrappedMfk: bytea('wrapped_mfk').notNull(),
+  kekMetadata: jsonb('kek_metadata').notNull(),
+  sentinelCiphertext: bytea('sentinel_ciphertext').notNull(),
+  rotationVersion: integer('rotation_version').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // =====================================================================
 // TABLE: office
 // =====================================================================
@@ -541,6 +603,31 @@ export const appUsers = pgTable(
     hiredDate: date('hired_date'),
     leftDate: date('left_date'),
 
+    // 0062 — staff profile expansion (CCH-style 9-tab profile).
+    // display_id is a short login-style identifier ("ADMIN", "SCHEN")
+    // unique per firm; description is the free-text label shown next
+    // to it on the Main tab.
+    displayId: text('display_id'),
+    description: text('description'),
+    photoUrl: text('photo_url'),
+    // (0063 dropped app_user.cost_rate_cents — was write-only with no
+    //  reader. Cost rate lives on staff_rate_snapshot + is snapshotted
+    //  onto time_entry.cost_rate_snapshot_cents at write time.)
+    internalNotes: text('internal_notes'),
+    // Phone extensions paired with each phone slot.
+    businessPhoneExt: text('business_phone_ext'),
+    homePhoneExt: text('home_phone_ext'),
+    faxPhoneExt: text('fax_phone_ext'),
+    mobilePhoneExt: text('mobile_phone_ext'),
+    secondaryEmail: text('secondary_email'),
+    addressCountry: text('address_country').default('US'),
+    homeAddressLine1: text('home_address_line1'),
+    homeAddressLine2: text('home_address_line2'),
+    homeCity: text('home_city'),
+    homeState: text('home_state'),
+    homeZip: text('home_zip'),
+    homeCountry: text('home_country'),
+
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -549,6 +636,9 @@ export const appUsers = pgTable(
     firmEmailUnique: uniqueIndex('app_user_firm_email_uk').on(t.firmId, t.email),
     firmIdx: index('app_user_firm_idx').on(t.firmId),
     statusIdx: index('app_user_status_idx').on(t.status),
+    firmDisplayIdUk: uniqueIndex('app_user_firm_display_id_uk')
+      .on(t.firmId, t.displayId)
+      .where(sql`display_id IS NOT NULL`),
   }),
 );
 
@@ -1000,6 +1090,11 @@ export const files = pgTable(
     modifiedAt: timestamp('modified_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     pendingUpload: boolean('pending_upload').notNull().default(false),
+    // 0060 — pay-to-unlock escrow zone. invoice_id is the gating
+    // invoice; promoted_at is set when the file flips from 'escrow' →
+    // 'client_visible' via payment.
+    invoiceId: uuid('invoice_id'),
+    promotedAt: timestamp('promoted_at', { withTimezone: true }),
   },
   (t) => ({
     firmKeyUk: uniqueIndex('files_firm_storage_key_uk').on(t.firmId, t.storageKey),
@@ -1530,6 +1625,11 @@ export const timeEntries = pgTable(
     // SNAPSHOTS — captured at write time, never recomputed
     standardRateSnapshotCents: bigint('standard_rate_snapshot_cents', { mode: 'number' }).notNull(),
     standardAmountCents: bigint('standard_amount_cents', { mode: 'number' }).notNull(),
+    // 0063 — cost rate snapshotted at write time, mirroring the bill
+    // rate. Nullable because pre-0063 entries (or entries logged before
+    // any staff_rate_snapshot existed for the user) may not have a
+    // value. Downstream sums COALESCE to 0.
+    costRateSnapshotCents: bigint('cost_rate_snapshot_cents', { mode: 'number' }),
 
     status: timeEntryStatus('status').notNull().default('SUBMITTED'),
 
@@ -2671,12 +2771,317 @@ export const invoiceReminderLog = pgTable(
 );
 
 // =====================================================================
+// 0059 — engagement messaging
+// =====================================================================
+// Per-thread DEK is wrapped with the firm MFK (Stage 1B crypto). Message
+// bodies are encrypted with the unwrapped DEK and stored as bytea.
+
+export const threads = pgTable(
+  'thread',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    tDekWrapped: bytea('t_dek_wrapped').notNull(),
+    status: text('status').notNull().default('ACTIVE'),
+    title: text('title'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+  },
+  (t) => ({
+    firmIdx: index('thread_firm_id_idx').on(t.firmId),
+    statusIdx: index('thread_status_idx').on(t.status),
+    statusCk: check('thread_status_ck', sql`${t.status} IN ('ACTIVE', 'ARCHIVED')`),
+  }),
+);
+
+export const engagementThreadLinks = pgTable('engagement_thread_link', {
+  engagementId: uuid('engagement_id')
+    .primaryKey()
+    .references(() => engagements.id, { onDelete: 'cascade' }),
+  threadId: uuid('thread_id')
+    .notNull()
+    .unique()
+    .references(() => threads.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const threadMembers = pgTable(
+  'thread_member',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    threadId: uuid('thread_id')
+      .notNull()
+      .references(() => threads.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id').references(() => appUsers.id, { onDelete: 'cascade' }),
+    portalIdentityId: uuid('portal_identity_id'),
+    memberRole: text('member_role').notNull(),
+    joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
+    removedAt: timestamp('removed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    threadIdx: index('thread_member_thread_id_idx').on(t.threadId),
+    actorCk: check(
+      'thread_member_actor_ck',
+      sql`(${t.appUserId} IS NOT NULL AND ${t.portalIdentityId} IS NULL)
+          OR (${t.appUserId} IS NULL AND ${t.portalIdentityId} IS NOT NULL)`,
+    ),
+    roleCk: check(
+      'thread_member_role_ck',
+      sql`${t.memberRole} IN ('partner', 'staff', 'client')`,
+    ),
+  }),
+);
+
+export const messages = pgTable(
+  'message',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    threadId: uuid('thread_id')
+      .notNull()
+      .references(() => threads.id, { onDelete: 'cascade' }),
+    senderAppUserId: uuid('sender_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    senderPortalIdentityId: uuid('sender_portal_identity_id'),
+    bodyCiphertext: bytea('body_ciphertext').notNull(),
+    excerptPlaintext: text('excerpt_plaintext'),
+    editOfId: uuid('edit_of_id'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedReason: text('deleted_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    threadCreatedIdx: index('message_thread_id_created_idx').on(t.threadId, t.createdAt),
+    senderCk: check(
+      'message_sender_ck',
+      sql`(${t.senderAppUserId} IS NOT NULL AND ${t.senderPortalIdentityId} IS NULL)
+          OR (${t.senderAppUserId} IS NULL AND ${t.senderPortalIdentityId} IS NOT NULL)`,
+    ),
+  }),
+);
+
+export const messageAttachments = pgTable(
+  'message_attachment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => messages.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    attachedAt: timestamp('attached_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    messageIdx: index('message_attachment_message_id_idx').on(t.messageId),
+    fileIdx: index('message_attachment_file_id_idx').on(t.fileId),
+  }),
+);
+
+export const messageReadReceipts = pgTable(
+  'message_read_receipt',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => messages.id, { onDelete: 'cascade' }),
+    readerAppUserId: uuid('reader_app_user_id').references(() => appUsers.id, {
+      onDelete: 'cascade',
+    }),
+    readerPortalIdentityId: uuid('reader_portal_identity_id'),
+    readAt: timestamp('read_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    readerCk: check(
+      'mrr_reader_ck',
+      sql`(${t.readerAppUserId} IS NOT NULL AND ${t.readerPortalIdentityId} IS NULL)
+          OR (${t.readerAppUserId} IS NULL AND ${t.readerPortalIdentityId} IS NOT NULL)`,
+    ),
+  }),
+);
+
+export const timeEntryMessageLinks = pgTable(
+  'time_entry_message_link',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    timeEntryId: uuid('time_entry_id')
+      .notNull()
+      .references(() => timeEntries.id, { onDelete: 'cascade' }),
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => messages.id, { onDelete: 'cascade' }),
+    sequence: integer('sequence').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unique: uniqueIndex('time_entry_message_link_unique').on(t.timeEntryId, t.messageId),
+    teIdx: index('time_entry_message_link_te_idx').on(t.timeEntryId),
+    msgIdx: index('time_entry_message_link_msg_idx').on(t.messageId),
+  }),
+);
+
+// =====================================================================
+// 0061 — client requests
+// =====================================================================
+
+export const clientRequests = pgTable(
+  'client_request',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'cascade' }),
+    assignedAppUserId: uuid('assigned_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    title: text('title').notNull(),
+    body: text('body').notNull().default(''),
+    status: text('status').notNull().default('OPEN'),
+    dueDate: date('due_date'),
+    fulfilledByMessageId: uuid('fulfilled_by_message_id'),
+    fulfilledByFileId: uuid('fulfilled_by_file_id'),
+    fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+    fulfilledByAppUserId: uuid('fulfilled_by_app_user_id'),
+    fulfilledByPortalIdentityId: uuid('fulfilled_by_portal_identity_id'),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+    dismissedReason: text('dismissed_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdByAppUserId: uuid('created_by_app_user_id'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmStatusIdx: index('client_request_firm_status_idx').on(t.firmId, t.status),
+    engIdx: index('client_request_engagement_idx').on(t.engagementId, t.status),
+    statusCk: check(
+      'client_request_status_ck',
+      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED')`,
+    ),
+  }),
+);
+
+export const clientRequestTimeEntryLinks = pgTable(
+  'client_request_time_entry_link',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clientRequestId: uuid('client_request_id')
+      .notNull()
+      .references(() => clientRequests.id, { onDelete: 'cascade' }),
+    timeEntryId: uuid('time_entry_id').references(() => timeEntries.id, {
+      onDelete: 'cascade',
+    }),
+    suggestedForAppUserId: uuid('suggested_for_app_user_id').references(() => appUsers.id, {
+      onDelete: 'cascade',
+    }),
+    suggestedAt: timestamp('suggested_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+    dismissedReason: text('dismissed_reason'),
+  },
+  (t) => ({
+    suggestedForIdx: index('crtel_suggested_for_idx').on(t.suggestedForAppUserId),
+    expiresIdx: index('crtel_expires_idx').on(t.expiresAt),
+  }),
+);
+
+// =====================================================================
+// 0062 — staff profile expansion (Skill Set + Targets tabs)
+// =====================================================================
+
+export const staffSkills = pgTable(
+  'staff_skill',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    workCodeId: uuid('work_code_id')
+      .notNull()
+      .references(() => workCodes.id, { onDelete: 'cascade' }),
+    proficiency: text('proficiency').notNull().default('COMPETENT'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unique: uniqueIndex('staff_skill_unique').on(t.appUserId, t.workCodeId),
+    userIdx: index('staff_skill_user_idx').on(t.appUserId),
+    codeIdx: index('staff_skill_code_idx').on(t.workCodeId),
+    proficiencyCk: check(
+      'staff_skill_proficiency_ck',
+      sql`${t.proficiency} IN ('LEARNING','COMPETENT','PROFICIENT','EXPERT')`,
+    ),
+  }),
+);
+
+export const staffTargets = pgTable(
+  'staff_target',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    targetYear: integer('target_year').notNull(),
+    annualBillableHours: numeric('annual_billable_hours', { precision: 8, scale: 2 }),
+    annualTotalHours: numeric('annual_total_hours', { precision: 8, scale: 2 }),
+    targetRealizationPctBps: integer('target_realization_pct_bps'),
+    targetUtilizationPctBps: integer('target_utilization_pct_bps'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unique: uniqueIndex('staff_target_unique').on(t.appUserId, t.targetYear),
+    userYearIdx: index('staff_target_user_year_idx').on(t.appUserId, t.targetYear),
+    yearCk: check('staff_target_year_ck', sql`${t.targetYear} BETWEEN 2000 AND 2100`),
+  }),
+);
+
+// =====================================================================
 // INFERRED TYPES
 // =====================================================================
 
 export type Firm = typeof firms.$inferSelect;
 export type NewFirm = typeof firms.$inferInsert;
 export type FirmSettings = typeof firmSettings.$inferSelect;
+export type FirmConfig = typeof firmConfig.$inferSelect;
+export type NewFirmConfig = typeof firmConfig.$inferInsert;
+export type FirmKeyEnvelope = typeof firmKeyEnvelope.$inferSelect;
+export type NewFirmKeyEnvelope = typeof firmKeyEnvelope.$inferInsert;
+
+// 0059 — messaging
+export type Thread = typeof threads.$inferSelect;
+export type NewThread = typeof threads.$inferInsert;
+export type EngagementThreadLink = typeof engagementThreadLinks.$inferSelect;
+export type NewEngagementThreadLink = typeof engagementThreadLinks.$inferInsert;
+export type ThreadMember = typeof threadMembers.$inferSelect;
+export type NewThreadMember = typeof threadMembers.$inferInsert;
+export type Message = typeof messages.$inferSelect;
+export type NewMessage = typeof messages.$inferInsert;
+export type MessageAttachment = typeof messageAttachments.$inferSelect;
+export type NewMessageAttachment = typeof messageAttachments.$inferInsert;
+export type MessageReadReceipt = typeof messageReadReceipts.$inferSelect;
+export type NewMessageReadReceipt = typeof messageReadReceipts.$inferInsert;
+export type TimeEntryMessageLink = typeof timeEntryMessageLinks.$inferSelect;
+export type NewTimeEntryMessageLink = typeof timeEntryMessageLinks.$inferInsert;
+
+// 0061 — client requests
+export type ClientRequest = typeof clientRequests.$inferSelect;
+export type NewClientRequest = typeof clientRequests.$inferInsert;
+export type ClientRequestTimeEntryLink = typeof clientRequestTimeEntryLinks.$inferSelect;
+export type NewClientRequestTimeEntryLink = typeof clientRequestTimeEntryLinks.$inferInsert;
+
+// 0062 — staff profile expansion
+export type StaffSkill = typeof staffSkills.$inferSelect;
+export type NewStaffSkill = typeof staffSkills.$inferInsert;
+export type StaffTarget = typeof staffTargets.$inferSelect;
+export type NewStaffTarget = typeof staffTargets.$inferInsert;
 
 export type Office = typeof offices.$inferSelect;
 export type AppUser = typeof appUsers.$inferSelect;

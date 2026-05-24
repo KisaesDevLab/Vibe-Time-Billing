@@ -13,6 +13,7 @@ import type { Database } from '@vibe/db';
 import { requiredFieldRules } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface RequiredFieldRulesDeps extends RbacDeps {
   db: Database | null;
@@ -26,6 +27,7 @@ const CreateSchema = z.object({
 
 export function createRequiredFieldRulesRouter(deps: RequiredFieldRulesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
 
   router.get(
     '/',

@@ -24,6 +24,7 @@ import { clientFolders } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface FolderRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -236,6 +237,7 @@ export function mountFolderRoutes(router: Router, deps: FolderRoutesDeps): void 
 
 export function buildFolderRouter(deps: FolderRoutesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
   mountFolderRoutes(router, deps);
   return router;
 }

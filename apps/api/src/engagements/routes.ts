@@ -23,8 +23,13 @@ import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import {
+  archiveThreadForEngagement,
+  provisionThreadForEngagement,
+} from '../engagement-messaging/lifecycle';
+import { getApplianceLockState } from '../crypto/boot';
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
@@ -217,13 +222,20 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         if (orExpr) conds.push(orExpr);
       }
 
-      const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+      const clientId = uuidQueryParam(req.query['clientId']);
+      if (clientId === 'invalid') {
+        res.status(400).json({ error: 'invalid_client_id' });
+        return;
+      }
       if (clientId) conds.push(eq(engagements.clientId, clientId));
 
       // 0050 — filter to engagements whose client has a given owner
       // (client.partnerInChargeId). Surfaced across the UI as a chip.
-      const clientOwnerId =
-        typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+      const clientOwnerId = uuidQueryParam(req.query['clientOwnerId']);
+      if (clientOwnerId === 'invalid') {
+        res.status(400).json({ error: 'invalid_client_owner_id' });
+        return;
+      }
       if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
 
       const feeStructure =
@@ -425,6 +437,33 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           userAgent: req.header('user-agent') ?? null,
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       }
+      // Stage 2 — auto-provision a messaging thread for this engagement.
+      // Best-effort: if the appliance is locked we skip silently and a
+      // future engagement-edit can re-trigger via syncMembers. Failures
+      // are logged but don't fail the engagement create.
+      if (engagementId && getApplianceLockState().kind === 'unlocked') {
+        try {
+          const threadId = await provisionThreadForEngagement(deps.db, {
+            firmId,
+            engagementId,
+            title: parsed.data.name,
+            creatorAppUserId: session.appUserId,
+          });
+          if (threadId) {
+            await emitAudit(deps.db, {
+              action: 'CREATE',
+              entityType: 'thread',
+              entityId: threadId,
+              actorAppUserId: session.appUserId,
+              after: { engagementId, title: parsed.data.name },
+              ip: clientIp(req),
+              userAgent: req.header('user-agent') ?? null,
+            }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+          }
+        } catch (err) {
+          logger.error({ err, engagementId }, 'thread provision failed (engagement create)');
+        }
+      }
       res.status(201).json({ id: engagementId, hourBankId });
     },
   );
@@ -514,6 +553,20 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .set(patch)
         .where(and(inArray(engagements.id, ids), inArray(engagements.clientId, clientIds)))
         .returning({ id: engagements.id });
+      // Stage 2 — archive associated threads when engagements close or
+      // archive. Best-effort; failures don't fail the status change.
+      if (
+        (targetStatus === 'ARCHIVED' || targetStatus === 'CLOSED') &&
+        getApplianceLockState().kind === 'unlocked'
+      ) {
+        for (const u of updated) {
+          try {
+            await archiveThreadForEngagement(deps.db, u.id);
+          } catch (err) {
+            logger.error({ err, engagementId: u.id }, 'thread archive failed');
+          }
+        }
+      }
       res.json({ ok: true, updated: updated.length });
     },
   );
@@ -915,6 +968,18 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      // Stage 2 — archive thread when engagement closes/archives.
+      if (
+        (parsed.data.status === 'CLOSED' || parsed.data.status === 'ARCHIVED') &&
+        getApplianceLockState().kind === 'unlocked'
+      ) {
+        try {
+          await archiveThreadForEngagement(deps.db, req.params['id']!);
+        } catch (err) {
+          logger.error({ err, engagementId: req.params['id'] }, 'thread archive failed');
+        }
+      }
 
       // Phase 10 #6/#8 — fire well-known event keys. Milestones with
       // trigger_type=EVENT and trigger_event_key matching the status
@@ -1449,19 +1514,13 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      const { staffRateSnapshots, invoices } = await import('@vibe/db/schema');
+      const { invoices } = await import('@vibe/db/schema');
+      // 0063 — cost is now snapshotted at write time on time_entry.
+      // No more LATERAL/correlated lookup against staff_rate_snapshot;
+      // backdated snapshot edits no longer shift historical cost.
       const [cost] = await deps.db
         .select({
-          c: sql<number>`
-            COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE((
-              SELECT ${staffRateSnapshots.costRateCents}
-              FROM ${staffRateSnapshots}
-              WHERE ${staffRateSnapshots.appUserId} = ${timeEntries.appUserId}
-                AND ${staffRateSnapshots.effectiveDate} <= ${timeEntries.entryDate}
-              ORDER BY ${staffRateSnapshots.effectiveDate} DESC
-              LIMIT 1
-            ), 0)), 0)::bigint
-          `,
+          c: sql<number>`COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)), 0)::bigint`,
         })
         .from(timeEntries)
         .where(eq(timeEntries.engagementId, eng.id));

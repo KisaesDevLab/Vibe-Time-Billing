@@ -37,7 +37,7 @@ import { evaluate, type ApprovalRule } from '@vibe/core/approvals';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface AdjustmentRoutesDeps extends RbacDeps {
@@ -389,10 +389,17 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const batchId = typeof req.query['batchId'] === 'string' ? req.query['batchId'] : null;
+      const batchId = uuidQueryParam(req.query['batchId']);
+      if (batchId === 'invalid') {
+        res.status(400).json({ error: 'invalid_batch_id' });
+        return;
+      }
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
-      const engagementId =
-        typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
+      const engagementId = uuidQueryParam(req.query['engagementId']);
+      if (engagementId === 'invalid') {
+        res.status(400).json({ error: 'invalid_engagement_id' });
+        return;
+      }
       const q = typeof req.query['q'] === 'string' ? req.query['q'].trim() : '';
       const conds = [] as Array<ReturnType<typeof eq> | ReturnType<typeof drz>>;
       if (batchId) conds.push(eq(adjustments.billingBatchId, batchId));
