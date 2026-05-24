@@ -27,6 +27,7 @@ import { recomputeInvoicePaid } from '../payments/routes';
 import {
   promoteEscrowFilesForInvoice,
   revertEscrowFilesForInvoice,
+  sendDeliverableUnlockedNotifications,
 } from '../files/promote-on-paid';
 import { publishWebhookEvent } from './publish';
 
@@ -213,10 +214,22 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           // Stage 3 — flip escrow files gated by this invoice to
           // client_visible. Best-effort: log + continue on failure.
           try {
-            await promoteEscrowFilesForInvoice(deps.db!, {
+            const promoted = await promoteEscrowFilesForInvoice(deps.db!, {
               firmId: inv.firmId,
               invoiceId: inv.id,
             });
+            // P3.3 — fire deliverable-unlocked email to portal
+            // identities on this client. Post-commit; failures swallow.
+            if (promoted.length > 0) {
+              await sendDeliverableUnlockedNotifications(deps.db!, {
+                invoiceId: inv.id,
+                promotedFileCount: promoted.length,
+                portalBaseUrl: deps.portalBaseUrl,
+                sendEmail: deps.sendEmail,
+              }).catch((err) =>
+                logger.error({ err, invoiceId: inv.id }, 'deliverable-unlocked dispatch failed'),
+              );
+            }
           } catch (err) {
             logger.error({ err, invoiceId: inv.id }, 'escrow promote failed');
           }

@@ -8,7 +8,10 @@ A Docker appliance you run on your own hardware. One annual license, unlimited u
 
 - Track time across seven fee structures: hourly, hourly-NTE, fixed-fee, fixed-fee with milestones, recurring subscription, mixed-mode (retainer + overage), and hour bank with rollover
 - Pre-bill, adjust, and invoice with six allocation methods — including a per-timekeeper grain so a partner's write-down on one engagement doesn't drag everyone's realization down equally
-- Branded client portal with identity-based access (one person, multiple client entities, email-or-SMS login)
+- **Engagement-level secure messaging** — encrypted at rest with a firm-managed key (XChaCha20-Poly1305 + per-thread DEK wrapped by the firm Master Key); decrypted server-side only for the authenticated session
+- **Pay-to-unlock deliverables** — drop a file into a per-engagement `escrow` zone; it auto-promotes to client-visible the moment the gating invoice clears (Stripe webhook or manual `/payments/receive`); reverts on refund
+- **In-app document collection** — client requests with one-click conversion into time-entry suggestions on the assigned staff member's timer
+- **Unified branded client portal** — single magic-link auth, identity-based access (one person, multiple client entities, email-or-SMS login), four top-level tabs (Invoices · Messages · Requests · Files)
 - Stripe and CPACharge payment processing — firm owns the merchant account
 - Dimensional reporting cube (realization, utilization, profitability, recurring revenue)
 - Local-first AI for description suggestions, scope creep detection, and plain-English query
@@ -16,11 +19,13 @@ A Docker appliance you run on your own hardware. One annual license, unlimited u
 
 ## What it isn't
 
-Not a full practice-management suite. No workflow/task management, no CRM, no document management, no tax prep. Pair with the rest of the Vibe family if you need those:
-- **Vibe Connect** — secure messaging and client document vault
+Not a full practice-management suite. No workflow/task management, no CRM, no tax prep. Pair with the rest of the Vibe family if you need those:
 - **Vibe MyBooks** — bookkeeping
 - **Vibe Payroll Time** — kiosk time tracking
 - **Vibe Trial Balance** — tax workpapers
+- **Vibe Shield** — local PII redaction gateway (required when opting AI features into cloud API egress; see `docs/architecture/AI_EGRESS_POLICY.md`)
+
+(Messaging, document vault, and document requests — previously planned as standalone "Vibe Connect" features — are absorbed directly into Time & Billing. See `docs/architecture/MESSAGING_VAULT.md`.)
 
 ## Stack
 

@@ -22,14 +22,16 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  appUsers,
   clientRequestTimeEntryLinks,
   clientRequests,
   engagements,
   firmConfig,
+  timeEntries,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
@@ -114,7 +116,51 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       .where(and(...conds))
       .orderBy(desc(clientRequests.createdAt))
       .limit(500);
-    res.json({ items });
+    if (items.length === 0) {
+      res.json({ items: [] });
+      return;
+    }
+    // P2.5 / G.8 — enrich each row with its accepted linked time entry
+    // (if any) so the firm-wide queue can render "Linked: X hrs by …"
+    // inline without N+1 calls. Left join: most rows have no link.
+    const linkRows = await deps.db
+      .select({
+        clientRequestId: clientRequestTimeEntryLinks.clientRequestId,
+        timeEntryId: timeEntries.id,
+        hours: timeEntries.hours,
+        entryDate: timeEntries.entryDate,
+        staffName: appUsers.fullName,
+      })
+      .from(clientRequestTimeEntryLinks)
+      .innerJoin(timeEntries, eq(timeEntries.id, clientRequestTimeEntryLinks.timeEntryId))
+      .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+      .where(
+        and(
+          sql`${clientRequestTimeEntryLinks.acceptedAt} IS NOT NULL`,
+          sql`${clientRequestTimeEntryLinks.timeEntryId} IS NOT NULL`,
+          inArray(
+            clientRequestTimeEntryLinks.clientRequestId,
+            items.map((i) => i.id),
+          ),
+        ),
+      );
+    const linkByRequest = new Map<string, (typeof linkRows)[number]>();
+    for (const r of linkRows) linkByRequest.set(r.clientRequestId, r);
+    const enriched = items.map((it) => {
+      const link = linkByRequest.get(it.id);
+      return {
+        ...it,
+        linkedTimeEntry: link
+          ? {
+              id: link.timeEntryId,
+              hours: link.hours,
+              entryDate: link.entryDate,
+              staffName: link.staffName,
+            }
+          : null,
+      };
+    });
+    res.json({ items: enriched });
   });
 
   router.get(
@@ -137,7 +183,37 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      res.json({ request: row });
+      // P2.3 — resolve the linked time entry (if any) for the request's
+      // accepted suggestion. Surfaces in the staff request-detail UI as
+      // "Linked time entry: X hrs by [staff]" per G.8.
+      const linkedRows = await deps.db
+        .select({
+          timeEntryId: timeEntries.id,
+          hours: timeEntries.hours,
+          entryDate: timeEntries.entryDate,
+          appUserId: timeEntries.appUserId,
+          staffName: appUsers.fullName,
+        })
+        .from(clientRequestTimeEntryLinks)
+        .innerJoin(timeEntries, eq(timeEntries.id, clientRequestTimeEntryLinks.timeEntryId))
+        .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .where(
+          and(
+            eq(clientRequestTimeEntryLinks.clientRequestId, row.id),
+            sql`${clientRequestTimeEntryLinks.timeEntryId} IS NOT NULL`,
+            sql`${clientRequestTimeEntryLinks.acceptedAt} IS NOT NULL`,
+          ),
+        )
+        .limit(1);
+      const linkedTimeEntry = linkedRows[0]
+        ? {
+            id: linkedRows[0].timeEntryId,
+            hours: linkedRows[0].hours,
+            entryDate: linkedRows[0].entryDate,
+            staffName: linkedRows[0].staffName,
+          }
+        : null;
+      res.json({ request: row, linkedTimeEntry });
     },
   );
 

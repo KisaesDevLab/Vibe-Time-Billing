@@ -33,7 +33,10 @@ import {
   portalIdentity,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
-import { promoteEscrowFilesForInvoice } from '../files/promote-on-paid';
+import {
+  promoteEscrowFilesForInvoice,
+  sendDeliverableUnlockedNotifications,
+} from '../files/promote-on-paid';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -44,6 +47,8 @@ export interface PaymentRoutesDeps extends RbacDeps {
   db: Database | null;
   stripe?: PaymentProvider | null;
   stripePublishableKey?: string | null;
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  portalBaseUrl?: string;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -515,14 +520,18 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
             if (wasFullyPaid) promotedInvoiceIds.add(id);
           }
           // Stage 3 — promote escrow files gated by any invoice that
-          // tipped over to fully-paid in this transaction.
+          // tipped over to fully-paid in this transaction. Capture the
+          // promoted counts so the post-commit block can fire
+          // deliverable-unlocked notifications (P3.3).
+          const promotedCounts: Array<{ invoiceId: string; count: number }> = [];
           for (const invId of promotedInvoiceIds) {
             try {
-              await promoteEscrowFilesForInvoice(tx, {
+              const ids = await promoteEscrowFilesForInvoice(tx, {
                 firmId: session.firmId,
                 invoiceId: invId,
                 actorAppUserId: session.appUserId,
               });
+              if (ids.length > 0) promotedCounts.push({ invoiceId: invId, count: ids.length });
             } catch (err) {
               logger.error({ err, invoiceId: invId }, 'escrow promote in /receive failed');
             }
@@ -560,8 +569,24 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
             creditApplicationCount: data.creditApplications.length,
             surplusCreditId: autoCreditId,
             surplusCents: surplus,
+            promotedCounts,
           };
         });
+
+        // P3.3 — F.10 — after the receive transaction commits, fire the
+        // deliverable-unlocked email to every portal identity on the
+        // invoice's client. Runs outside the tx so a rollback can't leak
+        // emails. Best-effort: failures are logged.
+        for (const { invoiceId, count } of result.promotedCounts) {
+          await sendDeliverableUnlockedNotifications(deps.db, {
+            invoiceId,
+            promotedFileCount: count,
+            portalBaseUrl: deps.portalBaseUrl,
+            sendEmail: deps.sendEmail,
+          }).catch((err: unknown) =>
+            logger.error({ err, invoiceId }, 'deliverable-unlocked dispatch failed (post-commit)'),
+          );
+        }
 
         await emitAudit(deps.db, {
           action: 'PAYMENT',

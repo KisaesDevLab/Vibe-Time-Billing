@@ -34,6 +34,12 @@ const UnlockSchema = z.object({
   passphrase: z.string().min(8).max(512),
 });
 
+const MigrateModeSchema = z.object({
+  targetMode: z.literal('admin-passphrase'),
+  passphrase: z.string().min(12).max(512),
+  acknowledgeIrreversible: z.literal(true),
+});
+
 const RATE_LIMIT_WINDOW_SEC = 5 * 60; // 5 minutes
 const RATE_LIMIT_MAX = 3;
 const RATE_LIMIT_BACKOFF_SEC = 15 * 60; // 15 minutes after 3 fails
@@ -211,6 +217,66 @@ export function createUnlockRouter(deps: UnlockRoutesDeps): Router {
   // additionally requires re-deriving the KEK and re-wrapping the MFK,
   // which is a separate operational dance from the in-memory rotate.
 
+  // P3.4 — one-way migration: sealed-on-disk → admin-passphrase. Staff
+  // auth required; appliance must be unlocked (so we have the live MFK
+  // in memory to re-wrap). Permission key `crypto:rotate` because this
+  // is an envelope-rewriting operation.
+  router.post(
+    '/migrate-mode',
+    deps.requireAuth,
+    deps.requireCsrf,
+    requirePermission(deps, 'crypto:rotate'),
+    async (req: Request, res: Response) => {
+      const state = getApplianceLockState();
+      if (state.kind !== 'unlocked') {
+        res.status(409).json({ error: 'not_unlocked' });
+        return;
+      }
+      const parsed = MigrateModeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_input', detail: parsed.error.flatten() });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const mgr = getFirmKeyManager(deps.db);
+      try {
+        const result = await mgr.migrateUnlockMode({
+          firmId: state.firmId,
+          targetMode: parsed.data.targetMode,
+          passphrase: parsed.data.passphrase,
+        });
+        await deps.db
+          .update(firmConfig)
+          .set({ unlockMode: 'admin-passphrase' })
+          .where(eq(firmConfig.firmId, state.firmId));
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'firm_key_envelope',
+          entityId: state.firmId,
+          actorAppUserId: req.staffSession?.appUserId ?? null,
+          ip: req.ip ?? null,
+          userAgent: req.get('user-agent') ?? null,
+          after: {
+            migratedTo: 'admin-passphrase',
+            rotationVersion: result.rotationVersion,
+          },
+        });
+        logger.info(
+          { firmId: state.firmId, rotationVersion: result.rotationVersion },
+          'crypto: unlock mode migrated to admin-passphrase',
+        );
+        res.json({ ok: true, mode: 'admin-passphrase', rotationVersion: result.rotationVersion });
+      } catch (err) {
+        logger.error({ err, firmId: state.firmId }, 'crypto: migrate-mode failed');
+        const message = err instanceof Error ? err.message : 'migrate_failed';
+        res.status(400).json({ error: 'migrate_failed', message });
+      }
+    },
+  );
+
   return router;
 }
 
@@ -259,12 +325,10 @@ export function createLockMiddleware(): (req: Request, res: Response, next: Next
       next();
       return;
     }
-    res
-      .status(503)
-      .json({
-        error: 'appliance_locked',
-        reason: s.kind === 'locked' ? s.reason : 'not-bootstrapped',
-      });
+    res.status(503).json({
+      error: 'appliance_locked',
+      reason: s.kind === 'locked' ? s.reason : 'not-bootstrapped',
+    });
   };
 }
 

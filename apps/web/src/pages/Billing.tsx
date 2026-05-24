@@ -829,6 +829,12 @@ function BatchDetailPage(): JSX.Element {
 
       <PrebillNarrativePanel batchId={detail.batch.id} />
 
+      <UntrackedMessagesPanel
+        engagementId={detail.batch.engagementId}
+        from={detail.batch.periodStart}
+        to={detail.batch.periodEnd}
+      />
+
       {showAdjustDialog && (
         <AdjustmentDialog
           billingBatchId={detail.batch.id}
@@ -895,6 +901,133 @@ function PrebillNarrativePanel({ batchId }: { batchId: string }): JSX.Element | 
         <p style={{ color: tokens.color.textMuted, fontSize: 12 }}>
           Click Generate to draft a client-facing narrative summarizing this batch.
         </p>
+      )}
+    </Card>
+  );
+}
+
+// P2.4 — Pre-bill "Untracked client interactions" panel (D.5).
+// Lists messages in the engagement thread during the billing period
+// not linked to any time entry, so a partner can spot conversations
+// the timekeeper never logged.
+interface UntrackedMsg {
+  id: string;
+  senderAppUserId: string | null;
+  senderPortalIdentityId: string | null;
+  body: string;
+  createdAt: string;
+}
+
+function UntrackedMessagesPanel({
+  engagementId,
+  from,
+  to,
+}: {
+  engagementId: string;
+  from: string;
+  to: string;
+}): JSX.Element | null {
+  const [items, setItems] = useState<UntrackedMsg[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [threadAbsent, setThreadAbsent] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    setErr(null);
+    void api<{
+      items: UntrackedMsg[];
+      total: number;
+      threadId: string | null;
+    }>(
+      `/api/staff/engagement-messaging/engagements/${engagementId}/untracked-messages?from=${from}&to=${to}&page=${page}&pageSize=${pageSize}`,
+    )
+      .then((r) => {
+        setItems(r.items);
+        setTotal(r.total);
+        setThreadAbsent(r.threadId === null);
+      })
+      .catch((e: unknown) => setErr(e instanceof Error ? e.message : 'failed'))
+      .finally(() => setLoading(false));
+  }, [engagementId, from, to, page, pageSize]);
+
+  if (threadAbsent) return null;
+
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  return (
+    <Card
+      title={`Untracked client interactions${total > 0 ? ` (${total})` : ''}`}
+      action={
+        total > pageSize ? (
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              ‹
+            </Button>
+            <span style={{ color: tokens.color.textMuted }}>
+              page {page} / {pages}
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page >= pages || loading}
+              onClick={() => setPage((p) => Math.min(pages, p + 1))}
+            >
+              ›
+            </Button>
+          </div>
+        ) : null
+      }
+    >
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+      {!err && total === 0 && (
+        <p style={{ color: tokens.color.textMuted, fontSize: 12, margin: 0 }}>
+          Every message in this engagement&apos;s thread during the billing period is linked to at
+          least one time entry.
+        </p>
+      )}
+      {items.length > 0 && (
+        <Table<UntrackedMsg>
+          rows={items}
+          rowKey={(m) => m.id}
+          empty="—"
+          columns={[
+            {
+              key: 'when',
+              header: 'When',
+              render: (m) => (
+                <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  {new Date(m.createdAt).toLocaleString()}
+                </span>
+              ),
+            },
+            {
+              key: 'sender',
+              header: 'From',
+              render: (m) => (
+                <Pill tone={m.senderPortalIdentityId ? 'accent' : 'neutral'}>
+                  {m.senderPortalIdentityId ? 'Client' : 'Staff'}
+                </Pill>
+              ),
+            },
+            {
+              key: 'body',
+              header: 'Excerpt',
+              render: (m) => (
+                <span style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                  {m.body.length > 200 ? m.body.slice(0, 200) + '…' : m.body}
+                </span>
+              ),
+            },
+          ]}
+        />
       )}
     </Card>
   );

@@ -201,6 +201,74 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // ============================================================
+  // P3.2 — F.1 escrow_visibility (Connect Integration firm_config)
+  // ============================================================
+  router.get(
+    '/firm-config',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ config: null });
+        return;
+      }
+      const { firmConfig } = await import('@vibe/db/schema');
+      const [cfg] = await deps.db
+        .select()
+        .from(firmConfig)
+        .where(eq(firmConfig.firmId, firmId))
+        .limit(1);
+      res.json({ config: cfg ?? null });
+    },
+  );
+
+  const FirmConfigPatchSchema = z.object({
+    // Section L Q37 — escrow staff visibility
+    escrowVisibility: z.enum(['engagement-access', 'partner-and-assigned-only']).optional(),
+    // Section L Q36 — suggestion expiration window
+    suggestionExpirationDays: z.number().int().min(1).max(365).optional(),
+    // Section L Q38/I.8 — step-up thresholds
+    writeOffStepUpThresholdCents: z.number().int().nonnegative().optional(),
+    creditStepUpThresholdCents: z.number().int().nonnegative().optional(),
+    // Section L Q39 — AI egress + Shield endpoint (Q39 + J.7/J.8)
+    aiEgressEnabled: z.boolean().optional(),
+    vibeShieldEndpoint: z.string().url().nullable().optional(),
+  });
+
+  router.patch(
+    '/firm-config',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const parsed = FirmConfigPatchSchema.safeParse(req.body);
+      if (!parsed.success || Object.keys(parsed.data).length === 0) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      const session = req.staffSession!;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const { firmConfig } = await import('@vibe/db/schema');
+      await deps.db
+        .update(firmConfig)
+        .set({ ...parsed.data, updatedAt: new Date() })
+        .where(eq(firmConfig.firmId, firmId));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'firm_config',
+        entityId: firmId,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/offices',
     requirePermission(deps, 'office:read'),

@@ -12,7 +12,7 @@
 // MFK never leaves the process's memory in plaintext. The wrapped form
 // is persisted in `vibetb.firm_key_envelope`.
 
-import { mkdir, readFile, writeFile, stat, chmod } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat, chmod, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import {
@@ -223,6 +223,74 @@ export class FirmKeyManager {
       rotationVersion: nextVersion,
     });
     return { oldMfk, newMfk };
+  }
+
+  /**
+   * P3.4 — one-way migration from sealed-on-disk → admin-passphrase.
+   * Wraps the existing live MFK with a fresh passphrase-derived KEK,
+   * persists the new envelope metadata, and best-effort deletes the
+   * stale on-disk sealed key. No downgrade path: once you've switched
+   * to admin-passphrase, the appliance requires the passphrase at
+   * every boot.
+   */
+  async migrateUnlockMode(args: {
+    firmId: string;
+    targetMode: 'admin-passphrase';
+    passphrase: string;
+  }): Promise<{ rotationVersion: number }> {
+    const live = this.requireLive(args.firmId);
+    if (live.unlockMode !== 'sealed-on-disk') {
+      throw new Error(
+        `firm ${args.firmId} is already in ${live.unlockMode} mode; migrate is one-way`,
+      );
+    }
+    if (args.targetMode !== 'admin-passphrase') {
+      throw new Error('migrateUnlockMode only supports targetMode=admin-passphrase');
+    }
+    if (!args.passphrase || args.passphrase.length < 12) {
+      throw new Error('passphrase must be at least 12 characters');
+    }
+    const row = await this.store.get(args.firmId);
+    if (!row) throw new Error('envelope row vanished mid-migrate');
+    const oldSealedPath = row.kekMetadata.mode === 'sealed-on-disk' ? row.kekMetadata.path : null;
+
+    const salt = generateSalt();
+    const params: Argon2Params = DEFAULT_ARGON2_PARAMS;
+    const newKek = await deriveKekFromPassphrase(args.passphrase, salt, params);
+    const wrappedMfk = encrypt(live.mfk, newKek).bytes;
+    const sentinelCiphertext = encrypt(
+      new TextEncoder().encode(SENTINEL_PLAINTEXT),
+      live.mfk,
+    ).bytes;
+    const nextVersion = row.rotationVersion + 1;
+    await this.store.update({
+      firmId: args.firmId,
+      wrappedMfk,
+      kekMetadata: {
+        mode: 'admin-passphrase',
+        argon2_salt: bytesToBase64(salt),
+        argon2_time_cost: params.timeCost,
+        argon2_memory_cost: params.memoryCost,
+        argon2_parallelism: params.parallelism,
+      },
+      sentinelCiphertext,
+      rotationVersion: nextVersion,
+    });
+    this.liveKeys.set(args.firmId, {
+      firmId: args.firmId,
+      mfk: live.mfk,
+      unlockMode: 'admin-passphrase',
+      rotationVersion: nextVersion,
+    });
+    if (oldSealedPath) {
+      try {
+        await unlink(oldSealedPath);
+      } catch {
+        // best-effort — the new envelope no longer references this file,
+        // so a leftover sealed key cannot unseal anything.
+      }
+    }
+    return { rotationVersion: nextVersion };
   }
 
   /** Drop the live MFK for a firm. Used in tests + manual relock. */

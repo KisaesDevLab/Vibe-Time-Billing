@@ -24,6 +24,7 @@ import {
   messages,
   threadMembers,
   threads,
+  timeEntryMessageLinks,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
@@ -242,6 +243,175 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
       } catch (err) {
         logger.error({ err, threadId }, 'message encrypt failed');
         res.status(500).json({ error: 'encrypt_failed' });
+      }
+    },
+  );
+
+  // ============================================================
+  // P2.1 — D.5 untracked client interactions
+  // GET /threads/:id/untracked-messages?from=YYYY-MM-DD&to=YYYY-MM-DD&page=1&pageSize=50
+  // Returns thread messages in the date range that are NOT linked to
+  // any time entry. Drives the "Untracked client interactions" panel
+  // on the pre-bill review page.
+  // ============================================================
+  router.get(
+    '/threads/:id/untracked-messages',
+    requirePermission(deps, 'messaging:read'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], page: 1, pageSize: 50, total: 0 });
+        return;
+      }
+      const threadId = req.params['id']!;
+      if (!(await isMember(deps.db, { threadId, appUserId: session.appUserId }))) {
+        res.status(403).json({ error: 'not_a_member' });
+        return;
+      }
+      const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+      const fromRaw = typeof req.query['from'] === 'string' ? req.query['from'] : null;
+      const toRaw = typeof req.query['to'] === 'string' ? req.query['to'] : null;
+      if ((fromRaw && !DATE_RE.test(fromRaw)) || (toRaw && !DATE_RE.test(toRaw))) {
+        res.status(400).json({ error: 'invalid_date' });
+        return;
+      }
+      const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+      const pageSize = Math.min(
+        200,
+        Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50),
+      );
+      // Drizzle's `notInArray` against a sub-select works in pg but the
+      // type system fights us; use a raw SQL anti-join for readability.
+      const conds = [
+        eq(messages.threadId, threadId),
+        isNull(messages.deletedAt),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${timeEntryMessageLinks}
+          WHERE ${timeEntryMessageLinks.messageId} = ${messages.id}
+        )`,
+      ];
+      if (fromRaw) conds.push(sql`${messages.createdAt} >= ${fromRaw}::timestamptz`);
+      if (toRaw) conds.push(sql`${messages.createdAt} < (${toRaw}::date + interval '1 day')`);
+      const rows = await deps.db
+        .select({
+          id: messages.id,
+          senderAppUserId: messages.senderAppUserId,
+          senderPortalIdentityId: messages.senderPortalIdentityId,
+          bodyCiphertext: messages.bodyCiphertext,
+          excerptPlaintext: messages.excerptPlaintext,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .where(and(...conds))
+        .orderBy(asc(messages.createdAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+      const [countRow] = await deps.db
+        .select({ c: sql<number>`COUNT(*)::int` })
+        .from(messages)
+        .where(and(...conds));
+      try {
+        const plaintexts = await batchDecryptForThread(
+          { db: deps.db, firmId: session.firmId, threadId },
+          rows.map((r) => r.bodyCiphertext),
+        );
+        const items = rows.map((r, i) => ({
+          id: r.id,
+          senderAppUserId: r.senderAppUserId,
+          senderPortalIdentityId: r.senderPortalIdentityId,
+          body: plaintexts[i],
+          createdAt: r.createdAt,
+        }));
+        res.json({ items, page, pageSize, total: Number(countRow?.c ?? 0) });
+      } catch (err) {
+        logger.error({ err, threadId }, 'untracked-messages decrypt failed');
+        res.status(500).json({ error: 'decrypt_failed' });
+      }
+    },
+  );
+
+  // Convenience for callers that have an engagementId but not the
+  // threadId. Resolves and returns the same shape as the thread-keyed
+  // route. Easier to wire from the Billing pre-bill UI.
+  router.get(
+    '/engagements/:engagementId/untracked-messages',
+    requirePermission(deps, 'messaging:read'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], page: 1, pageSize: 50, total: 0 });
+        return;
+      }
+      const engagementId = req.params['engagementId']!;
+      const [link] = await deps.db
+        .select({ threadId: engagementThreadLinks.threadId })
+        .from(engagementThreadLinks)
+        .where(eq(engagementThreadLinks.engagementId, engagementId))
+        .limit(1);
+      if (!link) {
+        res.json({ items: [], page: 1, pageSize: 50, total: 0, threadId: null });
+        return;
+      }
+      const threadId = link.threadId;
+      if (!(await isMember(deps.db, { threadId, appUserId: session.appUserId }))) {
+        res.status(403).json({ error: 'not_a_member' });
+        return;
+      }
+      const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+      const fromRaw = typeof req.query['from'] === 'string' ? req.query['from'] : null;
+      const toRaw = typeof req.query['to'] === 'string' ? req.query['to'] : null;
+      if ((fromRaw && !DATE_RE.test(fromRaw)) || (toRaw && !DATE_RE.test(toRaw))) {
+        res.status(400).json({ error: 'invalid_date' });
+        return;
+      }
+      const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+      const pageSize = Math.min(
+        200,
+        Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50),
+      );
+      const conds = [
+        eq(messages.threadId, threadId),
+        isNull(messages.deletedAt),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${timeEntryMessageLinks}
+          WHERE ${timeEntryMessageLinks.messageId} = ${messages.id}
+        )`,
+      ];
+      if (fromRaw) conds.push(sql`${messages.createdAt} >= ${fromRaw}::timestamptz`);
+      if (toRaw) conds.push(sql`${messages.createdAt} < (${toRaw}::date + interval '1 day')`);
+      const rows = await deps.db
+        .select({
+          id: messages.id,
+          senderAppUserId: messages.senderAppUserId,
+          senderPortalIdentityId: messages.senderPortalIdentityId,
+          bodyCiphertext: messages.bodyCiphertext,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .where(and(...conds))
+        .orderBy(asc(messages.createdAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+      const [countRow] = await deps.db
+        .select({ c: sql<number>`COUNT(*)::int` })
+        .from(messages)
+        .where(and(...conds));
+      try {
+        const plaintexts = await batchDecryptForThread(
+          { db: deps.db, firmId: session.firmId, threadId },
+          rows.map((r) => r.bodyCiphertext),
+        );
+        const items = rows.map((r, i) => ({
+          id: r.id,
+          senderAppUserId: r.senderAppUserId,
+          senderPortalIdentityId: r.senderPortalIdentityId,
+          body: plaintexts[i],
+          createdAt: r.createdAt,
+        }));
+        res.json({ items, page, pageSize, total: Number(countRow?.c ?? 0), threadId });
+      } catch (err) {
+        logger.error({ err, threadId }, 'untracked-messages decrypt failed');
+        res.status(500).json({ error: 'decrypt_failed' });
       }
     },
   );

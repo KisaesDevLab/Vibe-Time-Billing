@@ -9,6 +9,13 @@ import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
+interface LinkedTimeEntry {
+  id: string;
+  hours: string;
+  entryDate: string;
+  staffName: string | null;
+}
+
 interface RequestRow {
   id: string;
   firmId: string;
@@ -20,6 +27,7 @@ interface RequestRow {
   dueDate: string | null;
   fulfilledAt: string | null;
   createdAt: string;
+  linkedTimeEntry: LinkedTimeEntry | null;
 }
 
 const STATUS_OPTIONS = ['ALL', 'OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED'] as const;
@@ -220,6 +228,13 @@ export function RequestsPage(): JSX.Element {
                     <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                       {r.body.slice(0, 120)}
                       {r.body.length > 120 ? '…' : ''}
+                    </div>
+                  )}
+                  {r.linkedTimeEntry && (
+                    <div style={{ fontSize: 11, color: tokens.color.success, marginTop: 4 }}>
+                      Linked time entry: {r.linkedTimeEntry.hours} hrs
+                      {r.linkedTimeEntry.staffName ? ` by ${r.linkedTimeEntry.staffName}` : ''} (
+                      {r.linkedTimeEntry.entryDate})
                     </div>
                   )}
                 </div>

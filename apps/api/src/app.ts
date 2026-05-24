@@ -121,13 +121,35 @@ export function createApp(deps: AppDeps): Express {
   app.use(pinoHttp({ logger }));
 
   // Liveness — used by Docker HEALTHCHECK. Cheap, no I/O.
-  app.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'ok',
+  //
+  // P3.1 — A.11: when the appliance is locked (admin-passphrase mode
+  // awaiting /admin/unlock) we return 503 so load balancers and Docker
+  // healthcheck mark the container as unhealthy. The lock middleware
+  // already allowlists /health itself so this endpoint is always
+  // reachable; the body explains the state.
+  //
+  // `no-firm` state (initial value before bootCrypto resolves, or
+  // appliance not yet provisioned) returns 200 — we don't want a fresh
+  // container to flap unhealthy during the cold-boot window.
+  app.get('/health', async (_req: Request, res: Response) => {
+    const { getApplianceLockState } = await import('./crypto/boot');
+    const lock = getApplianceLockState();
+    const baseBody = {
       service: 'vibe-time-billing-api',
       env: config.NODE_ENV,
       portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
-    });
+    };
+    if (lock.kind === 'locked' || lock.kind === 'not-bootstrapped') {
+      res.status(503).json({
+        ...baseBody,
+        status: 'locked',
+        reason: lock.kind === 'locked' ? lock.reason : 'awaiting-bootstrap',
+        message:
+          'Appliance is awaiting admin passphrase — POST /api/staff/admin/unlock to proceed.',
+      });
+      return;
+    }
+    res.json({ ...baseBody, status: 'ok' });
   });
 
   // Per-service health probes — each external dep gets its own URL so a
@@ -604,6 +626,8 @@ export function createApp(deps: AppDeps): Express {
     stripe: deps.stripeProvider ?? null,
     stripePublishableKey: config.STRIPE_PUBLISHABLE_KEY ?? null,
     fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payments', auth.requireAuth, auth.requireCsrf, paymentRouter);
 

@@ -94,6 +94,9 @@ export function FirmSettingsPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [unlockMode, setUnlockMode] = useState<'sealed-on-disk' | 'admin-passphrase' | 'unknown'>(
+    'unknown',
+  );
 
   useEffect(() => {
     void (async () => {
@@ -101,6 +104,15 @@ export function FirmSettingsPage(): JSX.Element {
         const r = await api<{ firm: Firm; settings: Settings }>('/api/staff/admin/firm-settings');
         setS(r.settings);
         setF(r.firm);
+        try {
+          const status = await api<{
+            locked: boolean;
+            mode: 'sealed-on-disk' | 'admin-passphrase' | 'unknown';
+          }>('/api/staff/admin/unlock/status');
+          setUnlockMode(status.mode);
+        } catch {
+          // status endpoint failures aren't fatal — the Security card just hides.
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed');
       } finally {
@@ -612,6 +624,8 @@ export function FirmSettingsPage(): JSX.Element {
         </div>
       </Card>
 
+      <SecurityCard mode={unlockMode} onMigrated={(m) => setUnlockMode(m)} />
+
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
         <Button type="submit" disabled={saving}>
           {saving ? 'Saving…' : 'Save'}
@@ -675,5 +689,148 @@ function Select({
         ))}
       </select>
     </label>
+  );
+}
+
+function SecurityCard({
+  mode,
+  onMigrated,
+}: {
+  mode: 'sealed-on-disk' | 'admin-passphrase' | 'unknown';
+  onMigrated: (m: 'admin-passphrase') => void;
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const [pp, setPp] = useState('');
+  const [pp2, setPp2] = useState('');
+  const [ack, setAck] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  if (mode === 'unknown') return null;
+
+  async function migrate(): Promise<void> {
+    setErr(null);
+    if (pp !== pp2) {
+      setErr('passphrases do not match');
+      return;
+    }
+    if (pp.length < 12) {
+      setErr('passphrase must be at least 12 characters');
+      return;
+    }
+    if (!ack) {
+      setErr('you must acknowledge irreversibility');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api('/api/staff/admin/unlock/migrate-mode', {
+        method: 'POST',
+        body: JSON.stringify({
+          targetMode: 'admin-passphrase',
+          passphrase: pp,
+          acknowledgeIrreversible: true,
+        }),
+      });
+      setOpen(false);
+      setPp('');
+      setPp2('');
+      setAck(false);
+      onMigrated('admin-passphrase');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'migrate failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Security · Unlock mode">
+      <div style={{ display: 'grid', gap: 12, maxWidth: 540 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13 }}>Current mode:</span>
+          <Pill tone={mode === 'admin-passphrase' ? 'success' : 'neutral'}>
+            {mode === 'sealed-on-disk' ? 'Sealed on disk' : 'Admin passphrase'}
+          </Pill>
+        </div>
+        {mode === 'sealed-on-disk' ? (
+          <>
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+              Sealed-on-disk keeps the master key on the appliance volume. Switching to
+              admin-passphrase requires an operator to enter the passphrase at every boot before the
+              API will serve traffic. <strong>This change is one-way</strong> — there is no UI to
+              switch back.
+            </p>
+            {!open ? (
+              <Button type="button" onClick={() => setOpen(true)}>
+                Switch to admin-passphrase
+              </Button>
+            ) : (
+              <div
+                style={{
+                  display: 'grid',
+                  gap: 10,
+                  padding: 12,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                }}
+              >
+                <Input
+                  label="New passphrase (min 12 chars)"
+                  type="password"
+                  value={pp}
+                  onChange={(e) => setPp(e.target.value)}
+                  autoComplete="new-password"
+                />
+                <Input
+                  label="Confirm passphrase"
+                  type="password"
+                  value={pp2}
+                  onChange={(e) => setPp2(e.target.value)}
+                  autoComplete="new-password"
+                />
+                <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={ack}
+                    onChange={(e) => setAck(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    I understand this is irreversible. If the passphrase is lost, the appliance
+                    cannot be unlocked and all encrypted firm data becomes unrecoverable.
+                  </span>
+                </label>
+                {err && (
+                  <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{err}</p>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button type="button" onClick={migrate} disabled={busy || !ack}>
+                    {busy ? 'Migrating…' : 'Confirm migration'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      setOpen(false);
+                      setErr(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+            An operator must enter the firm passphrase at every appliance boot before the API will
+            serve traffic. Recovery requires offline access to the original passphrase — there is no
+            remote reset.
+          </p>
+        )}
+      </div>
+    </Card>
   );
 }

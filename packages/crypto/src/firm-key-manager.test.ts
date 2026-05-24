@@ -144,6 +144,134 @@ describe('FirmKeyManager', () => {
     });
   });
 
+  // ============================================================
+  // P1.1 — A.12 polish: rotation guards + mode parity
+  // ============================================================
+  describe('mode parity (A.12)', () => {
+    it('sealed-on-disk and admin-passphrase produce identical ciphertext semantics', async () => {
+      // Same plaintext encrypted under each mode's MFK should decrypt
+      // back to the same bytes — the AEAD scheme is mode-independent;
+      // only the KEK derivation differs.
+      const tmp2 = await mkdtemp(join(tmpdir(), 'vibe-crypto-parity-'));
+      const sealedPath2 = join(tmp2, '.firm-key.seal');
+      const SOD = '11111111-1111-1111-1111-111111111111';
+      const APH = '22222222-2222-2222-2222-222222222222';
+      const sodMgr = new FirmKeyManager({ store, sealedKeyPath: sealedPath2 });
+      await sodMgr.bootstrap({ firmId: SOD, mode: 'sealed-on-disk' });
+      await sodMgr.bootstrap({
+        firmId: APH,
+        mode: 'admin-passphrase',
+        passphrase: 'parity-test-passphrase',
+      });
+      const plaintext = new TextEncoder().encode('parity-test payload');
+      // Round-trip under each firm's T-DEK
+      const tDekSod = new Uint8Array(32).fill(20);
+      const tDekAph = new Uint8Array(32).fill(20);
+      const wSod = sodMgr.wrapTDek(SOD, tDekSod);
+      const wAph = sodMgr.wrapTDek(APH, tDekAph);
+      const uSod = sodMgr.unwrapTDek(SOD, wSod);
+      const uAph = sodMgr.unwrapTDek(APH, wAph);
+      expect(uSod).toEqual(tDekSod);
+      expect(uAph).toEqual(tDekAph);
+      // Encrypted content under each mode's recovered T-DEK
+      const ctSod = encrypt(plaintext, uSod).bytes;
+      const ctAph = encrypt(plaintext, uAph).bytes;
+      // Ciphertexts differ (random nonces) but both decrypt to the
+      // original plaintext.
+      expect(ctSod).not.toEqual(ctAph);
+      expect(decrypt(ctSod, uSod)).toEqual(plaintext);
+      expect(decrypt(ctAph, uAph)).toEqual(plaintext);
+      await rm(tmp2, { recursive: true, force: true });
+    });
+
+    it('rotateMFK refuses in admin-passphrase mode without passphrase support', async () => {
+      // The current implementation explicitly throws because re-wrapping
+      // the new MFK with the same KEK requires re-deriving from the
+      // passphrase, which we don't take as input. Codified so a future
+      // refactor that quietly succeeds would break this test.
+      await mgr.bootstrap({
+        firmId: FIRM,
+        mode: 'admin-passphrase',
+        passphrase: 'rotate-guard-test',
+      });
+      await expect(mgr.rotateMFK(FIRM)).rejects.toThrow(
+        /admin-passphrase mode requires the passphrase/,
+      );
+      await cleanup();
+    });
+
+    it('rotateMFK throws when the firm is not unlocked', async () => {
+      // Defense: rotation must not silently no-op when the live MFK
+      // isn't loaded; otherwise an operator could think they rotated
+      // when nothing happened.
+      await expect(mgr.rotateMFK(FIRM)).rejects.toThrow();
+      await cleanup();
+    });
+  });
+
+  describe('migrateUnlockMode (P3.4)', () => {
+    it('sealed-on-disk → admin-passphrase preserves the MFK and survives a relock', async () => {
+      await mgr.bootstrap({ firmId: FIRM, mode: 'sealed-on-disk' });
+      const tDek = new Uint8Array(32).fill(0x42);
+      const wrapped = mgr.wrapTDek(FIRM, tDek);
+      const passphrase = 'correct-horse-battery-staple';
+      const r = await mgr.migrateUnlockMode({
+        firmId: FIRM,
+        targetMode: 'admin-passphrase',
+        passphrase,
+      });
+      expect(r.rotationVersion).toBeGreaterThan(1);
+      expect(mgr.modeFor(FIRM)).toBe('admin-passphrase');
+      // T-DEKs wrapped pre-migration must still unwrap (same MFK held).
+      expect(mgr.unwrapTDek(FIRM, wrapped)).toEqual(tDek);
+      // Relock + unseal with the passphrase succeeds.
+      mgr.forget(FIRM);
+      await mgr.unseal({ firmId: FIRM, passphrase });
+      expect(mgr.modeFor(FIRM)).toBe('admin-passphrase');
+      expect(mgr.unwrapTDek(FIRM, wrapped)).toEqual(tDek);
+      await cleanup();
+    });
+
+    it('refuses migration when the firm is not unlocked', async () => {
+      await expect(
+        mgr.migrateUnlockMode({
+          firmId: FIRM,
+          targetMode: 'admin-passphrase',
+          passphrase: 'aaaaaaaaaaaa',
+        }),
+      ).rejects.toThrow('not unlocked');
+      await cleanup();
+    });
+
+    it('refuses migration when already in admin-passphrase mode (one-way)', async () => {
+      await mgr.bootstrap({
+        firmId: FIRM,
+        mode: 'admin-passphrase',
+        passphrase: 'a-very-strong-pass',
+      });
+      await expect(
+        mgr.migrateUnlockMode({
+          firmId: FIRM,
+          targetMode: 'admin-passphrase',
+          passphrase: 'another-strong-pass',
+        }),
+      ).rejects.toThrow('one-way');
+      await cleanup();
+    });
+
+    it('refuses short passphrases', async () => {
+      await mgr.bootstrap({ firmId: FIRM, mode: 'sealed-on-disk' });
+      await expect(
+        mgr.migrateUnlockMode({
+          firmId: FIRM,
+          targetMode: 'admin-passphrase',
+          passphrase: 'short',
+        }),
+      ).rejects.toThrow('12');
+      await cleanup();
+    });
+  });
+
   describe('isolation', () => {
     it('rejects bootstrap when an envelope already exists', async () => {
       await mgr.bootstrap({ firmId: FIRM, mode: 'sealed-on-disk' });

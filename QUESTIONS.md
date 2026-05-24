@@ -237,6 +237,47 @@ Read-receipt fires only when the client opens the invoice within the portal (set
 
 ---
 
+## Section L · Connect Integration *(from CONNECT_INTEGRATION_ADDENDUM.md §5)*
+
+These seven decisions govern the Connect-style features absorbed into TB (messaging, escrow files, client requests, unified portal, envelope encryption at rest). The original addendum's IDs Q1–Q7 are preserved in parentheses for cross-reference.
+
+### Q34 — Appliance unlock mode *(addendum Q1)*
+**Decided:** Sealed-on-disk default; admin-passphrase as per-firm opt-in.
+
+Default mode reads the KEK from `${DATA_DIR}/.firm-key.seal` (mode `0400`) at boot — unattended restart, suitable for uptime-focused firms. Admin-passphrase opt-in derives the KEK via Argon2id from a passphrase POSTed to `/api/staff/admin/unlock`; until unlocked the appliance serves 503. **Lost passphrase = unrecoverable data.** Migration sealed-on-disk → admin-passphrase is one-way (no UI to revert).
+
+### Q35 — Time-entry message link cap *(addendum Q2)*
+**Decided:** Unlimited; paginate in pre-bill UI.
+
+`time_entry_message_link.sequence INTEGER` enforces stable display order. Pre-bill view renders the first 5 inline; remainder behind a "Show N more" pagination control (server-side, 10/batch). No hard ceiling on the link table.
+
+### Q36 — Client-request suggestion expiration *(addendum Q3)*
+**Decided:** Configurable per firm; default 7 days.
+
+`firm_config.suggestion_expiration_days` (default 7, range 1–365). Hourly BullMQ sweep marks `client_request_time_entry_link` rows past `expires_at` as dismissed with reason `'expired'`.
+
+### Q37 — Escrow staff visibility *(addendum Q4)*
+**Decided:** Firm-configurable; default = any staff with engagement access.
+
+`firm_config.escrow_visibility text` with values `'engagement-access'` (default) or `'partner-and-assigned-only'`. Never visible to portal clients regardless of mode — that's the whole point of escrow.
+
+### Q38 — Step-up rate limit *(addendum Q5)*
+**Decided:** 5 attempts / 15 min → 30 min lockout.
+
+`apps/api/src/auth/step-up-middleware.ts` records failures per `appUserId` in Redis (`step-up:failures:<id>`, TTL 900s). At 5 failures the key flips to `step-up:lockout:<id>` (TTL 1800s). 6th+ attempts return `{error: 'step_up_locked_out', retryAfter}` (HTTP 429).
+
+### Q39 — MCP egress policy *(addendum Q6)*
+**Decided:** Local-only default; per-firm API opt-in; **Vibe Shield required if API enabled.**
+
+`firm_config.ai_egress_enabled boolean default false`. When true, all AI calls route through `firm_config.vibe_shield_endpoint`; Shield unreachable = MCP tools requiring egress deregister at startup with a clear admin banner. Vibe Shield doesn't exist yet, so egress mode currently fails closed.
+
+### Q40 — Portal authentication source *(addendum Q7)*
+**Decided:** TB's native portal-auth (NOT `@vibe/portal-auth`).
+
+Per the TB-standalone framing, the original addendum's plan to fold portal auth into a `@vibe/portal-auth` shared package was dropped. TB's existing magic-link + SMS-OTP flow (`apps/api/src/auth/portal-routes.ts`, `apps/api/src/auth/portal-middleware.ts`) remains the sole portal auth surface.
+
+---
+
 # OPEN QUESTIONS
 
 *Append questions encountered during the build here. Format: phase, item, question, options considered, default chosen, why. Decisions accumulate over time; this is the running deferral log, not a blocker.*
@@ -262,3 +303,4 @@ Implication if wrong: If Phase 5 ships before Phase 8 we have a useless boolean 
 
 - 2026-05-19 — Initial 30 decisions locked at build kickoff.
 - 2026-05-22 — Q31/Q32/Q33 added for file-manager rebuild (see `FILE_MANAGER_ADDENDUM.md`).
+- 2026-05-24 — Q34–Q40 locked under Section L for Connect Integration absorption (see `CONNECT_INTEGRATION_ADDENDUM.md` §5).

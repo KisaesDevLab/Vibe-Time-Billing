@@ -13,7 +13,13 @@ START SEQUENCE:
 1. Read CLAUDE.md in full. This is your operating manual.
 2. Read BUILD_PLAN.md in full. This is the 26-phase plan with ~513 items and acceptance criteria.
 3. Read QUESTIONS.md in full. The "Locked decisions" section is architectural law for this build.
-4. Run `git log --oneline --grep='^phase'` to find the last completed item. If empty, start at Phase 1, Item 1.
+   - Section L (Q34–Q40) captures the Connect Integration locked decisions; cross-reference CONNECT_INTEGRATION_ADDENDUM.md when a phase touches messaging, escrow files, requests, the unified portal, or envelope encryption.
+4. Skim addendum docs at repo root for cross-cutting work-streams:
+   - `CONNECT_INTEGRATION_ADDENDUM.md` — Phases A–K absorbed into TB; baseline shipped, polish pass tracked in the active plan file
+   - `FILE_MANAGER_ADDENDUM.md` — Files v2 (shipped)
+   - `VIBE_TB_RETAINER_ADDENDUM_BUILD_PLAN.md` — prepaid retainer module (forward work)
+   - `CLIENT_PORTAL_BUILD_PLAN.md` + `CLIENT_PORTAL_UI_PLAN.md` — portal expansion (mix of forward + shipped)
+5. Run `git log --oneline --grep='^phase'` (or `--grep='feat(connect)'` / `--grep='feat(files)'`) to find the last completed item. If empty, start at Phase 1, Item 1.
 
 EXECUTION LOOP:
 For each item in the current phase, in order:
@@ -47,11 +53,13 @@ When stopping: create `STOPPED_BECAUSE.md` at repo root with a clear description
 NON-NEGOTIABLES (these never relax, regardless of expedience):
 - Audit log immutability: app role has no UPDATE/DELETE on audit_log; every mutation creates a row
 - Cross-realm session isolation: staff and portal sessions are distinct in every dimension
-- Standard rate snapshot: time entries capture rate at creation; historical reports never shift
+- Standard rate snapshot: time entries capture bill rate AND cost rate at creation (post-0063); historical reports never shift
 - Per-timekeeper allocation grain: adjustment_allocation rows at (adjustment_id, time_entry_id, app_user_id)
 - Customer-owned external resources: firm owns Stripe, Cloudflare, domain — Kisaes never holds customer credentials
 - License gate on portal: commercial license token check at boot and on critical portal routes
 - PolyForm Internal Use 1.0.0 license header on every source file
+- Server-side decryption only for message bodies + escrow files: never expose plaintext on the wire to a portal client beyond the authenticated session's TLS connection (no client-side crypto material)
+- UUID guards on every router (`addUuidIdGuard`) AND every UUID-typed query param (`uuidQueryParam`) — bad-UUID inputs must return 400, never 500
 
 COMMIT STYLE:
 - Terse, descriptive subject line in present tense
@@ -90,6 +98,12 @@ Begin.
 ## Resuming mid-phase
 
 If a previous session ended mid-phase (token exhaustion, no STOPPED_BECAUSE.md), the start sequence handles it: `git log` reveals the last committed item, and Claude Code picks up at the next item in the current phase.
+
+## Current state of the Connect Integration absorption
+
+As of the latest sweep:
+- **Shipped (Stages 1–5):** Crypto foundation (`packages/crypto/`), schema split + envelope tables (migrations 0057–0058), messaging tables (0059), files escrow extension (0060), client requests (0061), staff profile expansion (0062), time-entry cost snapshot (0063), unified portal with 4 tabs, step-up middleware with Redis lockout, baseline docs in `docs/architecture/` and `docs/ops/`.
+- **In progress (Polish pass P0–P6):** test coverage gaps, pre-bill UX polish, crypto/escrow admin UI, notification template registration + portal step-up modal, MCP tools + AI egress gate, reporting cube measure. Tracked in `C:\Users\kwkcp\.claude\plans\image-9-we-velvet-shell.md` while active.
 
 ## When to re-read this prompt
 

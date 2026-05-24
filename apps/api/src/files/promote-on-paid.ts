@@ -12,7 +12,14 @@
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { fileVisibilityEvents, files } from '@vibe/db/schema';
+import {
+  clientPortalAccess,
+  fileVisibilityEvents,
+  files,
+  firms,
+  invoices,
+  portalIdentity,
+} from '@vibe/db/schema';
 
 import { logger } from '../logger';
 
@@ -99,4 +106,73 @@ export async function revertEscrowFilesForInvoice(
     'previously-promoted escrow files reverted',
   );
   return toRevert;
+}
+
+/**
+ * P3.3 — F.10 deliverable-unlocked notification. Resolves the client's
+ * portal identities from the invoice and sends an email to each. Best
+ * effort: failures are logged but don't propagate. Call AFTER the
+ * promotion transaction commits — running this inside the tx would
+ * leak emails on a rollback.
+ */
+export async function sendDeliverableUnlockedNotifications(
+  db: Database,
+  args: {
+    invoiceId: string;
+    promotedFileCount: number;
+    portalBaseUrl?: string;
+    sendEmail?: (a: { to: string; subject: string; body: string }) => Promise<void>;
+  },
+): Promise<{ sent: number; recipients: string[] }> {
+  if (args.promotedFileCount <= 0 || !args.sendEmail) {
+    return { sent: 0, recipients: [] };
+  }
+  // Resolve invoice → client → portal identities with verified email
+  const [inv] = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      clientId: invoices.clientId,
+      firmId: invoices.firmId,
+    })
+    .from(invoices)
+    .where(eq(invoices.id, args.invoiceId))
+    .limit(1);
+  if (!inv) return { sent: 0, recipients: [] };
+  const [firm] = await db
+    .select({ name: firms.name })
+    .from(firms)
+    .where(eq(firms.id, inv.firmId))
+    .limit(1);
+  const firmName = firm?.name ?? 'your accountant';
+  const identities = await db
+    .select({
+      identityId: portalIdentity.id,
+      email: portalIdentity.primaryEmail,
+    })
+    .from(clientPortalAccess)
+    .innerJoin(portalIdentity, eq(portalIdentity.id, clientPortalAccess.portalIdentityId))
+    .where(eq(clientPortalAccess.clientId, inv.clientId));
+  const recipients = identities
+    .map((r) => r.email)
+    .filter((e): e is string => Boolean(e && e.trim()));
+  const subject = `New files available from ${firmName}`;
+  const portalLink = args.portalBaseUrl ? `${args.portalBaseUrl}/files` : 'your client portal';
+  const body =
+    `${firmName} has released ${args.promotedFileCount} file${args.promotedFileCount === 1 ? '' : 's'} ` +
+    `tied to invoice ${inv.invoiceNumber}. Sign in to ${portalLink} to view ${args.promotedFileCount === 1 ? 'it' : 'them'}.`;
+  let sent = 0;
+  for (const to of recipients) {
+    try {
+      await args.sendEmail({ to, subject, body });
+      sent += 1;
+    } catch (err) {
+      logger.warn({ err, to, invoiceId: args.invoiceId }, 'deliverable-unlocked email failed');
+    }
+  }
+  logger.info(
+    { invoiceId: args.invoiceId, recipients: recipients.length, sent },
+    'deliverable-unlocked notifications dispatched',
+  );
+  return { sent, recipients };
 }

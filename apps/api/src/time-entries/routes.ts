@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
@@ -58,7 +58,9 @@ function clientIp(req: Request): string {
  * a member of that thread. Returns the number of links written.
  * Returns -1 if validation fails (caller should respond 403).
  */
-async function linkTimeEntryMessages(
+// Exported for integration tests; consumers should call the route, not
+// this helper directly.
+export async function linkTimeEntryMessages(
   db: Database,
   args: {
     engagementId: string;
@@ -635,6 +637,103 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         hourBankDebit,
         linkedMessages,
       });
+    },
+  );
+
+  // ============================================================
+  // P2.2 — D.5/D.6 linked-messages drill-in for pre-bill review
+  // GET /:id/linked-messages
+  // Returns the messages linked to this time entry, decrypted via the
+  // engagement's thread T-DEK. Authorized via the same permissions as
+  // viewing the entry; cross-thread / no-thread / non-member callers
+  // get a clean 403/404.
+  // ============================================================
+  router.get(
+    '/:id/linked-messages',
+    requirePermission(deps, 'time_entry:read:all'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const entryId = req.params['id']!;
+      const { batchDecryptForThread } = await import('../engagement-messaging/thread-crypto');
+      // Resolve the time entry → engagement → thread + verify firm scope
+      const [entry] = await deps.db
+        .select({
+          id: timeEntries.id,
+          engagementId: timeEntries.engagementId,
+          clientFirmId: clients.firmId,
+        })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(timeEntries.id, entryId))
+        .limit(1);
+      if (!entry || entry.clientFirmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [link] = await deps.db
+        .select({ threadId: engagementThreadLinks.threadId })
+        .from(engagementThreadLinks)
+        .where(eq(engagementThreadLinks.engagementId, entry.engagementId))
+        .limit(1);
+      if (!link) {
+        res.json({ items: [] });
+        return;
+      }
+      // Permission: must be a member of the thread to read its messages
+      const [member] = await deps.db
+        .select({ id: threadMembers.id })
+        .from(threadMembers)
+        .where(
+          and(
+            eq(threadMembers.threadId, link.threadId),
+            eq(threadMembers.appUserId, session.appUserId),
+          ),
+        )
+        .limit(1);
+      if (!member) {
+        res.status(403).json({ error: 'not_a_thread_member' });
+        return;
+      }
+      const linked = await deps.db
+        .select({
+          messageId: timeEntryMessageLinks.messageId,
+          sequence: timeEntryMessageLinks.sequence,
+          createdAt: messages.createdAt,
+          senderAppUserId: messages.senderAppUserId,
+          senderPortalIdentityId: messages.senderPortalIdentityId,
+          bodyCiphertext: messages.bodyCiphertext,
+        })
+        .from(timeEntryMessageLinks)
+        .innerJoin(messages, eq(messages.id, timeEntryMessageLinks.messageId))
+        .where(eq(timeEntryMessageLinks.timeEntryId, entryId))
+        .orderBy(asc(timeEntryMessageLinks.sequence));
+      if (linked.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
+      try {
+        const plaintexts = await batchDecryptForThread(
+          { db: deps.db, firmId: session.firmId, threadId: link.threadId },
+          linked.map((r) => r.bodyCiphertext),
+        );
+        const items = linked.map((r, i) => ({
+          messageId: r.messageId,
+          sequence: r.sequence,
+          createdAt: r.createdAt,
+          senderAppUserId: r.senderAppUserId,
+          senderPortalIdentityId: r.senderPortalIdentityId,
+          body: plaintexts[i],
+        }));
+        res.json({ items });
+      } catch (err) {
+        logger.error({ err, entryId }, 'linked-messages decrypt failed');
+        res.status(500).json({ error: 'decrypt_failed' });
+      }
     },
   );
 
