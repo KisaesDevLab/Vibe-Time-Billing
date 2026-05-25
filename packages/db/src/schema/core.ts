@@ -3215,6 +3215,81 @@ export type InvoiceReminderLogRow = typeof invoiceReminderLog.$inferSelect;
 export type NewInvoiceReminderLogRow = typeof invoiceReminderLog.$inferInsert;
 
 // =====================================================================
+// 0072 — File share links (CP11)
+//
+// Per-file share-link generator. Token stored hashed at rest; the raw
+// token is shown to the creator exactly once. Public /shared/:token
+// endpoint resolves to a fresh presigned URL on every access and
+// writes a file_share_event row.
+// =====================================================================
+
+export const fileShares = pgTable(
+  'file_share',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    // FK to portal_identity in portal.ts — kept loose to avoid circular
+    // imports. Enforced by the migration.
+    createdByPortalIdentityId: uuid('created_by_portal_identity_id'),
+    tokenHash: text('token_hash').notNull().unique(),
+    accessLevel: text('access_level').notNull().default('view'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    accessCount: integer('access_count').notNull().default(0),
+    lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    fileIdx: index('file_share_file_idx').on(t.fileId),
+    clientIdx: index('file_share_client_idx').on(t.clientId),
+    expiresIdx: index('file_share_expires_idx')
+      .on(t.expiresAt)
+      .where(sql`expires_at IS NOT NULL`),
+    accessLevelCk: check(
+      'file_share_access_level_ck',
+      sql`${t.accessLevel} IN ('view', 'download')`,
+    ),
+    accessCountNonneg: check(
+      'file_share_access_count_nonneg',
+      sql`${t.accessCount} >= 0`,
+    ),
+  }),
+);
+
+export const fileShareEvents = pgTable(
+  'file_share_event',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    fileShareId: uuid('file_share_id')
+      .notNull()
+      .references(() => fileShares.id, { onDelete: 'cascade' }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    outcome: text('outcome').notNull(),
+  },
+  (t) => ({
+    shareIdx: index('file_share_event_share_idx').on(t.fileShareId, t.occurredAt),
+    outcomeCk: check(
+      'file_share_event_outcome_ck',
+      sql`${t.outcome} IN ('allowed', 'denied_revoked', 'denied_expired', 'denied_file_gone')`,
+    ),
+  }),
+);
+
+export type FileShare = typeof fileShares.$inferSelect;
+export type FileShareEvent = typeof fileShareEvents.$inferSelect;
+
+// =====================================================================
 // 0069 — Tax payments (CP1)
 //
 // Staff-entered scheduled tax obligations surfaced to clients in the

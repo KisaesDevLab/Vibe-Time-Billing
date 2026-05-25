@@ -52,6 +52,8 @@ import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
 import { createPortalActivityRouter } from './portal/activity';
 import { createPortalEngagementAutopayRouter } from './portal/engagement-autopay';
 import { createPortalEngagementRouter } from './portal/engagements';
+import { createPortalFileShareRouter } from './portal/file-shares';
+import { createSharePublicRouter } from './share-public';
 import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
@@ -543,6 +545,18 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/engagement-autopay', portalEngagementAutopayRouter);
+
+  // CP11 — file share-link creation/list/revoke (portal-authenticated).
+  const portalFileShareRouter = createPortalFileShareRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
+  app.use('/api/portal/files', portalFileShareRouter);
+
+  // CP11 — public token-based share access (no portal auth).
+  const sharePublicRouter = createSharePublicRouter({ db: deps.db });
+  app.use('/api/shared', sharePublicRouter);
 
   // P4.4 — portal step-up challenge endpoints.
   const portalStepUpRouter = createPortalStepUpRouter({
