@@ -2029,6 +2029,13 @@ export const invoices = pgTable(
     notes: text('notes'),
     payToUnlockAttachments: boolean('pay_to_unlock_attachments').notNull().default(false),
 
+    // 0067 — when this invoice is the retainer-purchase AR invoice for
+    // a tier the client selected in the portal, this points back to
+    // the offer. NULL for everything else. The Stripe webhook reads
+    // this column to find the offer to activate when this invoice is
+    // marked paid.
+    retainerOfferId: uuid('retainer_offer_id'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

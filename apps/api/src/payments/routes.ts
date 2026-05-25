@@ -570,6 +570,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
             surplusCreditId: autoCreditId,
             surplusCents: surplus,
             promotedCounts,
+            promotedInvoiceIds: Array.from(promotedInvoiceIds),
           };
         });
 
@@ -586,6 +587,32 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           }).catch((err: unknown) =>
             logger.error({ err, invoiceId }, 'deliverable-unlocked dispatch failed (post-commit)'),
           );
+        }
+
+        // R3 — retainer activation. For every invoice that tipped to
+        // fully-paid in this receipt, check whether it carries a
+        // retainer_offer_id and run the activation handler if so.
+        // Idempotent against re-receive; outside the receipt tx so an
+        // activation failure doesn't roll back the payment.
+        for (const invId of result.promotedInvoiceIds) {
+          const [invRow] = await deps.db
+            .select({ retainerOfferId: invoices.retainerOfferId })
+            .from(invoices)
+            .where(eq(invoices.id, invId))
+            .limit(1);
+          if (invRow?.retainerOfferId) {
+            try {
+              const { activateRetainerFromPaidInvoice } = await import('../retainers/activation');
+              const r = await activateRetainerFromPaidInvoice(deps.db, invId, {
+                actorAppUserId: session.appUserId,
+              });
+              if (r.kind === 'error') {
+                logger.error({ invoiceId: invId, reason: r.reason }, 'retainer activation error');
+              }
+            } catch (err) {
+              logger.error({ err, invoiceId: invId }, 'retainer activation threw (post-commit)');
+            }
+          }
         }
 
         await emitAudit(deps.db, {

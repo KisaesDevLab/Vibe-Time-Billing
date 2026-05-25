@@ -47,6 +47,7 @@ import { createStatementsRouter } from './statements/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
+import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
 import { createPortalStepUpRouter } from './portal/step-up';
 import { createPortalLetterRouter } from './portal/letters';
 import { createPortalFileRouter } from './portal/files';
@@ -479,6 +480,13 @@ export function createApp(deps: AppDeps): Express {
     sessionStore: deps.sessionStore,
   });
   app.use('/api/portal/profile', portalProfileRouter);
+
+  // R3 — portal retainer offer flow (get / select / decline).
+  const portalRetainerOfferRouter = createPortalRetainerOfferRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/retainer-offers', portalRetainerOfferRouter);
 
   // P4.4 — portal step-up challenge endpoints.
   const portalStepUpRouter = createPortalStepUpRouter({

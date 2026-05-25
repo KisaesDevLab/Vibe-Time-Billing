@@ -233,6 +233,20 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           } catch (err) {
             logger.error({ err, invoiceId: inv.id }, 'escrow promote failed');
           }
+          // R3 — retainer activation. If this invoice carries
+          // retainer_offer_id, run the activation handler (idempotent
+          // against Stripe retries by SELECT FOR UPDATE on the offer).
+          if (inv.retainerOfferId) {
+            try {
+              const { activateRetainerFromPaidInvoice } = await import('../retainers/activation');
+              const r = await activateRetainerFromPaidInvoice(deps.db!, inv.id);
+              if (r.kind === 'error') {
+                logger.error({ invoiceId: inv.id, reason: r.reason }, 'retainer activation error');
+              }
+            } catch (err) {
+              logger.error({ err, invoiceId: inv.id }, 'retainer activation threw');
+            }
+          }
           // Phase 14 #14 — pay-to-unlock signal. If this invoice gated
           // attachment access and was the last unpaid pay-to-unlock
           // blocker for its client, publish client.unlocked so portal
