@@ -136,6 +136,13 @@ export const PERMISSION_KEYS = [
   // partners + managers can create / cancel).
   'appointment:read',
   'appointment:write',
+
+  // P02 (proposal addendum) — services catalog + tags. read for
+  // partner + manager + senior (need to know what's billable when
+  // logging time); write for partner + manager (pricing decisions
+  // commit the firm).
+  'service:read',
+  'service:write',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -207,6 +214,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'tax_payment:write',
     'appointment:read',
     'appointment:write',
+    'service:read',
+    'service:write',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -257,6 +266,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     // CP12 — manager has full appointment CRUD.
     'appointment:read',
     'appointment:write',
+    // P02 — manager has full services-catalog CRUD.
+    'service:read',
+    'service:write',
   ]),
 
   senior: new Set<PermissionKey>([
@@ -283,6 +295,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'requests:manage',
     // CP12 — senior can see appointments on their engagements.
     'appointment:read',
+    // P02 — senior reads catalog to pick services when logging time.
+    'service:read',
   ]),
 
   staff: new Set<PermissionKey>([
@@ -303,6 +317,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'requests:read',
     // CP12 — staff see appointments on their assigned engagements.
     'appointment:read',
+    // P02 — staff reads catalog too (same time-entry use case).
+    'service:read',
   ]),
 };
 

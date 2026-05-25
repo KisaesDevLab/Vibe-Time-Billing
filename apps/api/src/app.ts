@@ -85,6 +85,8 @@ import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createAppointmentRouter } from './appointments/routes';
+import { createServiceRouter } from './services-catalog/routes';
+import { createServiceTagRouter } from './services-catalog/tags';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
@@ -759,6 +761,19 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, appointmentRouter);
+
+  // P02 — services catalog + tags (proposal addendum). read for
+  // partner/manager/senior/staff; write for partner + manager.
+  const serviceRouter = createServiceRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/services', auth.requireAuth, auth.requireCsrf, serviceRouter);
+  const serviceTagRouter = createServiceTagRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/service-tags', auth.requireAuth, auth.requireCsrf, serviceTagRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,
