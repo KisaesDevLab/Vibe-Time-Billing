@@ -39,7 +39,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
-import { Button, Card, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
+import { Button, Card, Pill, SectionHeading, tokens } from '@vibe/ui';
 import {
   addBlock,
   duplicateBlock,
@@ -57,6 +57,7 @@ import { api } from '../api-client';
 import { useAutosave, type SaveStatus } from '../proposal-editor/use-autosave';
 import { useUndoHistory, useUndoKeyboard } from '../proposal-editor/use-undo-history';
 import { VALIDATORS } from '../proposal-editor/block-validators';
+import { PALETTE_ORDER, REGISTRY, type BlockTypeDef } from '../proposal-editor/blocks';
 
 interface ProposalDetail {
   proposal: {
@@ -68,130 +69,6 @@ interface ProposalDetail {
     updatedAt: string;
   };
 }
-
-interface BlockTypeDef {
-  type: string;
-  label: string;
-  icon: string;
-  defaultProps: () => Record<string, unknown>;
-  EditorFields: (props: {
-    block: ProposalBlock;
-    onChange: (next: Partial<Omit<ProposalBlock, 'id'>>) => void;
-  }) => JSX.Element;
-  Renderer: (props: { block: ProposalBlock }) => JSX.Element;
-}
-
-const TEXT_BLOCK: BlockTypeDef = {
-  type: 'text',
-  label: 'Text',
-  icon: '¶',
-  defaultProps: () => ({ md: '' }),
-  EditorFields: ({ block, onChange }) => (
-    <textarea
-      value={String(block.props['md'] ?? '')}
-      onChange={(e) => onChange({ props: { ...block.props, md: e.target.value } })}
-      rows={8}
-      style={{
-        fontFamily: 'ui-monospace, monospace',
-        fontSize: 12,
-        padding: 10,
-        border: `1px solid ${tokens.color.border}`,
-        borderRadius: tokens.radius.sm,
-        background: tokens.color.surface,
-        color: tokens.color.text,
-        width: '100%',
-        resize: 'vertical',
-      }}
-      placeholder="Markdown body"
-    />
-  ),
-  Renderer: ({ block }) => (
-    <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{String(block.props['md'] ?? '')}</p>
-  ),
-};
-
-const HEADING_BLOCK: BlockTypeDef = {
-  type: 'heading',
-  label: 'Heading',
-  icon: 'H',
-  defaultProps: () => ({ text: '', level: 1 }),
-  EditorFields: ({ block, onChange }) => (
-    <div style={{ display: 'grid', gap: 8 }}>
-      <Input
-        value={String(block.props['text'] ?? '')}
-        onChange={(e) => onChange({ props: { ...block.props, text: e.target.value } })}
-        placeholder="Heading text"
-      />
-      <div style={{ display: 'flex', gap: 4 }}>
-        {[1, 2, 3].map((lvl) => (
-          <button
-            key={lvl}
-            type="button"
-            onClick={() => onChange({ props: { ...block.props, level: lvl } })}
-            style={{
-              padding: '4px 10px',
-              fontSize: 12,
-              borderRadius: tokens.radius.sm,
-              border: `1px solid ${
-                Number(block.props['level']) === lvl ? tokens.color.accent : tokens.color.border
-              }`,
-              background:
-                Number(block.props['level']) === lvl
-                  ? tokens.color.accentMuted
-                  : tokens.color.surface,
-              color: Number(block.props['level']) === lvl ? tokens.color.accent : tokens.color.text,
-              cursor: 'pointer',
-            }}
-          >
-            H{lvl}
-          </button>
-        ))}
-      </div>
-    </div>
-  ),
-  Renderer: ({ block }) => {
-    const text = String(block.props['text'] ?? '');
-    const level = Number(block.props['level'] ?? 1);
-    const sizes: Record<number, string> = { 1: '26px', 2: '20px', 3: '16px' };
-    return (
-      <div
-        style={{ fontSize: sizes[level] ?? '16px', fontWeight: 700, margin: 0 }}
-        aria-level={level}
-        role="heading"
-      >
-        {text || <span style={{ color: tokens.color.textMuted }}>(empty heading)</span>}
-      </div>
-    );
-  },
-};
-
-const DIVIDER_BLOCK: BlockTypeDef = {
-  type: 'divider',
-  label: 'Divider',
-  icon: '─',
-  defaultProps: () => ({}),
-  EditorFields: () => (
-    <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-      Horizontal divider. No props to configure.
-    </p>
-  ),
-  Renderer: () => (
-    <hr
-      style={{
-        border: 0,
-        borderTop: `1px solid ${tokens.color.border}`,
-        margin: '8px 0',
-        width: '100%',
-      }}
-    />
-  ),
-};
-
-const REGISTRY = new Map<string, BlockTypeDef>([
-  [TEXT_BLOCK.type, TEXT_BLOCK],
-  [HEADING_BLOCK.type, HEADING_BLOCK],
-  [DIVIDER_BLOCK.type, DIVIDER_BLOCK],
-]);
 
 function generateId(): string {
   return `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -387,7 +264,7 @@ export function ProposalEditorPage(): JSX.Element {
           }}
         >
           <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Add block:</span>
-          {Array.from(REGISTRY.values()).map((def) => (
+          {PALETTE_ORDER.map((def) => (
             <Button key={def.type} size="sm" variant="ghost" onClick={() => addNew(def.type)}>
               <span aria-hidden style={{ marginRight: 4, fontFamily: 'ui-monospace, monospace' }}>
                 {def.icon}
