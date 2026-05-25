@@ -34,6 +34,7 @@ import { RecurringPlansPage } from './RecurringPlans';
 import { RetainerDashboardPage } from './RetainerDashboard';
 import { RetainerDetailPage } from './RetainerDetail';
 import { RetainerTierSettingsPage } from './RetainerTierSettings';
+import { TaxPaymentsPage } from './TaxPayments';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
@@ -100,6 +101,7 @@ const GROUPS: Group[] = [
       { key: 'banks-tx', label: 'Hour-bank tx', href: '/admin/hour-bank-tx' },
       { key: 'retainer-tiers', label: 'Retainer tiers', href: '/admin/retainer-tiers' },
       { key: 'retainers', label: 'Retainers', href: '/admin/retainers' },
+      { key: 'tax-payments', label: 'Tax payments', href: '/admin/tax-payments' },
       { key: 'rules', label: 'Approval rules', href: '/admin/approval-rules' },
       { key: 'rfr', label: 'Required fields', href: '/admin/required-fields' },
     ],
@@ -252,6 +254,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="retainer-tiers" element={<RetainerTierSettingsPage />} />
         <Route path="retainers" element={<RetainerDashboardPage />} />
         <Route path="retainers/:id" element={<RetainerDetailPage />} />
+        <Route path="tax-payments" element={<TaxPaymentsPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />

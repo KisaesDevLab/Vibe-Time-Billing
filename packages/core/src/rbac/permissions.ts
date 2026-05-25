@@ -123,6 +123,12 @@ export const PERMISSION_KEYS = [
   'retainer:tier_config:write',
   'retainer:read',
   'retainer:write',
+
+  // CP1 — Tax Payments addendum. read for partner + manager (their
+  // clients see what's scheduled); write for partner only (staff
+  // cannot create or modify tax-payment rows).
+  'tax_payment:read',
+  'tax_payment:write',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -190,6 +196,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'retainer:tier_config:write',
     'retainer:read',
     'retainer:write',
+    'tax_payment:read',
+    'tax_payment:write',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -234,6 +242,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     // edit tier configs or void retainers (partner-only).
     'retainer:tier_config:read',
     'retainer:read',
+    // CP1 — manager sees scheduled tax payments but cannot create
+    // or modify (partner-only write).
+    'tax_payment:read',
   ]),
 
   senior: new Set<PermissionKey>([

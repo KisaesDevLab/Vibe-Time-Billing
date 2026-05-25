@@ -3202,6 +3202,64 @@ export type InvoiceReminderLogRow = typeof invoiceReminderLog.$inferSelect;
 export type NewInvoiceReminderLogRow = typeof invoiceReminderLog.$inferInsert;
 
 // =====================================================================
+// 0069 — Tax payments (CP1)
+//
+// Staff-entered scheduled tax obligations surfaced to clients in the
+// portal. Source of truth is firm-entered for v1; external_ref is
+// reserved for a future MyBooks connector without committing to that
+// integration shape now. Soft-delete via status='VOIDED'.
+// =====================================================================
+
+export const taxPaymentStatus = pgEnum('tax_payment_status', ['SCHEDULED', 'PAID', 'VOIDED']);
+
+export const taxPayments = pgTable(
+  'tax_payment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'restrict' }),
+    // Nullable — many tax payments aren't tied to a single engagement.
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'restrict',
+    }),
+    jurisdiction: text('jurisdiction').notNull(),
+    paymentType: text('payment_type').notNull(),
+    taxYear: integer('tax_year'),
+    amountCents: bigint('amount_cents', { mode: 'number' }).notNull(),
+    dueDate: date('due_date').notNull(),
+    status: taxPaymentStatus('status').notNull().default('SCHEDULED'),
+    paidDate: date('paid_date'),
+    confirmationNumber: text('confirmation_number'),
+    // Firm-internal — portal API must strip this column.
+    notes: text('notes'),
+    // Reserved for future connector import; staff-entered rows leave NULL.
+    externalRef: text('external_ref'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+  },
+  (t) => ({
+    firmStatusDueIdx: index('tax_payment_firm_status_due_idx').on(t.firmId, t.status, t.dueDate),
+    clientStatusDueIdx: index('tax_payment_client_status_due_idx').on(
+      t.clientId,
+      t.status,
+      t.dueDate,
+    ),
+    engagementIdx: index('tax_payment_engagement_idx')
+      .on(t.engagementId)
+      .where(sql`engagement_id IS NOT NULL`),
+    amountNonneg: check('tax_payment_amount_nonneg', sql`${t.amountCents} >= 0`),
+  }),
+);
+
+export type TaxPayment = typeof taxPayments.$inferSelect;
+export type NewTaxPayment = typeof taxPayments.$inferInsert;
+
+// =====================================================================
 // MIGRATION ORDER NOTES
 //
 // Apply migrations in this order to satisfy FK dependencies:

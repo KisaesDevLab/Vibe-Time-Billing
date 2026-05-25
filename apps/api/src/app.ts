@@ -78,6 +78,7 @@ import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createRetainerRouter } from './retainers/routes';
+import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
 import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
@@ -689,6 +690,12 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/retainers', auth.requireAuth, auth.requireCsrf, retainerRouter);
+
+  const taxPaymentRouter = createTaxPaymentRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/tax-payments', auth.requireAuth, auth.requireCsrf, taxPaymentRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,
