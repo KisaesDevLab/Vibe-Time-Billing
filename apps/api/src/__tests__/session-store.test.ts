@@ -60,7 +60,9 @@ describe('SessionStore.listForUser', () => {
     await store.put(mkPortalSession({ portalIdentityId: 'identity-b' }));
     const result = await store.listForUser('portal', 'identity-a');
     expect(result).toHaveLength(1);
-    expect(result[0]!.portalIdentityId).toBe('identity-a');
+    const first = result[0]!;
+    if (first.realm !== 'portal') throw new Error('expected portal realm');
+    expect(first.portalIdentityId).toBe('identity-a');
   });
 
   it('cleans up stale sids from the reverse index when sessions have expired', async () => {

@@ -8,6 +8,7 @@ import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@v
 
 import { AuthProvider, useAuth } from './auth-context';
 import { StepUpModal } from './components/StepUpModal';
+import { ActivityPage } from './pages/Activity';
 import { AltContactsPage } from './pages/AltContacts';
 import { EngagementsPage } from './pages/Engagements';
 import { FilesPage } from './pages/Files';
@@ -74,6 +75,7 @@ export function App(): JSX.Element {
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/alt-contacts" element={<AltContactsPage />} />
                   <Route path="/profile" element={<ProfilePage />} />
+                  <Route path="/activity" element={<ActivityPage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
                   <Route path="/notifications" element={<NotificationPrefsPage />} />
                   <Route path="/retainer-offers/:id" element={<RetainerOfferPage />} />
@@ -220,6 +222,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active:
             location.pathname.startsWith('/profile') ||
             location.pathname.startsWith('/alt-contacts'),
+        },
+        {
+          label: 'Activity',
+          href: '/activity',
+          icon: '📜',
+          active: location.pathname.startsWith('/activity'),
         },
         {
           label: 'Switch client',
