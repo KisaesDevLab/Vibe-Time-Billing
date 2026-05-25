@@ -673,5 +673,116 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
     },
   );
 
+  // ----- R6-followup — CSV exports -----------------------------------
+
+  router.get(
+    '/exports/ledger.csv',
+    requirePermission(deps, 'retainer:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const retainerIdRaw = uuidQueryParam(req.query['retainerId']);
+      if (retainerIdRaw === 'invalid' || !retainerIdRaw) {
+        res.status(400).json({ error: 'retainerId_required' });
+        return;
+      }
+      const retainerId = retainerIdRaw;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [retainer] = await deps.db
+        .select({ id: retainers.id })
+        .from(retainers)
+        .where(and(eq(retainers.id, retainerId), eq(retainers.firmId, session.firmId)))
+        .limit(1);
+      if (!retainer) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          createdAt: retainerLedger.createdAt,
+          kind: retainerLedger.kind,
+          hoursDelta: retainerLedger.hoursDelta,
+          hoursBalanceAfter: retainerLedger.hoursBalanceAfter,
+          timeEntryId: retainerLedger.timeEntryId,
+          createdById: retainerLedger.createdById,
+        })
+        .from(retainerLedger)
+        .where(eq(retainerLedger.retainerId, retainer.id))
+        .orderBy(retainerLedger.createdAt);
+      const { buildLedgerCsv } = await import('./exports');
+      const csv = buildLedgerCsv(rows);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="retainer-ledger-${retainer.id}.csv"`,
+      );
+      res.send(csv);
+    },
+  );
+
+  router.get(
+    '/exports/funnel.csv',
+    requirePermission(deps, 'retainer:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const fromQuery = String(req.query['from'] ?? '');
+      const toQuery = String(req.query['to'] ?? '');
+      const today = new Date().toISOString().slice(0, 10);
+      const defaultFrom = new Date(Date.now() - 90 * 24 * 3600_000).toISOString().slice(0, 10);
+      const from = /^\d{4}-\d{2}-\d{2}$/.test(fromQuery) ? fromQuery : defaultFrom;
+      const to = /^\d{4}-\d{2}-\d{2}$/.test(toQuery) ? toQuery : today;
+      const rows = await deps.db.execute(
+        sql`SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS bucket,
+                   COUNT(*) FILTER (WHERE status = 'pending')          ::int AS pending,
+                   COUNT(*) FILTER (WHERE status = 'pending_payment')  ::int AS pending_payment,
+                   COUNT(*) FILTER (WHERE status = 'purchased')        ::int AS purchased,
+                   COUNT(*) FILTER (WHERE status = 'declined')         ::int AS declined,
+                   COUNT(*) FILTER (WHERE status = 'expired')          ::int AS expired
+            FROM retainer_offer
+            WHERE firm_id = ${session.firmId}
+              AND created_at >= ${from}::date
+              AND created_at <  (${to}::date + INTERVAL '1 day')
+            GROUP BY bucket
+            ORDER BY bucket`,
+      );
+      const ravel =
+        (
+          rows as unknown as {
+            rows: Array<{
+              bucket: string;
+              pending: number;
+              pending_payment: number;
+              purchased: number;
+              declined: number;
+              expired: number;
+            }>;
+          }
+        ).rows ?? [];
+      const { buildOfferFunnelCsv } = await import('./exports');
+      const csv = buildOfferFunnelCsv(
+        ravel.map((r) => ({
+          bucket: r.bucket,
+          pendingCount: r.pending,
+          pendingPaymentCount: r.pending_payment,
+          purchasedCount: r.purchased,
+          declinedCount: r.declined,
+          expiredCount: r.expired,
+        })),
+      );
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="retainer-offer-funnel-${from}-to-${to}.csv"`,
+      );
+      res.send(csv);
+    },
+  );
+
   return router;
 }

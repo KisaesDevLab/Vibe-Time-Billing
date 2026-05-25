@@ -225,12 +225,30 @@ last completed within 25h, 503 otherwise. Each sweep writes a heartbeat
 into Redis (`retainer:sweep:expiry:last_run` and
 `retainer:sweep:offer:last_run`) on success.
 
+## Exports
+
+Two staff-only CSV exports (require `retainer:read`):
+
+- `GET /api/staff/retainers/exports/ledger.csv?retainerId=...` — full
+  retainer ledger including `time_entry_id` and `created_by_id` for
+  forensic drill-down. Not exposed to the portal — staff use only.
+- `GET /api/staff/retainers/exports/funnel.csv?from=YYYY-MM-DD&to=YYYY-MM-DD`
+  — daily offer funnel: pending / pending_payment / purchased /
+  declined / expired counts per day in the window. Default window is
+  the last 90 days.
+
+One client-facing PDF:
+
+- `GET /api/portal/retainers/:id/statement.pdf` — privacy-filtered
+  Retainer Activity Statement. Rendered via the existing Puppeteer
+  adapter (HTML fallback when Puppeteer isn't installed). The HTML
+  builder is a pure function and is used by the staff PDF flow too.
+
 ## Open follow-ups (not in v1)
 
 - Staff dashboard (`/my/retainers`)
 - Retainer detail page with rich ledger + activity timeline
 - Vibe MyBooks GL posting on activation (cash-basis per D5)
-- CSV exports + Retainer Activity Statement PDF
 
 These will land as Stage R6-followup PRs.
 
