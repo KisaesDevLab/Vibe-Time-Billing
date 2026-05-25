@@ -9,6 +9,7 @@ import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@v
 import { AuthProvider, useAuth } from './auth-context';
 import { StepUpModal } from './components/StepUpModal';
 import { AltContactsPage } from './pages/AltContacts';
+import { EngagementsPage } from './pages/Engagements';
 import { FilesPage } from './pages/Files';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
@@ -62,6 +63,7 @@ export function App(): JSX.Element {
               <Shell>
                 <Routes>
                   <Route path="/" element={<HomePage />} />
+                  <Route path="/engagements" element={<EngagementsPage />} />
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
                   <Route path="/messages" element={<MessagesPage />} />
                   <Route path="/requests" element={<RequestsPage />} />
@@ -155,6 +157,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       realmBadge={<Pill tone="success">portal</Pill>}
       nav={[
         { label: 'Overview', href: '/', icon: '⌂', active: location.pathname === '/' },
+        {
+          label: 'Engagements',
+          href: '/engagements',
+          icon: '◉',
+          active: location.pathname.startsWith('/engagements'),
+        },
         {
           label: 'Invoices',
           href: '/invoices',

@@ -49,6 +49,7 @@ import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
+import { createPortalEngagementRouter } from './portal/engagements';
 import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
@@ -519,6 +520,13 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/tax-payments', portalTaxPaymentRouter);
+
+  // CP4 — portal engagement status board (read-only, privacy-filtered).
+  const portalEngagementRouter = createPortalEngagementRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/engagements', portalEngagementRouter);
 
   // P4.4 — portal step-up challenge endpoints.
   const portalStepUpRouter = createPortalStepUpRouter({

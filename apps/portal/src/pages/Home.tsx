@@ -14,6 +14,7 @@ import { Card, EmptyState, SectionHeading, Stat, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { PayToUnlockBanner } from '../components/PayToUnlockBanner';
+import { EngagementCard } from './Engagements';
 
 interface InvoiceSummary {
   id: string;
@@ -32,6 +33,20 @@ interface PortalTaxPaymentSummary {
   status: 'SCHEDULED' | 'PAID';
 }
 
+interface ActiveEngagementSummary {
+  id: string;
+  name: string;
+  partnerName: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  dueDate: string | null;
+  lastActivity: string;
+  statusPill: 'in_progress' | 'awaiting_client' | 'scheduled' | 'filed' | 'blocked' | 'paused';
+  progressPct: number | null;
+  nextMilestone: { id: string; name: string; dueDate: string | null } | null;
+  awaitingFromYou: number;
+}
+
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -39,17 +54,20 @@ export function HomePage(): JSX.Element {
   const { me } = useAuth();
   const [openInvoices, setOpenInvoices] = useState<InvoiceSummary[]>([]);
   const [taxPayments, setTaxPayments] = useState<PortalTaxPaymentSummary[]>([]);
+  const [engagements, setEngagements] = useState<ActiveEngagementSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [inv, tax] = await Promise.all([
+        const [inv, tax, eng] = await Promise.all([
           api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
           api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
+          api<{ items: ActiveEngagementSummary[] }>('/api/portal/engagements/active'),
         ]);
         setOpenInvoices(inv.open ?? []);
         setTaxPayments(tax.items ?? []);
+        setEngagements(eng.items ?? []);
       } catch {
         // best-effort — empty state handles failure gracefully
       } finally {
@@ -101,6 +119,38 @@ export function HomePage(): JSX.Element {
             caption={nextDue ? `Invoice ${nextDue.invoiceNumber}` : 'No invoices due'}
           />
         </div>
+      </section>
+
+      <section>
+        <SectionHeading
+          title="Engagement status"
+          action={
+            engagements.length > 0 ? (
+              <Link to="/engagements" style={{ color: tokens.color.accent, fontSize: 13 }}>
+                View all →
+              </Link>
+            ) : undefined
+          }
+        />
+        {!loaded ? (
+          <Card>
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>
+          </Card>
+        ) : engagements.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon="📋"
+              title="No active engagements"
+              body="When your firm starts work on your behalf, the engagement will appear here with status updates."
+            />
+          </Card>
+        ) : (
+          <div style={{ display: 'grid', gap: tokens.space.md }}>
+            {engagements.slice(0, 2).map((e) => (
+              <EngagementCard key={e.id} engagement={e} />
+            ))}
+          </div>
+        )}
       </section>
 
       <section>
