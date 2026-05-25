@@ -104,7 +104,7 @@ export async function applyTimeEntryToRetainer(
   );
   const retainerRow = unwrapRow<{
     id: string;
-    status: 'active' | 'exhausted' | 'expired' | 'void';
+    status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
     expiry_date: string;
     hours_purchased: string;
     hours_consumed: string;

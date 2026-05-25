@@ -11,8 +11,17 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { engagements, retainerLedger, retainerOffers, retainers } from '@vibe/db/schema';
-import { computeSplit, isEligibleEntry } from '@vibe/core/retainers';
+import {
+  clients,
+  engagements,
+  retainerEligibleServices,
+  retainerLedger,
+  retainerOffers,
+  retainerTierConfigs,
+  retainerTierEligibleServices,
+  retainers,
+} from '@vibe/db/schema';
+import { computeExpiryDate, computeSplit, isEligibleEntry } from '@vibe/core/retainers';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -270,6 +279,295 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         .orderBy(desc(retainerLedger.createdAt))
         .limit(500);
       res.json({ retainer: row, ledger });
+    },
+  );
+
+  // ----- R7 — firm-initiated activation (no offer / no AR invoice) -----
+  //
+  // Manual path for a partner to create a retainer directly. Bypasses
+  // the portal-purchase chain — used when the firm is collecting
+  // payment out-of-band (cash, check, separate invoice) or comping
+  // hours. Still enforces D2 (UNIQUE engagement_id) and uses the same
+  // tier config + eligibility snapshot logic as the activation handler.
+
+  router.post(
+    '/manual',
+    requirePermission(deps, 'retainer:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const Schema = z.object({
+        engagementId: z.string().uuid(),
+        tierConfigId: z.string().uuid(),
+        // Optional overrides — when omitted, snapshot from the tier config.
+        hoursPurchased: z.number().positive().max(10000).optional(),
+        priceCents: z.number().int().nonnegative().optional(),
+        name: z.string().min(1).max(120).optional(),
+        // ISO YYYY-MM-DD. Defaults to today.
+        purchaseDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        // ISO YYYY-MM-DD. When omitted, computed via D3 from engagement
+        // due dates. Falls back to purchaseDate + 3y if engagement has
+        // no due-date pair.
+        expiryDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        // Optional eligibility override (list of work_code IDs). When
+        // omitted, copies the tier_config's eligibility snapshot.
+        eligibleWorkCodeIds: z.array(z.string().uuid()).optional(),
+        notes: z.string().max(1000).optional(),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_input', detail: parsed.error.flatten() });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+
+      // Resolve engagement → client_id; scope-check the firm.
+      const [eng] = await deps.db
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          retainerId: engagements.retainerId,
+          originalDueDate: engagements.originalDueDate,
+          extendedDueDate: engagements.extendedDueDate,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(engagements.id, parsed.data.engagementId), eq(clients.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      if (eng.retainerId) {
+        res.status(409).json({ error: 'engagement_already_has_retainer' });
+        return;
+      }
+
+      // Resolve tier config; scope-check to the firm.
+      const [tierConfig] = await deps.db
+        .select()
+        .from(retainerTierConfigs)
+        .where(
+          and(
+            eq(retainerTierConfigs.id, parsed.data.tierConfigId),
+            eq(retainerTierConfigs.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!tierConfig) {
+        res.status(404).json({ error: 'tier_config_not_found' });
+        return;
+      }
+
+      const purchaseDate = parsed.data.purchaseDate ?? new Date().toISOString().slice(0, 10);
+      // Expiry: explicit > engagement due-date pair > purchase + 3y.
+      let expiryDate: string;
+      if (parsed.data.expiryDate) {
+        expiryDate = parsed.data.expiryDate;
+      } else if (eng.originalDueDate || eng.extendedDueDate) {
+        expiryDate = computeExpiryDate({
+          originalDueDate: eng.originalDueDate,
+          extendedDueDate: eng.extendedDueDate,
+        });
+      } else {
+        // Compute purchase + 3 years inline (avoid bringing the
+        // engagement due-date requirement into manual flow).
+        const d = new Date(purchaseDate + 'T00:00:00Z');
+        d.setUTCFullYear(d.getUTCFullYear() + 3);
+        expiryDate = d.toISOString().slice(0, 10);
+      }
+
+      const hoursPurchased = parsed.data.hoursPurchased ?? Number(tierConfig.hours);
+      const priceCents = parsed.data.priceCents ?? tierConfig.baseFeeCents;
+      const name = parsed.data.name ?? tierConfig.name;
+
+      const retainerId = await deps.db.transaction(async (tx) => {
+        const [retainer] = await tx
+          .insert(retainers)
+          .values({
+            firmId: session.firmId,
+            clientId: eng.clientId,
+            engagementId: eng.id,
+            // R7 — no offer / no purchase invoice for manual activation.
+            offerId: null,
+            purchaseInvoiceId: null,
+            tier: tierConfig.tier,
+            returnType: tierConfig.returnType,
+            taxYear: new Date(purchaseDate).getFullYear(),
+            tierConfigId: tierConfig.id,
+            name,
+            hoursPurchased: String(hoursPurchased),
+            hoursConsumed: '0',
+            priceCents,
+            purchaseDate,
+            expiryDate,
+            status: 'active',
+            notes: parsed.data.notes ?? null,
+          })
+          .returning({ id: retainers.id });
+        if (!retainer) throw new Error('retainer_insert_failed');
+
+        // Snapshot eligibility: explicit override else tier config set.
+        let eligibilityIds: string[];
+        if (parsed.data.eligibleWorkCodeIds && parsed.data.eligibleWorkCodeIds.length > 0) {
+          eligibilityIds = parsed.data.eligibleWorkCodeIds;
+        } else {
+          const rows = await tx
+            .select({ workCodeId: retainerTierEligibleServices.workCodeId })
+            .from(retainerTierEligibleServices)
+            .where(eq(retainerTierEligibleServices.tierConfigId, tierConfig.id));
+          eligibilityIds = rows.map((r) => r.workCodeId);
+        }
+        if (eligibilityIds.length > 0) {
+          await tx
+            .insert(retainerEligibleServices)
+            .values(eligibilityIds.map((workCodeId) => ({ retainerId: retainer.id, workCodeId })));
+        }
+
+        await tx
+          .update(engagements)
+          .set({ retainerId: retainer.id })
+          .where(eq(engagements.id, eng.id));
+
+        await tx.insert(retainerLedger).values({
+          retainerId: retainer.id,
+          kind: 'ACTIVATION',
+          hoursDelta: '0',
+          hoursBalanceAfter: String(hoursPurchased),
+          createdById: session.appUserId,
+        });
+        return retainer.id;
+      });
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'retainer',
+        entityId: retainerId,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'manual',
+          engagementId: eng.id,
+          tierConfigId: tierConfig.id,
+          hoursPurchased,
+          priceCents,
+        },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      res.status(201).json({ retainerId });
+    },
+  );
+
+  // ----- R7 — pause / resume ------------------------------------------
+
+  router.post(
+    '/:id/pause',
+    requirePermission(deps, 'retainer:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const Schema = z.object({ reason: z.string().max(400).optional() });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .select()
+        .from(retainers)
+        .where(and(eq(retainers.id, req.params['id']!), eq(retainers.firmId, session.firmId)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (row.status !== 'active') {
+        res.status(409).json({ error: 'not_active', currentStatus: row.status });
+        return;
+      }
+      await deps.db
+        .update(retainers)
+        .set({
+          status: 'paused',
+          pausedAt: new Date(),
+          pausedReason: parsed.data.reason ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(retainers.id, row.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'retainer',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: { status: 'paused', reason: parsed.data.reason ?? null },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/resume',
+    requirePermission(deps, 'retainer:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .select()
+        .from(retainers)
+        .where(and(eq(retainers.id, req.params['id']!), eq(retainers.firmId, session.firmId)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (row.status !== 'paused') {
+        res.status(409).json({ error: 'not_paused', currentStatus: row.status });
+        return;
+      }
+      // If the retainer is now also past its expiry_date, the daily
+      // sweep would have flipped to 'expired' — but during the paused
+      // window the sweep skips us. Re-check explicitly so resuming a
+      // long-paused retainer doesn't quietly re-activate beyond expiry.
+      const today = new Date().toISOString().slice(0, 10);
+      const nextStatus = row.expiryDate < today ? 'expired' : 'active';
+      await deps.db
+        .update(retainers)
+        .set({
+          status: nextStatus,
+          pausedAt: null,
+          pausedReason: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(retainers.id, row.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'retainer',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: { status: nextStatus, resumed: true },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, status: nextStatus });
     },
   );
 

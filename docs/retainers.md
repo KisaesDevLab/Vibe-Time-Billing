@@ -105,6 +105,42 @@ The time entry itself records `retainer_id`, `retainer_hours`, and
 `billable_hours` as a split breakdown. The original `hours` field is
 still the canonical total — reports built on `hours` don't drift.
 
+## Firm-initiated activation (manual)
+
+The portal-purchase flow is optional. Partners can create a retainer
+directly from **Admin → Billing → Retainers → Create retainer**:
+
+- Pick an engagement that doesn't already have a retainer (D2 still
+  applies — one per engagement)
+- Pick a tier config (drives the eligibility snapshot)
+- Optionally override hours, price, notes
+- Save — the system inserts the retainer with `offer_id=NULL` and
+  `purchase_invoice_id=NULL`, sets `engagement.retainer_id`, writes
+  the ACTIVATION ledger seed row
+
+Use cases: firm is collecting payment out-of-band (cash, check,
+separate invoice), comping hours, or migrating from a legacy
+prepaid-hours arrangement.
+
+Audit logs the action with `entity_type='retainer', action='CREATE',
+after.kind='manual'` so manually-created retainers are filterable.
+
+## Pause / resume
+
+D24 makes voiding heavy-handed — only allowed when `hours_consumed = 0`.
+For everything in between, use **Pause**:
+
+- **Pause** flips an active retainer to `status='paused'`. While paused,
+  time entries against the engagement route 100% to billable WIP (the
+  eligibility check returns `inactive`). The retainer's
+  `hours_consumed` is preserved.
+- **Resume** flips it back to `active`. If `expiry_date < today`, the
+  resume also flips to `expired` instead — preventing a long-paused
+  retainer from quietly re-activating beyond its expiry.
+
+Pause/resume is firm-only (`retainer:write` — partner template).
+There's no client-visible action.
+
 ## Void
 
 D24 — voiding a retainer is allowed only when `hours_consumed = 0`.

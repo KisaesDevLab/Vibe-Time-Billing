@@ -45,7 +45,15 @@ import { appUsers, clients, engagements, firms, invoices, timeEntries, workCodes
 
 export const retainerTier = pgEnum('retainer_tier', ['TIER_1', 'TIER_2']);
 
-export const retainerStatus = pgEnum('retainer_status', ['active', 'exhausted', 'expired', 'void']);
+export const retainerStatus = pgEnum('retainer_status', [
+  'active',
+  'exhausted',
+  'expired',
+  'void',
+  // R7 — firm can self-disable an active retainer without voiding it.
+  // Time entries route to WIP while paused. Resume flips back to active.
+  'paused',
+]);
 
 export const returnType = pgEnum('return_type', ['1040', '1065', '1120', '1120S', '1041', '990']);
 
@@ -234,14 +242,14 @@ export const retainers = pgTable(
     engagementId: uuid('engagement_id')
       .notNull()
       .references(() => engagements.id, { onDelete: 'restrict' }),
-    offerId: uuid('offer_id')
-      .notNull()
-      .references(() => retainerOffers.id, { onDelete: 'restrict' }),
-    // The retainer-purchase AR invoice paid by the client. Distinct
-    // from the source tax-prep invoice on the offer.
-    purchaseInvoiceId: uuid('purchase_invoice_id')
-      .notNull()
-      .references(() => invoices.id, { onDelete: 'restrict' }),
+    // R7 — both nullable so a firm can manually create a retainer
+    // without going through the offer / portal-purchase chain. When
+    // present, these point back to the offer + AR invoice that funded
+    // the retainer; NULL means the firm activated it directly.
+    offerId: uuid('offer_id').references(() => retainerOffers.id, { onDelete: 'restrict' }),
+    purchaseInvoiceId: uuid('purchase_invoice_id').references(() => invoices.id, {
+      onDelete: 'restrict',
+    }),
     tier: retainerTier('tier').notNull(),
     returnType: returnType('return_type').notNull(),
     taxYear: integer('tax_year').notNull(),
@@ -264,6 +272,10 @@ export const retainers = pgTable(
     voidedAt: timestamp('voided_at', { withTimezone: true }),
     voidedById: uuid('voided_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     voidedReason: text('voided_reason'),
+    // R7 — pause bookkeeping. status='paused' means consumption is
+    // disabled but the retainer hasn't been voided. Resume flips back.
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
+    pausedReason: text('paused_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

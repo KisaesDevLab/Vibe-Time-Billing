@@ -34,8 +34,24 @@ interface RetainerRow {
   hoursPurchased: string;
   hoursConsumed: string;
   expiryDate: string;
-  status: 'active' | 'exhausted' | 'expired' | 'void';
+  status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
   priceCents: number;
+}
+
+interface TierConfigOption {
+  id: string;
+  returnType: string;
+  tier: 'TIER_1' | 'TIER_2';
+  name: string;
+  hours: number;
+  baseFeeCents: number;
+}
+
+interface EngagementOption {
+  id: string;
+  name: string;
+  clientName: string | null;
+  hasRetainer: boolean;
 }
 
 export function RetainerDashboardPage(): JSX.Element {
@@ -44,6 +60,15 @@ export function RetainerDashboardPage(): JSX.Element {
   const [voidId, setVoidId] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // R7 — manual-create state
+  const [showCreate, setShowCreate] = useState(false);
+  const [createEngagementId, setCreateEngagementId] = useState('');
+  const [createTierConfigId, setCreateTierConfigId] = useState('');
+  const [createHours, setCreateHours] = useState<number | ''>('');
+  const [createPriceCents, setCreatePriceCents] = useState<number | ''>('');
+  const [createNotes, setCreateNotes] = useState('');
+  const [tierConfigs, setTierConfigs] = useState<TierConfigOption[]>([]);
+  const [engagements, setEngagements] = useState<EngagementOption[]>([]);
 
   async function load(): Promise<void> {
     try {
@@ -75,6 +100,90 @@ export function RetainerDashboardPage(): JSX.Element {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'void failed');
+    }
+  }
+
+  async function pauseRetainer(id: string): Promise<void> {
+    setError(null);
+    try {
+      await api(`/api/staff/retainers/${id}/pause`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'pause failed');
+    }
+  }
+
+  async function resumeRetainer(id: string): Promise<void> {
+    setError(null);
+    try {
+      await api(`/api/staff/retainers/${id}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'resume failed');
+    }
+  }
+
+  async function openCreate(): Promise<void> {
+    setError(null);
+    setShowCreate(true);
+    // Lazy-load the dropdowns when the form opens.
+    if (tierConfigs.length === 0 || engagements.length === 0) {
+      try {
+        // Load all tier configs (one call per return type — 6 total).
+        const types = ['1040', '1065', '1120', '1120S', '1041', '990'] as const;
+        const tcLists = await Promise.all(
+          types.map((rt) =>
+            api<{
+              returnType: string;
+              tier1: TierConfigOption | null;
+              tier2: TierConfigOption | null;
+            }>(`/api/staff/admin/retainer/tier-configs?returnType=${rt}`),
+          ),
+        );
+        const flat: TierConfigOption[] = [];
+        for (const r of tcLists) {
+          if (r.tier1) flat.push({ ...r.tier1, returnType: r.returnType, tier: 'TIER_1' });
+          if (r.tier2) flat.push({ ...r.tier2, returnType: r.returnType, tier: 'TIER_2' });
+        }
+        setTierConfigs(flat);
+        const engResp = await api<{ items: EngagementOption[] }>('/api/staff/engagements');
+        setEngagements(engResp.items ?? []);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'options load failed');
+      }
+    }
+  }
+
+  async function performCreate(): Promise<void> {
+    if (!createEngagementId || !createTierConfigId) return;
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {
+        engagementId: createEngagementId,
+        tierConfigId: createTierConfigId,
+      };
+      if (createHours !== '') body['hoursPurchased'] = Number(createHours);
+      if (createPriceCents !== '') body['priceCents'] = Number(createPriceCents);
+      if (createNotes) body['notes'] = createNotes;
+      await api('/api/staff/retainers/manual', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setShowCreate(false);
+      setCreateEngagementId('');
+      setCreateTierConfigId('');
+      setCreateHours('');
+      setCreatePriceCents('');
+      setCreateNotes('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'create failed');
     }
   }
 
@@ -113,7 +222,14 @@ export function RetainerDashboardPage(): JSX.Element {
         )}
       </Card>
 
-      <Card title="Retainers">
+      <Card
+        title="Retainers"
+        action={
+          <Button type="button" onClick={() => void openCreate()}>
+            Create retainer
+          </Button>
+        }
+      >
         {items.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No retainers yet.</p>
         ) : (
@@ -142,9 +258,11 @@ export function RetainerDashboardPage(): JSX.Element {
                         ? 'success'
                         : r.status === 'exhausted'
                           ? 'warning'
-                          : r.status === 'expired'
-                            ? 'neutral'
-                            : 'danger'
+                          : r.status === 'paused'
+                            ? 'accent'
+                            : r.status === 'expired'
+                              ? 'neutral'
+                              : 'danger'
                     }
                   >
                     {r.status}
@@ -154,12 +272,40 @@ export function RetainerDashboardPage(): JSX.Element {
               {
                 key: 'actions',
                 header: '',
-                render: (r) =>
-                  Number(r.hoursConsumed) === 0 && r.status !== 'void' ? (
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setVoidId(r.id)}>
-                      Void
-                    </Button>
-                  ) : null,
+                render: (r) => (
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {r.status === 'active' && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void pauseRetainer(r.id)}
+                      >
+                        Pause
+                      </Button>
+                    )}
+                    {r.status === 'paused' && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void resumeRetainer(r.id)}
+                      >
+                        Resume
+                      </Button>
+                    )}
+                    {Number(r.hoursConsumed) === 0 && r.status !== 'void' && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setVoidId(r.id)}
+                      >
+                        Void
+                      </Button>
+                    )}
+                  </div>
+                ),
               },
             ]}
             rows={items}
@@ -167,6 +313,131 @@ export function RetainerDashboardPage(): JSX.Element {
           />
         )}
       </Card>
+
+      {showCreate && (
+        <Card title="Create retainer (manual)">
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            Bypasses the portal-purchase flow — useful when the firm is collecting payment
+            out-of-band. Eligibility is copied from the tier config snapshot.
+          </p>
+          <div style={{ display: 'grid', gap: 12, maxWidth: 540 }}>
+            <label style={{ fontSize: 13, display: 'grid', gap: 4 }}>
+              Engagement
+              <select
+                value={createEngagementId}
+                onChange={(e) => setCreateEngagementId(e.target.value)}
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                }}
+              >
+                <option value="">Select…</option>
+                {engagements
+                  .filter((e) => !e.hasRetainer)
+                  .map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.clientName ? `${e.clientName} — ` : ''}
+                      {e.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label style={{ fontSize: 13, display: 'grid', gap: 4 }}>
+              Tier
+              <select
+                value={createTierConfigId}
+                onChange={(e) => setCreateTierConfigId(e.target.value)}
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                }}
+              >
+                <option value="">Select…</option>
+                {tierConfigs.map((tc) => (
+                  <option key={tc.id} value={tc.id}>
+                    {tc.returnType} {tc.tier} — {tc.name} ({tc.hours}h)
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={{ fontSize: 13, display: 'grid', gap: 4 }}>
+              Hours (override — blank = use tier default)
+              <input
+                type="number"
+                step={0.25}
+                min={0}
+                value={createHours}
+                onChange={(e) =>
+                  setCreateHours(e.target.value === '' ? '' : Number(e.target.value))
+                }
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                }}
+              />
+            </label>
+            <label style={{ fontSize: 13, display: 'grid', gap: 4 }}>
+              Price (cents — override; blank = use tier base fee)
+              <input
+                type="number"
+                min={0}
+                value={createPriceCents}
+                onChange={(e) =>
+                  setCreatePriceCents(e.target.value === '' ? '' : Number(e.target.value))
+                }
+                style={{
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                }}
+              />
+            </label>
+            <label style={{ fontSize: 13, display: 'grid', gap: 4 }}>
+              Notes (optional)
+              <textarea
+                rows={2}
+                value={createNotes}
+                onChange={(e) => setCreateNotes(e.target.value)}
+                style={{
+                  padding: 8,
+                  fontSize: 13,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                }}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button
+                type="button"
+                onClick={() => void performCreate()}
+                disabled={!createEngagementId || !createTierConfigId}
+              >
+                Create
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setShowCreate(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {voidId && (
         <Card title="Void retainer">

@@ -8,7 +8,10 @@
 // "preview" panel can render the right state.
 
 export interface RetainerForEligibility {
-  status: 'active' | 'exhausted' | 'expired' | 'void';
+  // R7 — 'paused' added so a firm can self-disable consumption
+  // without voiding. The eligibility check treats it the same as
+  // 'inactive' — entries route to billable WIP.
+  status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
   expiryDate: string; // ISO date, e.g. '2029-04-15'
 }
 
