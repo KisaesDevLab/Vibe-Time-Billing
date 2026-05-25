@@ -22,6 +22,18 @@ export interface SessionStore {
   touch(realm: AuthRealm, sid: string): Promise<void>;
   destroy(realm: AuthRealm, sid: string): Promise<void>;
   destroyAllForUser(realm: AuthRealm, subjectId: string): Promise<number>;
+  /**
+   * List all live sessions owned by the given subject. Cleans up
+   * the reverse index when individual session rows have expired.
+   * CP5 — backs the portal /profile/sessions endpoint.
+   */
+  listForUser(realm: AuthRealm, subjectId: string): Promise<AnySession[]>;
+  /**
+   * Destroy every session in the subject's reverse index EXCEPT the
+   * one matching `keepSid`. Returns the count of destroyed sessions.
+   * CP5 — backs the "Sign out everywhere else" action.
+   */
+  destroyOthers(realm: AuthRealm, subjectId: string, keepSid: string): Promise<number>;
 }
 
 export function createSessionStore(redis: Redis): SessionStore {
@@ -57,6 +69,37 @@ export function createSessionStore(redis: Redis): SessionStore {
       const keys = sids.map((s) => sessionKey(realm, s));
       await redis.del(...keys, indexKey);
       return sids.length;
+    },
+    async listForUser(realm, subjectId) {
+      const indexKey = userIndexKey(realm, subjectId);
+      const sids = await redis.smembers(indexKey);
+      if (sids.length === 0) return [];
+      const sessions: AnySession[] = [];
+      const stale: string[] = [];
+      for (const sid of sids) {
+        const raw = await redis.get(sessionKey(realm, sid));
+        if (!raw) {
+          stale.push(sid);
+          continue;
+        }
+        const parsed = JSON.parse(raw) as Omit<AnySession, 'sid'>;
+        sessions.push({ ...parsed, sid } as AnySession);
+      }
+      // Best-effort cleanup of expired entries in the reverse index.
+      if (stale.length > 0) {
+        await redis.srem(indexKey, ...stale).catch(() => undefined);
+      }
+      return sessions;
+    },
+    async destroyOthers(realm, subjectId, keepSid) {
+      const indexKey = userIndexKey(realm, subjectId);
+      const sids = await redis.smembers(indexKey);
+      const victims = sids.filter((s) => s !== keepSid);
+      if (victims.length === 0) return 0;
+      const keys = victims.map((s) => sessionKey(realm, s));
+      await redis.del(...keys);
+      await redis.srem(indexKey, ...victims).catch(() => undefined);
+      return victims.length;
     },
   };
 }

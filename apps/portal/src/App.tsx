@@ -18,6 +18,7 @@ import { LoginPage } from './pages/Login';
 import { MessagesPage } from './pages/Messages';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
+import { ProfilePage } from './pages/Profile';
 import { RequestsPage } from './pages/Requests';
 import { PortalRetainersPage } from './pages/Retainers';
 import { RetainerOfferPage } from './pages/RetainerOffer';
@@ -72,6 +73,7 @@ export function App(): JSX.Element {
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/alt-contacts" element={<AltContactsPage />} />
+                  <Route path="/profile" element={<ProfilePage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
                   <Route path="/notifications" element={<NotificationPrefsPage />} />
                   <Route path="/retainer-offers/:id" element={<RetainerOfferPage />} />
@@ -212,10 +214,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/payment-methods'),
         },
         {
-          label: 'Contacts',
-          href: '/alt-contacts',
+          label: 'Profile',
+          href: '/profile',
           icon: '☏',
-          active: location.pathname.startsWith('/alt-contacts'),
+          active:
+            location.pathname.startsWith('/profile') ||
+            location.pathname.startsWith('/alt-contacts'),
         },
         {
           label: 'Switch client',

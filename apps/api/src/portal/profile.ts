@@ -35,6 +35,10 @@ export interface PortalProfileDeps {
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
   sessionStore?: {
     put: (session: AnySession) => Promise<void>;
+    // CP5 — used by /sessions endpoints. Optional so tests can pass a
+    // minimal store; the routes 503 when these are missing.
+    listForUser?: (realm: 'portal', subjectId: string) => Promise<AnySession[]>;
+    destroyOthers?: (realm: 'portal', subjectId: string, keepSid: string) => Promise<number>;
   };
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   sendSms?: (args: { to: string; body: string }) => Promise<void>;
@@ -742,6 +746,61 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       actorPortalIdentityId: session.portalIdentityId,
     }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
     res.json({ ok: true });
+  });
+
+  // ----- CP5 — active sessions list + revoke ------------------------
+  // Sessions live in Redis only (no DB persistence — see CLAUDE.md
+  // non-negotiable #2). The reverse index in session-store keys all
+  // sids per portalIdentityId so we can enumerate without SCAN.
+
+  router.get('/sessions', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.sessionStore?.listForUser) {
+      res.status(503).json({ error: 'sessions_unavailable' });
+      return;
+    }
+    const all = await deps.sessionStore.listForUser('portal', session.portalIdentityId);
+    // Privacy: never return the full sid or csrfToken — clients only
+    // get a stable hash they can reference for revoke.
+    const items = all.map((s) => ({
+      id: createHash('sha256').update(s.sid).digest('hex').slice(0, 16),
+      sid: s.sid, // server-side echo; the UI strips this from any display
+      isCurrent: s.sid === session.sid,
+      ip: s.ip,
+      userAgent: s.userAgent,
+      createdAt: new Date(s.createdAt).toISOString(),
+      lastSeenAt: new Date(s.lastSeenAt).toISOString(),
+    }));
+    res.json({
+      // Strip the raw sid from the response — the client only needs
+      // the short id for revoke + the metadata for display.
+      items: items.map(({ sid, ...rest }) => {
+        void sid;
+        return rest;
+      }),
+    });
+  });
+
+  router.post('/sessions/revoke-others', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.sessionStore?.destroyOthers) {
+      res.status(503).json({ error: 'sessions_unavailable' });
+      return;
+    }
+    const destroyed = await deps.sessionStore.destroyOthers(
+      'portal',
+      session.portalIdentityId,
+      session.sid,
+    );
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'portal_session',
+      entityId: null,
+      actorPortalIdentityId: session.portalIdentityId,
+      activeClientId: session.activeClientId,
+      after: { action: 'revoke_others', destroyedCount: destroyed },
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.json({ ok: true, destroyed });
   });
 
   return router;
