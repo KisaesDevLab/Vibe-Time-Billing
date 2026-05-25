@@ -87,6 +87,7 @@ import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createAppointmentRouter } from './appointments/routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
+import { createPackageRouter } from './packages/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
@@ -774,6 +775,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/service-tags', auth.requireAuth, auth.requireCsrf, serviceTagRouter);
+
+  // P03 — packages (Bronze/Silver/Gold). Reuses service:read|write.
+  const packageRouter = createPackageRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/packages', auth.requireAuth, auth.requireCsrf, packageRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,

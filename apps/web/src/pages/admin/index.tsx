@@ -40,6 +40,7 @@ import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
 import { ServicesCatalogPage } from './ServicesCatalog';
+import { PackagesPage } from './Packages';
 import { StorageOnboardingPage } from './StorageOnboarding';
 import { TaxonomyPage } from './Taxonomy';
 import { TemplatesPage } from './Templates';
@@ -88,6 +89,7 @@ const GROUPS: Group[] = [
       { key: 'statuses', label: 'Engagement statuses', href: '/admin/engagement-statuses' },
       { key: 'tpl', label: 'Templates', href: '/admin/templates' },
       { key: 'services', label: 'Services catalog', href: '/admin/services' },
+      { key: 'packages', label: 'Packages', href: '/admin/packages' },
       { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
       { key: 'letters', label: 'Engagement letters', href: '/admin/letters' },
     ],
@@ -261,6 +263,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="tax-payments" element={<TaxPaymentsPage />} />
         <Route path="appointments" element={<AppointmentsPage />} />
         <Route path="services" element={<ServicesCatalogPage />} />
+        <Route path="packages" element={<PackagesPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />
