@@ -143,6 +143,16 @@ export const PERMISSION_KEYS = [
   // commit the firm).
   'service:read',
   'service:write',
+
+  // P04 (proposal addendum) — proposal authoring. read for
+  // partner + manager (see the pipeline); write for partner only
+  // (proposals commit pricing + terms to a specific client). Once
+  // signed, the engagement scope it creates is governed by
+  // engagement:read|write (no separate agreement:* key per
+  // QUESTIONS.md Q34 reasoning — agreement is just engagement +
+  // engagement_scope post-acceptance).
+  'proposal:read',
+  'proposal:write',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -216,6 +226,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'appointment:write',
     'service:read',
     'service:write',
+    'proposal:read',
+    'proposal:write',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -269,6 +281,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     // P02 — manager has full services-catalog CRUD.
     'service:read',
     'service:write',
+    // P04 — manager sees the pipeline read-only; only partners author.
+    'proposal:read',
   ]),
 
   senior: new Set<PermissionKey>([

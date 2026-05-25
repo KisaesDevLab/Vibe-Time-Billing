@@ -89,6 +89,7 @@ import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
 import { createTermsTemplateRouter } from './terms-templates/routes';
+import { createProposalRouter } from './proposals/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
@@ -790,6 +791,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/terms-templates', auth.requireAuth, auth.requireCsrf, termsTemplateRouter);
+
+  // PP4a — Proposal CRUD. partner = author; manager = read.
+  const proposalRouter = createProposalRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, proposalRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,

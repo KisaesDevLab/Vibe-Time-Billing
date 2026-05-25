@@ -22,6 +22,9 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { EngagementsPage } from './pages/Engagements';
+import { ProposalsListPage } from './pages/Proposals';
+import { ProposalCreatePage } from './pages/ProposalCreate';
+import { ProposalEditorPage } from './pages/ProposalEditor';
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
@@ -62,6 +65,9 @@ export function App(): JSX.Element {
                   <Route path="/engagements" element={<EngagementsPage />} />
                   <Route path="/engagements/new" element={<EngagementCreatePage />} />
                   <Route path="/engagements/:id" element={<EngagementDetailPage />} />
+                  <Route path="/proposals" element={<ProposalsListPage />} />
+                  <Route path="/proposals/new" element={<ProposalCreatePage />} />
+                  <Route path="/proposals/:id/edit" element={<ProposalEditorPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/wip" element={<WipDashboardPage />} />
@@ -131,6 +137,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/engagements',
           icon: '❖',
           active: location.pathname.startsWith('/engagements'),
+        },
+        {
+          label: 'Proposals',
+          href: '/proposals',
+          icon: '✎',
+          active: location.pathname.startsWith('/proposals'),
         },
         {
           label: 'Billing',
