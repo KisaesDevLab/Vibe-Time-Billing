@@ -23,7 +23,13 @@ import {
   recurringBillingPlans,
   timeEntries,
 } from '@vibe/db/schema';
-import { rollup, rollupBy, type AllocationRow } from '@vibe/core/reporting';
+import {
+  clientRequestBillableCaptureRate,
+  rollup,
+  rollupBy,
+  type AllocationRow,
+} from '@vibe/core/reporting';
+import { clientRequestTimeEntryLinks, clientRequests } from '@vibe/db/schema';
 import { sql as drz } from 'drizzle-orm';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -1464,6 +1470,62 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       });
       items.sort((a, b) => (a.grossMarginPct ?? 0) - (b.grossMarginPct ?? 0));
       res.json({ items, windowDays: trailingDays });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // P6.1 — G.9 — Client-request billable capture rate. Of every
+  // fulfilled client request, what fraction had a time entry linked at
+  // fulfillment (or via an accepted suggestion)?
+  // -------------------------------------------------------------------
+  router.get(
+    '/client-request-capture',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ measure: { fulfilledCount: 0, capturedCount: 0, captureRate: 0 } });
+        return;
+      }
+      const QSchema = z.object({
+        start: z.string().regex(DATE_RE).optional(),
+        end: z.string().regex(DATE_RE).optional(),
+      });
+      const q = QSchema.safeParse(req.query);
+      if (!q.success) {
+        res.status(400).json({ error: 'invalid_query' });
+        return;
+      }
+      const where = [eq(clientRequests.firmId, session.firmId)];
+      if (q.data.start) where.push(drz`${clientRequests.fulfilledAt} >= ${q.data.start}::date`);
+      if (q.data.end)
+        where.push(drz`${clientRequests.fulfilledAt} < ${q.data.end}::date + interval '1 day'`);
+      const rows = await deps.db
+        .select({
+          id: clientRequests.id,
+          status: clientRequests.status,
+          // True iff at least one time-entry link row exists for this
+          // request that resolved to an accepted (= linked) suggestion
+          // OR a direct time_entry_id binding.
+          hasLink: drz<boolean>`
+            EXISTS (
+              SELECT 1
+              FROM ${clientRequestTimeEntryLinks} l
+              WHERE l.client_request_id = ${clientRequests.id}
+                AND l.time_entry_id IS NOT NULL
+                AND l.accepted_at IS NOT NULL
+            )
+          `,
+        })
+        .from(clientRequests)
+        .where(and(...where));
+      const measure = clientRequestBillableCaptureRate(
+        rows.map((r) => ({
+          fulfilled: r.status === 'FULFILLED',
+          hasLinkedTimeEntry: Boolean(r.hasLink),
+        })),
+      );
+      res.json({ measure, windowStart: q.data.start ?? null, windowEnd: q.data.end ?? null });
     },
   );
 
