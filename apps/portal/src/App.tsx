@@ -12,6 +12,7 @@ import { StepUpModal } from './components/StepUpModal';
 import { ActivityPage } from './pages/Activity';
 import { AltContactsPage } from './pages/AltContacts';
 import { EngagementsPage } from './pages/Engagements';
+import { FilePreviewPage } from './pages/FilePreview';
 import { FilesPage } from './pages/Files';
 import { HomePage } from './pages/Home';
 import { PortalInvoicesPage } from './pages/Invoices';
@@ -82,6 +83,7 @@ function PortalRoutes(): JSX.Element {
                   <Route path="/requests" element={<RequestsPage />} />
                   <Route path="/letters" element={<LettersPage />} />
                   <Route path="/files" element={<FilesPage />} />
+                  <Route path="/files/:id" element={<FilePreviewPage />} />
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/alt-contacts" element={<AltContactsPage />} />

@@ -10,6 +10,7 @@
 // timeline on the staff client-detail Files tab.
 
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Button, Card, Pill, Table, tokens, useIsNarrow } from '@vibe/ui';
 
@@ -209,12 +210,21 @@ export function FilesPage(): JSX.Element {
                   key: 'name',
                   header: 'Name',
                   render: (r) => (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Link
+                      to={`/files/${r.id}`}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        color: tokens.color.accent,
+                        textDecoration: 'none',
+                      }}
+                    >
                       <span aria-hidden style={{ fontSize: 16 }}>
                         {fileTypeIcon(r.mimeType, r.originalFilename)}
                       </span>
                       <span style={{ fontSize: 13 }}>{r.originalFilename}</span>
-                    </span>
+                    </Link>
                   ),
                 },
                 {

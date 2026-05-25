@@ -5,6 +5,7 @@
 // download action. UI plan §4 — list patterns.
 
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Button, Pill, tokens } from '@vibe/ui';
 
@@ -58,17 +59,21 @@ export function FileCardList({ rows, onDownload, empty }: FileCardListProps): JS
             {r.icon}
           </div>
           <div style={{ minWidth: 0 }}>
-            <div
+            <Link
+              to={`/files/${r.id}`}
               style={{
                 fontSize: 14,
                 fontWeight: 500,
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
+                display: 'block',
+                color: tokens.color.accent,
+                textDecoration: 'none',
               }}
             >
               {r.originalFilename}
-            </div>
+            </Link>
             <div
               style={{
                 fontSize: 12,
