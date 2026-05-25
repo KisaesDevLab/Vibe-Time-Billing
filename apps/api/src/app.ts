@@ -526,6 +526,7 @@ export function createApp(deps: AppDeps): Express {
   // AI feature endpoints — staff realm.
   const aiRouter = createAiRouter({
     db: deps.db,
+    redis: deps.redis,
     fakeUserRoles: deps.fakeUserRoles,
     cloudProvider: deps.cloudAiProvider ?? null,
     localProvider: deps.localAiProvider ?? null,

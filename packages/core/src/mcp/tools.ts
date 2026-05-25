@@ -13,6 +13,12 @@ export const MCP_TOOL_KEYS = [
   'suggest_adjustment',
   'query_realization',
   'query_recurring_plans',
+  // P5.3 — Connect addendum J.1–J.5
+  'summarize_engagement_thread',
+  'list_unresolved_client_requests',
+  'link_message_to_time_entry',
+  'suggest_billable_messages',
+  'draft_pre_bill_narrative',
 ] as const;
 
 export type McpToolKey = (typeof MCP_TOOL_KEYS)[number];

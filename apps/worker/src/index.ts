@@ -18,6 +18,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
 import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
+import { runShieldHealthcheck } from './jobs/shield-healthcheck';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
 import { runLateFeeAccrual } from './jobs/late-fee-accrual';
@@ -139,6 +140,7 @@ const QUEUES = [
   'hash-file',
   'pending-upload-sweep',
   'request-suggestion-sweep',
+  'shield-healthcheck',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -365,6 +367,10 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runRequestSuggestionSweep(db, logger);
     logger.info({ jobId: job.id, ...result }, 'request-suggestion-sweep complete');
   },
+  'shield-healthcheck': async (job) => {
+    const result = await runShieldHealthcheck({ db, redis: connection, log: logger });
+    logger.info({ jobId: job.id, ...result }, 'shield-healthcheck complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -404,6 +410,10 @@ const CRON: Record<QueueName, string> = {
   // suggestion_expiration_days; default 7) but the sweep cadence is
   // global.
   'request-suggestion-sweep': '30 * * * *',
+  // P5.2 — Vibe Shield reachability probe every 5 min. Result lives in
+  // Redis with a 10-min TTL; two consecutive misses flip cloud egress
+  // off.
+  'shield-healthcheck': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {

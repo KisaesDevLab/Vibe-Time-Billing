@@ -8,6 +8,7 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, gte, sql, sum } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
 import { aiRequestLog, firmSettings } from '@vibe/db/schema';
@@ -16,9 +17,11 @@ import { checkBudget, type AiProvider } from '@vibe/core/ai';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { resolveEgressPolicy, type EgressDecision } from './egress';
 
 export interface AiRoutesDeps extends RbacDeps {
   db: Database | null;
+  redis: Redis;
   // Caller picks which provider is preferred; routing logic lives here.
   cloudProvider?: AiProvider | null;
   localProvider?: AiProvider | null;
@@ -75,7 +78,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'suggest-description');
+      const provider = await pickProvider(deps, 'suggest-description', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -148,7 +151,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'realization-narrative');
+      const provider = await pickProvider(deps, 'realization-narrative', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -216,7 +219,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         res.status(400).json({ error: 'question_required' });
         return;
       }
-      const provider = await pickProvider(deps, 'plain-english-query');
+      const provider = await pickProvider(deps, 'plain-english-query', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -290,7 +293,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'pricing-suggestion');
+      const provider = await pickProvider(deps, 'pricing-suggestion', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -369,7 +372,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'write-down-patterns');
+      const provider = await pickProvider(deps, 'write-down-patterns', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -433,7 +436,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'reason-code-suggest');
+      const provider = await pickProvider(deps, 'reason-code-suggest', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -507,7 +510,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'prebill-narrative');
+      const provider = await pickProvider(deps, 'prebill-narrative', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -574,7 +577,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     requirePermission(deps, 'report:realization:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'anomaly-summary');
+      const provider = await pickProvider(deps, 'anomaly-summary', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -654,7 +657,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'nl-to-filter');
+      const provider = await pickProvider(deps, 'nl-to-filter', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -724,7 +727,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     requirePermission(deps, 'report:realization:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'scope-creep-narrative');
+      const provider = await pickProvider(deps, 'scope-creep-narrative', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -791,7 +794,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     requirePermission(deps, 'report:utilization:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const provider = await pickProvider(deps, 'capacity-narrative');
+      const provider = await pickProvider(deps, 'capacity-narrative', session.firmId);
       if (!provider) {
         res.status(503).json({ error: 'no_ai_provider' });
         return;
@@ -1019,12 +1022,42 @@ function featureOverride(feature: string | undefined): 'local' | 'cloud' | null 
   return null;
 }
 
-async function pickProvider(deps: AiRoutesDeps, feature?: string): Promise<AiProvider | null> {
+async function pickProvider(
+  deps: AiRoutesDeps,
+  feature?: string,
+  firmId?: string,
+): Promise<AiProvider | null> {
   const override = featureOverride(feature);
+  // P5.1 — egress gate. Resolves the per-firm policy. If the firm is
+  // local-only (default), cloud overrides are silently downgraded to
+  // local. If shield is unreachable, cloud is denied. firmId is
+  // optional only for the /status probe; every real call passes it.
+  let decision: EgressDecision = { kind: 'local-only', reason: 'firm-policy' };
+  if (firmId) {
+    decision = await resolveEgressPolicy({ db: deps.db, redis: deps.redis, firmId });
+  }
+  if (decision.kind !== 'shield-ok') {
+    if (override === 'cloud') {
+      logger.warn({ firmId, decision }, 'ai egress: cloud override blocked by policy');
+    }
+    return deps.localProvider ?? null;
+  }
+  // shield-ok: cloud allowed.
   if (override === 'cloud') return deps.cloudProvider ?? deps.localProvider ?? null;
   if (override === 'local') return deps.localProvider ?? deps.cloudProvider ?? null;
-  // Q15 — local preferred. Falls back to cloud per-feature.
+  // Q15 — local preferred even when cloud is permitted.
   return deps.localProvider ?? deps.cloudProvider ?? null;
+}
+
+/**
+ * Exported for MCP / Connect tools that want to surface the egress
+ * decision (e.g. to deregister cloud-only tools when shield is down).
+ */
+export async function getEgressDecision(
+  deps: { db: Database | null; redis: Redis },
+  firmId: string,
+): Promise<EgressDecision> {
+  return resolveEgressPolicy({ db: deps.db, redis: deps.redis, firmId });
 }
 
 async function loadBudget(

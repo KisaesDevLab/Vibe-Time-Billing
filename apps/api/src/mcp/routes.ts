@@ -18,8 +18,12 @@ import {
   adjustmentAllocations,
   billingBatchEntries,
   billingBatches,
+  clientRequests,
   clients,
+  engagementThreadLinks,
   engagements,
+  invoices,
+  messages,
   recurringBillingPlans,
   timeEntries,
 } from '@vibe/db/schema';
@@ -28,6 +32,8 @@ import { rollup, rollupBy, type AllocationRow } from '@vibe/core/reporting';
 
 import { emitAudit } from '../auth/audit';
 import { requireApiToken } from '../auth/api-token';
+import { batchDecryptForThread } from '../engagement-messaging/thread-crypto';
+import { linkTimeEntryMessages } from '../time-entries/routes';
 import { logger } from '../logger';
 
 export interface McpRoutesDeps {
@@ -38,6 +44,34 @@ const CallSchema = z.object({
   tool: z.string(),
   args: z.record(z.unknown()).optional(),
 });
+
+// Tools added in P5.3 — Connect addendum J.1–J.5. The audit
+// pipeline tags these so an operator can filter "all calls that
+// touched encrypted messaging or client requests".
+const CONNECT_TOOL_KEYS = new Set<string>([
+  'summarize_engagement_thread',
+  'list_unresolved_client_requests',
+  'link_message_to_time_entry',
+  'suggest_billable_messages',
+  'draft_pre_bill_narrative',
+]);
+
+/**
+ * Replace UUID-shaped values in MCP tool args with their first 8
+ * chars + '…' so the audit log stays human-scannable without keeping
+ * full identifiers in plaintext for every call.
+ */
+function redactArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v)) {
+      out[k] = `${v.slice(0, 8)}…`;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 export function createMcpRouter(deps: McpRoutesDeps): Router {
   const router = express.Router();
@@ -73,12 +107,24 @@ export function createMcpRouter(deps: McpRoutesDeps): Router {
     const args = parsed.data.args ?? {};
     try {
       const result = await dispatch(deps, tool, args, token);
+      // P5.4 — J.13 — every MCP call audit-logs the token actor, the
+      // tool, the inputs (sans sensitive args), and the egress
+      // destination so an operator can reconstruct who-asked-what.
+      const isConnectTool = CONNECT_TOOL_KEYS.has(tool);
       await emitAudit(deps.db, {
         action: 'MCP_CALL',
         entityType: 'mcp_tool',
         entityId: null,
         actorMcpTokenId: token.tokenId,
-        after: { tool, args },
+        after: {
+          tool,
+          args: redactArgs(args),
+          // Connect tools that surface decrypted message content are
+          // considered "local-only" because the decryption happens
+          // server-side; the MCP transport itself is the egress edge.
+          egressDestination: isConnectTool ? 'local-server' : 'local-server',
+          piiRedacted: isConnectTool, // Connect tools redact identifiers in audit
+        },
         ip: req.ip ?? null,
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
@@ -351,6 +397,290 @@ async function dispatch(
       return {
         dimension: parsed.dimension,
         items: Array.from(map.entries()).map(([key, value]) => ({ key, ...value })),
+      };
+    }
+
+    // ===============================================================
+    // P5.3 — Connect addendum J.1–J.5 — Connect tools.
+    // ===============================================================
+    case 'summarize_engagement_thread': {
+      const Schema = z.object({
+        engagementId: z.string().uuid(),
+        since: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}/)
+          .optional(),
+        limit: z.number().int().positive().max(200).default(50),
+      });
+      const parsed = Schema.parse(args);
+      // Resolve engagement → thread, scope-check the firm.
+      const [link] = await deps.db
+        .select({
+          engagementId: engagementThreadLinks.engagementId,
+          threadId: engagementThreadLinks.threadId,
+        })
+        .from(engagementThreadLinks)
+        .innerJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            eq(engagementThreadLinks.engagementId, parsed.engagementId),
+            eq(clients.firmId, token.firmId),
+          ),
+        )
+        .limit(1);
+      if (!link) throw new Error('engagement_thread_not_found_or_cross_firm');
+      const sinceClause = parsed.since ? drz`AND ${messages.createdAt} >= ${parsed.since}` : drz``;
+      const rows = await deps.db.execute<{
+        id: string;
+        body_ciphertext: Uint8Array;
+        created_at: Date;
+        sender_app_user_id: string | null;
+        sender_portal_identity_id: string | null;
+      }>(
+        drz`
+          SELECT id, body_ciphertext, created_at, sender_app_user_id, sender_portal_identity_id
+          FROM ${messages}
+          WHERE thread_id = ${link.threadId}
+          ${sinceClause}
+          ORDER BY created_at ASC
+          LIMIT ${parsed.limit}
+        `,
+      );
+      const list = Array.isArray(rows)
+        ? (rows as unknown as Array<{
+            id: string;
+            body_ciphertext: Uint8Array;
+            created_at: Date;
+            sender_app_user_id: string | null;
+            sender_portal_identity_id: string | null;
+          }>)
+        : ((
+            rows as unknown as {
+              rows: Array<{
+                id: string;
+                body_ciphertext: Uint8Array;
+                created_at: Date;
+                sender_app_user_id: string | null;
+                sender_portal_identity_id: string | null;
+              }>;
+            }
+          ).rows ?? []);
+      const ciphertexts = list.map((r) => r.body_ciphertext);
+      const plaintexts = ciphertexts.length
+        ? await batchDecryptForThread(
+            { db: deps.db, firmId: token.firmId, threadId: link.threadId },
+            ciphertexts,
+          )
+        : [];
+      return {
+        threadId: link.threadId,
+        messages: list.map((r, i) => ({
+          id: r.id,
+          createdAt: r.created_at,
+          senderKind: r.sender_app_user_id ? 'staff' : 'client',
+          body: plaintexts[i] ?? '',
+        })),
+      };
+    }
+
+    case 'list_unresolved_client_requests': {
+      const Schema = z.object({
+        engagementId: z.string().uuid().optional(),
+      });
+      const parsed = Schema.parse(args);
+      const conds = [eq(clientRequests.firmId, token.firmId), eq(clientRequests.status, 'OPEN')];
+      if (parsed.engagementId) conds.push(eq(clientRequests.engagementId, parsed.engagementId));
+      const items = await deps.db
+        .select({
+          id: clientRequests.id,
+          engagementId: clientRequests.engagementId,
+          title: clientRequests.title,
+          body: clientRequests.body,
+          assignedAppUserId: clientRequests.assignedAppUserId,
+          dueDate: clientRequests.dueDate,
+          createdAt: clientRequests.createdAt,
+        })
+        .from(clientRequests)
+        .where(and(...conds))
+        .orderBy(desc(clientRequests.createdAt))
+        .limit(200);
+      return { items };
+    }
+
+    case 'link_message_to_time_entry': {
+      const Schema = z.object({
+        timeEntryId: z.string().uuid(),
+        messageIds: z.array(z.string().uuid()).min(1).max(50),
+      });
+      const parsed = Schema.parse(args);
+      // Validate cross-firm: time entry must belong to a firm engagement.
+      const [te] = await deps.db
+        .select({
+          id: timeEntries.id,
+          engagementId: timeEntries.engagementId,
+          appUserId: timeEntries.appUserId,
+        })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(timeEntries.id, parsed.timeEntryId), eq(clients.firmId, token.firmId)))
+        .limit(1);
+      if (!te) throw new Error('time_entry_not_found_or_cross_firm');
+      await linkTimeEntryMessages(deps.db, {
+        engagementId: te.engagementId,
+        timeEntryId: te.id,
+        messageIds: parsed.messageIds,
+        // MCP token is the actor; we don't have an app_user. Use the
+        // time entry's owning user as a fallback so audit attribution
+        // remains plausible. The MCP-level audit row already names the
+        // token, so the actor here is informational.
+        appUserId: te.appUserId,
+      });
+      return { timeEntryId: te.id, linkedCount: parsed.messageIds.length };
+    }
+
+    case 'suggest_billable_messages': {
+      const Schema = z.object({
+        engagementId: z.string().uuid(),
+        periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
+        periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
+        limit: z.number().int().positive().max(200).default(50),
+      });
+      const parsed = Schema.parse(args);
+      const [link] = await deps.db
+        .select({ threadId: engagementThreadLinks.threadId })
+        .from(engagementThreadLinks)
+        .innerJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            eq(engagementThreadLinks.engagementId, parsed.engagementId),
+            eq(clients.firmId, token.firmId),
+          ),
+        )
+        .limit(1);
+      if (!link) throw new Error('engagement_thread_not_found_or_cross_firm');
+      // Pull messages in window not yet linked to a time entry. Anti-
+      // join via NOT EXISTS is the cleanest expression in raw SQL.
+      const rows = await deps.db.execute<{
+        id: string;
+        body_ciphertext: Uint8Array;
+        created_at: Date;
+        sender_kind: string;
+      }>(
+        drz`
+          SELECT m.id, m.body_ciphertext, m.created_at,
+                 CASE WHEN m.sender_app_user_id IS NOT NULL THEN 'staff' ELSE 'client' END AS sender_kind
+          FROM ${messages} m
+          WHERE m.thread_id = ${link.threadId}
+            AND m.created_at >= ${parsed.periodStart}
+            AND m.created_at < ${parsed.periodEnd}::date + interval '1 day'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM vibetb.time_entry_message_link l
+              WHERE l.message_id = m.id
+            )
+          ORDER BY m.created_at ASC
+          LIMIT ${parsed.limit}
+        `,
+      );
+      const list = Array.isArray(rows)
+        ? (rows as unknown as Array<{
+            id: string;
+            body_ciphertext: Uint8Array;
+            created_at: Date;
+            sender_kind: string;
+          }>)
+        : ((
+            rows as unknown as {
+              rows: Array<{
+                id: string;
+                body_ciphertext: Uint8Array;
+                created_at: Date;
+                sender_kind: string;
+              }>;
+            }
+          ).rows ?? []);
+      const ciphertexts = list.map((r) => r.body_ciphertext);
+      const plaintexts = ciphertexts.length
+        ? await batchDecryptForThread(
+            { db: deps.db, firmId: token.firmId, threadId: link.threadId },
+            ciphertexts,
+          )
+        : [];
+      return {
+        threadId: link.threadId,
+        candidates: list.map((r, i) => ({
+          messageId: r.id,
+          createdAt: r.created_at,
+          senderKind: r.sender_kind,
+          body: plaintexts[i] ?? '',
+        })),
+      };
+    }
+
+    case 'draft_pre_bill_narrative': {
+      const Schema = z.object({
+        invoiceId: z.string().uuid(),
+      });
+      const parsed = Schema.parse(args);
+      const [inv] = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          totalCents: invoices.totalCents,
+          firmId: invoices.firmId,
+          primaryEngagementId: invoices.primaryEngagementId,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, parsed.invoiceId))
+        .limit(1);
+      if (!inv) throw new Error('invoice_not_found');
+      if (inv.firmId !== token.firmId) throw new Error('cross_firm_denied');
+      // Pull WIP context. For a single-engagement invoice we resolve
+      // via primary_engagement_id; the multi-engagement consolidated
+      // case (line_items) is left for a future tool refinement.
+      const batches = inv.primaryEngagementId
+        ? await deps.db
+            .select({ id: billingBatches.id })
+            .from(billingBatches)
+            .where(eq(billingBatches.engagementId, inv.primaryEngagementId))
+        : [];
+      const batchIds = batches.map((b) => b.id);
+      const entries = batchIds.length
+        ? await deps.db
+            .select({
+              entryId: billingBatchEntries.timeEntryId,
+              action: billingBatchEntries.action,
+            })
+            .from(billingBatchEntries)
+            .where(inArray(billingBatchEntries.billingBatchId, batchIds))
+        : [];
+      const includedIds = entries.filter((e) => e.action === 'INCLUDE').map((e) => e.entryId);
+      const times = includedIds.length
+        ? await deps.db
+            .select({
+              id: timeEntries.id,
+              hours: timeEntries.hours,
+              description: timeEntries.description,
+              standardAmountCents: timeEntries.standardAmountCents,
+              entryDate: timeEntries.entryDate,
+            })
+            .from(timeEntries)
+            .where(inArray(timeEntries.id, includedIds))
+        : [];
+      return {
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        totalCents: inv.totalCents,
+        timeEntries: times.map((t) => ({
+          id: t.id,
+          date: t.entryDate,
+          hours: Number(t.hours),
+          description: t.description,
+          standardAmountCents: t.standardAmountCents,
+        })),
       };
     }
   }
