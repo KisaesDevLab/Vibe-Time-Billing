@@ -244,13 +244,24 @@ One client-facing PDF:
   adapter (HTML fallback when Puppeteer isn't installed). The HTML
   builder is a pure function and is used by the staff PDF flow too.
 
+## Pages
+
+- **`/admin/retainer-tiers`** — per-return-type tier config + firm
+  settings (Admin → Billing → Retainer tiers).
+- **`/admin/retainers`** — partner dashboard: firm-wide KPIs, full
+  retainer table, manual-create, pause/resume/void actions.
+- **`/admin/retainers/:id`** — per-retainer detail: hours bar, purchase
+  meta, eligibility chips, full ledger with joined time-entry context
+  (date, work code, description, actor), and a status-change timeline
+  pulled from `audit_log`.
+- **`/my/retainers`** — staff read-only dashboard scoped to engagements
+  the signed-in user is assigned to (partner, manager, or staff via
+  `engagement_assignment`). No write actions.
+
 ## Open follow-ups (not in v1)
 
-- Staff dashboard (`/my/retainers`)
-- Retainer detail page with rich ledger + activity timeline
-- Vibe MyBooks GL posting on activation (cash-basis per D5)
-
-These will land as Stage R6-followup PRs.
+- Vibe MyBooks GL posting on activation (cash-basis per D5) — blocked
+  on operator clarification of the integration shape.
 
 ## Locked decisions reference
 

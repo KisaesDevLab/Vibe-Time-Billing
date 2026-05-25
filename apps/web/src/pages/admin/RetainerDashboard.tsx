@@ -5,6 +5,7 @@
 // is the operational view.
 
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
@@ -235,7 +236,15 @@ export function RetainerDashboardPage(): JSX.Element {
         ) : (
           <Table<RetainerRow>
             columns={[
-              { key: 'name', header: 'Name', render: (r) => r.name },
+              {
+                key: 'name',
+                header: 'Name',
+                render: (r) => (
+                  <Link to={`/admin/retainers/${r.id}`} style={{ color: tokens.color.accent }}>
+                    {r.name}
+                  </Link>
+                ),
+              },
               { key: 'rt', header: 'Type', render: (r) => `${r.returnType} (${r.tier})` },
               {
                 key: 'hours',

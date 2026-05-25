@@ -32,6 +32,7 @@ import { RateCodesPage } from './RateCodes';
 import { RatesPage } from './Rates';
 import { RecurringPlansPage } from './RecurringPlans';
 import { RetainerDashboardPage } from './RetainerDashboard';
+import { RetainerDetailPage } from './RetainerDetail';
 import { RetainerTierSettingsPage } from './RetainerTierSettings';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
@@ -250,6 +251,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="hour-bank-tx" element={<HourBankTxPage />} />
         <Route path="retainer-tiers" element={<RetainerTierSettingsPage />} />
         <Route path="retainers" element={<RetainerDashboardPage />} />
+        <Route path="retainers/:id" element={<RetainerDetailPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />

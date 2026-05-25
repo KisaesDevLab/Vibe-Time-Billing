@@ -110,6 +110,164 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
     res.json({ items });
   });
 
+  // ----- Detail view (admin) ----------------------------------------
+  // Returns the retainer row + eligibility chips + ledger (with
+  // joined time-entry context for staff) + audit-log timeline.
+  // Mounted at /:id/detail so /:id stays free for future top-level GETs.
+
+  router.get(
+    '/:id/detail',
+    requirePermission(deps, 'retainer:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const retainerId = req.params['id']!;
+      const [retainer] = await deps.db
+        .select()
+        .from(retainers)
+        .where(and(eq(retainers.id, retainerId), eq(retainers.firmId, session.firmId)))
+        .limit(1);
+      if (!retainer) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ id: clients.id, name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, retainer.clientId))
+        .limit(1);
+      const [engagement] = await deps.db
+        .select({
+          id: engagements.id,
+          name: engagements.name,
+          returnType: engagements.returnType,
+          taxYear: engagements.taxYear,
+        })
+        .from(engagements)
+        .where(eq(engagements.id, retainer.engagementId))
+        .limit(1);
+      const eligibilityRows = await deps.db.execute(
+        sql`SELECT wc.id, wc.key, wc.name
+            FROM retainer_eligible_service res
+            JOIN work_code wc ON wc.id = res.work_code_id
+            WHERE res.retainer_id = ${retainer.id}
+            ORDER BY wc.name`,
+      );
+      const eligibility =
+        (eligibilityRows as unknown as { rows: Array<{ id: string; key: string; name: string }> })
+          .rows ?? [];
+
+      const ledgerRows = await deps.db.execute(
+        sql`SELECT rl.id, rl.kind, rl.hours_delta::text AS hours_delta,
+                   rl.hours_balance_after::text AS hours_balance_after,
+                   rl.created_at, rl.time_entry_id, rl.created_by_id,
+                   au.full_name AS actor_name,
+                   te.entry_date, te.hours::text AS entry_hours, te.description AS entry_description,
+                   wc.name AS work_code_name
+            FROM retainer_ledger rl
+            LEFT JOIN app_user au ON au.id = rl.created_by_id
+            LEFT JOIN time_entry te ON te.id = rl.time_entry_id
+            LEFT JOIN work_code wc ON wc.id = te.work_code_id
+            WHERE rl.retainer_id = ${retainer.id}
+            ORDER BY rl.created_at ASC`,
+      );
+      const ledger =
+        (
+          ledgerRows as unknown as {
+            rows: Array<{
+              id: string;
+              kind: string;
+              hours_delta: string;
+              hours_balance_after: string;
+              created_at: Date | string;
+              time_entry_id: string | null;
+              created_by_id: string | null;
+              actor_name: string | null;
+              entry_date: Date | string | null;
+              entry_hours: string | null;
+              entry_description: string | null;
+              work_code_name: string | null;
+            }>;
+          }
+        ).rows ?? [];
+
+      const timelineRows = await deps.db.execute(
+        sql`SELECT al.id, al.occurred_at, al.action, al.before_json, al.after_json,
+                   al.actor_app_user_id, au.full_name AS actor_name
+            FROM audit_log al
+            LEFT JOIN app_user au ON au.id = al.actor_app_user_id
+            WHERE al.entity_type = 'retainer'
+              AND al.entity_id = ${retainer.id}
+            ORDER BY al.occurred_at ASC
+            LIMIT 200`,
+      );
+      const timeline =
+        (
+          timelineRows as unknown as {
+            rows: Array<{
+              id: string;
+              occurred_at: Date | string;
+              action: string;
+              before_json: unknown;
+              after_json: unknown;
+              actor_app_user_id: string | null;
+              actor_name: string | null;
+            }>;
+          }
+        ).rows ?? [];
+
+      res.json({
+        retainer: {
+          id: retainer.id,
+          name: retainer.name,
+          tier: retainer.tier,
+          returnType: retainer.returnType,
+          taxYear: retainer.taxYear,
+          status: retainer.status,
+          hoursPurchased: retainer.hoursPurchased,
+          hoursConsumed: retainer.hoursConsumed,
+          priceCents: retainer.priceCents,
+          purchaseDate: retainer.purchaseDate,
+          expiryDate: retainer.expiryDate,
+          notes: retainer.notes,
+          offerId: retainer.offerId,
+          purchaseInvoiceId: retainer.purchaseInvoiceId,
+          pausedAt: retainer.pausedAt,
+          pausedReason: retainer.pausedReason,
+          voidedAt: retainer.voidedAt,
+          voidedReason: retainer.voidedReason,
+        },
+        client,
+        engagement,
+        eligibility,
+        ledger: ledger.map((r) => ({
+          id: r.id,
+          kind: r.kind,
+          hoursDelta: r.hours_delta,
+          hoursBalanceAfter: r.hours_balance_after,
+          createdAt: r.created_at,
+          timeEntryId: r.time_entry_id,
+          actorName: r.actor_name,
+          entryDate: r.entry_date,
+          entryHours: r.entry_hours,
+          entryDescription: r.entry_description,
+          workCodeName: r.work_code_name,
+        })),
+        timeline: timeline.map((r) => ({
+          id: r.id,
+          occurredAt: r.occurred_at,
+          action: r.action,
+          actorName: r.actor_name,
+          before: r.before_json,
+          after: r.after_json,
+        })),
+      });
+    },
+  );
+
   // ----- Staff-scoped (/my/retainers) --------------------------------
   // Visibility: retainers on engagements where the signed-in user is
   // either the engagement.partner_id / manager_id OR has a row in
