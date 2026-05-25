@@ -19,6 +19,7 @@ import {
 import { renderInvoiceHtml } from '@vibe/core/invoicing';
 
 import { emitAudit } from '../auth/audit';
+import { renderReceiptHtml } from '../invoices/receipt-exports';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -93,6 +94,23 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .where(eq(invoiceLineItems.invoiceId, inv.id))
       .orderBy(invoiceLineItems.sortOrder);
 
+    // CP3 — payment history for the receipt-download button. Privacy-
+    // safe shape: id + amount + provider + when. Drops payment-method
+    // ids, fee internals, retry counters.
+    const paymentRows = await deps.db
+      .select({
+        id: payments.id,
+        amountCents: payments.amountCents,
+        provider: payments.provider,
+        status: payments.status,
+        receivedAt: payments.receivedAt,
+        refundedAt: payments.refundedAt,
+        refundedAmountCents: payments.refundedAmountCents,
+      })
+      .from(payments)
+      .where(eq(payments.invoiceId, inv.id))
+      .orderBy(desc(payments.receivedAt));
+
     // Q30: portal-view receipt
     if (!inv.firstViewedAt) {
       await deps.db
@@ -110,7 +128,7 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
     }
-    res.json({ invoice: inv, lineItems: lines });
+    res.json({ invoice: inv, lineItems: lines, payments: paymentRows });
   });
 
   router.get('/:id/pdf.html', deps.requireAuth, async (req: Request, res: Response) => {
@@ -272,6 +290,9 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
         amountCents: Number(pay.amountCents),
         receivedAt: pay.receivedAt,
         providerChargeId: pay.providerChargeId,
+        refundedAt: pay.refundedAt,
+        refundedAmountCents:
+          pay.refundedAmountCents != null ? Number(pay.refundedAmountCents) : null,
       });
       const accept = req.header('accept') ?? '';
       if (accept.includes('text/html')) {
@@ -386,42 +407,4 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
-}
-
-function renderReceiptHtml(args: {
-  firmName: string;
-  clientName: string;
-  invoiceNumber: string;
-  paymentId: string;
-  amountCents: number;
-  receivedAt: Date;
-  providerChargeId: string | null;
-}): string {
-  const amount = (args.amountCents / 100).toFixed(2);
-  const when = args.receivedAt.toISOString().slice(0, 10);
-  const charge = args.providerChargeId
-    ? `<p>Reference: ${escapeHtml(args.providerChargeId)}</p>`
-    : '';
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><title>Receipt ${escapeHtml(args.invoiceNumber)}</title>
-<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:40px auto;padding:0 20px;color:#111}h1{font-size:1.4rem}table{width:100%;border-collapse:collapse}td{padding:6px 0;border-bottom:1px solid #eee}.r{text-align:right}</style></head>
-<body><h1>Payment Receipt</h1>
-<p><strong>${escapeHtml(args.firmName)}</strong></p>
-<p>Received from ${escapeHtml(args.clientName)} on ${when}.</p>
-<table>
-<tr><td>Invoice</td><td class="r">${escapeHtml(args.invoiceNumber)}</td></tr>
-<tr><td>Payment ID</td><td class="r">${escapeHtml(args.paymentId)}</td></tr>
-<tr><td>Amount</td><td class="r">$${amount}</td></tr>
-</table>
-${charge}
-<p>Thank you.</p>
-</body></html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }

@@ -23,6 +23,16 @@ interface LineItem {
   amountCents: number;
 }
 
+interface PaymentRow {
+  id: string;
+  amountCents: number;
+  provider: string;
+  status: string;
+  receivedAt: string;
+  refundedAt: string | null;
+  refundedAmountCents: number | null;
+}
+
 interface InvoiceDetail {
   invoice: InvoiceRow & {
     subtotalCents: number;
@@ -31,6 +41,7 @@ interface InvoiceDetail {
     firmId: string;
   };
   lineItems: LineItem[];
+  payments?: PaymentRow[];
 }
 
 const formatCents = (c: number): string =>
@@ -278,6 +289,56 @@ function InvoiceDetailPage(): JSX.Element {
           rowKey={(l) => l.id}
         />
       </Card>
+
+      {detail.payments && detail.payments.length > 0 && (
+        <Card title={`Payments (${detail.payments.length})`}>
+          <Table<PaymentRow>
+            columns={[
+              {
+                key: 'when',
+                header: 'Date',
+                render: (p) => new Date(p.receivedAt).toLocaleDateString(),
+              },
+              {
+                key: 'amount',
+                header: 'Amount',
+                align: 'right',
+                render: (p) => formatCents(p.amountCents),
+              },
+              { key: 'method', header: 'Via', render: (p) => p.provider },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (p) =>
+                  p.refundedAt ? (
+                    <Pill tone="warning">REFUNDED</Pill>
+                  ) : (
+                    <Pill tone={p.status === 'SUCCEEDED' ? 'success' : 'accent'}>{p.status}</Pill>
+                  ),
+              },
+              {
+                key: 'receipt',
+                header: '',
+                render: (p) =>
+                  p.status === 'SUCCEEDED' ? (
+                    <a
+                      href={`/api/portal/invoices/${inv.id}/payments/${p.id}/receipt`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: tokens.color.accent, fontSize: 12 }}
+                    >
+                      Download receipt
+                    </a>
+                  ) : (
+                    <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>—</span>
+                  ),
+              },
+            ]}
+            rows={detail.payments}
+            rowKey={(p) => p.id}
+          />
+        </Card>
+      )}
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <Button variant="secondary" onClick={() => navigate('/invoices')}>
