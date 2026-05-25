@@ -43,7 +43,17 @@ export interface PortalRoutesDeps {
 
 const LoginSchema = z.object({ contact: z.string().min(3).max(254) });
 const VerifyMagicSchema = z.object({ token: z.string().min(1) });
-const VerifyOtpSchema = z.object({ phone: z.string().min(5), code: z.string().regex(/^\d{6}$/) });
+const VerifyOtpSchema = z.object({
+  phone: z.string().min(5),
+  code: z.string().regex(/^\d{6}$/),
+  // P4.3 — H.5 — TCPA SMS opt-in capture. When the portal client
+  // sends back the consent text + version they displayed alongside
+  // the code-entry form, we persist it as the audit trail. Optional
+  // so legacy clients without the new screen still verify, but the
+  // FE always sends these on first-time verification flows.
+  smsConsentText: z.string().max(2000).optional(),
+  smsConsentVersion: z.string().max(40).optional(),
+});
 const SwitchClientSchema = z.object({ clientId: z.string().uuid() });
 
 const GENERIC_RESPONSE = {
@@ -204,10 +214,21 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
     }
     await deps.redis.del(`portal:otp:${phone}`);
     // Mark phone verified at this point — Q6 first-use verification.
+    // If the caller sent TCPA consent text + version (FE shows it on
+    // the first verification screen), stamp consent at the same time —
+    // SMS senders must check sms_consent_at IS NOT NULL before
+    // delivering to this identity.
     if (deps.db) {
+      const update: Record<string, unknown> = { primaryPhoneVerifiedAt: new Date() };
+      if (parsed.data.smsConsentText && parsed.data.smsConsentVersion) {
+        update['smsConsentText'] = parsed.data.smsConsentText;
+        update['smsConsentVersion'] = parsed.data.smsConsentVersion;
+        update['smsConsentAt'] = new Date();
+        update['smsConsentIp'] = clientIp(req);
+      }
       await deps.db
         .update(portalIdentity)
-        .set({ primaryPhoneVerifiedAt: new Date() })
+        .set(update)
         .where(eq(portalIdentity.id, state.identityId));
     }
     const identity = await findIdentityById(deps.db, state.identityId);

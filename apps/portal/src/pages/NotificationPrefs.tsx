@@ -12,7 +12,8 @@ type Event =
   | 'paymentFailed'
   | 'documentReady'
   | 'autoPayUpcoming'
-  | 'statementMonthly';
+  | 'statementMonthly'
+  | 'deliverableUnlocked';
 
 interface Prefs {
   newInvoice: Channel[];
@@ -21,6 +22,7 @@ interface Prefs {
   documentReady: Channel[];
   autoPayUpcoming: Channel[];
   statementMonthly: Channel[];
+  deliverableUnlocked: Channel[];
 }
 
 const EVENT_LABELS: Record<Event, string> = {
@@ -30,6 +32,7 @@ const EVENT_LABELS: Record<Event, string> = {
   documentReady: 'Document ready',
   autoPayUpcoming: 'Upcoming autopay run',
   statementMonthly: 'Monthly statement',
+  deliverableUnlocked: 'Files released after payment',
 };
 
 export function NotificationPrefsPage(): JSX.Element {
@@ -43,16 +46,15 @@ export function NotificationPrefsPage(): JSX.Element {
         const r = await api<{ preferences: Prefs | null }>(
           '/api/portal/profile/notification-preferences',
         );
-        setPrefs(
-          r.preferences ?? {
-            newInvoice: ['EMAIL'],
-            paymentConfirmation: ['EMAIL'],
-            paymentFailed: ['EMAIL', 'SMS'],
-            documentReady: ['EMAIL'],
-            autoPayUpcoming: [],
-            statementMonthly: ['EMAIL'],
-          },
-        );
+        setPrefs({
+          newInvoice: r.preferences?.newInvoice ?? ['EMAIL'],
+          paymentConfirmation: r.preferences?.paymentConfirmation ?? ['EMAIL'],
+          paymentFailed: r.preferences?.paymentFailed ?? ['EMAIL', 'SMS'],
+          documentReady: r.preferences?.documentReady ?? ['EMAIL'],
+          autoPayUpcoming: r.preferences?.autoPayUpcoming ?? [],
+          statementMonthly: r.preferences?.statementMonthly ?? ['EMAIL'],
+          deliverableUnlocked: r.preferences?.deliverableUnlocked ?? ['EMAIL'],
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed');
       }

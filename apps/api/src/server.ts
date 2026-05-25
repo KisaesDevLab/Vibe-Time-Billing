@@ -200,6 +200,62 @@ const sendPortalSms = async (args: { to: string; body: string }): Promise<void> 
   await smsProvider.send(args);
 };
 
+// P4.6 — I.6 — step-up lockout alert to firm admins. Resolves the
+// `step_up_lockout` notification template, then sends to every
+// app_user with the admin role. Best-effort: failures are logged.
+const sendStepUpLockoutAlert = async (args: {
+  firmId: string;
+  portalIdentityId: string;
+  expiresAt: Date;
+}): Promise<void> => {
+  try {
+    const { sql } = await import('drizzle-orm');
+    if (!db) return;
+    const result = await db.execute(
+      sql`
+        SELECT au.email,
+               au.full_name AS admin_name,
+               f.name       AS firm_name
+        FROM vibetb.app_user au
+        INNER JOIN vibetb.user_role ur ON ur.app_user_id = au.id
+        INNER JOIN vibetb.role r       ON r.id = ur.role_id
+        INNER JOIN vibetb.firm f       ON f.id = au.firm_id
+        WHERE au.firm_id = ${args.firmId}
+          AND au.status = 'ACTIVE'
+          AND r.slug = 'admin'
+      `,
+    );
+    // reason: postgres-js returns `{ rows: [...] }`, node-postgres returns
+    // the array directly. Handle both for portability.
+    const rawRows = Array.isArray(result)
+      ? (result as unknown as Array<Record<string, unknown>>)
+      : ((result as unknown as { rows?: Array<Record<string, unknown>> }).rows ?? []);
+    const admins = rawRows.map((r) => ({
+      email: String(r['email'] ?? ''),
+      admin_name: (r['admin_name'] as string | null) ?? null,
+      firm_name: (r['firm_name'] as string | null) ?? null,
+    }));
+    if (admins.length === 0) return;
+    const expires = args.expiresAt.toLocaleString();
+    const firmName = admins[0]?.firm_name ?? 'your firm';
+    const subject = `Step-up lockout triggered for portal user`;
+    const body =
+      `A portal user (identity ${args.portalIdentityId}) has been locked out of ` +
+      `step-up verification after repeated failed attempts.\n\n` +
+      `Lockout expires: ${expires}\n\n` +
+      `Review the audit log to investigate.\n\n${firmName}`;
+    for (const admin of admins) {
+      try {
+        await mailer.send({ to: admin.email, subject, body });
+      } catch (err) {
+        logger.warn({ err, to: admin.email }, 'step-up lockout alert: send failed');
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'sendStepUpLockoutAlert: resolve admins failed');
+  }
+};
+
 const app = createApp({
   db,
   redis,
@@ -213,6 +269,7 @@ const app = createApp({
   sendPortalEmail,
   sendStaffMail,
   sendPortalSms,
+  sendStepUpLockoutAlert,
 });
 
 // QA fix — tsx watch's hot-restart races the dying listener: the new

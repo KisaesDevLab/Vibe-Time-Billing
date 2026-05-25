@@ -47,6 +47,7 @@ import { createStatementsRouter } from './statements/routes';
 import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
+import { createPortalStepUpRouter } from './portal/step-up';
 import { createPortalLetterRouter } from './portal/letters';
 import { createPortalFileRouter } from './portal/files';
 import { createPortalMessagingRouter } from './portal/messaging';
@@ -96,6 +97,16 @@ export interface AppDeps {
     attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
   }) => Promise<void>;
   sendPortalSms?: PortalRoutesDeps['sendSms'];
+  /**
+   * P4.6 — I.6 — fired when a portal step-up lockout trips. Notifies
+   * firm admins (template `step_up_lockout`). Optional; if absent the
+   * lockout still happens, the alert just isn't sent.
+   */
+  sendStepUpLockoutAlert?: (args: {
+    firmId: string;
+    portalIdentityId: string;
+    expiresAt: Date;
+  }) => Promise<void>;
   // Optional payment provider hook. In dev/test the portal pay endpoint
   // returns 402 if no provider is wired; production injects the Stripe
   // client (apps/api/src/payments/stripe.ts) per the firm's BYO keys.
@@ -466,6 +477,17 @@ export function createApp(deps: AppDeps): Express {
     sessionStore: deps.sessionStore,
   });
   app.use('/api/portal/profile', portalProfileRouter);
+
+  // P4.4 — portal step-up challenge endpoints.
+  const portalStepUpRouter = createPortalStepUpRouter({
+    db: deps.db,
+    redis: deps.redis,
+    requireAuth: portal.requireAuth,
+    sendEmail: deps.sendPortalEmail,
+    sendSms: deps.sendPortalSms,
+    onLockout: deps.sendStepUpLockoutAlert,
+  });
+  app.use('/api/portal/step-up', portalStepUpRouter);
 
   const portalLetterRouter = createPortalLetterRouter({
     db: deps.db,

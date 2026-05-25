@@ -201,6 +201,18 @@ export const portalIdentity = pgTable(
       withTimezone: true,
     }),
 
+    // P4.3 — H.5 — TCPA SMS opt-in capture. We record the consent text
+    // verbatim (so a later regulator can audit exactly what the user
+    // agreed to), the version of the consent string we showed, and the
+    // timestamp + IP when they agreed. Phone verification flows write
+    // these alongside primaryPhoneVerifiedAt. NULL means "no SMS consent
+    // on file" — the SMS provider must not deliver to this identity
+    // until consent is captured.
+    smsConsentText: text('sms_consent_text'),
+    smsConsentVersion: text('sms_consent_version'),
+    smsConsentAt: timestamp('sms_consent_at', { withTimezone: true }),
+    smsConsentIp: text('sms_consent_ip'),
+
     preferredMethod: portalLoginMethod('preferred_method')
       .notNull()
       .default('EMAIL'),
@@ -587,6 +599,51 @@ export const paymentMethod = pgTable(
       t.isDefault,
     ),
     statusIdx: index('payment_method_status_idx').on(t.status),
+  }),
+);
+
+// =====================================================================
+// TABLE: portal_step_up_challenge (0064)
+//
+// Portal-side step-up verification. Different from the staff
+// `step_up_verifications` table because portal challenges are not
+// TOTP-only — the firm can configure ssn-last-4, ein, email-otp, or
+// sms-otp. The middleware issues a challenge on access to a gated
+// resource; the user completes it via the portal modal; success
+// stamps completed_at and the session-scoped step-up TTL begins.
+// =====================================================================
+
+export const portalStepUpChallenge = pgTable(
+  'portal_step_up_challenge',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    portalIdentityId: uuid('portal_identity_id')
+      .notNull()
+      .references(() => portalIdentity.id, { onDelete: 'cascade' }),
+    activeClientId: uuid('active_client_id').references(() => clients.id, {
+      onDelete: 'set null',
+    }),
+    challengeType: text('challenge_type', {
+      enum: ['ssn-last-4', 'ein', 'email-otp', 'sms-otp'],
+    }).notNull(),
+    // sha256 hex of the OTP for email-otp / sms-otp; NULL for the
+    // knowledge-factor variants (ssn / ein) where the comparison
+    // happens against the client record.
+    otpHash: text('otp_hash'),
+    reason: text('reason'),
+    issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    attempts: integer('attempts').notNull().default(0),
+  },
+  (t) => ({
+    identityIdx: index('portal_step_up_challenge_identity_idx').on(
+      t.portalIdentityId,
+      t.issuedAt,
+    ),
   }),
 );
 

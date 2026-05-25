@@ -227,6 +227,57 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     channel: 'SMS',
     body: '{{firm.displayName}}: approval {{approval.decision}} by {{approver.name}}.',
   },
+
+  // P4.1 — Connect-addendum H.2 ---------------------------------------
+  {
+    kind: 'deliverable_unlocked',
+    channel: 'EMAIL',
+    subject: 'New files available from {{firm.displayName}}',
+    body:
+      'Hi {{client.name}},\n\n' +
+      '{{firm.displayName}} has released {{deliverable.file_count}} file{{deliverable.file_count_plural}} ' +
+      'tied to invoice {{invoice.number}}. Sign in to view {{deliverable.file_count_them}}:\n\n' +
+      '{{portal.files_url}}\n\n' +
+      'Thanks,\n{{firm.displayName}}',
+  },
+  {
+    kind: 'deliverable_unlocked',
+    channel: 'SMS',
+    body: '{{firm.displayName}}: {{deliverable.file_count}} file{{deliverable.file_count_plural}} ready for invoice {{invoice.number}}. {{portal.files_url}}',
+  },
+  {
+    kind: 'wip_threshold_exceeded',
+    channel: 'EMAIL',
+    subject: 'WIP threshold exceeded on {{engagement.name}}',
+    body:
+      'Hi {{staff.name}},\n\n' +
+      'Engagement {{engagement.name}} for {{client.name}} has crossed its WIP threshold ' +
+      '({{wip.current}} vs. {{wip.threshold}}).\n\n' +
+      'Review: {{engagement.portal_url}}\n\n' +
+      '{{firm.displayName}}',
+  },
+  {
+    kind: 'wip_threshold_exceeded',
+    channel: 'SMS',
+    body: '{{firm.displayName}}: {{engagement.name}} WIP {{wip.current}} > {{wip.threshold}}. Review: {{engagement.portal_url}}',
+  },
+  {
+    kind: 'step_up_lockout',
+    channel: 'EMAIL',
+    subject: 'Step-up lockout triggered for {{actor.label}}',
+    body:
+      'Hi {{admin.name}},\n\n' +
+      '{{actor.label}} has been locked out of step-up verification after {{lockout.failed_attempts}} ' +
+      'failed attempts.\n\n' +
+      'Lockout expires in {{lockout.retry_after_minutes}} minutes ({{lockout.expires_at}}).\n\n' +
+      'Review the audit log: {{audit.portal_url}}\n\n' +
+      '{{firm.displayName}}',
+  },
+  {
+    kind: 'step_up_lockout',
+    channel: 'SMS',
+    body: '{{firm.displayName}}: step-up lockout for {{actor.label}}. Expires {{lockout.expires_at}}.',
+  },
 ];
 
 /**

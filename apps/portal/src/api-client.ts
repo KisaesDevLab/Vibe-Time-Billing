@@ -33,6 +33,19 @@ export async function api<T = unknown>(
   const ct = res.headers.get('content-type') ?? '';
   const body: unknown = ct.includes('application/json') ? await res.json() : await res.text();
   if (!res.ok) {
+    // P4.5 — when the server replies 403 step_up_required, dispatch a
+    // global window event so the App-level StepUpModal can open. The
+    // original call still throws so the caller can react; once the user
+    // completes the challenge they retry the action manually.
+    if (
+      res.status === 403 &&
+      typeof body === 'object' &&
+      body &&
+      'error' in body &&
+      (body as { error: unknown }).error === 'step_up_required'
+    ) {
+      window.dispatchEvent(new CustomEvent('portal:step-up-required'));
+    }
     const err = new Error(
       typeof body === 'object' && body && 'error' in body
         ? String((body as { error: unknown }).error)

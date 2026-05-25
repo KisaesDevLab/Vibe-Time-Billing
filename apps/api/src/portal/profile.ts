@@ -358,6 +358,8 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         documentReady: channels(incoming['documentReady']),
         autoPayUpcoming: channels(incoming['autoPayUpcoming']),
         statementMonthly: channels(incoming['statementMonthly']),
+        // P4.2 — Connect addendum H.4: pay-to-unlock file release.
+        deliverableUnlocked: channels(incoming['deliverableUnlocked']),
       };
       await deps.db
         .update(clientPortalAccess)
