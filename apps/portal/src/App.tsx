@@ -22,6 +22,7 @@ import { PortalRetainersPage } from './pages/Retainers';
 import { RetainerOfferPage } from './pages/RetainerOffer';
 import { StatementPage } from './pages/Statement';
 import { SwitchEntityPage } from './pages/Switch';
+import { TaxPaymentsPage } from './pages/TaxPayments';
 
 export function App(): JSX.Element {
   // Phase 16 #27 — license + firm-toggle gate. Block all routes (login
@@ -73,6 +74,7 @@ export function App(): JSX.Element {
                   <Route path="/notifications" element={<NotificationPrefsPage />} />
                   <Route path="/retainer-offers/:id" element={<RetainerOfferPage />} />
                   <Route path="/retainers" element={<PortalRetainersPage />} />
+                  <Route path="/tax-payments" element={<TaxPaymentsPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Shell>
@@ -182,6 +184,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/files',
           icon: '▥',
           active: location.pathname.startsWith('/files'),
+        },
+        {
+          label: 'Tax payments',
+          href: '/tax-payments',
+          icon: '📅',
+          active: location.pathname.startsWith('/tax-payments'),
         },
         {
           label: 'Statement',

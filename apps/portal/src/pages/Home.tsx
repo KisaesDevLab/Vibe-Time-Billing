@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Card, EmptyState, Pill, SectionHeading, Stat, tokens } from '@vibe/ui';
+import { Card, EmptyState, SectionHeading, Stat, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -23,19 +23,33 @@ interface InvoiceSummary {
   paidCents: number;
 }
 
+interface PortalTaxPaymentSummary {
+  id: string;
+  jurisdiction: string;
+  paymentType: string;
+  amountCents: number;
+  dueDate: string;
+  status: 'SCHEDULED' | 'PAID';
+}
+
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export function HomePage(): JSX.Element {
   const { me } = useAuth();
   const [openInvoices, setOpenInvoices] = useState<InvoiceSummary[]>([]);
+  const [taxPayments, setTaxPayments] = useState<PortalTaxPaymentSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ open: InvoiceSummary[] }>('/api/portal/invoices');
-        setOpenInvoices(r.open ?? []);
+        const [inv, tax] = await Promise.all([
+          api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
+          api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
+        ]);
+        setOpenInvoices(inv.open ?? []);
+        setTaxPayments(tax.items ?? []);
       } catch {
         // best-effort — empty state handles failure gracefully
       } finally {
@@ -43,6 +57,8 @@ export function HomePage(): JSX.Element {
       }
     })();
   }, [me?.activeClientId]);
+
+  const upcomingTax = taxPayments.filter((t) => t.status === 'SCHEDULED').slice(0, 2);
 
   const totalOutstanding = openInvoices.reduce(
     (sum, inv) => sum + (inv.totalCents - inv.paidCents),
@@ -146,14 +162,51 @@ export function HomePage(): JSX.Element {
       <section>
         <SectionHeading
           title="Upcoming tax payments"
-          action={<Pill tone="neutral">coming soon</Pill>}
+          action={
+            upcomingTax.length > 0 ? (
+              <Link to="/tax-payments" style={{ color: tokens.color.accent, fontSize: 13 }}>
+                View all →
+              </Link>
+            ) : undefined
+          }
         />
         <Card>
-          <EmptyState
-            icon="📅"
-            title="Tax payments unlock soon"
-            body="Once your firm enters scheduled tax obligations, they'll appear here with due dates and reminders."
-          />
+          {!loaded ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>
+          ) : upcomingTax.length === 0 ? (
+            <EmptyState
+              icon="📅"
+              title="No scheduled tax payments"
+              body="Your firm has not entered any upcoming tax obligations. If you expect one, reach out to them directly."
+            />
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+              {upcomingTax.map((tp) => (
+                <li
+                  key={tp.id}
+                  style={{
+                    padding: tokens.space.md,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.bg,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{tp.jurisdiction}</div>
+                    <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 2 }}>
+                      {tp.paymentType} · due {tp.dueDate}
+                    </div>
+                  </div>
+                  <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+                    {formatCents(tp.amountCents)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
       </section>
     </div>
