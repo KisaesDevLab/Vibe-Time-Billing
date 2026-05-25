@@ -6,7 +6,7 @@
 // route surface.
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { proposals } from '@vibe/db/schema';
@@ -251,6 +251,130 @@ describe('PP4a — brochure save', () => {
       body: { brochureJsonb: { schemaVersion: 1, blocks: [] } },
     });
     expect(r.statusCode).toBe(409);
+  });
+});
+
+describe('P06 — send + versions', () => {
+  it('send transitions DRAFT → SENT and writes v1 with sha256 hash', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'Send me' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    // Put some content in the brochure first.
+    const tree = {
+      schemaVersion: 1,
+      blocks: [{ id: 'b1', type: 'markdown', position: 0, props: { md: 'Hello world' } }],
+    };
+    await invoke(f.router, 'post', '/:id/brochure', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: { brochureJsonb: tree },
+    });
+    const send = await invoke(f.router, 'post', '/:id/send', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: {},
+    });
+    expect(send.statusCode).toBe(200);
+    const body = send.jsonBody as { version: number; contentHash: string };
+    expect(body.version).toBe(1);
+    expect(body.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    const [row] = await harness.db.select().from(proposals).where(eq(proposals.id, id));
+    expect(row!.status).toBe('SENT');
+    expect(row!.sentAt).not.toBeNull();
+  });
+
+  it('versions list shows the v1 row after send', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'V' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    await invoke(f.router, 'post', '/:id/send', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: {},
+    });
+    const list = await invoke(f.router, 'get', '/:id/versions', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+    });
+    const items = (
+      list.jsonBody as { items: { version: number; reason: string; contentHash: string }[] }
+    ).items;
+    expect(items.length).toBe(1);
+    expect(items[0]!.version).toBe(1);
+    expect(items[0]!.reason).toBe('SENT');
+  });
+
+  it('snapshot content is byte-identical regardless of post-send draft edits', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'Immutable' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    const original = {
+      schemaVersion: 1,
+      blocks: [{ id: 'b1', type: 'markdown', position: 0, props: { md: 'Original' } }],
+    };
+    await invoke(f.router, 'post', '/:id/brochure', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: { brochureJsonb: original },
+    });
+    const send = await invoke(f.router, 'post', '/:id/send', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: {},
+    });
+    const hashAtSend = (send.jsonBody as { contentHash: string }).contentHash;
+    // Simulate "firm edits draft after send" — bypass the status
+    // guard by direct SQL since the route would refuse.
+    await harness.db.execute(
+      sql`UPDATE proposals SET brochure_jsonb = ${JSON.stringify({
+        schemaVersion: 1,
+        blocks: [{ id: 'b1', type: 'markdown', position: 0, props: { md: 'Edited' } }],
+      })}::jsonb WHERE id = ${id}`,
+    );
+    // Pull the snapshot back; hash must be unchanged.
+    const get = await invoke(f.router, 'get', '/:id/versions/:version', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id, version: '1' } }),
+    });
+    const v = (get.jsonBody as { version: { contentHash: string } }).version;
+    expect(v.contentHash).toBe(hashAtSend);
+  });
+
+  it('refuses to send a non-DRAFT proposal', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'X' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    await invoke(f.router, 'post', '/:id/send', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: {},
+    });
+    const second = await invoke(f.router, 'post', '/:id/send', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+      body: {},
+    });
+    expect(second.statusCode).toBe(409);
+  });
+
+  it('rejects invalid version number on version detail', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'X' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    const r = await invoke(f.router, 'get', '/:id/versions/:version', {
+      ...makeReq({
+        firmId: f.firmId,
+        appUserId: f.appUserId,
+        params: { id, version: 'not-a-number' },
+      }),
+    });
+    expect(r.statusCode).toBe(400);
   });
 });
 

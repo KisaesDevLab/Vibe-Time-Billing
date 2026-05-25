@@ -112,6 +112,10 @@ export function ProposalEditorPage(): JSX.Element {
   const undo = useUndoHistory<ProposalBlockTree>(EMPTY_BLOCK_TREE, serializeTree);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [versions, setVersions] = useState<
+    { id: string; version: number; contentHash: string; reason: string; createdAt: string }[]
+  >([]);
 
   async function load(): Promise<void> {
     try {
@@ -126,10 +130,46 @@ export function ProposalEditorPage(): JSX.Element {
     }
   }
 
+  async function loadVersions(): Promise<void> {
+    try {
+      const r = await api<{
+        items: {
+          id: string;
+          version: number;
+          contentHash: string;
+          reason: string;
+          createdAt: string;
+        }[];
+      }>(`/api/staff/proposals/${id}/versions`);
+      setVersions(r.items ?? []);
+    } catch {
+      // Versions table is best-effort UI; failure shouldn't block the editor.
+    }
+  }
+
   useEffect(() => {
     void load();
+    void loadVersions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function send(): Promise<void> {
+    setSending(true);
+    setLoadErr(null);
+    try {
+      await autosave.flush();
+      await api(`/api/staff/proposals/${id}/send`, {
+        method: 'POST',
+        body: '{}',
+      });
+      await load();
+      await loadVersions();
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : 'send_failed');
+    } finally {
+      setSending(false);
+    }
+  }
 
   const tree = undo.state;
   const setTree = useCallback((next: ProposalBlockTree) => undo.setState(next), [undo]);
@@ -244,6 +284,20 @@ export function ProposalEditorPage(): JSX.Element {
             >
               Save now
             </Button>
+            {detail.status === 'DRAFT' && (
+              <Button
+                size="sm"
+                disabled={errors.length > 0 || sending}
+                onClick={() => void send()}
+                title={
+                  errors.length > 0
+                    ? 'Resolve validation issues before sending'
+                    : 'Snapshot the proposal as v1 and mark it SENT'
+                }
+              >
+                {sending ? 'Sending…' : 'Send proposal'}
+              </Button>
+            )}
           </div>
         }
       />
@@ -341,6 +395,48 @@ export function ProposalEditorPage(): JSX.Element {
           )}
         </Card>
       </div>
+
+      {versions.length > 0 && (
+        <Card title="Versions">
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
+            {versions.map((v) => (
+              <li
+                key={v.id}
+                style={{
+                  display: 'flex',
+                  gap: 12,
+                  alignItems: 'baseline',
+                  fontSize: 13,
+                  padding: '6px 8px',
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                }}
+              >
+                <strong>v{v.version}</strong>
+                <Pill>{v.reason}</Pill>
+                <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+                  {new Date(v.createdAt).toLocaleString()}
+                </span>
+                <code
+                  style={{
+                    color: tokens.color.textMuted,
+                    fontSize: 11,
+                    marginLeft: 'auto',
+                  }}
+                  title={v.contentHash}
+                >
+                  {v.contentHash.slice(0, 12)}…
+                </code>
+              </li>
+            ))}
+          </ul>
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
+            Each row is an immutable snapshot. The content hash never changes — what the client saw
+            at send-time hashes to this value forever.
+          </p>
+        </Card>
+      )}
     </div>
   );
 }
