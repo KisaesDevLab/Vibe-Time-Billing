@@ -33,6 +33,7 @@ import { createClientRouter } from './clients/routes';
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
 import { createTimeEntryRouter } from './time-entries/routes';
+import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
 import { portalAuthDeps } from './auth/portal-middleware';
 import { createAuditRouter } from './audit/routes';
@@ -221,8 +222,22 @@ export function createApp(deps: AppDeps): Express {
     lines.push('# HELP vibe_process_uptime_seconds Process uptime.');
     lines.push('# TYPE vibe_process_uptime_seconds counter');
     lines.push(`vibe_process_uptime_seconds{service="api"} ${process.uptime().toFixed(2)}`);
+    // R6-followup — retainer gauges from DB. Best-effort; failures log.
+    if (deps.db) {
+      try {
+        const retainerLines = await collectRetainerMetricsText(deps.db);
+        if (retainerLines) lines.push(retainerLines);
+      } catch (err) {
+        logger.error({ err }, 'retainer metrics collection failed');
+      }
+    }
     res.send(lines.join('\n') + '\n');
   });
+
+  // R6-followup — retainer-specific healthcheck. Surfaces 503 when the
+  // daily sweeps (retainer-expiry-sweep / retainer-offer-expiry-sweep)
+  // haven't reported a heartbeat into Redis within 25h.
+  mountRetainerHealth(app, { db: deps.db, redis: deps.redis });
 
   // Readiness — surfaces what's actually wired vs. stubbed. Used by the
   // admin dashboard's "system status" panel.

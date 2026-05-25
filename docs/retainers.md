@@ -207,12 +207,30 @@ cancel in-flight warnings; resume re-schedules.
 Both queues require Redis. Set `REDIS_DISABLED=1` (or `NODE_ENV=test`)
 to short-circuit scheduling — useful for tests and offline dev.
 
+## Observability
+
+The `GET /metrics` endpoint exposes five retainer gauges (Prometheus
+text format) on top of the existing API metrics:
+
+- `retainer_active_count` — currently active retainers
+- `retainer_hours_remaining_total` — unconsumed hours on active retainers
+- `retainer_expiring_30d` — active retainers with `expiry_date` in the
+  next 30 days
+- `retainer_offers_pending` — offers in `pending` status (not paid yet)
+- `retainer_deferred_liability_cents` — pro-rated value of remaining
+  hours across active retainers, suitable for finance dashboards
+
+The `GET /health/retainers` endpoint returns 200 when the daily sweeps
+last completed within 25h, 503 otherwise. Each sweep writes a heartbeat
+into Redis (`retainer:sweep:expiry:last_run` and
+`retainer:sweep:offer:last_run`) on success.
+
 ## Open follow-ups (not in v1)
 
 - Staff dashboard (`/my/retainers`)
 - Retainer detail page with rich ledger + activity timeline
 - Vibe MyBooks GL posting on activation (cash-basis per D5)
-- Prometheus metrics + healthcheck endpoint
+- CSV exports + Retainer Activity Statement PDF
 
 These will land as Stage R6-followup PRs.
 

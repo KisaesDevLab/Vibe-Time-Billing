@@ -389,6 +389,10 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       return;
     }
     const result = await runRetainerExpirySweep(db, logger);
+    // R6-followup — sweep heartbeat for /health/retainers.
+    await connection
+      .set('retainer:sweep:expiry:last_run', new Date().toISOString())
+      .catch((err) => logger.warn({ err }, 'retainer expiry sweep heartbeat failed'));
     logger.info({ jobId: job.id, ...result }, 'retainer-expiry-sweep complete');
   },
   'retainer-offer-expiry-sweep': async (job) => {
@@ -397,6 +401,9 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       return;
     }
     const result = await runRetainerOfferExpirySweep(db, logger);
+    await connection
+      .set('retainer:sweep:offer:last_run', new Date().toISOString())
+      .catch((err) => logger.warn({ err }, 'retainer offer sweep heartbeat failed'));
     logger.info({ jobId: job.id, ...result }, 'retainer-offer-expiry-sweep complete');
   },
 };
