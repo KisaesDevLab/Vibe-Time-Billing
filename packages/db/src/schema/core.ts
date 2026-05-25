@@ -3290,6 +3290,72 @@ export type FileShare = typeof fileShares.$inferSelect;
 export type FileShareEvent = typeof fileShareEvents.$inferSelect;
 
 // =====================================================================
+// 0073 — Appointments (CP12)
+//
+// Client-visible scheduled meetings between firm staff and the
+// active client. Read-only on the portal in v1; staff create/cancel
+// via /admin/appointments or a future calendar webhook.
+// =====================================================================
+
+export const appointmentStatus = pgEnum('appointment_status', [
+  'SCHEDULED',
+  'COMPLETED',
+  'CANCELLED',
+]);
+
+export const appointmentLocation = pgEnum('appointment_location', [
+  'VIDEO',
+  'PHONE',
+  'IN_PERSON',
+]);
+
+export const appointments = pgTable(
+  'appointment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'restrict' }),
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'restrict',
+    }),
+    title: text('title').notNull(),
+    description: text('description'),
+    startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+    endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
+    location: appointmentLocation('location').notNull().default('VIDEO'),
+    locationDetail: text('location_detail'),
+    leadAppUserId: uuid('lead_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    status: appointmentStatus('status').notNull().default('SCHEDULED'),
+    cancelledReason: text('cancelled_reason'),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelledById: uuid('cancelled_by_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    externalRef: text('external_ref'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+  },
+  (t) => ({
+    firmStartsIdx: index('appointment_firm_starts_idx').on(t.firmId, t.startsAt),
+    clientStartsIdx: index('appointment_client_starts_idx').on(t.clientId, t.startsAt),
+    leadStartsIdx: index('appointment_lead_starts_idx')
+      .on(t.leadAppUserId, t.startsAt)
+      .where(sql`lead_app_user_id IS NOT NULL`),
+    timeOrderCk: check('appointment_time_order', sql`${t.endsAt} > ${t.startsAt}`),
+  }),
+);
+
+export type Appointment = typeof appointments.$inferSelect;
+export type NewAppointment = typeof appointments.$inferInsert;
+
+// =====================================================================
 // 0069 — Tax payments (CP1)
 //
 // Staff-entered scheduled tax obligations surfaced to clients in the

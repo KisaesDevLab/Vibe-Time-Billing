@@ -11,6 +11,7 @@ import { ScopeProvider } from './scope-context';
 import { StepUpModal } from './components/StepUpModal';
 import { ActivityPage } from './pages/Activity';
 import { AltContactsPage } from './pages/AltContacts';
+import { AppointmentsPage } from './pages/Appointments';
 import { EngagementsPage } from './pages/Engagements';
 import { FilePreviewPage } from './pages/FilePreview';
 import { FilesPage } from './pages/Files';
@@ -78,6 +79,7 @@ function PortalRoutes(): JSX.Element {
                 <Routes>
                   <Route path="/" element={<HomePage />} />
                   <Route path="/engagements" element={<EngagementsPage />} />
+                  <Route path="/appointments" element={<AppointmentsPage />} />
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
                   <Route path="/messages" element={<MessagesPage />} />
                   <Route path="/requests" element={<RequestsPage />} />
@@ -179,6 +181,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/engagements',
           icon: '◉',
           active: location.pathname.startsWith('/engagements'),
+        },
+        {
+          label: 'Appointments',
+          href: '/appointments',
+          icon: '📅',
+          active: location.pathname.startsWith('/appointments'),
         },
         {
           label: 'Invoices',

@@ -33,6 +33,17 @@ interface PortalTaxPaymentSummary {
   status: 'SCHEDULED' | 'PAID';
 }
 
+interface AppointmentSummary {
+  id: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  location: 'VIDEO' | 'PHONE' | 'IN_PERSON';
+  locationDetail: string | null;
+  leadName: string | null;
+  status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+}
+
 interface ActiveEngagementSummary {
   id: string;
   name: string;
@@ -55,19 +66,22 @@ export function HomePage(): JSX.Element {
   const [openInvoices, setOpenInvoices] = useState<InvoiceSummary[]>([]);
   const [taxPayments, setTaxPayments] = useState<PortalTaxPaymentSummary[]>([]);
   const [engagements, setEngagements] = useState<ActiveEngagementSummary[]>([]);
+  const [appointments, setAppointments] = useState<AppointmentSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [inv, tax, eng] = await Promise.all([
+        const [inv, tax, eng, apt] = await Promise.all([
           api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
           api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
           api<{ items: ActiveEngagementSummary[] }>('/api/portal/engagements/active'),
+          api<{ items: AppointmentSummary[] }>('/api/portal/appointments'),
         ]);
         setOpenInvoices(inv.open ?? []);
         setTaxPayments(tax.items ?? []);
         setEngagements(eng.items ?? []);
+        setAppointments(apt.items ?? []);
       } catch {
         // best-effort — empty state handles failure gracefully
       } finally {
@@ -75,6 +89,10 @@ export function HomePage(): JSX.Element {
       }
     })();
   }, [me?.activeClientId]);
+
+  const upcomingAppts = appointments
+    .filter((a) => a.status === 'SCHEDULED' && new Date(a.startsAt).getTime() >= Date.now())
+    .slice(0, 2);
 
   const upcomingTax = taxPayments.filter((t) => t.status === 'SCHEDULED').slice(0, 2);
 
@@ -119,6 +137,76 @@ export function HomePage(): JSX.Element {
             caption={nextDue ? `Invoice ${nextDue.invoiceNumber}` : 'No invoices due'}
           />
         </div>
+      </section>
+
+      <section>
+        <SectionHeading
+          title="Upcoming appointments"
+          action={
+            upcomingAppts.length > 0 ? (
+              <Link to="/appointments" style={{ color: tokens.color.accent, fontSize: 13 }}>
+                View all →
+              </Link>
+            ) : undefined
+          }
+        />
+        <Card>
+          {!loaded ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>
+          ) : upcomingAppts.length === 0 ? (
+            <EmptyState
+              icon="📅"
+              title="No appointments scheduled"
+              body="Your firm will book meetings with you here when needed."
+            />
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+              {upcomingAppts.map((a) => {
+                const start = new Date(a.startsAt);
+                return (
+                  <li
+                    key={a.id}
+                    style={{
+                      padding: tokens.space.md,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      background: tokens.color.bg,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 12,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 500, fontSize: 14 }}>{a.title}</div>
+                      <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 2 }}>
+                        {start.toLocaleString([], {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })}
+                        {a.leadName && ` · with ${a.leadName}`}
+                      </div>
+                    </div>
+                    {a.location === 'VIDEO' &&
+                    a.locationDetail &&
+                    /^https?:\/\//.test(a.locationDetail) ? (
+                      <a
+                        href={a.locationDetail}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: tokens.color.accent, fontSize: 13 }}
+                      >
+                        Join →
+                      </a>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
       </section>
 
       <section>

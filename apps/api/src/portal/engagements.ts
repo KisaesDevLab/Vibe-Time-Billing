@@ -114,7 +114,10 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
               )                                 AS next_milestone
             FROM ${engagements} e
             LEFT JOIN ${appUsers} partner ON partner.id = e.partner_id
-            WHERE e.client_id = ANY(${scope.clientIds})
+            WHERE e.client_id IN (${sql.join(
+              scope.clientIds.map((c) => sql`${c}::uuid`),
+              sql`, `,
+            )})
               AND e.status IN ('ACTIVE', 'PAUSED')
             ORDER BY
               CASE e.status WHEN 'ACTIVE' THEN 0 ELSE 1 END,

@@ -129,6 +129,13 @@ export const PERMISSION_KEYS = [
   // cannot create or modify tax-payment rows).
   'tax_payment:read',
   'tax_payment:write',
+
+  // CP12 — Appointments. read for partner + manager + staff (everyone
+  // sees firm calendar entries for their assigned engagements);
+  // write for partner + manager (any staff can be the lead but only
+  // partners + managers can create / cancel).
+  'appointment:read',
+  'appointment:write',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -198,6 +205,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'retainer:write',
     'tax_payment:read',
     'tax_payment:write',
+    'appointment:read',
+    'appointment:write',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -245,6 +254,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     // CP1 — manager sees scheduled tax payments but cannot create
     // or modify (partner-only write).
     'tax_payment:read',
+    // CP12 — manager has full appointment CRUD.
+    'appointment:read',
+    'appointment:write',
   ]),
 
   senior: new Set<PermissionKey>([
@@ -269,6 +281,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'messaging:write',
     'requests:read',
     'requests:manage',
+    // CP12 — senior can see appointments on their engagements.
+    'appointment:read',
   ]),
 
   staff: new Set<PermissionKey>([
@@ -287,6 +301,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'messaging:read',
     'messaging:write',
     'requests:read',
+    // CP12 — staff see appointments on their assigned engagements.
+    'appointment:read',
   ]),
 };
 

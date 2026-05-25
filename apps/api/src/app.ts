@@ -50,6 +50,7 @@ import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
 import { createPortalActivityRouter } from './portal/activity';
+import { createPortalAppointmentRouter } from './portal/appointments';
 import { createPortalEngagementAutopayRouter } from './portal/engagement-autopay';
 import { createPortalEngagementRouter } from './portal/engagements';
 import { createPortalFileShareRouter } from './portal/file-shares';
@@ -83,6 +84,7 @@ import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
+import { createAppointmentRouter } from './appointments/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
@@ -558,6 +560,13 @@ export function createApp(deps: AppDeps): Express {
   const sharePublicRouter = createSharePublicRouter({ db: deps.db });
   app.use('/api/shared', sharePublicRouter);
 
+  // CP12 — portal appointments (read-only).
+  const portalAppointmentRouter = createPortalAppointmentRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/appointments', portalAppointmentRouter);
+
   // P4.4 — portal step-up challenge endpoints.
   const portalStepUpRouter = createPortalStepUpRouter({
     db: deps.db,
@@ -742,6 +751,14 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/tax-payments', auth.requireAuth, auth.requireCsrf, taxPaymentRouter);
+
+  // CP12 — appointments (read for everyone with appointment:read,
+  // write for partner + manager).
+  const appointmentRouter = createAppointmentRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, appointmentRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,

@@ -73,7 +73,10 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             WHERE (
                 -- Portal identity's own actions.
                 al.actor_portal_identity_id = ${session.portalIdentityId}
-                OR al.active_client_id = ANY(${scope.clientIds})
+                OR al.active_client_id = IN (${sql.join(
+                  scope.clientIds.map((c) => sql`${c}::uuid`),
+                  sql`, `,
+                )})
               )
               AND al.entity_type IN (
                 'portal_session',
@@ -94,7 +97,10 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             FROM audit_log al
             JOIN invoice inv ON inv.id = al.entity_id
             WHERE al.entity_type = 'invoice'
-              AND inv.client_id = ANY(${scope.clientIds})
+              AND inv.client_id = IN (${sql.join(
+                scope.clientIds.map((c) => sql`${c}::uuid`),
+                sql`, `,
+              )})
               AND al.actor_app_user_id IS NOT NULL
             UNION
             SELECT
@@ -104,7 +110,10 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             JOIN client_request cr ON cr.id = al.entity_id
             WHERE al.entity_type = 'client_request'
               AND cr.engagement_id IN (
-                SELECT id FROM engagement WHERE client_id = ANY(${scope.clientIds})
+                SELECT id FROM engagement WHERE client_id = IN (${sql.join(
+                  scope.clientIds.map((c) => sql`${c}::uuid`),
+                  sql`, `,
+                )})
               )
               AND al.actor_app_user_id IS NOT NULL
             UNION
@@ -114,7 +123,10 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             FROM audit_log al
             JOIN engagement e ON e.id = al.entity_id
             WHERE al.entity_type = 'engagement'
-              AND e.client_id = ANY(${scope.clientIds})
+              AND e.client_id = IN (${sql.join(
+                scope.clientIds.map((c) => sql`${c}::uuid`),
+                sql`, `,
+              )})
               AND al.actor_app_user_id IS NOT NULL
           )
           SELECT
