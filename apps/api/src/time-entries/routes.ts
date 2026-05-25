@@ -606,6 +606,48 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         }
       }
 
+      // R5 — Phase 8 — retainer auto-split. After the time_entry insert
+      // we run the consumption logic in its own short transaction
+      // (SELECT FOR UPDATE on the retainer row serializes concurrent
+      // inserts against the same retainer). When a retainer hit
+      // occurs, update the time_entry row with the split breakdown.
+      // Best-effort: failures route the entry to 100% billable WIP
+      // and log; the entry itself stays in the DB.
+      if (row?.id) {
+        try {
+          const { applyTimeEntryToRetainer } = await import('../retainers/consumption');
+          const split = await deps.db.transaction(async (tx) => {
+            return applyTimeEntryToRetainer(tx, {
+              engagementId: eng.id,
+              entryDate: parsed.data.entryDate,
+              hours: parsed.data.hours,
+              workCodeId: parsed.data.workCodeId ?? null,
+              actorAppUserId: session.appUserId,
+              timeEntryId: row.id,
+            });
+          });
+          if (split.retainerId) {
+            await deps.db
+              .update(timeEntries)
+              .set({
+                retainerId: split.retainerId,
+                retainerHours: String(split.retainerHours),
+                billableHours: String(split.billableHours),
+              })
+              .where(eq(timeEntries.id, row.id));
+          } else {
+            // Entry routed entirely to WIP — stamp billableHours for
+            // reporting parity.
+            await deps.db
+              .update(timeEntries)
+              .set({ billableHours: String(parsed.data.hours) })
+              .where(eq(timeEntries.id, row.id));
+          }
+        } catch (err) {
+          logger.error({ err, timeEntryId: row.id }, 'retainer auto-split failed');
+        }
+      }
+
       // Stage 2 — wire any cited messages to this time entry. Validation
       // failures bubble out as 403 so the caller knows the entry was
       // created but links were rejected; the entry row stays in the DB
