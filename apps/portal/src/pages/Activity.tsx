@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom';
 import { Card, EmptyState, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useScope } from '../scope-context';
 
 type ActorKind = 'self' | 'staff' | 'system';
 
@@ -28,11 +29,12 @@ export function ActivityPage(): JSX.Element {
   const [items, setItems] = useState<ActivityRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { scope, scopeQuery } = useScope();
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ items: ActivityRow[] }>('/api/portal/activity');
+        const r = await api<{ items: ActivityRow[] }>(`/api/portal/activity${scopeQuery}`);
         setItems(r.items ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed to load');
@@ -40,7 +42,9 @@ export function ActivityPage(): JSX.Element {
         setLoaded(true);
       }
     })();
-  }, []);
+  }, [scopeQuery]);
+
+  const consolidated = scope === 'all_accessible';
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 800, margin: '0 auto' }}>
@@ -48,6 +52,19 @@ export function ActivityPage(): JSX.Element {
         title="Activity"
         description="A record of recent actions on your account — yours and your firm's."
       />
+      {consolidated && (
+        <div
+          style={{
+            padding: '8px 12px',
+            background: tokens.color.accentMuted,
+            borderRadius: tokens.radius.sm,
+            fontSize: 12,
+            color: tokens.color.accent,
+          }}
+        >
+          Showing activity from <strong>all clients you can access</strong>.
+        </div>
+      )}
 
       <Card>
         {!loaded ? (

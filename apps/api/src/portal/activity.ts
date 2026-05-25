@@ -26,6 +26,7 @@ import type { Database } from '@vibe/db';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { resolveScope } from './scope';
 
 export interface PortalActivityDeps {
   db: Database | null;
@@ -54,6 +55,7 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
       return;
     }
     const limit = Math.min(Math.max(parseInt(String(req.query['limit'] ?? '50'), 10), 10), 200);
+    const scope = await resolveScope(deps.db, session, req);
     try {
       const exec = await deps.db.execute(
         sql`
@@ -71,7 +73,7 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             WHERE (
                 -- Portal identity's own actions.
                 al.actor_portal_identity_id = ${session.portalIdentityId}
-                OR al.active_client_id = ${session.activeClientId}
+                OR al.active_client_id = ANY(${scope.clientIds})
               )
               AND al.entity_type IN (
                 'portal_session',
@@ -85,16 +87,14 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
                 'engagement'
               )
             UNION
-            -- Staff-initiated events on entities the active client owns.
-            -- We narrow by joining audit_log.entity_id back to the
-            -- corresponding table.
+            -- Staff-initiated events on entities scoped clients own.
             SELECT
               al.id, al.occurred_at, al.action, al.entity_type, al.entity_id,
               al.actor_app_user_id, al.actor_portal_identity_id, al.active_client_id
             FROM audit_log al
             JOIN invoice inv ON inv.id = al.entity_id
             WHERE al.entity_type = 'invoice'
-              AND inv.client_id = ${session.activeClientId}
+              AND inv.client_id = ANY(${scope.clientIds})
               AND al.actor_app_user_id IS NOT NULL
             UNION
             SELECT
@@ -104,7 +104,7 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             JOIN client_request cr ON cr.id = al.entity_id
             WHERE al.entity_type = 'client_request'
               AND cr.engagement_id IN (
-                SELECT id FROM engagement WHERE client_id = ${session.activeClientId}
+                SELECT id FROM engagement WHERE client_id = ANY(${scope.clientIds})
               )
               AND al.actor_app_user_id IS NOT NULL
             UNION
@@ -114,7 +114,7 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             FROM audit_log al
             JOIN engagement e ON e.id = al.entity_id
             WHERE al.entity_type = 'engagement'
-              AND e.client_id = ${session.activeClientId}
+              AND e.client_id = ANY(${scope.clientIds})
               AND al.actor_app_user_id IS NOT NULL
           )
           SELECT
@@ -153,7 +153,7 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
             : ('system' as const),
         actorName: r.actor_app_user_first_name,
       }));
-      res.json({ items });
+      res.json({ items, scope: scope.isConsolidated ? 'all_accessible' : 'active' });
     } catch (err) {
       logger.error({ err }, 'portal activity feed failed');
       res.status(500).json({ error: 'internal' });

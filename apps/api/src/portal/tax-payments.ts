@@ -22,6 +22,7 @@ import type { Database } from '@vibe/db';
 import { taxPayments } from '@vibe/db/schema';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { resolveScope } from './scope';
 
 export interface PortalTaxPaymentDeps {
   db: Database | null;
@@ -38,12 +39,14 @@ export function createPortalTaxPaymentRouter(deps: PortalTaxPaymentDeps): Router
       res.json({ items: [] });
       return;
     }
+    const scope = await resolveScope(deps.db, session, req);
     // PAID rows older than 90 days are excluded so the client view
     // stays focused on what's current.
     const cutoffPaid = new Date(Date.now() - 90 * 24 * 3600_000).toISOString().slice(0, 10);
     const items = await deps.db
       .select({
         id: taxPayments.id,
+        clientId: taxPayments.clientId,
         engagementId: taxPayments.engagementId,
         jurisdiction: taxPayments.jurisdiction,
         paymentType: taxPayments.paymentType,
@@ -57,7 +60,7 @@ export function createPortalTaxPaymentRouter(deps: PortalTaxPaymentDeps): Router
       .from(taxPayments)
       .where(
         and(
-          eq(taxPayments.clientId, session.activeClientId),
+          inArray(taxPayments.clientId, scope.clientIds),
           // Visible statuses only.
           inArray(taxPayments.status, ['SCHEDULED', 'PAID']),
           // For PAID: only recent. For SCHEDULED: drz wildcard (no cutoff).
@@ -65,8 +68,9 @@ export function createPortalTaxPaymentRouter(deps: PortalTaxPaymentDeps): Router
         ),
       )
       .orderBy(taxPayments.dueDate);
-    res.json({ items });
-    void gte; // imports used by other portal files; suppress unused warning
+    res.json({ items, scope: scope.isConsolidated ? 'all_accessible' : 'active' });
+    void gte;
+    void eq; // imports kept for future filters
   });
 
   return router;

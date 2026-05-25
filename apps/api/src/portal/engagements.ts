@@ -30,6 +30,7 @@ import { appUsers, clientRequests, engagements, milestonePlans, milestones } fro
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { resolveScope } from './scope';
 
 export interface PortalEngagementDeps {
   db: Database | null;
@@ -71,10 +72,12 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
       res.json({ items: [] });
       return;
     }
+    const scope = await resolveScope(deps.db, session, req);
     try {
       const exec = await deps.db.execute(
         sql`SELECT
               e.id,
+              e.client_id                       AS client_id,
               e.name,
               e.status                          AS engagement_status,
               e.workflow_state                  AS workflow_state,
@@ -111,7 +114,7 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
               )                                 AS next_milestone
             FROM ${engagements} e
             LEFT JOIN ${appUsers} partner ON partner.id = e.partner_id
-            WHERE e.client_id = ${session.activeClientId}
+            WHERE e.client_id = ANY(${scope.clientIds})
               AND e.status IN ('ACTIVE', 'PAUSED')
             ORDER BY
               CASE e.status WHEN 'ACTIVE' THEN 0 ELSE 1 END,
@@ -124,6 +127,7 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
           exec as unknown as {
             rows: Array<{
               id: string;
+              client_id: string;
               name: string;
               engagement_status: string;
               workflow_state: string;
@@ -147,6 +151,7 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
             : null;
         return {
           id: r.id,
+          clientId: r.client_id,
           name: r.name,
           partnerName: r.partner_name,
           startDate: r.start_date,
@@ -166,7 +171,7 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
           awaitingFromYou: r.open_request_count,
         };
       });
-      res.json({ items });
+      res.json({ items, scope: scope.isConsolidated ? 'all_accessible' : 'active' });
     } catch (err) {
       logger.error({ err }, 'portal engagements/active failed');
       res.status(500).json({ error: 'internal' });

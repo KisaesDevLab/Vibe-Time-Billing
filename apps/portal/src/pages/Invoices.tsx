@@ -6,9 +6,11 @@ import { Button, Card, Pill, Table, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { InvoiceCardList } from '../components/InvoiceCardList';
+import { useScope } from '../scope-context';
 
 interface InvoiceRow {
   id: string;
+  clientId?: string;
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
@@ -71,11 +73,14 @@ function InvoiceList(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const narrow = useIsNarrow();
+  const { scope, scopeQuery, clientNames } = useScope();
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ open: InvoiceRow[]; paid: InvoiceRow[] }>('/api/portal/invoices');
+        const r = await api<{ open: InvoiceRow[]; paid: InvoiceRow[] }>(
+          `/api/portal/invoices${scopeQuery}`,
+        );
         setOpen(r.open ?? []);
         setPaid(r.paid ?? []);
       } catch (err) {
@@ -84,7 +89,7 @@ function InvoiceList(): JSX.Element {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [scopeQuery]);
 
   if (loading) {
     return <p style={{ color: tokens.color.textMuted }}>Loading…</p>;
@@ -93,8 +98,24 @@ function InvoiceList(): JSX.Element {
     return <p style={{ color: tokens.color.danger }}>{error}</p>;
   }
 
+  const consolidated = scope === 'all_accessible';
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900, margin: '0 auto' }}>
+      {consolidated && (
+        <div
+          style={{
+            padding: '8px 12px',
+            background: tokens.color.accentMuted,
+            borderRadius: tokens.radius.sm,
+            fontSize: 12,
+            color: tokens.color.accent,
+          }}
+        >
+          Showing invoices from <strong>all clients you can access</strong>. Toggle off in Switch
+          client.
+        </div>
+      )}
       <Card title={`Open invoices (${open.length})`}>
         {narrow ? (
           <InvoiceCardList
@@ -111,9 +132,16 @@ function InvoiceList(): JSX.Element {
                 key: 'num',
                 header: 'Invoice',
                 render: (i) => (
-                  <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
-                    {i.invoiceNumber}
-                  </Link>
+                  <span>
+                    <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
+                      {i.invoiceNumber}
+                    </Link>
+                    {consolidated && i.clientId && clientNames[i.clientId] && (
+                      <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 2 }}>
+                        {clientNames[i.clientId]}
+                      </div>
+                    )}
+                  </span>
                 ),
               },
               { key: 'issue', header: 'Issued', render: (i) => i.issueDate },
@@ -158,9 +186,16 @@ function InvoiceList(): JSX.Element {
                 key: 'num',
                 header: 'Invoice',
                 render: (i) => (
-                  <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
-                    {i.invoiceNumber}
-                  </Link>
+                  <span>
+                    <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
+                      {i.invoiceNumber}
+                    </Link>
+                    {consolidated && i.clientId && clientNames[i.clientId] && (
+                      <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 2 }}>
+                        {clientNames[i.clientId]}
+                      </div>
+                    )}
+                  </span>
                 ),
               },
               { key: 'issue', header: 'Issued', render: (i) => i.issueDate },

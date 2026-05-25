@@ -22,6 +22,7 @@ import { emitAudit } from '../auth/audit';
 import { renderReceiptHtml } from '../invoices/receipt-exports';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { resolveScope } from './scope';
 
 export interface PortalInvoiceRoutesDeps {
   db: Database | null;
@@ -49,9 +50,11 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       res.json({ open: [], paid: [] });
       return;
     }
+    const scope = await resolveScope(deps.db, session, req);
     const rows = await deps.db
       .select({
         id: invoices.id,
+        clientId: invoices.clientId,
         invoiceNumber: invoices.invoiceNumber,
         issueDate: invoices.issueDate,
         dueDate: invoices.dueDate,
@@ -62,7 +65,7 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .from(invoices)
       .where(
         and(
-          eq(invoices.clientId, session.activeClientId),
+          inArray(invoices.clientId, scope.clientIds),
           inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE']),
         ),
       )
@@ -70,7 +73,7 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .limit(500);
     const open = rows.filter((r) => r.status !== 'PAID');
     const paid = rows.filter((r) => r.status === 'PAID');
-    res.json({ open, paid });
+    res.json({ open, paid, scope: scope.isConsolidated ? 'all_accessible' : 'active' });
   });
 
   router.get('/:id', deps.requireAuth, async (req: Request, res: Response) => {

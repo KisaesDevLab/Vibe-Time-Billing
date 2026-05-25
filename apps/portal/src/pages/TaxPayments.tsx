@@ -9,9 +9,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { Card, EmptyState, Pill, SectionHeading, Stat, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useScope } from '../scope-context';
 
 interface PortalTaxPaymentRow {
   id: string;
+  clientId?: string;
   engagementId: string | null;
   jurisdiction: string;
   paymentType: string;
@@ -43,11 +45,14 @@ export function TaxPaymentsPage(): JSX.Element {
   const [items, setItems] = useState<PortalTaxPaymentRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { scope, scopeQuery, clientNames } = useScope();
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ items: PortalTaxPaymentRow[] }>('/api/portal/tax-payments');
+        const r = await api<{ items: PortalTaxPaymentRow[] }>(
+          `/api/portal/tax-payments${scopeQuery}`,
+        );
         setItems(r.items ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed to load');
@@ -55,7 +60,7 @@ export function TaxPaymentsPage(): JSX.Element {
         setLoaded(true);
       }
     })();
-  }, []);
+  }, [scopeQuery]);
 
   const { upcoming, paid } = useMemo(() => {
     const upcoming = items.filter((i) => i.status === 'SCHEDULED');
@@ -67,12 +72,27 @@ export function TaxPaymentsPage(): JSX.Element {
   const nextDueDays = nextDue ? daysUntil(nextDue.dueDate) : null;
   const totalUpcomingCents = upcoming.reduce((s, i) => s + i.amountCents, 0);
 
+  const consolidated = scope === 'all_accessible';
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900, margin: '0 auto' }}>
       <SectionHeading
         title="Tax payments"
         description="Estimated tax obligations entered by your firm. Confirm with them before mailing checks or making payments."
       />
+      {consolidated && (
+        <div
+          style={{
+            padding: '8px 12px',
+            background: tokens.color.accentMuted,
+            borderRadius: tokens.radius.sm,
+            fontSize: 12,
+            color: tokens.color.accent,
+          }}
+        >
+          Showing tax payments from <strong>all clients you can access</strong>.
+        </div>
+      )}
 
       <Card
         title="Disclaimer"
@@ -184,6 +204,9 @@ export function TaxPaymentsPage(): JSX.Element {
                         </div>
                         <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 2 }}>
                           {row.paymentType}
+                          {consolidated && row.clientId && clientNames[row.clientId] && (
+                            <> · {clientNames[row.clientId]}</>
+                          )}
                         </div>
                       </div>
                       <div

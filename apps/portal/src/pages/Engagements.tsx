@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react';
 import { Card, EmptyState, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useScope } from '../scope-context';
 
 type StatusPill = 'in_progress' | 'awaiting_client' | 'scheduled' | 'filed' | 'blocked' | 'paused';
 
@@ -23,6 +24,7 @@ interface NextMilestone {
 
 interface ActiveEngagement {
   id: string;
+  clientId?: string;
   name: string;
   partnerName: string | null;
   startDate: string | null;
@@ -57,11 +59,14 @@ export function EngagementsPage(): JSX.Element {
   const [items, setItems] = useState<ActiveEngagement[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { scope, scopeQuery, clientNames } = useScope();
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ items: ActiveEngagement[] }>('/api/portal/engagements/active');
+        const r = await api<{ items: ActiveEngagement[] }>(
+          `/api/portal/engagements/active${scopeQuery}`,
+        );
         setItems(r.items ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed to load');
@@ -69,7 +74,9 @@ export function EngagementsPage(): JSX.Element {
         setLoaded(true);
       }
     })();
-  }, []);
+  }, [scopeQuery]);
+
+  const consolidated = scope === 'all_accessible';
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900, margin: '0 auto' }}>
@@ -77,6 +84,19 @@ export function EngagementsPage(): JSX.Element {
         title="Your engagements"
         description="Active engagements with your firm and where each one stands today."
       />
+      {consolidated && (
+        <div
+          style={{
+            padding: '8px 12px',
+            background: tokens.color.accentMuted,
+            borderRadius: tokens.radius.sm,
+            fontSize: 12,
+            color: tokens.color.accent,
+          }}
+        >
+          Showing engagements from <strong>all clients you can access</strong>.
+        </div>
+      )}
 
       {!loaded ? (
         <Card>
@@ -93,7 +113,11 @@ export function EngagementsPage(): JSX.Element {
       ) : (
         <div style={{ display: 'grid', gap: tokens.space.md }}>
           {items.map((e) => (
-            <EngagementCard key={e.id} engagement={e} />
+            <EngagementCard
+              key={e.id}
+              engagement={e}
+              clientName={consolidated && e.clientId ? clientNames[e.clientId] : undefined}
+            />
           ))}
         </div>
       )}
@@ -103,7 +127,13 @@ export function EngagementsPage(): JSX.Element {
   );
 }
 
-export function EngagementCard({ engagement }: { engagement: ActiveEngagement }): JSX.Element {
+export function EngagementCard({
+  engagement,
+  clientName,
+}: {
+  engagement: ActiveEngagement;
+  clientName?: string;
+}): JSX.Element {
   const period = formatPeriod(engagement.startDate, engagement.endDate, engagement.dueDate);
   return (
     <Card>
@@ -118,6 +148,12 @@ export function EngagementCard({ engagement }: { engagement: ActiveEngagement })
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 16, fontWeight: 600 }}>{engagement.name}</div>
           <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 4 }}>
+            {clientName && (
+              <>
+                <strong style={{ color: tokens.color.text }}>{clientName}</strong>
+                {' · '}
+              </>
+            )}
             {period}
             {engagement.partnerName && ` · ${engagement.partnerName}`}
           </div>

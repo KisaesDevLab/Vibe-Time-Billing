@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useScope } from '../scope-context';
 
 interface ClientRow {
   id: string;
@@ -17,6 +18,7 @@ export function SwitchEntityPage(): JSX.Element {
   const [active, setActive] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { scope, setScope } = useScope();
 
   async function load(): Promise<void> {
     try {
@@ -51,6 +53,39 @@ export function SwitchEntityPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
+      {items.length > 1 && (
+        <Card title="Consolidated view">
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            When enabled, your Invoices, Tax payments, Engagements, and Activity pages show entries
+            from <em>every</em> client you have access to. Toggling this does not change which
+            client is &quot;active&quot; for actions like making a payment — switch below to do
+            that.
+          </p>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={scope === 'all_accessible'}
+              onChange={(e) => setScope(e.target.checked ? 'all_accessible' : 'active')}
+            />
+            <span>
+              Show entries across all my clients
+              {scope === 'all_accessible' && (
+                <span style={{ marginLeft: 8 }}>
+                  <Pill tone="success">on</Pill>
+                </span>
+              )}
+            </span>
+          </label>
+        </Card>
+      )}
       <Card title="Switch active client">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
           If you have portal access to more than one client account, pick the one you want to view.

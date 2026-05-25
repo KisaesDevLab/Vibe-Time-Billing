@@ -7,6 +7,7 @@ import { api } from './api-client';
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
+import { ScopeProvider } from './scope-context';
 import { StepUpModal } from './components/StepUpModal';
 import { ActivityPage } from './pages/Activity';
 import { AltContactsPage } from './pages/AltContacts';
@@ -54,7 +55,17 @@ export function App(): JSX.Element {
   }
   return (
     <AuthProvider>
-      <StepUpModal />
+      <ScopeProvider>
+        <StepUpModal />
+        <PortalRoutes />
+      </ScopeProvider>
+    </AuthProvider>
+  );
+}
+
+function PortalRoutes(): JSX.Element {
+  return (
+    <>
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
         <Route path="/auth/verify" element={<LoginPage />} />
@@ -88,7 +99,7 @@ export function App(): JSX.Element {
           }
         />
       </Routes>
-    </AuthProvider>
+    </>
   );
 }
 
