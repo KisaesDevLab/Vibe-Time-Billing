@@ -2304,6 +2304,11 @@ export const engagementLetters = pgTable(
     sentToEmail: text('sent_to_email'),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     acceptedIp: text('accepted_ip'),
+    // CP8 — signature capture (Build Plan §2.11). signatureSvg holds
+    // the raw <svg> the client drew on the portal pad; signedFullName
+    // is a typed legibility fallback. Both nullable for legacy rows.
+    signatureSvg: text('signature_svg'),
+    signedFullName: text('signed_full_name'),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
     voidedReason: text('voided_reason'),
     createdById: uuid('created_by_id')

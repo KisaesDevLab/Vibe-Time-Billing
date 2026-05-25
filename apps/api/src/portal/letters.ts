@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { sanitizeSignatureSvg } from './signature-svg';
 
 /**
  * Phase 13 #24, 14 #13, 16 #20 — pay-to-unlock client-side gate.
@@ -130,6 +131,22 @@ export function createPortalLetterRouter(deps: PortalLetterDeps): Router {
       res.json({ ok: true });
       return;
     }
+    const body = (req.body ?? {}) as { signatureSvg?: unknown; signedFullName?: unknown };
+    // Signature is optional v1 — letters that didn't capture one stay
+    // valid. When provided, the SVG must pass the sanitizer.
+    let cleanSig: string | null = null;
+    if (typeof body.signatureSvg === 'string' && body.signatureSvg.length > 0) {
+      cleanSig = sanitizeSignatureSvg(body.signatureSvg);
+      if (cleanSig === null) {
+        res.status(400).json({ error: 'invalid_signature_svg' });
+        return;
+      }
+    }
+    const typedName =
+      typeof body.signedFullName === 'string' && body.signedFullName.trim().length > 0
+        ? body.signedFullName.trim().slice(0, 200)
+        : null;
+
     const [letter] = await deps.db
       .select({
         id: engagementLetters.id,
@@ -155,10 +172,17 @@ export function createPortalLetterRouter(deps: PortalLetterDeps): Router {
         status: 'ACCEPTED',
         acceptedAt: new Date(),
         acceptedIp: req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? null,
+        signatureSvg: cleanSig,
+        signedFullName: typedName,
       })
       .where(eq(engagementLetters.id, letter.id));
     logger.info(
-      { letterId: letter.id, portalIdentityId: session.portalIdentityId },
+      {
+        letterId: letter.id,
+        portalIdentityId: session.portalIdentityId,
+        hasSignature: cleanSig !== null,
+        hasTypedName: typedName !== null,
+      },
       'engagement letter accepted via portal',
     );
     res.json({ ok: true });
