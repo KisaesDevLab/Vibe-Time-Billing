@@ -41,6 +41,7 @@ import {
 } from '../schema/core';
 import { portalIdentity, clientPortalAccess } from '../schema/portal';
 import { seedNotificationTemplates } from '../seed-helpers/notification-templates';
+import { seedRetainerTierConfigs } from '../seed-helpers/retainer-tier-configs';
 
 const FIRM_NAME = 'Granite Peak CPAs';
 
@@ -76,6 +77,10 @@ async function main(): Promise<void> {
       // v2 Sprint A — default notification templates (15 kinds × 2 channels).
       const tplCount = await seedNotificationTemplates(tx, firmId);
       log(`seeded ${tplCount} notification template default(s)`);
+      // R0.3 — default retainer tier configs (six return types × two tiers).
+      // Plus firm_retainer_settings row (feature_enabled defaults false).
+      const tierCount = await seedRetainerTierConfigs(tx, firmId);
+      log(`seeded ${tierCount} retainer tier config default(s)`);
       // Demo loop: one engagement on the first client, four timekeepers
       // post the canonical Vance scenario, a billing batch ties them
       // together, a hierarchical-cascade write-down is applied. Reports

@@ -1414,7 +1414,24 @@ export const engagements = pgTable(
 
     // 0050 — when set, time-entry create/update on this engagement is
     // rejected (409). Toggled via /engagements/:id/retainer/lock|unlock.
+    // NOTE: unrelated to the 0065 retainer addendum; that feature uses
+    // the `retainer_id` + `return_type` columns added below.
     retainerLockedAt: timestamp('retainer_locked_at', { withTimezone: true }),
+
+    // 0065 — retainer addendum. Convenience pointer to the active
+    // retainer for this engagement (the retainer.engagement_id UNIQUE
+    // constraint enforces D2; this column mirrors it). Set by the
+    // activation handler inside the same transaction.
+    retainerId: uuid('retainer_id'),
+    // 0065 — six tax return types (1040/1065/1120/1120S/1041/990).
+    // NULL for non-tax-prep engagements. Set explicitly at engagement
+    // creation when the engagement covers a tax return.
+    returnType: text('return_type'),
+    // 0065 — tax year + due-date pair used by retainer expiry math:
+    // expiry = COALESCE(extended, original) + 3 years (D3).
+    taxYear: integer('tax_year'),
+    originalDueDate: date('original_due_date'),
+    extendedDueDate: date('extended_due_date'),
 
     scopeDefinition: text('scope_definition'),
 
@@ -1641,6 +1658,16 @@ export const timeEntries = pgTable(
 
     billingBatchId: uuid('billing_batch_id'), // forward reference, see below
     lockedAt: timestamp('locked_at', { withTimezone: true }),
+
+    // 0065 — retainer addendum. Phase 8 auto-split sets these at
+    // time-entry create. hours = retainerHours + billableHours when the
+    // entry was routed through an active retainer; both NULL when no
+    // retainer was eligible (legacy entries, or no active retainer on
+    // the engagement). Keep `hours` as the canonical total so existing
+    // reports don't drift.
+    retainerId: uuid('retainer_id'),
+    retainerHours: numeric('retainer_hours', { precision: 8, scale: 2 }),
+    billableHours: numeric('billable_hours', { precision: 8, scale: 2 }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
