@@ -18,6 +18,8 @@ import type { PaymentProvider } from '@vibe/core/payments';
 import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
 import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
+import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
+import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import { runShieldHealthcheck } from './jobs/shield-healthcheck';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
@@ -141,6 +143,8 @@ const QUEUES = [
   'pending-upload-sweep',
   'request-suggestion-sweep',
   'shield-healthcheck',
+  'retainer-expiry-sweep',
+  'retainer-offer-expiry-sweep',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -371,6 +375,22 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runShieldHealthcheck({ db, redis: connection, log: logger });
     logger.info({ jobId: job.id, ...result }, 'shield-healthcheck complete');
   },
+  'retainer-expiry-sweep': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'retainer-expiry-sweep: no DB configured');
+      return;
+    }
+    const result = await runRetainerExpirySweep(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'retainer-expiry-sweep complete');
+  },
+  'retainer-offer-expiry-sweep': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'retainer-offer-expiry-sweep: no DB configured');
+      return;
+    }
+    const result = await runRetainerOfferExpirySweep(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'retainer-offer-expiry-sweep complete');
+  },
 };
 
 const CRON: Record<QueueName, string> = {
@@ -414,6 +434,11 @@ const CRON: Record<QueueName, string> = {
   // Redis with a 10-min TTL; two consecutive misses flip cloud egress
   // off.
   'shield-healthcheck': '*/5 * * * *',
+  // R4 — Retainer addendum. Daily 02:00/02:15 sweeps flip expired
+  // retainers + offers to status='expired'. Per D4, unused hours
+  // forfeit on expiry (no refund / no rollover).
+  'retainer-expiry-sweep': '0 2 * * *',
+  'retainer-offer-expiry-sweep': '15 2 * * *',
 };
 
 function storageSyncCron(): string {
