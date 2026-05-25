@@ -15,3 +15,4 @@ export * as ai from './ai';
 export * as connect from './connect';
 export * as crypto from './crypto';
 export * as storage from './storage';
+export * as retainers from './retainers';

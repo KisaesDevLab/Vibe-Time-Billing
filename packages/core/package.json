@@ -21,7 +21,8 @@
     "./mcp": "./src/mcp/index.ts",
     "./ai": "./src/ai/index.ts",
     "./connect": "./src/connect/index.ts",
-    "./storage": "./src/storage/index.ts"
+    "./storage": "./src/storage/index.ts",
+    "./retainers": "./src/retainers/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

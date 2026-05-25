@@ -115,6 +115,14 @@ export const PERMISSION_KEYS = [
   // staff or the client). 'manage' covers create/update/dismiss.
   'requests:read',
   'requests:manage',
+
+  // R1 — Retainer addendum. tier_config:write is partner-only; read
+  // surfaces to partner + manager. retainer:read covers dashboards.
+  // retainer:write covers void + notes edit (R5).
+  'retainer:tier_config:read',
+  'retainer:tier_config:write',
+  'retainer:read',
+  'retainer:write',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -178,6 +186,10 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'messaging:write',
     'requests:read',
     'requests:manage',
+    'retainer:tier_config:read',
+    'retainer:tier_config:write',
+    'retainer:read',
+    'retainer:write',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -218,6 +230,10 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'messaging:write',
     'requests:read',
     'requests:manage',
+    // R1 — manager can see tier configs + read retainers but cannot
+    // edit tier configs or void retainers (partner-only).
+    'retainer:tier_config:read',
+    'retainer:read',
   ]),
 
   senior: new Set<PermissionKey>([

@@ -73,6 +73,7 @@ import { createWebhookRouter } from './webhooks/outbound';
 import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
+import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createPaymentRouter } from './payments/routes';
 import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
@@ -643,6 +644,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/hour-banks', auth.requireAuth, auth.requireCsrf, hourBankRouter);
+
+  // R1 — Retainer addendum tier config + firm settings.
+  const retainerConfigRouter = createRetainerConfigRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/retainer', auth.requireAuth, auth.requireCsrf, retainerConfigRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,
