@@ -1,40 +1,62 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// PP4a — Proposal editor (no dnd yet).
+// PP4b — Proposal editor with dnd-kit drag/drop, debounced autosave,
+// validation pipeline, and undo/redo.
 //
-// Two columns:
-//   Left:  block list with up/down/duplicate/delete + inline editor
-//          for the selected block. Add-block palette at top.
+// Layout (unchanged from PP4a):
+//   Left:  block list with drag-handle + inline editor on selection.
+//          Add-block palette at top.
 //   Right: live preview of the rendered tree.
 //
-// PP4b will:
-//   • swap up/down for drag-drop via dnd-kit
-//   • add 2s debounced autosave (current behavior is explicit Save
-//     button + dirty indicator)
-//   • run block-type validation on every change and surface errors
-//   • undo/redo
+// PP4b additions vs PP4a:
+//   • dnd-kit SortableContext on the block list (replaces up/down
+//     buttons; keyboard sortable still works via dnd-kit's
+//     KeyboardSensor)
+//   • useAutosave: 2 s debounce; queues during in-flight saves
+//   • useUndoHistory + useUndoKeyboard: Cmd/Ctrl-Z + Shift-Z
+//   • validateTree runs on every tree change; per-block errors
+//     render inline on each row
 //
-// Block types in PP4a: text, heading, divider. P05 adds the rest
-// (services, package selector, terms, signature, video, cover).
+// Block types here: text / heading / divider. P05 ships the
+// remaining seven; the registry pattern is the same.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 import { Button, Card, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
-
 import {
   addBlock,
   duplicateBlock,
   EMPTY_BLOCK_TREE,
   isBlockTree,
-  moveBlock,
   removeBlock,
+  reorderBlocks,
   updateBlock,
+  validateTree,
   type ProposalBlock,
   type ProposalBlockTree,
 } from '@vibe/core/proposals';
 
 import { api } from '../api-client';
+import { useAutosave, type SaveStatus } from '../proposal-editor/use-autosave';
+import { useUndoHistory, useUndoKeyboard } from '../proposal-editor/use-undo-history';
+import { VALIDATORS } from '../proposal-editor/block-validators';
 
 interface ProposalDetail {
   proposal: {
@@ -47,8 +69,6 @@ interface ProposalDetail {
   };
 }
 
-// Block-type registry — local to PP4a. PP4b will move this into a
-// shared module so portal-side rendering can reuse it.
 interface BlockTypeDef {
   type: string;
   label: string;
@@ -182,52 +202,89 @@ function coerceTree(raw: unknown): ProposalBlockTree {
   return EMPTY_BLOCK_TREE;
 }
 
+function statusLabel(s: SaveStatus, last: Date | null): string {
+  switch (s) {
+    case 'saving':
+      return 'Saving…';
+    case 'saved':
+      return last ? `Saved ${last.toLocaleTimeString()}` : 'Saved';
+    case 'pending':
+      return 'Unsaved changes';
+    case 'error':
+      return 'Save failed';
+    default:
+      return 'No changes';
+  }
+}
+
+const STATUS_TONE: Record<SaveStatus, 'accent' | 'success' | 'warning' | 'danger' | 'neutral'> = {
+  idle: 'neutral',
+  pending: 'warning',
+  saving: 'accent',
+  saved: 'success',
+  error: 'danger',
+};
+
+const serializeTree = (t: ProposalBlockTree): string => JSON.stringify(t);
+
 export function ProposalEditorPage(): JSX.Element {
   const params = useParams<{ id: string }>();
   const id = params.id!;
   const [detail, setDetail] = useState<ProposalDetail['proposal'] | null>(null);
-  const [tree, setTree] = useState<ProposalBlockTree>(EMPTY_BLOCK_TREE);
-  const [savedRevision, setSavedRevision] = useState(0);
+  const [baseline, setBaseline] = useState<ProposalBlockTree>(EMPTY_BLOCK_TREE);
+  const undo = useUndoHistory<ProposalBlockTree>(EMPTY_BLOCK_TREE, serializeTree);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
 
   async function load(): Promise<void> {
-    const r = await api<ProposalDetail>(`/api/staff/proposals/${id}`);
-    setDetail(r.proposal);
-    setTree(coerceTree(r.proposal.brochureJsonb));
-    setSavedRevision(r.proposal.draftRevision);
+    try {
+      const r = await api<ProposalDetail>(`/api/staff/proposals/${id}`);
+      setDetail(r.proposal);
+      const tree = coerceTree(r.proposal.brochureJsonb);
+      undo.reset(tree);
+      setBaseline(tree);
+      setLoadErr(null);
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : 'load_failed');
+    }
   }
 
   useEffect(() => {
-    void load().catch((e) => setErr(e instanceof Error ? e.message : 'load_failed'));
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const dirty = useMemo(() => {
-    if (!detail) return false;
-    const orig = JSON.stringify(coerceTree(detail.brochureJsonb));
-    return JSON.stringify(tree) !== orig;
-  }, [detail, tree]);
+  const tree = undo.state;
+  const setTree = useCallback((next: ProposalBlockTree) => undo.setState(next), [undo]);
 
-  async function save(): Promise<void> {
-    if (!detail || !dirty) return;
-    setBusy(true);
-    setErr(null);
-    try {
+  useUndoKeyboard({ undo: undo.undo, redo: undo.redo });
+
+  const save = useCallback(
+    async (next: ProposalBlockTree) => {
       const r = await api<{ draftRevision: number }>(`/api/staff/proposals/${id}/brochure`, {
         method: 'POST',
-        body: JSON.stringify({ brochureJsonb: tree }),
+        body: JSON.stringify({ brochureJsonb: next }),
       });
-      setSavedRevision(r.draftRevision);
-      // Refresh detail so dirty diff resets correctly.
-      await load();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'save_failed');
-    } finally {
-      setBusy(false);
+      // Update baseline + reflect new revision in detail so dirty
+      // diff resets correctly.
+      setBaseline(next);
+      setDetail((d) => (d ? { ...d, brochureJsonb: next, draftRevision: r.draftRevision } : d));
+    },
+    [id],
+  );
+
+  const autosave = useAutosave<ProposalBlockTree>(tree, baseline, save, 2000);
+
+  const errors = useMemo(() => validateTree(tree, VALIDATORS), [tree]);
+  const errorsByBlockId = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const e of errors) {
+      const arr = m.get(e.blockId) ?? [];
+      arr.push(e.message);
+      m.set(e.blockId, arr);
     }
-  }
+    return m;
+  }, [errors]);
 
   function addNew(type: string): void {
     const def = REGISTRY.get(type);
@@ -247,10 +304,28 @@ export function ProposalEditorPage(): JSX.Element {
     [tree],
   );
 
+  // dnd-kit sensors. Pointer for mouse/touch; keyboard so the
+  // accessibility story stays sound.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  function onDragEnd(event: DragEndEvent): void {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const fromIndex = sortedBlocks.findIndex((b) => b.id === active.id);
+    const toIndex = sortedBlocks.findIndex((b) => b.id === over.id);
+    if (fromIndex === -1 || toIndex === -1) return;
+    setTree(reorderBlocks(tree, fromIndex, toIndex));
+  }
+
   if (!detail) {
     return (
       <div style={{ padding: tokens.space.lg }}>
-        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>{err ?? 'Loading proposal…'}</p>
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+          {loadErr ?? 'Loading proposal…'}
+        </p>
       </div>
     );
   }
@@ -264,34 +339,42 @@ export function ProposalEditorPage(): JSX.Element {
             <Link to="/proposals" style={{ color: tokens.color.accent }}>
               ← All proposals
             </Link>{' '}
-            · Status <Pill>{detail.status}</Pill> · Saved revision v{savedRevision}
-            {dirty && (
+            · Status <Pill>{detail.status}</Pill> · v{detail.draftRevision} ·{' '}
+            <Pill tone={STATUS_TONE[autosave.status]}>
+              {statusLabel(autosave.status, autosave.lastSavedAt)}
+            </Pill>
+            {errors.length > 0 && (
               <>
                 {' '}
-                · <Pill tone="warning">Unsaved changes</Pill>
+                · <Pill tone="danger">{errors.length} validation issue(s)</Pill>
               </>
             )}
           </span>
         }
         action={
           <div style={{ display: 'flex', gap: 8 }}>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!dirty}
-              onClick={() => {
-                if (detail) setTree(coerceTree(detail.brochureJsonb));
-              }}
-            >
-              Revert
+            <Button size="sm" variant="ghost" disabled={!undo.canUndo} onClick={() => undo.undo()}>
+              Undo
             </Button>
-            <Button size="sm" disabled={!dirty || busy} onClick={() => void save()}>
-              {busy ? 'Saving…' : 'Save'}
+            <Button size="sm" variant="ghost" disabled={!undo.canRedo} onClick={() => undo.redo()}>
+              Redo
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={autosave.status === 'saving'}
+              onClick={() => void autosave.flush()}
+            >
+              Save now
             </Button>
           </div>
         }
       />
-      {err && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{err}</p>}
+      {(loadErr || autosave.lastError) && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>
+          {loadErr ?? autosave.lastError?.message}
+        </p>
+      )}
 
       <Card>
         <div
@@ -312,6 +395,10 @@ export function ProposalEditorPage(): JSX.Element {
               {def.label}
             </Button>
           ))}
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+            Tip: drag the handle to reorder · Ctrl/Cmd+Z to undo
+          </span>
         </div>
       </Card>
 
@@ -322,99 +409,32 @@ export function ProposalEditorPage(): JSX.Element {
               Empty proposal. Add a block using the palette above.
             </p>
           ) : (
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
-              {sortedBlocks.map((b, i) => {
-                const def = REGISTRY.get(b.type);
-                const active = b.id === selectedId;
-                return (
-                  <li
-                    key={b.id}
-                    style={{
-                      padding: tokens.space.sm,
-                      border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
-                      borderRadius: tokens.radius.sm,
-                      background: active ? tokens.color.accentMuted : tokens.color.surface,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        gap: 6,
-                        alignItems: 'center',
-                        marginBottom: active ? 8 : 0,
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+              <SortableContext
+                items={sortedBlocks.map((b) => b.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
+                  {sortedBlocks.map((b, i) => (
+                    <SortableBlockRow
+                      key={b.id}
+                      block={b}
+                      index={i}
+                      def={REGISTRY.get(b.type)}
+                      active={b.id === selectedId}
+                      errors={errorsByBlockId.get(b.id) ?? []}
+                      onSelect={() => setSelectedId(b.id)}
+                      onChange={(patch) => setTree(updateBlock(tree, b.id, patch))}
+                      onDuplicate={() => setTree(duplicateBlock(tree, b.id, generateId()))}
+                      onDelete={() => {
+                        if (selectedId === b.id) setSelectedId(null);
+                        setTree(removeBlock(tree, b.id));
                       }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setSelectedId(b.id)}
-                        style={{
-                          flex: 1,
-                          textAlign: 'left',
-                          background: 'transparent',
-                          border: 0,
-                          padding: 0,
-                          color: tokens.color.text,
-                          cursor: 'pointer',
-                          fontSize: 13,
-                        }}
-                      >
-                        <span
-                          aria-hidden
-                          style={{ marginRight: 6, fontFamily: 'ui-monospace, monospace' }}
-                        >
-                          {def?.icon ?? '?'}
-                        </span>
-                        {def?.label ?? b.type}
-                        <span style={{ color: tokens.color.textMuted, marginLeft: 6 }}>
-                          #{i + 1}
-                        </span>
-                      </button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setTree(moveBlock(tree, b.id, 'up'))}
-                        disabled={i === 0}
-                        aria-label="Move up"
-                      >
-                        ↑
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setTree(moveBlock(tree, b.id, 'down'))}
-                        disabled={i === sortedBlocks.length - 1}
-                        aria-label="Move down"
-                      >
-                        ↓
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setTree(duplicateBlock(tree, b.id, generateId()))}
-                      >
-                        Duplicate
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => {
-                          if (selectedId === b.id) setSelectedId(null);
-                          setTree(removeBlock(tree, b.id));
-                        }}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                    {active && def && (
-                      <def.EditorFields
-                        block={b}
-                        onChange={(patch) => setTree(updateBlock(tree, b.id, patch))}
-                      />
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+                    />
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
           )}
         </Card>
 
@@ -445,5 +465,120 @@ export function ProposalEditorPage(): JSX.Element {
         </Card>
       </div>
     </div>
+  );
+}
+
+function SortableBlockRow({
+  block,
+  index,
+  def,
+  active,
+  errors,
+  onSelect,
+  onChange,
+  onDuplicate,
+  onDelete,
+}: {
+  block: ProposalBlock;
+  index: number;
+  def: BlockTypeDef | undefined;
+  active: boolean;
+  errors: string[];
+  onSelect: () => void;
+  onChange: (patch: Partial<Omit<ProposalBlock, 'id'>>) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}): JSX.Element {
+  const sortable = useSortable({ id: block.id });
+  const style = {
+    transform: CSS.Transform.toString(sortable.transform),
+    transition: sortable.transition,
+    opacity: sortable.isDragging ? 0.6 : 1,
+  } as const;
+  return (
+    <li
+      ref={sortable.setNodeRef}
+      style={{
+        ...style,
+        padding: tokens.space.sm,
+        border: `1px solid ${
+          errors.length > 0
+            ? tokens.color.danger
+            : active
+              ? tokens.color.accent
+              : tokens.color.border
+        }`,
+        borderRadius: tokens.radius.sm,
+        background: active ? tokens.color.accentMuted : tokens.color.surface,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          gap: 6,
+          alignItems: 'center',
+          marginBottom: active ? 8 : 0,
+        }}
+      >
+        <button
+          type="button"
+          aria-label="Drag to reorder"
+          {...sortable.attributes}
+          {...sortable.listeners}
+          style={{
+            background: 'transparent',
+            border: 0,
+            color: tokens.color.textMuted,
+            cursor: 'grab',
+            fontSize: 16,
+            padding: '0 4px',
+            touchAction: 'none',
+          }}
+        >
+          ⋮⋮
+        </button>
+        <button
+          type="button"
+          onClick={onSelect}
+          style={{
+            flex: 1,
+            textAlign: 'left',
+            background: 'transparent',
+            border: 0,
+            padding: 0,
+            color: tokens.color.text,
+            cursor: 'pointer',
+            fontSize: 13,
+          }}
+        >
+          <span aria-hidden style={{ marginRight: 6, fontFamily: 'ui-monospace, monospace' }}>
+            {def?.icon ?? '?'}
+          </span>
+          {def?.label ?? block.type}
+          <span style={{ color: tokens.color.textMuted, marginLeft: 6 }}>#{index + 1}</span>
+        </button>
+        <Button size="sm" variant="ghost" onClick={onDuplicate}>
+          Duplicate
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onDelete}>
+          Delete
+        </Button>
+      </div>
+      {errors.length > 0 && (
+        <div
+          style={{
+            marginTop: 4,
+            padding: '4px 8px',
+            background: tokens.color.surface,
+            borderRadius: tokens.radius.sm,
+            fontSize: 12,
+            color: tokens.color.danger,
+          }}
+        >
+          {errors.join(' · ')}
+        </div>
+      )}
+      {active && def && <def.EditorFields block={block} onChange={onChange} />}
+    </li>
   );
 }
