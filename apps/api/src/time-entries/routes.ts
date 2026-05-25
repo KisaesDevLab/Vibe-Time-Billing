@@ -1278,6 +1278,45 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
+      // R5-followup — re-apply the retainer consumption if any field
+      // that affects routing changed (hours, work_code_id) OR the entry
+      // was previously retainer-linked. Same retainer either way per D2.
+      const fieldsAffectingRetainer =
+        parsed.data.hours != null || parsed.data.workCodeId !== undefined;
+      if (fieldsAffectingRetainer || prior.retainerId) {
+        try {
+          const { reapplyTimeEntryToRetainer } = await import('../retainers/consumption');
+          const newHours = parsed.data.hours ?? Number(prior.hours);
+          const newWorkCodeId =
+            parsed.data.workCodeId !== undefined ? parsed.data.workCodeId : prior.workCodeId;
+          const split = await deps.db.transaction(async (tx) =>
+            reapplyTimeEntryToRetainer(tx, {
+              timeEntryId: prior.id,
+              engagementId: prior.engagementId,
+              priorRetainerId: prior.retainerId ?? null,
+              priorRetainerHours: prior.retainerHours ? Number(prior.retainerHours) : 0,
+              entryDate:
+                typeof prior.entryDate === 'string'
+                  ? prior.entryDate
+                  : new Date(prior.entryDate as unknown as string).toISOString().slice(0, 10),
+              hours: newHours,
+              workCodeId: newWorkCodeId ?? null,
+              actorAppUserId: session.appUserId,
+            }),
+          );
+          await deps.db
+            .update(timeEntries)
+            .set({
+              retainerId: split.retainerId,
+              retainerHours: split.retainerId ? String(split.retainerHours) : null,
+              billableHours: String(split.billableHours),
+            })
+            .where(eq(timeEntries.id, prior.id));
+        } catch (err) {
+          logger.error({ err, timeEntryId: prior.id }, 'retainer re-apply on edit failed');
+        }
+      }
+
       // Stage 2 — replace linked messages if caller supplied a new set.
       let linkedMessages = 0;
       if (parsed.data.linkedMessageIds) {
@@ -1339,6 +1378,24 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       if (prior.status === 'ARCHIVED') {
         res.json({ ok: true, alreadyArchived: true });
         return;
+      }
+      // R5-followup — back hours out of the retainer before archiving
+      // the entry so balance + status stay accurate. Best-effort; an
+      // archive itself never blocks on retainer state.
+      if (prior.retainerId && prior.retainerHours && Number(prior.retainerHours) > 0) {
+        try {
+          const { reverseTimeEntryConsumption } = await import('../retainers/consumption');
+          await deps.db.transaction(async (tx) =>
+            reverseTimeEntryConsumption(tx, {
+              retainerId: prior.retainerId!,
+              retainerHours: Number(prior.retainerHours),
+              timeEntryId: prior.id,
+              actorAppUserId: session.appUserId,
+            }),
+          );
+        } catch (err) {
+          logger.error({ err, timeEntryId: prior.id }, 'retainer reversal on archive failed');
+        }
       }
       await deps.db
         .update(timeEntries)

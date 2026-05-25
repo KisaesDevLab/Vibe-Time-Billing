@@ -214,3 +214,125 @@ function unwrapRow<T>(raw: unknown): T | null {
   }
   return raw as T;
 }
+
+// =====================================================================
+// R5-followup — Edit/delete ledger reversal.
+//
+// reverseTimeEntryConsumption backs hours out of a retainer when a
+// time entry is deleted (soft-archived) or about to be replaced by a
+// re-application with new fields. Idempotent against a zero-delta
+// (e.g. the entry was originally routed to WIP).
+//
+// Status semantics: an exhausted retainer that drops below the
+// purchased line flips back to active. Other statuses (paused,
+// expired, void) are NOT changed — those transitions are owned by
+// the firm-action / sweep paths.
+// =====================================================================
+
+export interface ReverseTimeEntryInput {
+  retainerId: string;
+  retainerHours: number;
+  timeEntryId: string;
+  actorAppUserId?: string | null;
+}
+
+export async function reverseTimeEntryConsumption(
+  tx: TxOrDb,
+  args: ReverseTimeEntryInput,
+): Promise<{ newConsumed: number; newStatus: string }> {
+  if (!args.retainerHours || args.retainerHours <= 0) {
+    // Nothing to reverse — return the current retainer state for the
+    // caller, but skip the write.
+    const lookup = await tx.execute(
+      drz`SELECT hours_consumed::text AS hours_consumed, status FROM ${retainers} WHERE id = ${args.retainerId}`,
+    );
+    const row = unwrapRow<{ hours_consumed: string; status: string }>(lookup);
+    return {
+      newConsumed: row ? Number(row.hours_consumed) : 0,
+      newStatus: row?.status ?? 'active',
+    };
+  }
+  const lockResult = await tx.execute(
+    drz`SELECT id, status, hours_purchased::text AS hours_purchased,
+               hours_consumed::text AS hours_consumed
+        FROM ${retainers}
+        WHERE id = ${args.retainerId}
+        FOR UPDATE`,
+  );
+  const row = unwrapRow<{
+    id: string;
+    status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
+    hours_purchased: string;
+    hours_consumed: string;
+  }>(lockResult);
+  if (!row) {
+    return { newConsumed: 0, newStatus: 'active' };
+  }
+  const newConsumed = Math.max(0, Number(row.hours_consumed) - args.retainerHours);
+  const balanceAfter = Number(row.hours_purchased) - newConsumed;
+  // Only auto-flip exhausted → active. Other statuses stay put.
+  const newStatus =
+    row.status === 'exhausted' && newConsumed < Number(row.hours_purchased) ? 'active' : row.status;
+  await tx
+    .update(retainers)
+    .set({
+      hoursConsumed: String(newConsumed),
+      status: newStatus,
+      updatedAt: new Date(),
+    })
+    .where(eq(retainers.id, row.id));
+  await tx.insert(retainerLedger).values({
+    retainerId: row.id,
+    timeEntryId: args.timeEntryId,
+    kind: 'REVERSE',
+    hoursDelta: String(-args.retainerHours),
+    hoursBalanceAfter: String(balanceAfter),
+    createdById: args.actorAppUserId ?? null,
+  });
+  if (row.status === 'exhausted' && newStatus === 'active') {
+    logger.info(
+      { retainerId: row.id, prior: 'exhausted', next: 'active' },
+      'retainer un-exhausted by reversal',
+    );
+  }
+  return { newConsumed, newStatus };
+}
+
+// reapplyTimeEntryToRetainer is called from the time-entry edit path.
+// The engagement (and therefore the retainer, by D2 UNIQUE) cannot
+// change on edit, so prior and new retainer are the same row. The
+// helper:
+//   1. Reverses the prior consumption (REVERSE ledger row) if there
+//      was any.
+//   2. Re-runs apply with the new fields — eligibility chain may now
+//      route to WIP (e.g. work_code_id changed away from the eligible
+//      set), or apply to the now-larger remaining balance.
+// Both steps share the same SELECT FOR UPDATE under the hood.
+
+export interface ReapplyTimeEntryInput extends ApplyTimeEntryInput {
+  timeEntryId: string;
+  priorRetainerId: string | null;
+  priorRetainerHours: number;
+}
+
+export async function reapplyTimeEntryToRetainer(
+  tx: TxOrDb,
+  args: ReapplyTimeEntryInput,
+): Promise<ApplyTimeEntryResult> {
+  if (args.priorRetainerId && args.priorRetainerHours > 0) {
+    await reverseTimeEntryConsumption(tx, {
+      retainerId: args.priorRetainerId,
+      retainerHours: args.priorRetainerHours,
+      timeEntryId: args.timeEntryId,
+      actorAppUserId: args.actorAppUserId,
+    });
+  }
+  return applyTimeEntryToRetainer(tx, {
+    engagementId: args.engagementId,
+    entryDate: args.entryDate,
+    hours: args.hours,
+    workCodeId: args.workCodeId,
+    actorAppUserId: args.actorAppUserId,
+    timeEntryId: args.timeEntryId,
+  });
+}
