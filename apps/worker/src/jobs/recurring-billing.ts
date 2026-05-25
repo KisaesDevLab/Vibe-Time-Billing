@@ -271,11 +271,25 @@ export async function runRecurringBillingTick(
     // Autopay — runs outside the create transaction so a payment failure
     // doesn't roll back the invoice. The portal still surfaces the unpaid
     // invoice; the dunning-sweep job picks it up after due_date.
-    if (plan.autoPayFlag && plan.autoPayPaymentMethodId && deps.chargeInvoice && createdInvoiceId) {
+    //
+    // CP9 — resolve the autopay method with engagement-level precedence
+    // (Build Plan §2.2):
+    //   1. engagement.autopay_method_id (when set AND not paused) wins
+    //   2. Else fall back to plan.autoPayPaymentMethodId
+    // Pause window: when autopay_paused_until is in the future, autopay
+    // is skipped entirely for this engagement.
+    let resolvedAutopayMethodId: string | null = null;
+    const paused = eng.autopayPausedUntil != null && String(eng.autopayPausedUntil) >= today;
+    if (!paused && eng.autopayMethodId) {
+      resolvedAutopayMethodId = eng.autopayMethodId;
+    } else if (!paused && plan.autoPayFlag && plan.autoPayPaymentMethodId) {
+      resolvedAutopayMethodId = plan.autoPayPaymentMethodId;
+    }
+    if (resolvedAutopayMethodId && deps.chargeInvoice && createdInvoiceId) {
       try {
         const result = await deps.chargeInvoice({
           invoiceId: createdInvoiceId,
-          paymentMethodProviderId: plan.autoPayPaymentMethodId,
+          paymentMethodProviderId: resolvedAutopayMethodId,
           amountCents: invoiceAmount,
           metadata: {
             invoice_id: createdInvoiceId,
@@ -283,6 +297,7 @@ export async function runRecurringBillingTick(
             firm_id: client.firmId,
             client_id: client.id,
             autopay: 'true',
+            autopay_source: eng.autopayMethodId ? 'engagement' : 'plan',
           },
         });
         if (result.ok) {
@@ -290,7 +305,7 @@ export async function runRecurringBillingTick(
             invoiceId: createdInvoiceId,
             amountCents: invoiceAmount,
             feeCents: 0,
-            paymentMethodId: plan.autoPayPaymentMethodId,
+            paymentMethodId: resolvedAutopayMethodId,
             provider: 'STRIPE',
             providerChargeId: result.providerChargeId ?? null,
             status: 'SUCCEEDED',

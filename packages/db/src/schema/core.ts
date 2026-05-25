@@ -1416,6 +1416,14 @@ export const engagements = pgTable(
     partnerId: uuid('partner_id').references(() => appUsers.id),
     managerId: uuid('manager_id').references(() => appUsers.id),
 
+    // CP9 — per-engagement autopay control (Build Plan §2.2).
+    // autopayMethodId references payment_method.id from portal.ts but
+    // we keep it loose (no .references()) here to avoid a circular
+    // schema import. The FK is enforced by the migration.
+    // autopayPausedUntil lets clients pause without losing config.
+    autopayMethodId: uuid('autopay_method_id'),
+    autopayPausedUntil: date('autopay_paused_until'),
+
     // 0050 — when set, time-entry create/update on this engagement is
     // rejected (409). Toggled via /engagements/:id/retainer/lock|unlock.
     // NOTE: unrelated to the 0065 retainer addendum; that feature uses
