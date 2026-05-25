@@ -48,6 +48,7 @@ import { createApprovalRouter } from './approvals/routes';
 import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
+import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalStepUpRouter } from './portal/step-up';
 import { createPortalLetterRouter } from './portal/letters';
 import { createPortalFileRouter } from './portal/files';
@@ -487,6 +488,13 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/retainer-offers', portalRetainerOfferRouter);
+
+  // R6 — portal retainer list + ledger (read-only, privacy-filtered).
+  const portalRetainerRouter = createPortalRetainerRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/retainers', portalRetainerRouter);
 
   // P4.4 — portal step-up challenge endpoints.
   const portalStepUpRouter = createPortalStepUpRouter({
