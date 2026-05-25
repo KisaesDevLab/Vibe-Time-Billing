@@ -136,15 +136,6 @@ export const PERMISSION_KEYS = [
   // partners + managers can create / cancel).
   'appointment:read',
   'appointment:write',
-
-  // PP0 — Proposals + Live Agreements (§2.8). proposal:write is
-  // partner-only since proposals commit the firm to pricing + terms.
-  // agreement:read surfaces to senior + staff too — they need to see
-  // the live scope they're working under.
-  'proposal:read',
-  'proposal:write',
-  'agreement:read',
-  'agreement:write',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -216,10 +207,6 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'tax_payment:write',
     'appointment:read',
     'appointment:write',
-    'proposal:read',
-    'proposal:write',
-    'agreement:read',
-    'agreement:write',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -270,10 +257,6 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     // CP12 — manager has full appointment CRUD.
     'appointment:read',
     'appointment:write',
-    // PP0 — managers read the pipeline; only partners author proposals.
-    'proposal:read',
-    'agreement:read',
-    'agreement:write',
   ]),
 
   senior: new Set<PermissionKey>([
@@ -300,8 +283,6 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'requests:manage',
     // CP12 — senior can see appointments on their engagements.
     'appointment:read',
-    // PP0 — senior sees the live agreement governing the engagement.
-    'agreement:read',
   ]),
 
   staff: new Set<PermissionKey>([
@@ -322,9 +303,6 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'requests:read',
     // CP12 — staff see appointments on their assigned engagements.
     'appointment:read',
-    // PP0 — staff need to see the live agreement (scope they're
-    // working under) but cannot edit pricing.
-    'agreement:read',
   ]),
 };
 
