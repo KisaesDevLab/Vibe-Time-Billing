@@ -30,6 +30,7 @@ import { OnboardingPage } from './pages/Onboarding';
 import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
+import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
 import { RequestsPage } from './pages/Requests';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
@@ -76,6 +77,7 @@ export function App(): JSX.Element {
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
+                  <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
                   {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/onboarding" element={<OnboardingPage />} />

@@ -110,6 +110,115 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
     res.json({ items });
   });
 
+  // ----- Staff-scoped (/my/retainers) --------------------------------
+  // Visibility: retainers on engagements where the signed-in user is
+  // either the engagement.partner_id / manager_id OR has a row in
+  // engagement_assignment. Matches the "My Work" filter convention used
+  // elsewhere (engagement-list, etc.). No write permissions; the page is
+  // a pure read view.
+
+  router.get(
+    '/mine',
+    requirePermission(deps, 'retainer:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db.execute(
+        sql`SELECT r.*
+            FROM retainer r
+            WHERE r.firm_id = ${session.firmId}
+              AND r.engagement_id IN (
+                SELECT e.id FROM engagement e
+                WHERE e.partner_id = ${session.appUserId}
+                   OR e.manager_id = ${session.appUserId}
+                UNION
+                SELECT ea.engagement_id FROM engagement_assignment ea
+                WHERE ea.app_user_id = ${session.appUserId}
+              )
+            ORDER BY r.created_at DESC
+            LIMIT 200`,
+      );
+      const rows = (items as unknown as { rows: Array<Record<string, unknown>> }).rows ?? [];
+      res.json({
+        items: rows.map((r) => ({
+          id: r['id'],
+          clientId: r['client_id'],
+          engagementId: r['engagement_id'],
+          tier: r['tier'],
+          returnType: r['return_type'],
+          taxYear: r['tax_year'],
+          name: r['name'],
+          hoursPurchased: String(r['hours_purchased']),
+          hoursConsumed: String(r['hours_consumed']),
+          expiryDate: String(r['expiry_date']).slice(0, 10),
+          status: r['status'],
+          priceCents: Number(r['price_cents']),
+        })),
+      });
+    },
+  );
+
+  router.get(
+    '/mine/kpis',
+    requirePermission(deps, 'retainer:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ kpis: null });
+        return;
+      }
+      const agg = await deps.db.execute(
+        sql`WITH my_eng AS (
+              SELECT e.id FROM engagement e
+              WHERE e.partner_id = ${session.appUserId}
+                 OR e.manager_id = ${session.appUserId}
+              UNION
+              SELECT ea.engagement_id FROM engagement_assignment ea
+              WHERE ea.app_user_id = ${session.appUserId}
+            )
+            SELECT
+              COUNT(*) FILTER (WHERE r.status = 'active')                         ::int AS active_count,
+              COALESCE(SUM(r.hours_purchased - r.hours_consumed)
+                FILTER (WHERE r.status = 'active'), 0)::text                            AS hours_remaining,
+              COUNT(*) FILTER (
+                WHERE r.status = 'active'
+                  AND (r.hours_purchased - r.hours_consumed) <= 1
+              )::int                                                                    AS near_exhaustion,
+              COUNT(*) FILTER (
+                WHERE r.status IN ('active','exhausted')
+                  AND r.expiry_date <= CURRENT_DATE + INTERVAL '90 days'
+                  AND r.expiry_date >= CURRENT_DATE
+              )::int                                                                    AS expiring_90d
+            FROM retainer r
+            WHERE r.firm_id = ${session.firmId}
+              AND r.engagement_id IN (SELECT id FROM my_eng)`,
+      );
+      const row = (
+        agg as unknown as {
+          rows: Array<{
+            active_count: number;
+            hours_remaining: string;
+            near_exhaustion: number;
+            expiring_90d: number;
+          }>;
+        }
+      ).rows[0];
+      res.json({
+        kpis: row
+          ? {
+              activeCount: Number(row.active_count ?? 0),
+              hoursRemaining: Number(row.hours_remaining ?? 0),
+              nearExhaustion: Number(row.near_exhaustion ?? 0),
+              expiring90d: Number(row.expiring_90d ?? 0),
+            }
+          : null,
+      });
+    },
+  );
+
   router.get(
     '/admin/kpis',
     requirePermission(deps, 'retainer:read'),
