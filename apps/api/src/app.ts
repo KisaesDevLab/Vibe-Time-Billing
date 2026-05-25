@@ -74,6 +74,7 @@ import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
+import { createRetainerRouter } from './retainers/routes';
 import { createPaymentRouter } from './payments/routes';
 import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
@@ -651,6 +652,12 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/retainer', auth.requireAuth, auth.requireCsrf, retainerConfigRouter);
+
+  const retainerRouter = createRetainerRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/retainers', auth.requireAuth, auth.requireCsrf, retainerRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,

@@ -38,6 +38,7 @@ import type { PaymentProvider } from '@vibe/core/payments';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { maybeCreateRetainerOffer } from '../retainers/offers';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
@@ -57,6 +58,25 @@ export interface InvoiceRoutesDeps extends RbacDeps {
 
 const GenerateSchema = z.object({
   billingBatchId: z.string().uuid(),
+  // R2 — retainer addendum hook. When `enabled` is true (default from
+  // firm_retainer_settings.default_biller_toggle_on at the UI layer),
+  // attempt to auto-create a retainer offer inside the same transaction.
+  // Suppression rules in offers.ts decide whether an offer actually
+  // lands; missing options block defaults to enabled=true so legacy
+  // callers preserve behavior when the feature is firm-disabled.
+  retainerOptions: z
+    .object({
+      enabled: z.boolean(),
+      overrides: z
+        .object({
+          tier1PriceCents: z.number().int().nonnegative().optional(),
+          tier2PriceCents: z.number().int().nonnegative().optional(),
+          tier1WorkCodeIds: z.array(z.string().uuid()).optional(),
+          tier2WorkCodeIds: z.array(z.string().uuid()).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 const VoidSchema = z.object({
@@ -717,6 +737,30 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           .update(billingBatches)
           .set({ status: 'INVOICED' })
           .where(eq(billingBatches.id, batch.id));
+
+        // R2 — retainer addendum offer creation. Inside the same tx so a
+        // rollback unwinds the offer too. Suppression rules in offers.ts
+        // return a `reason` when no offer is created — we log and move on.
+        // The biller-supplied toggle defaults to true so legacy clients
+        // (no retainerOptions in body) get the feature when firm enabled.
+        const toggleOn = parsed.data.retainerOptions?.enabled ?? true;
+        if (toggleOn) {
+          try {
+            await maybeCreateRetainerOffer(tx as unknown as Database, {
+              invoiceId: inv.id,
+              engagementId: eng.id,
+              firmId: session.firmId,
+              clientId: client.id,
+              toggleOn,
+              overrides: parsed.data.retainerOptions?.overrides,
+              invoiceDate: issueDate,
+            });
+          } catch (err) {
+            logger.error({ err, invoiceId: inv.id }, 'retainer offer creation threw');
+            // Surface to outer catch so the whole invoice tx rolls back.
+            throw err;
+          }
+        }
         return inv.id;
       });
 

@@ -286,6 +286,10 @@ function BatchDetailPage(): JSX.Element {
   const [settingTarget, setSettingTarget] = useState(false);
 
   // 0052 — invoice composition draft
+  // R2 — biller toggle to auto-create a retainer offer on this invoice.
+  // Default true; the server-side suppression rules (no return_type,
+  // feature_enabled false, etc.) decide whether an offer actually lands.
+  const [offerRetainerOnGenerate, setOfferRetainerOnGenerate] = useState(true);
   const [invoiceDescription, setInvoiceDescription] = useState('');
   const [invoiceLines, setInvoiceLines] = useState<Array<{ description: string; dollars: string }>>(
     [],
@@ -765,22 +769,45 @@ function BatchDetailPage(): JSX.Element {
               </Button>
             </div>
           ) : detail.batch.status === 'APPROVED' ? (
-            <Button
-              onClick={async () => {
-                try {
-                  const r = await api<{ id: string }>('/api/staff/invoices/generate-from-batch', {
-                    method: 'POST',
-                    body: JSON.stringify({ billingBatchId: detail.batch.id }),
-                  });
-                  window.location.href = `/invoices`;
-                  void r;
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : 'invoice gen failed');
-                }
-              }}
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}
             >
-              Generate invoice
-            </Button>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  color: tokens.color.textMuted,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={offerRetainerOnGenerate}
+                  onChange={(e) => setOfferRetainerOnGenerate(e.target.checked)}
+                />
+                Offer retainer to client
+              </label>
+              <Button
+                onClick={async () => {
+                  try {
+                    const r = await api<{ id: string }>('/api/staff/invoices/generate-from-batch', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        billingBatchId: detail.batch.id,
+                        retainerOptions: { enabled: offerRetainerOnGenerate },
+                      }),
+                    });
+                    window.location.href = `/invoices`;
+                    void r;
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'invoice gen failed');
+                  }
+                }}
+              >
+                Generate invoice
+              </Button>
+            </div>
           ) : null
         }
       >

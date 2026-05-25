@@ -228,6 +228,10 @@ export const invoiceLineItemKind = pgEnum('invoice_line_item_kind', [
   // v2 — sales tax + per-engagement surcharge lines on the invoice.
   'SALES_TAX',
   'SURCHARGE',
+  // 0066 — retainer-purchase AR invoice carries a single RETAINER
+  // line. The payment webhook keys off invoice.metadata.retainerOfferId
+  // (R3) to activate the retainer.
+  'RETAINER',
 ]);
 
 export const consolidationPreference = pgEnum('consolidation_preference', [

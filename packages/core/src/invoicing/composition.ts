@@ -15,7 +15,10 @@ export type LineItemKind =
   | 'CUSTOM'
   // v2 — per-engagement surcharge + sales-tax lines on the invoice.
   | 'SURCHARGE'
-  | 'SALES_TAX';
+  | 'SALES_TAX'
+  // 0066 — retainer-purchase AR invoice line. R3 portal-selection
+  // handler issues a new invoice with a single RETAINER line item.
+  | 'RETAINER';
 
 export interface LineItem {
   kind: LineItemKind;
