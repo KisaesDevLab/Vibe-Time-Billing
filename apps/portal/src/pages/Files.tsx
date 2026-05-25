@@ -11,9 +11,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Table, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { FileCardList } from '../components/FileCardList';
 
 interface FileRow {
   id: string;
@@ -68,6 +69,7 @@ export function FilesPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [selectedSubfolder, setSelectedSubfolder] = useState<string | null>(null);
+  const narrow = useIsNarrow();
 
   async function load(): Promise<void> {
     setError(null);
@@ -175,63 +177,87 @@ export function FilesPage(): JSX.Element {
         </Card>
 
         <Card title={`Files (${filtered.length})`}>
-          <Table<FileRow>
-            rows={filtered}
-            rowKey={(r) => r.id}
-            empty="No files in this folder."
-            columns={[
-              {
-                key: 'name',
-                header: 'Name',
-                render: (r) => (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <span aria-hidden style={{ fontSize: 16 }}>
-                      {fileTypeIcon(r.mimeType, r.originalFilename)}
+          {narrow ? (
+            <FileCardList
+              rows={filtered.map((r) => ({
+                id: r.id,
+                originalFilename: r.originalFilename,
+                sizeBytes: r.sizeBytes,
+                mimeType: r.mimeType,
+                uploadedAt: r.modifiedAt,
+                categoryLabel: categoryLabel(r.category),
+                icon: fileTypeIcon(r.mimeType, r.originalFilename),
+                downloadDisabled: busy === r.id,
+              }))}
+              onDownload={(id) => {
+                const row = filtered.find((r) => r.id === id);
+                if (row) void download(row);
+              }}
+              empty={
+                <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                  No files in this folder.
+                </p>
+              }
+            />
+          ) : (
+            <Table<FileRow>
+              rows={filtered}
+              rowKey={(r) => r.id}
+              empty="No files in this folder."
+              columns={[
+                {
+                  key: 'name',
+                  header: 'Name',
+                  render: (r) => (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span aria-hidden style={{ fontSize: 16 }}>
+                        {fileTypeIcon(r.mimeType, r.originalFilename)}
+                      </span>
+                      <span style={{ fontSize: 13 }}>{r.originalFilename}</span>
                     </span>
-                    <span style={{ fontSize: 13 }}>{r.originalFilename}</span>
-                  </span>
-                ),
-              },
-              {
-                key: 'category',
-                header: 'Category',
-                render: (r) => {
-                  const label = categoryLabel(r.category);
-                  return label ? <Pill tone="neutral">{label}</Pill> : <span>—</span>;
+                  ),
                 },
-              },
-              {
-                key: 'subfolder',
-                header: 'Folder',
-                render: (r) => (
-                  <span
-                    style={{
-                      fontFamily: tokens.font.mono,
-                      fontSize: 11,
-                      color: tokens.color.textMuted,
-                    }}
-                  >
-                    {r.subfolderPath || '(root)'}
-                  </span>
-                ),
-              },
-              { key: 'size', header: 'Size', render: (r) => formatBytes(r.sizeBytes) },
-              {
-                key: 'modified',
-                header: 'Modified',
-                render: (r) => new Date(r.modifiedAt).toLocaleString(),
-              },
-              {
-                key: 'download',
-                header: '',
-                render: (r) => (
-                  <Button size="sm" onClick={() => void download(r)} disabled={busy === r.id}>
-                    {busy === r.id ? 'Opening…' : 'Download'}
-                  </Button>
-                ),
-              },
-            ]}
-          />
+                {
+                  key: 'category',
+                  header: 'Category',
+                  render: (r) => {
+                    const label = categoryLabel(r.category);
+                    return label ? <Pill tone="neutral">{label}</Pill> : <span>—</span>;
+                  },
+                },
+                {
+                  key: 'subfolder',
+                  header: 'Folder',
+                  render: (r) => (
+                    <span
+                      style={{
+                        fontFamily: tokens.font.mono,
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                      }}
+                    >
+                      {r.subfolderPath || '(root)'}
+                    </span>
+                  ),
+                },
+                { key: 'size', header: 'Size', render: (r) => formatBytes(r.sizeBytes) },
+                {
+                  key: 'modified',
+                  header: 'Modified',
+                  render: (r) => new Date(r.modifiedAt).toLocaleString(),
+                },
+                {
+                  key: 'download',
+                  header: '',
+                  render: (r) => (
+                    <Button size="sm" onClick={() => void download(r)} disabled={busy === r.id}>
+                      {busy === r.id ? 'Opening…' : 'Download'}
+                    </Button>
+                  ),
+                },
+              ]}
+            />
+          )}
         </Card>
       </div>
     </div>

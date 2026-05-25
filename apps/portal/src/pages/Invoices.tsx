@@ -2,9 +2,10 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Table, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { InvoiceCardList } from '../components/InvoiceCardList';
 
 interface InvoiceRow {
   id: string;
@@ -34,7 +35,8 @@ interface InvoiceDetail {
 
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const statusTone = (s: InvoiceRow['status']) =>
+type Tone = 'success' | 'warning' | 'danger' | 'accent' | 'neutral';
+const statusTone = (s: string): Tone =>
   s === 'PAID'
     ? 'success'
     : s === 'OVERDUE'
@@ -57,6 +59,7 @@ function InvoiceList(): JSX.Element {
   const [paid, setPaid] = useState<InvoiceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const narrow = useIsNarrow();
 
   useEffect(() => {
     void (async () => {
@@ -82,71 +85,91 @@ function InvoiceList(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900, margin: '0 auto' }}>
       <Card title={`Open invoices (${open.length})`}>
-        <Table<InvoiceRow>
-          columns={[
-            {
-              key: 'num',
-              header: 'Invoice',
-              render: (i) => (
-                <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
-                  {i.invoiceNumber}
-                </Link>
-              ),
-            },
-            { key: 'issue', header: 'Issued', render: (i) => i.issueDate },
-            { key: 'due', header: 'Due', render: (i) => i.dueDate },
-            {
-              key: 'total',
-              header: 'Total',
-              align: 'right',
-              render: (i) => formatCents(i.totalCents),
-            },
-            {
-              key: 'balance',
-              header: 'Balance',
-              align: 'right',
-              render: (i) => formatCents(i.totalCents - i.paidCents),
-            },
-            {
-              key: 'status',
-              header: 'Status',
-              render: (i) => <Pill tone={statusTone(i.status)}>{i.status}</Pill>,
-            },
-          ]}
-          rows={open}
-          rowKey={(i) => i.id}
-          empty="No open invoices. Nice."
-        />
+        {narrow ? (
+          <InvoiceCardList
+            rows={open}
+            statusTone={statusTone}
+            empty={
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No open invoices. Nice.</p>
+            }
+          />
+        ) : (
+          <Table<InvoiceRow>
+            columns={[
+              {
+                key: 'num',
+                header: 'Invoice',
+                render: (i) => (
+                  <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
+                    {i.invoiceNumber}
+                  </Link>
+                ),
+              },
+              { key: 'issue', header: 'Issued', render: (i) => i.issueDate },
+              { key: 'due', header: 'Due', render: (i) => i.dueDate },
+              {
+                key: 'total',
+                header: 'Total',
+                align: 'right',
+                render: (i) => formatCents(i.totalCents),
+              },
+              {
+                key: 'balance',
+                header: 'Balance',
+                align: 'right',
+                render: (i) => formatCents(i.totalCents - i.paidCents),
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (i) => <Pill tone={statusTone(i.status)}>{i.status}</Pill>,
+              },
+            ]}
+            rows={open}
+            rowKey={(i) => i.id}
+            empty="No open invoices. Nice."
+          />
+        )}
       </Card>
       <Card title={`Paid (${paid.length})`}>
-        <Table<InvoiceRow>
-          columns={[
-            {
-              key: 'num',
-              header: 'Invoice',
-              render: (i) => (
-                <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
-                  {i.invoiceNumber}
-                </Link>
-              ),
-            },
-            { key: 'issue', header: 'Issued', render: (i) => i.issueDate },
-            {
-              key: 'total',
-              header: 'Total',
-              align: 'right',
-              render: (i) => formatCents(i.totalCents),
-            },
-            {
-              key: 'status',
-              header: 'Status',
-              render: (i) => <Pill tone="success">{i.status}</Pill>,
-            },
-          ]}
-          rows={paid}
-          rowKey={(i) => i.id}
-          empty="No paid invoices yet."
-        />
+        {narrow ? (
+          <InvoiceCardList
+            rows={paid}
+            statusTone={() => 'success'}
+            empty={
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No paid invoices yet.</p>
+            }
+          />
+        ) : (
+          <Table<InvoiceRow>
+            columns={[
+              {
+                key: 'num',
+                header: 'Invoice',
+                render: (i) => (
+                  <Link to={`/invoices/${i.id}`} style={{ color: tokens.color.accent }}>
+                    {i.invoiceNumber}
+                  </Link>
+                ),
+              },
+              { key: 'issue', header: 'Issued', render: (i) => i.issueDate },
+              {
+                key: 'total',
+                header: 'Total',
+                align: 'right',
+                render: (i) => formatCents(i.totalCents),
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (i) => <Pill tone="success">{i.status}</Pill>,
+              },
+            ]}
+            rows={paid}
+            rowKey={(i) => i.id}
+            empty="No paid invoices yet."
+          />
+        )}
       </Card>
     </div>
   );

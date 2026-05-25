@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Card, Pill, Table, tokens } from '@vibe/ui';
+import { Card, Pill, Stat, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -148,24 +148,6 @@ export function StaffRetainerDashboardPage(): JSX.Element {
       </Card>
 
       {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string | number }): JSX.Element {
-  return (
-    <div
-      style={{
-        padding: 12,
-        border: `1px solid ${tokens.color.border}`,
-        borderRadius: tokens.radius.sm,
-        background: tokens.color.surface,
-      }}
-    >
-      <div style={{ fontSize: 11, color: tokens.color.textMuted, textTransform: 'uppercase' }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 600, marginTop: 4 }}>{value}</div>
     </div>
   );
 }
