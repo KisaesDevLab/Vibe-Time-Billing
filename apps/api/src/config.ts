@@ -54,6 +54,12 @@ const Schema = z.object({
   // so Stripe Elements can initialize without baking the key into the Vite
   // build (rotation would otherwise require a redeploy).
   STRIPE_PUBLISHABLE_KEY: z.string().optional(),
+  // P08 — Stripe Connect Standard OAuth. Platform client id lives at
+  // https://dashboard.stripe.com/settings/connect (ca_…). Operator
+  // sets STRIPE_CONNECT_CLIENT_ID + STRIPE_SECRET_KEY on the box;
+  // firms onboard their own Standard accounts via the OAuth dance.
+  STRIPE_CONNECT_CLIENT_ID: z.string().optional(),
+  STRIPE_CONNECT_REDIRECT_URI: z.string().optional(),
   AI_CLOUD_API_KEY: z.string().optional(),
   AI_CLOUD_MODEL: z.string().default('claude-opus-4-7'),
   AI_LOCAL_URL: z.string().default('http://localhost:11434'),

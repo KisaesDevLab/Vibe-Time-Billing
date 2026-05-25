@@ -90,6 +90,7 @@ import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
 import { createTermsTemplateRouter } from './terms-templates/routes';
 import { createProposalRouter } from './proposals/routes';
+import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
@@ -798,6 +799,19 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, proposalRouter);
+
+  // P08 — Stripe Connect Standard OAuth.
+  const stripeConnectRouter = createStripeConnectRouter({
+    db: deps.db,
+    redis: deps.redis,
+    fakeUserRoles: deps.fakeUserRoles,
+    config: {
+      clientId: config.STRIPE_CONNECT_CLIENT_ID ?? null,
+      secretKey: config.STRIPE_SECRET_KEY ?? null,
+      redirectUri: config.STRIPE_CONNECT_REDIRECT_URI ?? null,
+    },
+  });
+  app.use('/api/staff/stripe-connect', auth.requireAuth, auth.requireCsrf, stripeConnectRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,

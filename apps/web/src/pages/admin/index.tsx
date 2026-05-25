@@ -42,6 +42,7 @@ import { SavedReportsPage } from './SavedReports';
 import { ServicesCatalogPage } from './ServicesCatalog';
 import { PackagesPage } from './Packages';
 import { TermsTemplatesPage } from './TermsTemplates';
+import { StripeConnectPage } from './StripeConnect';
 import { StorageOnboardingPage } from './StorageOnboarding';
 import { TaxonomyPage } from './Taxonomy';
 import { TemplatesPage } from './Templates';
@@ -112,6 +113,7 @@ const GROUPS: Group[] = [
       { key: 'appointments', label: 'Appointments', href: '/admin/appointments' },
       { key: 'rules', label: 'Approval rules', href: '/admin/approval-rules' },
       { key: 'rfr', label: 'Required fields', href: '/admin/required-fields' },
+      { key: 'stripe-connect', label: 'Stripe Connect', href: '/admin/stripe-connect' },
     ],
   },
   {
@@ -267,6 +269,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="services" element={<ServicesCatalogPage />} />
         <Route path="packages" element={<PackagesPage />} />
         <Route path="terms-templates" element={<TermsTemplatesPage />} />
+        <Route path="stripe-connect" element={<StripeConnectPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />
