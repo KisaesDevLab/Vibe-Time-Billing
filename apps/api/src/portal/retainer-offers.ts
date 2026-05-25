@@ -194,6 +194,14 @@ export function createPortalRetainerOfferRouter(deps: PortalRetainerOfferDeps): 
       .update(retainerOffers)
       .set({ status: 'declined', declinedAt: new Date(), updatedAt: new Date() })
       .where(eq(retainerOffers.id, offer.id));
+    // R4-followup — cancel any in-flight reminder jobs so the client
+    // doesn't get a follow-up after declining. Best-effort.
+    try {
+      const { cancelOfferReminders } = await import('../retainers/scheduler');
+      void cancelOfferReminders(offer.id);
+    } catch (err) {
+      logger.error({ err, offerId: offer.id }, 'cancel offer reminders failed');
+    }
     await emitAudit(deps.db, {
       action: 'UPDATE',
       entityType: 'retainer_offer',

@@ -17,6 +17,7 @@ import {
   clients,
   dunningHistory,
   engagements,
+  firmRetainerSettings,
   firmSettings,
   firms,
   invoiceLineItems,
@@ -697,6 +698,10 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       }
       const totals = computeTotals(lines);
 
+      // Captured from the offer-creation hook so we can schedule
+      // reminders AFTER tx commit (BullMQ adds aren't transactional with
+      // Postgres — keep them outside).
+      let createdOfferId: string | null = null;
       const invoiceId = await deps.db.transaction(async (tx) => {
         const [inv] = await tx
           .insert(invoices)
@@ -746,7 +751,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         const toggleOn = parsed.data.retainerOptions?.enabled ?? true;
         if (toggleOn) {
           try {
-            await maybeCreateRetainerOffer(tx as unknown as Database, {
+            const offerResult = await maybeCreateRetainerOffer(tx as unknown as Database, {
               invoiceId: inv.id,
               engagementId: eng.id,
               firmId: session.firmId,
@@ -755,6 +760,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
               overrides: parsed.data.retainerOptions?.overrides,
               invoiceDate: issueDate,
             });
+            if (offerResult.ok) createdOfferId = offerResult.offerId;
           } catch (err) {
             logger.error({ err, invoiceId: inv.id }, 'retainer offer creation threw');
             // Surface to outer catch so the whole invoice tx rolls back.
@@ -763,6 +769,36 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         }
         return inv.id;
       });
+
+      // R4-followup — schedule offer reminder jobs now that the tx
+      // committed. Best-effort; failures here don't unwind the invoice.
+      if (createdOfferId) {
+        try {
+          const [settings] = await deps.db
+            .select({
+              notifyOnBill: firmRetainerSettings.notifyOnBill,
+              notifyDay30: firmRetainerSettings.notifyDay30,
+              notifyDay55: firmRetainerSettings.notifyDay55,
+            })
+            .from(firmRetainerSettings)
+            .where(eq(firmRetainerSettings.firmId, session.firmId))
+            .limit(1);
+          if (settings) {
+            const { scheduleOfferReminders } = await import('../retainers/scheduler');
+            void scheduleOfferReminders({
+              offerId: createdOfferId,
+              notifyOnBill: settings.notifyOnBill,
+              notifyDay30: settings.notifyDay30,
+              notifyDay55: settings.notifyDay55,
+            });
+          }
+        } catch (err) {
+          logger.error(
+            { err, offerId: createdOfferId },
+            'retainer offer reminder scheduling failed',
+          );
+        }
+      }
 
       await emitAudit(deps.db, {
         action: 'CREATE',

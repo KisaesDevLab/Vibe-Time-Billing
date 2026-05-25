@@ -35,8 +35,14 @@ export async function activateRetainerFromPaidInvoice(
   args: { actorAppUserId?: string | null; now?: Date } = {},
 ): Promise<ActivationResult> {
   const now = args.now ?? new Date();
+  // Captured inside the tx so we can schedule queue jobs AFTER commit
+  // (BullMQ adds aren't transactional with Postgres). null until we
+  // actually activate a retainer this call.
+  let activatedRetainerId: string | null = null;
+  let activatedOfferId: string | null = null;
+  let activatedExpiryDate: string | null = null;
   try {
-    return await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       // Resolve invoice → offer id.
       const [inv] = await tx
         .select({
@@ -224,8 +230,31 @@ export async function activateRetainerFromPaidInvoice(
         { retainerId: newRetainer.id, offerId: offerRow.id, invoiceId: inv.id },
         'retainer activated',
       );
+      // Stash for post-commit reminder cancel + warning schedule.
+      activatedRetainerId = newRetainer.id;
+      activatedOfferId = offerRow.id;
+      activatedExpiryDate = expiryDate;
       return { kind: 'activated', retainerId: newRetainer.id } as const;
     });
+    // Post-commit: cancel any in-flight offer reminders + schedule
+    // expiry-warning jobs. Best-effort — failures here log only.
+    if (activatedRetainerId && activatedOfferId && activatedExpiryDate) {
+      try {
+        const { cancelOfferReminders, scheduleRetainerWarnings } = await import('./scheduler');
+        await cancelOfferReminders(activatedOfferId);
+        await scheduleRetainerWarnings({
+          retainerId: activatedRetainerId,
+          expiryDate: activatedExpiryDate,
+          now,
+        });
+      } catch (err) {
+        logger.error(
+          { err, retainerId: activatedRetainerId, offerId: activatedOfferId },
+          'retainer activation post-commit scheduling failed',
+        );
+      }
+    }
+    return result;
   } catch (err) {
     // Unique-violation on engagement_id (D2) — should already be caught
     // above, but the constraint is the suspender. Treat as idempotent

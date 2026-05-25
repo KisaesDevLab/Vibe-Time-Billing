@@ -465,6 +465,15 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
+      // R4-followup — schedule expiry warnings for the manual retainer
+      // too. Same best-effort pattern as the activation path.
+      try {
+        const { scheduleRetainerWarnings } = await import('./scheduler');
+        void scheduleRetainerWarnings({ retainerId, expiryDate });
+      } catch (err) {
+        logger.error({ err, retainerId }, 'retainer warning scheduling failed (manual)');
+      }
+
       res.status(201).json({ retainerId });
     },
   );
@@ -517,6 +526,14 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // R4-followup — kill in-flight expiry warnings while paused; the
+      // firm will re-schedule on resume.
+      try {
+        const { cancelRetainerWarnings } = await import('./scheduler');
+        void cancelRetainerWarnings(row.id);
+      } catch (err) {
+        logger.error({ err, retainerId: row.id }, 'cancel retainer warnings failed (pause)');
+      }
       res.json({ ok: true });
     },
   );
@@ -567,6 +584,19 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // R4-followup — re-schedule warnings when resuming back to
+      // active. Skip when we flipped straight to expired.
+      if (nextStatus === 'active') {
+        try {
+          const { scheduleRetainerWarnings } = await import('./scheduler');
+          void scheduleRetainerWarnings({
+            retainerId: row.id,
+            expiryDate: String(row.expiryDate).slice(0, 10),
+          });
+        } catch (err) {
+          logger.error({ err, retainerId: row.id }, 'reschedule retainer warnings failed (resume)');
+        }
+      }
       res.json({ ok: true, status: nextStatus });
     },
   );
@@ -631,6 +661,14 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // R4-followup — kill any in-flight expiry warnings for the
+      // voided retainer.
+      try {
+        const { cancelRetainerWarnings } = await import('./scheduler');
+        void cancelRetainerWarnings(row.id);
+      } catch (err) {
+        logger.error({ err, retainerId: row.id }, 'cancel retainer warnings failed (void)');
+      }
       res.json({ ok: true });
     },
   );

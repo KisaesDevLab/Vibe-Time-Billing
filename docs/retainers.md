@@ -175,19 +175,46 @@ Two daily cron jobs run in the BullMQ worker:
   whose `offer_expires_at < now` to `expired`. Offers in
   `pending_payment` stay alone (AR flow finishes them).
 
+## Delayed notifications
+
+Two delayed-only BullMQ queues fan out client-facing reminders.
+
+### `retainer-offer-reminder`
+
+Enqueued at offer creation (R2) with deterministic job IDs
+(`retainer-offer-reminder:{offerId}:{onbill|day30|day55}`). Each
+reminder fires at the kind's offset from offer creation:
+
+- **on-bill** (~5 min after the invoice ships) — gentle nudge
+- **day-30** — halfway-through reminder
+- **day-55** — final reminder before the 60-day portal window closes
+
+Each reminder is gated by a firm-settings boolean
+(`notify_on_bill` / `notify_day_30` / `notify_day_55` on
+`firm_retainer_settings`). Defaults to all on. The handler defensively
+skips when the offer is purchased/declined/expired, the firm feature
+flag is off, or no billing contact exists. Cancelled by the portal
+purchase, decline, and offer-expiry-sweep paths.
+
+### `retainer-expiry-warning`
+
+Enqueued at activation (R3) and at firm-initiated manual activation
+(R7). Four stages: 90/60/30/7 days before `expiry_date`. Job IDs are
+`retainer-expiry-warning:{retainerId}:{90d|60d|30d|7d}`. The handler
+skips when the retainer is paused/void/expired. The pause / void paths
+cancel in-flight warnings; resume re-schedules.
+
+Both queues require Redis. Set `REDIS_DISABLED=1` (or `NODE_ENV=test`)
+to short-circuit scheduling — useful for tests and offline dev.
+
 ## Open follow-ups (not in v1)
 
-- Per-retainer expiry-warning email reminders at 90/60/30/7 days
-- Per-offer reminder cadence (on-bill/day-30/day-55 togglable, but no
-  scheduled jobs yet — set up reminders manually via notification
-  templates for now)
-- Edit/delete time entry: ledger reversal logic
 - Staff dashboard (`/my/retainers`)
 - Retainer detail page with rich ledger + activity timeline
 - Vibe MyBooks GL posting on activation (cash-basis per D5)
 - Prometheus metrics + healthcheck endpoint
 
-These will land as Stage R4-followup and R6-followup PRs.
+These will land as Stage R6-followup PRs.
 
 ## Locked decisions reference
 

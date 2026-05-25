@@ -20,6 +20,14 @@ import { runDunningSweep } from './jobs/dunning-sweep';
 import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
+import {
+  runRetainerOfferReminder,
+  type OfferReminderJobPayload,
+} from './jobs/retainer-offer-reminder';
+import {
+  runRetainerExpiryWarning,
+  type ExpiryWarningJobPayload,
+} from './jobs/retainer-expiry-warning';
 import { runShieldHealthcheck } from './jobs/shield-healthcheck';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
@@ -518,6 +526,11 @@ async function setup(): Promise<void> {
   // a dedicated IORedis publisher for storage-progress:{id} channel.
   setupStorageMutationQueue();
 
+  // R4-followup — delayed-only retainer notification queues. The API
+  // enqueues jobs with deterministic jobIds at offer-creation /
+  // activation time; handlers fire after the queue delay elapses.
+  setupRetainerDelayedQueues();
+
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
   startHealthServer();
 }
@@ -578,6 +591,71 @@ let mutationWorkerRef: Worker<FolderRenamePayload> | null = null;
 let mutationQueueRef: Queue<FolderRenamePayload> | null = null;
 let mutationEventsRef: QueueEvents | null = null;
 let publishConnRef: IORedis | null = null;
+
+// R4-followup — refs for graceful shutdown of the retainer delayed
+// queues. Same parallel-registration pattern as setupStorageMutationQueue:
+// the API enqueues delayed jobs with deterministic jobIds; these workers
+// consume them at the delay's elapse.
+let offerReminderQueueRef: Queue<OfferReminderJobPayload> | null = null;
+let offerReminderEventsRef: QueueEvents | null = null;
+let offerReminderWorkerRef: Worker<OfferReminderJobPayload> | null = null;
+let expiryWarningQueueRef: Queue<ExpiryWarningJobPayload> | null = null;
+let expiryWarningEventsRef: QueueEvents | null = null;
+let expiryWarningWorkerRef: Worker<ExpiryWarningJobPayload> | null = null;
+
+function setupRetainerDelayedQueues(): void {
+  if (!db) {
+    logger.warn('retainer delayed queues not registered — db missing');
+    return;
+  }
+  const offerName = 'retainer-offer-reminder';
+  offerReminderQueueRef = new Queue<OfferReminderJobPayload>(offerName, { connection });
+  offerReminderEventsRef = new QueueEvents(offerName, { connection });
+  offerReminderEventsRef.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: offerName, failedReason }, 'retainer offer reminder failed');
+  });
+  offerReminderWorkerRef = new Worker<OfferReminderJobPayload>(
+    offerName,
+    async (job) => {
+      const result = await runRetainerOfferReminder(
+        db!,
+        logger,
+        {
+          sendEmail: dunningSendEmail,
+          portalBaseUrl: process.env['PORTAL_BASE_URL'],
+        },
+        job.data,
+      );
+      logger.info({ jobId: job.id, ...result }, 'retainer-offer-reminder complete');
+    },
+    { connection, concurrency: 2 },
+  );
+
+  const warningName = 'retainer-expiry-warning';
+  expiryWarningQueueRef = new Queue<ExpiryWarningJobPayload>(warningName, { connection });
+  expiryWarningEventsRef = new QueueEvents(warningName, { connection });
+  expiryWarningEventsRef.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: warningName, failedReason }, 'retainer expiry warning failed');
+  });
+  expiryWarningWorkerRef = new Worker<ExpiryWarningJobPayload>(
+    warningName,
+    async (job) => {
+      const result = await runRetainerExpiryWarning(
+        db!,
+        logger,
+        {
+          sendEmail: dunningSendEmail,
+          portalBaseUrl: process.env['PORTAL_BASE_URL'],
+        },
+        job.data,
+      );
+      logger.info({ jobId: job.id, ...result }, 'retainer-expiry-warning complete');
+    },
+    { connection, concurrency: 2 },
+  );
+
+  logger.info({ queues: [offerName, warningName] }, 'retainer delayed-job queues registered');
+}
 
 // Phase 25 #11 — per-service health probe. Tiny HTTP listener that
 // exposes /health for k8s/docker healthchecks against the worker
@@ -648,6 +726,12 @@ async function shutdown(): Promise<void> {
   if (mutationWorkerRef) await mutationWorkerRef.close();
   if (mutationQueueRef) await mutationQueueRef.close();
   if (mutationEventsRef) await mutationEventsRef.close();
+  if (offerReminderWorkerRef) await offerReminderWorkerRef.close();
+  if (offerReminderQueueRef) await offerReminderQueueRef.close();
+  if (offerReminderEventsRef) await offerReminderEventsRef.close();
+  if (expiryWarningWorkerRef) await expiryWarningWorkerRef.close();
+  if (expiryWarningQueueRef) await expiryWarningQueueRef.close();
+  if (expiryWarningEventsRef) await expiryWarningEventsRef.close();
   if (publishConnRef) await publishConnRef.quit();
   await connection.quit();
   if (closeDb) await closeDb();
