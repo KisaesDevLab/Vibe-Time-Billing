@@ -22,7 +22,8 @@
     "./ai": "./src/ai/index.ts",
     "./connect": "./src/connect/index.ts",
     "./storage": "./src/storage/index.ts",
-    "./retainers": "./src/retainers/index.ts"
+    "./retainers": "./src/retainers/index.ts",
+    "./proposals": "./src/proposals/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
