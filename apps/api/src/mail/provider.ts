@@ -32,7 +32,7 @@ export interface MailMessage {
 }
 
 export interface MailProvider {
-  id: 'console' | 'smtp' | 'postmark' | 'resend' | 'ses';
+  id: 'console' | 'smtp' | 'postmark' | 'resend' | 'ses' | 'emailit';
   send(msg: MailMessage): Promise<{ ok: boolean; messageId?: string; error?: string }>;
 }
 
@@ -156,6 +156,53 @@ export interface ResendOptions {
   apiKey: string;
   from: string;
   fetchImpl?: typeof fetch;
+}
+
+// P26 — EmailIt provider (https://emailit.com). Same shape as Resend
+// — bearer token + JSON POST. Pulled in for the proposal addendum's
+// §0.1 explicit "SMTP / Postmark / EmailIt" list.
+export interface EmailItOptions {
+  apiKey: string;
+  from: string;
+  fetchImpl?: typeof fetch;
+}
+
+export function createEmailItProvider(opts: EmailItOptions, log: Logger): MailProvider {
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch);
+  return {
+    id: 'emailit',
+    async send(msg) {
+      try {
+        const res = await fetchImpl('https://api.emailit.com/v1/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${opts.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: opts.from,
+            to: [msg.to],
+            subject: msg.subject,
+            text: msg.body,
+            html: msg.html,
+          }),
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          id?: string;
+          message_id?: string;
+          message?: string;
+          error?: string;
+        };
+        if (!res.ok) {
+          return { ok: false, error: json.message ?? json.error ?? `emailit ${res.status}` };
+        }
+        return { ok: true, messageId: json.id ?? json.message_id };
+      } catch (err) {
+        log.error({ err }, 'emailit send failed');
+        return { ok: false, error: err instanceof Error ? err.message : 'emailit_failed' };
+      }
+    },
+  };
 }
 
 export function createResendProvider(opts: ResendOptions, log: Logger): MailProvider {
