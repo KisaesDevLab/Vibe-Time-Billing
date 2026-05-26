@@ -95,6 +95,7 @@ import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './propo
 import { createSignatureVerifyRouter } from './proposals/signature-verify';
 import { createClientAccountRouter } from './proposals/client-accounts';
 import { createQuickBillRouter } from './quick-bills/routes';
+import { createRenewalRouter } from './renewals/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -845,6 +846,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/quick-bills', auth.requireAuth, auth.requireCsrf, quickBillRouter);
+
+  // P25 — renewal engine.
+  const renewalRouter = createRenewalRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/renewals', auth.requireAuth, auth.requireCsrf, renewalRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({
