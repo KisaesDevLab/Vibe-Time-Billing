@@ -106,6 +106,7 @@ import { createWipRouter } from './wip/routes';
 import { createMrrDashboardRouter } from './dashboards/mrr-routes';
 import { createCaddyRouter } from './caddy/routes';
 import { createTaxReturnRouter } from './tax-returns/routes';
+import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
@@ -933,6 +934,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/tax/returns', auth.requireAuth, auth.requireCsrf, taxReturnRouter);
+
+  // FMv2 §4.6-4.8 — admin folder-conflict resolution.
+  const conflictsRouter = createConflictsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/storage/conflicts', auth.requireAuth, auth.requireCsrf, conflictsRouter);
 
   // TR-5 — Staff view-as-client impersonation.
   const impersonationRouter = createImpersonationRouter({
