@@ -945,6 +945,49 @@ export const clientFolders = pgTable(
 //   | conflict | orphan | restored
 // =====================================================================
 
+// FMv2 §2.1 — folder_link_attempts records every (client, folder)
+// link attempt for the admin reconciliation queue. Indexed on
+// (firm, outcome) for the open-conflicts surface and on (client,
+// attempted_at desc) for the per-client audit panel.
+export const folderLinkAttempts = pgTable(
+  'folder_link_attempts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    storagePath: text('storage_path').notNull(),
+    attemptedBy: uuid('attempted_by')
+      .notNull()
+      .references(() => appUsers.id),
+    attemptedAt: timestamp('attempted_at', { withTimezone: true }).notNull().defaultNow(),
+    matchConfidence: numeric('match_confidence', { precision: 4, scale: 3 }),
+    matchReasonCode: text('match_reason_code'),
+    outcome: text('outcome').notNull().default('pending'),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolvedBy: uuid('resolved_by').references(() => appUsers.id),
+    resolutionReason: text('resolution_reason'),
+    notes: text('notes'),
+  },
+  (t) => ({
+    openIdx: index('idx_folder_link_attempts_open')
+      .on(t.firmId, t.outcome)
+      .where(sql`outcome IN ('pending', 'contested')`),
+    clientIdx: index('idx_folder_link_attempts_client').on(t.clientId, t.attemptedAt),
+    outcomeChk: check(
+      'folder_link_attempts_outcome_chk',
+      sql`${t.outcome} IN ('pending', 'linked', 'contested', 'denied', 'reassigned', 'aborted')`,
+    ),
+    confidenceRange: check(
+      'folder_link_attempts_confidence_range',
+      sql`${t.matchConfidence} IS NULL OR (${t.matchConfidence} >= 0 AND ${t.matchConfidence} <= 1)`,
+    ),
+  }),
+);
+
 export const folderSyncEvents = pgTable(
   'folder_sync_events',
   {
