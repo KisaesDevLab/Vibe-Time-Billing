@@ -26,8 +26,10 @@
 
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Logger } from 'pino';
+import type { Redis } from 'ioredis';
 
 import { incCounter, observeDurationSeconds } from '../metrics';
+import { publishIndexProgress, type IndexProgressSnapshot } from '@vibe/core/storage';
 
 import type { Database } from '@vibe/db';
 import {
@@ -402,6 +404,11 @@ export interface RunStorageSyncTickOpts {
   systemPrefix?: string;
   sentinelFolder?: string;
   sentinelFile?: string;
+  /** Optional Redis client for FMv2 §5.2 index-progress publishing.
+   *  When provided, every per-folder file batch emits a snapshot to
+   *  `storage:index:{folder_id}`. When omitted, the worker still
+   *  syncs but doesn't push progress (UI falls back to polling). */
+  redis?: Redis;
 }
 
 export interface StorageSyncResult {
@@ -814,6 +821,12 @@ export async function runStorageSyncTick(
   let fileSoftDeletes = 0;
   let fileUndeletes = 0;
 
+  // FMv2 §5.2 — track per-folder progress so the IndexingProgressBar
+  // animation drives end-to-end. Capture started_at once per folder
+  // (the indexing experience for the client is bounded by ONE folder
+  // scan, not the firm-wide tick).
+  const folderStartedAt = new Date().toISOString();
+
   for (const folder of folderRows) {
     // List every object under this folder, flat (recursive).
     const observedFiles: ObservedFile[] = [];
@@ -826,6 +839,22 @@ export async function runStorageSyncTick(
         lastModified: entry.meta.lastModified,
         contentType: entry.meta.contentType,
       });
+    }
+
+    // Emit a `running` snapshot before the file diff so the UI knows
+    // total file count + sets the progress bar denominator.
+    if (opts.redis) {
+      await publishIndexProgress(opts.redis, folder.id, {
+        status: 'running',
+        files_total: observedFiles.length,
+        files_indexed: 0,
+        bytes_indexed: 0,
+        visible_count: 0,
+        private_count: 0,
+        started_at: folderStartedAt,
+      }).catch((err: unknown) =>
+        log.warn({ err, folderId: folder.id }, 'publishIndexProgress (start) failed'),
+      );
     }
 
     // Snapshot current files rows for this folder (including soft-deleted
@@ -920,6 +949,35 @@ export async function runStorageSyncTick(
         fileUndeletes += 1;
       }
     });
+
+    // FMv2 §5.2 — emit a `completed` snapshot for this folder once
+    // its diff is committed. The IndexingProgressBar listens for
+    // event=completed and flips the UI to the active state.
+    if (opts.redis) {
+      // Count file totals + visibility split from the planner result
+      // rather than re-querying. The planner already has every row
+      // it considered.
+      const visibleCount = filePlan.inserts.filter((i) => i.visibility === 'client_visible').length;
+      const privateCount = filePlan.inserts.filter((i) => i.visibility === 'private').length;
+      const bytesIndexed = filePlan.inserts.reduce((sum, i) => sum + i.sizeBytes, 0);
+      const lastFile =
+        filePlan.inserts.length > 0
+          ? filePlan.inserts[filePlan.inserts.length - 1]!.originalFilename
+          : null;
+      const completedSnapshot: IndexProgressSnapshot = {
+        status: 'completed',
+        files_total: observedFiles.length,
+        files_indexed: filePlan.inserts.length,
+        bytes_indexed: bytesIndexed,
+        visible_count: visibleCount,
+        private_count: privateCount,
+        started_at: folderStartedAt,
+        last_file_name: lastFile,
+      };
+      await publishIndexProgress(opts.redis, folder.id, completedSnapshot).catch((err: unknown) =>
+        log.warn({ err, folderId: folder.id }, 'publishIndexProgress (complete) failed'),
+      );
+    }
   }
 
   const durationSeconds = (Date.now() - tickStart) / 1000;
