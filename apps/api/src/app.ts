@@ -53,6 +53,7 @@ import { createPortalActivityRouter } from './portal/activity';
 import { createPortalAppointmentRouter } from './portal/appointments';
 import { createPortalEngagementAutopayRouter } from './portal/engagement-autopay';
 import { createPortalEngagementRouter } from './portal/engagements';
+import { createPortalTaxReturnRouter } from './portal/tax-returns';
 import { createPortalFileShareRouter } from './portal/file-shares';
 import { createSharePublicRouter } from './share-public';
 import { createPortalRetainerRouter } from './portal/retainers';
@@ -560,6 +561,13 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/engagements', portalEngagementRouter);
+
+  // TR-4 — portal tax-return viewer endpoints.
+  const portalTaxReturnRouter = createPortalTaxReturnRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/tax/returns', portalTaxReturnRouter);
 
   // CP6 — portal activity log (read-only, privacy-filtered audit feed).
   const portalActivityRouter = createPortalActivityRouter({

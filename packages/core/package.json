@@ -23,7 +23,8 @@
     "./connect": "./src/connect/index.ts",
     "./storage": "./src/storage/index.ts",
     "./retainers": "./src/retainers/index.ts",
-    "./proposals": "./src/proposals/index.ts"
+    "./proposals": "./src/proposals/index.ts",
+    "./tax-returns": "./src/tax-returns/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
