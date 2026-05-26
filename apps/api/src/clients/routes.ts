@@ -33,6 +33,7 @@ import { mountFileRoutes } from './files';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
+import { mountFolderLinkRoutes } from './folder-link';
 import { mountTaskRoutes } from './tasks';
 
 import type { Redis } from 'ioredis';
@@ -848,6 +849,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   if (deps.redis) {
     mountFolderRoutes(router, { ...deps, redis: deps.redis });
   }
+  // FMv2 link routes — independent of Redis (the SSE stream falls
+  // back to JSON when Redis isn't configured).
+  mountFolderLinkRoutes(router, { db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   mountCommunicationRoutes(router, deps);
 
   // v1 folder routes removed in Phase 0 of the file-manager rebuild.
