@@ -16,6 +16,9 @@ export * from './paths';
 export * from './sentinel';
 export { MockStorageClient, parseMockPresignUrl } from './mock';
 export { B2StorageClient } from './b2';
+export * from './normalize';
+export * from './jaro-winkler';
+export * from './match-engine';
 
 const StorageEnvSchema = z.object({
   // P13 — MinIO is S3-protocol-compatible and uses the same client
