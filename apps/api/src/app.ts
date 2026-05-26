@@ -92,6 +92,7 @@ import { createPackageRouter } from './packages/routes';
 import { createTermsTemplateRouter } from './terms-templates/routes';
 import { createProposalRouter } from './proposals/routes';
 import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
+import { createSignatureVerifyRouter } from './proposals/signature-verify';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -818,6 +819,14 @@ export function createApp(deps: AppDeps): Express {
     redis: deps.redis,
   });
   app.use('/api/portal/proposals', portalMagicLinkRouter);
+
+  // P16 — signature HMAC verification (firm-side).
+  const signatureVerifyRouter = createSignatureVerifyRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
+  });
+  app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signatureVerifyRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({

@@ -65,6 +65,11 @@ const Schema = z.object({
   // Distinct from STRIPE_WEBHOOK_SECRET which guards the firm's
   // direct-charge events from the BYO Stripe key flow.
   STRIPE_CONNECT_WEBHOOK_SECRET: z.string().optional(),
+  // P16 — per-firm signature HMAC keys derive from this seed +
+  // firm_id. Falls back to PORTAL_JWT_SECRET if unset so a fresh
+  // appliance gets coverage; production should set this to a
+  // dedicated 32+-byte value rotated on its own cadence.
+  PROPOSAL_SIGNATURE_HMAC_SEED: z.string().optional(),
   AI_CLOUD_API_KEY: z.string().optional(),
   AI_CLOUD_MODEL: z.string().default('claude-opus-4-7'),
   AI_LOCAL_URL: z.string().default('http://localhost:11434'),
