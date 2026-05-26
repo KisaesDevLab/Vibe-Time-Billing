@@ -14,6 +14,7 @@
 // the seam to FMv2 Phase D.
 
 import { type Request, type Response, type Router } from 'express';
+import IORedis from 'ioredis';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 
@@ -34,6 +35,7 @@ import {
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { indexChannel, readIndexState } from '../files/index-progress';
 
 export interface FolderLinkDeps extends RbacDeps {
   db: Database | null;
@@ -551,9 +553,10 @@ export function mountFolderLinkRoutes(router: Router, deps: FolderLinkDeps): voi
     },
   );
 
-  // Index-status SSE — when Redis is wired we publish to the channel
-  // returned by /link. For v1 of this route, we provide a polling
-  // fallback that reads the latest folder state from the DB.
+  // Index-status — JSON snapshot OR SSE stream depending on Accept
+  // header. When Accept includes `text/event-stream`, subscribe to
+  // the Redis channel and stream progress events; otherwise return
+  // the DB + Redis-state snapshot for polling clients.
   router.get(
     '/:id/folder/index-status',
     requirePermission(deps, 'storage:folder:view'),
@@ -581,13 +584,110 @@ export function mountFolderLinkRoutes(router: Router, deps: FolderLinkDeps): voi
         res.status(404).json({ error: 'folder_not_found' });
         return;
       }
-      // Honest snapshot — production wires the SSE stream over Redis;
-      // this surface still returns a usable JSON for polling clients.
-      res.json({
-        client_folder_id: folder.id,
-        status: folder.status,
-        last_synced_at: folder.lastSyncedAt?.toISOString() ?? null,
-        index_channel: `storage:index:${folder.id}`,
+
+      const wantsSse =
+        (req.get('accept') ?? '').includes('text/event-stream') || req.query['stream'] === '1';
+
+      if (!wantsSse) {
+        // JSON snapshot. Try to overlay the live Redis state for
+        // clients that just reconnected.
+        const redisUrl = process.env['REDIS_URL'];
+        let live: Awaited<ReturnType<typeof readIndexState>> = null;
+        if (redisUrl) {
+          const r = new IORedis(redisUrl, { maxRetriesPerRequest: null, lazyConnect: true });
+          try {
+            await r.connect();
+            live = await readIndexState(r, folder.id);
+          } catch {
+            // Redis unavailable — fall through to DB-only snapshot.
+          } finally {
+            void r.quit().catch(() => undefined);
+          }
+        }
+        res.json({
+          client_folder_id: folder.id,
+          status: folder.status,
+          last_synced_at: folder.lastSyncedAt?.toISOString() ?? null,
+          index_channel: indexChannel(folder.id),
+          live,
+        });
+        return;
+      }
+
+      // SSE stream. Open a dedicated subscriber connection so the
+      // parent app's Redis client never goes into subscribe mode.
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.write(': connected\n\n');
+
+      const redisUrl = process.env['REDIS_URL'];
+      if (!redisUrl) {
+        // No Redis configured — emit the current DB snapshot once and
+        // close. Clients fall back to polling automatically when SSE
+        // closes immediately.
+        res.write(
+          `event: snapshot\ndata: ${JSON.stringify({
+            status: folder.status,
+            files_indexed: 0,
+            files_total: 0,
+            bytes_indexed: 0,
+            visible_count: 0,
+            private_count: 0,
+            started_at: new Date().toISOString(),
+          })}\n\n`,
+        );
+        res.end();
+        return;
+      }
+
+      const subscriber = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const channel = indexChannel(folder.id);
+
+      // Emit the current snapshot (if any) immediately so the
+      // reconnect path doesn't blank the progress bar.
+      try {
+        const main = new IORedis(redisUrl, {
+          maxRetriesPerRequest: null,
+          lazyConnect: true,
+        });
+        await main.connect();
+        const snap = await readIndexState(main, folder.id);
+        if (snap) {
+          res.write(`event: progress\ndata: ${JSON.stringify(snap)}\n\n`);
+        }
+        void main.quit().catch(() => undefined);
+      } catch {
+        // ignore — live updates still flow
+      }
+
+      subscriber.subscribe(channel).catch((err: unknown) => {
+        res.write(`event: error\ndata: ${JSON.stringify({ message: String(err) })}\n\n`);
+      });
+      subscriber.on('message', (_chan, msg) => {
+        let parsed: { status?: string } = {};
+        try {
+          parsed = JSON.parse(msg) as { status?: string };
+        } catch {
+          // pass-through raw payload
+        }
+        const event =
+          parsed.status === 'completed'
+            ? 'completed'
+            : parsed.status === 'failed'
+              ? 'failed'
+              : 'progress';
+        res.write(`event: ${event}\ndata: ${msg}\n\n`);
+      });
+
+      // Heartbeat every 25s so proxies don't drop the connection.
+      const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 25_000);
+      req.on('close', () => {
+        clearInterval(heartbeat);
+        void subscriber.quit().catch(() => undefined);
       });
     },
   );
