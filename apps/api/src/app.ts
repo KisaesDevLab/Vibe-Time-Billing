@@ -90,6 +90,7 @@ import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
 import { createTermsTemplateRouter } from './terms-templates/routes';
 import { createProposalRouter } from './proposals/routes';
+import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -799,6 +800,23 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, proposalRouter);
+
+  // P17 — proposal magic-link mint (staff side). Mounted under the
+  // same /proposals path so the URL is /proposals/:id/mint-magic-link.
+  const staffMagicLinkRouter = createStaffMagicLinkRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
+  app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, staffMagicLinkRouter);
+
+  // P17 — proposal magic-link redeem (portal side). No portal-auth
+  // middleware — the magic link IS the credential.
+  const portalMagicLinkRouter = createPortalMagicLinkRouter({
+    db: deps.db,
+    redis: deps.redis,
+  });
+  app.use('/api/portal/proposals', portalMagicLinkRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({
