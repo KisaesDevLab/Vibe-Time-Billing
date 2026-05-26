@@ -5,4 +5,5 @@ export * from './video-embed';
 export * from './canonical-json';
 export * from './signature-hmac';
 export * from './renewal-uplift';
+export * from './wip-rollup';
 export { STARTER_TERMS_TEMPLATES, type StarterTemplate } from './starter-templates';

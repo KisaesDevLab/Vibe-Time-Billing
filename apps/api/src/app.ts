@@ -98,6 +98,7 @@ import { createAcceptanceRouter } from './proposals/acceptance';
 import { createSectionViewRouter } from './proposals/section-views';
 import { createQuickBillRouter } from './quick-bills/routes';
 import { createRenewalRouter } from './renewals/routes';
+import { createWipRouter } from './wip/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -868,6 +869,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/renewals', auth.requireAuth, auth.requireCsrf, renewalRouter);
+
+  // P23 — WIP rollup per engagement.
+  const wipRouter = createWipRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/wip', auth.requireAuth, auth.requireCsrf, wipRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({
