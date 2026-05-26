@@ -23,6 +23,7 @@ import { MessagesPage } from './pages/Messages';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
 import { ProfilePage } from './pages/Profile';
+import { ProposalPage } from './pages/Proposal';
 import { RequestsPage } from './pages/Requests';
 import { PortalRetainersPage } from './pages/Retainers';
 import { RetainerOfferPage } from './pages/RetainerOffer';
@@ -71,6 +72,7 @@ function PortalRoutes(): JSX.Element {
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
         <Route path="/auth/verify" element={<LoginPage />} />
+        <Route path="/p/:token" element={<ProposalPage />} />
         <Route
           path="*"
           element={
