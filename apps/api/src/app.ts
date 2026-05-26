@@ -102,6 +102,7 @@ import { createRenewalRouter } from './renewals/routes';
 import { createWipRouter } from './wip/routes';
 import { createMrrDashboardRouter } from './dashboards/mrr-routes';
 import { createCaddyRouter } from './caddy/routes';
+import { createTaxReturnRouter } from './tax-returns/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -903,6 +904,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/dashboards', auth.requireAuth, auth.requireCsrf, mrrDashboardRouter);
+
+  // TR-3 — Tax-return staff release API.
+  const taxReturnRouter = createTaxReturnRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/tax/returns', auth.requireAuth, auth.requireCsrf, taxReturnRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({
