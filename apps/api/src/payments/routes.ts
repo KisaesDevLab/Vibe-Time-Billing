@@ -605,6 +605,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
               const { activateRetainerFromPaidInvoice } = await import('../retainers/activation');
               const r = await activateRetainerFromPaidInvoice(deps.db, invId, {
                 actorAppUserId: session.appUserId,
+                sendEmail: deps.sendEmail,
               });
               if (r.kind === 'error') {
                 logger.error({ invoiceId: invId, reason: r.reason }, 'retainer activation error');

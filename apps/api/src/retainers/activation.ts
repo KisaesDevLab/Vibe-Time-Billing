@@ -23,6 +23,7 @@ import {
 import { computeExpiryDate } from '@vibe/core/retainers';
 
 import { logger } from '../logger';
+import type { RetainerMailDispatch } from './notifications';
 
 export type ActivationResult =
   | { kind: 'activated'; retainerId: string }
@@ -32,7 +33,13 @@ export type ActivationResult =
 export async function activateRetainerFromPaidInvoice(
   db: Database,
   invoiceId: string,
-  args: { actorAppUserId?: string | null; now?: Date } = {},
+  args: {
+    actorAppUserId?: string | null;
+    now?: Date;
+    /** Optional staff-mail dispatcher. When provided, sends client +
+     *  staff "retainer activated" notifications post-commit. */
+    sendEmail?: RetainerMailDispatch;
+  } = {},
 ): Promise<ActivationResult> {
   const now = args.now ?? new Date();
   // Captured inside the tx so we can schedule queue jobs AFTER commit
@@ -237,7 +244,8 @@ export async function activateRetainerFromPaidInvoice(
       return { kind: 'activated', retainerId: newRetainer.id } as const;
     });
     // Post-commit: cancel any in-flight offer reminders + schedule
-    // expiry-warning jobs. Best-effort — failures here log only.
+    // expiry-warning jobs + send activation emails. Best-effort —
+    // failures here log only.
     if (activatedRetainerId && activatedOfferId && activatedExpiryDate) {
       try {
         const { cancelOfferReminders, scheduleRetainerWarnings } = await import('./scheduler');
@@ -252,6 +260,17 @@ export async function activateRetainerFromPaidInvoice(
           { err, retainerId: activatedRetainerId, offerId: activatedOfferId },
           'retainer activation post-commit scheduling failed',
         );
+      }
+      if (args.sendEmail) {
+        try {
+          const { notifyRetainerActivated } = await import('./notifications');
+          await notifyRetainerActivated(db, activatedRetainerId, args.sendEmail);
+        } catch (err) {
+          logger.error(
+            { err, retainerId: activatedRetainerId },
+            'retainer activation notification failed',
+          );
+        }
       }
     }
     return result;

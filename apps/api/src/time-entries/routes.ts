@@ -41,6 +41,10 @@ import { logger } from '../logger';
 export interface TimeEntryRoutesDeps extends RbacDeps {
   db: Database | null;
   redis?: Redis;
+  /** Phase 8 — staff/client mail dispatcher used to notify when a
+   *  retainer is auto-split exhausted by a new time entry. Optional;
+   *  when absent, no email fires. */
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
 }
 
 const TIMER_KEY_PREFIX = 'time-entry:timer:';
@@ -635,6 +639,17 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
                 billableHours: String(split.billableHours),
               })
               .where(eq(timeEntries.id, row.id));
+            if (split.exhausted && deps.sendEmail) {
+              try {
+                const { notifyRetainerExhausted } = await import('../retainers/notifications');
+                await notifyRetainerExhausted(deps.db, split.retainerId, deps.sendEmail);
+              } catch (err) {
+                logger.warn(
+                  { err, retainerId: split.retainerId },
+                  'retainer.exhausted notification failed',
+                );
+              }
+            }
           } else {
             // Entry routed entirely to WIP — stamp billableHours for
             // reporting parity.
@@ -1312,6 +1327,17 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
               billableHours: String(split.billableHours),
             })
             .where(eq(timeEntries.id, prior.id));
+          if (split.retainerId && split.exhausted && deps.sendEmail) {
+            try {
+              const { notifyRetainerExhausted } = await import('../retainers/notifications');
+              await notifyRetainerExhausted(deps.db, split.retainerId, deps.sendEmail);
+            } catch (err) {
+              logger.warn(
+                { err, retainerId: split.retainerId },
+                'retainer.exhausted notification failed (edit path)',
+              );
+            }
+          }
         } catch (err) {
           logger.error({ err, timeEntryId: prior.id }, 'retainer re-apply on edit failed');
         }

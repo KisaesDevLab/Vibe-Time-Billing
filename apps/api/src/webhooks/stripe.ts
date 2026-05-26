@@ -239,7 +239,9 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           if (inv.retainerOfferId) {
             try {
               const { activateRetainerFromPaidInvoice } = await import('../retainers/activation');
-              const r = await activateRetainerFromPaidInvoice(deps.db!, inv.id);
+              const r = await activateRetainerFromPaidInvoice(deps.db!, inv.id, {
+                sendEmail: deps.sendEmail,
+              });
               if (r.kind === 'error') {
                 logger.error({ invoiceId: inv.id, reason: r.reason }, 'retainer activation error');
               }

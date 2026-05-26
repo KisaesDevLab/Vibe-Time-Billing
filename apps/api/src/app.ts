@@ -421,6 +421,7 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     redis: deps.redis,
+    sendEmail: deps.sendPortalEmail,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
 
