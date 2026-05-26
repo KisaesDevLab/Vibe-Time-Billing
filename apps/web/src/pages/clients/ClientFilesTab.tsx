@@ -25,6 +25,8 @@ import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 import { api } from '../../api-client';
 import { usePermission } from '../../auth-context';
 import { UnlinkedEmptyState } from './fmv2/UnlinkedEmptyState';
+import { IndexingToast } from './fmv2/IndexingToast';
+import { IndexingProgressBar } from './fmv2/IndexingProgressBar';
 
 interface FileRow {
   id: string;
@@ -103,6 +105,15 @@ export function ClientFilesTab({
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+
+  // FMv2 Phase C — post-link indexing transition. justLinkedPath is
+  // the storage_path returned from /folder/link or /folder/create;
+  // when set, we render the IndexingToast + IndexingProgressBar in
+  // place of the normal Storage folder card. Cleared on
+  // indexing-completed event, which also triggers load() to pull
+  // the freshly-indexed file list.
+  const [justLinkedPath, setJustLinkedPath] = useState<string | null>(null);
+  const [indexing, setIndexing] = useState(false);
 
   async function load(): Promise<void> {
     setError(null);
@@ -237,7 +248,11 @@ export function ClientFilesTab({
         canBind={canBind}
         canEdit={canEdit}
         canReconcile={canReconcile}
-        onLinked={() => void load()}
+        onLinked={(_id, path) => {
+          setJustLinkedPath(path);
+          setIndexing(true);
+          void load();
+        }}
       />
     );
   }
@@ -250,6 +265,22 @@ export function ClientFilesTab({
       {error && (
         <Card>
           <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0 }}>{error}</p>
+        </Card>
+      )}
+
+      {justLinkedPath && (
+        <IndexingToast storagePath={justLinkedPath} onDismiss={() => setJustLinkedPath(null)} />
+      )}
+
+      {indexing && (
+        <Card title="Indexing in progress">
+          <IndexingProgressBar
+            clientId={clientId}
+            onCompleted={() => {
+              setIndexing(false);
+              void load();
+            }}
+          />
         </Card>
       )}
 
@@ -285,13 +316,15 @@ export function ClientFilesTab({
             </Button>
             <Button
               variant="secondary"
-              disabled={busy || !canRename || data.status !== 'active'}
+              disabled={busy || !canRename || data.status !== 'active' || indexing}
               title={
-                !canRename
-                  ? 'Needs storage:folder:rename'
-                  : data.status !== 'active'
-                    ? `Folder is ${data.status} — resolve first`
-                    : undefined
+                indexing
+                  ? 'Available after indexing completes.'
+                  : !canRename
+                    ? 'Needs storage:folder:rename'
+                    : data.status !== 'active'
+                      ? `Folder is ${data.status} — resolve first`
+                      : undefined
               }
               onClick={() => setRenameOpen(true)}
             >
