@@ -93,6 +93,7 @@ import { createTermsTemplateRouter } from './terms-templates/routes';
 import { createProposalRouter } from './proposals/routes';
 import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
 import { createSignatureVerifyRouter } from './proposals/signature-verify';
+import { createQuickBillRouter } from './quick-bills/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -827,6 +828,13 @@ export function createApp(deps: AppDeps): Express {
     hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
   });
   app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signatureVerifyRouter);
+
+  // P24 — quick-bill (ad-hoc invoice).
+  const quickBillRouter = createQuickBillRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/quick-bills', auth.requireAuth, auth.requireCsrf, quickBillRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({
