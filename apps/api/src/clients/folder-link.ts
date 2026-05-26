@@ -292,6 +292,37 @@ export function mountFolderLinkRoutes(router: Router, deps: FolderLinkDeps): voi
         return;
       }
 
+      // FMv2 §6 Phase E — concurrency guard. If another link attempt
+      // on this exact path is already pending or contested, refuse
+      // the second attempt so the first one's admin review owns the
+      // outcome. The check is intentionally race-prone — the DB will
+      // also enforce uniqueness via the partial-unique index on
+      // (firm, storage_path) WHERE outcome IN ('pending','contested')
+      // when we add it; for now the application-level check covers
+      // the common case where two browsers race.
+      const [pending] = await deps.db
+        .select({
+          id: folderLinkAttempts.id,
+          attemptedBy: folderLinkAttempts.attemptedBy,
+        })
+        .from(folderLinkAttempts)
+        .where(
+          and(
+            eq(folderLinkAttempts.firmId, session.firmId),
+            eq(folderLinkAttempts.storagePath, storagePath),
+            inArray(folderLinkAttempts.outcome, ['pending', 'contested']),
+          ),
+        )
+        .limit(1);
+      if (pending && pending.attemptedBy !== session.appUserId) {
+        res.status(409).json({
+          code: 'link_already_pending',
+          attempt_id: pending.id,
+          admin_url: `/admin/storage/conflicts/${pending.id}`,
+        });
+        return;
+      }
+
       // Read sentinel. If it points at another client → contested.
       const sentinel = await tryReadSentinel(storage, storagePath);
       if (sentinel && sentinel.client_id !== clientId) {
