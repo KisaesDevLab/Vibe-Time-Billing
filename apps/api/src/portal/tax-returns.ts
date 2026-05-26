@@ -30,7 +30,7 @@ import { planExtraction, type SectionPageRange } from '@vibe/core/tax-returns';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { resolveScope } from './scope';
-import { listAccessLog } from '../tax-returns/access-log';
+import { appendAccessLog, listAccessLog } from '../tax-returns/access-log';
 
 export interface PortalTaxReturnDeps {
   db: Database | null;
@@ -315,6 +315,19 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
       res.status(400).json({ error: 'extract_plan_failed', detail: (err as Error).message });
       return;
     }
+    // TR-8b — audit. Even a 503 from the renderer means the client
+    // *attempted* to view; that's an audit-worthy event.
+    await appendAccessLog({
+      db: deps.db,
+      returnId: releaseRow.returnId,
+      event: 'VIEW',
+      actorKind: 'CLIENT',
+      actorRef:
+        (session as unknown as { activeClientAccessId?: string }).activeClientAccessId ?? null,
+      actorIp: req.ip ?? null,
+      actorUserAgent: req.get('user-agent') ?? null,
+      metadata: { pages: plan.pageIndices1Based.length, scope: releaseRow.scope },
+    }).catch(() => undefined);
     // Real renderer is wired by ops; this is the security-correct
     // fall-closed default.
     res.status(503).json({

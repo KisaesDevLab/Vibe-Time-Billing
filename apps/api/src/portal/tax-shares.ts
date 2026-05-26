@@ -21,6 +21,7 @@ import type { Database } from '@vibe/db';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { resolveScope } from './scope';
 import { createShare, revokeShare, ShareError } from '../tax-returns/share-helper';
+import { appendAccessLog } from '../tax-returns/access-log';
 
 export interface PortalTaxShareDeps {
   db: Database | null;
@@ -88,6 +89,28 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
         watermark: parsed.data.watermark,
         personalMessage: parsed.data.personalMessage,
       });
+      // TR-8b — audit. Best-effort; the share row is already
+      // committed so we don't block on logger failure. Captures
+      // recipient + scope but never the token.
+      await appendAccessLog({
+        db: deps.db,
+        returnId: req.params['returnId']!,
+        event: 'RELEASED',
+        actorKind: 'CLIENT',
+        actorRef: accessId,
+        actorIp: req.ip ?? null,
+        actorUserAgent: req.get('user-agent') ?? null,
+        shareId: result.shareId,
+        metadata: {
+          recipientEmail: parsed.data.recipientEmail.toLowerCase(),
+          organization: parsed.data.organization,
+          scope: parsed.data.scope,
+          sectionCount: parsed.data.sectionIds.length,
+          accessLevel: parsed.data.accessLevel,
+          require2fa: parsed.data.require2fa,
+          expiresAt: result.expiresAt.toISOString(),
+        },
+      }).catch(() => undefined);
       // Plaintext token MUST be forwarded to the dispatcher and
       // immediately discarded — never reach the JSON response.
       // Caller-side dispatch goes here in production; for v1 we
@@ -133,6 +156,16 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
         .activeClientAccessId;
       try {
         await revokeShare(deps.db, req.params['shareId']!, accessId ?? 'unknown', scope.clientIds);
+        await appendAccessLog({
+          db: deps.db,
+          returnId: req.params['returnId']!,
+          event: 'REVOKED',
+          actorKind: 'CLIENT',
+          actorRef: accessId ?? null,
+          actorIp: req.ip ?? null,
+          actorUserAgent: req.get('user-agent') ?? null,
+          shareId: req.params['shareId']!,
+        }).catch(() => undefined);
         res.status(204).end();
       } catch (err) {
         if (err instanceof ShareError) {

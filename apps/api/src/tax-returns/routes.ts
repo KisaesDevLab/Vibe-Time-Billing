@@ -26,6 +26,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { createRelease, revokeRelease, ReleaseError } from './release-helper';
 import { appendAccessLog, exportAccessLogCsv, listAccessLog } from './access-log';
+import { AmendError, computeAmendDiff, createAmendedReturn, markOriginalSuperseded } from './amend';
 
 export interface TaxReturnRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -37,6 +38,17 @@ const CreateReleaseSchema = z.object({
   sectionIds: z.array(z.string().uuid()).default([]),
   clientCanDownload: z.boolean().default(true),
   coverNote: z.string().max(2000).nullable().default(null),
+});
+
+const CreateAmendSchema = z.object({
+  newTitle: z.string().min(1).max(200),
+  newSourceFileId: z.string().uuid().nullable().default(null),
+  newSourceFileSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/i)
+    .nullable()
+    .default(null),
+  newTotalPages: z.number().int().positive().nullable().default(null),
 });
 
 export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
@@ -109,6 +121,16 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
       }
       try {
         await revokeRelease(deps.db, req.params['releaseId']!, session.appUserId, session.firmId);
+        await appendAccessLog({
+          db: deps.db,
+          returnId: req.params['returnId']!,
+          event: 'REVOKED',
+          actorKind: 'STAFF',
+          actorRef: session.appUserId,
+          actorIp: req.ip ?? null,
+          actorUserAgent: req.get('user-agent') ?? null,
+          metadata: { releaseId: req.params['releaseId']! },
+        }).catch(() => undefined);
         res.status(204).end();
       } catch (err) {
         if (err instanceof ReleaseError) {
@@ -118,6 +140,109 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         }
         throw err;
       }
+    },
+  );
+
+  // TR-10 — amendment chain.
+  //
+  // POST   /:returnId/amend                — clone original into a new
+  //                                          AMENDED row in DRAFT state
+  // POST   /:returnId/amend/approve        — flip the predecessor to
+  //                                          SUPERSEDED (called when
+  //                                          firm has decided the
+  //                                          amended return supersedes
+  //                                          the original)
+  // GET    /:returnId/amend/diff           — section-presence diff
+  //                                          vs the predecessor
+  router.post(
+    '/:returnId/amend',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = CreateAmendSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
+        return;
+      }
+      try {
+        const result = await createAmendedReturn({
+          db: deps.db,
+          originalReturnId: req.params['returnId']!,
+          firmId: session.firmId,
+          staffUserId: session.appUserId,
+          newTitle: parsed.data.newTitle,
+          newSourceFileId: parsed.data.newSourceFileId,
+          newSourceFileSha256: parsed.data.newSourceFileSha256,
+          newTotalPages: parsed.data.newTotalPages,
+        });
+        res.status(201).json(result);
+      } catch (err) {
+        if (err instanceof AmendError) {
+          const status =
+            err.code === 'forbidden'
+              ? 403
+              : err.code === 'original_not_found' || err.code === 'not_found'
+                ? 404
+                : 400;
+          res.status(status).json({ error: err.code, detail: err.message });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.post(
+    '/:returnId/amend/approve',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      try {
+        const result = await markOriginalSuperseded(
+          deps.db,
+          req.params['returnId']!,
+          session.firmId,
+          session.appUserId,
+        );
+        if (result == null) {
+          res.status(409).json({ error: 'not_an_amendment' });
+          return;
+        }
+        res.json({ supersededId: result.supersededId });
+      } catch (err) {
+        if (err instanceof AmendError) {
+          const status = err.code === 'forbidden' ? 403 : 404;
+          res.status(status).json({ error: err.code, detail: err.message });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.get(
+    '/:returnId/amend/diff',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const diff = await computeAmendDiff(deps.db, req.params['returnId']!, session.firmId);
+      if (!diff) {
+        res.status(404).json({ error: 'not_an_amendment' });
+        return;
+      }
+      res.json(diff);
     },
   );
 

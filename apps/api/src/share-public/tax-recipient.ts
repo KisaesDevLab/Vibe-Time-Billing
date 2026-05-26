@@ -37,6 +37,7 @@ import {
   resolveShareToken,
   ShareError,
 } from '../tax-returns/share-helper';
+import { appendAccessLog } from '../tax-returns/access-log';
 
 export interface ShareRecipientDeps {
   db: Database | null;
@@ -128,6 +129,17 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
     // NONE channel = no 2FA required. Always passes.
     if (share.verifyChannel === 'NONE' || !share.require2fa) {
       await markShareViewed(deps.db, share.id);
+      await appendAccessLog({
+        db: deps.db,
+        returnId: share.returnId,
+        event: '2FA_PASSED',
+        actorKind: 'RECIPIENT',
+        actorRef: share.id,
+        actorIp: req.ip ?? null,
+        actorUserAgent: req.get('user-agent') ?? null,
+        shareId: share.id,
+        metadata: { channel: 'NONE' },
+      }).catch(() => undefined);
       res.json({ ok: true });
       return;
     }
@@ -135,7 +147,26 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
     // for now — never silently pass. The failure counter still
     // increments to keep the lockout semantics honest.
     const bumped = await bumpFailed2fa(deps.db, share.id);
+    await appendAccessLog({
+      db: deps.db,
+      returnId: share.returnId,
+      event: '2FA_FAILED',
+      actorKind: 'RECIPIENT',
+      actorRef: share.id,
+      actorIp: req.ip ?? null,
+      actorUserAgent: req.get('user-agent') ?? null,
+      shareId: share.id,
+      metadata: { channel: share.verifyChannel, count: bumped.count },
+    }).catch(() => undefined);
     if (bumped.revoked) {
+      await appendAccessLog({
+        db: deps.db,
+        returnId: share.returnId,
+        event: 'REVOKED',
+        actorKind: 'SYSTEM',
+        shareId: share.id,
+        metadata: { reason: '2fa_lockout' },
+      }).catch(() => undefined);
       res.status(403).json({ error: '2fa_locked' });
       return;
     }
@@ -202,6 +233,17 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
       return;
     }
     await markShareViewed(deps.db, share.id);
+    await appendAccessLog({
+      db: deps.db,
+      returnId: share.returnId,
+      event: 'VIEW',
+      actorKind: 'RECIPIENT',
+      actorRef: share.id,
+      actorIp: req.ip ?? null,
+      actorUserAgent: req.get('user-agent') ?? null,
+      shareId: share.id,
+      metadata: { pages: plan.pageIndices1Based.length },
+    }).catch(() => undefined);
     res.status(503).json({
       error: 'pdf_renderer_unavailable',
       pages: plan.pageIndices1Based.length,
