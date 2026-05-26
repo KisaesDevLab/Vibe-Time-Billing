@@ -94,6 +94,7 @@ import { createProposalRouter } from './proposals/routes';
 import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
 import { createSignatureVerifyRouter } from './proposals/signature-verify';
 import { createClientAccountRouter } from './proposals/client-accounts';
+import { createAcceptanceRouter } from './proposals/acceptance';
 import { createQuickBillRouter } from './quick-bills/routes';
 import { createRenewalRouter } from './renewals/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
@@ -831,6 +832,15 @@ export function createApp(deps: AppDeps): Express {
     signingKey: config.PORTAL_JWT_SECRET ?? null,
   });
   app.use('/api/portal/client-accounts', clientAccountRouter);
+
+  // P21 — portal acceptance flow. No auth middleware — the route
+  // accepts magicLinkId or clientAccountId in the payload so a
+  // magic-link-only client (no account) can complete acceptance.
+  const acceptanceRouter = createAcceptanceRouter({
+    db: deps.db,
+    hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
+  });
+  app.use('/api/portal/proposals', acceptanceRouter);
 
   // P16 — signature HMAC verification (firm-side).
   const signatureVerifyRouter = createSignatureVerifyRouter({
