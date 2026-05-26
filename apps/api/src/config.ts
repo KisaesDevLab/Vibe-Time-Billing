@@ -60,6 +60,11 @@ const Schema = z.object({
   // firms onboard their own Standard accounts via the OAuth dance.
   STRIPE_CONNECT_CLIENT_ID: z.string().optional(),
   STRIPE_CONNECT_REDIRECT_URI: z.string().optional(),
+  // P12 — separate webhook secret for the Connect platform's events
+  // stream (account.updated / invoice.paid / subscription.* / etc.).
+  // Distinct from STRIPE_WEBHOOK_SECRET which guards the firm's
+  // direct-charge events from the BYO Stripe key flow.
+  STRIPE_CONNECT_WEBHOOK_SECRET: z.string().optional(),
   AI_CLOUD_API_KEY: z.string().optional(),
   AI_CLOUD_MODEL: z.string().default('claude-opus-4-7'),
   AI_LOCAL_URL: z.string().default('http://localhost:11434'),

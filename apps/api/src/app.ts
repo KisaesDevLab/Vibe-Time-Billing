@@ -78,6 +78,7 @@ import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createStripeWebhookRouter } from './webhooks/stripe';
+import { createStripeConnectWebhookRouter } from './webhooks/stripe-connect';
 import { createCpaChargeWebhookRouter } from './webhooks/cpacharge';
 import { createWebhookRouter } from './webhooks/outbound';
 import { createPortalInviteRouter } from './portal-invites/routes';
@@ -894,6 +895,19 @@ export function createApp(deps: AppDeps): Express {
       webhookSecret: deps.stripeWebhookSecret ?? null,
       sendEmail: deps.sendPortalEmail,
       portalBaseUrl: config.PORTAL_BASE_URL,
+    }),
+  );
+
+  // P12 — separate webhook channel for Stripe Connect events about
+  // connected accounts (subscription.*, invoice.*, mandate.updated,
+  // account.updated, …). Distinct secret from the BYO-key stripe
+  // webhook above.
+  app.use(
+    '/api/webhooks/stripe-connect',
+    createStripeConnectWebhookRouter({
+      db: deps.db,
+      stripe: deps.stripeProvider ?? null,
+      webhookSecret: config.STRIPE_CONNECT_WEBHOOK_SECRET ?? null,
     }),
   );
 
