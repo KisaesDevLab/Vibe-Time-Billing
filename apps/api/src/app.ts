@@ -91,6 +91,7 @@ import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
 import { createTermsTemplateRouter } from './terms-templates/routes';
 import { createProposalRouter } from './proposals/routes';
+import { createProposalDashboardRouter } from './proposals/dashboard';
 import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
 import { createSignatureVerifyRouter } from './proposals/signature-verify';
 import { createClientAccountRouter } from './proposals/client-accounts';
@@ -808,6 +809,15 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, proposalRouter);
+
+  // P28 — pipeline + conversion dashboard. Mounted under
+  // /api/staff/proposals so the GET /dashboard route is reachable as
+  // /api/staff/proposals/dashboard.
+  const proposalDashboardRouter = createProposalDashboardRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, proposalDashboardRouter);
 
   // P17 — proposal magic-link mint (staff side). Mounted under the
   // same /proposals path so the URL is /proposals/:id/mint-magic-link.

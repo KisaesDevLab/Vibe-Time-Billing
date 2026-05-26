@@ -6,4 +6,5 @@ export * from './canonical-json';
 export * from './signature-hmac';
 export * from './renewal-uplift';
 export * from './wip-rollup';
+export * from './funnel';
 export { STARTER_TERMS_TEMPLATES, type StarterTemplate } from './starter-templates';
