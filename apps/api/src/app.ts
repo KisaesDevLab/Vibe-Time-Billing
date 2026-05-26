@@ -95,6 +95,7 @@ import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './propo
 import { createSignatureVerifyRouter } from './proposals/signature-verify';
 import { createClientAccountRouter } from './proposals/client-accounts';
 import { createAcceptanceRouter } from './proposals/acceptance';
+import { createSectionViewRouter } from './proposals/section-views';
 import { createQuickBillRouter } from './quick-bills/routes';
 import { createRenewalRouter } from './renewals/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
@@ -841,6 +842,10 @@ export function createApp(deps: AppDeps): Express {
     hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
   });
   app.use('/api/portal/proposals', acceptanceRouter);
+
+  // P20 — per-section view tracking (portal-side, magic-link-gated).
+  const sectionViewRouter = createSectionViewRouter({ db: deps.db });
+  app.use('/api/portal/proposals', sectionViewRouter);
 
   // P16 — signature HMAC verification (firm-side).
   const signatureVerifyRouter = createSignatureVerifyRouter({
