@@ -101,6 +101,7 @@ import { createQuickBillRouter } from './quick-bills/routes';
 import { createRenewalRouter } from './renewals/routes';
 import { createWipRouter } from './wip/routes';
 import { createMrrDashboardRouter } from './dashboards/mrr-routes';
+import { createCaddyRouter } from './caddy/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -315,6 +316,14 @@ export function createApp(deps: AppDeps): Express {
     requireCsrf: auth.requireCsrf,
   });
   app.use('/api/staff/admin/unlock', unlockRouter);
+
+  // P19 — Caddy on-demand TLS ask endpoint. Mounted BEFORE the lock
+  // middleware so cert provisioning keeps working even when the
+  // appliance is locked (existing TLS termination shouldn't break
+  // mid-incident). No auth: Caddy is a separate process; the route
+  // is constrained by a `@internal` host matcher in the Caddy config.
+  const caddyRouter = createCaddyRouter({ db: deps.db });
+  app.use('/v1/internal', caddyRouter);
 
   // Stage 1B — lock middleware. Once mounted, every request below this
   // point gets a 503 if the appliance is locked. The middleware
