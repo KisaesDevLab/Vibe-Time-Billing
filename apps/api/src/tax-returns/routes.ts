@@ -25,6 +25,7 @@ import { taxReturns } from '@vibe/db/schema';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { createRelease, revokeRelease, ReleaseError } from './release-helper';
+import { appendAccessLog, exportAccessLogCsv, listAccessLog } from './access-log';
 
 export interface TaxReturnRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -68,6 +69,22 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
           coverNote: parsed.data.coverNote,
           releasedByUserId: session.appUserId,
         });
+        // TR-8 — audit. Best-effort; failure does not block the
+        // release (which is already committed).
+        await appendAccessLog({
+          db: deps.db,
+          returnId: req.params['returnId']!,
+          event: 'RELEASED',
+          actorKind: 'STAFF',
+          actorRef: session.appUserId,
+          actorIp: req.ip ?? null,
+          actorUserAgent: req.get('user-agent') ?? null,
+          metadata: {
+            releaseId: result.releaseId,
+            supersededReleaseId: result.supersededReleaseId,
+            scope: parsed.data.scope,
+          },
+        }).catch(() => undefined);
         res.status(201).json(result);
       } catch (err) {
         if (err instanceof ReleaseError) {
@@ -101,6 +118,65 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         }
         throw err;
       }
+    },
+  );
+
+  // TR-8 — staff access-log read endpoints.
+  router.get(
+    '/:returnId/access-log',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const cursorRaw = req.query['cursor'];
+      let cursor: { at: string; id: string } | null = null;
+      if (typeof cursorRaw === 'string' && cursorRaw.length > 0) {
+        try {
+          cursor = JSON.parse(Buffer.from(cursorRaw, 'base64url').toString('utf8'));
+        } catch {
+          res.status(400).json({ error: 'bad_cursor' });
+          return;
+        }
+      }
+      const result = await listAccessLog({
+        db: deps.db,
+        returnId: req.params['returnId']!,
+        firmId: session.firmId,
+        cursor,
+        pageSize: 50,
+        clientVisibleOnly: false,
+      });
+      const nextCursor =
+        result.nextCursor === null
+          ? null
+          : Buffer.from(JSON.stringify(result.nextCursor)).toString('base64url');
+      res.json({ items: result.items, nextCursor });
+    },
+  );
+
+  router.get(
+    '/:returnId/access-log.csv',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const csv = await exportAccessLogCsv({
+        db: deps.db,
+        returnId: req.params['returnId']!,
+        firmId: session.firmId,
+      });
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="tax-return-access-log-${req.params['returnId']}.csv"`,
+      );
+      res.send(csv);
     },
   );
 

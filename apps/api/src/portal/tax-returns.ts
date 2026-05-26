@@ -30,6 +30,7 @@ import { planExtraction, type SectionPageRange } from '@vibe/core/tax-returns';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { resolveScope } from './scope';
+import { listAccessLog } from '../tax-returns/access-log';
 
 export interface PortalTaxReturnDeps {
   db: Database | null;
@@ -205,6 +206,60 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
         expiresAt: s.expiresAt.toISOString(),
       })),
     });
+  });
+
+  // TR-8 — client-facing access history.
+  router.get('/:returnId/access-log', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ items: [], nextCursor: null });
+      return;
+    }
+    const scope = await resolveScope(deps.db, session, req);
+    const releaseRow = await loadReleaseForCaller(
+      deps.db,
+      req.params['returnId']!,
+      scope.clientIds,
+    );
+    if (!releaseRow) {
+      res.status(404).json({ error: 'release_not_found' });
+      return;
+    }
+    // Look up the firm via the return itself.
+    const cursorRaw = req.query['cursor'];
+    let cursor: { at: string; id: string } | null = null;
+    if (typeof cursorRaw === 'string' && cursorRaw.length > 0) {
+      try {
+        cursor = JSON.parse(Buffer.from(cursorRaw, 'base64url').toString('utf8'));
+      } catch {
+        res.status(400).json({ error: 'bad_cursor' });
+        return;
+      }
+    }
+    // We need the firmId for the scope guard. Pull from the
+    // return row.
+    const [retRow] = await deps.db
+      .select({ firmId: taxReturns.firmId })
+      .from(taxReturns)
+      .where(eq(taxReturns.id, releaseRow.returnId))
+      .limit(1);
+    if (!retRow) {
+      res.status(404).json({ error: 'release_not_found' });
+      return;
+    }
+    const result = await listAccessLog({
+      db: deps.db,
+      returnId: releaseRow.returnId,
+      firmId: retRow.firmId,
+      cursor,
+      pageSize: 50,
+      clientVisibleOnly: true, // hide PARSED, SECTION_EDITED
+    });
+    const nextCursor =
+      result.nextCursor === null
+        ? null
+        : Buffer.from(JSON.stringify(result.nextCursor)).toString('base64url');
+    res.json({ items: result.items, nextCursor });
   });
 
   // PDF endpoint — plans the extraction, then either delegates to a
