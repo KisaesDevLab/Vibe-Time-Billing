@@ -24,6 +24,7 @@ import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { usePermission } from '../../auth-context';
+import { UnlinkedEmptyState } from './fmv2/UnlinkedEmptyState';
 
 interface FileRow {
   id: string;
@@ -76,9 +77,17 @@ function formatTimestamp(iso: string | null | undefined): string {
   return d.toLocaleString();
 }
 
-export function ClientFilesTab({ clientId }: { clientId: string }): JSX.Element {
+export function ClientFilesTab({
+  clientId,
+  clientName,
+}: {
+  clientId: string;
+  clientName?: string;
+}): JSX.Element {
   const canView = usePermission('storage:folder:view');
   const canEdit = usePermission('storage:folder:edit');
+  const canBind = usePermission('storage:folder:bind');
+  const canReconcile = usePermission('storage:folder:reconcile');
   const canRename = usePermission('storage:folder:rename');
   const canPublish = usePermission('storage:file:publish');
   const canUnpublish = usePermission('storage:file:unpublish');
@@ -222,12 +231,14 @@ export function ClientFilesTab({ clientId }: { clientId: string }): JSX.Element 
 
   if (data.unbound) {
     return (
-      <Card title="Files">
-        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-          This client is not bound to a storage folder yet. Visit{' '}
-          <a href="/admin/storage">Storage Onboarding</a> to bind one.
-        </p>
-      </Card>
+      <UnlinkedEmptyState
+        clientId={clientId}
+        clientName={clientName ?? 'this client'}
+        canBind={canBind}
+        canEdit={canEdit}
+        canReconcile={canReconcile}
+        onLinked={() => void load()}
+      />
     );
   }
 

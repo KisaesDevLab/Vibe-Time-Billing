@@ -276,7 +276,9 @@ export function ClientDetailPage(): JSX.Element {
 
       {tab === 'notes' && <NotesCard clientId={client.id} />}
 
-      {tab === 'files' && <ClientFilesTab clientId={client.id} />}
+      {tab === 'files' && (
+        <ClientFilesTab clientId={client.id} clientName={client.clientFacingName || client.name} />
+      )}
 
       {tab === 'tasks' && <TasksCard clientId={client.id} users={staff} />}
 

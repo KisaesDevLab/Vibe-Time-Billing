@@ -44,6 +44,8 @@ import { PackagesPage } from './Packages';
 import { TermsTemplatesPage } from './TermsTemplates';
 import { StripeConnectPage } from './StripeConnect';
 import { StorageOnboardingPage } from './StorageOnboarding';
+import { StorageConflictsListPage } from './StorageConflictsList';
+import { StorageConflictResolutionPage } from './StorageConflictResolution';
 import { TaxonomyPage } from './Taxonomy';
 import { TemplatesPage } from './Templates';
 import { UsersPage } from './Users';
@@ -143,6 +145,7 @@ const GROUPS: Group[] = [
       { key: 'backup', label: 'Backup', href: '/admin/backup' },
       { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
       { key: 'storage', label: 'Storage onboarding', href: '/admin/storage' },
+      { key: 'storage-conflicts', label: 'Storage conflicts', href: '/admin/storage/conflicts' },
     ],
   },
 ];
@@ -288,6 +291,8 @@ export function AdminLayout(): JSX.Element {
         <Route path="compliance" element={<CompliancePage />} />
         <Route path="api-tokens" element={<ApiTokensPage />} />
         <Route path="storage" element={<StorageOnboardingPage />} />
+        <Route path="storage/conflicts" element={<StorageConflictsListPage />} />
+        <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />
       </Routes>
     </div>
   );
