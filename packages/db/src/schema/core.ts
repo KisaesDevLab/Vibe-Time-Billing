@@ -1478,6 +1478,14 @@ export const engagements = pgTable(
 
     customFields: jsonb('custom_fields').notNull().default({}),
 
+    // 0074 — proposal addendum. from_proposal_id stamps the proposal
+    // that birthed this engagement; renewed_from_engagement_id chains
+    // a renewed engagement to its predecessor. Both are nullable —
+    // engagements created directly (without a proposal) leave them
+    // NULL. Migration enforces the FKs.
+    fromProposalId: uuid('from_proposal_id'),
+    renewedFromEngagementId: uuid('renewed_from_engagement_id'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
