@@ -12,13 +12,13 @@
 //   • Per recipient_email globally: ≤ 5 ACTIVE
 //   • expires_at capped at sent_at + 90 days regardless of request
 
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { and, count, eq, gt, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { taxReturnReleases, taxReturnSections, taxReturnShares } from '@vibe/db/schema';
-import { hashPassword } from '@vibe/crypto';
+import { hashPassword, verifyPassword } from '@vibe/crypto';
 
 const MAX_PER_ACCESS_PER_24H = 50;
 const MAX_ACTIVE_PER_RETURN = 10;
@@ -178,13 +178,23 @@ export async function createShare(input: CreateShareInput): Promise<CreateShareR
   }
 
   // ---- 5. Mint token + hash ----
-  const token = randomBytes(32).toString('base64url');
-  const tokenHash = await hashPassword(token);
+  //
+  // Token format: "<shareId>.<secret>" where shareId is a UUID pre-
+  // minted client-side and secret is 32 random base64url bytes. The
+  // recipient page splits on the first '.', looks the row up by id
+  // (indexed PK), then argon2-verifies the secret against the stored
+  // tokenHash. This gives us O(1) lookup AND constant-time secret
+  // comparison via Argon2.
+  const shareId = randomUUID();
+  const secret = randomBytes(32).toString('base64url');
+  const token = `${shareId}.${secret}`;
+  const tokenHash = await hashPassword(secret);
 
   // ---- 6. Insert ----
   const [created] = await input.db
     .insert(taxReturnShares)
     .values({
+      id: shareId,
       returnId: input.returnId,
       releaseId: release.id,
       sharedByAccessId: input.sharedByAccessId,
@@ -209,6 +219,112 @@ export async function createShare(input: CreateShareInput): Promise<CreateShareR
 
   if (!created) throw new ShareError('insert_failed', 'share not created');
   return { shareId: created.id, token, expiresAt };
+}
+
+// =====================================================================
+// Recipient-side token resolution (TR-7).
+//
+// resolveShareToken parses "<shareId>.<secret>", looks the share up by
+// id, argon2-verifies the secret against token_hash, and runs the
+// status / expiry checks. Returns a typed result the route maps to
+// HTTP codes. The function NEVER discloses which check failed beyond
+// the typed code (caller decides what to leak to the recipient).
+// =====================================================================
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface ResolvedShare {
+  id: string;
+  returnId: string;
+  releaseId: string;
+  scope: 'FULL' | 'SELECTED';
+  sectionIds: string[];
+  accessLevel: 'view_only' | 'view_download';
+  watermark: boolean;
+  require2fa: boolean;
+  verifyChannel: 'SMS' | 'EMAIL' | 'NONE';
+  recipientEmail: string;
+  recipientPhone: string | null;
+  organization: string;
+  failed2faCount: number;
+  status: 'SENT' | 'VIEWED' | 'EXPIRED' | 'REVOKED';
+}
+
+export async function resolveShareToken(db: Database, token: string): Promise<ResolvedShare> {
+  const dotIdx = token.indexOf('.');
+  if (dotIdx <= 0) throw new ShareError('not_found', 'malformed token');
+  const idPart = token.slice(0, dotIdx);
+  const secret = token.slice(dotIdx + 1);
+  if (!UUID_RE.test(idPart) || secret.length === 0) {
+    throw new ShareError('not_found', 'malformed token');
+  }
+  const [row] = await db
+    .select()
+    .from(taxReturnShares)
+    .where(eq(taxReturnShares.id, idPart))
+    .limit(1);
+  if (!row) throw new ShareError('not_found', 'share not found');
+  // Argon2 verify is constant-time; if it returns false treat as
+  // generic not_found (no disclosure that the ID was correct).
+  const ok = await verifyPassword(row.tokenHash, secret);
+  if (!ok) throw new ShareError('not_found', 'token secret mismatch');
+  if (row.status === 'REVOKED' || row.revokedAt) {
+    throw new ShareError('revoked', 'share has been revoked');
+  }
+  if (row.status === 'EXPIRED' || row.expiresAt.getTime() <= Date.now()) {
+    throw new ShareError('expired', 'share has expired');
+  }
+  return {
+    id: row.id,
+    returnId: row.returnId,
+    releaseId: row.releaseId,
+    scope: row.scope as 'FULL' | 'SELECTED',
+    sectionIds: row.sectionIds as string[],
+    accessLevel: row.accessLevel as 'view_only' | 'view_download',
+    watermark: row.watermark,
+    require2fa: row.require2fa,
+    verifyChannel: row.verifyChannel as 'SMS' | 'EMAIL' | 'NONE',
+    recipientEmail: row.recipientEmail,
+    recipientPhone: row.recipientPhone,
+    organization: row.organization,
+    failed2faCount: row.failed2faCount,
+    status: row.status as 'SENT' | 'VIEWED' | 'EXPIRED' | 'REVOKED',
+  };
+}
+
+// Bump the 2FA failure count atomically; auto-revoke after 5.
+export async function bumpFailed2fa(
+  db: Database,
+  shareId: string,
+): Promise<{ revoked: boolean; count: number }> {
+  const result = await db.execute(
+    sql`UPDATE tax_return_shares
+        SET failed_2fa_count = failed_2fa_count + 1,
+            status = CASE WHEN failed_2fa_count + 1 >= 5 THEN 'REVOKED' ELSE status END,
+            revoked_at = CASE WHEN failed_2fa_count + 1 >= 5 THEN NOW() ELSE revoked_at END
+        WHERE id = ${shareId}
+        RETURNING failed_2fa_count, status`,
+  );
+  const r = result as unknown as {
+    rows: { failed_2fa_count: number; status: string }[];
+  };
+  const updated = r.rows[0];
+  return {
+    revoked: updated?.status === 'REVOKED',
+    count: updated?.failed_2fa_count ?? 0,
+  };
+}
+
+// Bump view_count + first/last_viewed_at, flip SENT → VIEWED.
+export async function markShareViewed(db: Database, shareId: string): Promise<void> {
+  await db.execute(
+    sql`UPDATE tax_return_shares
+        SET view_count = view_count + 1,
+            first_viewed_at = COALESCE(first_viewed_at, NOW()),
+            last_viewed_at = NOW(),
+            status = CASE WHEN status = 'SENT' THEN 'VIEWED' ELSE status END
+        WHERE id = ${shareId}`,
+  );
 }
 
 export async function revokeShare(

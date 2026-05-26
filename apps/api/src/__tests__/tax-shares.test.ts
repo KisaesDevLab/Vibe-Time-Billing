@@ -124,15 +124,18 @@ describe('TR-6 — createShare', () => {
       watermark: true,
       personalMessage: '',
     });
-    expect(result.token).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+    // Token format: <uuid>.<secret>. The secret part is what's
+    // argon2-hashed in token_hash.
+    expect(result.token).toMatch(/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{40,}$/);
     expect(result.shareId).toBeTruthy();
     const [row] = await harness.db
       .select()
       .from(taxReturnShares)
       .where(eq(taxReturnShares.id, result.shareId));
     expect(row!.tokenHash.startsWith('$argon2id$')).toBe(true);
-    // Verify the plaintext token matches the stored hash.
-    expect(await verifyPassword(row!.tokenHash, result.token)).toBe(true);
+    // Verify the secret part matches the stored hash (constant-time).
+    const secret = result.token.slice(result.token.indexOf('.') + 1);
+    expect(await verifyPassword(row!.tokenHash, secret)).toBe(true);
     expect(row!.recipientEmail).toBe('banker@chase.example');
   });
 

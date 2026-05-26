@@ -57,6 +57,7 @@ import { createPortalTaxReturnRouter } from './portal/tax-returns';
 import { createPortalTaxShareRouter } from './portal/tax-shares';
 import { createPortalFileShareRouter } from './portal/file-shares';
 import { createSharePublicRouter } from './share-public';
+import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
@@ -603,6 +604,10 @@ export function createApp(deps: AppDeps): Express {
   // CP11 — public token-based share access (no portal auth).
   const sharePublicRouter = createSharePublicRouter({ db: deps.db });
   app.use('/api/shared', sharePublicRouter);
+
+  // TR-7 — tax-return recipient page (3rd-party token surface).
+  const taxRecipientRouter = createShareRecipientRouter({ db: deps.db });
+  app.use('/shared/tax', taxRecipientRouter);
 
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({
