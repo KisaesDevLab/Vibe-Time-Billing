@@ -111,3 +111,27 @@ export async function deriveKekFromPassphrase(
   });
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
+
+// =====================================================================
+// Password hashing — Argon2id with embedded salt/params. Returns
+// the standard $argon2id$v=19$m=…,t=…,p=…$<salt>$<hash> string so a
+// stored hash is self-describing and verifiable without storing
+// params separately.
+// =====================================================================
+
+export async function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password, {
+    type: argon2.argon2id,
+    timeCost: 3,
+    memoryCost: 64 * 1024,
+    parallelism: 1,
+  });
+}
+
+export async function verifyPassword(stored: string, supplied: string): Promise<boolean> {
+  try {
+    return await argon2.verify(stored, supplied);
+  } catch {
+    return false;
+  }
+}

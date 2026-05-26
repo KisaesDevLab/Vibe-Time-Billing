@@ -93,6 +93,7 @@ import { createTermsTemplateRouter } from './terms-templates/routes';
 import { createProposalRouter } from './proposals/routes';
 import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
 import { createSignatureVerifyRouter } from './proposals/signature-verify';
+import { createClientAccountRouter } from './proposals/client-accounts';
 import { createQuickBillRouter } from './quick-bills/routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
@@ -820,6 +821,15 @@ export function createApp(deps: AppDeps): Express {
     redis: deps.redis,
   });
   app.use('/api/portal/proposals', portalMagicLinkRouter);
+
+  // P18 — optional client password accounts. Cookie-based portal
+  // session distinct from the existing portal_identity session.
+  const clientAccountRouter = createClientAccountRouter({
+    db: deps.db,
+    redis: deps.redis,
+    signingKey: config.PORTAL_JWT_SECRET ?? null,
+  });
+  app.use('/api/portal/client-accounts', clientAccountRouter);
 
   // P16 — signature HMAC verification (firm-side).
   const signatureVerifyRouter = createSignatureVerifyRouter({
