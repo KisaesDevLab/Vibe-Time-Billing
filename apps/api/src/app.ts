@@ -104,6 +104,7 @@ import { createWipRouter } from './wip/routes';
 import { createMrrDashboardRouter } from './dashboards/mrr-routes';
 import { createCaddyRouter } from './caddy/routes';
 import { createTaxReturnRouter } from './tax-returns/routes';
+import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -919,6 +920,15 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/tax/returns', auth.requireAuth, auth.requireCsrf, taxReturnRouter);
+
+  // TR-5 — Staff view-as-client impersonation.
+  const impersonationRouter = createImpersonationRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    staffSecret: config.STAFF_JWT_SECRET,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
+  app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, impersonationRouter);
 
   // P08 — Stripe Connect Standard OAuth.
   const stripeConnectRouter = createStripeConnectRouter({
