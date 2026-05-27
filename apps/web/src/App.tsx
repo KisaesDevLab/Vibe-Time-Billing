@@ -35,6 +35,8 @@ import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
 import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
 import { RequestsPage } from './pages/Requests';
+import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
+import { TaxReturnsStaffPage } from './pages/TaxReturns';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 import { WipDashboardPage } from './pages/Wip';
@@ -84,6 +86,8 @@ export function App(): JSX.Element {
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
                   <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
+                  <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
+                  <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
                   {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/onboarding" element={<OnboardingPage />} />
@@ -175,6 +179,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/reports',
           icon: '▦',
           active: location.pathname.startsWith('/reports'),
+        },
+        {
+          label: 'Tax returns',
+          href: '/tax/returns',
+          icon: '⎚',
+          active: location.pathname.startsWith('/tax/returns'),
         },
         // Top-level Files nav removed in Phase 0; the v2 file manager lives on the client-detail Files tab.
         {
