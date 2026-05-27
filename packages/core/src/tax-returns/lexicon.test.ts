@@ -83,6 +83,49 @@ describe('TR-1 — K-1 with recipient capture', () => {
     expect(r.kind).toBe('K1');
     expect(r.recipientName).toBeNull();
   });
+
+  it('handles UltraTax "Schedule K-1 (Form 1065) — Name" variant', () => {
+    const r = normalizeTitle('Schedule K-1 (Form 1065) — Alex Wu');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Alex Wu');
+    expect(r.normalizedTitle).toBe('Schedule K-1 — Alex Wu');
+  });
+
+  it('handles "Schedule K-1 (Form 1120-S) - Name"', () => {
+    const r = normalizeTitle('Schedule K-1 (Form 1120-S) - Priya Patel');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Priya Patel');
+  });
+
+  it('handles bare "K-1 — Name" without "Schedule"', () => {
+    const r = normalizeTitle('K-1 — Jordan Lee');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Jordan Lee');
+  });
+
+  it('handles "K-1: Name" colon separator', () => {
+    const r = normalizeTitle('K-1: Sam Rivera');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Sam Rivera');
+  });
+
+  it('handles "K-1 for Name"', () => {
+    const r = normalizeTitle('K-1 for Casey Morgan');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Casey Morgan');
+  });
+
+  it('handles "Partner K-1: Name"', () => {
+    const r = normalizeTitle('Partner K-1: Robin Chen');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Robin Chen');
+  });
+
+  it('handles "Shareholder K-1 — Name"', () => {
+    const r = normalizeTitle('Shareholder K-1 — Drew Park');
+    expect(r.kind).toBe('K1');
+    expect(r.recipientName).toBe('Drew Park');
+  });
 });
 
 describe('TR-1 — state returns + worksheets', () => {

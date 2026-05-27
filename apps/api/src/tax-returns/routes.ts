@@ -52,9 +52,26 @@ const CreateAmendSchema = z.object({
   newTotalPages: z.number().int().positive().nullable().default(null),
 });
 
+// Section PATCH — staff edits to a parsed section. Setting any field
+// flips is_manual_override = true so a future re-parse refuses to
+// clobber the edit. All fields optional; only the supplied subset is
+// updated.
+const PatchSectionSchema = z
+  .object({
+    normalizedTitle: z.string().min(1).max(200).optional(),
+    kind: z
+      .enum(['COVER', 'MAIN_FORM', 'SCHEDULE', 'K1', 'STATE', 'WORKSHEET', 'ATTACHMENT', 'UNKNOWN'])
+      .optional(),
+    formCode: z.string().max(40).nullable().optional(),
+    recipientName: z.string().max(120).nullable().optional(),
+    releasable: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: 'no_fields_to_update' });
+
 export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
   const router = express.Router();
-  addUuidIdGuard(router, ['returnId', 'releaseId']);
+  addUuidIdGuard(router, ['returnId', 'releaseId', 'sectionId']);
 
   router.post(
     '/:returnId/releases',
@@ -336,6 +353,70 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         .innerJoin(clients, eq(clients.id, taxReturns.clientId))
         .where(eq(taxReturns.firmId, session.firmId));
       res.json({ items: rows });
+    },
+  );
+
+  // PATCH a single section. Sets is_manual_override=true so a future
+  // outline reparse skips this row. Audits as SECTION_EDITED. Caller
+  // must hold engagement:write; cross-firm sections 404.
+  router.patch(
+    '/:returnId/sections/:sectionId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = PatchSectionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
+        return;
+      }
+      // Cross-firm guard via the parent return.
+      const [ret] = await deps.db
+        .select({ id: taxReturns.id })
+        .from(taxReturns)
+        .where(
+          and(eq(taxReturns.id, req.params['returnId']!), eq(taxReturns.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'return_not_found' });
+        return;
+      }
+      const sectionId = req.params['sectionId']!;
+      // Confirm the section actually belongs to this return.
+      const [existing] = await deps.db
+        .select({ id: taxReturnSections.id })
+        .from(taxReturnSections)
+        .where(and(eq(taxReturnSections.id, sectionId), eq(taxReturnSections.returnId, ret.id)))
+        .limit(1);
+      if (!existing) {
+        res.status(404).json({ error: 'section_not_found' });
+        return;
+      }
+      const patch: Record<string, unknown> = { isManualOverride: true };
+      if (parsed.data.normalizedTitle !== undefined)
+        patch['normalizedTitle'] = parsed.data.normalizedTitle;
+      if (parsed.data.kind !== undefined) patch['kind'] = parsed.data.kind;
+      if (parsed.data.formCode !== undefined) patch['formCode'] = parsed.data.formCode;
+      if (parsed.data.recipientName !== undefined)
+        patch['recipientName'] = parsed.data.recipientName;
+      if (parsed.data.releasable !== undefined) patch['releasable'] = parsed.data.releasable;
+      await deps.db.update(taxReturnSections).set(patch).where(eq(taxReturnSections.id, sectionId));
+      await appendAccessLog({
+        db: deps.db,
+        returnId: ret.id,
+        event: 'SECTION_EDITED',
+        actorKind: 'STAFF',
+        actorRef: session.appUserId,
+        actorIp: req.ip ?? null,
+        actorUserAgent: req.get('user-agent') ?? null,
+        sectionId,
+        metadata: { fields: Object.keys(parsed.data) },
+      }).catch(() => undefined);
+      res.json({ ok: true });
     },
   );
 

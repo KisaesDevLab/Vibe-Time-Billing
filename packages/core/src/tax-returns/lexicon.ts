@@ -53,9 +53,44 @@ function interpolate(template: string, match: RegExpMatchArray): string {
 export const DEFAULT_LEXICON: LexiconPattern[] = [
   // K-1s — recipient capture must come BEFORE the generic Schedule
   // pattern since "Schedule K-1 — ..." would otherwise match
-  // `Schedule [A-Z]`.
+  // `Schedule [A-Z]`. Cover the common variants emitted by UltraTax,
+  // Lacerte, ProSeries, and Drake:
+  //   "Schedule K-1 — Name"
+  //   "Schedule K-1 (Form 1065) — Name"
+  //   "K-1 — Name" / "K-1: Name" / "K-1 for Name"
+  //   "Partner K-1: Name" / "Shareholder K-1: Name"
+  //   "Schedule K-1" (no recipient, no parens) — last so it doesn't
+  //   swallow the captured variants above.
   {
-    re: /^Schedule K-1\b.*?[—-]\s*(.+?)\s*$/i,
+    re: /^Schedule K-1\s*\(Form\s+\d{3,5}[A-Z-]*\)\s*[—\-:]\s*(.+?)\s*$/i,
+    formCode: 'K-1',
+    kind: 'K1',
+    normalized: 'Schedule K-1 — {1}',
+    recipientCapture: 1,
+  },
+  {
+    re: /^Schedule K-1\b.*?[—\-:]\s*(.+?)\s*$/i,
+    formCode: 'K-1',
+    kind: 'K1',
+    normalized: 'Schedule K-1 — {1}',
+    recipientCapture: 1,
+  },
+  {
+    re: /^(?:Partner|Shareholder|Beneficiary)\s+K-1\s*[—\-:]\s*(.+?)\s*$/i,
+    formCode: 'K-1',
+    kind: 'K1',
+    normalized: 'Schedule K-1 — {1}',
+    recipientCapture: 1,
+  },
+  {
+    re: /^K-1\s+for\s+(.+?)\s*$/i,
+    formCode: 'K-1',
+    kind: 'K1',
+    normalized: 'Schedule K-1 — {1}',
+    recipientCapture: 1,
+  },
+  {
+    re: /^K-1\s*[—\-:]\s*(.+?)\s*$/i,
     formCode: 'K-1',
     kind: 'K1',
     normalized: 'Schedule K-1 — {1}',
