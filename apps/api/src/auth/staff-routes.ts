@@ -23,14 +23,21 @@ import {
 } from '@vibe/core/auth';
 import { unionPermissions, type PermissionKey, type RoleSlug } from '@vibe/core/rbac';
 import type { Database } from '@vibe/db';
-import { appUsers, roles, userRoles } from '@vibe/db/schema';
-import { eq } from 'drizzle-orm';
+import { appUserCredentials, appUsers, roles, userRoles } from '@vibe/db/schema';
+import { and, eq } from 'drizzle-orm';
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
 import { emitAudit } from './audit';
 import { clearSessionCookie, writeSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
+import {
+  buildAuthenticationOptions,
+  buildRegistrationOptions,
+  verifyAuthentication,
+  verifyRegistration,
+} from './webauthn';
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 export interface StaffRoutesDeps {
   db: Database | null;
@@ -53,6 +60,16 @@ const LoginSchema = z.object({ email: z.string().regex(EMAIL_RE) });
 const VerifySchema = z.object({ token: z.string().min(1) });
 const TotpEnrollSchema = z.object({}); // no body
 const TotpVerifySchema = z.object({ code: z.string().min(6).max(16) });
+
+// WebAuthn payload schemas. We trust @simplewebauthn/server to validate
+// the inner attestation/assertion bytes; here we only enforce shape.
+const WebAuthnRegistrationVerifySchema = z.object({
+  response: z.object({ id: z.string().min(1) }).passthrough(),
+  label: z.string().max(80).optional(),
+});
+const WebAuthnAuthVerifySchema = z.object({
+  response: z.object({ id: z.string().min(1) }).passthrough(),
+});
 
 const ENUM_RESPONSE = {
   ok: true,
@@ -303,6 +320,259 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json({ ok: true, enrolled: enrollmentCompleted });
   });
 
+  // -------------------------------------------------------------------
+  // Phase 3 item #8 — WebAuthn / passkey enrollment + assertion.
+  //
+  // Six endpoints:
+  //   POST   /webauthn/registration/options
+  //   POST   /webauthn/registration/verify
+  //   POST   /webauthn/auth/options
+  //   POST   /webauthn/auth/verify
+  //   GET    /webauthn/credentials
+  //   DELETE /webauthn/credentials/:id
+  //
+  // Registration challenge is stored under
+  //   webauthn:reg:{appUserId}        TTL 5 min
+  // Authentication challenge under
+  //   webauthn:auth:{appUserId}       TTL 5 min
+  //
+  // A successful assertion updates session.lastStepUpAt — the same
+  // step-up bump TOTP provides — and bumps the per-credential
+  // sign_count + last_used_at.
+  // -------------------------------------------------------------------
+
+  router.post(
+    '/webauthn/registration/options',
+    deps.requireAuth,
+    async (req: Request, res: Response) => {
+      const session = req.staffSession;
+      if (!session) {
+        res.status(401).json({ error: 'no_session' });
+        return;
+      }
+      const user = await findStaffById(deps.db, session.appUserId);
+      if (!user) {
+        res.status(401).json({ error: 'unknown_user' });
+        return;
+      }
+      const existing = await listCredentials(deps.db, session.appUserId);
+      let options;
+      try {
+        options = await buildRegistrationOptions({
+          appUserId: session.appUserId,
+          email: user.email,
+          fullName: user.email,
+          existing,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
+        res.status(503).json({ error: msg });
+        return;
+      }
+      await deps.redis.set(`webauthn:reg:${session.appUserId}`, options.challenge, 'EX', 5 * 60);
+      res.status(200).json(options);
+    },
+  );
+
+  router.post(
+    '/webauthn/registration/verify',
+    deps.requireAuth,
+    async (req: Request, res: Response) => {
+      const session = req.staffSession;
+      if (!session) {
+        res.status(401).json({ error: 'no_session' });
+        return;
+      }
+      const parsed = WebAuthnRegistrationVerifySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const challenge = await deps.redis.get(`webauthn:reg:${session.appUserId}`);
+      if (!challenge) {
+        res.status(400).json({ error: 'no_pending_registration' });
+        return;
+      }
+      const outcome = await verifyRegistration({
+        response: parsed.data.response as unknown as RegistrationResponseJSON,
+        expectedChallenge: challenge,
+      });
+      await deps.redis.del(`webauthn:reg:${session.appUserId}`);
+      if (!outcome.ok || !outcome.credential) {
+        res.status(400).json({ error: outcome.error ?? 'verify_failed' });
+        return;
+      }
+      if (deps.db) {
+        await deps.db.insert(appUserCredentials).values({
+          appUserId: session.appUserId,
+          credentialId: outcome.credential.credentialId,
+          publicKey: outcome.credential.publicKey,
+          signCount: outcome.credential.signCount,
+          transports: outcome.credential.transports,
+          label: parsed.data.label ?? null,
+          aaguid: outcome.credential.aaguid,
+          deviceType: outcome.credential.deviceType,
+          backedUp: outcome.credential.backedUp,
+        });
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'app_user_credential',
+        entityId: outcome.credential.credentialId,
+        actorAppUserId: session.appUserId,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ ok: true });
+    },
+  );
+
+  router.post('/webauthn/auth/options', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const candidates = await listCredentials(deps.db, session.appUserId);
+    if (candidates.length === 0) {
+      res.status(400).json({ error: 'no_credentials' });
+      return;
+    }
+    let options;
+    try {
+      options = await buildAuthenticationOptions({ candidates });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
+      res.status(503).json({ error: msg });
+      return;
+    }
+    await deps.redis.set(`webauthn:auth:${session.appUserId}`, options.challenge, 'EX', 5 * 60);
+    res.status(200).json(options);
+  });
+
+  router.post('/webauthn/auth/verify', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const parsed = WebAuthnAuthVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const challenge = await deps.redis.get(`webauthn:auth:${session.appUserId}`);
+    if (!challenge) {
+      res.status(400).json({ error: 'no_pending_authentication' });
+      return;
+    }
+    const credentialId = parsed.data.response.id;
+    const credential = await findCredentialByIdForUser(deps.db, session.appUserId, credentialId);
+    if (!credential) {
+      await deps.redis.del(`webauthn:auth:${session.appUserId}`);
+      res.status(400).json({ error: 'credential_not_found' });
+      return;
+    }
+    const outcome = await verifyAuthentication({
+      response: parsed.data.response as unknown as AuthenticationResponseJSON,
+      expectedChallenge: challenge,
+      credential,
+    });
+    await deps.redis.del(`webauthn:auth:${session.appUserId}`);
+    if (!outcome.ok) {
+      res.status(401).json({ error: outcome.error ?? 'verify_failed' });
+      return;
+    }
+    if (deps.db && outcome.newSignCount != null) {
+      await deps.db
+        .update(appUserCredentials)
+        .set({ signCount: outcome.newSignCount, lastUsedAt: new Date() })
+        .where(eq(appUserCredentials.id, credential.id));
+    }
+    session.lastStepUpAt = Date.now();
+    await deps.sessionStore.put(session);
+    await emitAudit(deps.db, {
+      action: 'STEP_UP',
+      entityType: 'app_user_credential',
+      entityId: credential.id,
+      actorAppUserId: session.appUserId,
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.status(200).json({ ok: true });
+  });
+
+  router.get('/webauthn/credentials', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    const rows = await deps.db
+      .select({
+        id: appUserCredentials.id,
+        label: appUserCredentials.label,
+        transports: appUserCredentials.transports,
+        deviceType: appUserCredentials.deviceType,
+        backedUp: appUserCredentials.backedUp,
+        createdAt: appUserCredentials.createdAt,
+        lastUsedAt: appUserCredentials.lastUsedAt,
+      })
+      .from(appUserCredentials)
+      .where(eq(appUserCredentials.appUserId, session.appUserId));
+    res.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        transports: r.transports ? r.transports.split(',').filter(Boolean) : [],
+        deviceType: r.deviceType,
+        backedUp: r.backedUp,
+        createdAt: r.createdAt.toISOString(),
+        lastUsedAt: r.lastUsedAt?.toISOString() ?? null,
+      })),
+    });
+  });
+
+  router.delete(
+    '/webauthn/credentials/:id',
+    deps.requireAuth,
+    async (req: Request, res: Response) => {
+      const session = req.staffSession;
+      if (!session) {
+        res.status(401).json({ error: 'no_session' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const id = req.params['id']!;
+      const deleted = await deps.db
+        .delete(appUserCredentials)
+        .where(
+          and(eq(appUserCredentials.id, id), eq(appUserCredentials.appUserId, session.appUserId)),
+        )
+        .returning({ id: appUserCredentials.id });
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'credential_not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'app_user_credential',
+        entityId: id,
+        actorAppUserId: session.appUserId,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(200).json({ ok: true });
+    },
+  );
+
   router.post('/logout', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (session) {
@@ -412,6 +682,76 @@ async function findStaffById(db: Database | null, id: string): Promise<StaffUser
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+}
+
+async function listCredentials(
+  db: Database | null,
+  appUserId: string,
+): Promise<
+  Array<{
+    id: string;
+    credentialId: string;
+    publicKey: string;
+    signCount: number;
+    transports: string;
+  }>
+> {
+  if (!db) return [];
+  const rows = await db
+    .select({
+      id: appUserCredentials.id,
+      credentialId: appUserCredentials.credentialId,
+      publicKey: appUserCredentials.publicKey,
+      signCount: appUserCredentials.signCount,
+      transports: appUserCredentials.transports,
+    })
+    .from(appUserCredentials)
+    .where(eq(appUserCredentials.appUserId, appUserId));
+  return rows.map((r) => ({
+    id: r.id,
+    credentialId: r.credentialId,
+    publicKey: r.publicKey,
+    signCount: Number(r.signCount),
+    transports: r.transports,
+  }));
+}
+
+async function findCredentialByIdForUser(
+  db: Database | null,
+  appUserId: string,
+  credentialId: string,
+): Promise<{
+  id: string;
+  credentialId: string;
+  publicKey: string;
+  signCount: number;
+  transports: string;
+} | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({
+      id: appUserCredentials.id,
+      credentialId: appUserCredentials.credentialId,
+      publicKey: appUserCredentials.publicKey,
+      signCount: appUserCredentials.signCount,
+      transports: appUserCredentials.transports,
+    })
+    .from(appUserCredentials)
+    .where(
+      and(
+        eq(appUserCredentials.credentialId, credentialId),
+        eq(appUserCredentials.appUserId, appUserId),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    credentialId: row.credentialId,
+    publicKey: row.publicKey,
+    signCount: Number(row.signCount),
+    transports: row.transports,
+  };
 }
 
 /**

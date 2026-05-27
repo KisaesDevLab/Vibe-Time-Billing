@@ -988,6 +988,34 @@ export const folderLinkAttempts = pgTable(
   }),
 );
 
+// =====================================================================
+// app_user_credential — Phase 3 item #8. One row per registered
+// WebAuthn / passkey credential. Unique by credential_id.
+// =====================================================================
+export const appUserCredentials = pgTable(
+  'app_user_credential',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    credentialId: text('credential_id').notNull(),
+    publicKey: text('public_key').notNull(),
+    signCount: bigint('sign_count', { mode: 'number' }).notNull().default(0),
+    transports: text('transports').notNull().default(''),
+    label: text('label'),
+    aaguid: uuid('aaguid'),
+    deviceType: text('device_type'),
+    backedUp: boolean('backed_up').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => ({
+    credentialUk: uniqueIndex('app_user_credential_credential_uk').on(t.credentialId),
+    userIdx: index('app_user_credential_user_idx').on(t.appUserId),
+  }),
+);
+
 export const folderSyncEvents = pgTable(
   'folder_sync_events',
   {
