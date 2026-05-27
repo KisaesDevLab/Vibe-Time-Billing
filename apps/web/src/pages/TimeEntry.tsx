@@ -299,6 +299,11 @@ function LogView({
   const [searchParams] = useSearchParams();
   const initialClientId = searchParams.get('clientId') ?? '';
   const initialEngagementId = searchParams.get('engagementId') ?? '';
+  // CONNECT_INTEGRATION D.6 — pre-fill flow from the untracked
+  // messages panel. linkMessageId is carried through submit so the
+  // resulting entry is auto-linked to the citing message.
+  const initialDescription = searchParams.get('description') ?? '';
+  const initialLinkMessageId = searchParams.get('linkMessageId') ?? '';
   const [clientId, setClientId] = useState(() => {
     if (initialClientId) return initialClientId;
     try {
@@ -311,7 +316,8 @@ function LogView({
   const [workCodeId, setWorkCodeId] = useState('');
   const [entryDate, setEntryDate] = useState(today());
   const [hours, setHours] = useState('1.00');
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(initialDescription);
+  const [linkMessageId, setLinkMessageId] = useState(initialLinkMessageId);
   // 0050 — user-controlled out-of-scope override.
   const [outOfScope, setOutOfScope] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -500,11 +506,13 @@ function LogView({
           hours: Number(hours),
           description,
           outOfScopeOverride: outOfScope,
+          linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
         }),
       });
       setHours('1.00');
       setDescription('');
       setOutOfScope(false);
+      setLinkMessageId('');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
@@ -675,6 +683,39 @@ function LogView({
           <Button type="submit" disabled={submitting || !engagementId}>
             {submitting ? 'Saving…' : 'Log'}
           </Button>
+          {linkMessageId && (
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                padding: '6px 10px',
+                fontSize: 12,
+                background: 'rgba(67, 56, 202, 0.06)',
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+                color: tokens.color.text,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span>
+                Will auto-link to message <code>{linkMessageId.slice(0, 8)}…</code> on save.
+              </span>
+              <button
+                type="button"
+                onClick={() => setLinkMessageId('')}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: tokens.color.accent,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                }}
+              >
+                Clear link
+              </button>
+            </div>
+          )}
         </form>
         {clientHasNoActive && (
           <p

@@ -1053,10 +1053,45 @@ function UntrackedMessagesPanel({
                 </span>
               ),
             },
+            {
+              key: 'convert',
+              header: '',
+              render: (m) => <ConvertToTimeEntryButton message={m} engagementId={engagementId} />,
+            },
           ]}
         />
       )}
     </Card>
+  );
+}
+
+// CONNECT_INTEGRATION D.6 — partner-clicks-Convert shortcut. Routes to
+// the time-entry form with the engagement pre-selected, the message
+// body pre-filled as description, and a linkMessageId carried through
+// the submit so the saved entry is auto-linked to this message.
+function ConvertToTimeEntryButton({
+  message,
+  engagementId,
+}: {
+  message: UntrackedMsg;
+  engagementId: string;
+}): JSX.Element {
+  const navigate = useNavigate();
+  const onClick = (): void => {
+    // Truncate the description to fit the 2000-char server limit.
+    const description =
+      message.body.length > 1900 ? message.body.slice(0, 1900) + '…' : message.body;
+    const params = new URLSearchParams({
+      engagementId,
+      description,
+      linkMessageId: message.id,
+    });
+    navigate(`/time?${params.toString()}`);
+  };
+  return (
+    <Button size="sm" variant="secondary" onClick={onClick}>
+      Convert
+    </Button>
   );
 }
 
