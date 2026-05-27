@@ -40,8 +40,14 @@ const LOCKOUT_WINDOW_SEC = 15 * 60;
 const LOCKOUT_MAX_FAILURES = 5;
 const LOCKOUT_DURATION_SEC = 30 * 60;
 
+// Knowledge-factor challenges (ssn-last-4 / ein) are accepted by the
+// schema (the persisted portalStepUpChallenge.challengeType enum still
+// includes them so a future migration can light them up without a
+// schema change) but rejected at the API boundary until tax_id_hash
+// lands on client. Until then the only valid issue types are
+// email-otp + sms-otp; anything else is a 400 invalid_payload.
 const IssueSchema = z.object({
-  type: z.enum(['email-otp', 'sms-otp', 'ssn-last-4', 'ein']),
+  type: z.enum(['email-otp', 'sms-otp']),
   reason: z.string().max(200).optional(),
 });
 
@@ -147,6 +153,9 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
     let sentTo: string | null = null;
     let channel: 'EMAIL' | 'SMS' | null = null;
 
+    // IssueSchema narrows `type` to email-otp | sms-otp so this branch
+    // is exhaustive; the ssn-last-4/ein arms are gated server-side
+    // until tax_id_hash lands.
     if (challengeType === 'email-otp' || challengeType === 'sms-otp') {
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
       otpHash = sha256Hex(code);
@@ -193,13 +202,10 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
         sentTo = identity.phone;
         channel = 'SMS';
       }
-    } else {
-      // ssn-last-4 / ein — knowledge-factor variants. Currently stubbed
-      // because the client schema does not yet store a tax_id_hash;
-      // when added (Phase Q+), this branch verifies against that.
-      res.status(501).json({ error: 'challenge_type_not_configured' });
-      return;
     }
+    // No else branch — IssueSchema rejects everything other than
+    // email-otp/sms-otp at the boundary, so the type system has
+    // already narrowed challengeType exhaustively.
 
     const [row] = await deps.db
       .insert(portalStepUpChallenge)
