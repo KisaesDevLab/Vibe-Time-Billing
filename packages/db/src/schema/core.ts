@@ -30,6 +30,7 @@ import {
   boolean,
   integer,
   bigint,
+  smallint,
   jsonb,
   date,
   numeric,
@@ -253,6 +254,9 @@ export const approvalEntityType = pgEnum('approval_entity_type', [
   'INVOICE',
   'ENGAGEMENT_LETTER',
   'RATE_CHANGE',
+  // 0082 — recurring engagement collision per Q23 (previous still
+  // ACTIVE when the scheduled recurrence fires).
+  'ENGAGEMENT_RENEWAL',
 ]);
 
 export const approvalStatus = pgEnum('approval_status', [
@@ -1381,6 +1385,11 @@ export const engagementTemplates = pgTable(
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),
     customFieldsSchema: jsonb('custom_fields_schema').notNull().default({}),
+    // 0083 — Mustache-style template resolved at engagement-creation
+    // time. Supports {{client.name}}, {{period.year/month/label}},
+    // {{today}}, {{engagement.*}}. NULL = use static `name` field
+    // (backward-compatible).
+    namePattern: text('name_pattern'),
     isSystem: boolean('is_system').notNull().default(false),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1564,6 +1573,14 @@ export const engagements = pgTable(
     // NULL. Migration enforces the FKs.
     fromProposalId: uuid('from_proposal_id'),
     renewedFromEngagementId: uuid('renewed_from_engagement_id'),
+
+    // 0083 — optional period inputs that engagement-template name patterns
+    // substitute into the resolved engagement name (e.g. "Bookkeeping
+    // 4/2026"). Also used by the engagement_recurrence worker to derive
+    // the next occurrence's period via advancePeriod().
+    periodYear: integer('period_year'),
+    periodMonth: smallint('period_month'),
+    periodLabel: text('period_label'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -2899,6 +2916,70 @@ export const engagementAssignments = pgTable(
     naturalKey: uniqueIndex('engagement_assignment_uk').on(t.engagementId, t.appUserId, t.role),
     engagementIdx: index('engagement_assignment_engagement_idx').on(t.engagementId),
     userIdx: index('engagement_assignment_user_idx').on(t.appUserId, t.engagementId),
+  }),
+);
+
+// =====================================================================
+// 0083 — engagement_recurrence. Subscribes a (client × template) to a
+// cadence. Worker spawns the next engagement either on schedule
+// (next_run_date <= today) or when the previous engagement transitions
+// to CLOSED. Collision case (previous still ACTIVE on a SCHEDULE fire)
+// queues an ENGAGEMENT_RENEWAL approval per Q23.
+// =====================================================================
+export const engagementRecurrences = pgTable(
+  'engagement_recurrence',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => engagementTemplates.id, { onDelete: 'restrict' }),
+    frequency: recurringFrequency('frequency').notNull(),
+    triggerMode: text('trigger_mode').notNull(),
+    nextRunDate: date('next_run_date'),
+    seedPeriodYear: integer('seed_period_year'),
+    seedPeriodMonth: smallint('seed_period_month'),
+    seedPeriodLabel: text('seed_period_label'),
+    lastEngagementId: uuid('last_engagement_id').references(() => engagements.id, {
+      onDelete: 'set null',
+    }),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    status: text('status').notNull().default('ACTIVE'),
+    notes: text('notes'),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmStatusIdx: index('engagement_recurrence_firm_status_idx').on(t.firmId, t.status),
+    nextRunIdx: index('engagement_recurrence_next_run_idx')
+      .on(t.nextRunDate)
+      .where(sql`status = 'ACTIVE' AND trigger_mode = 'SCHEDULE'`),
+    completionIdx: index('engagement_recurrence_completion_idx')
+      .on(t.lastEngagementId)
+      .where(sql`status = 'ACTIVE' AND trigger_mode = 'ON_COMPLETION'`),
+    clientIdx: index('engagement_recurrence_client_idx').on(t.clientId),
+    triggerModeCheck: check(
+      'engagement_recurrence_trigger_mode_ck',
+      sql`${t.triggerMode} IN ('SCHEDULE', 'ON_COMPLETION')`,
+    ),
+    statusCheck: check(
+      'engagement_recurrence_status_ck',
+      sql`${t.status} IN ('ACTIVE', 'PAUSED', 'CANCELLED')`,
+    ),
+    scheduleHasDateCheck: check(
+      'engagement_recurrence_schedule_has_date_ck',
+      sql`(${t.triggerMode} = 'SCHEDULE') = (${t.nextRunDate} IS NOT NULL)`,
+    ),
+    seedMonthRangeCheck: check(
+      'engagement_recurrence_seed_month_range_ck',
+      sql`${t.seedPeriodMonth} IS NULL OR (${t.seedPeriodMonth} BETWEEN 1 AND 12)`,
+    ),
   }),
 );
 

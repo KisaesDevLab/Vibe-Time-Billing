@@ -19,6 +19,7 @@ import { runRecurringBillingTick } from './jobs/recurring-billing';
 import { runDunningSweep } from './jobs/dunning-sweep';
 import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
+import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -153,6 +154,10 @@ const QUEUES = [
   'shield-healthcheck',
   'retainer-expiry-sweep',
   'retainer-offer-expiry-sweep',
+  // 0083 — recurring engagements. Daily sweep at 02:45 spawns the
+  // next engagement per active recurrence (or queues a Q23 approval
+  // on collision).
+  'recurring-engagement',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -409,6 +414,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.info({ jobId: job.id, ...result }, 'retainer-offer-expiry-sweep complete');
     },
   ),
+  'recurring-engagement': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'recurring-engagement: no DB configured');
+      return;
+    }
+    const result = await runRecurringEngagementTick(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'recurring-engagement complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -484,6 +497,10 @@ const CRON: Record<QueueName, string> = {
   // forfeit on expiry (no refund / no rollover).
   'retainer-expiry-sweep': '0 2 * * *',
   'retainer-offer-expiry-sweep': '15 2 * * *',
+  // 0083 — recurring engagements. Daily 02:45 sweep fires SCHEDULE
+  // recurrences whose next_run_date <= today and ON_COMPLETION
+  // recurrences whose previous engagement just closed.
+  'recurring-engagement': '45 2 * * *',
 };
 
 function storageSyncCron(): string {

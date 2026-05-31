@@ -47,6 +47,11 @@ const EngagementSchema = z.object({
   // 0054 — engagements created from this template inherit this code.
   defaultRateCodeId: z.string().uuid().nullable().optional(),
   customFieldsSchema: z.record(z.string(), z.unknown()).optional(),
+  // 0083 — optional Mustache-style template resolved at
+  // engagement-creation time. Supports {{client.name}},
+  // {{period.year/month/label}}, {{today}}, {{engagement.*}}. NULL =
+  // use static `name` field as the engagement name.
+  namePattern: z.string().max(200).nullable().optional(),
 });
 
 const LetterSchema = z.object({
@@ -132,6 +137,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultLetterTemplateId: d.defaultLetterTemplateId ?? null,
           defaultRateCodeId: d.defaultRateCodeId ?? null,
           customFieldsSchema: d.customFieldsSchema ?? {},
+          namePattern: d.namePattern ?? null,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -176,6 +182,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.defaultLetterTemplateId = d.defaultLetterTemplateId;
       if (d.defaultRateCodeId !== undefined) updates.defaultRateCodeId = d.defaultRateCodeId;
       if (d.customFieldsSchema !== undefined) updates.customFieldsSchema = d.customFieldsSchema;
+      if (d.namePattern !== undefined) updates.namePattern = d.namePattern;
       await deps.db
         .update(engagementTemplates)
         .set(updates)

@@ -32,6 +32,7 @@ import { createClientRouter } from './clients/routes';
 // internal-files + folder-templates routers removed in Phase 0 of the
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
+import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
@@ -396,6 +397,19 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/engagements', auth.requireAuth, auth.requireCsrf, engagementRouter);
+
+  // 0083 — recurring engagements (CRUD + run-now). Worker sweep lives
+  // in apps/worker/src/jobs/recurring-engagement.ts.
+  const engagementRecurrenceRouter = createEngagementRecurrenceRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/engagement-recurrences',
+    auth.requireAuth,
+    auth.requireCsrf,
+    engagementRecurrenceRouter,
+  );
 
   // Stage 2 — engagement-level messaging. Distinct prefix from the
   // legacy /messaging/ provider config router (which lives under

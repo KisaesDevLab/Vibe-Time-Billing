@@ -12,6 +12,7 @@ import {
   clients,
   engagementAssignments,
   engagementNotes,
+  engagementTemplates,
   engagements,
   firmSettings,
   hourBanks,
@@ -19,6 +20,7 @@ import {
   milestones,
   timeEntries,
 } from '@vibe/db/schema';
+import { resolveEngagementName, type Period } from '@vibe/core/engagements';
 import { desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
@@ -45,7 +47,24 @@ export interface EngagementRoutesDeps extends RbacDeps {
 
 const EngagementCreateSchema = z.object({
   clientId: z.string().uuid(),
-  name: z.string().min(1).max(200),
+  // Name is optional when templateId is sent AND that template has a
+  // name_pattern — the server resolves the pattern using `period` +
+  // client + today. Handler enforces "must have either explicit name
+  // or template+pattern that resolves to non-empty" with a 400.
+  name: z.string().min(1).max(200).optional(),
+  // 0083 — when set, server loads the template, copies any non-
+  // overridden defaults, and (if no explicit name) resolves
+  // template.name_pattern via resolveEngagementName.
+  templateId: z.string().uuid().optional(),
+  // 0083 — period inputs persisted on the new engagement +
+  // substituted into the template name_pattern.
+  period: z
+    .object({
+      year: z.number().int().min(1900).max(9999).nullable().optional(),
+      month: z.number().int().min(1).max(12).nullable().optional(),
+      label: z.string().max(80).nullable().optional(),
+    })
+    .optional(),
   engagementTypeId: z.string().uuid().optional(),
   feeStructure: z.enum([
     'HOURLY',
@@ -380,10 +399,73 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
-      const { hourBank, assignments, ...engagementFields } = parsed.data;
+
+      // 0083 — template + period resolution. Loads the template
+      // (cross-firm guard), then either uses the explicit `name` or
+      // resolves the template's `name_pattern` against client + period
+      // + today. Period fields are persisted on the engagement row
+      // regardless of whether the template uses them.
+      let resolvedName = parsed.data.name?.trim() ?? '';
+      if (parsed.data.templateId) {
+        const [tpl] = await deps.db
+          .select({
+            id: engagementTemplates.id,
+            name: engagementTemplates.name,
+            namePattern: engagementTemplates.namePattern,
+          })
+          .from(engagementTemplates)
+          .where(
+            and(
+              eq(engagementTemplates.id, parsed.data.templateId),
+              eq(engagementTemplates.firmId, firmId),
+            ),
+          )
+          .limit(1);
+        if (!tpl) {
+          res.status(404).json({ error: 'template_not_found' });
+          return;
+        }
+        if (resolvedName.length === 0 && tpl.namePattern) {
+          const [clientRow] = await deps.db
+            .select({ name: clients.name })
+            .from(clients)
+            .where(eq(clients.id, parsed.data.clientId))
+            .limit(1);
+          const period: Period = {
+            year: parsed.data.period?.year ?? null,
+            month: parsed.data.period?.month ?? null,
+            label: parsed.data.period?.label ?? null,
+          };
+          const r = resolveEngagementName(tpl.namePattern, {
+            client: { name: clientRow?.name ?? null },
+            period,
+            today: new Date().toISOString().slice(0, 10),
+          });
+          resolvedName = r.output.trim();
+        }
+        // Fall back to the template's static name when neither path
+        // produced something.
+        if (resolvedName.length === 0) {
+          resolvedName = tpl.name;
+        }
+      }
+      if (resolvedName.length === 0) {
+        res.status(400).json({ error: 'name_required' });
+        return;
+      }
+
+      const { hourBank, assignments, templateId, period, ...engagementFields } = parsed.data;
+      // templateId + period are stripped from engagementFields here so
+      // they don't bleed into the engagements insert; period is mapped
+      // to the explicit period_year/month/label columns below.
+      void templateId;
       const insertVals = {
         ...engagementFields,
+        name: resolvedName,
         budgetHours: engagementFields.budgetHours?.toString(),
+        periodYear: period?.year ?? null,
+        periodMonth: period?.month ?? null,
+        periodLabel: period?.label ?? null,
       };
       const { engagementId, hourBankId } = await deps.db.transaction(async (tx) => {
         const [eng] = await tx
