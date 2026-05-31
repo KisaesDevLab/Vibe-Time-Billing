@@ -36,6 +36,8 @@ interface EngagementTpl {
   defaultBudgetHours: string | null;
   defaultLetterTemplateId: string | null;
   defaultRateCodeId: string | null;
+  // 0083 — Mustache name pattern resolved at engagement-creation time.
+  namePattern: string | null;
   isSystem: boolean;
   status: string;
 }
@@ -118,12 +120,14 @@ function EngagementTab(): JSX.Element {
     defaultFeeAmountDollars: string;
     defaultBudgetHours: string;
     defaultRateCodeId: string;
+    namePattern: string;
   }>({
     name: '',
     defaultFeeStructure: 'FIXED_FEE',
     defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
     defaultRateCodeId: '',
+    namePattern: '',
   });
   const [draft, setDraft] = useState({
     key: '',
@@ -132,6 +136,7 @@ function EngagementTab(): JSX.Element {
     defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
     defaultRateCodeId: '',
+    namePattern: '',
   });
 
   async function load(): Promise<void> {
@@ -162,6 +167,7 @@ function EngagementTab(): JSX.Element {
           defaultFeeAmountCents: dollarsInputToCents(draft.defaultFeeAmountDollars),
           defaultBudgetHours: draft.defaultBudgetHours ? Number(draft.defaultBudgetHours) : null,
           defaultRateCodeId: draft.defaultRateCodeId || null,
+          namePattern: draft.namePattern.trim() || null,
         }),
       });
       setDraft({
@@ -171,6 +177,7 @@ function EngagementTab(): JSX.Element {
         defaultFeeAmountDollars: '',
         defaultBudgetHours: '',
         defaultRateCodeId: '',
+        namePattern: '',
       });
       setAdding(false);
       await load();
@@ -206,6 +213,7 @@ function EngagementTab(): JSX.Element {
       defaultFeeAmountDollars: centsToDollarsInput(t.defaultFeeAmountCents),
       defaultBudgetHours: t.defaultBudgetHours ?? '',
       defaultRateCodeId: t.defaultRateCodeId ?? '',
+      namePattern: t.namePattern ?? '',
     });
   }
 
@@ -222,6 +230,7 @@ function EngagementTab(): JSX.Element {
             ? Number(editDraft.defaultBudgetHours)
             : null,
           defaultRateCodeId: editDraft.defaultRateCodeId || null,
+          namePattern: editDraft.namePattern.trim() || null,
         }),
       });
       setEditingId(null);
@@ -307,6 +316,32 @@ function EngagementTab(): JSX.Element {
             ))}
           </select>
           <div>
+            <label
+              htmlFor="new-name-pattern"
+              style={{
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                display: 'block',
+                marginBottom: 4,
+              }}
+            >
+              Name pattern (optional)
+            </label>
+            <input
+              id="new-name-pattern"
+              value={draft.namePattern}
+              onChange={(e) => setDraft({ ...draft, namePattern: e.target.value })}
+              placeholder="e.g. Bookkeeping {{period.month}}/{{period.year}}"
+              aria-label="Engagement name pattern"
+              style={{ ...fieldStyle, width: '100%' }}
+            />
+            <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '4px 0 0' }}>
+              Tokens: <code>{'{{client.name}}'}</code>, <code>{'{{period.year}}'}</code>,{' '}
+              <code>{'{{period.month}}'}</code>, <code>{'{{period.label}}'}</code>,{' '}
+              <code>{'{{today}}'}</code>. Left blank → engagement name comes from the create form.
+            </p>
+          </div>
+          <div>
             <Button size="sm" onClick={() => void add()}>
               Create
             </Button>
@@ -349,6 +384,18 @@ function EngagementTab(): JSX.Element {
                     </span>
                   )}
                   {t.isSystem && <Pill tone="accent">system</Pill>}
+                  {!isEditing && t.namePattern && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                        fontFamily: 'monospace',
+                      }}
+                      title={`Engagement name pattern: ${t.namePattern}`}
+                    >
+                      📝 {t.namePattern}
+                    </span>
+                  )}
                   {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
                   <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                     {isEditing ? (
@@ -419,6 +466,34 @@ function EngagementTab(): JSX.Element {
                         </option>
                       ))}
                     </select>
+                  </div>
+                )}
+                {isEditing && (
+                  <div>
+                    <label
+                      htmlFor={`edit-name-pattern-${t.id}`}
+                      style={{
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                        display: 'block',
+                        marginBottom: 4,
+                      }}
+                    >
+                      Name pattern (optional)
+                    </label>
+                    <input
+                      id={`edit-name-pattern-${t.id}`}
+                      value={editDraft.namePattern}
+                      onChange={(e) => setEditDraft({ ...editDraft, namePattern: e.target.value })}
+                      placeholder="e.g. Bookkeeping {{period.month}}/{{period.year}}"
+                      aria-label="Engagement name pattern"
+                      style={{ ...fieldStyle, width: '100%' }}
+                    />
+                    <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '4px 0 0' }}>
+                      Tokens: <code>{'{{client.name}}'}</code>, <code>{'{{period.year}}'}</code>,{' '}
+                      <code>{'{{period.month}}'}</code>, <code>{'{{period.label}}'}</code>,{' '}
+                      <code>{'{{today}}'}</code>.
+                    </p>
                   </div>
                 )}
               </div>

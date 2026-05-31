@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
+import { resolveEngagementName } from '@vibe/core/engagements';
 
 import { api } from '../api-client';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../lib/money';
@@ -33,6 +34,10 @@ interface EngagementTpl {
   defaultLetterTemplateId: string | null;
   // 0054 — engagements created from this template inherit this code.
   defaultRateCodeId: string | null;
+  // 0083 — Mustache name template (e.g. "Bookkeeping
+  // {{period.month}}/{{period.year}}"). Server resolves at create
+  // time if `name` is left blank.
+  namePattern: string | null;
   isSystem: boolean;
   status: string;
 }
@@ -95,6 +100,12 @@ export function EngagementCreatePage(): JSX.Element {
 
   const [clientId, setClientId] = useState(initialClientId);
   const [name, setName] = useState('');
+  // 0083 — period inputs. All optional; populated either by the
+  // template's name_pattern requirements or because the firm wants to
+  // tag this engagement with a (year, month, label) tuple regardless.
+  const [periodYear, setPeriodYear] = useState<string>('');
+  const [periodMonth, setPeriodMonth] = useState<string>('');
+  const [periodLabel, setPeriodLabel] = useState<string>('');
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [defaultRateCodeId, setDefaultRateCodeId] = useState<string>('');
   const [feeStructure, setFeeStructure] = useState<FeeStructure>('FIXED_FEE');
@@ -164,9 +175,32 @@ export function EngagementCreatePage(): JSX.Element {
     if (tpl.defaultRateCodeId) setDefaultRateCodeId(tpl.defaultRateCodeId);
   }
 
+  // 0083 — pick a template that uses a name_pattern + the user left
+  // the name field blank → preview what the server will resolve. Used
+  // in the UI hint below the name input.
+  const pickedTpl = templates.find((t) => t.id === pickedTemplateId) ?? null;
+  const pickedClientName = clients.find((c) => c.id === clientId)?.name ?? null;
+  const periodPreview = {
+    year: periodYear.trim() ? Number(periodYear) : null,
+    month: periodMonth.trim() ? Number(periodMonth) : null,
+    label: periodLabel.trim() || null,
+  };
+  const namePreview =
+    pickedTpl?.namePattern && !name.trim()
+      ? resolveEngagementName(pickedTpl.namePattern, {
+          client: { name: pickedClientName ?? '' },
+          period: periodPreview,
+          today: new Date().toISOString().slice(0, 10),
+        })
+      : null;
+
   async function submit(): Promise<void> {
-    if (!clientId || !name.trim()) {
-      setError('Client and name are required.');
+    if (!clientId) {
+      setError('Client is required.');
+      return;
+    }
+    if (!name.trim() && !pickedTpl?.namePattern) {
+      setError('Name is required (or pick a template with a name pattern).');
       return;
     }
     setBusy(true);
@@ -174,11 +208,15 @@ export function EngagementCreatePage(): JSX.Element {
     try {
       const body: Record<string, unknown> = {
         clientId,
-        name: name.trim(),
         feeStructure,
         mixedModeEnabled,
         feePassthroughEnabled,
       };
+      if (name.trim()) body.name = name.trim();
+      if (pickedTemplateId) body.templateId = pickedTemplateId;
+      if (periodPreview.year != null || periodPreview.month != null || periodPreview.label) {
+        body.period = periodPreview;
+      }
       const feeCents = dollarsInputToCents(feeAmountDollars);
       if (feeCents != null) body.feeAmountCents = feeCents;
       if (budgetHours.trim()) body.budgetHours = Number(budgetHours);
@@ -287,7 +325,87 @@ export function EngagementCreatePage(): JSX.Element {
         )}
 
         <div style={{ display: 'grid', gap: 12 }}>
-          <Input label="Name *" value={name} onChange={(e) => setName(e.target.value)} required />
+          <div>
+            <Input
+              label={pickedTpl?.namePattern ? 'Name (optional — template fills in)' : 'Name *'}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={pickedTpl?.namePattern ? '(blank uses template pattern)' : ''}
+            />
+            {namePreview && (
+              <p
+                style={{
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  margin: '4px 0 0',
+                }}
+              >
+                Will save as:{' '}
+                <strong style={{ color: tokens.color.text }}>
+                  {namePreview.output || '(empty — fill in period fields below)'}
+                </strong>
+                {namePreview.unresolvedTokens.length > 0 && (
+                  <span style={{ color: tokens.color.warning }}>
+                    {' '}
+                    — missing: {namePreview.unresolvedTokens.join(', ')}
+                  </span>
+                )}
+              </p>
+            )}
+          </div>
+
+          {/* 0083 — period inputs. Render only when a template is
+              picked (the period fields are template-driven), or when
+              the user wants to tag the engagement with structured
+              period data even without a template. Show always so
+              firms can use them for any engagement. */}
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                marginBottom: 4,
+              }}
+            >
+              Period (optional){' '}
+              {pickedTpl?.namePattern && (
+                <span style={{ color: tokens.color.accent }}>— used by template name pattern</span>
+              )}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: 8 }}>
+              <Input
+                type="number"
+                min={1900}
+                max={9999}
+                label="Year"
+                value={periodYear}
+                onChange={(e) => setPeriodYear(e.target.value)}
+                placeholder="2026"
+              />
+              <div>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Month
+                </div>
+                <Combobox
+                  ariaLabel="Period month"
+                  clearable
+                  value={periodMonth}
+                  onChange={(v) => setPeriodMonth(v ?? '')}
+                  options={Array.from({ length: 12 }, (_, i) => ({
+                    value: String(i + 1),
+                    label: new Date(2000, i, 1).toLocaleString('en-US', { month: 'long' }),
+                  }))}
+                  placeholder="—"
+                />
+              </div>
+              <Input
+                label="Label"
+                value={periodLabel}
+                onChange={(e) => setPeriodLabel(e.target.value)}
+                placeholder="e.g. Q1 2026, FY26"
+              />
+            </div>
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12 }}>
             <div>

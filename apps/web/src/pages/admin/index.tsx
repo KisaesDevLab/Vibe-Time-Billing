@@ -48,6 +48,7 @@ import { StorageConflictsListPage } from './StorageConflictsList';
 import { StorageConflictResolutionPage } from './StorageConflictResolution';
 import { TaxonomyPage } from './Taxonomy';
 import { TemplatesPage } from './Templates';
+import { EngagementRecurrencesPage } from './EngagementRecurrences';
 import { UsersPage } from './Users';
 import { UserDetailPage } from './UserDetail';
 import { WebhooksPage } from './Webhooks';
@@ -92,6 +93,11 @@ const GROUPS: Group[] = [
       { key: 'taxonomy', label: 'Taxonomy', href: '/admin/taxonomy' },
       { key: 'statuses', label: 'Engagement statuses', href: '/admin/engagement-statuses' },
       { key: 'tpl', label: 'Templates', href: '/admin/templates' },
+      {
+        key: 'recurring-engagements',
+        label: 'Recurring engagements',
+        href: '/admin/recurring-engagements',
+      },
       { key: 'services', label: 'Services catalog', href: '/admin/services' },
       { key: 'packages', label: 'Packages', href: '/admin/packages' },
       { key: 'terms', label: 'Terms templates', href: '/admin/terms-templates' },
@@ -259,6 +265,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
         <Route path="templates" element={<TemplatesPage />} />
+        <Route path="recurring-engagements" element={<EngagementRecurrencesPage />} />
         <Route path="rate-codes" element={<RateCodesPage />} />
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
