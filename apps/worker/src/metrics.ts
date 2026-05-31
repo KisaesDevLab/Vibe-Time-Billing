@@ -72,11 +72,14 @@ const COUNTER_HELP: Record<string, string> = {
   storage_files_hashed_total: 'Files hashed by the hash-file worker.',
   storage_pending_uploads_swept_total: 'Stale pending_upload rows hard-deleted by the janitor.',
   storage_folder_renames_total: 'Folder-rename jobs, by outcome.',
+  retainer_job_failures_total: 'Retainer-related BullMQ job failures, by job name.',
+  retainer_job_total: 'Retainer-related BullMQ job completions, by job + outcome.',
 };
 
 const HISTOGRAM_HELP: Record<string, string> = {
   storage_sync_duration_seconds: 'Wall-clock duration of the last sync tick.',
   storage_folder_rename_duration_seconds: 'Wall-clock duration of folder-rename jobs.',
+  retainer_job_duration_seconds: 'Wall-clock duration of retainer-related BullMQ jobs.',
 };
 
 const GAUGE_HELP: Record<string, string> = {

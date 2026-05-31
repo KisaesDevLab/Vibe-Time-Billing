@@ -25,6 +25,7 @@ import { clientPortalAccess, invoiceLineItems, invoices, retainerOffers } from '
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { isRetainerFeatureEnabled } from '../retainers/feature-flag';
 
 export interface PortalRetainerOfferDeps {
   db: Database | null;
@@ -40,6 +41,10 @@ export function createPortalRetainerOfferRouter(deps: PortalRetainerOfferDeps): 
   router.get('/:id', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;
     if (!deps.db) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (!(await isRetainerFeatureEnabled(deps.db, session.firmId))) {
       res.status(404).json({ error: 'not_found' });
       return;
     }

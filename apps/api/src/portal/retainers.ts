@@ -15,6 +15,7 @@ import { clients, firms, retainerLedger, retainers } from '@vibe/db/schema';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { buildActivityStatementHtml } from '../retainers/exports';
+import { isRetainerFeatureEnabled } from '../retainers/feature-flag';
 import { renderHtmlToPdf } from '../pdf/render';
 
 export interface PortalRetainerDeps {
@@ -29,6 +30,10 @@ export function createPortalRetainerRouter(deps: PortalRetainerDeps): Router {
   router.get('/', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;
     if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    if (!(await isRetainerFeatureEnabled(deps.db, session.firmId))) {
       res.json({ items: [] });
       return;
     }
@@ -55,6 +60,10 @@ export function createPortalRetainerRouter(deps: PortalRetainerDeps): Router {
   router.get('/:id', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;
     if (!deps.db) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (!(await isRetainerFeatureEnabled(deps.db, session.firmId))) {
       res.status(404).json({ error: 'not_found' });
       return;
     }
@@ -107,6 +116,10 @@ export function createPortalRetainerRouter(deps: PortalRetainerDeps): Router {
     const session = req.portalSession!;
     if (!deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    if (!(await isRetainerFeatureEnabled(deps.db, session.firmId))) {
+      res.status(404).json({ error: 'not_found' });
       return;
     }
     const [row] = await deps.db

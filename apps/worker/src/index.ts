@@ -51,7 +51,7 @@ import { runStorageSyncTick } from './jobs/storage-sync';
 import { runHashFileTick } from './jobs/hash-file';
 import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
-import { renderPrometheusText } from './metrics';
+import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
@@ -383,7 +383,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runShieldHealthcheck({ db, redis: connection, log: logger });
     logger.info({ jobId: job.id, ...result }, 'shield-healthcheck complete');
   },
-  'retainer-expiry-sweep': async (job) => {
+  'retainer-expiry-sweep': instrumentRetainerJob('retainer-expiry-sweep', async (job) => {
     if (!db) {
       logger.warn({ jobId: job.id }, 'retainer-expiry-sweep: no DB configured');
       return;
@@ -394,19 +394,49 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       .set('retainer:sweep:expiry:last_run', new Date().toISOString())
       .catch((err) => logger.warn({ err }, 'retainer expiry sweep heartbeat failed'));
     logger.info({ jobId: job.id, ...result }, 'retainer-expiry-sweep complete');
-  },
-  'retainer-offer-expiry-sweep': async (job) => {
-    if (!db) {
-      logger.warn({ jobId: job.id }, 'retainer-offer-expiry-sweep: no DB configured');
-      return;
-    }
-    const result = await runRetainerOfferExpirySweep(db, logger);
-    await connection
-      .set('retainer:sweep:offer:last_run', new Date().toISOString())
-      .catch((err) => logger.warn({ err }, 'retainer offer sweep heartbeat failed'));
-    logger.info({ jobId: job.id, ...result }, 'retainer-offer-expiry-sweep complete');
-  },
+  }),
+  'retainer-offer-expiry-sweep': instrumentRetainerJob(
+    'retainer-offer-expiry-sweep',
+    async (job) => {
+      if (!db) {
+        logger.warn({ jobId: job.id }, 'retainer-offer-expiry-sweep: no DB configured');
+        return;
+      }
+      const result = await runRetainerOfferExpirySweep(db, logger);
+      await connection
+        .set('retainer:sweep:offer:last_run', new Date().toISOString())
+        .catch((err) => logger.warn({ err }, 'retainer offer sweep heartbeat failed'));
+      logger.info({ jobId: job.id, ...result }, 'retainer-offer-expiry-sweep complete');
+    },
+  ),
 };
+
+// Phase 13 — retainer addendum observability. Wraps a job handler so
+// the worker emits retainer_job_duration_seconds (histogram) +
+// retainer_job_total{outcome} + retainer_job_failures_total counters
+// to the worker's /metrics endpoint without scattering try/finally.
+function instrumentRetainerJob<T extends Job>(
+  jobName: string,
+  fn: (job: T) => Promise<void>,
+): (job: T) => Promise<void> {
+  return async (job) => {
+    const startedAt = Date.now();
+    try {
+      await fn(job);
+      observeDurationSeconds('retainer_job_duration_seconds', (Date.now() - startedAt) / 1000, {
+        job: jobName,
+      });
+      incCounter('retainer_job_total', { job: jobName, outcome: 'success' });
+    } catch (err) {
+      observeDurationSeconds('retainer_job_duration_seconds', (Date.now() - startedAt) / 1000, {
+        job: jobName,
+      });
+      incCounter('retainer_job_total', { job: jobName, outcome: 'failure' });
+      incCounter('retainer_job_failures_total', { job: jobName });
+      throw err;
+    }
+  };
+}
 
 const CRON: Record<QueueName, string> = {
   'recurring-billing': '*/15 * * * *',
@@ -623,7 +653,7 @@ function setupRetainerDelayedQueues(): void {
   });
   offerReminderWorkerRef = new Worker<OfferReminderJobPayload>(
     offerName,
-    async (job) => {
+    instrumentRetainerJob(offerName, async (job) => {
       const result = await runRetainerOfferReminder(
         db!,
         logger,
@@ -634,7 +664,7 @@ function setupRetainerDelayedQueues(): void {
         job.data,
       );
       logger.info({ jobId: job.id, ...result }, 'retainer-offer-reminder complete');
-    },
+    }),
     { connection, concurrency: 2 },
   );
 
@@ -646,7 +676,7 @@ function setupRetainerDelayedQueues(): void {
   });
   expiryWarningWorkerRef = new Worker<ExpiryWarningJobPayload>(
     warningName,
-    async (job) => {
+    instrumentRetainerJob(warningName, async (job) => {
       const result = await runRetainerExpiryWarning(
         db!,
         logger,
@@ -657,7 +687,7 @@ function setupRetainerDelayedQueues(): void {
         job.data,
       );
       logger.info({ jobId: job.id, ...result }, 'retainer-expiry-warning complete');
-    },
+    }),
     { connection, concurrency: 2 },
   );
 
