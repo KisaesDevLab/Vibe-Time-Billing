@@ -317,9 +317,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      // Profit = invoiced - cost approximation. We don't track cost
-      // explicitly per time entry; use staff_rate_snapshot.cost_rate_cents.
-      // For brevity this returns invoiced minus a flat-cost stub.
+      // Profit per engagement: SUM(invoice.total) − SUM(time_entry.hours
+      // × cost_rate_snapshot_cents). 0063 added cost_rate_snapshot_cents
+      // on time_entry so no LATERAL join against staff_rate_snapshot is
+      // needed. Engagements with no time entries roll up cost=0; ones
+      // with no invoices roll up billed=0.
       const firmClientIds = (
         await deps.db
           .select({ id: clients.id })
@@ -335,24 +337,58 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .from(engagements)
         .where(inArray(engagements.clientId, firmClientIds));
       const engIds = firmEngs.map((e) => e.id);
+      if (engIds.length === 0) {
+        res.json({ items: [] });
+        return;
+      }
       const { invoices: inv } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
-      const items = engIds.length
-        ? await deps.db
-            .select({
-              engagementId: inv.primaryEngagementId,
-              invoicedCents: drz<number>`COALESCE(SUM(${inv.totalCents}), 0)`,
-            })
-            .from(inv)
-            .where(inArray(inv.primaryEngagementId, engIds))
-            .groupBy(inv.primaryEngagementId)
-        : [];
-      res.json({
-        items: items.map((r) => ({
-          engagementId: r.engagementId,
-          invoicedCents: Number(r.invoicedCents),
-        })),
+      const [billed, cost] = await Promise.all([
+        deps.db
+          .select({
+            engagementId: inv.primaryEngagementId,
+            billedCents: drz<number>`COALESCE(SUM(${inv.totalCents}), 0)`,
+            paidCents: drz<number>`COALESCE(SUM(${inv.paidCents}), 0)`,
+          })
+          .from(inv)
+          .where(inArray(inv.primaryEngagementId, engIds))
+          .groupBy(inv.primaryEngagementId),
+        deps.db
+          .select({
+            engagementId: timeEntries.engagementId,
+            costCents: drz<number>`COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)), 0)::bigint`,
+          })
+          .from(timeEntries)
+          .where(inArray(timeEntries.engagementId, engIds))
+          .groupBy(timeEntries.engagementId),
+      ]);
+      const billedBy = new Map<string, { billed: number; paid: number }>();
+      for (const r of billed) {
+        if (!r.engagementId) continue;
+        billedBy.set(r.engagementId, {
+          billed: Number(r.billedCents),
+          paid: Number(r.paidCents),
+        });
+      }
+      const costBy = new Map<string, number>();
+      for (const r of cost) {
+        costBy.set(r.engagementId, Number(r.costCents));
+      }
+      const allEngIds = new Set<string>([...billedBy.keys(), ...costBy.keys()]);
+      const items = Array.from(allEngIds).map((engId) => {
+        const br = billedBy.get(engId) ?? { billed: 0, paid: 0 };
+        const cc = costBy.get(engId) ?? 0;
+        const marginCents = br.billed - cc;
+        return {
+          engagementId: engId,
+          billedCents: br.billed,
+          paidCents: br.paid,
+          costCents: cc,
+          marginCents,
+          marginPct: br.billed > 0 ? (marginCents / br.billed) * 100 : null,
+        };
       });
+      res.json({ items });
     },
   );
 
