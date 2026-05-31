@@ -83,6 +83,7 @@ import { createApiTokenRouter } from './admin/api-tokens';
 import { createStripeWebhookRouter } from './webhooks/stripe';
 import { createStripeConnectWebhookRouter } from './webhooks/stripe-connect';
 import { createCpaChargeWebhookRouter } from './webhooks/cpacharge';
+import { createNotificationWebhookRouter } from './webhooks/notifications';
 import { createWebhookRouter } from './webhooks/outbound';
 import { createPortalInviteRouter } from './portal-invites/routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
@@ -1050,6 +1051,20 @@ export function createApp(deps: AppDeps): Express {
       db: deps.db,
       provider: null,
       webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
+    }),
+  );
+
+  // H.8 follow-up — mail + SMS provider delivery callbacks update
+  // notification_log.status. Each provider expects a separate sub-path
+  // with a shared-secret token in X-Webhook-Token.
+  app.use(
+    '/api/webhooks/notifications',
+    createNotificationWebhookRouter({
+      db: deps.db,
+      log: logger,
+      postmarkSecret: process.env['NOTIFICATION_WEBHOOK_POSTMARK_SECRET'] ?? null,
+      resendSecret: process.env['NOTIFICATION_WEBHOOK_RESEND_SECRET'] ?? null,
+      twilioSecret: process.env['NOTIFICATION_WEBHOOK_TWILIO_SECRET'] ?? null,
     }),
   );
 

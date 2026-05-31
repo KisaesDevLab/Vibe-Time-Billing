@@ -2679,6 +2679,7 @@ export const notificationLog = pgTable(
     providerMessageId: text('provider_message_id'),
     errorMessage: text('error_message'),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveryUpdatedAt: timestamp('delivery_updated_at', { withTimezone: true }),
   },
   (t) => ({
     firmIdx: index('notification_log_firm_idx').on(t.firmId, t.occurredAt),
@@ -2686,8 +2687,14 @@ export const notificationLog = pgTable(
       .on(t.status, t.occurredAt)
       .where(sql`status = 'failed'`),
     recipientIdx: index('notification_log_recipient_idx').on(t.recipient, t.occurredAt),
+    providerMessageIdx: index('notification_log_provider_message_idx')
+      .on(t.providerMessageId)
+      .where(sql`provider_message_id IS NOT NULL`),
     channelCheck: check('notification_log_channel_ck', sql`${t.channel} IN ('email', 'sms')`),
-    statusCheck: check('notification_log_status_ck', sql`${t.status} IN ('sent', 'failed')`),
+    statusCheck: check(
+      'notification_log_status_ck',
+      sql`${t.status} IN ('sent', 'failed', 'delivered', 'bounced', 'complained', 'opened')`,
+    ),
   }),
 );
 
