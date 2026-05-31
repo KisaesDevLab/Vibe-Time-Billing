@@ -1492,6 +1492,50 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   // for entries on this engagement; revenue is sum(invoice paid_cents)
   // attributed to this engagement as the primary engagement.
   // -----------------------------------------------------------------
+  // Connect D.7 — realization defense PDF. Firm-only export bundling
+  // every time entry + linked thread message into one PDF. The HTML
+  // template stamps an INTERNAL banner so a casual mis-send is obvious.
+  router.get(
+    '/:id/realization-defense.pdf',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const { buildDefensePayload, renderDefenseHtml } = await import('./realization-defense');
+      const payload = await buildDefensePayload({
+        db: deps.db,
+        engagementId: req.params['id']!,
+        firmId,
+      });
+      if (!payload) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const html = renderDefenseHtml(payload);
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        const pdf = await renderHtmlToPdf(html);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="realization-defense-${req.params['id']}.pdf"`,
+        );
+        res.send(pdf);
+      } catch (err) {
+        // PDF renderer not available (dev without Chrome, sidecar
+        // unreachable) — serve HTML inline so the partner can still
+        // pull the report. Tag the response with a header so the UI
+        // knows to render-vs-download appropriately.
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('X-Defense-Fallback', 'html');
+        res.send(html);
+      }
+    },
+  );
+
   router.get(
     '/:id/cost-vs-revenue',
     requirePermission(deps, 'report:profitability:read'),
