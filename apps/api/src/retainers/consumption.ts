@@ -25,6 +25,7 @@ import type { Database } from '@vibe/db';
 import { engagements, retainerEligibleServices, retainerLedger, retainers } from '@vibe/db/schema';
 import { computeSplit, isEligibleEntry } from '@vibe/core/retainers';
 
+import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 
 export interface ApplyTimeEntryInput {
@@ -195,6 +196,16 @@ export async function applyTimeEntryToRetainer(
       { retainerId: retainerRow.id, engagementId: args.engagementId },
       'retainer exhausted',
     );
+    await emitAudit(tx as Database, {
+      action: 'UPDATE',
+      entityType: 'retainer',
+      entityId: retainerRow.id,
+      actorAppUserId: args.actorAppUserId ?? null,
+      before: { status: 'active' },
+      after: { status: 'exhausted', exhaustedBy: args.timeEntryId ?? null },
+    }).catch((err: unknown) =>
+      logger.warn({ err, retainerId: retainerRow.id }, 'retainer.exhausted audit emit failed'),
+    );
   }
   return {
     retainerId: retainerRow.id,
@@ -293,6 +304,16 @@ export async function reverseTimeEntryConsumption(
     logger.info(
       { retainerId: row.id, prior: 'exhausted', next: 'active' },
       'retainer un-exhausted by reversal',
+    );
+    await emitAudit(tx as Database, {
+      action: 'UPDATE',
+      entityType: 'retainer',
+      entityId: row.id,
+      actorAppUserId: args.actorAppUserId ?? null,
+      before: { status: 'exhausted' },
+      after: { status: 'active', unexhaustedBy: args.timeEntryId },
+    }).catch((err: unknown) =>
+      logger.warn({ err, retainerId: row.id }, 'retainer.unexhausted audit emit failed'),
     );
   }
   return { newConsumed, newStatus };

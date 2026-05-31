@@ -22,6 +22,7 @@ import {
 } from '@vibe/db/schema';
 import { computeExpiryDate } from '@vibe/core/retainers';
 
+import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import type { RetainerMailDispatch } from './notifications';
 
@@ -272,6 +273,20 @@ export async function activateRetainerFromPaidInvoice(
           );
         }
       }
+      // Audit emit post-commit so the timeline picks up activation.
+      await emitAudit(db, {
+        action: 'CREATE',
+        entityType: 'retainer',
+        entityId: activatedRetainerId,
+        actorAppUserId: args.actorAppUserId ?? null,
+        after: {
+          status: 'active',
+          activatedFromOfferId: activatedOfferId,
+          expiryDate: activatedExpiryDate,
+        },
+      }).catch((err: unknown) =>
+        logger.warn({ err, retainerId: activatedRetainerId }, 'activation audit emit failed'),
+      );
     }
     return result;
   } catch (err) {
