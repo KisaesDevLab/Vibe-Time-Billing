@@ -2661,6 +2661,37 @@ export const auditLog = pgTable(
 );
 
 // =====================================================================
+// notification_log — Connect H.8. One row per outbound mail/sms send
+// attempt so firms can answer "did this dunning email actually go
+// out?" without grepping pino logs. Captures success + failure.
+// =====================================================================
+export const notificationLog = pgTable(
+  'notification_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id').references(() => firms.id, { onDelete: 'set null' }),
+    channel: text('channel').notNull(),
+    provider: text('provider').notNull(),
+    templateKey: text('template_key'),
+    recipient: text('recipient').notNull(),
+    subject: text('subject'),
+    status: text('status').notNull(),
+    providerMessageId: text('provider_message_id'),
+    errorMessage: text('error_message'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('notification_log_firm_idx').on(t.firmId, t.occurredAt),
+    statusIdx: index('notification_log_status_idx')
+      .on(t.status, t.occurredAt)
+      .where(sql`status = 'failed'`),
+    recipientIdx: index('notification_log_recipient_idx').on(t.recipient, t.occurredAt),
+    channelCheck: check('notification_log_channel_ck', sql`${t.channel} IN ('email', 'sms')`),
+    statusCheck: check('notification_log_status_ck', sql`${t.status} IN ('sent', 'failed')`),
+  }),
+);
+
+// =====================================================================
 // WEBHOOKS, MCP TOKENS, AI REQUEST LOG
 // =====================================================================
 

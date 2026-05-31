@@ -89,7 +89,7 @@ describe('Connect placeholder routes', () => {
 
   it('mirrors upstream status + body when wired', async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    const fakeFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fakeFetch: typeof fetch = async (input, init) => {
       calls.push({ url: String(input), init });
       return new Response(JSON.stringify({ ok: true, echo: init?.body }), {
         status: 201,
@@ -135,7 +135,7 @@ describe('Connect placeholder routes', () => {
 
   it('GET /destinations passes firmId as a query param', async () => {
     const calls: string[] = [];
-    const fakeFetch: typeof fetch = async (input: RequestInfo | URL) => {
+    const fakeFetch: typeof fetch = async (input) => {
       calls.push(String(input));
       return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
     };

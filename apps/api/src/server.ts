@@ -30,6 +30,7 @@ import {
   createTwilioSmsProvider,
   type SmsProvider,
 } from './sms/provider';
+import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
 import type { AiProvider } from '@vibe/core/ai';
 
 const config = loadConfig();
@@ -90,8 +91,10 @@ const cloudAiProvider: AiProvider | null = config.AI_CLOUD_API_KEY
 
 // Mail provider — Q11 abstraction. Defaults to console (which logs the
 // link/body) so dev still surfaces magic links via stdout if MailHog is
-// down. SMTP path covers MailHog + on-prem mail servers.
-const mailer: MailProvider = (() => {
+// down. SMTP path covers MailHog + on-prem mail servers. The base
+// provider is wrapped below with wrapMailWithAudit so every send
+// appends a notification_log row (Connect H.8).
+const baseMailer: MailProvider = (() => {
   switch (config.MAIL_PROVIDER) {
     case 'postmark':
       return config.MAIL_POSTMARK_TOKEN
@@ -124,8 +127,10 @@ const mailer: MailProvider = (() => {
   }
 })();
 
-// SMS provider — Q16. Console fallback in dev.
-const smsProvider: SmsProvider = (() => {
+const mailer: MailProvider = wrapMailWithAudit(baseMailer, { db, log: logger });
+
+// SMS provider — Q16. Console fallback in dev. Same audit wrap as mail.
+const baseSmsProvider: SmsProvider = (() => {
   switch (config.SMS_PROVIDER) {
     case 'twilio':
       return config.SMS_TWILIO_ACCOUNT_SID && config.SMS_TWILIO_AUTH_TOKEN && config.SMS_TWILIO_FROM
@@ -146,6 +151,8 @@ const smsProvider: SmsProvider = (() => {
       return createConsoleSmsProvider(logger);
   }
 })();
+
+const smsProvider: SmsProvider = wrapSmsWithAudit(baseSmsProvider, { db, log: logger });
 
 // Wrap the providers into the shapes the auth routes expect.
 const sendMagicLink = async (args: {
