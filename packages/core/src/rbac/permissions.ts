@@ -64,6 +64,12 @@ export const PERMISSION_KEYS = [
   'payment:write',
   'payment:refund',
 
+  // Override gate — partners can manually promote/demote pay-to-unlock
+  // escrow files without an underlying invoice payment (Connect F.7).
+  // Distinct from invoice:void / payment:refund so a manager can void
+  // an invoice without also being able to release the deliverable.
+  'billing:override',
+
   // Credit memos (0056). Read = list/get; write = create + apply + void.
   'credit:read',
   'credit:write',
@@ -192,6 +198,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'payment:read',
     'payment:write',
     'payment:refund',
+    'billing:override',
     'credit:read',
     'credit:write',
     'report:realization:read',

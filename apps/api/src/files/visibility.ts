@@ -72,6 +72,20 @@ const BulkSchema = z
     path: ['invoiceId'],
   });
 
+// Connect F.7 — escrow override. Limited to the escrow ⇄
+// client_visible pair (private flips go through the normal PATCH
+// path). Justification text >= 10 chars is required.
+const EscrowOverrideSchema = z
+  .object({
+    targetVisibility: z.enum(['escrow', 'client_visible']),
+    reason: z.string().min(10).max(500),
+    invoiceId: z.string().uuid().optional(),
+  })
+  .refine((d) => d.targetVisibility !== 'escrow' || d.invoiceId, {
+    message: 'invoiceId required when re-gating to escrow',
+    path: ['invoiceId'],
+  });
+
 interface FlipResult {
   fileId: string;
   oldValue: VisibilityValue;
@@ -253,6 +267,62 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
     }
     res.json({ ok: true, flipped: flipped.length, ids: flipped.map((f) => f.fileId) });
   });
+
+  // ----- Connect F.7 — admin escrow override ---------------------------
+  //
+  // Lets a partner manually promote a file from escrow to client_visible
+  // (release the deliverable without an invoice payment) or demote a
+  // client_visible file back to escrow (re-gate access). Distinct from
+  // the standard PATCH /:id/visibility path because:
+  //   1. Permission is `billing:override` (partner-only), not the
+  //      storage:file:publish/unpublish pair that staff have.
+  //   2. The `reason` field is mandatory and must be >= 10 chars.
+  //   3. The audit row records `override: true` so a future compliance
+  //      export can distinguish manual overrides from natural payment-
+  //      driven flips.
+  router.post(
+    '/:id/escrow-override',
+    requirePermission(deps, 'billing:override'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = EscrowOverrideSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const flipped = await flipFiles(
+        deps.db,
+        session.firmId,
+        [req.params['id']!],
+        parsed.data.targetVisibility,
+        session.appUserId,
+        `[OVERRIDE] ${parsed.data.reason}`,
+        parsed.data.invoiceId ?? null,
+      );
+      if (flipped.length === 0) {
+        res.status(409).json({ error: 'no_change' });
+        return;
+      }
+      const f = flipped[0]!;
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'file',
+        entityId: f.fileId,
+        actorAppUserId: session.appUserId,
+        before: { visibility: f.oldValue },
+        after: {
+          visibility: f.newValue,
+          override: true,
+          reason: parsed.data.reason,
+        },
+      }).catch(() => undefined);
+      res.json({ ok: true, fileId: f.fileId, oldValue: f.oldValue, newValue: f.newValue });
+    },
+  );
 
   // ----- Phase 10 — presigned GET for staff download ------------------
   router.get(
