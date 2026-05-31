@@ -865,6 +865,14 @@ export const clients = pgTable(
     tags: jsonb('tags').$type<string[]>().notNull().default([]),
     notes: text('notes'),
 
+    // Connect I.4 — server-peppered HMAC of the client's tax id, used
+    // for the ssn-last-4 / ein portal step-up challenge factors.
+    // tax_id_kind tags which factor applies. Never log raw values;
+    // hashing happens in apps/api/src/portal/tax-id.ts with the
+    // TAX_ID_HASH_PEPPER env value.
+    taxIdKind: text('tax_id_kind'),
+    taxIdHash: text('tax_id_hash'),
+
     // Legal hold (Phase 19 #12) — when true, the retention worker
     // skips this client's records and archive is blocked.
     legalHoldFlag: boolean('legal_hold_flag').notNull().default(false),

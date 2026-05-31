@@ -29,7 +29,7 @@ import { and, eq, isNull, sql as drz } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
-import { portalIdentity, portalStepUpChallenge } from '@vibe/db/schema';
+import { clients, portalIdentity, portalStepUpChallenge } from '@vibe/db/schema';
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
@@ -40,14 +40,12 @@ const LOCKOUT_WINDOW_SEC = 15 * 60;
 const LOCKOUT_MAX_FAILURES = 5;
 const LOCKOUT_DURATION_SEC = 30 * 60;
 
-// Knowledge-factor challenges (ssn-last-4 / ein) are accepted by the
-// schema (the persisted portalStepUpChallenge.challengeType enum still
-// includes them so a future migration can light them up without a
-// schema change) but rejected at the API boundary until tax_id_hash
-// lands on client. Until then the only valid issue types are
-// email-otp + sms-otp; anything else is a 400 invalid_payload.
+// All four challenge types are valid at the API boundary now that
+// client.tax_id_hash is wired. Knowledge-factor variants (ssn-last-4
+// / ein) require the firm to have set TAX_ID_HASH_PEPPER + enrolled
+// the client; otherwise issue returns 400 challenge_type_not_available.
 const IssueSchema = z.object({
-  type: z.enum(['email-otp', 'sms-otp']),
+  type: z.enum(['email-otp', 'sms-otp', 'ssn-last-4', 'ein']),
   reason: z.string().max(200).optional(),
 });
 
@@ -153,10 +151,34 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
     let sentTo: string | null = null;
     let channel: 'EMAIL' | 'SMS' | null = null;
 
-    // IssueSchema narrows `type` to email-otp | sms-otp so this branch
-    // is exhaustive; the ssn-last-4/ein arms are gated server-side
-    // until tax_id_hash lands.
-    if (challengeType === 'email-otp' || challengeType === 'sms-otp') {
+    // Knowledge-factor branches gate on (a) the pepper being
+    // configured and (b) the client having an enrolled tax_id_hash of
+    // the matching kind. Otherwise 400 so the UI can fall back to
+    // email-otp.
+    if (challengeType === 'ssn-last-4' || challengeType === 'ein') {
+      const { isFeatureEnabled } = await import('./tax-id');
+      if (!isFeatureEnabled()) {
+        res.status(400).json({ error: 'challenge_type_not_available' });
+        return;
+      }
+      const expectedKind = challengeType === 'ssn-last-4' ? 'ssn_last4' : 'ein';
+      const activeClientId = session.activeClientId;
+      if (!activeClientId) {
+        res.status(400).json({ error: 'no_active_client' });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ taxIdKind: clients.taxIdKind, taxIdHash: clients.taxIdHash })
+        .from(clients)
+        .where(eq(clients.id, activeClientId))
+        .limit(1);
+      if (!client || client.taxIdKind !== expectedKind || !client.taxIdHash) {
+        res.status(400).json({ error: 'challenge_type_not_available' });
+        return;
+      }
+      // No OTP code for knowledge factors — the value IS the secret.
+      // otpHash stays null; verify branches on challengeType.
+    } else if (challengeType === 'email-otp' || challengeType === 'sms-otp') {
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
       otpHash = sha256Hex(code);
       const [identity] = await deps.db
@@ -203,9 +225,8 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
         channel = 'SMS';
       }
     }
-    // No else branch — IssueSchema rejects everything other than
-    // email-otp/sms-otp at the boundary, so the type system has
-    // already narrowed challengeType exhaustively.
+    // No fallthrough — the two if-blocks above are exhaustive over
+    // IssueSchema's union.
 
     const [row] = await deps.db
       .insert(portalStepUpChallenge)
@@ -284,8 +305,24 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
     let ok = false;
     if (row.challengeType === 'email-otp' || row.challengeType === 'sms-otp') {
       ok = row.otpHash !== null && row.otpHash === sha256Hex(parsed.data.value);
+    } else if (row.challengeType === 'ssn-last-4' || row.challengeType === 'ein') {
+      // Look up the active client's stored hash + constant-time
+      // compare. The session's activeClientId is the scope guard —
+      // verifying against another client's hash is impossible.
+      const expectedKind = row.challengeType === 'ssn-last-4' ? 'ssn_last4' : 'ein';
+      const activeClientId = session.activeClientId;
+      if (activeClientId) {
+        const [client] = await deps.db
+          .select({ taxIdKind: clients.taxIdKind, taxIdHash: clients.taxIdHash })
+          .from(clients)
+          .where(eq(clients.id, activeClientId))
+          .limit(1);
+        if (client && client.taxIdKind === expectedKind && client.taxIdHash) {
+          const { verifyTaxId } = await import('./tax-id');
+          ok = verifyTaxId(expectedKind, parsed.data.value, client.taxIdHash);
+        }
+      }
     }
-    // ssn-last-4 / ein not yet reachable (issue rejects with 501).
 
     // Always bump attempts so brute-force is bounded.
     await deps.db

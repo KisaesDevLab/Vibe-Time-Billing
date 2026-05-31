@@ -78,6 +78,17 @@ const MergeSchema = z.object({
   reason: z.string().max(2000).optional(),
 });
 
+// Connect I.4 — staff enrolls / re-enrolls / clears a client's tax id
+// for portal step-up. The raw value is hashed server-side; the request
+// body is never logged.
+const TaxIdSchema = z.union([
+  z.object({
+    kind: z.enum(['ssn_last4', 'ein']),
+    value: z.string().min(1).max(32),
+  }),
+  z.object({ kind: z.literal('clear') }),
+]);
+
 export function createClientRouter(deps: ClientRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
@@ -857,6 +868,81 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // v1 folder routes removed in Phase 0 of the file-manager rebuild.
   // Phase 4 (storage onboarding) introduces a new admin-scoped route
   // table; Phase 10 wires the per-client UI.
+
+  // Connect I.4 — enroll / clear the client's tax_id for portal step-up.
+  // Raw value never logged. Body is one of:
+  //   { kind: 'ssn_last4' | 'ein', value: string }   — enrol / re-enrol
+  //   { kind: 'clear' }                               — drop the hash
+  router.put(
+    '/:id/tax-id',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = TaxIdSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ id: clients.id, taxIdKind: clients.taxIdKind })
+        .from(clients)
+        .where(and(eq(clients.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const { isFeatureEnabled, normalizeTaxId, hashTaxId } = await import('../portal/tax-id');
+      if (parsed.data.kind === 'clear') {
+        await deps.db
+          .update(clients)
+          .set({ taxIdKind: null, taxIdHash: null })
+          .where(eq(clients.id, client.id));
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'client',
+          entityId: client.id,
+          actorAppUserId: session.appUserId,
+          before: { taxIdKind: client.taxIdKind },
+          after: { taxIdKind: null, cleared: true },
+          ip: req.ip ?? null,
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.warn({ err }, 'audit emit failed'));
+        res.json({ ok: true, kind: null });
+        return;
+      }
+      if (!isFeatureEnabled()) {
+        res.status(503).json({ error: 'tax_id_pepper_not_configured' });
+        return;
+      }
+      const norm = normalizeTaxId(parsed.data.kind, parsed.data.value);
+      if (!norm.ok) {
+        res.status(400).json({ error: norm.error });
+        return;
+      }
+      const hash = hashTaxId(parsed.data.kind, norm.digits);
+      await deps.db
+        .update(clients)
+        .set({ taxIdKind: parsed.data.kind, taxIdHash: hash })
+        .where(eq(clients.id, client.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        entityId: client.id,
+        actorAppUserId: session.appUserId,
+        before: { taxIdKind: client.taxIdKind },
+        // Never include the raw value — only the kind we enrolled.
+        after: { taxIdKind: parsed.data.kind },
+        ip: req.ip ?? null,
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.warn({ err }, 'audit emit failed'));
+      res.json({ ok: true, kind: parsed.data.kind });
+    },
+  );
 
   return router;
 }
