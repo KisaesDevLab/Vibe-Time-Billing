@@ -43,7 +43,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ops/docker/Dockerfile
+          # Dockerfile lives at the repo root (the multi-stage builder
+          # references ./apps/... from there); ops/docker/ only holds
+          # compose files + the api entrypoint script.
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/vibe-time-billing:${{ steps.meta.outputs.version }}
