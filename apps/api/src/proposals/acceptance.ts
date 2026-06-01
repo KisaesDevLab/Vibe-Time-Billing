@@ -25,7 +25,7 @@ import {
   contentHash,
   deriveFirmHmacKey,
   type SignatureRecord,
-} from '@vibe/core/proposals';
+} from '@vibe/core/proposals/server';
 
 import { logger } from '../logger';
 import { emitAudit } from '../auth/audit';

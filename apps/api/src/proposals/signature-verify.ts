@@ -31,7 +31,7 @@ import {
   deriveFirmHmacKey,
   verifySignatureHmac,
   type SignatureRecord,
-} from '@vibe/core/proposals';
+} from '@vibe/core/proposals/server';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';

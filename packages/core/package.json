@@ -24,6 +24,7 @@
     "./storage": "./src/storage/index.ts",
     "./retainers": "./src/retainers/index.ts",
     "./proposals": "./src/proposals/index.ts",
+    "./proposals/server": "./src/proposals/server.ts",
     "./tax-returns": "./src/tax-returns/index.ts",
     "./engagements": "./src/engagements/index.ts"
   },

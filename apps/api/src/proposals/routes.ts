@@ -28,7 +28,8 @@ import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
 import { clients, proposalVersions, proposals } from '@vibe/db/schema';
-import { contentHash, isBlockTree, type ProposalBlockTree } from '@vibe/core/proposals';
+import { isBlockTree, type ProposalBlockTree } from '@vibe/core/proposals';
+import { contentHash } from '@vibe/core/proposals/server';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
