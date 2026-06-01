@@ -100,13 +100,11 @@ describe('P18 — register', () => {
 
   it('404 on unknown magic-link token', async () => {
     const app = buildApp();
-    const res = await request(app)
-      .post('/api/portal/client-accounts/register')
-      .send({
-        magicLinkToken: 'no-such-token-anywhere',
-        email: 'a@x.com',
-        password: 'longerpassword',
-      });
+    const res = await request(app).post('/api/portal/client-accounts/register').send({
+      magicLinkToken: 'no-such-token-anywhere',
+      email: 'a@x.com',
+      password: 'longerpassword',
+    });
     expect(res.status).toBe(404);
   });
 
