@@ -111,6 +111,10 @@ export function CloudflareTunnelPage(): JSX.Element {
       void load();
     }, 15_000);
     return () => clearInterval(t);
+    // Only the status + id matter for whether polling should run;
+    // listing `config` itself would re-create the interval on every
+    // load() round-trip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config?.status, config?.id]);
 
   async function validate(): Promise<void> {

@@ -49,6 +49,11 @@ services:
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?portal jwt required}
       APP_BASE_URL: ${APP_BASE_URL}
       PORTAL_BASE_URL: ${PORTAL_BASE_URL}
+      # WebAuthn / passkeys — required when staff sign in with a passkey.
+      # rp_id should be the bare domain (no scheme), e.g. firm.com.
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Vibe Time & Billing}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-${APP_BASE_URL}}
       COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
