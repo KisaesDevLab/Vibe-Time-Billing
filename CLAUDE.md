@@ -58,7 +58,7 @@ These come from `QUESTIONS.md` and must be respected everywhere they touch.
 
 ### Authentication & sessions
 4. **Step-up TOTP timeout: 30 minutes** after last verification. Sensitive actions re-prompt only after this window.
-5. **TOTP required for all staff.** No magic-link-only accounts; enrollment is mandatory at first login. Recovery codes generated and shown once.
+5. **Every staff user has at least one second factor enrolled** — passkey (WebAuthn), TOTP, email OTP, or SMS OTP. (Revised by migration 0087 + the follow-up passkey login work; was "TOTP required for all staff" prior.) The factor is challenged after both magic-link verification and password sign-in. Passkeys may also act as the primary sign-in method, in which case the WebAuthn assertion itself counts as the step-up. Recovery codes are generated when TOTP is enrolled and shown once.
 6. **Phone re-verification on every new device** for portal_identity. Fingerprint by IP + user-agent (best-effort); on mismatch, send SMS OTP confirming the new device before issuing session.
 
 ### Payments
@@ -225,7 +225,7 @@ These come from `QUESTIONS.md` and must be respected everywhere they touch.
 
 ## Security invariants
 
-- **Never store raw passwords** (there are none; magic-link + TOTP + SMS only)
+- **Passwords are stored as argon2id digests** (never plaintext). Magic-link sign-in remains available alongside password sign-in — staff may use either. See QUESTIONS.md decision #5 (revised by migration 0087).
 - **Never log secrets, API keys, or tokens** — even in dev
 - **Hash all tokens at rest** (bcrypt for API keys, SHA-256 for session/magic-link/OTP tokens)
 - **CSRF** via SameSite=Strict cookies + double-submit token on mutating endpoints

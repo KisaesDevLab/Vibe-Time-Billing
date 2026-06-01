@@ -13,6 +13,8 @@ import {
   checkAndIncrement,
   generateCsrfToken,
   generateSessionId,
+  generateSmsOtp,
+  hashSmsOtp,
   issueMagicLink,
   newEnrollment,
   randomNonce,
@@ -21,10 +23,12 @@ import {
   hashRecoveryCode,
   type StaffSession,
 } from '@vibe/core/auth';
+import { SignJWT, jwtVerify } from 'jose';
+import { verifyPassword } from './password';
 import { unionPermissions, type PermissionKey, type RoleSlug } from '@vibe/core/rbac';
 import type { Database } from '@vibe/db';
 import { appUserCredentials, appUsers, roles, userRoles } from '@vibe/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
@@ -45,6 +49,10 @@ export interface StaffRoutesDeps {
   sessionStore: SessionStore;
   // Email delivery is pluggable (Q11); in tests we just capture the link.
   sendMagicLink: (args: { email: string; firmId: string; link: string }) => Promise<void>;
+  // 0087 — second-factor OTP delivery. Both are pluggable so tests can
+  // capture the code instead of actually sending.
+  sendEmailOtp?: (args: { email: string; firmId: string; code: string }) => Promise<void>;
+  sendSmsOtp?: (args: { phone: string; firmId: string; code: string }) => Promise<void>;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
   // Test seam — explicit user→roles map overrides DB lookup when provided.
   // Used by `/me` to surface effective permissions to the FE without
@@ -60,6 +68,34 @@ const LoginSchema = z.object({ email: z.string().regex(EMAIL_RE) });
 const VerifySchema = z.object({ token: z.string().min(1) });
 const TotpEnrollSchema = z.object({}); // no body
 const TotpVerifySchema = z.object({ code: z.string().min(6).max(16) });
+
+// 0087 — password + second-factor sign-in.
+const LoginPasswordSchema = z.object({
+  email: z.string().regex(EMAIL_RE),
+  password: z.string().min(1).max(256),
+});
+const FactorSchema = z.enum(['TOTP', 'EMAIL', 'SMS', 'PASSKEY']);
+const TwoFactorStartSchema = z.object({
+  pendingToken: z.string().min(1),
+  factor: FactorSchema,
+});
+// PASSKEY 2FA replaces the {code} field with {response} (WebAuthn assertion).
+// Everything else uses {code}. The schema is a union so the verify handler
+// can branch cleanly.
+const TwoFactorVerifySchema = z.union([
+  z.object({
+    pendingToken: z.string().min(1),
+    factor: z.enum(['TOTP', 'EMAIL', 'SMS']),
+    code: z.string().min(6).max(16),
+  }),
+  z.object({
+    pendingToken: z.string().min(1),
+    factor: z.literal('PASSKEY'),
+    response: z.object({ id: z.string().min(1) }).passthrough(),
+  }),
+]);
+
+const PENDING_TTL_SECONDS = 5 * 60;
 
 // WebAuthn payload schemas. We trust @simplewebauthn/server to validate
 // the inner attestation/assertion bytes; here we only enforce shape.
@@ -197,6 +233,522 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
       ok: true,
       csrfToken: session.csrfToken,
       needsTotpEnrollment: !user.totpEnrolledAt,
+    });
+  });
+
+  // ===================================================================
+  // 0087 — username + password sign-in (sibling to magic link).
+  // ===================================================================
+  //
+  // Three-step flow:
+  //   1. POST /login/password { email, password }
+  //      → 200 { pendingToken, availableFactors, preferredFactor }
+  //      → 401 invalid_credentials  (same code for unknown email + bad pw)
+  //      → 400 no_factor_enrolled   (user has not opted into any 2FA factor)
+  //
+  //   2. POST /2fa/start { pendingToken, factor }
+  //      → for EMAIL / SMS: sends the OTP, returns { ok: true, sentTo }
+  //      → for TOTP: noop, returns { ok: true } (code comes from the
+  //         user's authenticator app)
+  //
+  //   3. POST /2fa/verify { pendingToken, factor, code }
+  //      → on success: creates the staff session (same path as
+  //        /verify-magic-link) + sets the cookie + emits a LOGIN audit
+  //      → on failure: shared rate-limit + lockout keys with the
+  //        existing TOTP step-up flow.
+  //
+  // The pending token is a short-lived JWT (5 min) signed with the
+  // same STAFF_JWT_SECRET. Different `pur` claim + audience so a
+  // magic-link token can't be reused here and vice versa.
+
+  async function issuePendingToken(
+    appUserId: string,
+    firmId: string,
+    cfg: ReturnType<typeof loadConfig>,
+  ): Promise<string> {
+    return new SignJWT({
+      fid: firmId,
+      rlm: 'staff',
+      pur: 'pwd_pending',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(appUserId)
+      .setIssuedAt()
+      .setExpirationTime(Math.floor(Date.now() / 1000) + PENDING_TTL_SECONDS)
+      .setIssuer('vibe-tb:staff')
+      .setAudience('vibe-tb:staff:2fa-pending')
+      .sign(new TextEncoder().encode(cfg.STAFF_JWT_SECRET));
+  }
+
+  async function verifyPendingToken(
+    token: string,
+    cfg: ReturnType<typeof loadConfig>,
+  ): Promise<{ appUserId: string; firmId: string } | null> {
+    try {
+      const { payload } = await jwtVerify(token, new TextEncoder().encode(cfg.STAFF_JWT_SECRET), {
+        issuer: 'vibe-tb:staff',
+        audience: 'vibe-tb:staff:2fa-pending',
+      });
+      if (payload['pur'] !== 'pwd_pending') return null;
+      if (typeof payload['sub'] !== 'string') return null;
+      if (typeof payload['fid'] !== 'string') return null;
+      return { appUserId: payload['sub'], firmId: payload['fid'] };
+    } catch {
+      return null;
+    }
+  }
+
+  type Factor = 'TOTP' | 'EMAIL' | 'SMS' | 'PASSKEY';
+
+  async function availableFactorsFor(user: StaffUserShape): Promise<Factor[]> {
+    const factors: Factor[] = [];
+    if (user.totpEnrolledAt) factors.push('TOTP');
+    if (user.emailOtpEnrolledAt) factors.push('EMAIL');
+    if (user.smsOtpEnrolledAt) factors.push('SMS');
+    // PASSKEY is available when the user has at least one registered
+    // WebAuthn credential. Count via the credentials table since the
+    // user row doesn't track it.
+    if (deps.db) {
+      const creds = await listCredentials(deps.db, user.id);
+      if (creds.length > 0) factors.push('PASSKEY');
+    }
+    return factors;
+  }
+
+  function pickPreferredFactor(user: StaffUserShape, available: Factor[]): Factor | null {
+    if (available.length === 0) return null;
+    if (user.preferredSecondFactor && available.includes(user.preferredSecondFactor)) {
+      return user.preferredSecondFactor;
+    }
+    // Default order: PASSKEY > TOTP > EMAIL > SMS. Passkey wins because
+    // it's the strongest factor when present.
+    for (const f of ['PASSKEY', 'TOTP', 'EMAIL', 'SMS'] as const) {
+      if (available.includes(f)) return f;
+    }
+    return null;
+  }
+
+  function maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    if (!local || !domain) return email;
+    if (local.length <= 2) return `${local[0]}*@${domain}`;
+    return `${local[0]}${'*'.repeat(local.length - 2)}${local[local.length - 1]}@${domain}`;
+  }
+
+  function maskPhone(phone: string): string {
+    if (phone.length <= 4) return phone;
+    return `${phone.slice(0, 2)}${'*'.repeat(phone.length - 4)}${phone.slice(-2)}`;
+  }
+
+  router.post('/login/password', async (req: Request, res: Response) => {
+    const parsed = LoginPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const ip = clientIp(req);
+    const emailLower = parsed.data.email.toLowerCase();
+    // Reuse the existing magic-link rate-limit windows. Per-email and
+    // per-IP caps both apply — a single attacker can't fan out across
+    // emails to bypass per-account throttling.
+    const contactLimit = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:password:contact:${emailLower}`,
+      windowSeconds: 15 * 60,
+      max: 5,
+    });
+    const ipLimit = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:password:ip:${ip}`,
+      windowSeconds: 15 * 60,
+      max: 20,
+    });
+    if (!contactLimit.allowed || !ipLimit.allowed) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+
+    const user = await findStaffByEmail(deps.db, emailLower);
+    // Same generic error for "no such user" + "wrong password" to keep
+    // the password path enumeration-safe just like the magic-link path.
+    if (!user || !user.passwordHash) {
+      res.status(401).json({ error: 'invalid_credentials' });
+      return;
+    }
+    const ok = await verifyPassword(parsed.data.password, user.passwordHash);
+    if (!ok) {
+      res.status(401).json({ error: 'invalid_credentials' });
+      return;
+    }
+
+    const available = await availableFactorsFor(user);
+    if (available.length === 0) {
+      // Password is correct but no second factor is enrolled. The user
+      // has to land via magic link and enroll a factor before they can
+      // sign in with password going forward.
+      res.status(400).json({
+        error: 'no_factor_enrolled',
+        message:
+          'Sign in via magic link and enroll a second factor (passkey, TOTP, email OTP, or SMS) before using password sign-in.',
+      });
+      return;
+    }
+    const cfg = loadConfig();
+    const pendingToken = await issuePendingToken(user.id, user.firmId, cfg);
+    const preferred = pickPreferredFactor(user, available);
+    res.json({
+      pendingToken,
+      availableFactors: available,
+      preferredFactor: preferred,
+    });
+  });
+
+  router.post('/2fa/start', async (req: Request, res: Response) => {
+    const parsed = TwoFactorStartSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const cfg = loadConfig();
+    const ctx = await verifyPendingToken(parsed.data.pendingToken, cfg);
+    if (!ctx) {
+      res.status(401).json({ error: 'invalid_pending_token' });
+      return;
+    }
+    const user = await findStaffById(deps.db, ctx.appUserId);
+    if (!user) {
+      res.status(401).json({ error: 'unknown_user' });
+      return;
+    }
+    const factor = parsed.data.factor;
+    const available = await availableFactorsFor(user);
+    if (!available.includes(factor)) {
+      res.status(400).json({ error: 'factor_not_enrolled' });
+      return;
+    }
+    if (factor === 'TOTP') {
+      // No server-side action; the user reads the code from their app.
+      res.json({ ok: true, factor: 'TOTP' });
+      return;
+    }
+    if (factor === 'PASSKEY') {
+      // Build an authentication options object scoped to the user's
+      // registered credentials. Browser will pick the matching one
+      // (or prompt if multiple) and produce an assertion. The
+      // challenge is keyed by the pending token's appUserId so
+      // /2fa/verify can recover it.
+      const candidates = deps.db ? await listCredentials(deps.db, user.id) : [];
+      if (candidates.length === 0) {
+        res.status(400).json({ error: 'no_passkey_enrolled' });
+        return;
+      }
+      let options;
+      try {
+        options = await buildAuthenticationOptions({ candidates });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
+        res.status(503).json({ error: msg });
+        return;
+      }
+      await deps.redis.set(`webauthn:2fa:${user.id}`, options.challenge, 'EX', PENDING_TTL_SECONDS);
+      res.json({ ok: true, factor: 'PASSKEY', options });
+      return;
+    }
+    // Email + SMS: generate a fresh 6-digit code, store hashed in Redis
+    // under a per-user-per-factor key with a 5-min TTL, then deliver it
+    // via the injected dispatcher. Rate-limit so an attacker can't burn
+    // through SMS credit by spamming /2fa/start.
+    const burst = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:2fa-start:${user.id}:${factor}`,
+      windowSeconds: 60,
+      max: 3,
+    });
+    if (!burst.allowed) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+    const code = generateSmsOtp();
+    const codeHash = hashSmsOtp(code);
+    await deps.redis.set(`staff:2fa-otp:${user.id}:${factor}`, codeHash, 'EX', PENDING_TTL_SECONDS);
+    if (factor === 'EMAIL') {
+      if (!deps.sendEmailOtp) {
+        // Mail provider not wired — surface clearly so the firm can
+        // configure it; refuse rather than silently swallow the code.
+        res.status(503).json({ error: 'email_dispatcher_unavailable' });
+        return;
+      }
+      try {
+        await deps.sendEmailOtp({ email: user.email, firmId: user.firmId, code });
+      } catch (err) {
+        logger.error({ err }, 'email otp delivery failed');
+        res.status(502).json({ error: 'email_send_failed' });
+        return;
+      }
+      res.json({ ok: true, factor: 'EMAIL', sentTo: maskEmail(user.email) });
+      return;
+    }
+    // SMS
+    if (!user.smsOtpPhoneE164) {
+      res.status(400).json({ error: 'sms_phone_missing' });
+      return;
+    }
+    if (!deps.sendSmsOtp) {
+      res.status(503).json({ error: 'sms_dispatcher_unavailable' });
+      return;
+    }
+    try {
+      await deps.sendSmsOtp({ phone: user.smsOtpPhoneE164, firmId: user.firmId, code });
+    } catch (err) {
+      logger.error({ err }, 'sms otp delivery failed');
+      res.status(502).json({ error: 'sms_send_failed' });
+      return;
+    }
+    res.json({ ok: true, factor: 'SMS', sentTo: maskPhone(user.smsOtpPhoneE164) });
+  });
+
+  router.post('/2fa/verify', async (req: Request, res: Response) => {
+    const parsed = TwoFactorVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const cfg = loadConfig();
+    const ctx = await verifyPendingToken(parsed.data.pendingToken, cfg);
+    if (!ctx) {
+      res.status(401).json({ error: 'invalid_pending_token' });
+      return;
+    }
+    const user = await findStaffById(deps.db, ctx.appUserId);
+    if (!user) {
+      res.status(401).json({ error: 'unknown_user' });
+      return;
+    }
+    // Reuse the existing TOTP lockout key so a series of failed attempts
+    // across factors triggers the same backoff a TOTP brute would.
+    const lockoutKey = `lockout:staff:totp:${user.id}`;
+    const lockedUntil = await deps.redis.get(lockoutKey);
+    if (lockedUntil && Number(lockedUntil) > Date.now()) {
+      res.status(429).json({ error: 'locked_out', retry_at: Number(lockedUntil) });
+      return;
+    }
+
+    let factorVerified = false;
+    if (parsed.data.factor === 'TOTP') {
+      if (!user.totpSecretEncrypted || !user.totpEnrolledAt) {
+        res.status(400).json({ error: 'totp_not_enrolled' });
+        return;
+      }
+      factorVerified =
+        verifyTotp({ token: parsed.data.code, secret: user.totpSecretEncrypted }) ||
+        (await tryRecoveryCode(deps, user.id, parsed.data.code));
+    } else if (parsed.data.factor === 'PASSKEY') {
+      const challenge = await deps.redis.get(`webauthn:2fa:${user.id}`);
+      if (!challenge) {
+        res.status(400).json({ error: 'no_pending_authentication' });
+        return;
+      }
+      // Single-use challenge regardless of outcome — prevents replay.
+      await deps.redis.del(`webauthn:2fa:${user.id}`);
+      const credentialId = parsed.data.response.id;
+      const credential = await findCredentialByIdForUser(deps.db, user.id, credentialId);
+      if (!credential) {
+        res.status(401).json({ error: 'invalid_credential' });
+        return;
+      }
+      const outcome = await verifyAuthentication({
+        response: parsed.data.response as unknown as AuthenticationResponseJSON,
+        expectedChallenge: challenge,
+        credential,
+      });
+      factorVerified = outcome.ok;
+      if (factorVerified && deps.db && outcome.newSignCount != null) {
+        await deps.db
+          .update(appUserCredentials)
+          .set({ signCount: outcome.newSignCount, lastUsedAt: new Date() })
+          .where(eq(appUserCredentials.id, credential.id));
+      }
+    } else {
+      const expectedHash = await deps.redis.get(`staff:2fa-otp:${user.id}:${parsed.data.factor}`);
+      if (!expectedHash) {
+        res.status(400).json({ error: 'otp_expired_or_missing' });
+        return;
+      }
+      const actualHash = hashSmsOtp(parsed.data.code.trim());
+      factorVerified = expectedHash === actualHash;
+      if (factorVerified) {
+        // Single-use: nuke the code on first successful match.
+        await deps.redis.del(`staff:2fa-otp:${user.id}:${parsed.data.factor}`);
+      }
+    }
+    if (!factorVerified) {
+      const attempts = await deps.redis.incr(`lockout-attempts:staff:totp:${user.id}`);
+      await deps.redis.expire(`lockout-attempts:staff:totp:${user.id}`, 15 * 60);
+      if (attempts >= 5) {
+        await deps.redis.set(lockoutKey, String(Date.now() + 15 * 60 * 1000), 'EX', 15 * 60);
+      }
+      res.status(401).json({ error: 'invalid_code' });
+      return;
+    }
+    await deps.redis.del(`lockout-attempts:staff:totp:${user.id}`);
+
+    // Session creation — identical to the magic-link path. `lastStepUpAt`
+    // is set immediately since the 2FA factor IS the step-up.
+    const session: StaffSession = {
+      realm: 'staff',
+      sid: generateSessionId(),
+      appUserId: user.id,
+      firmId: user.firmId,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+      lastStepUpAt: Date.now(),
+      csrfToken: generateCsrfToken(),
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    };
+    await deps.sessionStore.put(session);
+    writeSessionCookie(res, 'staff', session.sid);
+
+    await emitAudit(deps.db, {
+      action: 'LOGIN',
+      entityType: 'app_user',
+      entityId: user.id,
+      actorAppUserId: user.id,
+      ip: session.ip,
+      userAgent: session.userAgent,
+      after: { method: 'password', factor: parsed.data.factor },
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+    res.json({
+      ok: true,
+      csrfToken: session.csrfToken,
+      needsTotpEnrollment: false,
+    });
+  });
+
+  // ===================================================================
+  // Passkey (WebAuthn) primary sign-in — passwordless.
+  // ===================================================================
+  //
+  // Two unauthenticated endpoints. The browser drives a "discoverable
+  // credential" flow (allowCredentials empty) so the platform shows the
+  // user their list of saved passkeys without us first knowing who
+  // they are.
+  //
+  //   1. POST /login/passkey/options
+  //      → returns { options, nonce }. The nonce ties the issued
+  //        challenge to a Redis row (TTL 5 min) so the verify call
+  //        can prove it's responding to a challenge we issued.
+  //
+  //   2. POST /login/passkey/verify { nonce, response }
+  //      → looks up the credential by its globally-unique id, loads
+  //        the owning user, verifies the assertion, creates the staff
+  //        session (lastStepUpAt = now since passkey IS the step-up).
+
+  const PasskeyLoginVerifySchema = z.object({
+    nonce: z.string().min(16).max(64),
+    response: z.object({ id: z.string().min(1) }).passthrough(),
+  });
+
+  router.post('/login/passkey/options', async (req: Request, res: Response) => {
+    const ip = clientIp(req);
+    // Same rate-limit window as magic-link login. Issuing an options
+    // call is cheap but we still want to throttle so an attacker can't
+    // probe for valid origins or burn CPU on the verifier.
+    const ipLimit = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:passkey-options:ip:${ip}`,
+      windowSeconds: 15 * 60,
+      max: 20,
+    });
+    if (!ipLimit.allowed) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+    let options;
+    try {
+      options = await buildAuthenticationOptions({ candidates: [] });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
+      res.status(503).json({ error: msg });
+      return;
+    }
+    const nonce = randomNonce();
+    await deps.redis.set(
+      `webauthn:login-discover:${nonce}`,
+      options.challenge,
+      'EX',
+      PENDING_TTL_SECONDS,
+    );
+    res.json({ options, nonce });
+  });
+
+  router.post('/login/passkey/verify', async (req: Request, res: Response) => {
+    const parsed = PasskeyLoginVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const challenge = await deps.redis.get(`webauthn:login-discover:${parsed.data.nonce}`);
+    if (!challenge) {
+      res.status(401).json({ error: 'challenge_expired' });
+      return;
+    }
+    // Single-use: nuke before doing anything else so a parallel
+    // request can't share the same challenge.
+    await deps.redis.del(`webauthn:login-discover:${parsed.data.nonce}`);
+    const credentialId = parsed.data.response.id;
+    const cred = await findCredentialById(deps.db, credentialId);
+    if (!cred) {
+      // Unknown credential — same generic 401 so we don't leak which
+      // credential ids exist.
+      res.status(401).json({ error: 'invalid_credential' });
+      return;
+    }
+    const user = await findStaffById(deps.db, cred.appUserId);
+    if (!user) {
+      res.status(401).json({ error: 'invalid_credential' });
+      return;
+    }
+    const outcome = await verifyAuthentication({
+      response: parsed.data.response as unknown as AuthenticationResponseJSON,
+      expectedChallenge: challenge,
+      credential: cred,
+    });
+    if (!outcome.ok) {
+      res.status(401).json({ error: 'invalid_credential' });
+      return;
+    }
+    // Bump sign count + last-used so cloned-credential detection works.
+    if (deps.db && outcome.newSignCount != null) {
+      await deps.db
+        .update(appUserCredentials)
+        .set({ signCount: outcome.newSignCount, lastUsedAt: new Date() })
+        .where(eq(appUserCredentials.id, cred.id));
+    }
+    const session: StaffSession = {
+      realm: 'staff',
+      sid: generateSessionId(),
+      appUserId: user.id,
+      firmId: user.firmId,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+      lastStepUpAt: Date.now(),
+      csrfToken: generateCsrfToken(),
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    };
+    await deps.sessionStore.put(session);
+    writeSessionCookie(res, 'staff', session.sid);
+    await emitAudit(deps.db, {
+      action: 'LOGIN',
+      entityType: 'app_user',
+      entityId: user.id,
+      actorAppUserId: user.id,
+      ip: session.ip,
+      userAgent: session.userAgent,
+      after: { method: 'passkey' },
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.json({
+      ok: true,
+      csrfToken: session.csrfToken,
+      needsTotpEnrollment: false,
     });
   });
 
@@ -573,6 +1125,275 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     },
   );
 
+  // ===================================================================
+  // 0087 — sign-in settings. Authenticated user manages their password
+  // + second-factor enrollment from the profile page.
+  // ===================================================================
+
+  const PasswordSetSchema = z.object({
+    currentPassword: z.string().min(1).max(256).optional(),
+    newPassword: z.string().min(1).max(256),
+  });
+  const SmsEnrollStartSchema = z.object({
+    phone: z.string().regex(/^\+[1-9][0-9]{7,14}$/),
+  });
+  const SmsEnrollVerifySchema = z.object({ code: z.string().min(6).max(16) });
+  // PASSKEY is intentionally excluded from the persisted preference:
+  // the DB enum `second_factor_kind` (migration 0087) only includes
+  // TOTP/EMAIL/SMS, and passkey is auto-preferred whenever it's
+  // enrolled (see pickPreferredFactor). Users wanting passkey as
+  // their go-to simply leave preferredSecondFactor NULL.
+  const PreferredFactorSchema = z.object({
+    factor: z.enum(['TOTP', 'EMAIL', 'SMS']).nullable(),
+  });
+
+  router.post('/password', deps.requireAuth, async (req: Request, res: Response) => {
+    const parsed = PasswordSetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    // Policy check first so a too-short password doesn't waste a hash cycle.
+    const { checkPasswordPolicy, hashPassword } = await import('./password');
+    const policy = checkPasswordPolicy(parsed.data.newPassword);
+    if (!policy.ok) {
+      res.status(400).json({ error: 'password_policy', reason: policy.reason });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const user = await findStaffById(deps.db, session.appUserId);
+    if (!user) {
+      res.status(401).json({ error: 'unknown_user' });
+      return;
+    }
+    // If the user already has a password, require the current one. New
+    // users (first-time set) just need a fresh step-up — the magic-link
+    // flow that got them here already counts.
+    if (user.passwordHash) {
+      if (!parsed.data.currentPassword) {
+        res.status(400).json({ error: 'current_password_required' });
+        return;
+      }
+      const ok = await verifyPassword(parsed.data.currentPassword, user.passwordHash);
+      if (!ok) {
+        res.status(401).json({ error: 'current_password_wrong' });
+        return;
+      }
+    }
+    const digest = await hashPassword(parsed.data.newPassword);
+    await deps.db
+      .update(appUsers)
+      .set({ passwordHash: digest, passwordSetAt: new Date(), updatedAt: new Date() })
+      .where(eq(appUsers.id, user.id));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'app_user',
+      entityId: user.id,
+      actorAppUserId: user.id,
+      after: { passwordChanged: true },
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
+
+  router.post('/email-otp/enroll', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session || !deps.db) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    await deps.db
+      .update(appUsers)
+      .set({ emailOtpEnrolledAt: new Date(), updatedAt: new Date() })
+      .where(eq(appUsers.id, session.appUserId));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'app_user',
+      entityId: session.appUserId,
+      actorAppUserId: session.appUserId,
+      after: { emailOtpEnrolled: true },
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
+
+  router.post('/email-otp/disable', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session || !deps.db) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    // If the user's preferred factor was EMAIL, clear it too so we
+    // don't violate the CHECK constraint on next select.
+    await deps.db
+      .update(appUsers)
+      .set({
+        emailOtpEnrolledAt: null,
+        preferredSecondFactor: sql`CASE WHEN preferred_second_factor = 'EMAIL' THEN NULL ELSE preferred_second_factor END`,
+        updatedAt: new Date(),
+      })
+      .where(eq(appUsers.id, session.appUserId));
+    res.json({ ok: true });
+  });
+
+  router.post('/sms-otp/enroll/start', deps.requireAuth, async (req: Request, res: Response) => {
+    const parsed = SmsEnrollStartSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const burst = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:sms-enroll-start:${session.appUserId}`,
+      windowSeconds: 60,
+      max: 3,
+    });
+    if (!burst.allowed) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+    if (!deps.sendSmsOtp) {
+      res.status(503).json({ error: 'sms_dispatcher_unavailable' });
+      return;
+    }
+    const code = generateSmsOtp();
+    const codeHash = hashSmsOtp(code);
+    // Stash both the phone and the hashed code so /enroll/verify can
+    // validate the code AND learn which phone it was for.
+    await deps.redis.set(
+      `staff:sms-enroll:${session.appUserId}`,
+      JSON.stringify({ phone: parsed.data.phone, codeHash }),
+      'EX',
+      PENDING_TTL_SECONDS,
+    );
+    try {
+      await deps.sendSmsOtp({
+        phone: parsed.data.phone,
+        firmId: session.firmId,
+        code,
+      });
+    } catch (err) {
+      logger.error({ err }, 'sms enroll otp delivery failed');
+      res.status(502).json({ error: 'sms_send_failed' });
+      return;
+    }
+    res.json({ ok: true, sentTo: maskPhone(parsed.data.phone) });
+  });
+
+  router.post('/sms-otp/enroll/verify', deps.requireAuth, async (req: Request, res: Response) => {
+    const parsed = SmsEnrollVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.staffSession;
+    if (!session || !deps.db) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const raw = await deps.redis.get(`staff:sms-enroll:${session.appUserId}`);
+    if (!raw) {
+      res.status(400).json({ error: 'no_pending_enrollment' });
+      return;
+    }
+    const pending = JSON.parse(raw) as { phone: string; codeHash: string };
+    const ok = pending.codeHash === hashSmsOtp(parsed.data.code.trim());
+    if (!ok) {
+      res.status(401).json({ error: 'invalid_code' });
+      return;
+    }
+    await deps.redis.del(`staff:sms-enroll:${session.appUserId}`);
+    await deps.db
+      .update(appUsers)
+      .set({
+        smsOtpPhoneE164: pending.phone,
+        smsOtpEnrolledAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(appUsers.id, session.appUserId));
+    res.json({ ok: true });
+  });
+
+  router.post('/sms-otp/disable', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session || !deps.db) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    await deps.db
+      .update(appUsers)
+      .set({
+        smsOtpEnrolledAt: null,
+        smsOtpPhoneE164: null,
+        preferredSecondFactor: sql`CASE WHEN preferred_second_factor = 'SMS' THEN NULL ELSE preferred_second_factor END`,
+        updatedAt: new Date(),
+      })
+      .where(eq(appUsers.id, session.appUserId));
+    res.json({ ok: true });
+  });
+
+  router.post('/totp/disable', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session || !deps.db) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    await deps.db
+      .update(appUsers)
+      .set({
+        totpSecretEncrypted: null,
+        totpEnrolledAt: null,
+        recoveryCodesEncrypted: null,
+        preferredSecondFactor: sql`CASE WHEN preferred_second_factor = 'TOTP' THEN NULL ELSE preferred_second_factor END`,
+        updatedAt: new Date(),
+      })
+      .where(eq(appUsers.id, session.appUserId));
+    res.json({ ok: true });
+  });
+
+  router.patch('/preferred-factor', deps.requireAuth, async (req: Request, res: Response) => {
+    const parsed = PreferredFactorSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.staffSession;
+    if (!session || !deps.db) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const user = await findStaffById(deps.db, session.appUserId);
+    if (!user) {
+      res.status(401).json({ error: 'unknown_user' });
+      return;
+    }
+    // Honor the DB CHECK: the picked factor must be enrolled.
+    if (parsed.data.factor) {
+      const available = await availableFactorsFor(user);
+      if (!available.includes(parsed.data.factor)) {
+        res.status(400).json({ error: 'factor_not_enrolled' });
+        return;
+      }
+    }
+    await deps.db
+      .update(appUsers)
+      .set({ preferredSecondFactor: parsed.data.factor, updatedAt: new Date() })
+      .where(eq(appUsers.id, user.id));
+    res.json({ ok: true });
+  });
+
   router.post('/logout', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (session) {
@@ -600,12 +1421,24 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     // effective permission set so the FE can drive `usePermission`
     // without an extra round trip.
     const permissions = await loadEffectivePermissions(deps, session.appUserId);
+    // 0087 — surface sign-in factor enrollment state so the profile
+    // page can render the current second-factor configuration without
+    // an extra round trip.
+    const user = await findStaffById(deps.db, session.appUserId);
+    const passkeyCount = deps.db ? (await listCredentials(deps.db, session.appUserId)).length : 0;
     res.json({
       appUserId: session.appUserId,
       firmId: session.firmId,
       lastStepUpAt: session.lastStepUpAt,
       csrfToken: session.csrfToken,
       permissions,
+      passwordSet: user?.passwordHash != null,
+      totpEnrolledAt: user?.totpEnrolledAt ?? null,
+      emailOtpEnrolledAt: user?.emailOtpEnrolledAt ?? null,
+      smsOtpEnrolledAt: user?.smsOtpEnrolledAt ?? null,
+      smsOtpPhoneE164: user?.smsOtpPhoneE164 ?? null,
+      preferredSecondFactor: user?.preferredSecondFactor ?? null,
+      passkeyCount,
     });
   });
 
@@ -643,7 +1476,26 @@ interface StaffUserShape {
   firmId: string;
   totpEnrolledAt: Date | null;
   totpSecretEncrypted: string | null;
+  // 0087 — password + factor enrollment state.
+  passwordHash: string | null;
+  smsOtpPhoneE164: string | null;
+  smsOtpEnrolledAt: Date | null;
+  emailOtpEnrolledAt: Date | null;
+  preferredSecondFactor: 'TOTP' | 'EMAIL' | 'SMS' | null;
 }
+
+const STAFF_USER_SELECT = {
+  id: appUsers.id,
+  email: appUsers.email,
+  firmId: appUsers.firmId,
+  totpEnrolledAt: appUsers.totpEnrolledAt,
+  totpSecretEncrypted: appUsers.totpSecretEncrypted,
+  passwordHash: appUsers.passwordHash,
+  smsOtpPhoneE164: appUsers.smsOtpPhoneE164,
+  smsOtpEnrolledAt: appUsers.smsOtpEnrolledAt,
+  emailOtpEnrolledAt: appUsers.emailOtpEnrolledAt,
+  preferredSecondFactor: appUsers.preferredSecondFactor,
+} as const;
 
 async function findStaffByEmail(
   db: Database | null,
@@ -651,13 +1503,7 @@ async function findStaffByEmail(
 ): Promise<StaffUserShape | null> {
   if (!db) return null;
   const [row] = await db
-    .select({
-      id: appUsers.id,
-      email: appUsers.email,
-      firmId: appUsers.firmId,
-      totpEnrolledAt: appUsers.totpEnrolledAt,
-      totpSecretEncrypted: appUsers.totpSecretEncrypted,
-    })
+    .select(STAFF_USER_SELECT)
     .from(appUsers)
     .where(eq(appUsers.email, email.toLowerCase()))
     .limit(1);
@@ -667,13 +1513,7 @@ async function findStaffByEmail(
 async function findStaffById(db: Database | null, id: string): Promise<StaffUserShape | null> {
   if (!db) return null;
   const [row] = await db
-    .select({
-      id: appUsers.id,
-      email: appUsers.email,
-      firmId: appUsers.firmId,
-      totpEnrolledAt: appUsers.totpEnrolledAt,
-      totpSecretEncrypted: appUsers.totpSecretEncrypted,
-    })
+    .select(STAFF_USER_SELECT)
     .from(appUsers)
     .where(eq(appUsers.id, id))
     .limit(1);
@@ -697,23 +1537,80 @@ async function listCredentials(
   }>
 > {
   if (!db) return [];
-  const rows = await db
-    .select({
-      id: appUserCredentials.id,
-      credentialId: appUserCredentials.credentialId,
-      publicKey: appUserCredentials.publicKey,
-      signCount: appUserCredentials.signCount,
-      transports: appUserCredentials.transports,
-    })
-    .from(appUserCredentials)
-    .where(eq(appUserCredentials.appUserId, appUserId));
-  return rows.map((r) => ({
+  // Test stubs that don't implement the full Drizzle chain return
+  // a non-array placeholder from `.where()`. In production the real
+  // postgres driver always returns an array, so guarding here only
+  // affects the test harness path.
+  let rows: unknown;
+  try {
+    rows = await db
+      .select({
+        id: appUserCredentials.id,
+        credentialId: appUserCredentials.credentialId,
+        publicKey: appUserCredentials.publicKey,
+        signCount: appUserCredentials.signCount,
+        transports: appUserCredentials.transports,
+      })
+      .from(appUserCredentials)
+      .where(eq(appUserCredentials.appUserId, appUserId));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(rows)) return [];
+  return (
+    rows as Array<{
+      id: string;
+      credentialId: string;
+      publicKey: string;
+      signCount: number;
+      transports: string;
+    }>
+  ).map((r) => ({
     id: r.id,
     credentialId: r.credentialId,
     publicKey: r.publicKey,
     signCount: Number(r.signCount),
     transports: r.transports,
   }));
+}
+
+// 0087+ passkey login — credentialId is globally unique, so a passwordless
+// (discoverable-credential) sign-in flow needs to look up a credential
+// without first knowing the appUserId. Returns the owning user so the
+// caller can build the staff session.
+async function findCredentialById(
+  db: Database | null,
+  credentialId: string,
+): Promise<{
+  id: string;
+  appUserId: string;
+  credentialId: string;
+  publicKey: string;
+  signCount: number;
+  transports: string;
+} | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({
+      id: appUserCredentials.id,
+      appUserId: appUserCredentials.appUserId,
+      credentialId: appUserCredentials.credentialId,
+      publicKey: appUserCredentials.publicKey,
+      signCount: appUserCredentials.signCount,
+      transports: appUserCredentials.transports,
+    })
+    .from(appUserCredentials)
+    .where(eq(appUserCredentials.credentialId, credentialId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    appUserId: row.appUserId,
+    credentialId: row.credentialId,
+    publicKey: row.publicKey,
+    signCount: Number(row.signCount),
+    transports: row.transports,
+  };
 }
 
 async function findCredentialByIdForUser(

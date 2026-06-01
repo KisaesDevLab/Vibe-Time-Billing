@@ -582,10 +582,29 @@ export const appUsers = pgTable(
     defaultOfficeId: uuid('default_office_id').references(() => offices.id),
     status: userStatus('status').notNull().default('ACTIVE'),
 
-    // TOTP — Q5: required for all staff
+    // TOTP — was Q5 (mandatory) prior to 0087. Now one of three
+    // optional second factors (TOTP / EMAIL / SMS); at least one must
+    // be enrolled before the user can set a password.
     totpSecretEncrypted: text('totp_secret_encrypted'),
     totpEnrolledAt: timestamp('totp_enrolled_at', { withTimezone: true }),
     recoveryCodesEncrypted: text('recovery_codes_encrypted'),
+
+    // 0087 — username + password sign-in (sibling to magic link).
+    // password_hash is argon2id; NULL means this user has not set a
+    // password and can only sign in via magic link.
+    passwordHash: text('password_hash'),
+    passwordSetAt: timestamp('password_set_at', { withTimezone: true }),
+    // SMS OTP enrollment. phone is E.164 (verified at enrollment time
+    // by a code round-trip).
+    smsOtpPhoneE164: text('sms_otp_phone_e164'),
+    smsOtpEnrolledAt: timestamp('sms_otp_enrolled_at', { withTimezone: true }),
+    // Email OTP enrollment. No separate verification step — the user's
+    // email is already trusted via magic-link onboarding.
+    emailOtpEnrolledAt: timestamp('email_otp_enrolled_at', { withTimezone: true }),
+    // 'TOTP' | 'EMAIL' | 'SMS'. NULL = auto-pick (TOTP > EMAIL > SMS).
+    preferredSecondFactor: text('preferred_second_factor').$type<
+      'TOTP' | 'EMAIL' | 'SMS' | null
+    >(),
 
     // Standard hours per week for utilization denominator
     standardHoursPerWeek: numeric('standard_hours_per_week', { precision: 5, scale: 2 })

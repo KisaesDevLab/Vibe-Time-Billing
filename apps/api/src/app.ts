@@ -129,6 +129,8 @@ export interface AppDeps {
   redis: Redis;
   sessionStore: SessionStore;
   sendMagicLink?: StaffRoutesDeps['sendMagicLink'];
+  sendEmailOtp?: StaffRoutesDeps['sendEmailOtp'];
+  sendSmsOtp?: StaffRoutesDeps['sendSmsOtp'];
   sendPortalEmail?: PortalRoutesDeps['sendEmail'];
   /** 0054 — full-payload mail (HTML body, attachments) for statement + invoice emails. */
   sendStaffMail?: (args: {
@@ -344,6 +346,8 @@ export function createApp(deps: AppDeps): Express {
   const authRouter = createStaffAuthRouter({
     ...deps,
     sendMagicLink: deps.sendMagicLink ?? (async () => undefined),
+    sendEmailOtp: deps.sendEmailOtp,
+    sendSmsOtp: deps.sendSmsOtp,
     requireAuth: auth.requireAuth,
   });
   app.use('/api/auth', authRouter);

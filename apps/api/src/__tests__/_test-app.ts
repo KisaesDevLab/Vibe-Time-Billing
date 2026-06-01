@@ -15,6 +15,8 @@ export interface TestHarness {
   app: ReturnType<typeof createApp>;
   redis: Redis;
   capturedMagicLinks: { email: string; firmId: string; link: string }[];
+  capturedEmailOtps: { email: string; firmId: string; code: string }[];
+  capturedSmsOtps: { phone: string; firmId: string; code: string }[];
 }
 
 export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<TestHarness> {
@@ -32,6 +34,8 @@ export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<Te
   await redis.flushall();
   const sessionStore = createSessionStore(redis);
   const captured: TestHarness['capturedMagicLinks'] = [];
+  const capturedEmailOtps: TestHarness['capturedEmailOtps'] = [];
+  const capturedSmsOtps: TestHarness['capturedSmsOtps'] = [];
 
   const app = createApp({
     db: overrides.db ?? null,
@@ -42,8 +46,18 @@ export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<Te
       (async (args) => {
         captured.push(args);
       }),
+    sendEmailOtp:
+      overrides.sendEmailOtp ??
+      (async (args) => {
+        capturedEmailOtps.push(args);
+      }),
+    sendSmsOtp:
+      overrides.sendSmsOtp ??
+      (async (args) => {
+        capturedSmsOtps.push(args);
+      }),
     fakeUserRoles: overrides.fakeUserRoles,
   });
 
-  return { app, redis, capturedMagicLinks: captured };
+  return { app, redis, capturedMagicLinks: captured, capturedEmailOtps, capturedSmsOtps };
 }

@@ -38,10 +38,24 @@ No `currency` column on monetary tables. All amounts in cents (integer). No FX l
 
 Sensitive actions (large adjustment, invoice send, payment-method change, rate change) require TOTP re-verification only after 30 minutes have elapsed since the last successful step-up. Stored as `last_step_up_at` on `app_session`. Configurable in firm settings for v1.1.
 
-### Q5 — TOTP enrollment scope
-**Decided:** Required for all staff.
+### Q5 — Second-factor enrollment scope
+**Decided (revised by migration 0087, extended by the passkey login work that followed):** Every staff user enrols at least one second factor — passkey (WebAuthn), TOTP, email OTP, or SMS OTP — and may pick a preferred one (passkey is auto-preferred when present).
 
-Every `app_user` must enroll TOTP at first login. No magic-link-only paths. Recovery codes generated and shown once; user confirms storage before proceeding. Skipping enrollment is impossible.
+Originally TOTP was mandatory and the only option; magic-link + TOTP was the sole sign-in path. With 0087 the system added optional username/password sign-in (argon2id) as a sibling to magic link, and broadened the second-factor catalog. The follow-up work added passkeys as both a fourth second-factor option AND a primary (passwordless) sign-in path. Sign-in paths:
+
+- **Magic link** → second-factor challenge → session.
+- **Password** → second-factor challenge (passkey / TOTP / email / SMS) → session.
+- **Passkey** (passwordless / discoverable credential) → session. The WebAuthn assertion itself counts as the step-up.
+
+Email OTP is opt-in with no separate verification (the user's email is already trusted via the magic-link onboarding path); SMS OTP requires a code round-trip to verify the phone number; passkey enrollment uses the existing post-login `/webauthn/registration/*` flow. Recovery codes are generated only when TOTP is enrolled.
+
+Implementation surface:
+- `app_user.password_hash`, `app_user.sms_otp_phone_e164`, `app_user.email_otp_enrolled_at`, `app_user.sms_otp_enrolled_at`, `app_user.preferred_second_factor` (TOTP/EMAIL/SMS — passkey is intentionally not persisted as a preference because it's always auto-preferred when enrolled).
+- `app_user_credential` table (migration 0077) holds the WebAuthn credentials.
+- Routes in `apps/api/src/auth/staff-routes.ts`:
+  - `/login/password` → `/2fa/start` → `/2fa/verify` (TOTP / EMAIL / SMS / PASSKEY)
+  - `/login/passkey/options` + `/login/passkey/verify` (passwordless primary)
+  - Settings: `/password`, `/email-otp/*`, `/sms-otp/*`, `/preferred-factor`, plus the existing `/webauthn/*` enrollment endpoints.
 
 ### Q6 — Phone re-verification cadence (portal_identity)
 **Decided:** On every new device.
