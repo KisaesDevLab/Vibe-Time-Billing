@@ -13,11 +13,13 @@ import {
   engagementAssignments,
   engagementNotes,
   engagementTemplates,
+  engagementTypes,
   engagements,
   firmSettings,
   hourBanks,
   milestonePlans,
   milestones,
+  serviceLines,
   timeEntries,
 } from '@vibe/db/schema';
 import { resolveEngagementName, type Period } from '@vibe/core/engagements';
@@ -280,6 +282,29 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         );
       }
 
+      // Service line filter. Two forms supported, both optional:
+      //   ?serviceLineId=<uuid>           — exact service line
+      //   ?serviceLineCategory=tax|...    — enum category roll-up
+      // Both join through engagement_type. Engagements with no type
+      // are excluded by either filter.
+      const serviceLineId = uuidQueryParam(req.query['serviceLineId']);
+      if (serviceLineId === 'invalid') {
+        res.status(400).json({ error: 'invalid_service_line_id' });
+        return;
+      }
+      if (serviceLineId) {
+        conds.push(eq(engagementTypes.serviceLineId, serviceLineId));
+      }
+      const slCategoryRaw =
+        typeof req.query['serviceLineCategory'] === 'string'
+          ? req.query['serviceLineCategory']
+          : null;
+      const slCategoryAllowed = ['tax', 'audit', 'advisory', 'bookkeeping', 'payroll'] as const;
+      type ServiceLineCategory = (typeof slCategoryAllowed)[number];
+      if (slCategoryRaw && (slCategoryAllowed as readonly string[]).includes(slCategoryRaw)) {
+        conds.push(eq(serviceLines.category, slCategoryRaw as ServiceLineCategory));
+      }
+
       const items = await deps.db
         .select({
           id: engagements.id,
@@ -300,9 +325,16 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           createdAt: engagements.createdAt,
           // Joined fields so the UI doesn't need separate lookups.
           clientName: clients.name,
+          // Service-line dimension — left-joined via engagement_type so
+          // engagements without a type still return (NULL service line).
+          serviceLineId: serviceLines.id,
+          serviceLineName: serviceLines.name,
+          serviceLineCategory: serviceLines.category,
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
+        .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
         .where(and(...conds))
         .limit(500);
 
@@ -312,6 +344,8 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           'id',
           'name',
           'client',
+          'service_line',
+          'service_line_category',
           'status',
           'workflow_state',
           'priority',
@@ -334,6 +368,8 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
               cell(it.id),
               cell(it.name),
               cell(it.clientName),
+              cell(it.serviceLineName),
+              cell(it.serviceLineCategory),
               cell(it.status),
               cell(it.workflowState),
               cell(it.priority),

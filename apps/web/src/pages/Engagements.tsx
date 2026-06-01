@@ -45,6 +45,11 @@ interface EngagementRow {
   dueDate: string | null;
   engagementTypeId: string | null;
   clientName: string;
+  // Service-line dimension (joined server-side from engagement_type →
+  // service_line). NULL for engagements without an assigned type.
+  serviceLineId: string | null;
+  serviceLineName: string | null;
+  serviceLineCategory: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll' | null;
 }
 
 interface AppUser {
@@ -55,6 +60,12 @@ interface AppUser {
 interface EngagementType {
   id: string;
   name: string;
+}
+
+interface ServiceLine {
+  id: string;
+  name: string;
+  category: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll';
 }
 
 const WORKFLOW_LABELS: Record<WorkflowState, string> = {
@@ -110,12 +121,17 @@ export function EngagementsPage(): JSX.Element {
 
   const [users, setUsers] = useState<AppUser[]>([]);
   const [types, setTypes] = useState<EngagementType[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
 
   // Per-column filter state.
   const [workflowFilter, setWorkflowFilter] = useState<Set<string>>(new Set());
   const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set());
   const [clientFilter, setClientFilter] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+  // Service-line filter — sent server-side via ?serviceLineId. A single
+  // value at a time (the API filters by exact match); multi-select on
+  // top of that runs client-side via the visible useMemo below.
+  const [serviceLineFilter, setServiceLineFilter] = useState<Set<string>>(new Set());
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
   // 0050 — filter by client owner (client.partnerInChargeId).
   const [clientOwnerId, setClientOwnerId] = useState<string>('');
@@ -156,6 +172,11 @@ export function EngagementsPage(): JSX.Element {
       if (tab === 'mine' && currentUserId) params.set('assigneeUserId', currentUserId);
       if (clientFilter.size > 0) params.set('clientId', Array.from(clientFilter).join(','));
       if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
+      // When exactly one service line is picked, narrow server-side
+      // (cheaper for large firms). Multi-select runs client-side below.
+      if (serviceLineFilter.size === 1) {
+        params.set('serviceLineId', Array.from(serviceLineFilter)[0]!);
+      }
 
       const r = await api<{ items: EngagementRow[] }>(
         `/api/staff/engagements?${params.toString()}`,
@@ -177,6 +198,7 @@ export function EngagementsPage(): JSX.Element {
     priorityFilter,
     clientFilter,
     assigneeFilter,
+    serviceLineFilter,
     clientOwnerId,
     // 0050 — when auth resolves and default tab is 'mine', refetch.
     currentUserId,
@@ -188,7 +210,7 @@ export function EngagementsPage(): JSX.Element {
         // Each sub-call .catch'd individually so a single permission
         // denial (e.g. staff without app_user:read) doesn't blank out
         // all three filter sources.
-        const [u, t, s] = await Promise.all([
+        const [u, t, s, sl] = await Promise.all([
           api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
           api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
             items: [],
@@ -202,9 +224,13 @@ export function EngagementsPage(): JSX.Element {
               kanbanVisible: boolean;
             }>;
           }>('/api/staff/admin/engagement-statuses').catch(() => ({ items: [] })),
+          api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines').catch(() => ({
+            items: [],
+          })),
         ]);
         setUsers(u.users ?? []);
         setTypes(t.items ?? []);
+        setServiceLines(sl.items ?? []);
         setStatusCols(
           (s.items ?? [])
             .filter((row) => row.kanbanVisible)
@@ -231,12 +257,16 @@ export function EngagementsPage(): JSX.Element {
     }
   }
 
-  // Client-side filter on type + assignee (server doesn't filter these);
-  // and client-side sort because the server returns max 500.
+  // Client-side filter on type + assignee + service-line (the server
+  // filter is single-value to keep the SQL simple; multi-select runs
+  // here on top of the up-to-500-row server response).
   const visible = useMemo(() => {
     let r = rows;
     if (typeFilter.size > 0) {
       r = r.filter((row) => row.engagementTypeId && typeFilter.has(row.engagementTypeId));
+    }
+    if (serviceLineFilter.size > 1) {
+      r = r.filter((row) => row.serviceLineId && serviceLineFilter.has(row.serviceLineId));
     }
     if (assigneeFilter.size > 0) {
       r = r.filter(
@@ -286,7 +316,7 @@ export function EngagementsPage(): JSX.Element {
       });
     }
     return r;
-  }, [rows, typeFilter, assigneeFilter, sortBy]);
+  }, [rows, typeFilter, assigneeFilter, serviceLineFilter, sortBy]);
 
   const clientOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -384,6 +414,10 @@ export function EngagementsPage(): JSX.Element {
 
   const userOptions = users.map((u) => ({ value: u.id, label: u.fullName }));
   const typeOptions = types.map((t) => ({ value: t.id, label: t.name }));
+  const serviceLineOptions = serviceLines.map((sl) => ({
+    value: sl.id,
+    label: `${sl.name} (${sl.category})`,
+  }));
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
@@ -576,6 +610,16 @@ export function EngagementsPage(): JSX.Element {
                     />
                   </th>
                   <th style={th()}>
+                    Service line{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter service line"
+                      values={serviceLineOptions}
+                      selected={serviceLineFilter}
+                      sort={null}
+                      onApply={(sel) => setServiceLineFilter(sel)}
+                    />
+                  </th>
+                  <th style={th()}>
                     Assignee(s){' '}
                     <ColumnFilter
                       ariaLabel="Filter assignee"
@@ -633,7 +677,7 @@ export function EngagementsPage(): JSX.Element {
                 {visible.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={10}
                       style={{
                         textAlign: 'center',
                         padding: 40,
@@ -682,6 +726,16 @@ export function EngagementsPage(): JSX.Element {
                           <a href={`/clients/${r.clientId}`}>{r.clientName}</a>
                         </td>
                         <td style={td()}>{typeName ?? '—'}</td>
+                        <td style={td()}>
+                          {r.serviceLineName ? (
+                            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                              <Pill tone="neutral">{r.serviceLineCategory}</Pill>
+                              <span style={{ fontSize: 13 }}>{r.serviceLineName}</span>
+                            </span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                         <td style={td()}>
                           {assigneeNames.length > 0 ? assigneeNames.join(', ') : '—'}
                         </td>

@@ -16,11 +16,13 @@ import {
   approvalRequests,
   billingBatches,
   clients,
+  engagementTypes,
   engagements,
   firmSettings,
   invoices,
   payments,
   recurringBillingPlans,
+  serviceLines,
   timeEntries,
 } from '@vibe/db/schema';
 import {
@@ -39,8 +41,12 @@ export interface ReportRoutesDeps extends RbacDeps {
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const SERVICE_LINE_CATEGORIES = ['tax', 'audit', 'advisory', 'bookkeeping', 'payroll'] as const;
+type ServiceLineCategory = (typeof SERVICE_LINE_CATEGORIES)[number];
 const QuerySchema = z.object({
-  dimension: z.enum(['firm', 'timekeeper', 'engagement', 'client']).default('firm'),
+  // 'service_line' rolls allocations up by engagement_type.service_line_id;
+  // engagements without an assigned type are excluded from this dimension.
+  dimension: z.enum(['firm', 'timekeeper', 'engagement', 'client', 'service_line']).default('firm'),
   start: z.string().regex(DATE_RE).optional(),
   end: z.string().regex(DATE_RE).optional(),
   // Drill filters (Phase 17 #20). When provided, the rollup is scoped
@@ -49,6 +55,11 @@ const QuerySchema = z.object({
   appUserId: z.string().uuid().optional(),
   engagementId: z.string().uuid().optional(),
   clientId: z.string().uuid().optional(),
+  // Service-line drill filters. Both narrow the allocation set before
+  // grouping. `serviceLineId` is exact; `serviceLineCategory` is the
+  // five-value enum tax|audit|advisory|bookkeeping|payroll.
+  serviceLineId: z.string().uuid().optional(),
+  serviceLineCategory: z.enum(SERVICE_LINE_CATEGORIES).optional(),
   // v2 followup — CSV export (workstream 4). When format=csv the
   // response body is text/csv instead of JSON, same shape otherwise.
   format: z.enum(['json', 'csv']).default('json'),
@@ -88,9 +99,20 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ dimension: parsed.data.dimension, items: [] });
         return;
       }
+      // Pull engagements with their service-line dimension already joined,
+      // so service-line filters + the new dimension keyFn don't need a
+      // separate roundtrip per allocation. Left-joins because not every
+      // engagement has an engagement_type / service_line set.
       const firmEngagements = await deps.db
-        .select({ id: engagements.id, clientId: engagements.clientId })
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          serviceLineId: serviceLines.id,
+          serviceLineCategory: serviceLines.category,
+        })
         .from(engagements)
+        .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
+        .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
         .where(
           inArray(
             engagements.clientId,
@@ -141,12 +163,40 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const rows = await (conds.length > 0 ? baseQuery.where(and(...conds)) : baseQuery);
 
       const enginToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
+      // Service-line lookup map — populated for engagements that have an
+      // assigned type with a service line. Engagements without one stay
+      // absent, which naturally drops them from service-line filters and
+      // the service_line dimension.
+      const enginToServiceLine = new Map<
+        string,
+        { serviceLineId: string; category: ServiceLineCategory }
+      >();
+      for (const e of firmEngagements) {
+        if (e.serviceLineId && e.serviceLineCategory) {
+          enginToServiceLine.set(e.id, {
+            serviceLineId: e.serviceLineId,
+            category: e.serviceLineCategory as ServiceLineCategory,
+          });
+        }
+      }
       const allocationRows: AllocationRow[] = rows
         .filter((r) => enginToClient.has(r.engagementId))
         .filter(
           (r) =>
             !parsed.data.clientId || enginToClient.get(r.engagementId) === parsed.data.clientId,
         )
+        .filter((r) => {
+          if (!parsed.data.serviceLineId) return true;
+          return (
+            enginToServiceLine.get(r.engagementId)?.serviceLineId === parsed.data.serviceLineId
+          );
+        })
+        .filter((r) => {
+          if (!parsed.data.serviceLineCategory) return true;
+          return (
+            enginToServiceLine.get(r.engagementId)?.category === parsed.data.serviceLineCategory
+          );
+        })
         .map((r) => ({
           appUserId: r.appUserId,
           engagementId: r.engagementId,
@@ -183,6 +233,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         timekeeper: (r: AllocationRow) => r.appUserId,
         engagement: (r: AllocationRow) => r.engagementId,
         client: (r: AllocationRow) => r.clientId,
+        // Engagements without a service line fall into a sentinel
+        // "__unassigned__" bucket so the rollup is total-preserving.
+        service_line: (r: AllocationRow) =>
+          enginToServiceLine.get(r.engagementId)?.serviceLineId ?? '__unassigned__',
       }[parsed.data.dimension];
       const map = rollupBy(allocationRows, keyFn);
 
@@ -210,6 +264,24 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             .from(clients)
             .where(inArray(clients.id, ids));
           nameMap = new Map(cls.map((c) => [c.id, c.name]));
+        } else if (parsed.data.dimension === 'service_line') {
+          // Translate ids (minus the unassigned sentinel) to friendly
+          // labels "<name> (<category>)".
+          const realIds = ids.filter((id) => id !== '__unassigned__');
+          const slRows = realIds.length
+            ? await deps.db
+                .select({
+                  id: serviceLines.id,
+                  name: serviceLines.name,
+                  category: serviceLines.category,
+                })
+                .from(serviceLines)
+                .where(inArray(serviceLines.id, realIds))
+            : [];
+          nameMap = new Map(slRows.map((sl) => [sl.id, `${sl.name} (${sl.category})`]));
+          if (map.has('__unassigned__')) {
+            nameMap.set('__unassigned__', '(No service line)');
+          }
         }
       }
 

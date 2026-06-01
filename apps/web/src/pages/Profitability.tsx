@@ -12,6 +12,10 @@ interface Eng {
   clientName: string | null;
   engagementTypeId: string | null;
   partnerId: string | null;
+  // Joined from engagement_type → service_line by the list endpoint.
+  serviceLineId: string | null;
+  serviceLineName: string | null;
+  serviceLineCategory: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll' | null;
 }
 
 interface Summary {
@@ -36,6 +40,11 @@ interface EngType {
   id: string;
   name: string;
 }
+interface ServiceLine {
+  id: string;
+  name: string;
+  category: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll';
+}
 
 type SortCol = 'name' | 'cost' | 'billed' | 'paid' | 'margin' | 'pct';
 
@@ -46,11 +55,13 @@ export function ProfitabilityPage(): JSX.Element {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [clients, setClients] = useState<ClientLite[]>([]);
   const [types, setTypes] = useState<EngType[]>([]);
+  const [serviceLinesList, setServiceLinesList] = useState<ServiceLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const [clientId, setClientId] = useState('');
   const [engagementTypeId, setEngagementTypeId] = useState('');
+  const [serviceLineId, setServiceLineId] = useState('');
   const [clientOwnerId, setClientOwnerId] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -91,16 +102,20 @@ export function ProfitabilityPage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [u, c, t] = await Promise.all([
+        const [u, c, t, sl] = await Promise.all([
           api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
           api<{ items: ClientLite[] }>('/api/staff/clients').catch(() => ({ items: [] })),
           api<{ items: EngType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
+            items: [],
+          })),
+          api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines').catch(() => ({
             items: [],
           })),
         ]);
         setUsers(u.users ?? []);
         setClients(c.items ?? []);
         setTypes(t.items ?? []);
+        setServiceLinesList(sl.items ?? []);
       } catch {
         // Non-fatal.
       }
@@ -119,10 +134,11 @@ export function ProfitabilityPage(): JSX.Element {
       if (r.summary.billedCents === 0 && r.summary.costCents === 0) return false;
       if (clientId && r.eng.clientId !== clientId) return false;
       if (engagementTypeId && r.eng.engagementTypeId !== engagementTypeId) return false;
+      if (serviceLineId && r.eng.serviceLineId !== serviceLineId) return false;
       if (clientOwnerId && clientOwnerByClient.get(r.eng.clientId) !== clientOwnerId) return false;
       return true;
     });
-  }, [rows, clientId, engagementTypeId, clientOwnerId, clientOwnerByClient]);
+  }, [rows, clientId, engagementTypeId, serviceLineId, clientOwnerId, clientOwnerByClient]);
 
   const sorted = useMemo(() => {
     const sign = sort.dir === 'asc' ? 1 : -1;
@@ -203,7 +219,7 @@ export function ProfitabilityPage(): JSX.Element {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr 120px',
+            gridTemplateColumns: '1fr 1fr 1fr 1fr 120px',
             gap: 8,
             marginBottom: 12,
           }}
@@ -230,6 +246,21 @@ export function ProfitabilityPage(): JSX.Element {
             }}
             options={types.map((t) => ({ value: t.id, label: t.name }))}
             placeholder="Any type"
+            size="sm"
+          />
+          <Combobox
+            ariaLabel="Service line"
+            clearable
+            value={serviceLineId}
+            onChange={(v) => {
+              setServiceLineId(v);
+              setPage(1);
+            }}
+            options={serviceLinesList.map((sl) => ({
+              value: sl.id,
+              label: `${sl.name} (${sl.category})`,
+            }))}
+            placeholder="Any service line"
             size="sm"
           />
           <Combobox
