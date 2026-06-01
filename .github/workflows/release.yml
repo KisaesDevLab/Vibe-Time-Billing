@@ -29,9 +29,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
+      - name: Extract version + lowercase owner
         id: meta
         run: |
+          # Docker rejects uppercase in repository names; github.repository_owner
+          # preserves the original case (e.g. KisaesDevLab) which is invalid.
+          # Lowercase here so the tag string is always Docker-legal.
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
           echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push appliance image
@@ -41,8 +46,8 @@ jobs:
           file: ops/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vibe-time-billing:${{ steps.meta.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/vibe-time-billing:latest
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/vibe-time-billing:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/vibe-time-billing:latest
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -52,4 +57,4 @@ jobs:
       - name: Verify image
         run: |
           docker buildx imagetools inspect \
-            ghcr.io/${{ github.repository_owner }}/vibe-time-billing:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/vibe-time-billing:${{ steps.meta.outputs.version }}
