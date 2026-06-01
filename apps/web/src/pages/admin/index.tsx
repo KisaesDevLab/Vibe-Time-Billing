@@ -13,6 +13,7 @@ import { tokens } from '@vibe/ui';
 import { AiUsagePage } from './AiUsage';
 import { ApiTokensPage } from './ApiTokens';
 import { BackupPage } from './Backup';
+import { CloudflareTunnelPage } from './CloudflareTunnel';
 import { CompliancePage } from './Compliance';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
@@ -152,6 +153,7 @@ const GROUPS: Group[] = [
       { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
       { key: 'storage', label: 'Storage onboarding', href: '/admin/storage' },
       { key: 'storage-conflicts', label: 'Storage conflicts', href: '/admin/storage/conflicts' },
+      { key: 'cloudflare-tunnel', label: 'Cloudflare Tunnel', href: '/admin/cloudflare-tunnel' },
     ],
   },
 ];
@@ -300,6 +302,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="storage" element={<StorageOnboardingPage />} />
         <Route path="storage/conflicts" element={<StorageConflictsListPage />} />
         <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />
+        <Route path="cloudflare-tunnel" element={<CloudflareTunnelPage />} />
       </Routes>
     </div>
   );

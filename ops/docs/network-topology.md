@@ -36,10 +36,19 @@ LAN/Tailscale-only deployments.
                  Postgres + Redis
 ```
 
-Cloudflare Tunnel keeps the appliance off the public IP space. Origin
-config lives in `ops/cloudflared/`. Two services:
+Cloudflare Tunnel keeps the appliance off the public IP space.
+
+Starting with 0085 the tunnel is provisioned **from the admin UI**
+(Admin → Operations → Cloudflare Tunnel) — the firm pastes a
+Cloudflare API token and the appliance creates the tunnel, writes
+DNS CNAMEs, and drops the run-token into `/run/cloudflared/token` for
+the bundled sidecar to consume. Two services per Q10:
 - `app.firm.com` → `http://caddy:80/app`
-- `portal.firm.com` → `http://caddy:80/portal`
+- `portal.firm.com` → `http://caddy:80/portal` (registered only when a
+  commercial portal license is active)
+
+The legacy CLI-driven config at `ops/cloudflared/config.example.yml`
+remains supported for fully self-managed tunnels.
 
 ## Topology 2 — LAN-only (small firm, single office)
 

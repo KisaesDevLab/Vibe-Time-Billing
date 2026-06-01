@@ -82,6 +82,7 @@ import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
+import { createCloudflareTunnelRouter } from './admin/cloudflare-tunnel/routes';
 import { createStripeWebhookRouter } from './webhooks/stripe';
 import { createStripeConnectWebhookRouter } from './webhooks/stripe-connect';
 import { createCpaChargeWebhookRouter } from './webhooks/cpacharge';
@@ -380,6 +381,20 @@ export function createApp(deps: AppDeps): Express {
     auth.requireAuth,
     auth.requireCsrf,
     requestTemplateRouter,
+  );
+
+  // 0085 — Cloudflare Tunnel admin provisioning UI.
+  const cloudflareTunnelRouter = createCloudflareTunnelRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    commercialLicenseActive: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
+    tokenFilePath: process.env['CLOUDFLARED_TOKEN_FILE'] ?? '/run/cloudflared/token',
+  });
+  app.use(
+    '/api/staff/admin/cloudflare-tunnel',
+    auth.requireAuth,
+    auth.requireCsrf,
+    cloudflareTunnelRouter,
   );
 
   const taxonomyRouter = createTaxonomyRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });

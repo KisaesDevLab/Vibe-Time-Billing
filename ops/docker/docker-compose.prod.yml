@@ -53,6 +53,12 @@ services:
       MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # 0085 — tunnel sidecar shares this volume so the API can write
+      # the run-token here when the admin provisions a Cloudflare tunnel.
+      CLOUDFLARED_TOKEN_FILE: /run/cloudflared/token
+      CLOUDFLARED_METRICS_URL: http://cloudflared:2000
+    volumes:
+      - cloudflared-run:/run/cloudflared
     entrypoint: ['/usr/bin/tini', '--', '/app/ops/docker/entrypoint-api.sh']
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
@@ -74,6 +80,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-vibe}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibe_tb}
       REDIS_URL: redis://redis:6379
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # 0085 — worker polls the sidecar's metrics endpoint over the
+      # docker network and writes a snapshot to the DB.
+      CLOUDFLARED_METRICS_URL: http://cloudflared:2000
     command: ['node', 'apps/worker/dist/index.js']
     restart: unless-stopped
 
@@ -89,6 +98,31 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    restart: unless-stopped
+
+  # 0085 — Cloudflare Tunnel sidecar. Boots in "wait for token" mode
+  # so the firm can provision via the admin UI after the stack is up
+  # (token file is written to a volume the API also mounts).
+  #
+  # Once a token exists the entrypoint execs cloudflared in remote-
+  # managed mode — ingress changes happen via the Cloudflare API,
+  # not local config, so the sidecar does not need restarting when
+  # the firm edits hostnames.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: vibe-tb-cloudflared
+    depends_on:
+      - api
+    volumes:
+      - cloudflared-run:/run/cloudflared
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "cloudflared: waiting for /run/cloudflared/token (provision via admin UI)"
+        until [ -s /run/cloudflared/token ]; do sleep 5; done
+        echo "cloudflared: token present; starting tunnel"
+        exec cloudflared --no-autoupdate tunnel --metrics 0.0.0.0:2000 run --token "$$(cat /run/cloudflared/token)"
     restart: unless-stopped
 
   backup:
@@ -122,3 +156,4 @@ volumes:
   backups:
   caddy-data:
   caddy-config:
+  cloudflared-run:

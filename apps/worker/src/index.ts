@@ -21,6 +21,7 @@ import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
+import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -163,6 +164,7 @@ const QUEUES = [
   // billing contact when an OPEN/NEEDS_INFO request is within
   // reminder_days_before of its due date.
   'request-reminder',
+  'cloudflare-tunnel-status',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -438,6 +440,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     });
     logger.info({ jobId: job.id, ...result }, 'request-reminder complete');
   },
+  'cloudflare-tunnel-status': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'cloudflare-tunnel-status: no DB configured');
+      return;
+    }
+    const result = await runCloudflareTunnelStatusTick(db, logger, {});
+    logger.info({ jobId: job.id, ...result }, 'cloudflare-tunnel-status complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -521,6 +531,7 @@ const CRON: Record<QueueName, string> = {
   // contact when an OPEN/NEEDS_INFO request is within
   // reminder_days_before of its due_date.
   'request-reminder': '0 3 * * *',
+  'cloudflare-tunnel-status': '* * * * *',
 };
 
 function storageSyncCron(): string {

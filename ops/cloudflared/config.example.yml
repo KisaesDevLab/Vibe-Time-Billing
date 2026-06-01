@@ -1,15 +1,25 @@
 # Cloudflare Tunnel config for Vibe Time & Billing
 #
-# Two ingress services per Q10:
-#   app.firm.com    → staff app
-#   portal.firm.com → client portal (only when commercial license enabled)
+# NOTE (0085): in-app provisioning replaces this file for new
+# deployments. Boot the appliance, sign in as admin, and use
+# Admin → Operations → Cloudflare Tunnel. The bundled cloudflared
+# sidecar reads its run-token from /run/cloudflared/token (written by
+# the API after the wizard completes) and runs in remotely-managed
+# mode — ingress changes happen via the Cloudflare API, not via this
+# local file.
 #
-# Usage:
+# This file remains for operators who want a fully self-managed
+# (CLI-driven) tunnel without using the admin UI:
+#
 #   1. Create a tunnel: `cloudflared tunnel create vibe-firm`
 #   2. Copy the tunnel UUID + credentials JSON into ./creds/
 #   3. Adjust the hostnames below
 #   4. Mount this file at /etc/cloudflared/config.yml in the cloudflared container
 #   5. Add the same hostnames to your firm's DNS in Cloudflare (CNAME → tunnel-uuid.cfargotunnel.com)
+#
+# Two ingress services per Q10:
+#   app.firm.com    → staff app
+#   portal.firm.com → client portal (only when commercial license enabled)
 
 tunnel: REPLACE_WITH_TUNNEL_UUID
 credentials-file: /etc/cloudflared/creds/credentials.json

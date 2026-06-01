@@ -3799,3 +3799,56 @@ export type NewTaxPayment = typeof taxPayments.$inferInsert;
 // as a DEFERRABLE INITIALLY DEFERRED constraint trigger so multi-row inserts
 // in a transaction are validated at commit, not row-by-row.
 // =====================================================================
+
+// =====================================================================
+// 0085 — CLOUDFLARE TUNNEL CONFIG
+// =====================================================================
+//
+// Stores firm-owned Cloudflare credentials + the per-tunnel run-token.
+// One row per firm. Both secrets are MFK-wrapped (bytea); plaintext
+// never leaves the API process. `api_token_hint` is the last 4 chars
+// of the API token so the admin UI can render "ends in ...abcd" with
+// no decrypt. See apps/api/src/admin/cloudflare-tunnel/routes.ts.
+
+export const cloudflareTunnelStatus = pgEnum('cloudflare_tunnel_status', [
+  'INACTIVE',
+  'PROVISIONING',
+  'ACTIVE',
+  'ERROR',
+]);
+
+export const cloudflareTunnelConfigs = pgTable(
+  'cloudflare_tunnel_config',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    accountId: text('account_id'),
+    zoneId: text('zone_id'),
+    zoneName: text('zone_name'),
+    staffHostname: text('staff_hostname'),
+    portalHostname: text('portal_hostname'),
+    tunnelId: text('tunnel_id'),
+    tunnelName: text('tunnel_name'),
+    apiTokenEncrypted: bytea('api_token_encrypted'),
+    apiTokenHint: text('api_token_hint'),
+    tunnelTokenEncrypted: bytea('tunnel_token_encrypted'),
+    status: cloudflareTunnelStatus('status').notNull().default('INACTIVE'),
+    lastError: text('last_error'),
+    lastProvisionedAt: timestamp('last_provisioned_at', { withTimezone: true }),
+    lastStatusCheckAt: timestamp('last_status_check_at', { withTimezone: true }),
+    metricsSnapshot: jsonb('metrics_snapshot').$type<{
+      ready: boolean;
+      connectorCount: number;
+      region: string | null;
+      checkedAt: string;
+    } | null>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUk: uniqueIndex('cf_tunnel_one_per_firm').on(t.firmId),
+    statusIdx: index('cloudflare_tunnel_status_idx').on(t.status),
+  }),
+);

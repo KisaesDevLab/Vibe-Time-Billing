@@ -21,6 +21,7 @@
     "./mcp": "./src/mcp/index.ts",
     "./ai": "./src/ai/index.ts",
     "./connect": "./src/connect/index.ts",
+    "./cloudflare": "./src/cloudflare/index.ts",
     "./storage": "./src/storage/index.ts",
     "./retainers": "./src/retainers/index.ts",
     "./proposals": "./src/proposals/index.ts",

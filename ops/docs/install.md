@@ -70,8 +70,29 @@ role templates.
 
 ## 6. Configure Cloudflare Tunnel (recommended)
 
-See `ops/cloudflared/config.example.yml`. Two ingress rules: one per
-hostname. The tunnel keeps the appliance off the public Internet.
+The appliance ships a bundled `cloudflared` sidecar (Q10). After the
+stack is up, sign in as the admin and go to **Admin → Operations →
+Cloudflare Tunnel** to provision the tunnel from the UI:
+
+1. Generate an API token at https://dash.cloudflare.com/profile/api-tokens
+   with permissions `Account → Cloudflare Tunnel:Edit` and
+   `Zone → DNS:Edit` scoped to your firm's zone.
+2. Paste the token plus your Account ID and Zone ID; click **Validate**.
+3. Pick the staff and (optional) portal subdomains; click **Provision**.
+
+The app creates the tunnel, writes DNS CNAMEs, fetches the run-token,
+encrypts it with the firm key, and drops it into the shared volume the
+sidecar watches. cloudflared connects automatically — no shell access
+or `cloudflared tunnel run` required.
+
+Subsequent hostname changes apply through the same UI without
+restarting the sidecar (Cloudflare manages ingress server-side). The
+portal hostname is always recorded but only added as an ingress rule
+when a commercial portal license is active on the appliance.
+
+The legacy `ops/cloudflared/config.example.yml` is preserved for
+operators who prefer a self-managed (CLI) setup, but the in-app flow
+is the supported path.
 
 ## 7. Verify health
 
