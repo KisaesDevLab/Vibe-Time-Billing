@@ -138,6 +138,11 @@ export const recurringFrequency = pgEnum('recurring_frequency', [
   'ANNUAL',
 ]);
 
+// 0084 — client request priority. Small fixed set so a pgEnum is fine
+// (vs `client_request.status` which is text+CHECK to keep adding
+// values lighter-weight).
+export const requestPriority = pgEnum('request_priority', ['LOW', 'MEDIUM', 'HIGH', 'URGENT']);
+
 export const recurringPlanStatus = pgEnum('recurring_plan_status', [
   'ACTIVE',
   'PAUSED',
@@ -3211,14 +3216,149 @@ export const clientRequests = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     createdByAppUserId: uuid('created_by_app_user_id'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    // 0084 — request expansion.
+    priority: requestPriority('priority').notNull().default('MEDIUM'),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    // FK declared via raw SQL in the migration (request_template
+    // doesn't exist yet at this column's declaration time). Drizzle
+    // treats it as a bare uuid pointer.
+    templateId: uuid('template_id'),
+    reminderDaysBefore: integer('reminder_days_before'),
+    lastReminderSentAt: timestamp('last_reminder_sent_at', { withTimezone: true }),
+    clientReplyText: text('client_reply_text'),
   },
   (t) => ({
     firmStatusIdx: index('client_request_firm_status_idx').on(t.firmId, t.status),
     engIdx: index('client_request_engagement_idx').on(t.engagementId, t.status),
+    priorityIdx: index('client_request_priority_idx').on(t.firmId, t.priority, t.status),
     statusCk: check(
       'client_request_status_ck',
-      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED')`,
+      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED', 'NEEDS_INFO')`,
     ),
+    reminderDaysCk: check(
+      'client_request_reminder_days_ck',
+      sql`${t.reminderDaysBefore} IS NULL OR ${t.reminderDaysBefore} BETWEEN 0 AND 365`,
+    ),
+  }),
+);
+
+// 0084 — request templates with Mustache title/body patterns.
+export const requestTemplates = pgTable(
+  'request_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    titlePattern: text('title_pattern').notNull(),
+    bodyPattern: text('body_pattern').notNull().default(''),
+    defaultPriority: requestPriority('default_priority').notNull().default('MEDIUM'),
+    defaultDueOffsetDays: integer('default_due_offset_days'),
+    defaultReminderDaysBefore: integer('default_reminder_days_before'),
+    defaultAssignedAppUserId: uuid('default_assigned_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    isSystem: boolean('is_system').notNull().default(false),
+    status: text('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+  },
+  (t) => ({
+    firmKeyUk: uniqueIndex('request_template_firm_key_uk').on(t.firmId, t.key),
+    firmStatusIdx: index('request_template_firm_status_idx').on(t.firmId, t.status),
+    statusCk: check('request_template_status_ck', sql`${t.status} IN ('ACTIVE', 'ARCHIVED')`),
+  }),
+);
+
+export const requestTemplateItems = pgTable(
+  'request_template_item',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => requestTemplates.id, { onDelete: 'cascade' }),
+    ordinal: integer('ordinal').notNull(),
+    label: text('label').notNull(),
+    body: text('body').notNull().default(''),
+    itemKind: text('item_kind').notNull().default('QUESTION'),
+    required: boolean('required').notNull().default(true),
+    defaultDueOffsetDays: integer('default_due_offset_days'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    ordinalUk: uniqueIndex('request_template_item_ordinal_uk').on(t.templateId, t.ordinal),
+    kindCk: check(
+      'request_template_item_kind_ck',
+      sql`${t.itemKind} IN ('QUESTION', 'DOCUMENT', 'SIGNATURE')`,
+    ),
+  }),
+);
+
+export const clientRequestItems = pgTable(
+  'client_request_item',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clientRequestId: uuid('client_request_id')
+      .notNull()
+      .references(() => clientRequests.id, { onDelete: 'cascade' }),
+    ordinal: integer('ordinal').notNull(),
+    label: text('label').notNull(),
+    body: text('body').notNull().default(''),
+    itemKind: text('item_kind').notNull().default('QUESTION'),
+    required: boolean('required').notNull().default(true),
+    status: text('status').notNull().default('OPEN'),
+    dueDate: date('due_date'),
+    fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+    fulfilledByAppUserId: uuid('fulfilled_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    fulfilledByPortalIdentityId: uuid('fulfilled_by_portal_identity_id'),
+    fulfilledByFileId: uuid('fulfilled_by_file_id'),
+    fulfilledText: text('fulfilled_text'),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+    dismissedReason: text('dismissed_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    ordinalUk: uniqueIndex('client_request_item_ordinal_uk').on(t.clientRequestId, t.ordinal),
+    requestStatusIdx: index('client_request_item_request_status_idx').on(
+      t.clientRequestId,
+      t.status,
+    ),
+    statusCk: check(
+      'client_request_item_status_ck',
+      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'NEEDS_INFO')`,
+    ),
+    kindCk: check(
+      'client_request_item_kind_ck',
+      sql`${t.itemKind} IN ('QUESTION', 'DOCUMENT', 'SIGNATURE')`,
+    ),
+  }),
+);
+
+export const clientRequestAttachments = pgTable(
+  'client_request_attachment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clientRequestId: uuid('client_request_id')
+      .notNull()
+      .references(() => clientRequests.id, { onDelete: 'cascade' }),
+    clientRequestItemId: uuid('client_request_item_id').references(() => clientRequestItems.id, {
+      onDelete: 'cascade',
+    }),
+    fileId: uuid('file_id').notNull(),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
+    uploadedByAppUserId: uuid('uploaded_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    uploadedByPortalIdentityId: uuid('uploaded_by_portal_identity_id'),
+  },
+  (t) => ({
+    requestIdx: index('client_request_attachment_request_idx').on(t.clientRequestId, t.uploadedAt),
   }),
 );
 

@@ -35,6 +35,7 @@ import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
 import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
 import { RequestsPage } from './pages/Requests';
+import { RequestDetailPage } from './pages/RequestDetail';
 import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
 import { TaxReturnsStaffPage } from './pages/TaxReturns';
 import { TimeEntryPage } from './pages/TimeEntry';
@@ -81,6 +82,7 @@ export function App(): JSX.Element {
                   <Route path="/payments/new" element={<PaymentReceivePage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/requests" element={<RequestsPage />} />
+                  <Route path="/requests/:id" element={<RequestDetailPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />

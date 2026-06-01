@@ -20,6 +20,7 @@ import { runDunningSweep } from './jobs/dunning-sweep';
 import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
+import { runRequestReminderTick } from './jobs/request-reminder';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -158,6 +159,10 @@ const QUEUES = [
   // next engagement per active recurrence (or queues a Q23 approval
   // on collision).
   'recurring-engagement',
+  // 0084 — request reminders. Daily 03:00 sweep emails the client
+  // billing contact when an OPEN/NEEDS_INFO request is within
+  // reminder_days_before of its due date.
+  'request-reminder',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -422,6 +427,17 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runRecurringEngagementTick(db, logger);
     logger.info({ jobId: job.id, ...result }, 'recurring-engagement complete');
   },
+  'request-reminder': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'request-reminder: no DB configured');
+      return;
+    }
+    const result = await runRequestReminderTick(db, logger, {
+      sendEmail: dunningSendEmail,
+      portalBaseUrl: process.env['PORTAL_BASE_URL'],
+    });
+    logger.info({ jobId: job.id, ...result }, 'request-reminder complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -501,6 +517,10 @@ const CRON: Record<QueueName, string> = {
   // recurrences whose next_run_date <= today and ON_COMPLETION
   // recurrences whose previous engagement just closed.
   'recurring-engagement': '45 2 * * *',
+  // 0084 — request reminders. Daily 03:00 — emails the client billing
+  // contact when an OPEN/NEEDS_INFO request is within
+  // reminder_days_before of its due_date.
+  'request-reminder': '0 3 * * *',
 };
 
 function storageSyncCron(): string {

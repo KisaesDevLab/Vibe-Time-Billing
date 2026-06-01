@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Stage 4 — portal Requests page. Lists document/info requests that
-// staff have created for the active client, with a single-click
-// fulfill action.
+// Portal Requests page — 0084 update. Row click navigates to detail;
+// open / closed buckets honor the new NEEDS_INFO status.
 
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
@@ -21,12 +21,14 @@ interface RequestRow {
   createdAt: string;
 }
 
-function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger' {
+function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'accent' {
   switch (status) {
     case 'OPEN':
       return 'warning';
     case 'FULFILLED':
       return 'success';
+    case 'NEEDS_INFO':
+      return 'accent';
     case 'DISMISSED':
     case 'EXPIRED':
       return 'neutral';
@@ -35,10 +37,12 @@ function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger
   }
 }
 
+const OPEN_STATUSES = new Set(['OPEN', 'NEEDS_INFO']);
+
 export function RequestsPage(): JSX.Element {
   const [items, setItems] = useState<RequestRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   async function load(): Promise<void> {
     setError(null);
@@ -54,24 +58,8 @@ export function RequestsPage(): JSX.Element {
     void load();
   }, []);
 
-  async function fulfill(req: RequestRow): Promise<void> {
-    setBusy(req.id);
-    setError(null);
-    try {
-      await api(`/api/portal/requests/${req.id}/fulfill`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'fulfill_failed');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  const open = items.filter((r) => r.status === 'OPEN');
-  const closed = items.filter((r) => r.status !== 'OPEN');
+  const open = items.filter((r) => OPEN_STATUSES.has(r.status));
+  const closed = items.filter((r) => !OPEN_STATUSES.has(r.status));
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
@@ -96,7 +84,15 @@ export function RequestsPage(): JSX.Element {
                 key: 'title',
                 header: 'Request',
                 render: (r) => (
-                  <div>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => navigate(`/requests/${r.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') navigate(`/requests/${r.id}`);
+                    }}
+                  >
                     <div style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</div>
                     {r.body && (
                       <div
@@ -106,11 +102,17 @@ export function RequestsPage(): JSX.Element {
                           whiteSpace: 'pre-wrap',
                         }}
                       >
-                        {r.body}
+                        {r.body.slice(0, 160)}
+                        {r.body.length > 160 ? '…' : ''}
                       </div>
                     )}
                   </div>
                 ),
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill>,
               },
               {
                 key: 'due',
@@ -121,8 +123,8 @@ export function RequestsPage(): JSX.Element {
                 key: 'action',
                 header: '',
                 render: (r) => (
-                  <Button size="sm" onClick={() => void fulfill(r)} disabled={busy === r.id}>
-                    {busy === r.id ? 'Working…' : 'Mark complete'}
+                  <Button size="sm" variant="ghost" onClick={() => navigate(`/requests/${r.id}`)}>
+                    Open
                   </Button>
                 ),
               },
@@ -140,7 +142,23 @@ export function RequestsPage(): JSX.Element {
             rowKey={(r) => r.id}
             empty="—"
             columns={[
-              { key: 'title', header: 'Request', render: (r) => <span>{r.title}</span> },
+              {
+                key: 'title',
+                header: 'Request',
+                render: (r) => (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => navigate(`/requests/${r.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') navigate(`/requests/${r.id}`);
+                    }}
+                  >
+                    {r.title}
+                  </span>
+                ),
+              },
               {
                 key: 'status',
                 header: 'Status',

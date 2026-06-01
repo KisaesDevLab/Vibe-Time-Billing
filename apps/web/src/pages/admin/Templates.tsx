@@ -25,7 +25,7 @@ const FEE_OPTIONS = [
 import { api } from '../../api-client';
 import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
 
-type Kind = 'engagement' | 'letter' | 'client';
+type Kind = 'engagement' | 'letter' | 'client' | 'request';
 
 interface EngagementTpl {
   id: string;
@@ -92,6 +92,7 @@ export function TemplatesPage(): JSX.Element {
           { key: 'engagement', label: 'Engagement templates' },
           { key: 'letter', label: 'Letter templates' },
           { key: 'client', label: 'Client templates' },
+          { key: 'request', label: 'Request templates' },
         ]}
         active={kind}
         onChange={(k) => setKind(k as Kind)}
@@ -99,6 +100,7 @@ export function TemplatesPage(): JSX.Element {
       {kind === 'engagement' && <EngagementTab />}
       {kind === 'letter' && <LetterTab />}
       {kind === 'client' && <ClientTab />}
+      {kind === 'request' && <RequestTab />}
     </div>
   );
 }
@@ -786,6 +788,528 @@ function ClientTab(): JSX.Element {
                     }}
                     aria-label="Defaults JSON"
                   />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ============================================================
+// 0084 — Request templates tab.
+// ============================================================
+
+type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+type ItemKind = 'QUESTION' | 'DOCUMENT' | 'SIGNATURE';
+
+interface RequestTpl {
+  id: string;
+  key: string;
+  name: string;
+  titlePattern: string;
+  bodyPattern: string;
+  defaultPriority: Priority;
+  defaultDueOffsetDays: number | null;
+  defaultReminderDaysBefore: number | null;
+  defaultAssignedAppUserId: string | null;
+  isSystem: boolean;
+  status: string;
+  items: Array<{
+    id: string;
+    ordinal: number;
+    label: string;
+    body: string;
+    itemKind: ItemKind;
+    required: boolean;
+    defaultDueOffsetDays: number | null;
+  }>;
+}
+
+interface RequestItemDraft {
+  ordinal: number;
+  label: string;
+  body: string;
+  itemKind: ItemKind;
+  required: boolean;
+}
+
+const PRIORITY_OPTIONS: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
+
+function RequestTab(): JSX.Element {
+  const [items, setItems] = useState<RequestTpl[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{
+    name: string;
+    titlePattern: string;
+    bodyPattern: string;
+    defaultPriority: Priority;
+    defaultDueOffsetDays: string;
+    defaultReminderDaysBefore: string;
+  }>({
+    name: '',
+    titlePattern: '',
+    bodyPattern: '',
+    defaultPriority: 'MEDIUM',
+    defaultDueOffsetDays: '',
+    defaultReminderDaysBefore: '',
+  });
+  const [editItems, setEditItems] = useState<RequestItemDraft[]>([]);
+  const [draft, setDraft] = useState({
+    key: '',
+    name: '',
+    titlePattern: '',
+    bodyPattern: '',
+    defaultPriority: 'MEDIUM' as Priority,
+    defaultDueOffsetDays: '',
+    defaultReminderDaysBefore: '',
+  });
+  const [draftItems, setDraftItems] = useState<RequestItemDraft[]>([]);
+
+  async function load(): Promise<void> {
+    try {
+      const r = await api<{ items: RequestTpl[] }>('/api/staff/admin/templates/request');
+      setItems(r.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function add(): Promise<void> {
+    if (!draft.key.trim() || !draft.name.trim() || !draft.titlePattern.trim()) return;
+    try {
+      await api('/api/staff/admin/templates/request', {
+        method: 'POST',
+        body: JSON.stringify({
+          key: draft.key.trim(),
+          name: draft.name.trim(),
+          titlePattern: draft.titlePattern.trim(),
+          bodyPattern: draft.bodyPattern.trim() || undefined,
+          defaultPriority: draft.defaultPriority,
+          defaultDueOffsetDays: draft.defaultDueOffsetDays
+            ? Number(draft.defaultDueOffsetDays)
+            : undefined,
+          defaultReminderDaysBefore: draft.defaultReminderDaysBefore
+            ? Number(draft.defaultReminderDaysBefore)
+            : undefined,
+          items: draftItems
+            .filter((i) => i.label.trim().length > 0)
+            .map((i, idx) => ({
+              ordinal: idx,
+              label: i.label.trim(),
+              body: i.body.trim() || undefined,
+              itemKind: i.itemKind,
+              required: i.required,
+            })),
+        }),
+      });
+      setDraft({
+        key: '',
+        name: '',
+        titlePattern: '',
+        bodyPattern: '',
+        defaultPriority: 'MEDIUM',
+        defaultDueOffsetDays: '',
+        defaultReminderDaysBefore: '',
+      });
+      setDraftItems([]);
+      setAdding(false);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'add_failed');
+    }
+  }
+
+  async function archive(id: string): Promise<void> {
+    if (!confirm('Archive this request template?')) return;
+    try {
+      await api(`/api/staff/admin/templates/request/${id}/archive`, { method: 'PATCH' });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'archive_failed');
+    }
+  }
+
+  function beginEdit(t: RequestTpl): void {
+    setEditingId(t.id);
+    setEditDraft({
+      name: t.name,
+      titlePattern: t.titlePattern,
+      bodyPattern: t.bodyPattern,
+      defaultPriority: t.defaultPriority,
+      defaultDueOffsetDays: t.defaultDueOffsetDays != null ? String(t.defaultDueOffsetDays) : '',
+      defaultReminderDaysBefore:
+        t.defaultReminderDaysBefore != null ? String(t.defaultReminderDaysBefore) : '',
+    });
+    setEditItems(
+      t.items.map((i) => ({
+        ordinal: i.ordinal,
+        label: i.label,
+        body: i.body,
+        itemKind: i.itemKind,
+        required: i.required,
+      })),
+    );
+  }
+
+  async function saveEdit(id: string): Promise<void> {
+    try {
+      await api(`/api/staff/admin/templates/request/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editDraft.name.trim(),
+          titlePattern: editDraft.titlePattern.trim(),
+          bodyPattern: editDraft.bodyPattern.trim() || null,
+          defaultPriority: editDraft.defaultPriority,
+          defaultDueOffsetDays: editDraft.defaultDueOffsetDays
+            ? Number(editDraft.defaultDueOffsetDays)
+            : null,
+          defaultReminderDaysBefore: editDraft.defaultReminderDaysBefore
+            ? Number(editDraft.defaultReminderDaysBefore)
+            : null,
+        }),
+      });
+      await api(`/api/staff/admin/templates/request/${id}/items`, {
+        method: 'POST',
+        body: JSON.stringify({
+          items: editItems
+            .filter((i) => i.label.trim().length > 0)
+            .map((i, idx) => ({
+              ordinal: idx,
+              label: i.label.trim(),
+              body: i.body.trim() || undefined,
+              itemKind: i.itemKind,
+              required: i.required,
+            })),
+        }),
+      });
+      setEditingId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
+    }
+  }
+
+  function renderItemEditor(
+    list: RequestItemDraft[],
+    setList: (l: RequestItemDraft[]) => void,
+  ): JSX.Element {
+    return (
+      <div>
+        <div
+          style={{
+            fontSize: 12,
+            marginBottom: 4,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span>Checklist items ({list.length})</span>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() =>
+              setList([
+                ...list,
+                {
+                  ordinal: list.length,
+                  label: '',
+                  body: '',
+                  itemKind: 'QUESTION',
+                  required: true,
+                },
+              ])
+            }
+          >
+            + Item
+          </Button>
+        </div>
+        {list.length === 0 ? (
+          <div style={{ fontSize: 11, color: tokens.color.textMuted }}>None.</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 4 }}>
+            {list.map((it, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 130px 100px 40px',
+                  gap: 4,
+                  alignItems: 'center',
+                }}
+              >
+                <input
+                  type="text"
+                  value={it.label}
+                  onChange={(e) =>
+                    setList(list.map((x, i) => (i === idx ? { ...x, label: e.target.value } : x)))
+                  }
+                  placeholder={`Item ${idx + 1}`}
+                  style={fieldStyle}
+                />
+                <select
+                  value={it.itemKind}
+                  onChange={(e) =>
+                    setList(
+                      list.map((x, i) =>
+                        i === idx ? { ...x, itemKind: e.target.value as ItemKind } : x,
+                      ),
+                    )
+                  }
+                  style={fieldStyle}
+                >
+                  <option value="QUESTION">Question</option>
+                  <option value="DOCUMENT">Document</option>
+                  <option value="SIGNATURE">Signature</option>
+                </select>
+                <label style={{ fontSize: 12, display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={it.required}
+                    onChange={(e) =>
+                      setList(
+                        list.map((x, i) => (i === idx ? { ...x, required: e.target.checked } : x)),
+                      )
+                    }
+                  />
+                  required
+                </label>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setList(list.filter((_, i) => i !== idx))}
+                >
+                  ✕
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <Card title="Request templates">
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+          {error}
+        </p>
+      )}
+      <p style={{ fontSize: 12, color: tokens.color.textMuted }}>
+        Reusable client-request shells with Mustache title/body patterns plus a default checklist.
+        Tokens: <code>{'{{client.name}}'}</code>, <code>{'{{engagement.name}}'}</code>,{' '}
+        <code>{'{{today}}'}</code>. Spawn from the Requests page or via bulk-send.
+      </p>
+
+      {adding ? (
+        <div
+          style={{
+            padding: 10,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            display: 'grid',
+            gap: 8,
+            marginBottom: 12,
+          }}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <input
+              placeholder="key (lowercase, e.g. year-end-docs)"
+              value={draft.key}
+              onChange={(e) => setDraft({ ...draft, key: e.target.value })}
+              style={fieldStyle}
+            />
+            <input
+              placeholder="Name"
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              style={fieldStyle}
+            />
+          </div>
+          <input
+            placeholder="Title pattern (supports {{client.name}})"
+            value={draft.titlePattern}
+            onChange={(e) => setDraft({ ...draft, titlePattern: e.target.value })}
+            style={fieldStyle}
+          />
+          <textarea
+            placeholder="Body pattern (optional)"
+            value={draft.bodyPattern}
+            onChange={(e) => setDraft({ ...draft, bodyPattern: e.target.value })}
+            rows={3}
+            style={{ ...fieldStyle, resize: 'vertical' }}
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+            <Combobox
+              ariaLabel="Default priority"
+              options={PRIORITY_OPTIONS.map((p) => ({ value: p, label: p }))}
+              value={draft.defaultPriority}
+              onChange={(v) => setDraft({ ...draft, defaultPriority: v as Priority })}
+            />
+            <input
+              placeholder="Due offset (days)"
+              type="number"
+              value={draft.defaultDueOffsetDays}
+              onChange={(e) => setDraft({ ...draft, defaultDueOffsetDays: e.target.value })}
+              style={fieldStyle}
+            />
+            <input
+              placeholder="Reminder days before"
+              type="number"
+              value={draft.defaultReminderDaysBefore}
+              onChange={(e) => setDraft({ ...draft, defaultReminderDaysBefore: e.target.value })}
+              style={fieldStyle}
+            />
+          </div>
+          {renderItemEditor(draftItems, setDraftItems)}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button onClick={() => void add()}>Create</Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setAdding(false);
+                setDraftItems([]);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 12 }}>
+          <Button onClick={() => setAdding(true)}>+ New request template</Button>
+        </div>
+      )}
+
+      {items.length === 0 ? (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No request templates yet.</p>
+      ) : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {items.map((t) => {
+            const isEditing = editingId === t.id;
+            return (
+              <div
+                key={t.id}
+                style={{
+                  padding: 10,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {isEditing ? (
+                    <input
+                      value={editDraft.name}
+                      onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })}
+                      style={{ ...fieldStyle, flex: 1, minWidth: 220 }}
+                    />
+                  ) : (
+                    <strong style={{ fontSize: 13 }}>{t.name}</strong>
+                  )}
+                  <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+                  {t.isSystem && <Pill tone="accent">system</Pill>}
+                  {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
+                  {!isEditing && <Pill>{t.defaultPriority}</Pill>}
+                  {!isEditing && (
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      {t.items.length} item(s)
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {isEditing ? (
+                      <>
+                        <Button size="sm" onClick={() => void saveEdit(t.id)}>
+                          Save
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => beginEdit(t)}>
+                          Edit
+                        </Button>
+                        {t.status === 'ACTIVE' && (
+                          <Button size="sm" variant="ghost" onClick={() => void archive(t.id)}>
+                            Archive
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </span>
+                </div>
+                {isEditing ? (
+                  <>
+                    <input
+                      value={editDraft.titlePattern}
+                      onChange={(e) => setEditDraft({ ...editDraft, titlePattern: e.target.value })}
+                      placeholder="Title pattern"
+                      style={fieldStyle}
+                    />
+                    <textarea
+                      value={editDraft.bodyPattern}
+                      onChange={(e) => setEditDraft({ ...editDraft, bodyPattern: e.target.value })}
+                      rows={2}
+                      placeholder="Body pattern"
+                      style={{ ...fieldStyle, resize: 'vertical' }}
+                    />
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                      <Combobox
+                        ariaLabel="Default priority"
+                        options={PRIORITY_OPTIONS.map((p) => ({ value: p, label: p }))}
+                        value={editDraft.defaultPriority}
+                        onChange={(v) =>
+                          setEditDraft({ ...editDraft, defaultPriority: v as Priority })
+                        }
+                      />
+                      <input
+                        type="number"
+                        placeholder="Due offset (days)"
+                        value={editDraft.defaultDueOffsetDays}
+                        onChange={(e) =>
+                          setEditDraft({ ...editDraft, defaultDueOffsetDays: e.target.value })
+                        }
+                        style={fieldStyle}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Reminder days before"
+                        value={editDraft.defaultReminderDaysBefore}
+                        onChange={(e) =>
+                          setEditDraft({
+                            ...editDraft,
+                            defaultReminderDaysBefore: e.target.value,
+                          })
+                        }
+                        style={fieldStyle}
+                      />
+                    </div>
+                    {renderItemEditor(editItems, setEditItems)}
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    <div>
+                      <strong>Title:</strong> {t.titlePattern}
+                    </div>
+                    {t.bodyPattern && (
+                      <div style={{ marginTop: 2 }}>
+                        <strong>Body:</strong> {t.bodyPattern.slice(0, 100)}
+                        {t.bodyPattern.length > 100 ? '…' : ''}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             );

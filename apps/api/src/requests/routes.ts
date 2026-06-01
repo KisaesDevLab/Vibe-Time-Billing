@@ -27,12 +27,18 @@ import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  clientRequestItems,
   clientRequestTimeEntryLinks,
   clientRequests,
+  clients,
   engagements,
   firmConfig,
+  requestTemplateItems,
+  requestTemplates,
   timeEntries,
 } from '@vibe/db/schema';
+
+import { spawnFromTemplate, type Priority } from './template-spawn';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -44,13 +50,30 @@ export interface RequestRoutesDeps extends RbacDeps {
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;
+const ITEM_KINDS = ['QUESTION', 'DOCUMENT', 'SIGNATURE'] as const;
+
+const ItemInputSchema = z.object({
+  ordinal: z.number().int().min(0).max(500),
+  label: z.string().min(1).max(200),
+  body: z.string().max(2000).optional(),
+  itemKind: z.enum(ITEM_KINDS).default('QUESTION'),
+  required: z.boolean().default(true),
+  dueDate: z.string().regex(DATE_RE).nullable().optional(),
+});
 
 const CreateSchema = z.object({
   engagementId: z.string().uuid(),
-  title: z.string().min(1).max(200),
+  // 0084 — title is optional when templateId resolves to a non-empty pattern.
+  title: z.string().min(1).max(200).optional(),
   body: z.string().max(5000).optional().default(''),
   assignedAppUserId: z.string().uuid().nullable().optional(),
   dueDate: z.string().regex(DATE_RE).nullable().optional(),
+  templateId: z.string().uuid().optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
+  reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
+  items: z.array(ItemInputSchema).max(100).optional(),
 });
 
 const PatchSchema = z.object({
@@ -58,6 +81,40 @@ const PatchSchema = z.object({
   body: z.string().max(5000).optional(),
   assignedAppUserId: z.string().uuid().nullable().optional(),
   dueDate: z.string().regex(DATE_RE).nullable().optional(),
+  engagementId: z.string().uuid().optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
+  reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
+});
+
+const BulkSchema = z.object({
+  templateId: z.string().uuid(),
+  targets: z
+    .array(
+      z.object({
+        clientId: z.string().uuid(),
+        engagementId: z.string().uuid(),
+        dueDateOverride: z.string().regex(DATE_RE).nullable().optional(),
+        priorityOverride: z.enum(PRIORITIES).optional(),
+        assignedAppUserIdOverride: z.string().uuid().nullable().optional(),
+        tags: z.array(z.string().max(40)).max(20).optional(),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+
+const NeedsInfoSchema = z.object({ text: z.string().min(1).max(2000) });
+
+const ItemPatchSchema = z.object({
+  label: z.string().min(1).max(200).optional(),
+  body: z.string().max(2000).optional(),
+  dueDate: z.string().regex(DATE_RE).nullable().optional(),
+});
+
+const ItemFulfillSchema = z.object({
+  fileId: z.string().uuid().nullable().optional(),
+  text: z.string().max(2000).optional(),
 });
 
 const FulfillSchema = z.object({
@@ -98,7 +155,7 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
   router.get('/', requirePermission(deps, 'requests:read'), async (req: Request, res: Response) => {
     const session = req.staffSession!;
     if (!deps.db) {
-      res.json({ items: [] });
+      res.json({ items: [], total: 0 });
       return;
     }
     const status = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
@@ -107,17 +164,103 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       res.status(400).json({ error: 'invalid_engagement_id' });
       return;
     }
+    const clientIdParam = uuidQueryParam(req.query['clientId']);
+    if (clientIdParam === 'invalid') {
+      res.status(400).json({ error: 'invalid_client_id' });
+      return;
+    }
+    const assignedParam = uuidQueryParam(req.query['assignedAppUserId']);
+    if (assignedParam === 'invalid') {
+      res.status(400).json({ error: 'invalid_assigned_app_user_id' });
+      return;
+    }
+    const priorityParam =
+      typeof req.query['priority'] === 'string' &&
+      (PRIORITIES as readonly string[]).includes(req.query['priority'])
+        ? (req.query['priority'] as Priority)
+        : undefined;
+    const dueBefore =
+      typeof req.query['dueBefore'] === 'string' && DATE_RE.test(req.query['dueBefore'])
+        ? req.query['dueBefore']
+        : undefined;
+    const dueAfter =
+      typeof req.query['dueAfter'] === 'string' && DATE_RE.test(req.query['dueAfter'])
+        ? req.query['dueAfter']
+        : undefined;
+    const search =
+      typeof req.query['search'] === 'string' && req.query['search'].trim().length > 0
+        ? req.query['search'].trim()
+        : undefined;
+    const tag =
+      typeof req.query['tag'] === 'string' && req.query['tag'].trim().length > 0
+        ? req.query['tag'].trim()
+        : undefined;
+    const sortCol =
+      typeof req.query['sort'] === 'string' &&
+      ['created_at', 'due_date', 'priority', 'status', 'title'].includes(req.query['sort'])
+        ? req.query['sort']
+        : 'created_at';
+    const dir = req.query['dir'] === 'asc' ? 'asc' : 'desc';
+    const limit = Math.min(200, Math.max(1, Number(req.query['limit'] ?? 50)));
+    const offset = Math.max(0, Number(req.query['offset'] ?? 0));
+
     const conds = [eq(clientRequests.firmId, session.firmId)];
     if (status) conds.push(eq(clientRequests.status, status));
     if (engagementIdParam) conds.push(eq(clientRequests.engagementId, engagementIdParam));
-    const items = await deps.db
-      .select()
-      .from(clientRequests)
-      .where(and(...conds))
-      .orderBy(desc(clientRequests.createdAt))
-      .limit(500);
+    if (assignedParam) conds.push(eq(clientRequests.assignedAppUserId, assignedParam));
+    if (priorityParam) conds.push(eq(clientRequests.priority, priorityParam));
+    if (dueBefore) conds.push(sql`${clientRequests.dueDate} <= ${dueBefore}`);
+    if (dueAfter) conds.push(sql`${clientRequests.dueDate} >= ${dueAfter}`);
+    if (search) {
+      const pattern = `%${search.replace(/[\\%_]/g, (m) => '\\' + m)}%`;
+      conds.push(
+        sql`(${clientRequests.title} ILIKE ${pattern} OR ${clientRequests.body} ILIKE ${pattern})`,
+      );
+    }
+    if (tag) {
+      conds.push(sql`${clientRequests.tags} @> ${JSON.stringify([tag])}::jsonb`);
+    }
+    // clientId requires the engagement join.
+    const useClientJoin = Boolean(clientIdParam);
+    const baseQ = useClientJoin
+      ? deps.db
+          .select({ row: clientRequests })
+          .from(clientRequests)
+          .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+          .where(and(...conds, eq(engagements.clientId, clientIdParam!)))
+      : deps.db
+          .select({ row: clientRequests })
+          .from(clientRequests)
+          .where(and(...conds));
+    const orderExpr = (() => {
+      const col =
+        sortCol === 'due_date'
+          ? clientRequests.dueDate
+          : sortCol === 'priority'
+            ? clientRequests.priority
+            : sortCol === 'status'
+              ? clientRequests.status
+              : sortCol === 'title'
+                ? clientRequests.title
+                : clientRequests.createdAt;
+      return dir === 'asc' ? asc(col) : desc(col);
+    })();
+    const rows = await baseQ.orderBy(orderExpr).limit(limit).offset(offset);
+    const items = rows.map((r) => r.row);
+    const totalQ = useClientJoin
+      ? deps.db
+          .select({ c: sql<number>`COUNT(*)::int` })
+          .from(clientRequests)
+          .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+          .where(and(...conds, eq(engagements.clientId, clientIdParam!)))
+      : deps.db
+          .select({ c: sql<number>`COUNT(*)::int` })
+          .from(clientRequests)
+          .where(and(...conds));
+    const totalRows = await totalQ;
+    const total = totalRows[0]?.c ?? 0;
     if (items.length === 0) {
-      res.json({ items: [] });
+      res.json({ items: [], total });
       return;
     }
     // P2.5 / G.8 — enrich each row with its accepted linked time entry
@@ -160,7 +303,7 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
           : null,
       };
     });
-    res.json({ items: enriched });
+    res.json({ items: enriched, total });
   });
 
   router.get(
@@ -231,37 +374,159 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
+      // Cross-firm guard: engagement must belong to a client in this firm.
       const [eng] = await deps.db
-        .select({ clientId: engagements.clientId })
+        .select({ id: engagements.id, clientId: engagements.clientId, name: engagements.name })
         .from(engagements)
-        .where(eq(engagements.id, parsed.data.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(eq(engagements.id, parsed.data.engagementId), eq(clients.firmId, session.firmId)),
+        )
         .limit(1);
       if (!eng) {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
-      const [row] = await deps.db
-        .insert(clientRequests)
-        .values({
-          firmId: session.firmId,
-          engagementId: parsed.data.engagementId,
-          assignedAppUserId: parsed.data.assignedAppUserId ?? null,
-          title: parsed.data.title,
-          body: parsed.data.body ?? '',
-          dueDate: parsed.data.dueDate ?? null,
-          createdByAppUserId: session.appUserId,
-        })
-        .returning({ id: clientRequests.id });
+
+      // 0084 — template resolution. When templateId is sent, load it +
+      // its items, then spawn via the pure helper. Explicit fields in
+      // the body always override template defaults.
+      let resolvedTitle = parsed.data.title?.trim() ?? '';
+      let resolvedBody = parsed.data.body ?? '';
+      let resolvedPriority: Priority = parsed.data.priority ?? 'MEDIUM';
+      let resolvedDueDate: string | null = parsed.data.dueDate ?? null;
+      let resolvedReminder: number | null = parsed.data.reminderDaysBefore ?? null;
+      let resolvedAssignee: string | null = parsed.data.assignedAppUserId ?? null;
+      let resolvedItems: Array<{
+        ordinal: number;
+        label: string;
+        body: string;
+        itemKind: 'QUESTION' | 'DOCUMENT' | 'SIGNATURE';
+        required: boolean;
+        dueDate: string | null;
+      }> = (parsed.data.items ?? []).map((i) => ({
+        ordinal: i.ordinal,
+        label: i.label,
+        body: i.body ?? '',
+        itemKind: i.itemKind,
+        required: i.required,
+        dueDate: i.dueDate ?? null,
+      }));
+      if (parsed.data.templateId) {
+        const [tpl] = await deps.db
+          .select()
+          .from(requestTemplates)
+          .where(
+            and(
+              eq(requestTemplates.id, parsed.data.templateId),
+              eq(requestTemplates.firmId, session.firmId),
+            ),
+          )
+          .limit(1);
+        if (!tpl) {
+          res.status(404).json({ error: 'template_not_found' });
+          return;
+        }
+        const tplItems = await deps.db
+          .select()
+          .from(requestTemplateItems)
+          .where(eq(requestTemplateItems.templateId, tpl.id))
+          .orderBy(asc(requestTemplateItems.ordinal));
+        const [clientRow] = await deps.db
+          .select({ name: clients.name })
+          .from(clients)
+          .where(eq(clients.id, eng.clientId))
+          .limit(1);
+        const spawn = spawnFromTemplate(
+          {
+            id: tpl.id,
+            titlePattern: tpl.titlePattern,
+            bodyPattern: tpl.bodyPattern,
+            defaultPriority: tpl.defaultPriority as Priority,
+            defaultDueOffsetDays: tpl.defaultDueOffsetDays,
+            defaultReminderDaysBefore: tpl.defaultReminderDaysBefore,
+            defaultAssignedAppUserId: tpl.defaultAssignedAppUserId,
+            items: tplItems.map((it) => ({
+              ordinal: it.ordinal,
+              label: it.label,
+              body: it.body,
+              itemKind: it.itemKind as 'QUESTION' | 'DOCUMENT' | 'SIGNATURE',
+              required: it.required,
+              defaultDueOffsetDays: it.defaultDueOffsetDays,
+            })),
+          },
+          {
+            clientName: clientRow?.name ?? null,
+            engagementName: eng.name,
+            today: new Date().toISOString().slice(0, 10),
+          },
+          {
+            titleOverride: parsed.data.title?.trim() || undefined,
+            bodyOverride: parsed.data.body || undefined,
+            priorityOverride: parsed.data.priority,
+            dueDateOverride: parsed.data.dueDate ?? undefined,
+            reminderDaysBeforeOverride: parsed.data.reminderDaysBefore ?? undefined,
+            assignedAppUserIdOverride: parsed.data.assignedAppUserId ?? undefined,
+            tags: parsed.data.tags,
+          },
+        );
+        resolvedTitle = spawn.title;
+        resolvedBody = spawn.body;
+        resolvedPriority = spawn.priority;
+        resolvedDueDate = spawn.dueDate;
+        resolvedReminder = spawn.reminderDaysBefore;
+        resolvedAssignee = spawn.assignedAppUserId;
+        // If caller didn't pass items, use the template's items.
+        if (resolvedItems.length === 0) resolvedItems = spawn.items;
+      }
+      if (resolvedTitle.length === 0) {
+        res.status(400).json({ error: 'title_required' });
+        return;
+      }
+
+      const newId = await deps.db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(clientRequests)
+          .values({
+            firmId: session.firmId,
+            engagementId: parsed.data.engagementId,
+            assignedAppUserId: resolvedAssignee,
+            title: resolvedTitle,
+            body: resolvedBody,
+            dueDate: resolvedDueDate,
+            createdByAppUserId: session.appUserId,
+            priority: resolvedPriority,
+            tags: parsed.data.tags ?? [],
+            templateId: parsed.data.templateId ?? null,
+            reminderDaysBefore: resolvedReminder,
+          })
+          .returning({ id: clientRequests.id });
+        if (!row) throw new Error('insert_failed');
+        if (resolvedItems.length > 0) {
+          await tx.insert(clientRequestItems).values(
+            resolvedItems.map((it) => ({
+              clientRequestId: row.id,
+              ordinal: it.ordinal,
+              label: it.label,
+              body: it.body,
+              itemKind: it.itemKind,
+              required: it.required,
+              dueDate: it.dueDate,
+            })),
+          );
+        }
+        return row.id;
+      });
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'client_request',
-        entityId: row?.id,
+        entityId: newId,
         actorAppUserId: session.appUserId,
-        after: parsed.data,
+        after: { ...parsed.data, resolvedTitle, itemCount: resolvedItems.length },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.status(201).json({ id: row?.id });
+      res.status(201).json({ id: newId });
     },
   );
 
@@ -279,6 +544,21 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         res.json({ ok: true });
         return;
       }
+      // Re-attach engagement: cross-firm guard.
+      if (parsed.data.engagementId !== undefined) {
+        const [eng] = await deps.db
+          .select({ id: engagements.id })
+          .from(engagements)
+          .innerJoin(clients, eq(clients.id, engagements.clientId))
+          .where(
+            and(eq(engagements.id, parsed.data.engagementId), eq(clients.firmId, session.firmId)),
+          )
+          .limit(1);
+        if (!eng) {
+          res.status(404).json({ error: 'engagement_not_found' });
+          return;
+        }
+      }
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (parsed.data.title !== undefined) patch['title'] = parsed.data.title;
       if (parsed.data.body !== undefined) patch['body'] = parsed.data.body;
@@ -286,6 +566,11 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         patch['assignedAppUserId'] = parsed.data.assignedAppUserId;
       }
       if (parsed.data.dueDate !== undefined) patch['dueDate'] = parsed.data.dueDate;
+      if (parsed.data.engagementId !== undefined) patch['engagementId'] = parsed.data.engagementId;
+      if (parsed.data.priority !== undefined) patch['priority'] = parsed.data.priority;
+      if (parsed.data.tags !== undefined) patch['tags'] = parsed.data.tags;
+      if (parsed.data.reminderDaysBefore !== undefined)
+        patch['reminderDaysBefore'] = parsed.data.reminderDaysBefore;
       const updated = await deps.db
         .update(clientRequests)
         .set(patch)
@@ -475,6 +760,337 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // 0084 — needs-info status flip (staff side; the portal flips via
+  // /api/portal/requests/:id/needs-info).
+  // -------------------------------------------------------------------
+  router.post(
+    '/:id/needs-info',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = NeedsInfoSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const updated = await deps.db
+        .update(clientRequests)
+        .set({
+          status: 'NEEDS_INFO',
+          clientReplyText: parsed.data.text,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .returning({ id: clientRequests.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client_request',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'NEEDS_INFO' },
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // 0084 — bulk send: one template → N clients/engagements in one call.
+  // -------------------------------------------------------------------
+  router.post(
+    '/bulk',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = BulkSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const [tpl] = await deps.db
+        .select()
+        .from(requestTemplates)
+        .where(
+          and(
+            eq(requestTemplates.id, parsed.data.templateId),
+            eq(requestTemplates.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const tplItems = await deps.db
+        .select()
+        .from(requestTemplateItems)
+        .where(eq(requestTemplateItems.templateId, tpl.id))
+        .orderBy(asc(requestTemplateItems.ordinal));
+      const today = new Date().toISOString().slice(0, 10);
+      const created: string[] = [];
+      const skipped: Array<{ clientId: string; reason: string }> = [];
+      for (const target of parsed.data.targets) {
+        const [eng] = await deps.db
+          .select({ id: engagements.id, clientId: engagements.clientId, name: engagements.name })
+          .from(engagements)
+          .innerJoin(clients, eq(clients.id, engagements.clientId))
+          .where(and(eq(engagements.id, target.engagementId), eq(clients.firmId, session.firmId)))
+          .limit(1);
+        if (!eng || eng.clientId !== target.clientId) {
+          skipped.push({ clientId: target.clientId, reason: 'engagement_cross_firm_or_mismatch' });
+          continue;
+        }
+        const [clientRow] = await deps.db
+          .select({ name: clients.name })
+          .from(clients)
+          .where(eq(clients.id, target.clientId))
+          .limit(1);
+        const spawn = spawnFromTemplate(
+          {
+            id: tpl.id,
+            titlePattern: tpl.titlePattern,
+            bodyPattern: tpl.bodyPattern,
+            defaultPriority: tpl.defaultPriority as Priority,
+            defaultDueOffsetDays: tpl.defaultDueOffsetDays,
+            defaultReminderDaysBefore: tpl.defaultReminderDaysBefore,
+            defaultAssignedAppUserId: tpl.defaultAssignedAppUserId,
+            items: tplItems.map((it) => ({
+              ordinal: it.ordinal,
+              label: it.label,
+              body: it.body,
+              itemKind: it.itemKind as 'QUESTION' | 'DOCUMENT' | 'SIGNATURE',
+              required: it.required,
+              defaultDueOffsetDays: it.defaultDueOffsetDays,
+            })),
+          },
+          { clientName: clientRow?.name ?? null, engagementName: eng.name, today },
+          {
+            dueDateOverride: target.dueDateOverride ?? undefined,
+            priorityOverride: target.priorityOverride,
+            assignedAppUserIdOverride: target.assignedAppUserIdOverride ?? undefined,
+            tags: target.tags,
+          },
+        );
+        try {
+          const newId = await deps.db.transaction(async (tx) => {
+            const [row] = await tx
+              .insert(clientRequests)
+              .values({
+                firmId: session.firmId,
+                engagementId: eng.id,
+                assignedAppUserId: spawn.assignedAppUserId,
+                title: spawn.title,
+                body: spawn.body,
+                dueDate: spawn.dueDate,
+                createdByAppUserId: session.appUserId,
+                priority: spawn.priority,
+                tags: spawn.tags,
+                templateId: tpl.id,
+                reminderDaysBefore: spawn.reminderDaysBefore,
+              })
+              .returning({ id: clientRequests.id });
+            if (!row) throw new Error('insert_failed');
+            if (spawn.items.length > 0) {
+              await tx.insert(clientRequestItems).values(
+                spawn.items.map((it) => ({
+                  clientRequestId: row.id,
+                  ordinal: it.ordinal,
+                  label: it.label,
+                  body: it.body,
+                  itemKind: it.itemKind,
+                  required: it.required,
+                  dueDate: it.dueDate,
+                })),
+              );
+            }
+            return row.id;
+          });
+          created.push(newId);
+        } catch (err) {
+          skipped.push({
+            clientId: target.clientId,
+            reason: err instanceof Error ? err.message : 'insert_failed',
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'client_request',
+        entityId: null,
+        actorAppUserId: session.appUserId,
+        after: { bulk: true, templateId: tpl.id, created: created.length, skipped: skipped.length },
+      }).catch(() => undefined);
+      res.status(201).json({ created: created.length, requestIds: created, skipped });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // 0084 — items endpoints (staff side; portal has its own per-item
+  // fulfill in apps/api/src/portal/requests.ts).
+  // -------------------------------------------------------------------
+  router.get(
+    '/:id/items',
+    requirePermission(deps, 'requests:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [parent] = await deps.db
+        .select({ id: clientRequests.id })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!parent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(clientRequestItems)
+        .where(eq(clientRequestItems.clientRequestId, parent.id))
+        .orderBy(asc(clientRequestItems.ordinal));
+      res.json({ items });
+    },
+  );
+
+  router.patch(
+    '/:id/items/:itemId',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ItemPatchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [parent] = await deps.db
+        .select({ id: clientRequests.id })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!parent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (parsed.data.label !== undefined) patch['label'] = parsed.data.label;
+      if (parsed.data.body !== undefined) patch['body'] = parsed.data.body;
+      if (parsed.data.dueDate !== undefined) patch['dueDate'] = parsed.data.dueDate;
+      const updated = await deps.db
+        .update(clientRequestItems)
+        .set(patch)
+        .where(
+          and(
+            eq(clientRequestItems.id, req.params['itemId']!),
+            eq(clientRequestItems.clientRequestId, parent.id),
+          ),
+        )
+        .returning({ id: clientRequestItems.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'item_not_found' });
+        return;
+      }
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/:id/items/:itemId/fulfill',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ItemFulfillSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [parent] = await deps.db
+        .select({ id: clientRequests.id })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!parent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const updated = await deps.db
+        .update(clientRequestItems)
+        .set({
+          status: 'FULFILLED',
+          fulfilledAt: new Date(),
+          fulfilledByAppUserId: session.appUserId,
+          fulfilledByFileId: parsed.data.fileId ?? null,
+          fulfilledText: parsed.data.text ?? null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(clientRequestItems.id, req.params['itemId']!),
+            eq(clientRequestItems.clientRequestId, parent.id),
+          ),
+        )
+        .returning({ id: clientRequestItems.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'item_not_found' });
+        return;
+      }
+      // Roll-up: if every REQUIRED item is FULFILLED, flip the parent to FULFILLED.
+      const remaining = await deps.db
+        .select({ id: clientRequestItems.id })
+        .from(clientRequestItems)
+        .where(
+          and(
+            eq(clientRequestItems.clientRequestId, parent.id),
+            eq(clientRequestItems.required, true),
+            sql`${clientRequestItems.status} != 'FULFILLED'`,
+          ),
+        )
+        .limit(1);
+      if (remaining.length === 0) {
+        await deps.db
+          .update(clientRequests)
+          .set({
+            status: 'FULFILLED',
+            fulfilledAt: new Date(),
+            fulfilledByAppUserId: session.appUserId,
+            updatedAt: new Date(),
+          })
+          .where(eq(clientRequests.id, parent.id));
+      }
       res.json({ ok: true });
     },
   );

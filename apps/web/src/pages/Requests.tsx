@@ -1,13 +1,22 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Stage 3 — staff Requests page. Firm-wide queue with status filter,
-// engagement filter, create + fulfill + dismiss actions.
+// Staff Requests page — 0084 overhaul. Filterable, sortable,
+// paginated list backed by /api/staff/requests, with a much richer
+// create form that supports templates, priority, tags, reminder
+// days, multi-item checklists, and a bulk-send mode that posts to
+// /api/staff/requests/bulk.
+//
+// Row click navigates to /requests/:id (RequestDetail page).
 
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+
+type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+type ItemKind = 'QUESTION' | 'DOCUMENT' | 'SIGNATURE';
 
 interface LinkedTimeEntry {
   id: string;
@@ -24,21 +33,72 @@ interface RequestRow {
   title: string;
   body: string;
   status: string;
+  priority: Priority;
+  tags: string[];
   dueDate: string | null;
   fulfilledAt: string | null;
   createdAt: string;
   linkedTimeEntry: LinkedTimeEntry | null;
 }
 
-const STATUS_OPTIONS = ['ALL', 'OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED'] as const;
+interface ClientLite {
+  id: string;
+  name: string;
+}
+
+interface EngagementLite {
+  id: string;
+  name: string;
+  clientId: string;
+}
+
+interface FirmUser {
+  id: string;
+  fullName: string;
+}
+
+interface RequestTemplate {
+  id: string;
+  key: string;
+  name: string;
+  titlePattern: string;
+  bodyPattern: string;
+  defaultPriority: Priority;
+  defaultDueOffsetDays: number | null;
+  defaultReminderDaysBefore: number | null;
+  defaultAssignedAppUserId: string | null;
+  status: string;
+  items: Array<{
+    id: string;
+    ordinal: number;
+    label: string;
+    body: string;
+    itemKind: ItemKind;
+    required: boolean;
+    defaultDueOffsetDays: number | null;
+  }>;
+}
+
+const STATUS_OPTIONS = ['ALL', 'OPEN', 'NEEDS_INFO', 'FULFILLED', 'DISMISSED', 'EXPIRED'] as const;
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
 
-function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger' {
+const PRIORITIES: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
+const SORT_OPTIONS = [
+  { value: 'created_at', label: 'Created' },
+  { value: 'due_date', label: 'Due date' },
+  { value: 'priority', label: 'Priority' },
+  { value: 'status', label: 'Status' },
+  { value: 'title', label: 'Title' },
+];
+
+function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger' | 'accent' {
   switch (status) {
     case 'OPEN':
       return 'warning';
     case 'FULFILLED':
       return 'success';
+    case 'NEEDS_INFO':
+      return 'accent';
     case 'DISMISSED':
     case 'EXPIRED':
       return 'neutral';
@@ -47,96 +107,320 @@ function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger
   }
 }
 
+function priorityTone(p: Priority): 'neutral' | 'warning' | 'danger' | 'accent' {
+  switch (p) {
+    case 'URGENT':
+      return 'danger';
+    case 'HIGH':
+      return 'warning';
+    case 'MEDIUM':
+      return 'accent';
+    case 'LOW':
+    default:
+      return 'neutral';
+  }
+}
+
+interface NewItemDraft {
+  ordinal: number;
+  label: string;
+  body: string;
+  itemKind: ItemKind;
+  required: boolean;
+}
+
+function emptyItem(ord: number): NewItemDraft {
+  return { ordinal: ord, label: '', body: '', itemKind: 'QUESTION', required: true };
+}
+
 export function RequestsPage(): JSX.Element {
+  const navigate = useNavigate();
   const [items, setItems] = useState<RequestRow[]>([]);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('OPEN');
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  // Create form
+
+  // Filter / sort / pagination state.
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('OPEN');
+  const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('');
+  const [assignedFilter, setAssignedFilter] = useState<string>('');
+  const [clientFilter, setClientFilter] = useState<string>('');
+  const [search, setSearch] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
+  const [dueAfter, setDueAfter] = useState('');
+  const [dueBefore, setDueBefore] = useState('');
+  const [sort, setSort] = useState<string>('created_at');
+  const [dir, setDir] = useState<'asc' | 'desc'>('desc');
+  const [limit, setLimit] = useState(25);
+  const [offset, setOffset] = useState(0);
+
+  // Reference data.
+  const [clients, setClients] = useState<ClientLite[]>([]);
+  const [engagements, setEngagements] = useState<EngagementLite[]>([]);
+  const [users, setUsers] = useState<FirmUser[]>([]);
+  const [templates, setTemplates] = useState<RequestTemplate[]>([]);
+
+  // Create form.
   const [showCreate, setShowCreate] = useState(false);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [createClientId, setCreateClientId] = useState('');
   const [createEngagementId, setCreateEngagementId] = useState('');
+  const [createTemplateId, setCreateTemplateId] = useState('');
   const [createTitle, setCreateTitle] = useState('');
   const [createBody, setCreateBody] = useState('');
+  const [createPriority, setCreatePriority] = useState<Priority>('MEDIUM');
+  const [createTags, setCreateTags] = useState('');
   const [createDue, setCreateDue] = useState('');
+  const [createReminder, setCreateReminder] = useState('');
+  const [createAssignee, setCreateAssignee] = useState('');
+  const [createItems, setCreateItems] = useState<NewItemDraft[]>([]);
+  const [bulkClientIds, setBulkClientIds] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
 
   async function load(): Promise<void> {
     setError(null);
     try {
-      const qs = statusFilter === 'ALL' ? '' : `?status=${statusFilter}`;
-      const r = await api<{ items: RequestRow[] }>(`/api/staff/requests${qs}`);
+      const qs = new URLSearchParams();
+      if (statusFilter !== 'ALL') qs.set('status', statusFilter);
+      if (priorityFilter) qs.set('priority', priorityFilter);
+      if (assignedFilter) qs.set('assignedAppUserId', assignedFilter);
+      if (clientFilter) qs.set('clientId', clientFilter);
+      if (search.trim()) qs.set('search', search.trim());
+      if (tagFilter.trim()) qs.set('tag', tagFilter.trim());
+      if (dueBefore) qs.set('dueBefore', dueBefore);
+      if (dueAfter) qs.set('dueAfter', dueAfter);
+      qs.set('sort', sort);
+      qs.set('dir', dir);
+      qs.set('limit', String(limit));
+      qs.set('offset', String(offset));
+      const r = await api<{ items: RequestRow[]; total: number }>(
+        `/api/staff/requests?${qs.toString()}`,
+      );
       setItems(r.items ?? []);
+      setTotal(r.total ?? 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     }
   }
 
+  async function loadRefData(): Promise<void> {
+    try {
+      const [c, e, u, t] = await Promise.all([
+        api<{ rows: ClientLite[] } | { items: ClientLite[] }>('/api/staff/clients?limit=500').catch(
+          () => ({ items: [] as ClientLite[] }),
+        ),
+        api<{ items: EngagementLite[] }>('/api/staff/engagements?limit=500').catch(() => ({
+          items: [] as EngagementLite[],
+        })),
+        api<{ items: FirmUser[] }>('/api/staff/firm-users').catch(() => ({
+          items: [] as FirmUser[],
+        })),
+        api<{ items: RequestTemplate[] }>('/api/staff/admin/templates/request').catch(() => ({
+          items: [] as RequestTemplate[],
+        })),
+      ]);
+      const cRows: ClientLite[] =
+        (c as { rows?: ClientLite[]; items?: ClientLite[] }).rows ??
+        (c as { items?: ClientLite[] }).items ??
+        [];
+      setClients(cRows);
+      setEngagements(e.items ?? []);
+      setUsers(u.items ?? []);
+      setTemplates((t.items ?? []).filter((tpl) => tpl.status !== 'ARCHIVED'));
+    } catch {
+      // Reference data is non-critical; the form still works with raw input.
+    }
+  }
+
+  useEffect(() => {
+    void loadRefData();
+  }, []);
+
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter]);
+  }, [
+    statusFilter,
+    priorityFilter,
+    assignedFilter,
+    clientFilter,
+    tagFilter,
+    dueBefore,
+    dueAfter,
+    sort,
+    dir,
+    limit,
+    offset,
+  ]);
 
-  async function fulfill(req: RequestRow): Promise<void> {
-    setBusy(req.id);
-    try {
-      await api(`/api/staff/requests/${req.id}/fulfill`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'fulfill_failed');
-    } finally {
-      setBusy(null);
+  // Search-on-Enter rather than every keystroke to avoid hammering.
+  function onSearchKey(e: React.KeyboardEvent<HTMLInputElement>): void {
+    if (e.key === 'Enter') {
+      setOffset(0);
+      void load();
     }
   }
 
-  async function dismiss(req: RequestRow): Promise<void> {
-    const reason = window.prompt('Reason for dismissing this request?');
-    if (reason == null) return;
-    setBusy(req.id);
-    try {
-      await api(`/api/staff/requests/${req.id}/dismiss`, {
-        method: 'POST',
-        body: JSON.stringify({ reason }),
-      });
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'dismiss_failed');
-    } finally {
-      setBusy(null);
+  // When template chosen, prefill priority/reminder/items.
+  function applyTemplate(tplId: string): void {
+    setCreateTemplateId(tplId);
+    if (!tplId) {
+      setCreateItems([]);
+      return;
     }
+    const tpl = templates.find((t) => t.id === tplId);
+    if (!tpl) return;
+    setCreatePriority(tpl.defaultPriority);
+    if (tpl.defaultReminderDaysBefore != null) {
+      setCreateReminder(String(tpl.defaultReminderDaysBefore));
+    }
+    if (tpl.defaultAssignedAppUserId) {
+      setCreateAssignee(tpl.defaultAssignedAppUserId);
+    }
+    setCreateItems(
+      tpl.items.map((i, idx) => ({
+        ordinal: idx,
+        label: i.label,
+        body: i.body ?? '',
+        itemKind: i.itemKind,
+        required: i.required,
+      })),
+    );
   }
 
-  async function create(): Promise<void> {
-    if (!createEngagementId || !createTitle) return;
+  const filteredEngagements = useMemo(
+    () => (createClientId ? engagements.filter((e) => e.clientId === createClientId) : engagements),
+    [engagements, createClientId],
+  );
+
+  function resetCreateForm(): void {
+    setCreateClientId('');
+    setCreateEngagementId('');
+    setCreateTemplateId('');
+    setCreateTitle('');
+    setCreateBody('');
+    setCreatePriority('MEDIUM');
+    setCreateTags('');
+    setCreateDue('');
+    setCreateReminder('');
+    setCreateAssignee('');
+    setCreateItems([]);
+    setBulkClientIds([]);
+    setBulkMode(false);
+    setShowCreate(false);
+  }
+
+  async function submitCreate(): Promise<void> {
+    setSubmitting(true);
+    setError(null);
     try {
-      await api('/api/staff/requests', {
-        method: 'POST',
-        body: JSON.stringify({
-          engagementId: createEngagementId,
-          title: createTitle,
-          body: createBody,
-          dueDate: createDue || null,
-        }),
-      });
-      setShowCreate(false);
-      setCreateEngagementId('');
-      setCreateTitle('');
-      setCreateBody('');
-      setCreateDue('');
+      const tagsArr = createTags
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
+      const itemsPayload = createItems
+        .filter((i) => i.label.trim().length > 0)
+        .map((i, idx) => ({
+          ordinal: idx,
+          label: i.label.trim(),
+          body: i.body.trim() || undefined,
+          itemKind: i.itemKind,
+          required: i.required,
+        }));
+
+      if (bulkMode) {
+        if (!createTemplateId) {
+          setError('Bulk send requires a template.');
+          return;
+        }
+        if (bulkClientIds.length === 0) {
+          setError('Pick at least one client.');
+          return;
+        }
+        const targets = bulkClientIds
+          .map((cid) => {
+            const eng = engagements.find((e) => e.clientId === cid);
+            if (!eng) return null;
+            return {
+              clientId: cid,
+              engagementId: eng.id,
+              priorityOverride: createPriority,
+              dueDateOverride: createDue || undefined,
+              assignedAppUserIdOverride: createAssignee || undefined,
+              tags: tagsArr.length > 0 ? tagsArr : undefined,
+            };
+          })
+          .filter((t): t is NonNullable<typeof t> => t !== null);
+        const resp = await api<{ created: number; skipped: Array<{ reason: string }> }>(
+          '/api/staff/requests/bulk',
+          {
+            method: 'POST',
+            body: JSON.stringify({ templateId: createTemplateId, targets }),
+          },
+        );
+        if (resp.skipped.length > 0) {
+          setError(`Created ${resp.created}; skipped ${resp.skipped.length}.`);
+        }
+      } else {
+        if (!createEngagementId) {
+          setError('Pick an engagement.');
+          return;
+        }
+        if (!createTemplateId && !createTitle.trim()) {
+          setError('Title is required when no template is picked.');
+          return;
+        }
+        await api('/api/staff/requests', {
+          method: 'POST',
+          body: JSON.stringify({
+            engagementId: createEngagementId,
+            templateId: createTemplateId || undefined,
+            title: createTitle.trim() || undefined,
+            body: createBody.trim() || undefined,
+            priority: createPriority,
+            tags: tagsArr.length > 0 ? tagsArr : undefined,
+            dueDate: createDue || undefined,
+            reminderDaysBefore: createReminder ? Number(createReminder) : undefined,
+            assignedAppUserId: createAssignee || undefined,
+            items: itemsPayload.length > 0 ? itemsPayload : undefined,
+          }),
+        });
+      }
+      resetCreateForm();
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'create_failed');
+    } finally {
+      setSubmitting(false);
     }
   }
 
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { OPEN: 0, FULFILLED: 0, DISMISSED: 0, EXPIRED: 0 };
-    for (const r of items) {
-      if (c[r.status] != null) c[r.status]! += 1;
-    }
-    return c;
-  }, [items]);
+  const clientOptions: ComboboxOption[] = useMemo(
+    () =>
+      clients.map((c) => ({
+        value: c.id,
+        label: c.name,
+      })),
+    [clients],
+  );
+  const engagementOptions: ComboboxOption[] = useMemo(
+    () =>
+      filteredEngagements.map((e) => ({
+        value: e.id,
+        label: e.name,
+      })),
+    [filteredEngagements],
+  );
+  const userOptions: ComboboxOption[] = useMemo(
+    () => users.map((u) => ({ value: u.id, label: u.fullName })),
+    [users],
+  );
+  const templateOptions: ComboboxOption[] = useMemo(
+    () => templates.map((t) => ({ value: t.id, label: t.name, description: t.key })),
+    [templates],
+  );
+
+  const page = Math.floor(offset / limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
@@ -146,18 +430,149 @@ export function RequestsPage(): JSX.Element {
         </Card>
       )}
 
+      <Card title="Filters">
+        <div
+          style={{
+            display: 'grid',
+            gap: tokens.space.sm,
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            alignItems: 'end',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Status</div>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {STATUS_OPTIONS.map((s) => (
+                <Button
+                  key={s}
+                  size="sm"
+                  variant={statusFilter === s ? 'primary' : 'secondary'}
+                  onClick={() => {
+                    setStatusFilter(s);
+                    setOffset(0);
+                  }}
+                >
+                  {s}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Priority</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <Button
+                size="sm"
+                variant={priorityFilter === '' ? 'primary' : 'secondary'}
+                onClick={() => {
+                  setPriorityFilter('');
+                  setOffset(0);
+                }}
+              >
+                Any
+              </Button>
+              {PRIORITIES.map((p) => (
+                <Button
+                  key={p}
+                  size="sm"
+                  variant={priorityFilter === p ? 'primary' : 'secondary'}
+                  onClick={() => {
+                    setPriorityFilter(p);
+                    setOffset(0);
+                  }}
+                >
+                  {p}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Assigned to</div>
+            <Combobox
+              options={[{ value: '', label: 'Anyone' }, ...userOptions]}
+              value={assignedFilter}
+              onChange={(v) => {
+                setAssignedFilter(v);
+                setOffset(0);
+              }}
+              placeholder="Anyone"
+              clearable
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Client</div>
+            <Combobox
+              options={[{ value: '', label: 'All clients' }, ...clientOptions]}
+              value={clientFilter}
+              onChange={(v) => {
+                setClientFilter(v);
+                setOffset(0);
+              }}
+              placeholder="All clients"
+              clearable
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Due after</div>
+            <input
+              type="date"
+              value={dueAfter}
+              onChange={(e) => {
+                setDueAfter(e.target.value);
+                setOffset(0);
+              }}
+              style={{ width: '100%', padding: tokens.space.sm }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Due before</div>
+            <input
+              type="date"
+              value={dueBefore}
+              onChange={(e) => {
+                setDueBefore(e.target.value);
+                setOffset(0);
+              }}
+              style={{ width: '100%', padding: tokens.space.sm }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Tag</div>
+            <input
+              type="text"
+              value={tagFilter}
+              onChange={(e) => {
+                setTagFilter(e.target.value);
+                setOffset(0);
+              }}
+              placeholder="e.g. urgent"
+              style={{ width: '100%', padding: tokens.space.sm }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, marginBottom: 4 }}>Search</div>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={onSearchKey}
+              placeholder="title / body (Enter)"
+              style={{ width: '100%', padding: tokens.space.sm }}
+            />
+          </div>
+        </div>
+      </Card>
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: tokens.space.sm }}>
-          {STATUS_OPTIONS.map((s) => (
-            <Button
-              key={s}
-              size="sm"
-              variant={statusFilter === s ? 'primary' : 'secondary'}
-              onClick={() => setStatusFilter(s)}
-            >
-              {s} {s !== 'ALL' && counts[s] != null ? `(${counts[s]})` : ''}
-            </Button>
-          ))}
+        <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Sort by</span>
+          <Combobox options={SORT_OPTIONS} value={sort} onChange={(v) => setSort(v)} width={160} />
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+          >
+            {dir === 'asc' ? '↑ asc' : '↓ desc'}
+          </Button>
         </div>
         <Button onClick={() => setShowCreate((v) => !v)}>
           {showCreate ? 'Cancel' : 'New request'}
@@ -165,54 +580,303 @@ export function RequestsPage(): JSX.Element {
       </div>
 
       {showCreate && (
-        <Card title="Create request">
+        <Card title={bulkMode ? 'Bulk send' : 'Create request'}>
           <div style={{ display: 'grid', gap: tokens.space.sm }}>
+            <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
+              <Button
+                size="sm"
+                variant={bulkMode ? 'secondary' : 'primary'}
+                onClick={() => setBulkMode(false)}
+              >
+                Single
+              </Button>
+              <Button
+                size="sm"
+                variant={bulkMode ? 'primary' : 'secondary'}
+                onClick={() => setBulkMode(true)}
+              >
+                Bulk (template only)
+              </Button>
+            </div>
+
             <label style={{ fontSize: 12 }}>
-              Engagement ID
-              <input
-                type="text"
-                value={createEngagementId}
-                onChange={(e) => setCreateEngagementId(e.target.value)}
-                style={{ width: '100%', padding: tokens.space.sm }}
+              Template {bulkMode && <span style={{ color: tokens.color.danger }}>*</span>}
+              <Combobox
+                options={[{ value: '', label: '— none —' }, ...templateOptions]}
+                value={createTemplateId}
+                onChange={(v) => applyTemplate(v)}
+                placeholder="— none —"
+                clearable
               />
             </label>
-            <label style={{ fontSize: 12 }}>
-              Title
-              <input
-                type="text"
-                value={createTitle}
-                onChange={(e) => setCreateTitle(e.target.value)}
-                style={{ width: '100%', padding: tokens.space.sm }}
-              />
-            </label>
-            <label style={{ fontSize: 12 }}>
-              Body (optional)
-              <textarea
-                value={createBody}
-                onChange={(e) => setCreateBody(e.target.value)}
-                rows={3}
-                style={{ width: '100%', padding: tokens.space.sm }}
-              />
-            </label>
-            <label style={{ fontSize: 12 }}>
-              Due date (optional)
-              <input
-                type="date"
-                value={createDue}
-                onChange={(e) => setCreateDue(e.target.value)}
-                style={{ padding: tokens.space.sm }}
-              />
-            </label>
-            <div>
-              <Button onClick={() => void create()} disabled={!createEngagementId || !createTitle}>
-                Create
+
+            {!bulkMode ? (
+              <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: tokens.space.sm,
+                  }}
+                >
+                  <div style={{ fontSize: 12 }}>
+                    <div style={{ marginBottom: 4 }}>Client</div>
+                    <Combobox
+                      ariaLabel="Client"
+                      options={clientOptions}
+                      value={createClientId}
+                      onChange={(v) => {
+                        setCreateClientId(v);
+                        setCreateEngagementId('');
+                      }}
+                      placeholder="Pick client"
+                    />
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <div style={{ marginBottom: 4 }}>
+                      Engagement <span style={{ color: tokens.color.danger }}>*</span>
+                    </div>
+                    <Combobox
+                      ariaLabel="Engagement"
+                      options={engagementOptions}
+                      value={createEngagementId}
+                      onChange={setCreateEngagementId}
+                      placeholder={
+                        createClientId ? 'Pick engagement' : 'Pick client first (or pick any)'
+                      }
+                    />
+                  </div>
+                </div>
+                <label style={{ fontSize: 12 }}>
+                  Title {!createTemplateId && <span style={{ color: tokens.color.danger }}>*</span>}
+                  <input
+                    type="text"
+                    value={createTitle}
+                    onChange={(e) => setCreateTitle(e.target.value)}
+                    placeholder={
+                      createTemplateId ? '(template title used if blank)' : 'Send 2026 W-2s'
+                    }
+                    style={{ width: '100%', padding: tokens.space.sm }}
+                  />
+                </label>
+                <label style={{ fontSize: 12 }}>
+                  Body
+                  <textarea
+                    value={createBody}
+                    onChange={(e) => setCreateBody(e.target.value)}
+                    rows={3}
+                    placeholder={createTemplateId ? '(template body used if blank)' : ''}
+                    style={{ width: '100%', padding: tokens.space.sm }}
+                  />
+                </label>
+              </>
+            ) : (
+              <label style={{ fontSize: 12 }}>
+                Clients to send to
+                <div
+                  style={{
+                    maxHeight: 200,
+                    overflow: 'auto',
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.md,
+                    padding: tokens.space.sm,
+                    display: 'grid',
+                    gap: 4,
+                  }}
+                >
+                  {clients.map((c) => (
+                    <label
+                      key={c.id}
+                      style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={bulkClientIds.includes(c.id)}
+                        onChange={(e) => {
+                          setBulkClientIds((prev) =>
+                            e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id),
+                          );
+                        }}
+                      />
+                      {c.name}
+                    </label>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  {bulkClientIds.length} selected. The first active engagement on each client will
+                  be used.
+                </div>
+              </label>
+            )}
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                gap: tokens.space.sm,
+              }}
+            >
+              <div style={{ fontSize: 12 }}>
+                <div style={{ marginBottom: 4 }}>Priority</div>
+                <Combobox
+                  ariaLabel="Priority"
+                  options={PRIORITIES.map((p) => ({ value: p, label: p }))}
+                  value={createPriority}
+                  onChange={(v) => setCreatePriority(v as Priority)}
+                />
+              </div>
+              <label style={{ fontSize: 12 }}>
+                Due date
+                <input
+                  type="date"
+                  value={createDue}
+                  onChange={(e) => setCreateDue(e.target.value)}
+                  style={{ width: '100%', padding: tokens.space.sm }}
+                />
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Reminder days before due
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={createReminder}
+                  onChange={(e) => setCreateReminder(e.target.value)}
+                  placeholder="e.g. 3"
+                  style={{ width: '100%', padding: tokens.space.sm }}
+                />
+              </label>
+              <div style={{ fontSize: 12 }}>
+                <div style={{ marginBottom: 4 }}>Assigned to</div>
+                <Combobox
+                  ariaLabel="Assigned to"
+                  options={[{ value: '', label: 'Nobody' }, ...userOptions]}
+                  value={createAssignee}
+                  onChange={setCreateAssignee}
+                  placeholder="Nobody"
+                  clearable
+                />
+              </div>
+              <label style={{ fontSize: 12 }}>
+                Tags (comma-separated)
+                <input
+                  type="text"
+                  value={createTags}
+                  onChange={(e) => setCreateTags(e.target.value)}
+                  placeholder="urgent, audit"
+                  style={{ width: '100%', padding: tokens.space.sm }}
+                />
+              </label>
+            </div>
+
+            {!bulkMode && (
+              <div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    marginBottom: 4,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <span>Checklist items ({createItems.length})</span>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setCreateItems((prev) => [...prev, emptyItem(prev.length)])}
+                  >
+                    + Item
+                  </Button>
+                </div>
+                {createItems.length === 0 ? (
+                  <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                    No items. Pick a template above or add items here.
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    {createItems.map((it, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1fr 130px 100px 60px 40px',
+                          gap: 4,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <input
+                          type="text"
+                          value={it.label}
+                          onChange={(e) =>
+                            setCreateItems((prev) =>
+                              prev.map((x, i) => (i === idx ? { ...x, label: e.target.value } : x)),
+                            )
+                          }
+                          placeholder={`Item ${idx + 1}`}
+                          style={{ padding: tokens.space.sm }}
+                        />
+                        <select
+                          value={it.itemKind}
+                          onChange={(e) =>
+                            setCreateItems((prev) =>
+                              prev.map((x, i) =>
+                                i === idx ? { ...x, itemKind: e.target.value as ItemKind } : x,
+                              ),
+                            )
+                          }
+                          style={{ padding: tokens.space.sm }}
+                        >
+                          <option value="QUESTION">Question</option>
+                          <option value="DOCUMENT">Document</option>
+                          <option value="SIGNATURE">Signature</option>
+                        </select>
+                        <label
+                          style={{ fontSize: 12, display: 'flex', gap: 4, alignItems: 'center' }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={it.required}
+                            onChange={(e) =>
+                              setCreateItems((prev) =>
+                                prev.map((x, i) =>
+                                  i === idx ? { ...x, required: e.target.checked } : x,
+                                ),
+                              )
+                            }
+                          />
+                          required
+                        </label>
+                        <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                          #{idx + 1}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setCreateItems((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          ✕
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: tokens.space.sm }}>
+              <Button onClick={() => void submitCreate()} disabled={submitting}>
+                {submitting ? 'Sending…' : bulkMode ? 'Send to all' : 'Create'}
+              </Button>
+              <Button variant="ghost" onClick={resetCreateForm}>
+                Cancel
               </Button>
             </div>
           </div>
         </Card>
       )}
 
-      <Card title={`Requests (${items.length})`}>
+      <Card title={`Requests (${total})`}>
         <Table<RequestRow>
           rows={items}
           rowKey={(r) => r.id}
@@ -222,12 +886,29 @@ export function RequestsPage(): JSX.Element {
               key: 'title',
               header: 'Title',
               render: (r) => (
-                <div>
+                <div
+                  onClick={() => navigate(`/requests/${r.id}`)}
+                  style={{ cursor: 'pointer' }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') navigate(`/requests/${r.id}`);
+                  }}
+                >
                   <div style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</div>
                   {r.body && (
                     <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                       {r.body.slice(0, 120)}
                       {r.body.length > 120 ? '…' : ''}
+                    </div>
+                  )}
+                  {r.tags.length > 0 && (
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                      {r.tags.map((t) => (
+                        <Pill key={t} tone="neutral">
+                          {t}
+                        </Pill>
+                      ))}
                     </div>
                   )}
                   {r.linkedTimeEntry && (
@@ -241,6 +922,11 @@ export function RequestsPage(): JSX.Element {
               ),
             },
             {
+              key: 'priority',
+              header: 'Priority',
+              render: (r) => <Pill tone={priorityTone(r.priority)}>{r.priority}</Pill>,
+            },
+            {
               key: 'status',
               header: 'Status',
               render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill>,
@@ -252,29 +938,59 @@ export function RequestsPage(): JSX.Element {
               render: (r) => new Date(r.createdAt).toLocaleDateString(),
             },
             {
-              key: 'actions',
+              key: 'open',
               header: '',
-              render: (r) =>
-                r.status === 'OPEN' ? (
-                  <div style={{ display: 'flex', gap: tokens.space.xs }}>
-                    <Button size="sm" onClick={() => void fulfill(r)} disabled={busy === r.id}>
-                      Fulfill
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => void dismiss(r)}
-                      disabled={busy === r.id}
-                    >
-                      Dismiss
-                    </Button>
-                  </div>
-                ) : (
-                  <span>—</span>
-                ),
+              render: (r) => (
+                <Button size="sm" variant="ghost" onClick={() => navigate(`/requests/${r.id}`)}>
+                  Open
+                </Button>
+              ),
             },
           ]}
         />
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginTop: tokens.space.sm,
+            fontSize: 12,
+          }}
+        >
+          <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
+            <span>
+              Page {page} of {totalPages}
+            </span>
+            <Combobox
+              options={[25, 50, 100, 200].map((n) => ({ value: String(n), label: `${n}/page` }))}
+              value={String(limit)}
+              onChange={(v) => {
+                setLimit(Number(v));
+                setOffset(0);
+              }}
+              width={110}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: tokens.space.sm }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+              disabled={offset === 0}
+            >
+              ← Prev
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setOffset(offset + limit)}
+              disabled={offset + limit >= total}
+            >
+              Next →
+            </Button>
+          </div>
+        </div>
       </Card>
     </div>
   );

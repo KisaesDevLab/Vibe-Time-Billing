@@ -8,7 +8,14 @@ import { z } from 'zod';
 import { desc, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientRequests, engagements } from '@vibe/db/schema';
+import {
+  clientRequestAttachments,
+  clientRequestItems,
+  clientRequests,
+  engagements,
+  files,
+} from '@vibe/db/schema';
+import { and, asc, sql } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
@@ -20,6 +27,18 @@ const FulfillSchema = z.object({
   reason: z.string().max(500).optional(),
   messageId: z.string().uuid().nullable().optional(),
   fileId: z.string().uuid().nullable().optional(),
+});
+
+const ReplySchema = z.object({ text: z.string().min(1).max(2000) });
+
+const AttachmentSchema = z.object({
+  fileId: z.string().uuid(),
+  clientRequestItemId: z.string().uuid().nullable().optional(),
+});
+
+const ItemFulfillSchema = z.object({
+  fileId: z.string().uuid().nullable().optional(),
+  text: z.string().max(2000).optional(),
 });
 
 export interface PortalRequestsDeps {
@@ -56,6 +75,278 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       .orderBy(desc(clientRequests.createdAt))
       .limit(200);
     res.json({ items: rows });
+  });
+
+  // 0084 — single-request detail with items + attachments + reply
+  // history. Used by the new RequestDetail.tsx portal page.
+  router.get('/:id', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const [request] = await deps.db
+      .select()
+      .from(clientRequests)
+      .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+      .where(
+        and(
+          eq(clientRequests.id, req.params['id']!),
+          eq(engagements.clientId, session.activeClientId),
+        ),
+      )
+      .limit(1);
+    if (!request) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const items = await deps.db
+      .select()
+      .from(clientRequestItems)
+      .where(eq(clientRequestItems.clientRequestId, request.client_request.id))
+      .orderBy(asc(clientRequestItems.ordinal));
+    const attachments = await deps.db
+      .select({
+        id: clientRequestAttachments.id,
+        clientRequestItemId: clientRequestAttachments.clientRequestItemId,
+        fileId: clientRequestAttachments.fileId,
+        uploadedAt: clientRequestAttachments.uploadedAt,
+        uploadedByPortalIdentityId: clientRequestAttachments.uploadedByPortalIdentityId,
+        fileName: files.originalFilename,
+        fileSize: files.sizeBytes,
+      })
+      .from(clientRequestAttachments)
+      .leftJoin(files, eq(files.id, clientRequestAttachments.fileId))
+      .where(eq(clientRequestAttachments.clientRequestId, request.client_request.id))
+      .orderBy(asc(clientRequestAttachments.uploadedAt));
+    res.json({ request: request.client_request, items, attachments });
+  });
+
+  // 0084 — typed client reply (Q&A). Saves to client_reply_text.
+  router.post('/:id/reply', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = ReplySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const [scoped] = await deps.db
+      .select({ id: clientRequests.id })
+      .from(clientRequests)
+      .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+      .where(
+        and(
+          eq(clientRequests.id, req.params['id']!),
+          eq(engagements.clientId, session.activeClientId),
+        ),
+      )
+      .limit(1);
+    if (!scoped) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    await deps.db
+      .update(clientRequests)
+      .set({ clientReplyText: parsed.data.text, updatedAt: new Date() })
+      .where(eq(clientRequests.id, scoped.id));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'client_request',
+      entityId: scoped.id,
+      actorPortalIdentityId: session.portalIdentityId,
+      activeClientId: session.activeClientId,
+      after: { kind: 'portal_reply' },
+      ip: req.ip ?? null,
+      userAgent: req.get('user-agent') ?? null,
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
+
+  // 0084 — client flips request back to NEEDS_INFO with a typed
+  // message. Staff must then PATCH/reopen.
+  router.post('/:id/needs-info', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = ReplySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const [scoped] = await deps.db
+      .select({ id: clientRequests.id })
+      .from(clientRequests)
+      .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+      .where(
+        and(
+          eq(clientRequests.id, req.params['id']!),
+          eq(engagements.clientId, session.activeClientId),
+        ),
+      )
+      .limit(1);
+    if (!scoped) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    await deps.db
+      .update(clientRequests)
+      .set({
+        status: 'NEEDS_INFO',
+        clientReplyText: parsed.data.text,
+        updatedAt: new Date(),
+      })
+      .where(eq(clientRequests.id, scoped.id));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'client_request',
+      entityId: scoped.id,
+      actorPortalIdentityId: session.portalIdentityId,
+      activeClientId: session.activeClientId,
+      after: { kind: 'portal_needs_info', status: 'NEEDS_INFO' },
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
+
+  // 0084 — record a portal file upload as an attachment to the request
+  // (or one of its items). Caller must already have uploaded the file
+  // via the existing portal file-manager v2 flow; this just records
+  // the link.
+  router.post('/:id/attachments', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = AttachmentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const [scoped] = await deps.db
+      .select({ id: clientRequests.id })
+      .from(clientRequests)
+      .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+      .where(
+        and(
+          eq(clientRequests.id, req.params['id']!),
+          eq(engagements.clientId, session.activeClientId),
+        ),
+      )
+      .limit(1);
+    if (!scoped) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    // File must belong to this client (scope guard against pasting
+    // someone else's file id).
+    const [file] = await deps.db
+      .select({ id: files.id })
+      .from(files)
+      .where(and(eq(files.id, parsed.data.fileId), eq(files.clientId, session.activeClientId)))
+      .limit(1);
+    if (!file) {
+      res.status(404).json({ error: 'file_not_found' });
+      return;
+    }
+    const [row] = await deps.db
+      .insert(clientRequestAttachments)
+      .values({
+        clientRequestId: scoped.id,
+        clientRequestItemId: parsed.data.clientRequestItemId ?? null,
+        fileId: parsed.data.fileId,
+        uploadedByPortalIdentityId: session.portalIdentityId,
+      })
+      .returning({ id: clientRequestAttachments.id });
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'client_request_attachment',
+      entityId: row?.id ?? null,
+      actorPortalIdentityId: session.portalIdentityId,
+      activeClientId: session.activeClientId,
+      after: { fileId: parsed.data.fileId, itemId: parsed.data.clientRequestItemId ?? null },
+    }).catch(() => undefined);
+    res.status(201).json({ id: row?.id });
+  });
+
+  // 0084 — per-item fulfill from the portal. Marks the item FULFILLED
+  // and rolls up the parent when every required item is done.
+  router.post('/:id/items/:itemId/fulfill', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = ItemFulfillSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const [scoped] = await deps.db
+      .select({ id: clientRequests.id })
+      .from(clientRequests)
+      .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+      .where(
+        and(
+          eq(clientRequests.id, req.params['id']!),
+          eq(engagements.clientId, session.activeClientId),
+        ),
+      )
+      .limit(1);
+    if (!scoped) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const updated = await deps.db
+      .update(clientRequestItems)
+      .set({
+        status: 'FULFILLED',
+        fulfilledAt: new Date(),
+        fulfilledByPortalIdentityId: session.portalIdentityId,
+        fulfilledByFileId: parsed.data.fileId ?? null,
+        fulfilledText: parsed.data.text ?? null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(clientRequestItems.id, req.params['itemId']!),
+          eq(clientRequestItems.clientRequestId, scoped.id),
+        ),
+      )
+      .returning({ id: clientRequestItems.id });
+    if (updated.length === 0) {
+      res.status(404).json({ error: 'item_not_found' });
+      return;
+    }
+    // Roll-up to parent.
+    const remaining = await deps.db
+      .select({ id: clientRequestItems.id })
+      .from(clientRequestItems)
+      .where(
+        and(
+          eq(clientRequestItems.clientRequestId, scoped.id),
+          eq(clientRequestItems.required, true),
+          sql`${clientRequestItems.status} != 'FULFILLED'`,
+        ),
+      )
+      .limit(1);
+    if (remaining.length === 0) {
+      await deps.db
+        .update(clientRequests)
+        .set({
+          status: 'FULFILLED',
+          fulfilledAt: new Date(),
+          fulfilledByPortalIdentityId: session.portalIdentityId,
+          updatedAt: new Date(),
+        })
+        .where(eq(clientRequests.id, scoped.id));
+    }
+    res.json({ ok: true });
   });
 
   router.post('/:id/fulfill', async (req: Request, res: Response) => {

@@ -25,6 +25,7 @@ import { PaymentMethodsPage } from './pages/PaymentMethods';
 import { ProfilePage } from './pages/Profile';
 import { ProposalPage } from './pages/Proposal';
 import { RequestsPage } from './pages/Requests';
+import { RequestDetailPage } from './pages/RequestDetail';
 import { PortalRetainersPage } from './pages/Retainers';
 import { RetainerOfferPage } from './pages/RetainerOffer';
 import { StatementPage } from './pages/Statement';
@@ -87,6 +88,7 @@ function PortalRoutes(): JSX.Element {
                   <Route path="/invoices/*" element={<PortalInvoicesPage />} />
                   <Route path="/messages" element={<MessagesPage />} />
                   <Route path="/requests" element={<RequestsPage />} />
+                  <Route path="/requests/:id" element={<RequestDetailPage />} />
                   <Route path="/letters" element={<LettersPage />} />
                   <Route path="/files" element={<FilesPage />} />
                   <Route path="/files/:id" element={<FilePreviewPage />} />
