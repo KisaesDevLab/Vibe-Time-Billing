@@ -16,6 +16,7 @@ import { and, eq, lte, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  billingBatchEngagements,
   billingBatchEntries,
   billingBatches,
   clients,
@@ -174,6 +175,14 @@ export async function runRecurringBillingTick(
           })
           .returning({ id: billingBatches.id });
         if (!batch) throw new Error('batch insert failed');
+
+        // 0086 — record the single-engagement set in the join table so
+        // GET handlers can read engagements uniformly via the join.
+        await tx.insert(billingBatchEngagements).values({
+          billingBatchId: batch.id,
+          engagementId: plan.engagementId,
+          ordinal: 0,
+        });
 
         // Attach the rolled-up entries to the batch so they're flagged
         // as billed and won't be picked up by the next tick.

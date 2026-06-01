@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import {
   adjustmentAllocations,
   adjustments,
+  billingBatchEngagements,
   billingBatchEntries,
   billingBatches,
   clients,
@@ -529,15 +530,38 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         return;
       }
 
-      const [eng] = await deps.db
-        .select()
-        .from(engagements)
-        .where(eq(engagements.id, batch.engagementId))
-        .limit(1);
-      if (!eng) {
+      // 0086 — load the full engagement set. Single-engagement batches
+      // still produce a 1-element list (the batch's primary). The first
+      // engagement in ordinal order acts as the "header" engagement for
+      // legacy code paths (mixed-mode + surcharge + tax pull off it).
+      const engLinks = await deps.db
+        .select({ engagementId: billingBatchEngagements.engagementId })
+        .from(billingBatchEngagements)
+        .where(eq(billingBatchEngagements.billingBatchId, batch.id))
+        .orderBy(billingBatchEngagements.ordinal);
+      const engIds =
+        engLinks.length > 0
+          ? engLinks.map((l) => l.engagementId)
+          : batch.engagementId
+            ? [batch.engagementId]
+            : [];
+      if (engIds.length === 0) {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
+      const engRows = await deps.db
+        .select()
+        .from(engagements)
+        .where(inArray(engagements.id, engIds));
+      if (engRows.length !== engIds.length) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      // Preserve pick order.
+      const engById = new Map(engRows.map((r) => [r.id, r]));
+      const engsInOrder = engIds.map((id) => engById.get(id)!);
+      const eng = engsInOrder[0]!; // "primary" — used for surcharge/tax/mixed-mode config
+      const isMultiEngagement = engsInOrder.length > 1;
       const [client] = await deps.db
         .select()
         .from(clients)
@@ -609,6 +633,12 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       // with later actions can't ship a mismatched invoice.
       const savedLines = batch.invoiceLineItems ?? null;
       let lines: LineItem[];
+      // 0086 — parallel array to `lines` carrying each line's
+      // engagement_id. For single-engagement batches every entry is
+      // the primary engagement; for multi-engagement we tag each
+      // TIME_AGGREGATE line with the engagement it summarizes, and
+      // surcharge/tax lines (if any) carry the primary engagement.
+      let lineEngagementIds: Array<string | null>;
       if (savedLines && savedLines.length > 0) {
         const savedSum = savedLines.reduce((s, l) => s + l.amountCents, 0);
         if (savedSum !== lineAmount) {
@@ -625,6 +655,65 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           description: l.description,
           amountCents: l.amountCents,
         }));
+        // Saved composition can't carry per-line engagementId in its
+        // current jsonb shape, so we attribute each line to the
+        // primary (first) engagement.
+        lineEngagementIds = lines.map(() => eng.id);
+      } else if (isMultiEngagement) {
+        // 0086 — multi-engagement composition: one TIME_AGGREGATE line
+        // per engagement, sourced from that engagement's included WIP
+        // slice. Adjustments are netted onto the FIRST (primary) line
+        // since adjustment_allocations are batch-scoped, not engagement
+        // scoped — applying them per-engagement would require a
+        // separate allocation method. Mixed-mode, surcharge, and tax
+        // are skipped in v1 because they're engagement-level configs
+        // that don't generalize across N engagements.
+        const perEng = await deps.db
+          .select({
+            engagementId: timeEntries.engagementId,
+            inScope: sql<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
+            overage: sql<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
+          })
+          .from(billingBatchEntries)
+          .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
+          .where(
+            and(
+              eq(billingBatchEntries.billingBatchId, batch.id),
+              eq(billingBatchEntries.action, 'INCLUDE'),
+            ),
+          )
+          .groupBy(timeEntries.engagementId);
+        const sumByEng = new Map(
+          perEng.map((r) => [r.engagementId, Number(r.inScope) + Number(r.overage)]),
+        );
+        const built: LineItem[] = [];
+        const builtEngIds: Array<string | null> = [];
+        engsInOrder.forEach((e, idx) => {
+          const wip = sumByEng.get(e.id) ?? 0;
+          const lineAmt = idx === 0 ? wip + adjTotal : wip;
+          // Skip zero-value engagements so we don't litter invoices
+          // with $0 lines.
+          if (lineAmt === 0) return;
+          built.push({
+            kind: 'TIME_AGGREGATE',
+            description: `${e.name} — ${batch.periodStart} to ${batch.periodEnd}`,
+            amountCents: lineAmt,
+          });
+          builtEngIds.push(e.id);
+        });
+        if (built.length === 0) {
+          // All engagements had zero WIP (very unusual but possible).
+          // Fall back to a single $0 line on the primary so the invoice
+          // still has at least one line item.
+          built.push({
+            kind: 'TIME_AGGREGATE',
+            description: `${eng.name} — ${batch.periodStart} to ${batch.periodEnd}`,
+            amountCents: lineAmount,
+          });
+          builtEngIds.push(eng.id);
+        }
+        lines = built;
+        lineEngagementIds = builtEngIds;
       } else {
         // Phase 10 #10/#11 — mixed-mode invoice composer.
         // For RECURRING_SUBSCRIPTION engagements with mixedModeEnabled=true,
@@ -662,12 +751,16 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
                 amountCents: lineAmount,
               },
             ];
+        lineEngagementIds = lines.map(() => eng.id);
       }
       // v2 — append per-engagement surcharge + sales tax. Order
       // matters: surcharge is computed against the pre-tax subtotal,
       // then tax is computed against (subtotal + surcharge).
+      // 0086 — surcharge + tax are engagement-level configs; for
+      // multi-engagement invoices we skip them (the primary engagement's
+      // config wouldn't be correct for the other engagements' slices).
       const preExtrasTotals = computeTotals(lines);
-      if (eng.surchargeEnabled) {
+      if (!isMultiEngagement && eng.surchargeEnabled) {
         // Resolve label: engagement override → firm default → 'Surcharge'.
         const [fsRow] = await deps.db
           .select({ defaultSurchargeLabel: firmSettings.defaultSurchargeLabel })
@@ -682,9 +775,12 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           amountCents: Number(eng.surchargeAmountCents),
           label,
         });
-        if (line) lines.push(line);
+        if (line) {
+          lines.push(line);
+          lineEngagementIds.push(eng.id);
+        }
       }
-      if (eng.taxEnabled && eng.taxRateBps > 0) {
+      if (!isMultiEngagement && eng.taxEnabled && eng.taxRateBps > 0) {
         const surchargeSoFar = lines
           .filter((l) => l.kind === 'SURCHARGE')
           .reduce((s, l) => s + l.amountCents, 0);
@@ -694,7 +790,10 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           rateBps: eng.taxRateBps,
           label: eng.taxLabel,
         });
-        if (line) lines.push(line);
+        if (line) {
+          lines.push(line);
+          lineEngagementIds.push(eng.id);
+        }
       }
       const totals = computeTotals(lines);
 
@@ -708,7 +807,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           .values({
             firmId: session.firmId,
             clientId: client.id,
-            primaryEngagementId: eng.id,
+            // 0086 — primary_engagement_id is NULL for consolidated
+            // (multi-engagement) invoices, per the column comment in
+            // packages/db/src/schema/core.ts. Single-engagement
+            // invoices keep populating the convenience pointer.
+            primaryEngagementId: isMultiEngagement ? null : eng.id,
             invoiceNumber,
             issueDate,
             dueDate,
@@ -731,7 +834,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             kind: l.kind,
             description: l.description,
             amountCents: l.amountCents,
-            engagementId: eng.id,
+            // 0086 — each line carries the engagement it belongs to.
+            // For single-engagement invoices every line ties back to
+            // `eng.id`; for multi-engagement, TIME_AGGREGATE lines tie
+            // to their specific engagement (built above).
+            engagementId: lineEngagementIds[i] ?? eng.id,
             sourceRefType: 'billing_batch',
             sourceRefId: batch.id,
             sortOrder: i,

@@ -11,6 +11,9 @@ interface BatchRow {
   id: string;
   engagementId: string;
   engagementName: string;
+  // 0086 — full list of engagements on this batch (primary first). One
+  // element for single-engagement batches; >1 for consolidated bills.
+  engagements?: Array<{ id: string; name: string }>;
   clientName: string | null;
   periodStart: string;
   periodEnd: string;
@@ -48,6 +51,8 @@ interface BatchDetail {
   entries: BatchEntry[];
   aging: Record<string, number>;
   engagement?: { id: string; name: string; clientId: string; clientName: string } | null;
+  // 0086 — full engagement list (primary first) for the batch header.
+  engagements?: Array<{ id: string; name: string; clientId: string; clientName: string }>;
   adjustmentTotalCents?: number;
 }
 
@@ -76,7 +81,12 @@ function BatchListPage(): JSX.Element {
   // 0050 — client → engagement order. URL params from WIP "Bill" buttons
   // prefill all four fields.
   const [clientId, setClientId] = useState(search.get('clientId') ?? '');
-  const [engagementId, setEngagementId] = useState(search.get('engagementId') ?? '');
+  // 0086 — multi-select engagements. URL param `engagementId` (legacy
+  // WIP "Bill" CTA) seeds a 1-element list.
+  const seedEng = search.get('engagementId');
+  const [selectedEngagementIds, setSelectedEngagementIds] = useState<string[]>(
+    seedEng ? [seedEng] : [],
+  );
   const [periodStart, setPeriodStart] = useState(
     search.get('periodStart') ??
       new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
@@ -113,18 +123,34 @@ function BatchListPage(): JSX.Element {
     [engagements, clientId],
   );
 
-  // If the selected engagement no longer belongs to the picked client, clear it.
+  // 0086 — when the client changes, drop any selected engagements that
+  // don't belong to the new client. Keeps the list internally
+  // consistent without surprising the user.
   useEffect(() => {
-    if (engagementId && !filteredEngagements.some((e) => e.id === engagementId)) {
-      setEngagementId('');
-    }
-  }, [filteredEngagements, engagementId]);
+    const allowed = new Set(filteredEngagements.map((e) => e.id));
+    setSelectedEngagementIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [filteredEngagements]);
 
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
+    if (selectedEngagementIds.length === 0) {
+      setError('Select at least one engagement.');
+      return;
+    }
+    if (kind === 'RETAINER' && selectedEngagementIds.length > 1) {
+      setError('Retainer batches can only cover a single engagement.');
+      return;
+    }
     try {
-      const body: Record<string, unknown> = { engagementId, periodStart, periodEnd, kind };
+      const body: Record<string, unknown> = {
+        // 0086 — multi-engagement payload. The server also accepts the
+        // legacy `engagementId` singular for backward compat.
+        engagementIds: selectedEngagementIds,
+        periodStart,
+        periodEnd,
+        kind,
+      };
       if (kind === 'RETAINER') {
         const cents = Math.round(Number(retainerTargetDollars) * 100);
         if (!Number.isFinite(cents) || cents <= 0) {
@@ -146,80 +172,199 @@ function BatchListPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <Card title="Open a billing batch">
-        <form
-          onSubmit={create}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr auto',
-            gap: 12,
-            alignItems: 'end',
-          }}
-        >
-          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-              Client
+        <form onSubmit={create} style={{ display: 'grid', gap: 12 }}>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr 1fr',
+              gap: 12,
+              alignItems: 'end',
+            }}
+          >
+            <div style={{ display: 'block', fontFamily: tokens.font.body }}>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Client
+              </div>
+              <Combobox
+                ariaLabel="Client"
+                required
+                value={clientId}
+                onChange={setClientId}
+                options={clients.map((c) => ({ value: c.id, label: c.name }))}
+                placeholder="— select —"
+              />
             </div>
-            <Combobox
-              ariaLabel="Client"
-              required
-              value={clientId}
-              onChange={setClientId}
-              options={clients.map((c) => ({ value: c.id, label: c.name }))}
-              placeholder="— select —"
-            />
-          </div>
-          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-              Engagement
-            </div>
-            <Combobox
-              ariaLabel="Engagement"
-              required
-              value={engagementId}
-              onChange={setEngagementId}
-              options={filteredEngagements.map((e) => ({ value: e.id, label: e.name }))}
-              placeholder={clientId ? '— select —' : 'Pick a client first'}
-            />
-          </div>
-          <Input
-            type="date"
-            label="Period start"
-            value={periodStart}
-            onChange={(e) => setPeriodStart(e.target.value)}
-          />
-          <Input
-            type="date"
-            label="Period end"
-            value={periodEnd}
-            onChange={(e) => setPeriodEnd(e.target.value)}
-          />
-          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-              Batch type
-            </div>
-            <Combobox
-              ariaLabel="Batch type"
-              value={kind}
-              onChange={(v) => setKind(v as 'STANDARD' | 'RETAINER')}
-              options={[
-                { value: 'STANDARD', label: 'Standard' },
-                { value: 'RETAINER', label: 'Retainer' },
-              ]}
-            />
-          </div>
-          <Button type="submit" disabled={!engagementId || !clientId}>
-            Create
-          </Button>
-          {kind === 'RETAINER' && (
             <Input
-              type="text"
-              inputMode="decimal"
-              label="Retainer target ($)"
-              value={retainerTargetDollars}
-              onChange={(e) => setRetainerTargetDollars(e.target.value)}
-              placeholder="0.00"
+              type="date"
+              label="Period start"
+              value={periodStart}
+              onChange={(e) => setPeriodStart(e.target.value)}
             />
-          )}
+            <Input
+              type="date"
+              label="Period end"
+              value={periodEnd}
+              onChange={(e) => setPeriodEnd(e.target.value)}
+            />
+            <div style={{ display: 'block', fontFamily: tokens.font.body }}>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Batch type
+              </div>
+              <Combobox
+                ariaLabel="Batch type"
+                value={kind}
+                onChange={(v) => setKind(v as 'STANDARD' | 'RETAINER')}
+                options={[
+                  { value: 'STANDARD', label: 'Standard' },
+                  { value: 'RETAINER', label: 'Retainer' },
+                ]}
+              />
+            </div>
+          </div>
+
+          {/* 0086 — multi-engagement checkbox list. One bill can cover
+              many engagements for the same client. Retainer batches
+              stay single-engagement (server enforces this too). */}
+          <div style={{ display: 'block', fontFamily: tokens.font.body }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: tokens.color.textMuted,
+                marginBottom: 4,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span>
+                Engagements{' '}
+                {selectedEngagementIds.length > 0 && (
+                  <span style={{ color: tokens.color.text }}>
+                    ({selectedEngagementIds.length} selected)
+                  </span>
+                )}
+              </span>
+              {filteredEngagements.length > 0 && (
+                <span style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedEngagementIds(
+                        kind === 'RETAINER'
+                          ? filteredEngagements.slice(0, 1).map((e) => e.id)
+                          : filteredEngagements.map((e) => e.id),
+                      )
+                    }
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: tokens.color.accent,
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEngagementIds([])}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: tokens.color.accent,
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    Clear
+                  </button>
+                </span>
+              )}
+            </div>
+            {!clientId ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+                Pick a client first.
+              </p>
+            ) : filteredEngagements.length === 0 ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+                No engagements found for this client.
+              </p>
+            ) : (
+              <div
+                role="group"
+                aria-label="Engagements to bill"
+                style={{
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  padding: 8,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                  gap: 4,
+                  background: tokens.color.surface,
+                }}
+              >
+                {filteredEngagements.map((e) => {
+                  const checked = selectedEngagementIds.includes(e.id);
+                  return (
+                    <label
+                      key={e.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 13,
+                        cursor: 'pointer',
+                        padding: '4px 6px',
+                        borderRadius: tokens.radius.sm,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(evt) => {
+                          setSelectedEngagementIds((prev) =>
+                            evt.target.checked
+                              ? // Retainer: one engagement only — replace.
+                                kind === 'RETAINER'
+                                ? [e.id]
+                                : [...prev, e.id]
+                              : prev.filter((id) => id !== e.id),
+                          );
+                        }}
+                      />
+                      <span>{e.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            {selectedEngagementIds.length > 1 && (
+              <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>
+                Consolidated bill: one invoice covering {selectedEngagementIds.length} engagements.
+                Surcharge and tax are skipped on consolidated bills.
+              </p>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'end', gap: 12 }}>
+            <Button type="submit" disabled={selectedEngagementIds.length === 0 || !clientId}>
+              Create
+            </Button>
+            {kind === 'RETAINER' && (
+              <Input
+                type="text"
+                inputMode="decimal"
+                label="Retainer target ($)"
+                value={retainerTargetDollars}
+                onChange={(e) => setRetainerTargetDollars(e.target.value)}
+                placeholder="0.00"
+              />
+            )}
+          </div>
         </form>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
       </Card>
@@ -233,11 +378,25 @@ function BatchListPage(): JSX.Element {
               {
                 key: 'name',
                 header: 'Engagement',
-                render: (b) => (
-                  <Link to={`/billing/${b.id}`} style={{ color: tokens.color.accent }}>
-                    {b.engagementName}
-                  </Link>
-                ),
+                render: (b) => {
+                  const engs = b.engagements ?? [{ id: b.engagementId, name: b.engagementName }];
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <Link to={`/billing/${b.id}`} style={{ color: tokens.color.accent }}>
+                        {engs[0]?.name ?? b.engagementName}
+                      </Link>
+                      {engs.length > 1 && (
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {engs.slice(1).map((e) => (
+                            <Pill key={e.id} tone="neutral">
+                              {e.name}
+                            </Pill>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                },
               },
               { key: 'client', header: 'Client', render: (b) => b.clientName ?? '—' },
               {
@@ -444,20 +603,42 @@ function BatchDetailPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <Card
-        title={
-          detail.engagement
-            ? `${detail.engagement.clientName} · ${detail.engagement.name}`
-            : `Batch ${detail.batch.id.slice(0, 8)}`
-        }
+        title={(() => {
+          // 0086 — render the client name + engagement set. For
+          // multi-engagement batches show the count beside the primary
+          // engagement; the full list of chips appears below.
+          const engs = detail.engagements ?? (detail.engagement ? [detail.engagement] : []);
+          if (engs.length === 0) return `Batch ${detail.batch.id.slice(0, 8)}`;
+          const primary = engs[0]!;
+          const more = engs.length - 1;
+          return `${primary.clientName} · ${primary.name}${more > 0 ? ` (+${more})` : ''}`;
+        })()}
         action={
           <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             {detail.batch.kind === 'RETAINER' && <Pill tone="accent">Retainer</Pill>}
+            {(detail.engagements?.length ?? 0) > 1 && (
+              <Pill tone="accent">Consolidated · {detail.engagements!.length} engagements</Pill>
+            )}
             <Pill tone={detail.batch.status === 'APPROVED' ? 'success' : 'neutral'}>
               {detail.batch.status}
             </Pill>
           </span>
         }
       >
+        {(detail.engagements?.length ?? 0) > 1 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ color: tokens.color.textMuted, fontSize: 11, marginBottom: 4 }}>
+              Engagements on this bill
+            </div>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {detail.engagements!.map((e, idx) => (
+                <Pill key={e.id} tone={idx === 0 ? 'accent' : 'neutral'}>
+                  {e.name}
+                </Pill>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 24, fontSize: 13, flexWrap: 'wrap' }}>
           <div>
             <div style={{ color: tokens.color.textMuted, fontSize: 11 }}>Period</div>

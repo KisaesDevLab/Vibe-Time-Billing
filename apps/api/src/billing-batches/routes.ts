@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import {
   adjustments,
   appUsers,
+  billingBatchEngagements,
   billingBatchEntries,
   billingBatches,
   clients,
@@ -32,15 +33,26 @@ export interface BillingBatchRoutesDeps extends RbacDeps {
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
 }
 
-const CreateSchema = z.object({
-  engagementId: z.string().uuid(),
-  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  // 0050 — kind defaults to STANDARD. A RETAINER batch must declare a
-  // positive target (DB check constraint enforces the invariant).
-  kind: z.enum(['STANDARD', 'RETAINER']).optional(),
-  retainerTargetAmountCents: z.number().int().positive().optional(),
-});
+// 0086 — accepts either the legacy single `engagementId` or the new
+// `engagementIds: [...]` array. The single shape is preserved so
+// external callers (mcp server, scripts) keep working unchanged; the
+// staff UI moves to the array shape so one batch can span N
+// engagements for the same client and produce a consolidated invoice.
+const CreateSchema = z
+  .object({
+    engagementId: z.string().uuid().optional(),
+    engagementIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    // 0050 — kind defaults to STANDARD. A RETAINER batch must declare a
+    // positive target (DB check constraint enforces the invariant).
+    // RETAINER batches stay single-engagement (see "out of scope").
+    kind: z.enum(['STANDARD', 'RETAINER']).optional(),
+    retainerTargetAmountCents: z.number().int().positive().optional(),
+  })
+  .refine((v) => v.engagementId != null || (v.engagementIds && v.engagementIds.length > 0), {
+    message: 'engagementId or engagementIds is required',
+  });
 
 const EntryActionSchema = z.object({
   timeEntryId: z.string().uuid(),
@@ -70,53 +82,59 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
-      const [eng] = await deps.db
-        .select()
+
+      // 0086 — normalize to an engagement-id list. Preserves pick order
+      // so the first id becomes the batch's "primary" engagement (the
+      // legacy engagement_id pointer); all of them get a row in the
+      // billing_batch_engagement join.
+      const engIds =
+        parsed.data.engagementIds && parsed.data.engagementIds.length > 0
+          ? parsed.data.engagementIds
+          : [parsed.data.engagementId!];
+      // Dedupe in pick order.
+      const seen = new Set<string>();
+      const uniqEngIds = engIds.filter((id) => {
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      const engRows = await deps.db
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          nteCapCents: engagements.nteCapCents,
+        })
         .from(engagements)
-        .where(eq(engagements.id, parsed.data.engagementId))
-        .limit(1);
-      if (!eng) {
+        .where(inArray(engagements.id, uniqEngIds));
+      if (engRows.length !== uniqEngIds.length) {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
+      // All engagements must belong to the same client.
+      const clientIds = new Set(engRows.map((e) => e.clientId));
+      if (clientIds.size > 1) {
+        res.status(400).json({ error: 'mixed_clients' });
+        return;
+      }
+      const [clientId] = Array.from(clientIds);
       const [client] = await deps.db
         .select({ firmId: clients.firmId })
         .from(clients)
-        .where(eq(clients.id, eng.clientId))
+        .where(eq(clients.id, clientId!))
         .limit(1);
       if (!client || client.firmId !== session.firmId) {
         res.status(404).json({ error: 'client_not_found' });
         return;
       }
 
-      // NTE cap check (Phase 11 #18): if the engagement has a per-period
-      // NTE, reject the batch when its included entries would exceed it.
-      if (eng.nteCapCents != null && Number(eng.nteCapCents) > 0) {
-        const [projected] = await deps.db
-          .select({
-            total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
-          })
-          .from(timeEntries)
-          .where(
-            and(
-              eq(timeEntries.engagementId, eng.id),
-              isNull(timeEntries.billingBatchId),
-              between(timeEntries.entryDate, parsed.data.periodStart, parsed.data.periodEnd),
-            ),
-          );
-        const projectedCents = Number(projected?.total ?? 0);
-        if (projectedCents > Number(eng.nteCapCents)) {
-          res.status(409).json({
-            error: 'nte_cap_exceeded',
-            capCents: Number(eng.nteCapCents),
-            projectedCents,
-          });
-          return;
-        }
-      }
-
       // 0050 — retainer validation. Kind defaults to STANDARD.
+      // 0086 — RETAINER batches must remain single-engagement (the
+      // activation flow ties to one engagement's tier config).
       const kind = parsed.data.kind ?? 'STANDARD';
+      if (kind === 'RETAINER' && uniqEngIds.length > 1) {
+        res.status(400).json({ error: 'retainer_batch_single_engagement_only' });
+        return;
+      }
       if (kind === 'RETAINER' && !parsed.data.retainerTargetAmountCents) {
         res.status(400).json({ error: 'retainer_target_required' });
         return;
@@ -126,11 +144,42 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         return;
       }
 
+      // NTE cap check (Phase 11 #18): each engagement with a per-period
+      // NTE has its own cap evaluated independently against its slice
+      // of unbilled WIP. If any single engagement would exceed its cap
+      // the batch is rejected outright.
+      for (const eng of engRows) {
+        if (eng.nteCapCents != null && Number(eng.nteCapCents) > 0) {
+          const [projected] = await deps.db
+            .select({
+              total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+            })
+            .from(timeEntries)
+            .where(
+              and(
+                eq(timeEntries.engagementId, eng.id),
+                isNull(timeEntries.billingBatchId),
+                between(timeEntries.entryDate, parsed.data.periodStart, parsed.data.periodEnd),
+              ),
+            );
+          const projectedCents = Number(projected?.total ?? 0);
+          if (projectedCents > Number(eng.nteCapCents)) {
+            res.status(409).json({
+              error: 'nte_cap_exceeded',
+              engagementId: eng.id,
+              capCents: Number(eng.nteCapCents),
+              projectedCents,
+            });
+            return;
+          }
+        }
+      }
+
       const batchId = await deps.db.transaction(async (tx) => {
         const [batch] = await tx
           .insert(billingBatches)
           .values({
-            engagementId: eng.id,
+            engagementId: uniqEngIds[0]!, // primary pointer; backward-compat for legacy readers
             periodStart: parsed.data.periodStart,
             periodEnd: parsed.data.periodEnd,
             createdById: session.appUserId,
@@ -141,14 +190,25 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           .returning({ id: billingBatches.id });
         if (!batch) throw new Error('batch insert failed');
 
-        // Pull unbilled time entries in the period. 0050 — exclude
-        // soft-deleted entries.
+        // 0086 — record the full engagement set in the join table.
+        // Pick order is preserved via `ordinal` so UI can render the
+        // primary first.
+        await tx.insert(billingBatchEngagements).values(
+          uniqEngIds.map((id, idx) => ({
+            billingBatchId: batch.id,
+            engagementId: id,
+            ordinal: idx,
+          })),
+        );
+
+        // Pull unbilled time entries in the period across all selected
+        // engagements. 0086 — IN-list replaces the single eq().
         const rows = await tx
           .select({ id: timeEntries.id })
           .from(timeEntries)
           .where(
             and(
-              eq(timeEntries.engagementId, eng.id),
+              inArray(timeEntries.engagementId, uniqEngIds),
               isNull(timeEntries.billingBatchId),
               between(timeEntries.entryDate, parsed.data.periodStart, parsed.data.periodEnd),
               sql`${timeEntries.status} <> 'ARCHIVED'`,
@@ -217,14 +277,36 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         return;
       }
       const allBatches = await deps.db.select().from(billingBatches).limit(500);
+      const batchIds = allBatches.map((b) => b.id);
+      // 0086 — pull every batch's engagement list in one query so we can
+      // render multi-engagement batches without N+1.
+      const engLinks = batchIds.length
+        ? await deps.db
+            .select()
+            .from(billingBatchEngagements)
+            .where(inArray(billingBatchEngagements.billingBatchId, batchIds))
+        : [];
+      const linksByBatch = new Map<string, string[]>();
+      // Sort by ordinal so the primary engagement leads.
+      for (const link of engLinks.sort((a, b) => a.ordinal - b.ordinal)) {
+        const arr = linksByBatch.get(link.billingBatchId) ?? [];
+        arr.push(link.engagementId);
+        linksByBatch.set(link.billingBatchId, arr);
+      }
       const items = allBatches
-        .filter((b) => engMap.has(b.engagementId))
+        .filter((b) => b.engagementId != null && engMap.has(b.engagementId))
         .map((b) => {
-          const eng = engMap.get(b.engagementId)!;
+          const primary = engMap.get(b.engagementId!)!;
+          const ids = linksByBatch.get(b.id) ?? [b.engagementId!];
+          const engs = ids
+            .map((id) => engMap.get(id))
+            .filter((e): e is NonNullable<typeof e> => e != null)
+            .map((e) => ({ id: e.id, name: e.name }));
           return {
             ...b,
-            engagementName: eng.name,
-            clientName: clientMap.get(eng.clientId) ?? null,
+            engagementName: primary.name,
+            engagements: engs,
+            clientName: clientMap.get(primary.clientId) ?? null,
           };
         });
       res.json({ items });
@@ -267,18 +349,37 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
         .where(eq(billingBatchEntries.billingBatchId, batch.id));
 
-      // 0050 — join engagement + client for the batch header.
-      const [eng] = await deps.db
-        .select({
-          id: engagements.id,
-          name: engagements.name,
-          clientId: clients.id,
-          clientName: clients.name,
-        })
-        .from(engagements)
-        .innerJoin(clients, eq(clients.id, engagements.clientId))
-        .where(eq(engagements.id, batch.engagementId))
-        .limit(1);
+      // 0086 — load every engagement on the batch (primary + extras)
+      // in ordinal order. Single-engagement batches still produce a
+      // one-element array, so the UI can render uniformly.
+      const links = await deps.db
+        .select({ engagementId: billingBatchEngagements.engagementId })
+        .from(billingBatchEngagements)
+        .where(eq(billingBatchEngagements.billingBatchId, batch.id))
+        .orderBy(billingBatchEngagements.ordinal);
+      const linkedIds = links.map((l) => l.engagementId);
+      // Fallback for any batch that pre-dates the join backfill
+      // (defensive; the migration covers all existing rows).
+      const engIds =
+        linkedIds.length > 0 ? linkedIds : batch.engagementId ? [batch.engagementId] : [];
+      const engRows = engIds.length
+        ? await deps.db
+            .select({
+              id: engagements.id,
+              name: engagements.name,
+              clientId: clients.id,
+              clientName: clients.name,
+            })
+            .from(engagements)
+            .innerJoin(clients, eq(clients.id, engagements.clientId))
+            .where(inArray(engagements.id, engIds))
+        : [];
+      // Preserve ordinal order.
+      const engRowById = new Map(engRows.map((r) => [r.id, r]));
+      const engs = engIds
+        .map((id) => engRowById.get(id))
+        .filter((r): r is NonNullable<typeof r> => r != null);
+      const eng = engs[0] ?? null;
 
       const aging = bucketize(
         entries.map((e) => ({ entryDate: e.entryDate, amountCents: e.standardAmountCents })),
@@ -305,7 +406,8 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         batch,
         entries,
         aging,
-        engagement: eng ?? null,
+        engagement: eng,
+        engagements: engs,
         adjustmentTotalCents,
       });
     },
@@ -1154,6 +1256,18 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
             })),
           )
           .returning({ id: billingBatches.id, engagementId: billingBatches.engagementId });
+        // 0086 — every batch needs a row in the join table, even when
+        // the bulk path is 1-engagement-per-batch. Keeps GET handlers
+        // uniform (they read engagements via the join, not the column).
+        if (rows.length > 0) {
+          await tx.insert(billingBatchEngagements).values(
+            rows.map((r) => ({
+              billingBatchId: r.id,
+              engagementId: r.engagementId!,
+              ordinal: 0,
+            })),
+          );
+        }
         // 0050 — for each created batch, pull unbilled (non-archived)
         // time entries in the period and attach them. Mirrors the
         // single-batch POST so "Bill selected" produces batches with

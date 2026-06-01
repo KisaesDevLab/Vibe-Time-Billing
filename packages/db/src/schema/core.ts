@@ -2027,6 +2027,28 @@ export const billingBatchEntries = pgTable(
   }),
 );
 
+// 0086 — multi-engagement billing batches. One batch can span N
+// engagements for the same client; the join table holds every picked
+// engagement (including the one stored in billing_batch.engagement_id,
+// which remains as a "primary" pointer for legacy readers).
+export const billingBatchEngagements = pgTable(
+  'billing_batch_engagement',
+  {
+    billingBatchId: uuid('billing_batch_id')
+      .notNull()
+      .references(() => billingBatches.id, { onDelete: 'cascade' }),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'restrict' }),
+    ordinal: smallint('ordinal').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.billingBatchId, t.engagementId] }),
+    engagementIdx: index('billing_batch_engagement_engagement_idx').on(t.engagementId),
+  }),
+);
+
 // =====================================================================
 // ADJUSTMENT — the wedge.
 //
