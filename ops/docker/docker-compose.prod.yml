@@ -3,6 +3,25 @@
 # Pull the published image, mount /backups and /data volumes, wire Caddy.
 
 services:
+  # One-shot init: copies the image's bundled web + portal dists into
+  # a shared volume so the caddy container can serve them as static
+  # files. Re-runs on every `docker compose up` so a fresh image pull
+  # propagates to the volume automatically.
+  init-static:
+    image: ghcr.io/kisaesdevlab/vibe-time-billing:${TAG:-latest}
+    container_name: vibe-tb-init-static
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        rm -rf /static-out/web /static-out/portal
+        cp -r /app/apps/web/dist /static-out/web
+        cp -r /app/apps/portal/dist /static-out/portal
+        echo "init-static: copied web + portal dists"
+    volumes:
+      - static-content:/static-out
+    restart: 'no'
+
   postgres:
     image: postgres:16-alpine
     container_name: vibe-tb-postgres
@@ -95,12 +114,16 @@ services:
     image: caddy:2-alpine
     container_name: vibe-tb-caddy
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+      init-static:
+        condition: service_completed_successfully
     ports:
       - '80:80'
       - '443:443'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - static-content:/srv:ro
       - caddy-data:/data
       - caddy-config:/config
     restart: unless-stopped
@@ -162,3 +185,4 @@ volumes:
   caddy-data:
   caddy-config:
   cloudflared-run:
+  static-content:

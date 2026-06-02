@@ -1,72 +1,124 @@
 # Install runbook
 
-This runbook walks a CPA firm from "fresh VM" to "live Vibe Time &
-Billing appliance" in about 30 minutes. The appliance is self-hosted
-per Q1 — there is no SaaS layer.
+Self-hosted Vibe Time & Billing appliance from "fresh VM" to "live
+firm" in about 15 minutes. There is no SaaS layer (Q1).
+
+## Quick install (recommended)
+
+For most CPA firms, the easiest path is the one-command installer.
+It handles every step below for you — prereq checks, generating
+sign-in keys, writing `.env`, pulling the image, starting the stack,
+running database migrations, and bootstrapping your firm + admin user.
+
+```bash
+git clone https://github.com/KisaesDevLab/Vibe-Time-Billing.git
+cd Vibe-Time-Billing
+./ops/scripts/install.sh
+```
+
+The installer will ask you for four things:
+
+1. **Firm name** — e.g. `Smith & Co CPAs`
+2. **Admin email** — where the first sign-in link is sent
+3. **Admin display name** — defaults to `Firm Administrator`
+4. **App URL** — the URL staff will use; defaults to your VM's IP
+   address. You can change this later via the Cloudflare Tunnel
+   admin UI without re-running the installer.
+
+When it finishes, open the printed URL, enter your admin email, and
+follow the email link. Pick a second factor (passkey is easiest if
+your laptop supports Touch ID / Windows Hello).
+
+To remove the appliance: `./ops/scripts/uninstall.sh` (preserves data
+for re-install) or `./ops/scripts/uninstall.sh --purge` (wipes
+everything — prompts for confirmation).
 
 ## Prerequisites
 
-- A host with 4 vCPU / 8 GB RAM minimum (16 GB recommended for the
-  local LLM). Ubuntu 22.04 LTS or Debian 12 tested.
+- 4 vCPU / 8 GB RAM minimum (16 GB recommended if you'll run the
+  local LLM). Ubuntu 22.04 LTS, Debian 12, macOS 14, and Windows WSL2
+  are tested.
 - Docker Engine 24+ and `docker compose` v2.
-- A domain you control. You need DNS to point two hostnames at the
-  appliance: `app.firm.com` and (optionally, with commercial license)
-  `portal.firm.com`.
-- An SMTP/email provider, or accounts at one of: Postmark, Resend,
-  AWS SES. See `MAIL_PROVIDER` env vars in `.env.example`.
+- `openssl` (for key generation; pre-installed on every supported OS).
+- A GitHub Personal Access Token with `read:packages` scope —
+  https://github.com/settings/tokens/new — the installer prompts for
+  this if the image isn't publicly available yet.
+- (Optional, configure later) An SMTP / Postmark / Resend / SES
+  account so sign-in links actually arrive in inboxes. Without one,
+  the link is in the API container logs.
 
-## 1. Pull the appliance image
+## Manual install (advanced)
+
+If you'd rather do each step yourself, here's what the installer does
+under the hood:
+
+### 1. Pull the appliance image
 
 ```bash
-docker pull ghcr.io/kisaesdevlab/vibe-time-billing:latest
+docker login ghcr.io -u <your-gh-username>   # paste the PAT when prompted
+docker pull ghcr.io/kisaesdevlab/vibe-time-billing:v0.1.0
 ```
 
-## 2. Create the environment file
+### 2. Create the environment file
 
 ```bash
 cp .env.example .env
 ```
 
-Required:
-- `DATABASE_URL` — `postgres://vibe:password@postgres:5432/vibe` if you
-  use the bundled Postgres in `docker-compose.prod.yml`.
-- `REDIS_URL` — `redis://redis:6379` if bundled.
-- `STAFF_JWT_SIGNING_KEY` and `PORTAL_JWT_SIGNING_KEY` — generate with
-  `openssl rand -hex 32`. **Distinct keys** per Q10.
-- `MAIL_PROVIDER` + provider-specific keys.
+Required values to set (everything else has sensible defaults):
+
+- `APP_BASE_URL` + `PORTAL_BASE_URL` — the URLs staff and clients use.
+- `STAFF_JWT_SECRET` and `PORTAL_JWT_SECRET` — generate with
+  `openssl rand -hex 32`. **Distinct keys** per CLAUDE.md #10.
+- `POSTGRES_PASSWORD` — `openssl rand -hex 24`.
+- `WEBAUTHN_RP_ID` — the bare domain (no scheme, no port), e.g.
+  `app.firm.com`.
 
 Optional but recommended:
 - `STRIPE_SECRET_KEY` (Q7 — firm-owned account)
 - `ANTHROPIC_API_KEY` or local Ollama config (Q15)
 - `COMMERCIAL_LICENSE_TOKEN` (Q6 — needed to enable the client portal)
 
-## 3. Bring up the stack
+### 3. Bring up the stack
 
 ```bash
-docker compose -f ops/docker/docker-compose.prod.yml up -d
+docker compose -f ops/docker/docker-compose.prod.yml --env-file .env up -d
 ```
 
-This starts: Postgres, Redis, API, worker, web (staff), portal,
-Caddy ingress, and (optionally) a local Ollama instance.
+This starts: Postgres, Redis, API, worker, Caddy ingress (with the
+bundled staff + portal SPAs), the `cloudflared` sidecar (waiting for
+its run-token), and the nightly backup cron.
 
-## 4. Run initial migrations + seed
+### 4. Run migrations + bootstrap the firm
 
 ```bash
-docker compose exec api node /app/scripts/migrate.js
-docker compose exec api node /app/scripts/seed.js --firm "My Firm, CPA"
+docker compose -f ops/docker/docker-compose.prod.yml exec api \
+  node packages/db/dist/scripts/migrate.js
+
+docker compose -f ops/docker/docker-compose.prod.yml exec \
+  -e FIRM_NAME="Smith & Co CPAs" \
+  -e ADMIN_EMAIL="you@firm.com" \
+  -e ADMIN_NAME="Firm Administrator" \
+  api node packages/db/dist/scripts/bootstrap-firm.js
 ```
 
-The seed creates the firm row, a default admin user, and the 5 system
-role templates.
+`bootstrap-firm` creates the firm row, an admin user with the email
+you provide, the `admin` role + role assignment, four service lines
+(Tax / Audit / Advisory / Bookkeeping), the StandardRate rate code,
+and the default notification templates + retainer tier configs. It's
+idempotent on firm name.
 
-## 5. First-time login
+### 5. First-time login
 
-1. Navigate to `https://app.firm.com/auth/login`
-2. Enter the admin email from step 4. A magic-link email goes to that
-   address.
-3. Click the link → enroll TOTP (required per Q5). Save the recovery
-   codes.
-4. Land on the dashboard. Visit `/onboarding` for the setup checklist.
+1. Navigate to `<APP_URL>/auth/login`.
+2. Enter your admin email. A magic-link email is sent (or appears in
+   the API log if mail isn't configured yet:
+   `docker compose -f ops/docker/docker-compose.prod.yml logs api 2>&1 | grep magic-link`).
+3. Click the link.
+4. Enroll a second factor when prompted (passkey, TOTP, email OTP,
+   or SMS — pick what's easiest).
+5. Land on the dashboard. Visit Admin → Operations → Cloudflare
+   Tunnel to put the appliance behind your domain.
 
 ## 6. Configure Cloudflare Tunnel (recommended)
 

@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+#
+# Production Caddyfile for the Vibe Time & Billing appliance.
+#
+# Default deployment shape: Cloudflare Tunnel terminates TLS at
+# Cloudflare's edge and forwards plain HTTP to this Caddy on port 80.
+# For LAN-only or VM-local access, this same listener serves the
+# staff app at http://<vm-ip>/ directly.
+#
+# Staff vs portal realm split (CLAUDE.md #10): subdomains are routed
+# via the X-Vibe-Realm header so the API can tell them apart and the
+# cookie / signing-key isolation holds end-to-end. The active hostname
+# matchers are driven by the WEBAUTHN_RP_ID env var so the same image
+# works for any firm domain — no Caddyfile editing required.
+#
+# How the routing decision works:
+#   - Requests to the portal subdomain (portal.<rp_id>) get the portal
+#     SPA + X-Vibe-Realm: portal.
+#   - Everything else (the staff subdomain app.<rp_id>, or direct
+#     IP access during pre-tunnel setup) gets the staff SPA + the
+#     staff realm header.
+
+{
+	auto_https off
+	admin off
+}
+
+# Portal hostname. The pattern matches portal.<anything> so the same
+# config works whether you're at portal.firm.com or just exposing it
+# on a LAN. If no portal.* hostname matches, the staff block below
+# catches everything else.
+(portal-realm) {
+	encode gzip zstd
+
+	handle /api/* {
+		reverse_proxy api:3001 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Vibe-Realm portal
+			transport http {
+				read_timeout 120s
+			}
+		}
+	}
+
+	handle {
+		root * /srv/portal
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+(staff-realm) {
+	encode gzip zstd
+
+	handle /api/* {
+		reverse_proxy api:3001 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Vibe-Realm app
+			transport http {
+				read_timeout 120s
+			}
+		}
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Hostname-based routing.
+:80 {
+	@portal host portal.* portal:80
+	handle @portal {
+		import portal-realm
+	}
+	handle {
+		import staff-realm
+	}
+}
