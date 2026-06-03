@@ -207,6 +207,29 @@ const sendPortalSms = async (args: { to: string; body: string }): Promise<void> 
   await smsProvider.send(args);
 };
 
+// 0087 — second-factor OTP senders. Without these wired, password
+// sign-in (which requires a second factor) can't dispatch its EMAIL/SMS
+// code and returns email_dispatcher_unavailable. Reuse the same mailer /
+// SMS provider so the console/MailHog/SMTP/Postmark/Resend swap applies.
+const sendEmailOtp = async (args: {
+  email: string;
+  firmId: string;
+  code: string;
+}): Promise<void> => {
+  await mailer.send({
+    to: args.email,
+    subject: 'Your sign-in code',
+    body: `Your sign-in code is ${args.code}. It expires in ${config.SMS_OTP_TTL_MINUTES} minutes.`,
+    html:
+      `<p>Your sign-in code is <strong style="font-size:18px">${args.code}</strong></p>` +
+      `<p style="color:#666;font-size:13px">It expires in ${config.SMS_OTP_TTL_MINUTES} minutes.</p>`,
+  });
+};
+
+const sendSmsOtp = async (args: { phone: string; firmId: string; code: string }): Promise<void> => {
+  await smsProvider.send({ to: args.phone, body: `Your sign-in code is ${args.code}.` });
+};
+
 // P4.6 — I.6 — step-up lockout alert to firm admins. Resolves the
 // `step_up_lockout` notification template, then sends to every
 // app_user with the admin role. Best-effort: failures are logged.
@@ -273,6 +296,8 @@ const app = createApp({
   stripeProvider: stripe,
   stripeWebhookSecret: config.STRIPE_WEBHOOK_SECRET ?? null,
   sendMagicLink,
+  sendEmailOtp,
+  sendSmsOtp,
   sendPortalEmail,
   sendStaffMail,
   sendPortalSms,

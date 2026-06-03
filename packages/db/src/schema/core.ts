@@ -3973,6 +3973,12 @@ export const cloudflareTunnelStatus = pgEnum('cloudflare_tunnel_status', [
   'ERROR',
 ]);
 
+// 0095 — realm a tunnel hostname routes to. STAFF → app SPA, PORTAL →
+// client portal SPA. Drives the origin Host-header rewrite so Caddy's
+// existing `portal.*` matcher lands the request in the right realm
+// regardless of the public hostname label.
+export const cloudflareTunnelRealm = pgEnum('cloudflare_tunnel_realm', ['STAFF', 'PORTAL']);
+
 export const cloudflareTunnelConfigs = pgTable(
   'cloudflare_tunnel_config',
   {
@@ -4006,6 +4012,31 @@ export const cloudflareTunnelConfigs = pgTable(
   (t) => ({
     firmUk: uniqueIndex('cf_tunnel_one_per_firm').on(t.firmId),
     statusIdx: index('cloudflare_tunnel_status_idx').on(t.status),
+  }),
+);
+
+// 0095 — source of truth for tunnel hostnames. Supports an arbitrary
+// add/remove list (replacing the fixed staff/portal pair); the legacy
+// staff_hostname/portal_hostname columns above are kept populated with
+// the first hostname of each realm for back-compat.
+export const cloudflareTunnelHostnames = pgTable(
+  'cloudflare_tunnel_hostname',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    hostname: text('hostname').notNull(),
+    realm: cloudflareTunnelRealm('realm').notNull(),
+    // Cloudflare DNS record id for this hostname — stored so edit/remove
+    // can reconcile (delete) the exact record without a lookup.
+    dnsRecordId: text('dns_record_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmHostUk: uniqueIndex('cf_tunnel_hostname_firm_host_uk').on(t.firmId, t.hostname),
+    firmIdx: index('cf_tunnel_hostname_firm_idx').on(t.firmId),
   }),
 );
 

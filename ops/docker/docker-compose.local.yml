@@ -51,8 +51,8 @@ services:
       STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:?STAFF_JWT_SECRET required (export from .env)}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?PORTAL_JWT_SECRET required (export from .env)}
       KMS_KEY: ${KMS_KEY:?KMS_KEY required (export from .env, 32 bytes base64)}
-      APP_BASE_URL: http://localhost:5195
-      PORTAL_BASE_URL: http://localhost:5196
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5195}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:5196}
       COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       MAIL_PROVIDER: smtp
       MAIL_FROM: 'Vibe Dev <dev@localhost>'
@@ -148,6 +148,11 @@ services:
         condition: service_healthy
       init-static:
         condition: service_completed_successfully
+    environment:
+      # Host the TLS sites bind to (internal-CA cert SAN). Default localhost;
+      # set VIBE_HOST=<lan-ip> to serve the LAN over HTTPS so the Secure
+      # session cookie sticks off-localhost.
+      VIBE_HOST: ${VIBE_HOST:-localhost}
     ports:
       - '5195:5195'
       - '5196:5196'

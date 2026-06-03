@@ -51,6 +51,18 @@ export interface Zone {
   status: string;
 }
 
+export interface Account {
+  id: string;
+  name: string;
+}
+
+export interface ZoneListItem {
+  id: string;
+  name: string;
+  status: string;
+  accountId: string | null;
+}
+
 export interface Tunnel {
   id: string;
   name: string;
@@ -88,6 +100,8 @@ interface CfEnvelope<T> {
 
 export function createCloudflareClient(opts: CloudflareClientOptions): {
   validateApiToken: (accountId: string) => Promise<{ accountId: string }>;
+  listAccounts: () => Promise<Account[]>;
+  listZones: (accountId?: string) => Promise<ZoneListItem[]>;
   getZone: (zoneId: string) => Promise<Zone>;
   createTunnel: (accountId: string, name: string) => Promise<Tunnel>;
   getTunnelToken: (accountId: string, tunnelId: string) => Promise<string>;
@@ -130,6 +144,30 @@ export function createCloudflareClient(opts: CloudflareClientOptions): {
     async validateApiToken(accountId: string): Promise<{ accountId: string }> {
       const r = await call<{ id: string }>('GET', `/accounts/${accountId}`);
       return { accountId: r.id };
+    },
+
+    // Discovery: list the accounts + zones the token can see, so the
+    // admin UI can offer dropdowns instead of asking for raw 32-char
+    // IDs. per_page=50 covers any realistic single firm; pagination
+    // beyond that is intentionally out of scope.
+    async listAccounts(): Promise<Account[]> {
+      const r = await call<Array<{ id: string; name: string }>>('GET', `/accounts?per_page=50`);
+      return r.map((a) => ({ id: a.id, name: a.name }));
+    },
+
+    async listZones(accountId?: string): Promise<ZoneListItem[]> {
+      const qs = accountId
+        ? `?per_page=50&account.id=${encodeURIComponent(accountId)}`
+        : `?per_page=50`;
+      const r = await call<
+        Array<{ id: string; name: string; status: string; account?: { id?: string } }>
+      >('GET', `/zones${qs}`);
+      return r.map((z) => ({
+        id: z.id,
+        name: z.name,
+        status: z.status,
+        accountId: z.account?.id ?? null,
+      }));
     },
 
     async getZone(zoneId: string): Promise<Zone> {

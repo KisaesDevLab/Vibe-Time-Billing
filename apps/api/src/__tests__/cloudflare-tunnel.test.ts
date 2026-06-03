@@ -115,6 +115,8 @@ function makeReq(over: Partial<FakeReq> & { firmId: string; appUserId: string })
 
 interface MockClientLog {
   validateApiToken: string[];
+  listAccounts: number;
+  listZones: Array<string | undefined>;
   getZone: string[];
   createTunnel: Array<{ accountId: string; name: string }>;
   getTunnelToken: string[];
@@ -131,6 +133,8 @@ function buildMockClient(): {
 } {
   const log: MockClientLog = {
     validateApiToken: [],
+    listAccounts: 0,
+    listZones: [],
     getZone: [],
     createTunnel: [],
     getTunnelToken: [],
@@ -145,6 +149,17 @@ function buildMockClient(): {
     async validateApiToken(accountId: string) {
       log.validateApiToken.push(accountId);
       return { accountId };
+    },
+    async listAccounts() {
+      log.listAccounts += 1;
+      return [
+        { id: ACCOUNT_ID, name: 'Granite Peak' },
+        { id: 'c'.repeat(32), name: 'Second Co' },
+      ];
+    },
+    async listZones(accountId?: string) {
+      log.listZones.push(accountId);
+      return [{ id: ZONE_ID, name: 'firm.example', status: 'active', accountId: ACCOUNT_ID }];
     },
     async getZone(zoneId: string) {
       log.getZone.push(zoneId);
@@ -415,5 +430,145 @@ describe('cloudflare-tunnel router', () => {
       }),
     });
     expect(r.statusCode).toBe(400);
+  });
+
+  it('POST /discover returns the accounts + zones the token can see', async () => {
+    const { factory, log } = buildMockClient();
+    const router = createCloudflareTunnelRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      commercialLicenseActive: true,
+      tokenFilePath: tokenFile,
+      createClient: factory,
+    });
+    const r = await invoke(router, 'post', '/discover', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: { apiToken: VALID_TOKEN },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.jsonBody as {
+      accounts: Array<{ id: string; name: string }>;
+      zones: Array<{ id: string; name: string }>;
+    };
+    expect(body.accounts.map((a) => a.name)).toEqual(['Granite Peak', 'Second Co']);
+    expect(body.zones[0]!.name).toBe('firm.example');
+    expect(log.listAccounts).toBe(1);
+    expect(log.listZones).toHaveLength(1);
+  });
+
+  it('POST /provision accepts a hostnames[] list with realm-canonical host headers', async () => {
+    const { factory, log } = buildMockClient();
+    const router = createCloudflareTunnelRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      commercialLicenseActive: true,
+      tokenFilePath: tokenFile,
+      createClient: factory,
+    });
+    const r = await invoke(router, 'post', '/provision', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          apiToken: VALID_TOKEN,
+          accountId: ACCOUNT_ID,
+          zoneId: ZONE_ID,
+          hostnames: [
+            { hostname: 'app.firm.example', realm: 'STAFF' },
+            { hostname: 'billing.firm.example', realm: 'STAFF' },
+            { hostname: 'clients.firm.example', realm: 'PORTAL' },
+          ],
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    expect((r.jsonBody as { hostnameCount: number }).hostnameCount).toBe(3);
+    // 3 hostnames + catch-all.
+    expect(log.setTunnelIngress[0]!.ingressLen).toBe(4);
+    expect(log.setTunnelIngress[0]!.hosts.sort()).toEqual([
+      'app.firm.example',
+      'billing.firm.example',
+      'clients.firm.example',
+    ]);
+    // CNAMEs created for all three.
+    expect(log.upsertCnameRecord.map((c) => c.hostname).sort()).toEqual([
+      'app.firm.example',
+      'billing.firm.example',
+      'clients.firm.example',
+    ]);
+
+    // GET / surfaces the hostname list with realms.
+    const g = await invoke(router, 'get', '/', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId }),
+    });
+    const cfg = (
+      g.jsonBody as { config: { hostnames: Array<{ hostname: string; realm: string }> } }
+    ).config;
+    expect(cfg.hostnames).toHaveLength(3);
+    expect(cfg.hostnames.find((h) => h.hostname === 'clients.firm.example')!.realm).toBe('PORTAL');
+  });
+
+  it('POST /update reconciles hostnames without recreating the tunnel', async () => {
+    const { factory, log } = buildMockClient();
+    const router = createCloudflareTunnelRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      commercialLicenseActive: true,
+      tokenFilePath: tokenFile,
+      createClient: factory,
+    });
+    // Provision with app(staff) + portal(portal).
+    await invoke(router, 'post', '/provision', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          apiToken: VALID_TOKEN,
+          accountId: ACCOUNT_ID,
+          zoneId: ZONE_ID,
+          hostnames: [
+            { hostname: 'app.firm.example', realm: 'STAFF' },
+            { hostname: 'portal.firm.example', realm: 'PORTAL' },
+          ],
+        },
+      }),
+    });
+    expect(log.createTunnel).toHaveLength(1);
+    const dnsBefore = log.deleteDnsRecord.length;
+
+    // Update: drop portal, add billing(staff).
+    const r = await invoke(router, 'post', '/update', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          hostnames: [
+            { hostname: 'app.firm.example', realm: 'STAFF' },
+            { hostname: 'billing.firm.example', realm: 'STAFF' },
+          ],
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    // No new tunnel created on update.
+    expect(log.createTunnel).toHaveLength(1);
+    // The removed portal hostname's DNS record was deleted.
+    expect(log.deleteDnsRecord.length).toBe(dnsBefore + 1);
+    // Ingress rebuilt with the two staff hostnames + catch-all.
+    const lastIngress = log.setTunnelIngress[log.setTunnelIngress.length - 1]!;
+    expect(lastIngress.hosts.sort()).toEqual(['app.firm.example', 'billing.firm.example']);
+
+    // Hostname list now reflects the edit.
+    const g = await invoke(router, 'get', '/', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId }),
+    });
+    const cfg = (g.jsonBody as { config: { hostnames: Array<{ hostname: string }> } }).config;
+    expect(cfg.hostnames.map((h) => h.hostname).sort()).toEqual([
+      'app.firm.example',
+      'billing.firm.example',
+    ]);
   });
 });

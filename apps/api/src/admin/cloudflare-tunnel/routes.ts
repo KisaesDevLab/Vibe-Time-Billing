@@ -4,25 +4,32 @@
 // cloudflared CLI dance documented in ops/docs/install.md Section 6.
 //
 // Flow:
-//   1. UI calls POST /validate with {apiToken, accountId, zoneId}.
-//      Server hits Cloudflare to verify all three; returns zoneName.
-//   2. UI calls POST /provision with the same + {staffHostname,
-//      portalHostname}. Server creates a tunnel + DNS records, pulls
-//      the run-token, encrypts both tokens with the firm MFK, and
-//      writes the run-token to /run/cloudflared/token (a volume that
-//      the sidecar container reads on its entrypoint loop).
+//   1. UI calls POST /discover with {apiToken}. Server validates the
+//      token and returns the accounts + zones it can see so the wizard
+//      can offer dropdowns instead of raw 32-char IDs.
+//   2. UI calls POST /provision with {apiToken, accountId, zoneId,
+//      hostnames:[{hostname,realm}]}. Server creates a tunnel + DNS
+//      records, sets ingress, pulls the run-token, encrypts both tokens
+//      with the firm MFK, and writes the run-token to the sidecar
+//      volume.
 //   3. cloudflared connects on its own; the worker periodically polls
 //      the local :2000 metrics endpoint and writes a snapshot.
-//   4. UI calls GET / to render the current config + status. POST
-//      /deprovision deletes the tunnel + DNS records and clears the
-//      row.
+//   4. UI calls GET / to render the current config + hostname list +
+//      status. POST /update edits the hostname list in place (reconciles
+//      ingress + DNS without recreating the tunnel). POST /deprovision
+//      deletes the tunnel + all DNS records and clears the row.
 //
-// All secrets at rest are MFK-wrapped (envelopeCodec via the firm key
-// manager). Plaintext never lives in the DB.
+// Realm routing: each hostname is tagged STAFF or PORTAL. The tunnel
+// ingress rewrites the origin Host header (originRequest.httpHostHeader)
+// to a realm-canonical host — portal.<zone> for PORTAL, app.<zone> for
+// STAFF — so Caddy's existing `@portal host portal.*` matcher routes the
+// request into the right realm regardless of the public hostname label.
+// No Caddyfile change required.
 //
-// The portal hostname is always asked at provision time (per the
-// locked decision) but its ingress rule is omitted from the tunnel
-// configuration unless the appliance has a commercial license token.
+// All secrets at rest are MFK-wrapped (via the firm key manager).
+// Plaintext never lives in the DB. PORTAL hostnames are always saved but
+// their ingress + DNS are skipped unless the appliance has a commercial
+// license token (re-license picks them up on the next provision/update).
 
 import { writeFile, mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -40,7 +47,7 @@ import {
 
 type CloudflareClient = ReturnType<typeof defaultCreateCloudflareClient>;
 import type { Database } from '@vibe/db';
-import { cloudflareTunnelConfigs } from '@vibe/db/schema';
+import { cloudflareTunnelConfigs, cloudflareTunnelHostnames } from '@vibe/db/schema';
 
 import { emitAudit } from '../../auth/audit';
 import { requirePermission, type RbacDeps } from '../../auth/rbac-middleware';
@@ -53,7 +60,7 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
   /** Path to the token file the cloudflared sidecar reads. */
   tokenFilePath?: string;
   /** Whether the appliance has a valid commercial license. Controls
-   *  whether the portal hostname is registered as an ingress rule. */
+   *  whether PORTAL hostnames are registered as ingress rules + DNS. */
   commercialLicenseActive: boolean;
   /** Origin URL the tunnel forwards traffic to (the caddy service inside
    *  the appliance docker network). Defaults to http://caddy:80. */
@@ -65,16 +72,41 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
 const FQDN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 const HEX_ID_RE = /^[a-f0-9]{32,64}$/i;
 
+type Realm = 'STAFF' | 'PORTAL';
+interface HostnameSpec {
+  hostname: string;
+  realm: Realm;
+}
+
+const HostnameSchema = z.object({
+  hostname: z.string().regex(FQDN_RE).max(253),
+  realm: z.enum(['STAFF', 'PORTAL']),
+});
+
+const DiscoverSchema = z.object({
+  apiToken: z.string().min(20).max(200),
+});
+
 const ValidateSchema = z.object({
   apiToken: z.string().min(20).max(200),
   accountId: z.string().regex(HEX_ID_RE),
   zoneId: z.string().regex(HEX_ID_RE),
 });
 
+// Provision accepts the new hostnames[] list. Legacy
+// staffHostname/portalHostname fields remain accepted (normalized into
+// the list) so older callers + existing tests keep working.
 const ProvisionSchema = ValidateSchema.extend({
-  staffHostname: z.string().regex(FQDN_RE).max(253),
+  hostnames: z.array(HostnameSchema).min(1).max(50).optional(),
+  staffHostname: z.string().regex(FQDN_RE).max(253).optional(),
   portalHostname: z.string().regex(FQDN_RE).max(253).nullable().optional(),
   tunnelName: z.string().min(1).max(120).optional(),
+});
+
+// Edit-in-place: reuses the stored API token + account/zone; only the
+// hostname list changes.
+const UpdateSchema = z.object({
+  hostnames: z.array(HostnameSchema).min(1).max(50),
 });
 
 function hint(token: string): string {
@@ -89,14 +121,103 @@ function fromBytes(b: Uint8Array): string {
   return new TextDecoder('utf-8').decode(b);
 }
 
+// Normalize a provision payload into a deduped hostname list. Prefers the
+// explicit hostnames[] array; falls back to the legacy staff/portal pair.
+function normalizeHostnames(d: {
+  hostnames?: HostnameSpec[];
+  staffHostname?: string;
+  portalHostname?: string | null;
+}): HostnameSpec[] {
+  const out: HostnameSpec[] = [];
+  const seen = new Set<string>();
+  const push = (hostname: string, realm: Realm): void => {
+    const key = hostname.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ hostname, realm });
+  };
+  if (d.hostnames && d.hostnames.length > 0) {
+    for (const h of d.hostnames) push(h.hostname, h.realm);
+  } else {
+    if (d.staffHostname) push(d.staffHostname, 'STAFF');
+    if (d.portalHostname) push(d.portalHostname, 'PORTAL');
+  }
+  return out;
+}
+
+// Build the tunnel ingress from a hostname list. Each rule rewrites the
+// origin Host header to a realm-canonical value so Caddy routes it into
+// the right realm. PORTAL rules are omitted unless licensed. A trailing
+// catch-all 404 is always appended (Cloudflare requires it).
+function buildIngress(
+  hostnames: HostnameSpec[],
+  zoneName: string,
+  licensed: boolean,
+  originService: string,
+): IngressRule[] {
+  const ingress: IngressRule[] = [];
+  for (const h of hostnames) {
+    if (h.realm === 'PORTAL' && !licensed) continue;
+    const canonicalHost = h.realm === 'PORTAL' ? `portal.${zoneName}` : `app.${zoneName}`;
+    ingress.push({
+      hostname: h.hostname,
+      service: originService,
+      originRequest: {
+        httpHostHeader: canonicalHost,
+        noTLSVerify: true,
+        connectTimeout: '30s',
+      },
+    });
+  }
+  ingress.push({ service: 'http_status:404' });
+  return ingress;
+}
+
+function firstOfRealm(hostnames: HostnameSpec[], realm: Realm): string | null {
+  return hostnames.find((h) => h.realm === realm)?.hostname ?? null;
+}
+
 export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): Router {
   const router = express.Router();
   const tokenFilePath = deps.tokenFilePath ?? '/run/cloudflared/token';
   const originService = deps.originService ?? 'http://caddy:80';
   const createCloudflareClient = deps.createClient ?? defaultCreateCloudflareClient;
 
+  // Persist the hostname list for a firm: replace the child rows and keep
+  // the legacy staff/portal columns pointed at the first of each realm.
+  async function persistHostnames(
+    db: Database,
+    firmId: string,
+    rows: Array<HostnameSpec & { dnsRecordId: string | null }>,
+  ): Promise<void> {
+    await db.delete(cloudflareTunnelHostnames).where(eq(cloudflareTunnelHostnames.firmId, firmId));
+    if (rows.length > 0) {
+      await db.insert(cloudflareTunnelHostnames).values(
+        rows.map((r) => ({
+          firmId,
+          hostname: r.hostname,
+          realm: r.realm,
+          dnsRecordId: r.dnsRecordId,
+          updatedAt: new Date(),
+        })),
+      );
+    }
+  }
+
+  async function loadHostnames(db: Database, firmId: string): Promise<HostnameSpec[]> {
+    const rows = await db
+      .select({
+        hostname: cloudflareTunnelHostnames.hostname,
+        realm: cloudflareTunnelHostnames.realm,
+      })
+      .from(cloudflareTunnelHostnames)
+      .where(eq(cloudflareTunnelHostnames.firmId, firmId));
+    return rows.map((r) => ({ hostname: r.hostname, realm: r.realm as Realm }));
+  }
+
   // ---------------------------------------------------------------------
-  // GET / — current config + last status snapshot. Secrets redacted.
+  // GET / — current config + hostname list + last status snapshot.
+  // Secrets redacted.
   // ---------------------------------------------------------------------
   router.get(
     '/',
@@ -116,6 +237,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         res.json({ config: null });
         return;
       }
+      const hostnames = await loadHostnames(deps.db, session.firmId);
       res.json({
         config: {
           id: row.id,
@@ -124,6 +246,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           zoneName: row.zoneName,
           staffHostname: row.staffHostname,
           portalHostname: row.portalHostname,
+          hostnames,
           tunnelId: row.tunnelId,
           tunnelName: row.tunnelName,
           apiTokenHint: row.apiTokenHint,
@@ -138,8 +261,38 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
   );
 
   // ---------------------------------------------------------------------
+  // POST /discover — validate the token and list the accounts + zones it
+  // can see, so the UI can render dropdowns. No DB writes.
+  // ---------------------------------------------------------------------
+  router.post(
+    '/discover',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const parsed = DiscoverSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const client = createCloudflareClient({ apiToken: parsed.data.apiToken });
+      try {
+        const [accounts, zones] = await Promise.all([client.listAccounts(), client.listZones()]);
+        res.json({ ok: true, accounts, zones });
+      } catch (err) {
+        if (err instanceof CloudflareApiError) {
+          res
+            .status(400)
+            .json({ error: 'cloudflare_rejected', errors: err.errors, status: err.status });
+          return;
+        }
+        logger.warn({ err }, 'cf tunnel discover failed');
+        res.status(502).json({ error: 'cloudflare_unreachable' });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------
   // POST /validate — verifies the API token has access to the named
-  // account + zone. Used by the UI Step 1 to gate progress to Step 2.
+  // account + zone. Retained for back-compat; /discover supersedes it.
   // ---------------------------------------------------------------------
   router.post(
     '/validate',
@@ -151,15 +304,10 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         return;
       }
       const client = createCloudflareClient({ apiToken: parsed.data.apiToken });
-
       try {
         await client.validateApiToken(parsed.data.accountId);
         const zone = await client.getZone(parsed.data.zoneId);
-        res.json({
-          ok: true,
-          zoneName: zone.name,
-          zoneStatus: zone.status,
-        });
+        res.json({ ok: true, zoneName: zone.name, zoneStatus: zone.status });
       } catch (err) {
         if (err instanceof CloudflareApiError) {
           res
@@ -175,11 +323,11 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
 
   // ---------------------------------------------------------------------
   // POST /provision — creates the tunnel, pulls the run-token, writes
-  // DNS records, sets ingress, encrypts tokens, writes the run-token
-  // to the sidecar volume, stamps the row to ACTIVE.
+  // DNS records for every hostname, sets ingress, encrypts tokens, writes
+  // the run-token to the sidecar volume, stamps the row to ACTIVE.
   //
-  // Reusable for re-provision: an existing row gets its tunnel deleted
-  // and recreated (the user might be moving zones or rotating creds).
+  // Reusable for re-provision: an existing tunnel is deleted and
+  // recreated (the user might be moving zones or rotating creds).
   // ---------------------------------------------------------------------
   router.post(
     '/provision',
@@ -201,6 +349,13 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         return;
       }
       const d = parsed.data;
+      const hostnames = normalizeHostnames(d);
+      if (hostnames.length === 0) {
+        res.status(400).json({ error: 'no_hostnames' });
+        return;
+      }
+      const staffHostname = firstOfRealm(hostnames, 'STAFF');
+      const portalHostname = firstOfRealm(hostnames, 'PORTAL');
 
       // Mark PROVISIONING so concurrent provision attempts get an early
       // 409. Upsert via firm-unique index.
@@ -211,8 +366,8 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           status: 'PROVISIONING',
           accountId: d.accountId,
           zoneId: d.zoneId,
-          staffHostname: d.staffHostname,
-          portalHostname: d.portalHostname ?? null,
+          staffHostname,
+          portalHostname,
           tunnelName: d.tunnelName ?? 'vibe-tb',
           updatedAt: new Date(),
         })
@@ -222,8 +377,8 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
             status: 'PROVISIONING',
             accountId: d.accountId,
             zoneId: d.zoneId,
-            staffHostname: d.staffHostname,
-            portalHostname: d.portalHostname ?? null,
+            staffHostname,
+            portalHostname,
             tunnelName: d.tunnelName ?? 'vibe-tb',
             lastError: null,
             updatedAt: new Date(),
@@ -232,13 +387,11 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
 
       const cf = createCloudflareClient({ apiToken: d.apiToken });
       try {
-        // Verify zone + account again (in case validate was skipped).
+        // Verify zone + account again (in case discover/validate skipped).
         await cf.validateApiToken(d.accountId);
         const zone = await cf.getZone(d.zoneId);
 
-        // If we already had a tunnel for this firm, delete it first so
-        // re-provision starts clean (also removes its DNS records on
-        // Cloudflare's side via cascade where supported).
+        // Delete any prior tunnel so re-provision starts clean.
         const [existing] = await deps.db
           .select({ tunnelId: cloudflareTunnelConfigs.tunnelId })
           .from(cloudflareTunnelConfigs)
@@ -248,7 +401,6 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           try {
             await cf.deleteTunnel(d.accountId, existing.tunnelId);
           } catch (err) {
-            // Non-fatal: the old tunnel may already be gone.
             logger.warn({ err }, 'cf tunnel: prior tunnel delete failed (continuing)');
           }
         }
@@ -256,38 +408,25 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         const tunnel = await cf.createTunnel(d.accountId, d.tunnelName ?? 'vibe-tb');
         const runToken = await cf.getTunnelToken(d.accountId, tunnel.id);
 
-        // Ingress rules. Portal rule only registered when licensed.
-        const ingress: IngressRule[] = [
-          {
-            hostname: d.staffHostname,
-            service: originService,
-            originRequest: {
-              httpHostHeader: d.staffHostname,
-              noTLSVerify: true,
-              connectTimeout: '30s',
-            },
-          },
-        ];
-        if (d.portalHostname && deps.commercialLicenseActive) {
-          ingress.push({
-            hostname: d.portalHostname,
-            service: originService,
-            originRequest: {
-              httpHostHeader: d.portalHostname,
-              noTLSVerify: true,
-              connectTimeout: '30s',
-            },
-          });
-        }
-        ingress.push({ service: 'http_status:404' });
+        const ingress = buildIngress(
+          hostnames,
+          zone.name,
+          deps.commercialLicenseActive,
+          originService,
+        );
         await cf.setTunnelIngress(d.accountId, tunnel.id, { ingress });
 
-        // DNS CNAMEs → <tunnel>.cfargotunnel.com (Cloudflare's standard
-        // tunnel target).
+        // DNS CNAMEs → <tunnel>.cfargotunnel.com. PORTAL hostnames are
+        // recorded but get no DNS until licensed.
         const cnameTarget = `${tunnel.id}.cfargotunnel.com`;
-        await cf.upsertCnameRecord(d.zoneId, d.staffHostname, cnameTarget);
-        if (d.portalHostname && deps.commercialLicenseActive) {
-          await cf.upsertCnameRecord(d.zoneId, d.portalHostname, cnameTarget);
+        const persisted: Array<HostnameSpec & { dnsRecordId: string | null }> = [];
+        for (const h of hostnames) {
+          if (h.realm === 'PORTAL' && !deps.commercialLicenseActive) {
+            persisted.push({ ...h, dnsRecordId: null });
+            continue;
+          }
+          const rec = await cf.upsertCnameRecord(d.zoneId, h.hostname, cnameTarget);
+          persisted.push({ hostname: h.hostname, realm: h.realm, dnsRecordId: rec.id });
         }
 
         // Encrypt + write the sidecar token file.
@@ -299,8 +438,6 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           await mkdir(dirname(tokenFilePath), { recursive: true });
           await writeFile(tokenFilePath, runToken, { mode: 0o600 });
         } catch (err) {
-          // If we can't write the token file the sidecar won't connect,
-          // but we still persist the DB row so the operator can rerun.
           logger.error({ err, tokenFilePath }, 'cf tunnel: token file write failed');
         }
 
@@ -308,6 +445,8 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           .update(cloudflareTunnelConfigs)
           .set({
             zoneName: zone.name,
+            staffHostname,
+            portalHostname,
             tunnelId: tunnel.id,
             tunnelName: tunnel.name,
             apiTokenEncrypted: apiTokenEnc,
@@ -320,6 +459,8 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           })
           .where(eq(cloudflareTunnelConfigs.firmId, session.firmId));
 
+        await persistHostnames(deps.db, session.firmId, persisted);
+
         await emitAudit(deps.db, {
           action: 'UPDATE',
           entityType: 'cloudflare_tunnel_config',
@@ -327,8 +468,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           actorAppUserId: session.appUserId,
           after: {
             tunnelId: tunnel.id,
-            staffHostname: d.staffHostname,
-            portalHostname: d.portalHostname,
+            hostnames: hostnames.map((h) => `${h.realm}:${h.hostname}`),
             ingressCount: ingress.length,
           },
         }).catch(() => undefined);
@@ -338,8 +478,11 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           tunnelId: tunnel.id,
           tunnelName: tunnel.name,
           zoneName: zone.name,
+          hostnameCount: hostnames.length,
           ingressCount: ingress.length,
-          portalIngressActive: ingress.length > 2,
+          portalIngressActive: ingress.some(
+            (r) => r.originRequest?.httpHostHeader === `portal.${zone.name}`,
+          ),
         });
       } catch (err) {
         const message =
@@ -359,7 +502,122 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
   );
 
   // ---------------------------------------------------------------------
-  // POST /deprovision — delete the tunnel + DNS records, clear the row.
+  // POST /update — edit the hostname list in place. Reuses the stored API
+  // token + account/zone; reconciles DNS (adds new CNAMEs, deletes removed
+  // ones) and rebuilds tunnel ingress WITHOUT deleting/recreating the
+  // tunnel. The run-token is unchanged so the sidecar keeps running.
+  // ---------------------------------------------------------------------
+  router.post(
+    '/update',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const lockState = getApplianceLockState();
+      if (lockState.kind !== 'unlocked') {
+        res.status(503).json({ error: 'appliance_locked', state: lockState.kind });
+        return;
+      }
+      const parsed = UpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const next = parsed.data.hostnames;
+
+      const [row] = await deps.db
+        .select()
+        .from(cloudflareTunnelConfigs)
+        .where(eq(cloudflareTunnelConfigs.firmId, session.firmId))
+        .limit(1);
+      if (!row || !row.tunnelId || !row.apiTokenEncrypted || !row.zoneId || !row.zoneName) {
+        res.status(404).json({ error: 'no_tunnel' });
+        return;
+      }
+
+      const keyMgr = getFirmKeyManager(deps.db);
+      const apiToken = fromBytes(keyMgr.unwrapTDek(session.firmId, row.apiTokenEncrypted));
+      const cf = createCloudflareClient({ apiToken });
+
+      // Existing hostname rows (with DNS record ids) for the diff.
+      const existingRows = await deps.db
+        .select()
+        .from(cloudflareTunnelHostnames)
+        .where(eq(cloudflareTunnelHostnames.firmId, session.firmId));
+      const nextHosts = new Set(next.map((h) => h.hostname.toLowerCase()));
+
+      try {
+        const zoneId = row.zoneId;
+        const zoneName = row.zoneName;
+        const cnameTarget = `${row.tunnelId}.cfargotunnel.com`;
+
+        // Rebuild ingress first (single API call; authoritative).
+        const ingress = buildIngress(next, zoneName, deps.commercialLicenseActive, originService);
+        await cf.setTunnelIngress(row.accountId ?? '', row.tunnelId, { ingress });
+
+        // Delete DNS for removed hostnames.
+        for (const r of existingRows) {
+          if (nextHosts.has(r.hostname.toLowerCase())) continue;
+          if (r.dnsRecordId) {
+            try {
+              await cf.deleteDnsRecord(zoneId, r.dnsRecordId);
+            } catch (err) {
+              logger.warn({ err, hostname: r.hostname }, 'cf tunnel: stale DNS delete failed');
+            }
+          }
+        }
+
+        // Upsert DNS for the new list; carry forward existing record ids.
+        const persisted: Array<HostnameSpec & { dnsRecordId: string | null }> = [];
+        for (const h of next) {
+          if (h.realm === 'PORTAL' && !deps.commercialLicenseActive) {
+            persisted.push({ ...h, dnsRecordId: null });
+            continue;
+          }
+          const rec = await cf.upsertCnameRecord(zoneId, h.hostname, cnameTarget);
+          persisted.push({ hostname: h.hostname, realm: h.realm, dnsRecordId: rec.id });
+        }
+
+        const staffHostname = firstOfRealm(next, 'STAFF');
+        const portalHostname = firstOfRealm(next, 'PORTAL');
+        await deps.db
+          .update(cloudflareTunnelConfigs)
+          .set({ staffHostname, portalHostname, lastError: null, updatedAt: new Date() })
+          .where(eq(cloudflareTunnelConfigs.firmId, session.firmId));
+        await persistHostnames(deps.db, session.firmId, persisted);
+
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'cloudflare_tunnel_config',
+          entityId: row.tunnelId,
+          actorAppUserId: session.appUserId,
+          after: { hostnames: next.map((h) => `${h.realm}:${h.hostname}`) },
+        }).catch(() => undefined);
+
+        res.json({ ok: true, hostnameCount: next.length, ingressCount: ingress.length });
+      } catch (err) {
+        const message =
+          err instanceof CloudflareApiError
+            ? (err.errors[0]?.message ?? `HTTP ${err.status}`)
+            : err instanceof Error
+              ? err.message
+              : 'unknown';
+        await deps.db
+          .update(cloudflareTunnelConfigs)
+          .set({ status: 'ERROR', lastError: message, updatedAt: new Date() })
+          .where(eq(cloudflareTunnelConfigs.firmId, session.firmId));
+        logger.error({ err }, 'cf tunnel update failed');
+        res.status(502).json({ error: 'update_failed', message });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------
+  // POST /deprovision — delete the tunnel + all DNS records, clear the
+  // row + hostname list.
   // ---------------------------------------------------------------------
   router.post(
     '/deprovision',
@@ -389,22 +647,24 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
       const cf = createCloudflareClient({ apiToken });
       const errors: string[] = [];
 
-      // Clean up DNS records first so a downstream tunnel-delete failure
-      // doesn't leave dangling DNS pointing at a deleted tunnel.
-      if (row.zoneId && row.staffHostname) {
-        try {
-          const rec = await cf.findDnsRecord(row.zoneId, row.staffHostname);
-          if (rec) await cf.deleteDnsRecord(row.zoneId, rec.id);
-        } catch (err) {
-          errors.push(err instanceof Error ? err.message : 'staff_dns');
-        }
-      }
-      if (row.zoneId && row.portalHostname) {
-        try {
-          const rec = await cf.findDnsRecord(row.zoneId, row.portalHostname);
-          if (rec) await cf.deleteDnsRecord(row.zoneId, rec.id);
-        } catch (err) {
-          errors.push(err instanceof Error ? err.message : 'portal_dns');
+      // Delete DNS for every recorded hostname (prefer the stored record
+      // id; fall back to a name lookup).
+      if (row.zoneId) {
+        const hostRows = await deps.db
+          .select()
+          .from(cloudflareTunnelHostnames)
+          .where(eq(cloudflareTunnelHostnames.firmId, session.firmId));
+        for (const h of hostRows) {
+          try {
+            if (h.dnsRecordId) {
+              await cf.deleteDnsRecord(row.zoneId, h.dnsRecordId);
+            } else {
+              const rec = await cf.findDnsRecord(row.zoneId, h.hostname);
+              if (rec) await cf.deleteDnsRecord(row.zoneId, rec.id);
+            }
+          } catch (err) {
+            errors.push(err instanceof Error ? err.message : `dns:${h.hostname}`);
+          }
         }
       }
       if (row.accountId) {
@@ -423,6 +683,10 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
       }
 
       await deps.db
+        .delete(cloudflareTunnelHostnames)
+        .where(eq(cloudflareTunnelHostnames.firmId, session.firmId));
+
+      await deps.db
         .update(cloudflareTunnelConfigs)
         .set({
           status: 'INACTIVE',
@@ -431,6 +695,8 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           tunnelTokenEncrypted: null,
           apiTokenEncrypted: null,
           apiTokenHint: null,
+          staffHostname: null,
+          portalHostname: null,
           lastError: errors.length > 0 ? errors.join('; ') : null,
           metricsSnapshot: null,
           updatedAt: new Date(),
@@ -450,10 +716,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
   );
 
   // ---------------------------------------------------------------------
-  // GET /status — fresh probe of the cloudflared sidecar's :2000
-  // endpoint. The worker writes the same snapshot to metricsSnapshot
-  // on a 60s cadence; this endpoint serves the cached value plus an
-  // on-demand refresh hint for the UI.
+  // GET /status — cached metrics snapshot from the worker poll.
   // ---------------------------------------------------------------------
   router.get(
     '/status',

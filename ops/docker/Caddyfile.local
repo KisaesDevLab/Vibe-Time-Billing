@@ -1,31 +1,36 @@
-# Local-only Caddyfile — serves the appliance image's web + portal SPAs and
-# proxies /api/* + /portal-api/* to the api container.
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 #
-# Two distinct ports preserve the realm split (cookies + CSRF) used in dev:
-#   :5195 → staff app   (APP_BASE_URL)
-#   :5196 → client portal (PORTAL_BASE_URL)
+# Local/LAN Caddyfile — serves the appliance image's web + portal SPAs over
+# HTTPS (internal CA) and proxies /api/* to the api container.
 #
-# Static dists are copied from the image into the `static-content` volume by
-# the `init-static` service in docker-compose.local.yml. Caddy serves them
-# read-only.
+# HTTPS is required because the session cookie is marked `Secure` in
+# production (apps/api/src/auth/cookies.ts) — over plain http on a LAN IP
+# the browser drops it and login loops back to sign-in. `tls internal`
+# mints a cert from Caddy's local CA; browsers show a one-time
+# "not trusted" warning you click through (or import the Caddy root CA).
 #
-# `handle` blocks are mutually exclusive — the first matching block wins
-# and no other top-level handler runs. We MUST use `handle` (not bare
-# directives) because `try_files` is a rewrite that runs before
-# `reverse_proxy` in Caddy's directive order; without `handle` it would
-# rewrite /api/* paths to /index.html before the @api matcher saw them.
+# Host is injected via the VIBE_HOST env var (set on the caddy service in
+# docker-compose.local.yml). Defaults to localhost so the tracked file
+# stays machine-agnostic; set VIBE_HOST=<lan-ip> to serve the LAN.
+#
+#   https://<VIBE_HOST>:5195 → staff app   (APP_BASE_URL)
+#   https://<VIBE_HOST>:5196 → client portal (PORTAL_BASE_URL)
 
 {
-  auto_https off
+  # Keep internal-CA cert issuance on, but don't spin up the :80 HTTP->HTTPS
+  # redirect vhosts (we publish custom ports only).
+  auto_https disable_redirects
   admin off
+  # TLS clients connecting to a bare IP don't send SNI, so Caddy can't match
+  # the IP-keyed site and aborts the handshake. default_sni tells it which
+  # server name (and cert) to assume when SNI is absent.
+  default_sni {$VIBE_HOST:localhost}
 }
 
-:5195 {
+https://{$VIBE_HOST:localhost}:5195 {
+  tls internal
   encode gzip zstd
 
-  # Staff API + portal API both run on the api container on port 3001.
-  # The realm hint lets the API distinguish staff vs portal requests via
-  # the X-Vibe-Realm header pattern used in the LAN/domain templates.
   handle /api/* {
     reverse_proxy api:3001 {
       header_up X-Real-IP {remote_host}
@@ -36,7 +41,6 @@
     }
   }
 
-  # Staff SPA — fall through to index.html for client-side routes.
   handle {
     root * /srv/web
     try_files {path} /index.html
@@ -44,7 +48,8 @@
   }
 }
 
-:5196 {
+https://{$VIBE_HOST:localhost}:5196 {
+  tls internal
   encode gzip zstd
 
   handle /api/* {

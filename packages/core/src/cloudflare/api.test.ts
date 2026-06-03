@@ -151,6 +151,49 @@ describe('CloudflareClient', () => {
     expect((calls[0]!.body as { config: { ingress: unknown[] } }).config.ingress).toHaveLength(2);
   });
 
+  it('listAccounts returns id+name pairs from /accounts', async () => {
+    const { fetch, calls } = buildFakeFetch(() => ({
+      status: 200,
+      envelope: {
+        success: true,
+        errors: [],
+        result: [
+          { id: 'acc-1', name: 'Granite Peak', extra: 'ignored' },
+          { id: 'acc-2', name: 'Second Co' },
+        ],
+      },
+    }));
+    const client = createCloudflareClient({ apiToken: 'tok', fetchImpl: fetch });
+    const accts = await client.listAccounts();
+    expect(accts).toEqual([
+      { id: 'acc-1', name: 'Granite Peak' },
+      { id: 'acc-2', name: 'Second Co' },
+    ]);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toContain('/accounts?per_page=50');
+  });
+
+  it('listZones maps account id and filters by account when given', async () => {
+    const { fetch, calls } = buildFakeFetch(() => ({
+      status: 200,
+      envelope: {
+        success: true,
+        errors: [],
+        result: [
+          { id: 'z1', name: 'firm.com', status: 'active', account: { id: 'acc-1' } },
+          { id: 'z2', name: 'other.com', status: 'pending' },
+        ],
+      },
+    }));
+    const client = createCloudflareClient({ apiToken: 'tok', fetchImpl: fetch });
+    const zones = await client.listZones('acc-1');
+    expect(zones).toEqual([
+      { id: 'z1', name: 'firm.com', status: 'active', accountId: 'acc-1' },
+      { id: 'z2', name: 'other.com', status: 'pending', accountId: null },
+    ]);
+    expect(calls[0]!.url).toContain('/zones?per_page=50&account.id=acc-1');
+  });
+
   it('deleteDnsRecord and deleteTunnel use DELETE', async () => {
     const { fetch, calls } = buildFakeFetch(() => ({
       status: 200,
