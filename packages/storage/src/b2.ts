@@ -261,10 +261,18 @@ export class B2StorageClient implements StorageClient {
   async copy(srcKey: string, destKey: string): Promise<{ etag: string }> {
     const { CopyObjectCommand } = await loadS3Module();
     const client = await this.client();
+    // CopySource must be "bucket/keyComponents...". encodeURIComponent
+    // encodes '/' as %2F which B2 can't resolve back to a real object,
+    // so any nested key (Smith/Invoices/2024.pdf) returns 404 NoSuchKey.
+    // Encode each path component separately and rejoin with literal '/'.
+    const encodedKey = srcKey
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
     const out: { CopyObjectResult?: { ETag?: string } } = await client.send(
       new CopyObjectCommand({
         Bucket: this.bucket,
-        CopySource: `${this.bucket}/${encodeURIComponent(srcKey)}`,
+        CopySource: `${this.bucket}/${encodedKey}`,
         Key: destKey,
       }),
     );
@@ -284,17 +292,27 @@ export class B2StorageClient implements StorageClient {
     const { PutObjectCommand } = await loadS3Module();
     const { getSignedUrl } = await loadPresignerModule();
     const client = await this.client();
-    return getSignedUrl(
-      client,
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        ContentType: opts.contentType,
-        ContentDisposition: opts.contentDisposition,
-        Metadata: opts.metadata,
-        ContentLength: opts.expectedSizeBytes,
-      }),
-      { expiresIn: ttlSeconds },
-    );
+    // Only include ContentType / ContentLength when the caller actually
+    // supplied them. SigV4 includes any header set on the command in
+    // the signature — and B2 rejects with 403 SignatureDoesNotMatch if
+    // the browser's PUT doesn't echo the same value. Browsers leave
+    // Content-Type empty for files with unknown MIME types and may
+    // disagree on Content-Length when intermediaries (corporate
+    // proxies / DLP appliances) rewrite the body. Size is verified
+    // server-side on /complete via HEAD anyway.
+    const putInput: {
+      Bucket: string;
+      Key: string;
+      ContentType?: string;
+      ContentDisposition?: string;
+      Metadata?: Record<string, string>;
+    } = {
+      Bucket: this.bucket,
+      Key: key,
+    };
+    if (opts.contentType) putInput.ContentType = opts.contentType;
+    if (opts.contentDisposition) putInput.ContentDisposition = opts.contentDisposition;
+    if (opts.metadata) putInput.Metadata = opts.metadata;
+    return getSignedUrl(client, new PutObjectCommand(putInput), { expiresIn: ttlSeconds });
   }
 }

@@ -274,10 +274,15 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
 
       let uploadUrl: string;
       try {
+        // Don't synthesize a content type. If the browser couldn't
+        // identify one (file.type === ''), forcing application/octet-
+        // stream into the SigV4 signature would lock the PUT to that
+        // header value — but the FE sends no Content-Type at all,
+        // causing B2 to reject with 403 SignatureDoesNotMatch.
         uploadUrl = await storage.presignPut(
           storageKey,
           {
-            contentType: parsed.data.mimeType ?? 'application/octet-stream',
+            contentType: parsed.data.mimeType,
             expectedSizeBytes: parsed.data.sizeBytes,
           },
           PRESIGN_TTL_SECONDS,
