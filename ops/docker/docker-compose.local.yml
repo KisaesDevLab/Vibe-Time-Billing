@@ -180,7 +180,11 @@ services:
     profiles: ['cloudflare']
     command: ['tunnel', '--no-autoupdate', '--metrics', '0.0.0.0:2000', 'run']
     environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN (docker exec vibe-tb-api cat /run/cloudflared/token)}
+      # Optional so non-cloudflare `up`s don't require it (compose validates
+      # every service regardless of active profile). Start the connector with:
+      #   TUNNEL_TOKEN=$(docker exec vibe-tb-api cat /run/cloudflared/token) \
+      #     docker compose -f ... --profile cloudflare up -d cloudflared
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     restart: unless-stopped
     networks:
       - default
