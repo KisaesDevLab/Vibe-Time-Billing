@@ -227,8 +227,8 @@ export function createMessagingRouter(deps: MessagingRoutesDeps): Router {
         const provider = buildMailProvider(cfg, logger);
         const result = await provider.send({
           to: body.to,
-          subject: 'Vibe Time & Billing — test email',
-          body: `This is a test message from your Vibe Time & Billing appliance, confirming the ${cfg.provider} email provider is configured correctly.`,
+          subject: 'Vibe Practice Management — test email',
+          body: `This is a test message from your Vibe Practice Management appliance, confirming the ${cfg.provider} email provider is configured correctly.`,
         });
         if (deps.db && req.staffSession) {
           await emitAudit(deps.db, {
@@ -281,7 +281,7 @@ export function createMessagingRouter(deps: MessagingRoutesDeps): Router {
         const provider = buildSmsProvider(cfg, logger);
         const result = await provider.send({
           to: body.to,
-          body: 'Vibe Time & Billing test SMS.',
+          body: 'Vibe Practice Management test SMS.',
         });
         if (deps.db && req.staffSession) {
           await emitAudit(deps.db, {

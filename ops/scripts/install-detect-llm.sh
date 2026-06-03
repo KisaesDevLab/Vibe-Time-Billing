@@ -2,7 +2,7 @@
 # =============================================================================
 # install-detect-llm.sh — Detect hardware capabilities and select a local LLM
 #
-# Runs at first boot of the Vibe Time & Billing appliance. Inspects RAM, CPU,
+# Runs at first boot of the Vibe Practice Management appliance. Inspects RAM, CPU,
 # and (if present) GPU, then chooses the right local model and pulls it via
 # Ollama. Writes the choice to ./ai.config so the API server picks it up.
 #

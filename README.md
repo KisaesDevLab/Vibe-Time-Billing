@@ -1,6 +1,6 @@
-# Vibe Time & Billing
+# Vibe Practice Management
 
-**Self-hosted time tracking, recurring billing, and adjustment allocation for CPA firms.**
+**Self-hosted practice management for CPA firms — time tracking, recurring billing, proposals, tax-return tracking, and a branded client portal.**
 
 A Docker appliance you run on your own hardware. One annual license, unlimited users, unlimited clients, no per-seat pricing. Built for firms that want their data on their own infrastructure and want billing math that actually models how partner write-downs flow through to staff realization.
 
@@ -17,15 +17,15 @@ A Docker appliance you run on your own hardware. One annual license, unlimited u
 - Local-first AI for description suggestions, scope creep detection, and plain-English query
 - MCP server for AI agent integration (Claude Code, Cowork, third-party)
 
-## What it isn't
+## Scope
 
-Not a full practice-management suite. No workflow/task management, no CRM, no tax prep. Pair with the rest of the Vibe family if you need those:
+Vibe PM covers the engagement-to-cash workflow: time tracking, billing & realization, adjustments, proposals, retainers, tax-return tracking, secure messaging, document collection, and the client portal. It is **not** a bookkeeping ledger, a payroll system, or a tax-prep engine — pair it with the rest of the Vibe family for those:
 - **Vibe MyBooks** — bookkeeping
 - **Vibe Payroll Time** — kiosk time tracking
 - **Vibe Trial Balance** — tax workpapers
 - **Vibe Shield** — local PII redaction gateway (required when opting AI features into cloud API egress; see `docs/architecture/AI_EGRESS_POLICY.md`)
 
-(Messaging, document vault, and document requests — previously planned as standalone "Vibe Connect" features — are absorbed directly into Time & Billing. See `docs/architecture/MESSAGING_VAULT.md`.)
+(Messaging, document vault, and document requests — previously planned as standalone "Vibe Connect" features — are absorbed directly into Vibe Practice Management. See `docs/architecture/MESSAGING_VAULT.md`.)
 
 ## Stack
 

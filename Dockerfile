@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.6
-# Multi-stage production build for Vibe Time & Billing appliance.
+# Multi-stage production build for Vibe Practice Management appliance.
 # Final image bundles Chromium for Puppeteer PDF rendering (~300MB bloat).
 
 # =============================================================================

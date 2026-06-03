@@ -1,6 +1,6 @@
 # Docker image size note
 
-The production Vibe Time & Billing image is approximately **750-900 MB**. This is large for a Node.js application. Most of the bloat comes from one decision.
+The production Vibe Practice Management image is approximately **750-900 MB**. This is large for a Node.js application. Most of the bloat comes from one decision.
 
 ## The Chrome problem
 

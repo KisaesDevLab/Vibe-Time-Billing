@@ -1,6 +1,6 @@
 # Semver policy
 
-Vibe Time & Billing follows strict semver from `v1.0.0` onward. While in
+Vibe Practice Management follows strict semver from `v1.0.0` onward. While in
 beta (`v0.MINOR.PATCH`), the rules below apply with the asterisks noted.
 
 ## Versions

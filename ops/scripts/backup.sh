@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# backup.sh — Nightly database backup for Vibe Time & Billing
+# backup.sh — Nightly database backup for Vibe Practice Management
 #
 # Per QUESTIONS.md Q12: pg_dump nightly cron, 30-day retention, mounted volume.
 #

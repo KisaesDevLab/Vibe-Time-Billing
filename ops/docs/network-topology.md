@@ -1,6 +1,6 @@
 # Network topology
 
-Vibe Time & Billing is a self-hosted appliance. There is no SaaS layer;
+Vibe Practice Management is a self-hosted appliance. There is no SaaS layer;
 firms run the stack themselves. This doc covers the three supported
 network shapes plus the Cloudflare Tunnel template (Q10 locked) and
 LAN/Tailscale-only deployments.

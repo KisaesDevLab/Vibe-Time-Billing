@@ -8,6 +8,7 @@ import { AuthLayout, Button, Input, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
+import { BRAND } from '../brand';
 
 interface EnrollmentResponse {
   otpauthUri: string;
@@ -54,7 +55,7 @@ export function TotpEnrollPage(): JSX.Element {
 
   if (!enrollment && !error) {
     return (
-      <AuthLayout brand="Vibe Time & Billing" title="Setting up TOTP…">
+      <AuthLayout brand={BRAND} title="Setting up TOTP…">
         <p style={{ fontSize: 14 }}>Loading…</p>
       </AuthLayout>
     );
@@ -62,7 +63,7 @@ export function TotpEnrollPage(): JSX.Element {
 
   return (
     <AuthLayout
-      brand="Vibe Time & Billing"
+      brand={BRAND}
       title="Two-factor enrollment"
       subtitle="TOTP is required for all staff. Scan in your authenticator app."
     >

@@ -1,6 +1,6 @@
 # Database restore procedure
 
-This document describes how to restore the Vibe Time & Billing database from a `pg_dump` backup. See `ops/scripts/backup.sh` for how backups are created (nightly at firm-local 02:00, retained 30 days in `/backups`).
+This document describes how to restore the Vibe Practice Management database from a `pg_dump` backup. See `ops/scripts/backup.sh` for how backups are created (nightly at firm-local 02:00, retained 30 days in `/backups`).
 
 ## When to restore
 

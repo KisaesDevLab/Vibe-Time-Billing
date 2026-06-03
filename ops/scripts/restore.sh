@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# restore.sh — Restore Vibe Time & Billing database from a pg_dump backup
+# restore.sh — Restore Vibe Practice Management database from a pg_dump backup
 #
 # See ops/docs/restore.md for the full procedure including pre-flight checks
 # and post-restore tasks. This script is the mechanical part.

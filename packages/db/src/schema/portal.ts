@@ -1,7 +1,7 @@
 // =====================================================================
 // packages/db/src/schema/portal.ts
 //
-// Portal schema for Vibe Time & Billing (Phase 16).
+// Portal schema for Vibe Practice Management (Phase 16).
 //
 // Design notes:
 //   - portal_identity is THE PERSON. Email and phone are contact methods

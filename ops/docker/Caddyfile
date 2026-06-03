@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 #
-# Production Caddyfile for the Vibe Time & Billing appliance.
+# Production Caddyfile for the Vibe Practice Management appliance.
 #
 # Default deployment shape: Cloudflare Tunnel terminates TLS at
 # Cloudflare's edge and forwards plain HTTP to this Caddy on port 80.

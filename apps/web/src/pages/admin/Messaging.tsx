@@ -306,7 +306,7 @@ export function MessagingPage(): JSX.Element {
             <input
               value={emailDraft.from}
               onChange={(e) => setEmailDraft({ ...emailDraft, from: e.target.value })}
-              placeholder="Vibe Time & Billing <[email protected]>"
+              placeholder="Vibe Practice Management <[email protected]>"
               style={fieldStyle}
             />
           </label>

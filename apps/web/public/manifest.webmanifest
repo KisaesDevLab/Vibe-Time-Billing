@@ -1,7 +1,7 @@
 {
-  "name": "Vibe Time & Billing — Staff",
-  "short_name": "Vibe Staff",
-  "description": "CPA practice time tracking, recurring billing, and realization reporting.",
+  "name": "Vibe Practice Management — Staff",
+  "short_name": "Vibe PM",
+  "description": "CPA practice management: time tracking, recurring billing, proposals, tax returns, and realization reporting.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f1419",

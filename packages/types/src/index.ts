@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-// Shared TypeScript types for Vibe Time & Billing.
+// Shared TypeScript types for Vibe Practice Management.
 //
 // Exposes domain enums and primitive aliases used across api, worker, web,
 // portal, and packages/core. Drizzle table row types are re-exported from

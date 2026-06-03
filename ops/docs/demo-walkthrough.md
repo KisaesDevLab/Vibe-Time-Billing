@@ -1,4 +1,4 @@
-# Vibe Time & Billing — demo walkthrough
+# Vibe Practice Management — demo walkthrough
 
 A 10-minute path from a fresh clone to seeing the differentiator live.
 

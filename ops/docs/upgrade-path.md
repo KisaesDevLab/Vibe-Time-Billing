@@ -1,6 +1,6 @@
 # Upgrade path
 
-Vibe Time & Billing ships as a versioned Docker image. Major-version upgrades
+Vibe Practice Management ships as a versioned Docker image. Major-version upgrades
 may include irreversible schema migrations; minor-version upgrades never do.
 
 ## Versioning

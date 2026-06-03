@@ -72,6 +72,6 @@ The **software** is the software the licensor makes available under these terms.
 
 The client portal feature of this software (the `apps/portal` application and all `client_portal_*` database tables and supporting infrastructure) requires a separate commercial license to enable. A commercial license token is checked at boot and on critical portal routes. Token absence disables the portal cleanly with a clear administrative message; the rest of the software continues to function.
 
-Connect-style features — engagement messaging (encrypted threads), escrow file release tied to invoice payment, and client document/information requests — are bundled into the same artifact as the rest of Vibe Time & Billing and gated by the same portal license token. There is no separate "Connect" license tier; if your portal license is active, every Connect feature is too.
+Connect-style features — engagement messaging (encrypted threads), escrow file release tied to invoice payment, and client document/information requests — are bundled into the same artifact as the rest of Vibe Practice Management and gated by the same portal license token. There is no separate "Connect" license tier; if your portal license is active, every Connect feature is too.
 
 To obtain a commercial license token, contact Kisaes LLC.

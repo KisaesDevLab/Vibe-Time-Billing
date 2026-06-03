@@ -772,7 +772,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     }
     const enrollment = newEnrollment({
       accountName: user.email,
-      issuer: 'Vibe Time & Billing',
+      issuer: 'Vibe Practice Management',
     });
     // Store enrollment in Redis pending confirmation by /totp/verify.
     await deps.redis.set(

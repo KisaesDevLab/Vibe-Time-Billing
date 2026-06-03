@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-# Production compose for the Vibe Time & Billing appliance.
+# Production compose for the Vibe Practice Management appliance.
 # Pull the published image, mount /backups and /data volumes, wire Caddy.
 
 services:
@@ -71,7 +71,7 @@ services:
       # WebAuthn / passkeys — required when staff sign in with a passkey.
       # rp_id should be the bare domain (no scheme), e.g. firm.com.
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID}
-      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Vibe Time & Billing}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Vibe Practice Management}
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-${APP_BASE_URL}}
       COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}

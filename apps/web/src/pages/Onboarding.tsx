@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { BRAND } from '../brand';
 
 interface Snapshot {
   counts: {
@@ -100,7 +101,7 @@ export function OnboardingPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 800 }}>
-      <Card title="Welcome to Vibe Time & Billing">
+      <Card title={`Welcome to ${BRAND}`}>
         <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
           Run through this checklist once to get the appliance fully operational.
         </p>

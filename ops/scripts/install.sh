@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 #
-# Vibe Time & Billing — one-command appliance installer for CPAs.
+# Vibe Practice Management — one-command appliance installer for CPAs.
 #
 # What it does:
 #   1. Verifies Docker + Docker Compose v2 + openssl are installed.

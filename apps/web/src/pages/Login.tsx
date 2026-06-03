@@ -8,7 +8,7 @@
 // The verify-via-link path still works when the URL carries ?token=,
 // so existing emailed magic links open the right screen automatically.
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   startAuthentication,
@@ -20,6 +20,7 @@ import { AuthLayout, Button, Input, tokens } from '@vibe/ui';
 
 import { api, setCsrfToken } from '../api-client';
 import { useAuth } from '../auth-context';
+import { BRAND } from '../brand';
 
 type Factor = 'TOTP' | 'EMAIL' | 'SMS' | 'PASSKEY';
 
@@ -34,7 +35,7 @@ function SignInPage(): JSX.Element {
   const [method, setMethod] = useState<'magic' | 'password' | 'passkey'>('magic');
   return (
     <AuthLayout
-      brand="Vibe Time & Billing"
+      brand={BRAND}
       title="Sign in"
       subtitle={
         method === 'magic'
@@ -256,6 +257,18 @@ function FactorChallenge({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Auto-start the initial factor on mount. EMAIL/SMS need a send before
+  // the code field appears; without this, a user with a single non-TOTP
+  // factor lands on a blank screen (the factor picker only renders when
+  // there are 2+ options). TOTP/PASSKEY are excluded — TOTP already shows
+  // its input, PASSKEY waits for an explicit tap.
+  useEffect(() => {
+    if (!started && factor !== 'PASSKEY' && factor !== 'TOTP') {
+      void start(factor);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function start(picked: Factor): Promise<void> {
     setFactor(picked);
     setError(null);
@@ -476,7 +489,7 @@ function VerifyPage({ token }: { token: string }): JSX.Element {
   }
 
   return (
-    <AuthLayout brand="Vibe Time & Billing" title="Confirm sign-in">
+    <AuthLayout brand={BRAND} title="Confirm sign-in">
       {done ? (
         <p style={{ fontSize: 14 }}>Signed in. Redirecting…</p>
       ) : (

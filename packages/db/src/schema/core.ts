@@ -1,7 +1,7 @@
 // =====================================================================
 // packages/db/src/schema/core.ts
 //
-// Core Drizzle schema for Vibe Time & Billing.
+// Core Drizzle schema for Vibe Practice Management.
 //
 // Covers everything except the portal (see portal.ts for portal_identity,
 // client_portal_access, portal_session, portal_invitation,

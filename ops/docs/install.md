@@ -1,6 +1,6 @@
 # Install runbook
 
-Self-hosted Vibe Time & Billing appliance from "fresh VM" to "live
+Self-hosted Vibe Practice Management appliance from "fresh VM" to "live
 firm" in about 15 minutes. There is no SaaS layer (Q1).
 
 ## Quick install (recommended)

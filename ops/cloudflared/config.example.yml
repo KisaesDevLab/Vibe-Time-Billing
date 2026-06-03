@@ -1,4 +1,4 @@
-# Cloudflare Tunnel config for Vibe Time & Billing
+# Cloudflare Tunnel config for Vibe Practice Management
 #
 # NOTE (0085): in-app provisioning replaces this file for new
 # deployments. Boot the appliance, sign in as admin, and use

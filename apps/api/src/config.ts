@@ -83,7 +83,7 @@ const Schema = z.object({
   VIBE_CONNECT_URL: z.string().optional(),
   VIBE_CONNECT_API_KEY: z.string().optional(),
   // Mail provider secrets — only the matching one is read per MAIL_PROVIDER.
-  MAIL_FROM: z.string().default('Vibe Time & Billing <[email protected]>'),
+  MAIL_FROM: z.string().default('Vibe Practice Management <[email protected]>'),
   MAIL_SMTP_HOST: z.string().default('localhost'),
   MAIL_SMTP_PORT: z.coerce.number().int().positive().default(1025),
   MAIL_SMTP_SECURE: z

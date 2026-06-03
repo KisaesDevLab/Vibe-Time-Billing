@@ -4,6 +4,8 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
+import { BRAND } from './brand';
+
 import { QuickFind } from './QuickFind';
 
 import { AccountPage } from './pages/Account';
@@ -136,7 +138,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   const canViewRetainers = usePermission('retainer:read');
   return (
     <AppShell
-      brand="Vibe Time & Billing"
+      brand={BRAND}
       collapseStorageKey="__vibe_staff_sidebar_collapsed"
       realmBadge={<Pill tone="accent">staff</Pill>}
       nav={[

@@ -31,7 +31,7 @@ import {
   type WebAuthnCredential,
 } from '@simplewebauthn/server';
 
-const RP_NAME = 'Vibe Time & Billing';
+const RP_NAME = 'Vibe Practice Management';
 
 /** Relying Party domain. Required when WebAuthn endpoints are hit. */
 export function rpId(): string {
