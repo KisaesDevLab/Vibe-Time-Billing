@@ -17,6 +17,12 @@ import { resolveEngagementName } from '@vibe/core/engagements';
 
 import { api } from '../api-client';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../lib/money';
+import {
+  RecurrenceComposer,
+  makeDefaultRecurrenceDraft,
+  recurrenceDraftToPayload,
+  type RecurrenceDraft,
+} from './engagements/RecurrenceComposer';
 
 interface Client {
   id: string;
@@ -38,8 +44,22 @@ interface EngagementTpl {
   // {{period.month}}/{{period.year}}"). Server resolves at create
   // time if `name` is left blank.
   namePattern: string | null;
+  // Inherited onto the engagement at create time so list/report views
+  // can roll up by type → service line.
+  engagementTypeId: string | null;
   isSystem: boolean;
   status: string;
+}
+
+interface EngagementType {
+  id: string;
+  name: string;
+  serviceLineId: string | null;
+}
+
+interface ServiceLine {
+  id: string;
+  name: string;
 }
 
 interface RateCode {
@@ -87,6 +107,9 @@ export function EngagementCreatePage(): JSX.Element {
   const [templates, setTemplates] = useState<EngagementTpl[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
   const [firmUsers, setFirmUsers] = useState<FirmUser[]>([]);
+  const [engagementTypes, setEngagementTypes] = useState<EngagementType[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
+  const [engagementTypeId, setEngagementTypeId] = useState<string>('');
   const [pickedTemplateId, setPickedTemplateId] = useState<string>('');
 
   // 0050 — assignee fields. partnerId / managerId remain authoritative
@@ -135,13 +158,23 @@ export function EngagementCreatePage(): JSX.Element {
   const [surchargeFlatDollars, setSurchargeFlatDollars] = useState('');
   const [surchargeLabel, setSurchargeLabel] = useState('');
 
+  // Recurrence — when on, a recurrence row is created after the
+  // engagement is inserted, pointing at the same template and this
+  // engagement as last_engagement_id (so the next period derives from
+  // it). Requires a template pick (the recurrence table FK is to
+  // engagement_template, not the engagement itself).
+  const [makeRecurring, setMakeRecurring] = useState(false);
+  const [recurrenceDraft, setRecurrenceDraft] = useState<RecurrenceDraft>(() =>
+    makeDefaultRecurrenceDraft(),
+  );
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [c, t, w, u, rc] = await Promise.all([
+        const [c, t, w, u, rc, et, sl] = await Promise.all([
           api<{ items: Client[] }>('/api/staff/clients').catch(() => ({ items: [] })),
           api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement').catch(() => ({
             items: [],
@@ -151,12 +184,20 @@ export function EngagementCreatePage(): JSX.Element {
           })),
           api<{ users: FirmUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
           api<{ items: RateCode[] }>('/api/staff/admin/rate-codes').catch(() => ({ items: [] })),
+          api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
+            items: [],
+          })),
+          api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines').catch(() => ({
+            items: [],
+          })),
         ]);
         setClients(c.items ?? []);
         setTemplates((t.items ?? []).filter((tpl) => tpl.status === 'ACTIVE'));
         setWorkCodes(w.items ?? []);
         setFirmUsers((u.users ?? []).filter((x) => x.status === 'ACTIVE'));
         setRateCodes((rc.items ?? []).filter((x) => x.active));
+        setEngagementTypes(et.items ?? []);
+        setServiceLines(sl.items ?? []);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'load_failed');
       }
@@ -173,6 +214,10 @@ export function EngagementCreatePage(): JSX.Element {
     setBudgetHours(tpl.defaultBudgetHours ?? '');
     setInScopeIds(tpl.inScopeWorkCodeIds ?? []);
     if (tpl.defaultRateCodeId) setDefaultRateCodeId(tpl.defaultRateCodeId);
+    // Inherit the type from the template so the engagement (and every
+    // report that rolls up by type → service line) gets categorized
+    // without the user having to pick a second time.
+    if (tpl.engagementTypeId) setEngagementTypeId(tpl.engagementTypeId);
   }
 
   // 0083 — pick a template that uses a name_pattern + the user left
@@ -227,6 +272,7 @@ export function EngagementCreatePage(): JSX.Element {
       if (dueDate) body.dueDate = dueDate;
       if (inScopeIds.length > 0) body.inScopeWorkCodeIds = inScopeIds;
       if (defaultRateCodeId) body.defaultRateCodeId = defaultRateCodeId;
+      if (engagementTypeId) body.engagementTypeId = engagementTypeId;
       if (partnerId) body.partnerId = partnerId;
       if (managerId) body.managerId = managerId;
       if (assignments.length > 0) body.assignments = assignments;
@@ -252,6 +298,29 @@ export function EngagementCreatePage(): JSX.Element {
         method: 'POST',
         body: JSON.stringify(body),
       });
+      // Recurrence — best-effort after the engagement insert succeeds.
+      // A failure here does not unwind the engagement (the partner can
+      // add the recurrence later from the client detail card).
+      if (makeRecurring && pickedTemplateId) {
+        try {
+          await api('/api/staff/engagement-recurrences', {
+            method: 'POST',
+            body: JSON.stringify({
+              clientId,
+              templateId: pickedTemplateId,
+              ...recurrenceDraftToPayload(recurrenceDraft),
+            }),
+          });
+        } catch (e) {
+          // Surface the failure but still navigate to the engagement so
+          // the user can see what was created.
+          setError(
+            `Engagement created, but recurrence setup failed: ${
+              e instanceof Error ? e.message : 'unknown_error'
+            }. Add the recurrence from the client's Engagements tab.`,
+          );
+        }
+      }
       navigate(`/engagements/${r.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'create_failed');
@@ -483,6 +552,73 @@ export function EngagementCreatePage(): JSX.Element {
               Drives which billing rate is pulled from each staff member&apos;s snapshot. Leave
               blank to fall back to StandardRate.
             </p>
+          </div>
+
+          {/* Type → service line. Picking a Type both categorizes the
+              engagement for reports (Profitability by Service Line,
+              AR by Service Line, etc.) and inherits the type's
+              default fee structure / budget guidance. Service line
+              is derived from the type and shown read-only. */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  display: 'block',
+                  marginBottom: 4,
+                }}
+              >
+                Type
+              </div>
+              <Combobox
+                ariaLabel="Engagement type"
+                clearable
+                value={engagementTypeId}
+                onChange={(v) => setEngagementTypeId(v || '')}
+                options={engagementTypes.map<ComboboxOption>((t) => {
+                  const sl = serviceLines.find((s) => s.id === t.serviceLineId);
+                  return {
+                    value: t.id,
+                    label: t.name,
+                    description: sl?.name ?? undefined,
+                  };
+                })}
+                placeholder="— select —"
+              />
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  display: 'block',
+                  marginBottom: 4,
+                }}
+              >
+                Service line
+              </div>
+              <div
+                style={{
+                  padding: '10px 12px',
+                  background: tokens.color.bg,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  fontSize: 14,
+                  color: tokens.color.textMuted,
+                  minHeight: 'calc(14px + 20px)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  boxSizing: 'border-box',
+                }}
+              >
+                {(() => {
+                  const type = engagementTypes.find((t) => t.id === engagementTypeId);
+                  const sl = serviceLines.find((s) => s.id === type?.serviceLineId);
+                  return sl?.name ?? '— derived from Type —';
+                })()}
+              </div>
+            </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
@@ -862,6 +998,57 @@ export function EngagementCreatePage(): JSX.Element {
               </div>
             </div>
           )}
+
+          <fieldset
+            style={{
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              padding: 12,
+              marginTop: 8,
+              display: 'grid',
+              gap: 10,
+            }}
+          >
+            <legend
+              style={{
+                padding: '0 6px',
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                textTransform: 'uppercase',
+                letterSpacing: 0.4,
+              }}
+            >
+              Recurrence
+            </legend>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={makeRecurring}
+                onChange={(e) => setMakeRecurring(e.target.checked)}
+                disabled={!pickedTemplateId}
+              />
+              <span>
+                <strong>Make this engagement recurring</strong>{' '}
+                {!pickedTemplateId && (
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    (pick a template above to enable — the recurrence reuses the template each
+                    cycle)
+                  </span>
+                )}
+              </span>
+            </label>
+            {makeRecurring && pickedTemplateId && (
+              <div
+                style={{
+                  background: tokens.color.surface,
+                  padding: 10,
+                  borderRadius: tokens.radius.sm,
+                }}
+              >
+                <RecurrenceComposer value={recurrenceDraft} onChange={setRecurrenceDraft} />
+              </div>
+            )}
+          </fieldset>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <Button onClick={() => void submit()} disabled={busy || !clientId || !name.trim()}>

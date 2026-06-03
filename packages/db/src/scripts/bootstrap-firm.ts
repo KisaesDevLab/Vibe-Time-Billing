@@ -25,19 +25,30 @@
 // staff, and rates are all left for the operator to configure post-
 // install via the admin UI.
 
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import postgres from 'postgres';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { eq } from 'drizzle-orm';
 
 import {
   appUsers,
+  engagementLetterTemplates,
+  engagementTemplates,
+  engagementTypes,
   firmSettings,
   firms,
   offices,
+  paymentMethodTypes,
   rateCodes,
   roles,
   serviceLines,
+  taxJurisdictions,
+  taxPaymentTypeCatalog,
   userRoles,
+  workCodes,
 } from '../schema/core';
 import { seedNotificationTemplates } from '../seed-helpers/notification-templates';
 import { seedRetainerTierConfigs } from '../seed-helpers/retainer-tier-configs';
@@ -110,12 +121,21 @@ async function main(): Promise<void> {
 
       await tx.insert(userRoles).values({ appUserId: adminUser.id, roleId: adminRole.id });
 
-      await tx.insert(serviceLines).values([
-        { firmId, name: 'Tax', category: 'tax' as const, color: '#3b82f6' },
-        { firmId, name: 'Audit', category: 'audit' as const, color: '#ef4444' },
-        { firmId, name: 'Advisory', category: 'advisory' as const, color: '#22c55e' },
-        { firmId, name: 'Bookkeeping', category: 'bookkeeping' as const, color: '#f59e0b' },
-      ]);
+      const serviceLineRows = await tx
+        .insert(serviceLines)
+        .values([
+          { firmId, name: 'Tax', category: 'tax' as const, color: '#3b82f6' },
+          { firmId, name: 'Audit', category: 'audit' as const, color: '#ef4444' },
+          { firmId, name: 'Advisory', category: 'advisory' as const, color: '#22c55e' },
+          { firmId, name: 'Bookkeeping', category: 'bookkeeping' as const, color: '#f59e0b' },
+          { firmId, name: 'Payroll', category: 'payroll' as const, color: '#a855f7' },
+        ])
+        .returning({ id: serviceLines.id, category: serviceLines.category });
+      // Map category → service_line_id so engagement types + work codes
+      // can resolve their service line by category name in the JSON.
+      const serviceLineByCategory = new Map(
+        serviceLineRows.map((r) => [r.category as string, r.id]),
+      );
 
       await tx.insert(rateCodes).values({
         firmId,
@@ -125,6 +145,128 @@ async function main(): Promise<void> {
         isSystem: true,
       });
 
+      // Q24 starter pack — load the eight engagement templates from
+      // seed/engagement-templates.json + their matching letter MDs.
+      // Inserted in dependency order: work_codes → letter_templates →
+      // engagement_types → engagement_templates (the template row
+      // references all three).
+      const starterPack = loadStarterPack();
+      if (starterPack) {
+        const { templates, letters } = starterPack;
+
+        // Deduplicate work codes by key; assign each to the first
+        // service-line category the key appears under. Operators can
+        // re-bucket via the admin UI later.
+        const workCodeByKey = new Map<
+          string,
+          { key: string; name: string; serviceLineId: string | null; billableDefault: boolean }
+        >();
+        for (const t of templates) {
+          const slId = serviceLineByCategory.get(t.service_line_category) ?? null;
+          for (const wc of t.work_codes) {
+            if (workCodeByKey.has(wc.key)) continue;
+            workCodeByKey.set(wc.key, {
+              key: wc.key,
+              name: wc.name,
+              serviceLineId: slId,
+              billableDefault: wc.billable_default,
+            });
+          }
+        }
+        const workCodeValues = Array.from(workCodeByKey.values());
+        const workCodeRows = workCodeValues.length
+          ? await tx
+              .insert(workCodes)
+              .values(
+                workCodeValues.map((w) => ({
+                  firmId,
+                  serviceLineId: w.serviceLineId,
+                  key: w.key,
+                  name: w.name,
+                  billableDefault: w.billableDefault,
+                })),
+              )
+              .returning({ id: workCodes.id, key: workCodes.key })
+          : [];
+        const workCodeIdByKey = new Map(workCodeRows.map((r) => [r.key, r.id]));
+        // eslint-disable-next-line no-console
+        console.log(`bootstrap: seeded ${workCodeRows.length} work code(s)`);
+
+        // Letter templates — one per .md file. Skip silently if the
+        // template references a letter key that isn't on disk; the
+        // template will land with default_letter_template_id NULL.
+        const letterRows = letters.length
+          ? await tx
+              .insert(engagementLetterTemplates)
+              .values(
+                letters.map((l) => ({
+                  firmId,
+                  key: l.key,
+                  name: l.name,
+                  bodyHtml: l.body,
+                  isSystem: true,
+                })),
+              )
+              .returning({ id: engagementLetterTemplates.id, key: engagementLetterTemplates.key })
+          : [];
+        const letterIdByKey = new Map(letterRows.map((r) => [r.key, r.id]));
+        // eslint-disable-next-line no-console
+        console.log(`bootstrap: seeded ${letterRows.length} engagement letter template(s)`);
+
+        // Engagement types — one per JSON template. Service line by
+        // category; the templateData blob keeps any extra fields we
+        // don't normalize into columns yet (milestones, custom fields).
+        const engTypeRows = await tx
+          .insert(engagementTypes)
+          .values(
+            templates.map((t) => ({
+              firmId,
+              serviceLineId: serviceLineByCategory.get(t.service_line_category) ?? null,
+              key: t.key,
+              name: t.name,
+              defaultFeeStructure: t.default_fee_structure,
+              defaultBudgetHours:
+                t.default_budget_hours != null ? String(t.default_budget_hours) : null,
+              autoRolloverDefault: t.auto_rollover_default ?? false,
+              templateData: extractTemplateExtras(t),
+            })),
+          )
+          .returning({ id: engagementTypes.id, key: engagementTypes.key });
+        const engTypeIdByKey = new Map(engTypeRows.map((r) => [r.key, r.id]));
+        // eslint-disable-next-line no-console
+        console.log(`bootstrap: seeded ${engTypeRows.length} engagement type(s)`);
+
+        // Engagement templates — link engagement_type, letter template,
+        // and the in-scope work-code id array.
+        await tx.insert(engagementTemplates).values(
+          templates.map((t) => ({
+            firmId,
+            key: t.key,
+            name: t.name,
+            engagementTypeId: engTypeIdByKey.get(t.key) ?? null,
+            defaultFeeStructure: t.default_fee_structure,
+            defaultFeeAmountCents: t.default_fee_amount_cents ?? null,
+            defaultBudgetHours:
+              t.default_budget_hours != null ? String(t.default_budget_hours) : null,
+            inScopeWorkCodeIds: t.work_codes
+              .filter((wc) => wc.in_scope_default)
+              .map((wc) => workCodeIdByKey.get(wc.key))
+              .filter((id): id is string => id != null),
+            defaultLetterTemplateId: t.engagement_letter_template_key
+              ? (letterIdByKey.get(t.engagement_letter_template_key) ?? null)
+              : null,
+            isSystem: true,
+          })),
+        );
+        // eslint-disable-next-line no-console
+        console.log(`bootstrap: seeded ${templates.length} engagement template(s)`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(
+          'bootstrap: starter pack not found on disk — engagement types will be empty (configure via admin UI)',
+        );
+      }
+
       const tplCount = await seedNotificationTemplates(tx, firmId);
       // eslint-disable-next-line no-console
       console.log(`bootstrap: seeded ${tplCount} notification template default(s)`);
@@ -132,6 +274,79 @@ async function main(): Promise<void> {
       const tierCount = await seedRetainerTierConfigs(tx, firmId);
       // eslint-disable-next-line no-console
       console.log(`bootstrap: seeded ${tierCount} retainer tier config default(s)`);
+
+      // 0089 — payment-method catalog built-ins. Matches the previously
+      // hard-coded RECORD_METHODS list on PaymentReceive. is_system=true
+      // means these rows can be renamed/deactivated but not deleted.
+      await tx
+        .insert(paymentMethodTypes)
+        .values([
+          { firmId, key: 'CHECK', label: 'Check', displayOrder: 10, isSystem: true },
+          { firmId, key: 'CASH', label: 'Cash', displayOrder: 20, isSystem: true },
+          { firmId, key: 'ACH_MANUAL', label: 'ACH (manual)', displayOrder: 30, isSystem: true },
+          { firmId, key: 'OTHER', label: 'Other', displayOrder: 99, isSystem: true },
+        ])
+        .onConflictDoNothing();
+      // eslint-disable-next-line no-console
+      console.log('bootstrap: seeded 4 payment method type default(s)');
+
+      // 0090 — Tax jurisdiction + payment type catalog. Federal +
+      // a starter pack of 5 common federal payment types. Firms add
+      // their own state / local jurisdictions from the admin UI.
+      const [federal] = await tx
+        .insert(taxJurisdictions)
+        .values({ firmId, name: 'Federal', displayOrder: 10, isSystem: true })
+        .onConflictDoNothing()
+        .returning({ id: taxJurisdictions.id });
+      if (federal) {
+        await tx
+          .insert(taxPaymentTypeCatalog)
+          .values([
+            {
+              firmId,
+              jurisdictionId: federal.id,
+              name: 'Income Tax',
+              paymentUrl: 'https://www.irs.gov/payments',
+              displayOrder: 10,
+              isSystem: true,
+            },
+            {
+              firmId,
+              jurisdictionId: federal.id,
+              name: 'Estimated Tax',
+              paymentUrl: 'https://www.eftps.gov',
+              displayOrder: 20,
+              isSystem: true,
+            },
+            {
+              firmId,
+              jurisdictionId: federal.id,
+              name: 'Tax Notice',
+              paymentUrl: 'https://www.irs.gov/payments',
+              displayOrder: 30,
+              isSystem: true,
+            },
+            {
+              firmId,
+              jurisdictionId: federal.id,
+              name: 'Extension',
+              paymentUrl: 'https://www.irs.gov/payments/extension-of-time-to-file',
+              displayOrder: 40,
+              isSystem: true,
+            },
+            {
+              firmId,
+              jurisdictionId: federal.id,
+              name: 'Payroll Tax',
+              paymentUrl: 'https://www.eftps.gov',
+              displayOrder: 50,
+              isSystem: true,
+            },
+          ])
+          .onConflictDoNothing();
+        // eslint-disable-next-line no-console
+        console.log('bootstrap: seeded Federal jurisdiction + 5 tax payment types');
+      }
     });
     // eslint-disable-next-line no-console
     console.log(`bootstrap: '${firmName}' ready. Sign in at the admin URL using ${adminEmail}`);
@@ -148,3 +363,131 @@ main().catch((err: unknown) => {
 
 // Type used by seed-helpers (drizzle's transaction param shape).
 export type Tx = Parameters<Parameters<PostgresJsDatabase['transaction']>[0]>[0];
+
+// ---------------------------------------------------------------------
+// Q24 starter pack loader.
+//
+// The JSON + letter MDs live at `seed/` at the repo root. The Dockerfile
+// copies them into `/app/seed` so the script can find them inside the
+// runtime container. Resolution order:
+//
+//   1. SEED_DIR env var (operator override, for tests / unusual layouts)
+//   2. Path relative to this script (../../../../seed from
+//      packages/db/dist/scripts/bootstrap-firm.js → repo-root/seed in
+//      both the image and a local checkout)
+//   3. /app/seed (last-ditch absolute path inside the appliance image)
+//
+// If none of those resolve, we log a warning and skip the starter pack
+// without failing the bootstrap — the firm just lands with empty
+// engagement types and the operator configures them in the admin UI.
+// ---------------------------------------------------------------------
+
+const SUPPORTED_FEE_STRUCTURES = [
+  'HOURLY',
+  'HOURLY_NTE',
+  'FIXED_FEE',
+  'FIXED_FEE_WITH_MILESTONES',
+  'RECURRING_SUBSCRIPTION',
+] as const;
+type FeeStructure = (typeof SUPPORTED_FEE_STRUCTURES)[number];
+
+interface StarterPackTemplate {
+  key: string;
+  name: string;
+  service_line_category: string;
+  default_fee_structure: FeeStructure;
+  default_fee_amount_cents?: number | null;
+  default_budget_hours?: number | null;
+  auto_rollover_default?: boolean;
+  work_codes: Array<{
+    key: string;
+    name: string;
+    billable_default: boolean;
+    in_scope_default: boolean;
+  }>;
+  engagement_letter_template_key?: string;
+  // Catch-all for fields we forward into engagement_type.template_data
+  // (milestones, custom fields, partner-review flag, price-increase
+  // pct, etc.) without normalizing them into columns yet.
+  [key: string]: unknown;
+}
+
+interface StarterPackLetter {
+  key: string;
+  name: string;
+  body: string;
+}
+
+interface StarterPack {
+  templates: StarterPackTemplate[];
+  letters: StarterPackLetter[];
+}
+
+function resolveSeedDir(): string | null {
+  const envOverride = process.env['SEED_DIR'];
+  if (envOverride && existsSync(envOverride)) return envOverride;
+  try {
+    // packages/db/dist/scripts/bootstrap-firm.js → ../../../../seed
+    const here = dirname(fileURLToPath(import.meta.url));
+    const fromScript = join(here, '..', '..', '..', '..', 'seed');
+    if (existsSync(fromScript)) return fromScript;
+  } catch {
+    // fileURLToPath can throw on weird URLs; fall through to /app/seed.
+  }
+  if (existsSync('/app/seed')) return '/app/seed';
+  return null;
+}
+
+function loadStarterPack(): StarterPack | null {
+  const seedDir = resolveSeedDir();
+  if (!seedDir) return null;
+  const templatesPath = join(seedDir, 'engagement-templates.json');
+  if (!existsSync(templatesPath)) return null;
+  const raw = JSON.parse(readFileSync(templatesPath, 'utf8')) as {
+    templates?: StarterPackTemplate[];
+  };
+  const templates = raw.templates ?? [];
+
+  const lettersDir = join(seedDir, 'engagement-letters');
+  const letters: StarterPackLetter[] = [];
+  if (existsSync(lettersDir)) {
+    for (const file of readdirSync(lettersDir)) {
+      if (!file.endsWith('.md')) continue;
+      const key = file.replace(/\.md$/, '');
+      const body = readFileSync(join(lettersDir, file), 'utf8');
+      // Friendly name: strip the el_ prefix and title-case.
+      const name = key
+        .replace(/^el_/, '')
+        .split('_')
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(' ');
+      letters.push({ key, name, body });
+    }
+  }
+  return { templates, letters };
+}
+
+/**
+ * Extra fields we don't normalize into engagement_type columns — milestones,
+ * custom fields, partner-review flag, rollover price increase — stay in
+ * `template_data` so the admin UI can surface them and a future migration
+ * can promote them to dedicated columns without losing data.
+ */
+function extractTemplateExtras(t: StarterPackTemplate): Record<string, unknown> {
+  const known = new Set([
+    'key',
+    'name',
+    'service_line_category',
+    'default_fee_structure',
+    'default_fee_amount_cents',
+    'default_budget_hours',
+    'auto_rollover_default',
+    'work_codes',
+    'engagement_letter_template_key',
+  ]);
+  const extras: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(t)) {
+    if (!known.has(k)) extras[k] = v;
+  }
+  return extras;
+}

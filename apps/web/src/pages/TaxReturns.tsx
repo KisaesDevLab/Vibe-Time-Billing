@@ -1,122 +1,50 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// TR-staff — list every tax return for the firm. Read-only surface
-// driven by GET /api/staff/tax/returns. Row click → detail page.
+// Top-level Tax page. Hosts two tabs:
+//   - Returns   — every parsed tax return for the firm
+//   - Payments  — every scheduled tax payment for the firm,
+//                 sortable / per-column filterable, with a multi-
+//                 select bulk reminder action (email + SMS).
+//
+// Mounted at /tax/returns to preserve the existing nav entry and
+// route. The tab key is kept in URL state via ?tab= so deep links
+// resolve directly to the right view.
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
-import { Card, EmptyState, Pill, Table, tokens } from '@vibe/ui';
+import { Tabs, tokens } from '@vibe/ui';
 
-import { api } from '../api-client';
+import { TaxPaymentsTab } from './tax/TaxPaymentsTab';
+import { TaxReturnsTab } from './tax/TaxReturnsTab';
 
-interface ReturnRow {
-  id: string;
-  clientId: string;
-  clientName: string;
-  taxYear: number;
-  formCode: string;
-  jurisdiction: string;
-  title: string;
-  status: string;
-  releaseKind: 'ORIGINAL' | 'AMENDED' | 'SUPERSEDED';
-  totalPages: number | null;
-  releasedAt: string | null;
-  createdAt: string;
-}
-
-function statusTone(s: string): 'success' | 'warning' | 'neutral' | 'accent' {
-  if (s === 'released') return 'success';
-  if (s === 'amended') return 'warning';
-  if (s === 'superseded') return 'neutral';
-  return 'accent';
-}
+type Tab = 'returns' | 'payments';
 
 export function TaxReturnsStaffPage(): JSX.Element {
-  const [items, setItems] = useState<ReturnRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useSearchParams();
+  const initial = (search.get('tab') as Tab) === 'payments' ? 'payments' : 'returns';
+  const [tab, setTab] = useState<Tab>(initial);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const r = await api<{ items: ReturnRow[] }>('/api/staff/tax/returns');
-        setItems(r.items ?? []);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'failed');
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+    const next = new URLSearchParams(search);
+    if (tab === 'returns') next.delete('tab');
+    else next.set('tab', tab);
+    setSearch(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <Card title="Tax returns">
-        {error && (
-          <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }}>{error}</p>
-        )}
-        {loading ? (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
-        ) : items.length === 0 ? (
-          <EmptyState
-            title="No tax returns yet"
-            body="When a return is parsed into the system it appears here, ready for review and release."
-          />
-        ) : (
-          <Table<ReturnRow>
-            columns={[
-              {
-                key: 'client',
-                header: 'Client',
-                render: (r) => (
-                  <Link
-                    to={`/tax/returns/${r.id}`}
-                    style={{ color: tokens.color.accent, textDecoration: 'none', fontWeight: 500 }}
-                  >
-                    {r.clientName}
-                  </Link>
-                ),
-              },
-              { key: 'year', header: 'Year', render: (r) => String(r.taxYear) },
-              {
-                key: 'form',
-                header: 'Form',
-                render: (r) => `${r.formCode} · ${r.jurisdiction}`,
-              },
-              { key: 'title', header: 'Title', render: (r) => r.title || '—' },
-              {
-                key: 'kind',
-                header: 'Type',
-                render: (r) => (
-                  <Pill tone={r.releaseKind === 'AMENDED' ? 'warning' : 'accent'}>
-                    {r.releaseKind}
-                  </Pill>
-                ),
-              },
-              {
-                key: 'status',
-                header: 'Status',
-                render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill>,
-              },
-              {
-                key: 'pages',
-                header: 'Pages',
-                align: 'right',
-                render: (r) => (r.totalPages != null ? String(r.totalPages) : '—'),
-              },
-              {
-                key: 'released',
-                header: 'Released',
-                render: (r) => (r.releasedAt ? new Date(r.releasedAt).toLocaleDateString() : '—'),
-              },
-            ]}
-            rows={items}
-            rowKey={(r) => r.id}
-            empty="No returns."
-          />
-        )}
-      </Card>
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
+      <Tabs
+        tabs={[
+          { key: 'returns', label: 'Returns' },
+          { key: 'payments', label: 'Payments' },
+        ]}
+        active={tab}
+        onChange={(k) => setTab(k as Tab)}
+      />
+      {tab === 'returns' && <TaxReturnsTab />}
+      {tab === 'payments' && <TaxPaymentsTab />}
     </div>
   );
 }

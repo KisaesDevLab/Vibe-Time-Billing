@@ -33,24 +33,36 @@ export type ThemeMode = 'light' | 'dark';
 
 export const THEME_STORAGE_KEY = 'vibe-theme';
 
-/** Discrete font-scale steps wired to the FontSizeControl. 1.0 is
- *  the design baseline; the others apply via `body { zoom: N }` so
- *  every descendant scales uniformly without depending on rem usage. */
-export const FONT_SCALE_STEPS = [0.9, 1.0, 1.15, 1.3] as const;
+/** Re-anchored typography baseline. What used to render at 115% is
+ *  now treated as the design 100% — every step is a multiple of this
+ *  baseline. The underlying value (1.15) is the absolute zoom applied
+ *  to the body; the percent label shown in the FontSizeControl is
+ *  `scale / FONT_SCALE_BASELINE * 100`, so 1.15 displays as 100%. */
+export const FONT_SCALE_BASELINE = 1.15;
+
+/** Discrete font-scale steps wired to the FontSizeControl. The named
+ *  percentages are 85% / 100% / 115% / 130% of the new baseline; the
+ *  literal numbers below are absolute zoom values (baseline × ratio,
+ *  rounded for stable comparison after localStorage round-trips). */
+export const FONT_SCALE_STEPS = [0.98, 1.15, 1.32, 1.5] as const;
 export type FontScale = (typeof FONT_SCALE_STEPS)[number];
-export const DEFAULT_FONT_SCALE: FontScale = 1.0;
+export const DEFAULT_FONT_SCALE: FontScale = FONT_SCALE_BASELINE;
 export const FONT_SCALE_STORAGE_KEY = 'vibe-font-scale';
 
 /** Pre-React inline-script body that applies the persisted font-scale
  *  before paint, mirroring themeBootstrapScript. Saves a FOUC where
- *  the page flashes at 1.0 and snaps to the user's preferred size. */
+ *  the page flashes at the baseline and snaps to the user's choice.
+ *  Old localStorage values from the previous step set (0.9 / 1.0 /
+ *  1.15 / 1.3) won't match the new allowed list and fall through to
+ *  the new default. */
 export const fontScaleBootstrapScript = `
 (function() {
   try {
     var raw = localStorage.getItem(${JSON.stringify(FONT_SCALE_STORAGE_KEY)});
     var allowed = ${JSON.stringify(FONT_SCALE_STEPS)};
-    var n = raw ? parseFloat(raw) : 1;
-    if (!isFinite(n) || allowed.indexOf(n) === -1) n = 1;
+    var baseline = ${FONT_SCALE_BASELINE};
+    var n = raw ? parseFloat(raw) : baseline;
+    if (!isFinite(n) || allowed.indexOf(n) === -1) n = baseline;
     document.documentElement.style.setProperty('--vibe-font-scale', String(n));
     if (document.body) document.body.style.zoom = String(n);
   } catch (e) {

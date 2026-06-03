@@ -1,10 +1,13 @@
+/* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
+import { RollDueRecurrencesDialog } from './clients/RollDueRecurrencesDialog';
 
 interface ClientRow {
   id: string;
@@ -17,8 +20,13 @@ interface ClientRow {
   termsDays: number;
   invoiceConsolidationPreference: 'CONSOLIDATED' | 'SEPARATE';
   createdAt: string;
+  outstandingBalanceCents: number;
   mailingCity: string | null;
   mailingState: string | null;
+  // 0092 — when set, the client has at least one ACTIVE portal contact
+  // and clicking the Status pill opens a view-as session against this
+  // access row. NULL when no active portal access exists.
+  activePortalAccessId: string | null;
 }
 
 interface AppUser {
@@ -26,20 +34,37 @@ interface AppUser {
   fullName: string;
 }
 
-type SortCol = 'name' | 'externalId' | 'clientType' | 'status' | 'partnerName' | 'createdAt';
+type SortCol =
+  | 'name'
+  | 'externalId'
+  | 'clientType'
+  | 'status'
+  | 'partnerName'
+  | 'createdAt'
+  | 'outstandingBalanceCents';
 
 export function ClientsPage(): JSX.Element {
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  // 0092 — multi-select replaces the legacy pin column. The bulk-email
+  // toolbar action enables when at least one row is selected.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
   const [q, setQ] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [rollOpen, setRollOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // 0050 — filters
   const [clientOwnerId, setClientOwnerId] = useState<string>('');
   const [clientType, setClientType] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
+  // 0092 — office filter chip. Multi-office firms can scope the list
+  // to a single office; '' = all offices.
+  const [officeFilter, setOfficeFilter] = useState<string>('');
+  const [officeOptions, setOfficeOptions] = useState<
+    Array<{ id: string; name: string; isDefault: boolean }>
+  >([]);
 
   // 0050 — pagination + sort
   const [page, setPage] = useState(1);
@@ -58,6 +83,7 @@ export function ClientsPage(): JSX.Element {
       if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
       if (clientType) params.set('clientType', clientType);
       if (statusFilter) params.set('status', statusFilter);
+      if (officeFilter) params.set('officeId', officeFilter);
       params.set('page', String(page));
       params.set('pageSize', String(pageSize));
       params.set('sort', sort.col);
@@ -65,18 +91,17 @@ export function ClientsPage(): JSX.Element {
       // Fetch in parallel; tolerate the secondary calls failing (e.g.
       // a staff user without app_user:read perm) so the client list
       // still renders even if the filter dropdowns are empty.
-      const [r, u, p] = await Promise.all([
+      const [r, u, o] = await Promise.all([
         api<{ rows: ClientRow[]; total: number }>(`/api/staff/clients?${params.toString()}`),
         api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
-        api<{ items: { clientId: string }[] }>('/api/staff/clients/pins').catch(() => ({
-          items: [],
-        })),
+        api<{ offices: Array<{ id: string; name: string; isDefault: boolean }> }>(
+          '/api/staff/admin/offices',
+        ).catch(() => ({ offices: [] })),
       ]);
-      const pins = new Set((p.items ?? []).map((x) => x.clientId));
-      setPinnedIds(pins);
       setClients(r.rows ?? []);
       setTotal(r.total ?? 0);
       setUsers(u.users ?? []);
+      setOfficeOptions(o.offices ?? []);
     } finally {
       setLoading(false);
     }
@@ -84,22 +109,32 @@ export function ClientsPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize, sort, clientOwnerId, clientType, statusFilter]);
+  }, [page, pageSize, sort, clientOwnerId, clientType, statusFilter, officeFilter]);
 
-  async function togglePin(clientId: string): Promise<void> {
-    const isPinned = pinnedIds.has(clientId);
+  function toggleSelect(id: string): void {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll(): void {
+    setSelectedIds((prev) =>
+      prev.size === clients.length ? new Set() : new Set(clients.map((c) => c.id)),
+    );
+  }
+
+  async function viewAsClient(c: ClientRow): Promise<void> {
+    if (!c.activePortalAccessId) return;
     try {
-      if (isPinned) {
-        await api(`/api/staff/clients/pins/${clientId}`, { method: 'DELETE' });
-      } else {
-        await api('/api/staff/clients/pins', {
-          method: 'POST',
-          body: JSON.stringify({ clientId }),
-        });
-      }
-      await load();
+      const r = await api<{ portalUrl: string }>(`/api/staff/clients/${c.id}/impersonate`, {
+        method: 'POST',
+        body: JSON.stringify({ accessId: c.activePortalAccessId }),
+      });
+      window.open(r.portalUrl, '_blank', 'noopener,noreferrer');
     } catch {
-      // Non-fatal — refresh on next reload.
+      // Non-fatal; user can retry from the client detail page.
     }
   }
 
@@ -114,21 +149,33 @@ export function ClientsPage(): JSX.Element {
   const sortIcon = (col: SortCol): string =>
     sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
 
-  const sortedDisplay = useMemo(() => {
-    // Server sorts the data; we only float pinned rows to the top of the
-    // current page so the UX is still useful.
-    return [...clients].sort((a, b) => {
-      const pa = pinnedIds.has(a.id) ? 0 : 1;
-      const pb = pinnedIds.has(b.id) ? 0 : 1;
-      return pa - pb;
-    });
-  }, [clients, pinnedIds]);
+  // Server sorts the data — we render rows as returned.
+  const sortedDisplay = clients;
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
       <Card
         title="Clients"
-        action={<Button onClick={() => setWizardOpen(true)}>+ New client</Button>}
+        action={
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {selectedIds.size > 0 && (
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                {selectedIds.size} selected
+              </span>
+            )}
+            <Button
+              variant={selectedIds.size > 0 ? 'secondary' : 'ghost'}
+              disabled={selectedIds.size === 0}
+              onClick={() => setBulkEmailOpen(true)}
+            >
+              Send email
+            </Button>
+            <Button variant="secondary" onClick={() => setRollOpen(true)}>
+              Roll due recurrences
+            </Button>
+            <Button onClick={() => setWizardOpen(true)}>+ New client</Button>
+          </div>
+        }
       >
         <form
           onSubmit={(e) => {
@@ -136,7 +183,7 @@ export function ClientsPage(): JSX.Element {
             setPage(1);
             void load();
           }}
-          style={{ display: 'grid', gap: 8, gridTemplateColumns: '2fr 1fr 1fr 1fr auto' }}
+          style={{ display: 'grid', gap: 8, gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr auto' }}
         >
           <Input
             value={q}
@@ -153,7 +200,20 @@ export function ClientsPage(): JSX.Element {
             }}
             options={users.map((u) => ({ value: u.id, label: u.fullName }))}
             placeholder="Any owner"
-            size="sm"
+          />
+          <Combobox
+            ariaLabel="Office"
+            clearable
+            value={officeFilter}
+            onChange={(v) => {
+              setPage(1);
+              setOfficeFilter(v);
+            }}
+            options={officeOptions.map((o) => ({
+              value: o.id,
+              label: o.isDefault ? `${o.name} (default)` : o.name,
+            }))}
+            placeholder="Any office"
           />
           <Combobox
             ariaLabel="Client type"
@@ -168,7 +228,6 @@ export function ClientsPage(): JSX.Element {
               { value: 'BUSINESS', label: 'Business' },
             ]}
             placeholder="Any type"
-            size="sm"
           />
           <Combobox
             ariaLabel="Status"
@@ -185,7 +244,6 @@ export function ClientsPage(): JSX.Element {
               { value: 'PROSPECT', label: 'Prospect' },
             ]}
             placeholder="Any status"
-            size="sm"
           />
           <Button type="submit" variant="secondary">
             Search
@@ -199,6 +257,19 @@ export function ClientsPage(): JSX.Element {
         onCreated={() => void load()}
         users={users}
       />
+
+      {rollOpen && <RollDueRecurrencesDialog onClose={() => setRollOpen(false)} />}
+
+      {bulkEmailOpen && (
+        <BulkEmailDialog
+          targets={clients.filter((c) => selectedIds.has(c.id))}
+          onClose={() => setBulkEmailOpen(false)}
+          onSent={() => {
+            setBulkEmailOpen(false);
+            setSelectedIds(new Set());
+          }}
+        />
+      )}
 
       <Card
         title={`Results — ${total.toLocaleString()} client${total === 1 ? '' : 's'}`}
@@ -248,28 +319,28 @@ export function ClientsPage(): JSX.Element {
           <Table<ClientRow>
             columns={[
               {
-                key: 'pin',
-                header: '',
-                render: (c) => (
-                  <button
-                    type="button"
-                    onClick={() => void togglePin(c.id)}
-                    aria-label={pinnedIds.has(c.id) ? 'Unpin client' : 'Pin client'}
-                    title={
-                      pinnedIds.has(c.id) ? 'Unpin (remove from top of list)' : 'Pin to top of list'
-                    }
-                    style={{
-                      fontSize: 16,
-                      lineHeight: 1,
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      color: pinnedIds.has(c.id) ? tokens.color.accent : tokens.color.textMuted,
-                      padding: 0,
+                key: 'select',
+                header: (
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible clients"
+                    checked={selectedIds.size === clients.length && clients.length > 0}
+                    ref={(el) => {
+                      if (el) {
+                        el.indeterminate =
+                          selectedIds.size > 0 && selectedIds.size < clients.length;
+                      }
                     }}
-                  >
-                    {pinnedIds.has(c.id) ? '★' : '☆'}
-                  </button>
+                    onChange={toggleSelectAll}
+                  />
+                ) as unknown as string,
+                render: (c) => (
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${c.name}`}
+                    checked={selectedIds.has(c.id)}
+                    onChange={() => toggleSelect(c.id)}
+                  />
                 ),
               },
               {
@@ -309,10 +380,30 @@ export function ClientsPage(): JSX.Element {
                 render: (c) => <Pill>{c.clientType}</Pill>,
               },
               {
-                key: 'terms',
-                header: 'Terms (days)',
+                key: 'outstanding',
+                header: (
+                  <button
+                    type="button"
+                    onClick={() => toggleSort('outstandingBalanceCents')}
+                    style={headerBtn}
+                  >
+                    Outstanding Bal.{sortIcon('outstandingBalanceCents')}
+                  </button>
+                ) as unknown as string,
                 align: 'right',
-                render: (c) => String(c.termsDays),
+                render: (c) => (
+                  <span
+                    style={{
+                      color:
+                        (c.outstandingBalanceCents ?? 0) > 0
+                          ? tokens.color.text
+                          : tokens.color.textMuted,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {formatCents(c.outstandingBalanceCents ?? 0)}
+                  </span>
+                ),
               },
               {
                 key: 'consol',
@@ -326,9 +417,40 @@ export function ClientsPage(): JSX.Element {
                     Status{sortIcon('status')}
                   </button>
                 ) as unknown as string,
-                render: (c) => (
-                  <Pill tone={c.status === 'ACTIVE' ? 'success' : 'neutral'}>{c.status}</Pill>
-                ),
+                render: (c) => {
+                  // 0092 — when an active portal access exists, the pill
+                  // renders filled (white text on accent fill) and acts as
+                  // a "view as client" button. Without an active access it
+                  // stays plain.
+                  const hasPortal = c.activePortalAccessId != null;
+                  if (hasPortal) {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => void viewAsClient(c)}
+                        title="Open portal as this client (impersonation, 5-min token)"
+                        style={{
+                          display: 'inline-flex',
+                          padding: '2px 8px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          borderRadius: 999,
+                          background: tokens.color.accent,
+                          color: '#fff',
+                          border: 'none',
+                          cursor: 'pointer',
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.4,
+                        }}
+                      >
+                        {c.status} · view as ↗
+                      </button>
+                    );
+                  }
+                  return (
+                    <Pill tone={c.status === 'ACTIVE' ? 'success' : 'neutral'}>{c.status}</Pill>
+                  );
+                },
               },
             ]}
             rows={sortedDisplay}
@@ -351,3 +473,175 @@ const headerBtn: React.CSSProperties = {
   color: 'inherit',
   cursor: 'pointer',
 };
+
+// ---------------------------------------------------------------------
+// BulkEmailDialog — compose a single subject/body and POST to
+// /api/staff/clients/bulk-email which fans out to each client's primary
+// (or billing, or first-with-email) contact. Shows per-client outcomes
+// on completion so the partner can see skipped/no-contact rows.
+// ---------------------------------------------------------------------
+
+interface BulkEmailResult {
+  results: Array<{
+    clientId: string;
+    clientName: string;
+    sent: boolean;
+    to: string | null;
+    reason: string | null;
+  }>;
+  summary: { requested: number; sent: number; skipped: number };
+}
+
+function BulkEmailDialog({
+  targets,
+  onClose,
+  onSent,
+}: {
+  targets: ClientRow[];
+  onClose: () => void;
+  onSent: () => void;
+}): JSX.Element {
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<BulkEmailResult | null>(null);
+
+  async function send(): Promise<void> {
+    if (!subject.trim() || !body.trim()) {
+      setError('Subject and body are required.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<BulkEmailResult>('/api/staff/clients/bulk-email', {
+        method: 'POST',
+        body: JSON.stringify({
+          clientIds: targets.map((t) => t.id),
+          subject: subject.trim(),
+          body: body.trim(),
+        }),
+      });
+      setResult(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'send_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        paddingTop: 56,
+        zIndex: 200,
+      }}
+    >
+      <div style={{ minWidth: 560, maxWidth: 720, maxHeight: '85vh', overflow: 'auto' }}>
+        <Card title="Send email to selected clients">
+          {!result ? (
+            <div style={{ display: 'grid', gap: 12 }}>
+              <p style={{ fontSize: 13, margin: 0 }}>
+                One message will be sent to each of <strong>{targets.length}</strong> client
+                {targets.length === 1 ? '' : 's'} — to their primary contact (or billing, or first
+                contact with an email).
+              </p>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Subject</label>
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  style={{
+                    padding: '8px 10px',
+                    fontSize: 13,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.bg,
+                    color: tokens.color.text,
+                  }}
+                />
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Body</label>
+                <textarea
+                  rows={8}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  style={{
+                    padding: '8px 10px',
+                    fontSize: 13,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.bg,
+                    color: tokens.color.text,
+                    resize: 'vertical',
+                  }}
+                />
+              </div>
+              {error && (
+                <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
+                  {error}
+                </p>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Button variant="ghost" onClick={onClose} disabled={busy}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={busy || !subject.trim() || !body.trim()}
+                  onClick={() => void send()}
+                >
+                  {busy ? 'Sending…' : `Send to ${targets.length}`}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <p style={{ fontSize: 13, margin: 0 }}>
+                <strong>Done.</strong> {result.summary.sent} sent · {result.summary.skipped}{' '}
+                skipped.
+              </p>
+              <ul
+                style={{
+                  margin: 0,
+                  padding: '8px 16px',
+                  background: tokens.color.surface,
+                  borderRadius: tokens.radius.sm,
+                  fontSize: 12,
+                  maxHeight: 240,
+                  overflow: 'auto',
+                }}
+              >
+                {result.results.map((r) => (
+                  <li key={r.clientId} style={{ marginBottom: 4 }}>
+                    <strong>{r.clientName}</strong> —{' '}
+                    {r.sent ? (
+                      <span style={{ color: tokens.color.success }}>sent to {r.to}</span>
+                    ) : (
+                      <span style={{ color: tokens.color.warning }}>
+                        skipped ({r.reason ?? 'unknown'})
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Button onClick={onSent}>Close</Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}

@@ -7,11 +7,17 @@ import { Button, Card, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { BillingCard } from './clients/BillingCard';
 import { ClientInfoCard } from './clients/ClientInfoCard';
+import { PortalAccessCard } from './clients/PortalAccessCard';
+import { TaxPaymentsCard } from './clients/TaxPaymentsCard';
+import { ClientMessagesCard } from './messaging/ClientMessagesCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 import { ContactsCard } from './clients/ContactsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
 import { ClientFilesTab } from './clients/ClientFilesTab';
+import { ClientRequestsCard } from './clients/ClientRequestsCard';
+import { ClientTaxReturnsCard } from './clients/ClientTaxReturnsCard';
 import { NotesCard } from './clients/NotesCard';
+import { RecurringEngagementsCard } from './clients/RecurringEngagementsCard';
 import { TasksCard } from './clients/TasksCard';
 
 interface Client {
@@ -45,6 +51,10 @@ interface Engagement {
   status: string;
   feeStructure: string;
   feeAmountCents: number | null;
+  // Server-side correlated count of time entries with billing_batch_id
+  // IS NULL — drives the "Bill →" button visibility so we don't offer
+  // a workflow that has nothing to bill.
+  unbilledEntryCount?: number;
 }
 
 interface Summary {
@@ -61,7 +71,17 @@ interface Summary {
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
-type Tab = 'home' | 'communications' | 'notes' | 'files' | 'tasks' | 'engagements' | 'billing';
+type Tab =
+  | 'home'
+  | 'communications'
+  | 'messages'
+  | 'requests'
+  | 'notes'
+  | 'files'
+  | 'tasks'
+  | 'engagements'
+  | 'billing'
+  | 'tax';
 
 interface StaffUser {
   id: string;
@@ -220,12 +240,15 @@ export function ClientDetailPage(): JSX.Element {
       <Tabs
         tabs={[
           { key: 'home', label: 'Home' },
+          { key: 'messages', label: 'Messages' },
+          { key: 'requests', label: 'Requests' },
           { key: 'communications', label: 'Communications' },
           { key: 'notes', label: 'Notes' },
           { key: 'files', label: 'Files' },
           { key: 'tasks', label: 'Tasks' },
           { key: 'engagements', label: 'Engagements', badge: engagements.length },
           { key: 'billing', label: 'Billing' },
+          { key: 'tax', label: 'Tax' },
         ]}
         active={tab}
         onChange={(k) => setTab(k as Tab)}
@@ -261,6 +284,8 @@ export function ClientDetailPage(): JSX.Element {
 
           <ContactsCard clientId={client.id} />
 
+          <PortalAccessCard clientId={client.id} />
+
           <TasksCard clientId={client.id} compact users={staff} />
 
           {/* Files card disabled — v2 (B2-backed) ships in Phase 10. */}
@@ -271,6 +296,10 @@ export function ClientDetailPage(): JSX.Element {
           />
         </>
       )}
+
+      {tab === 'messages' && <ClientMessagesCard clientId={client.id} />}
+
+      {tab === 'requests' && <ClientRequestsCard clientId={client.id} />}
 
       {tab === 'communications' && <CommunicationsCard clientId={client.id} />}
 
@@ -284,6 +313,7 @@ export function ClientDetailPage(): JSX.Element {
 
       {tab === 'engagements' && (
         <>
+          <RecurringEngagementsCard clientId={client.id} />
           <Card title={`Engagements (${engagements.length})`}>
             <Table<Engagement>
               columns={[
@@ -305,6 +335,47 @@ export function ClientDetailPage(): JSX.Element {
                   render: (e) => (
                     <Pill tone={e.status === 'ACTIVE' ? 'success' : 'neutral'}>{e.status}</Pill>
                   ),
+                },
+                {
+                  key: 'bill',
+                  header: '',
+                  align: 'right',
+                  render: (e) => {
+                    // Hidden when the engagement isn't ACTIVE or has no
+                    // unbilled time. Cuts visual noise on the list and
+                    // prevents launching the wizard against a batch
+                    // with zero rows to include.
+                    if (e.status !== 'ACTIVE') return null;
+                    if ((e.unbilledEntryCount ?? 0) === 0) return null;
+                    return (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          // Prefill the billing wizard with this client
+                          // + engagement and a default month-to-date
+                          // window.
+                          const today = new Date();
+                          const start = new Date(today.getFullYear(), today.getMonth(), 1)
+                            .toISOString()
+                            .slice(0, 10);
+                          const end = today.toISOString().slice(0, 10);
+                          const qs = new URLSearchParams({
+                            clientId: client.id,
+                            engagementId: e.id,
+                            periodStart: start,
+                            periodEnd: end,
+                          }).toString();
+                          window.location.href = `/billing?${qs}`;
+                        }}
+                        title={`Open the pre-bill wizard (${e.unbilledEntryCount} unbilled ${
+                          e.unbilledEntryCount === 1 ? 'entry' : 'entries'
+                        })`}
+                      >
+                        Bill →
+                      </Button>
+                    );
+                  },
                 },
               ]}
               rows={engagements}
@@ -342,6 +413,13 @@ export function ClientDetailPage(): JSX.Element {
       )}
 
       {tab === 'billing' && <BillingCard clientId={client.id} />}
+
+      {tab === 'tax' && (
+        <>
+          <ClientTaxReturnsCard clientId={client.id} />
+          <TaxPaymentsCard clientId={client.id} />
+        </>
+      )}
     </div>
   );
 }

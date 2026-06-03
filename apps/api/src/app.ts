@@ -19,6 +19,9 @@ import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
+import { createAdminDataRouter } from './admin/data';
+import { createPaymentMethodTypeRouter } from './admin/payment-method-types';
+import { createTaxJurisdictionRouter, createTaxPaymentTypeRouter } from './admin/tax-catalog';
 import { createUnlockRouter, createLockMiddleware } from './admin/unlock';
 import { requireStepUpWithLockout } from './auth/step-up-middleware';
 import { createEngagementMessagingRouter } from './engagement-messaging/routes';
@@ -71,6 +74,7 @@ import { createAdminJobRouter } from './admin/jobs';
 import { createComplianceRouter } from './admin/compliance';
 import { createStorageOnboardingRouter } from './admin/storage-onboarding';
 import { createStorageMockUploadRouter } from './admin/storage-mock-upload';
+import { createStorageSettingsRouter } from './admin/storage-settings/routes';
 import { createVisibilityRulesRouter } from './admin/visibility-rules';
 import { createFileVisibilityRouter } from './files/visibility';
 import { createConnectRouter } from './connect/routes';
@@ -419,6 +423,7 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
     storage,
     redis: deps.redis,
+    sendStaffMail: deps.sendStaffMail,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
 
@@ -514,6 +519,7 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     sendEmail: deps.sendPortalEmail,
+    sendSms: deps.sendPortalSms,
     portalBaseUrl: config.PORTAL_BASE_URL,
     paymentProvider: deps.stripeProvider ?? null,
     requireStepUp: stepUpGuard,
@@ -571,6 +577,8 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendPortalEmail ?? (async () => undefined),
     sendSms: deps.sendPortalSms ?? (async () => undefined),
     requireAuth: portal.requireAuth,
+    // TR-5 — same key used by the staff impersonation-routes issuer.
+    staffSecret: config.STAFF_JWT_SECRET,
   });
   app.use('/api/portal/auth', portalRouter);
 
@@ -765,6 +773,52 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/admin/jobs', auth.requireAuth, auth.requireCsrf, adminJobRouter);
 
+  // Destructive data ops — load demo dataset / reset firm to blank.
+  // Gated on firm:settings:write + fresh step-up + (for reset) typed
+  // confirmation in the body. Mounted here so the shared stepUpGuard
+  // (Redis-backed lockout) is in scope.
+  const adminDataRouter = createAdminDataRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    requireStepUp: stepUpGuard,
+  });
+  app.use('/api/staff/admin/data', auth.requireAuth, auth.requireCsrf, adminDataRouter);
+
+  // 0089 — firm-editable payment method catalog. Backs Admin → Catalog
+  // → Payment methods and the dropdown on the Receive Payment form.
+  const paymentMethodTypeRouter = createPaymentMethodTypeRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/payment-method-types',
+    auth.requireAuth,
+    auth.requireCsrf,
+    paymentMethodTypeRouter,
+  );
+
+  // 0090 — Tax jurisdiction + payment-type catalog.
+  const taxJurisdictionRouter = createTaxJurisdictionRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/tax-jurisdictions',
+    auth.requireAuth,
+    auth.requireCsrf,
+    taxJurisdictionRouter,
+  );
+  const taxPaymentTypeRouter = createTaxPaymentTypeRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/tax-payment-types',
+    auth.requireAuth,
+    auth.requireCsrf,
+    taxPaymentTypeRouter,
+  );
+
   const complianceRouter = createComplianceRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
@@ -786,6 +840,21 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/storage', auth.requireAuth, auth.requireCsrf, storageMockUploadRouter);
+
+  // 0094 — UI-configurable storage backend (B2 / MinIO / mock).
+  // Reads + writes the storage_settings table; secrets are sealed with
+  // the firm MFK. Boot reads merged DB-or-env config; admin saves
+  // trigger a "restart required" banner in the FE.
+  const storageSettingsRouter = createStorageSettingsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/storage/settings',
+    auth.requireAuth,
+    auth.requireCsrf,
+    storageSettingsRouter,
+  );
 
   // Phase 6 of FILE_MANAGER_ADDENDUM.md — firm-level visibility rules.
   const visibilityRulesRouter = createVisibilityRulesRouter({
@@ -849,6 +918,8 @@ export function createApp(deps: AppDeps): Express {
   const taxPaymentRouter = createTaxPaymentRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    sendSms: deps.sendPortalSms,
   });
   app.use('/api/staff/tax-payments', auth.requireAuth, auth.requireCsrf, taxPaymentRouter);
 

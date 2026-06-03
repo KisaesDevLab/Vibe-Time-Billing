@@ -89,6 +89,12 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
   const [filingStatus, setFilingStatus] = useState<FilingStatus>('');
   const [sourceId, setSourceId] = useState('');
   const [partnerInChargeId, setPartnerInChargeId] = useState('');
+  // 0092 — every client belongs to one office. Defaults to the firm's
+  // default office; partner can pick any other from the dropdown.
+  const [officeId, setOfficeId] = useState('');
+  const [offices, setOffices] = useState<Array<{ id: string; name: string; isDefault: boolean }>>(
+    [],
+  );
   const [pipelineStage, setPipelineStage] = useState<PipelineStage>('CLIENT');
   const [active, setActive] = useState(true);
   const [termsDays, setTermsDays] = useState(30);
@@ -107,12 +113,21 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
     if (!open) return;
     void (async () => {
       try {
-        const [s, r] = await Promise.all([
+        const [s, r, o] = await Promise.all([
           api<{ items: TaxonomyEntry[] }>('/api/staff/taxonomy/client-sources'),
           api<{ items: TaxonomyEntry[] }>('/api/staff/taxonomy/contact-roles'),
+          api<{ offices: Array<{ id: string; name: string; isDefault: boolean }> }>(
+            '/api/staff/admin/offices',
+          ).catch(() => ({ offices: [] })),
         ]);
         setSources((s.items ?? []).filter((i) => i.status === 'ACTIVE'));
         setRoles((r.items ?? []).filter((i) => i.status === 'ACTIVE'));
+        const list = o.offices ?? [];
+        setOffices(list);
+        // Default-select the firm's default office (is_default=true) or
+        // the first one returned. Partner can flip in the UI.
+        const def = list.find((x) => x.isDefault) ?? list[0];
+        if (def) setOfficeId(def.id);
       } catch {
         // Non-fatal: dropdowns just stay empty.
       }
@@ -167,6 +182,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
         body: JSON.stringify({
           name: name.trim(),
           partnerInChargeId,
+          officeId: officeId || undefined,
           termsDays,
           tags: tags.slice(0, 20),
           customFields: customFieldsMap,
@@ -308,6 +324,23 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
                 placeholder="— select —"
               />
             </div>
+            <div>
+              <span style={labelStyle}>Office *</span>
+              <Combobox
+                ariaLabel="Office"
+                required
+                value={officeId}
+                onChange={setOfficeId}
+                options={offices.map<ComboboxOption>((o) => ({
+                  value: o.id,
+                  label: o.isDefault ? `${o.name} (default)` : o.name,
+                }))}
+                placeholder="— select —"
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <Input
               label="External ID"
               value={externalId}

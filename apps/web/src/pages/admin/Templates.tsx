@@ -36,10 +36,22 @@ interface EngagementTpl {
   defaultBudgetHours: string | null;
   defaultLetterTemplateId: string | null;
   defaultRateCodeId: string | null;
+  engagementTypeId: string | null;
   // 0083 — Mustache name pattern resolved at engagement-creation time.
   namePattern: string | null;
   isSystem: boolean;
   status: string;
+}
+
+interface EngagementType {
+  id: string;
+  name: string;
+  serviceLineId: string | null;
+}
+
+interface ServiceLine {
+  id: string;
+  name: string;
 }
 
 interface RateCode {
@@ -116,12 +128,15 @@ function EngagementTab(): JSX.Element {
   // "Fee (cents)" and accepted 75000 to mean $750 which was confusing
   // for any user not steeped in the storage shape.
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
+  const [engagementTypes, setEngagementTypes] = useState<EngagementType[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
   const [editDraft, setEditDraft] = useState<{
     name: string;
     defaultFeeStructure: string;
     defaultFeeAmountDollars: string;
     defaultBudgetHours: string;
     defaultRateCodeId: string;
+    engagementTypeId: string;
     namePattern: string;
   }>({
     name: '',
@@ -129,6 +144,7 @@ function EngagementTab(): JSX.Element {
     defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
     defaultRateCodeId: '',
+    engagementTypeId: '',
     namePattern: '',
   });
   const [draft, setDraft] = useState({
@@ -138,17 +154,26 @@ function EngagementTab(): JSX.Element {
     defaultFeeAmountDollars: '',
     defaultBudgetHours: '',
     defaultRateCodeId: '',
+    engagementTypeId: '',
     namePattern: '',
   });
 
   async function load(): Promise<void> {
     try {
-      const [r, rc] = await Promise.all([
+      const [r, rc, et, sl] = await Promise.all([
         api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement'),
         api<{ items: RateCode[] }>('/api/staff/admin/rate-codes').catch(() => ({ items: [] })),
+        api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
+          items: [],
+        })),
+        api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines').catch(() => ({
+          items: [],
+        })),
       ]);
       setItems(r.items ?? []);
       setRateCodes((rc.items ?? []).filter((c) => c.active));
+      setEngagementTypes(et.items ?? []);
+      setServiceLines(sl.items ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
     }
@@ -169,6 +194,7 @@ function EngagementTab(): JSX.Element {
           defaultFeeAmountCents: dollarsInputToCents(draft.defaultFeeAmountDollars),
           defaultBudgetHours: draft.defaultBudgetHours ? Number(draft.defaultBudgetHours) : null,
           defaultRateCodeId: draft.defaultRateCodeId || null,
+          engagementTypeId: draft.engagementTypeId || null,
           namePattern: draft.namePattern.trim() || null,
         }),
       });
@@ -179,6 +205,7 @@ function EngagementTab(): JSX.Element {
         defaultFeeAmountDollars: '',
         defaultBudgetHours: '',
         defaultRateCodeId: '',
+        engagementTypeId: '',
         namePattern: '',
       });
       setAdding(false);
@@ -215,6 +242,7 @@ function EngagementTab(): JSX.Element {
       defaultFeeAmountDollars: centsToDollarsInput(t.defaultFeeAmountCents),
       defaultBudgetHours: t.defaultBudgetHours ?? '',
       defaultRateCodeId: t.defaultRateCodeId ?? '',
+      engagementTypeId: t.engagementTypeId ?? '',
       namePattern: t.namePattern ?? '',
     });
   }
@@ -232,6 +260,7 @@ function EngagementTab(): JSX.Element {
             ? Number(editDraft.defaultBudgetHours)
             : null,
           defaultRateCodeId: editDraft.defaultRateCodeId || null,
+          engagementTypeId: editDraft.engagementTypeId || null,
           namePattern: editDraft.namePattern.trim() || null,
         }),
       });
@@ -317,6 +346,40 @@ function EngagementTab(): JSX.Element {
               </option>
             ))}
           </select>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
+            <select
+              value={draft.engagementTypeId}
+              onChange={(e) => setDraft({ ...draft, engagementTypeId: e.target.value })}
+              aria-label="Engagement type"
+              style={fieldStyle}
+            >
+              <option value="">— Type (none) —</option>
+              {engagementTypes.map((t) => {
+                const sl = serviceLines.find((s) => s.id === t.serviceLineId);
+                return (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                    {sl ? ` — ${sl.name}` : ''}
+                  </option>
+                );
+              })}
+            </select>
+            <div
+              style={{
+                ...fieldStyle,
+                background: tokens.color.bg,
+                color: tokens.color.textMuted,
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              {(() => {
+                const t = engagementTypes.find((x) => x.id === draft.engagementTypeId);
+                const sl = serviceLines.find((s) => s.id === t?.serviceLineId);
+                return sl ? `Service line: ${sl.name}` : 'Service line: — derived from Type —';
+              })()}
+            </div>
+          </div>
           <div>
             <label
               htmlFor="new-name-pattern"
@@ -468,6 +531,44 @@ function EngagementTab(): JSX.Element {
                         </option>
                       ))}
                     </select>
+                  </div>
+                )}
+                {isEditing && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
+                    <select
+                      value={editDraft.engagementTypeId}
+                      onChange={(e) =>
+                        setEditDraft({ ...editDraft, engagementTypeId: e.target.value })
+                      }
+                      aria-label="Engagement type"
+                      style={fieldStyle}
+                    >
+                      <option value="">— Type (none) —</option>
+                      {engagementTypes.map((et) => {
+                        const sl = serviceLines.find((s) => s.id === et.serviceLineId);
+                        return (
+                          <option key={et.id} value={et.id}>
+                            {et.name}
+                            {sl ? ` — ${sl.name}` : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <div
+                      style={{
+                        ...fieldStyle,
+                        background: tokens.color.bg,
+                        color: tokens.color.textMuted,
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      {(() => {
+                        const et = engagementTypes.find((x) => x.id === editDraft.engagementTypeId);
+                        const sl = serviceLines.find((s) => s.id === et?.serviceLineId);
+                        return sl ? `Service line: ${sl.name}` : 'Service line: — derived —';
+                      })()}
+                    </div>
                   </div>
                 )}
                 {isEditing && (

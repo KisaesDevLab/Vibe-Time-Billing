@@ -67,7 +67,9 @@ const EngagementCreateSchema = z.object({
       label: z.string().max(80).nullable().optional(),
     })
     .optional(),
-  engagementTypeId: z.string().uuid().optional(),
+  // Nullable so PATCH callers can clear the type (set NULL) by sending
+  // `null`. POST callers still treat it as a normal optional uuid.
+  engagementTypeId: z.string().uuid().nullable().optional(),
   feeStructure: z.enum([
     'HOURLY',
     'HOURLY_NTE',
@@ -305,6 +307,19 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         conds.push(eq(serviceLines.category, slCategoryRaw as ServiceLineCategory));
       }
 
+      // Per-engagement unbilled time-entry count. Drives the "Bill"
+      // CTA on ClientDetail → Engagements: only show the button when
+      // there's actually something to bill (entries where
+      // billing_batch_id IS NULL AND status <> 'ARCHIVED'). Correlated
+      // subquery keeps the list query a single round-trip.
+      const unbilledExpr = sql<number>`(
+        SELECT COUNT(*)::int
+        FROM ${timeEntries}
+        WHERE ${timeEntries.engagementId} = ${engagements.id}
+          AND ${timeEntries.billingBatchId} IS NULL
+          AND ${timeEntries.status} <> 'ARCHIVED'
+      )`.as('unbilled_entry_count');
+
       const items = await deps.db
         .select({
           id: engagements.id,
@@ -330,6 +345,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           serviceLineId: serviceLines.id,
           serviceLineName: serviceLines.name,
           serviceLineCategory: serviceLines.category,
+          unbilledEntryCount: unbilledExpr,
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))

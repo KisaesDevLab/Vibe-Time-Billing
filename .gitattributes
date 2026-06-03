@@ -1,0 +1,23 @@
+# Default: let Git auto-detect text vs binary.
+* text=auto
+
+# Files that MUST stay LF regardless of host OS — Docker / Linux refuses
+# to exec a shebang script with CRLF terminators (the \r becomes part of
+# the interpreter path), so a Windows checkout would otherwise produce
+# broken images.
+*.sh           text eol=lf
+*.bash         text eol=lf
+Dockerfile*    text eol=lf
+.env*          text eol=lf
+ops/docker/**  text eol=lf
+ops/scripts/** text eol=lf
+
+# Lockfiles + generated outputs — leave as-is.
+pnpm-lock.yaml -text
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.pdf          binary
+*.woff2        binary

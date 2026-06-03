@@ -34,7 +34,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import postgres from 'postgres';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import { eq, sql } from 'drizzle-orm';
+import { asc, desc, eq, sql } from 'drizzle-orm';
 
 import {
   appUsers,
@@ -45,6 +45,7 @@ import {
   files as filesTable,
   firms,
   folderSyncEvents,
+  offices,
   invoiceLineItems,
   invoices as invoicesTable,
   payments as paymentsTable,
@@ -178,6 +179,7 @@ function isoDateDaysAgo(daysBack: number): string {
 
 interface SeedContext {
   firmId: string;
+  defaultOfficeId: string;
   userIds: string[];
   partnerIds: string[];
   workCodeIds: string[];
@@ -227,8 +229,19 @@ async function loadContext(db: PostgresJsDatabase, firmId: string): Promise<Seed
     userBillRates.set(userIds[i]!, baseRates[i] ?? 25000);
   }
 
+  // 0092 — every client requires office_id. Resolve the firm's default
+  // office once and reuse for every seeded client.
+  const [defaultOffice] = await db
+    .select({ id: offices.id })
+    .from(offices)
+    .where(eq(offices.firmId, firmId))
+    .orderBy(desc(offices.isDefault), asc(offices.createdAt))
+    .limit(1);
+  if (!defaultOffice) throw new Error('seed-demo: firm has no office');
+
   return {
     firmId,
+    defaultOfficeId: defaultOffice.id,
     userIds,
     partnerIds,
     workCodeIds,
@@ -482,6 +495,7 @@ async function seedClients(
         name: c.name,
         clientType: c.type,
         partnerInChargeId: c.partnerId,
+        officeId: ctx.defaultOfficeId,
         pipelineStage: 'CLIENT' as const,
         termsDays: pick([15, 30, 30, 30, 45, 60]),
         notes: '[demo-seed]',
@@ -990,12 +1004,114 @@ async function seedFolders(
   }
 
   await tracker.flush();
-  log(`storage writes: ${storageWrites} ok, ${storageErrors} skipped (path unwritable)`);
+  defaultLog(`storage writes: ${storageWrites} ok, ${storageErrors} skipped (path unwritable)`);
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+
+export interface DemoSeedResult {
+  cleared: number;
+  clients: number;
+  engagements: number;
+  timeEntries: number;
+  invoices: number;
+  folders: number;
+}
+
+export interface DemoSeedOptions {
+  /**
+   * Override default volumes for a quick smoke run from the API admin
+   * panel. When omitted, env-var-driven defaults (TARGET_*) apply.
+   */
+  targets?: Partial<{
+    clients: number;
+    engagements: number;
+    timeEntries: number;
+    invoices: number;
+    fileFolders: number;
+    filesPerFolder: number;
+  }>;
+  onLog?: (msg: string) => void;
+}
+
+/**
+ * Seed demo data into an existing firm. Idempotent: each run first
+ * clears rows tracked by previous demo seeds before inserting fresh
+ * data. Designed to be called from both the CLI and the admin API
+ * endpoint (POST /api/staff/admin/data/load-demo).
+ */
+export async function runDemoSeed(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: PostgresJsDatabase<any>,
+  firmId: string,
+  options: DemoSeedOptions = {},
+): Promise<DemoSeedResult> {
+  const log = options.onLog ?? defaultLog;
+  const targets = {
+    clients: options.targets?.clients ?? TARGET_TOTAL_CLIENTS,
+    engagements: options.targets?.engagements ?? TARGET_ENGAGEMENTS,
+    timeEntries: options.targets?.timeEntries ?? TARGET_TIME_ENTRIES,
+    invoices: options.targets?.invoices ?? TARGET_INVOICES,
+    fileFolders: options.targets?.fileFolders ?? TARGET_FILE_FOLDERS,
+    filesPerFolder: options.targets?.filesPerFolder ?? FILES_PER_FOLDER,
+  };
+
+  await ensureTrackerTable(db);
+  log('clearing previous demo data (if any)…');
+  const cleared = await clearPreviousDemo(db);
+  log(`cleared ${cleared} previously-seeded rows`);
+
+  const ctx = await loadContext(db, firmId);
+  log(`loaded context: ${ctx.userIds.length} users, ${ctx.workCodeIds.length} work codes`);
+  if (ctx.workCodeIds.length === 0 || ctx.engagementTypeIds.length === 0) {
+    throw new Error(
+      'demo seed requires the firm to have work codes and engagement types — run bootstrap-firm first',
+    );
+  }
+
+  const counts: DemoSeedResult = {
+    cleared,
+    clients: 0,
+    engagements: 0,
+    timeEntries: 0,
+    invoices: 0,
+    folders: 0,
+  };
+
+  await db.transaction(async (tx) => {
+    const tracker = new Tracker(tx);
+
+    const existing = await tx
+      .select({ id: clients.id })
+      .from(clients)
+      .where(eq(clients.firmId, firmId));
+    const needed = Math.max(0, targets.clients - existing.length);
+    log(`seeding ${needed} new clients (target total ${targets.clients})…`);
+    const newClients = await seedClients(tx, tracker, ctx, needed);
+    counts.clients = newClients.length;
+
+    log(`seeding ${targets.engagements} engagements across the new clients…`);
+    const engagements = await seedEngagements(tx, tracker, ctx, newClients, targets.engagements);
+    counts.engagements = engagements.length;
+
+    log(`seeding ${targets.timeEntries} time entries…`);
+    await seedTimeEntries(tx, tracker, ctx, engagements, targets.timeEntries);
+    counts.timeEntries = targets.timeEntries;
+
+    log(`seeding ${targets.invoices} invoices + payments…`);
+    await seedInvoicesAndPayments(tx, tracker, ctx, engagements, targets.invoices);
+    counts.invoices = targets.invoices;
+
+    log(`seeding ${targets.fileFolders} client folders × ${targets.filesPerFolder} files each…`);
+    await seedFolders(tx, tracker, ctx, newClients, targets.fileFolders, targets.filesPerFolder);
+    counts.folders = targets.fileFolders;
+  });
+
+  log('demo seed complete.');
+  return counts;
+}
 
 async function main(): Promise<void> {
   const url = process.env['DATABASE_URL'];
@@ -1005,64 +1121,30 @@ async function main(): Promise<void> {
   const db = drizzle(client);
 
   try {
-    log('locating seed firm…');
+    defaultLog('locating seed firm…');
     const [firm] = await db.select().from(firms).where(eq(firms.name, FIRM_NAME)).limit(1);
     if (!firm) {
       throw new Error(`firm '${FIRM_NAME}' not seeded — run \`pnpm db:seed\` first`);
     }
-
-    await ensureTrackerTable(db);
-    log('clearing previous demo data (if any)…');
-    const cleared = await clearPreviousDemo(db);
-    log(`cleared ${cleared} previously-seeded rows`);
-
-    const ctx = await loadContext(db, firm.id);
-    log(`loaded context: ${ctx.userIds.length} users, ${ctx.workCodeIds.length} work codes`);
-
-    await db.transaction(async (tx) => {
-      const tracker = new Tracker(tx);
-
-      // Top-up clients to the target. Don't tag existing 5 as demo so
-      // the base scenario stays intact.
-      const existing = await tx
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, firm.id));
-      const needed = Math.max(0, TARGET_TOTAL_CLIENTS - existing.length);
-      log(`seeding ${needed} new clients (target total ${TARGET_TOTAL_CLIENTS})…`);
-      const newClients = await seedClients(tx, tracker, ctx, needed);
-
-      log(`seeding ${TARGET_ENGAGEMENTS} engagements across the new clients…`);
-      const engagements = await seedEngagements(tx, tracker, ctx, newClients, TARGET_ENGAGEMENTS);
-
-      log(`seeding ${TARGET_TIME_ENTRIES} time entries…`);
-      await seedTimeEntries(tx, tracker, ctx, engagements, TARGET_TIME_ENTRIES);
-
-      log(`seeding ${TARGET_INVOICES} invoices + payments…`);
-      await seedInvoicesAndPayments(tx, tracker, ctx, engagements, TARGET_INVOICES);
-
-      // Skipped: adjustments. They require allocations summed to the
-      // adjustment total (deferred trigger). For a demo that's overkill;
-      // the Approvals page still renders cleanly from time-entry
-      // approval workflow.
-
-      log(`seeding ${TARGET_FILE_FOLDERS} client folders × ${FILES_PER_FOLDER} files each…`);
-      await seedFolders(tx, tracker, ctx, newClients, TARGET_FILE_FOLDERS, FILES_PER_FOLDER);
-    });
-
-    log('demo seed complete.');
+    await runDemoSeed(db, firm.id);
   } finally {
     await client.end({ timeout: 5 });
   }
 }
 
-function log(msg: string): void {
+function defaultLog(msg: string): void {
   // eslint-disable-next-line no-console
   console.log(`seed-demo: ${msg}`);
 }
 
-main().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
-  console.error(err);
-  process.exit(1);
-});
+// Run as CLI only when executed directly. The API admin endpoint imports
+// `runDemoSeed` and reuses an existing DB connection instead.
+const isCli =
+  process.argv[1]?.endsWith('seed-demo.ts') || process.argv[1]?.endsWith('seed-demo.js');
+if (isCli) {
+  main().catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(err);
+    process.exit(1);
+  });
+}

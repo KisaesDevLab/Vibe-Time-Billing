@@ -19,9 +19,13 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  clientPortalAccess,
+  clients,
+  engagements,
   engagementThreadLinks,
   messageReadReceipts,
   messages,
+  portalIdentity,
   threadMembers,
   threads,
   timeEntryMessageLinks,
@@ -32,7 +36,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
-import { batchDecryptForThread, encryptForThread } from './thread-crypto';
+import { batchDecryptForThread, encryptForThread, generateWrappedTDek } from './thread-crypto';
 import { isMember } from './lifecycle';
 
 export interface EngagementMessagingDeps extends RbacDeps {
@@ -47,6 +51,18 @@ const AddMemberSchema = z.object({
   appUserId: z.string().uuid().optional(),
   portalIdentityId: z.string().uuid().optional(),
   memberRole: z.enum(['partner', 'staff', 'client']),
+});
+
+const CreateThreadSchema = z.object({
+  clientId: z.string().uuid(),
+  /** Optional — when set, the new thread is also engagement-linked. */
+  engagementId: z.string().uuid().optional(),
+  title: z.string().min(1).max(200).optional(),
+  /** Optional first message; sent in the same transaction. */
+  body: z.string().min(1).max(10_000).optional(),
+  /** Portal identities (client side) to add as members. When omitted,
+   *  every ACTIVE client_portal_access for the client is included. */
+  portalIdentityIds: z.array(z.string().uuid()).optional(),
 });
 
 const EXCERPT_MAX = 80;
@@ -149,12 +165,16 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           id: messages.id,
           senderAppUserId: messages.senderAppUserId,
           senderPortalIdentityId: messages.senderPortalIdentityId,
+          senderStaffName: appUsers.fullName,
+          senderPortalName: portalIdentity.fullName,
           bodyCiphertext: messages.bodyCiphertext,
           excerptPlaintext: messages.excerptPlaintext,
           editOfId: messages.editOfId,
           createdAt: messages.createdAt,
         })
         .from(messages)
+        .leftJoin(appUsers, eq(appUsers.id, messages.senderAppUserId))
+        .leftJoin(portalIdentity, eq(portalIdentity.id, messages.senderPortalIdentityId))
         .where(and(eq(messages.threadId, threadId), isNull(messages.deletedAt)))
         .orderBy(asc(messages.createdAt))
         .limit(limit);
@@ -167,6 +187,8 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           id: r.id,
           senderAppUserId: r.senderAppUserId,
           senderPortalIdentityId: r.senderPortalIdentityId,
+          senderName: r.senderStaffName ?? r.senderPortalName ?? null,
+          senderKind: r.senderAppUserId ? ('staff' as const) : ('client' as const),
           body: plaintexts[i],
           editOfId: r.editOfId,
           createdAt: r.createdAt,
@@ -176,6 +198,258 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
         logger.error({ err, threadId }, 'message decrypt failed');
         res.status(500).json({ error: 'decrypt_failed' });
       }
+    },
+  );
+
+  // List every thread visible to the caller for a specific client —
+  // both client-direct threads (thread.client_id) and engagement-linked
+  // ones (via engagement_thread_link → engagement.client_id). Filtered
+  // to threads the staff user is a member of so the response doesn't
+  // leak threads outside their assignments.
+  router.get(
+    '/clients/:clientId/threads',
+    requirePermission(deps, 'messaging:read'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const clientId = req.params['clientId']!;
+      // Scope check: the client must belong to the caller's firm.
+      const [client] = await deps.db
+        .select({ id: clients.id, firmId: clients.firmId })
+        .from(clients)
+        .where(eq(clients.id, clientId))
+        .limit(1);
+      if (!client || client.firmId !== session.firmId) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      // thread.client_id was backfilled in 0088 for every existing
+      // engagement-linked thread, so a single WHERE catches both
+      // client-direct and engagement-scoped threads.
+      const rows = await deps.db
+        .select({
+          threadId: threads.id,
+          engagementId: engagementThreadLinks.engagementId,
+          title: threads.title,
+          status: threads.status,
+          updatedAt: threads.updatedAt,
+        })
+        .from(threadMembers)
+        .innerJoin(threads, eq(threads.id, threadMembers.threadId))
+        .leftJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
+        .where(
+          and(
+            eq(threadMembers.appUserId, session.appUserId),
+            isNull(threadMembers.removedAt),
+            eq(threads.firmId, session.firmId),
+            eq(threads.clientId, clientId),
+          ),
+        )
+        .orderBy(desc(threads.updatedAt));
+      res.json({ items: rows });
+    },
+  );
+
+  // Create a new thread at the client scope. When engagementId is set,
+  // also writes an engagement_thread_link row (subject to that table's
+  // 1:1 constraint — caller gets 409 if the engagement already has a
+  // thread). Adds the calling staff user + the named portal identities
+  // (or all ACTIVE accesses for the client when omitted) as members.
+  // An optional body posts the first message in the same flow so the
+  // recipient sees content rather than an empty thread.
+  router.post('/threads', requirePermission(deps, 'messaging:write'), async (req, res) => {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = CreateThreadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const { clientId, engagementId, title, body, portalIdentityIds } = parsed.data;
+
+    const [client] = await deps.db
+      .select({ id: clients.id, firmId: clients.firmId, name: clients.name })
+      .from(clients)
+      .where(eq(clients.id, clientId))
+      .limit(1);
+    if (!client || client.firmId !== session.firmId) {
+      res.status(404).json({ error: 'client_not_found' });
+      return;
+    }
+
+    if (engagementId) {
+      const [eng] = await deps.db
+        .select({ id: engagements.id, engClientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, engagementId))
+        .limit(1);
+      if (!eng || eng.engClientId !== clientId) {
+        res.status(400).json({ error: 'engagement_client_mismatch' });
+        return;
+      }
+      const [existingLink] = await deps.db
+        .select({ id: engagementThreadLinks.threadId })
+        .from(engagementThreadLinks)
+        .where(eq(engagementThreadLinks.engagementId, engagementId))
+        .limit(1);
+      if (existingLink) {
+        res.status(409).json({
+          error: 'engagement_thread_exists',
+          threadId: existingLink.id,
+        });
+        return;
+      }
+    }
+
+    // Resolve the portal-identity members. Explicit list wins, but
+    // each id must map to an ACTIVE access for THIS client (defense
+    // in depth — we don't want a misclicked id to leak the new
+    // thread to an identity not authorized for the client).
+    const accessRows = await deps.db
+      .select({
+        identityId: clientPortalAccess.portalIdentityId,
+        status: clientPortalAccess.status,
+      })
+      .from(clientPortalAccess)
+      .where(eq(clientPortalAccess.clientId, clientId));
+    const activeAccessIds = new Set(
+      accessRows.filter((r) => r.status === 'ACTIVE').map((r) => r.identityId),
+    );
+    const requestedIds = portalIdentityIds
+      ? portalIdentityIds.filter((id) => activeAccessIds.has(id))
+      : Array.from(activeAccessIds);
+
+    const wrapped = generateWrappedTDek(deps.db, session.firmId);
+    let createdThreadId: string | null = null;
+    try {
+      await deps.db.transaction(async (tx) => {
+        const [t] = await tx
+          .insert(threads)
+          .values({
+            firmId: session.firmId,
+            clientId,
+            tDekWrapped: wrapped,
+            title: title ?? `${client.name} — conversation`,
+          })
+          .returning({ id: threads.id });
+        if (!t) throw new Error('thread_insert_failed');
+        createdThreadId = t.id;
+
+        if (engagementId) {
+          await tx
+            .insert(engagementThreadLinks)
+            .values({ engagementId, threadId: t.id })
+            .onConflictDoNothing();
+        }
+
+        // Staff creator → member with role 'staff'.
+        await tx
+          .insert(threadMembers)
+          .values({
+            threadId: t.id,
+            appUserId: session.appUserId,
+            memberRole: 'staff',
+          })
+          .onConflictDoNothing();
+
+        // Resolved portal identities → 'client' members.
+        for (const identityId of requestedIds) {
+          await tx
+            .insert(threadMembers)
+            .values({
+              threadId: t.id,
+              portalIdentityId: identityId,
+              memberRole: 'client',
+            })
+            .onConflictDoNothing();
+        }
+      });
+    } catch (err) {
+      logger.error({ err, clientId, engagementId }, 'thread create failed');
+      res.status(500).json({ error: 'thread_create_failed' });
+      return;
+    }
+
+    const threadId = createdThreadId!;
+
+    // Optional first message — keeps the UI flow single-step.
+    if (body && body.trim()) {
+      try {
+        const ciphertext = await encryptForThread(
+          { db: deps.db, firmId: session.firmId, threadId },
+          body.trim(),
+        );
+        await deps.db.insert(messages).values({
+          threadId,
+          senderAppUserId: session.appUserId,
+          bodyCiphertext: ciphertext,
+          excerptPlaintext: body.slice(0, EXCERPT_MAX),
+        });
+        await deps.db
+          .update(threads)
+          .set({ updatedAt: new Date() })
+          .where(eq(threads.id, threadId));
+      } catch (err) {
+        // Thread is already created; surface the error but leave
+        // the empty thread behind for the user to retry.
+        logger.error({ err, threadId }, 'first message encrypt failed');
+      }
+    }
+
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'thread',
+      entityId: threadId,
+      actorAppUserId: session.appUserId,
+      activeClientId: clientId,
+      after: {
+        clientId,
+        engagementId: engagementId ?? null,
+        memberCount: requestedIds.length + 1,
+      },
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+    res.status(201).json({ threadId });
+  });
+
+  // Helper: look up the thread linked to a given engagement so the
+  // engagement-detail card can fetch messages without knowing the
+  // threadId. Returns 404 if no thread exists yet (engagements may
+  // pre-date the messaging feature or have had their thread archived).
+  router.get(
+    '/engagements/:id/thread',
+    requirePermission(deps, 'messaging:read'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const engagementId = req.params['id']!;
+      const [row] = await deps.db
+        .select({
+          threadId: threads.id,
+          title: threads.title,
+          status: threads.status,
+          firmId: threads.firmId,
+        })
+        .from(engagementThreadLinks)
+        .innerJoin(threads, eq(threads.id, engagementThreadLinks.threadId))
+        .where(eq(engagementThreadLinks.engagementId, engagementId))
+        .limit(1);
+      if (!row || row.firmId !== session.firmId) {
+        res.status(404).json({ error: 'no_thread_for_engagement' });
+        return;
+      }
+      res.json({ threadId: row.threadId, title: row.title, status: row.status });
     },
   );
 

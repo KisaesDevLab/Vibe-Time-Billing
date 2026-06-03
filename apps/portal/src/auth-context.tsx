@@ -16,6 +16,10 @@ interface Me {
   firmId: string;
   activeClientId: string;
   csrfToken: string;
+  // TR-5 — staff "view as client" session. When true, the SPA renders
+  // a banner naming the staff impersonator and the API rejects writes.
+  isImpersonation?: boolean;
+  impersonatedByEmail?: string | null;
 }
 
 interface AuthContextValue {

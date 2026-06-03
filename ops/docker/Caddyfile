@@ -69,7 +69,7 @@
 	}
 }
 
-# Hostname-based routing.
+# Hostname-based routing on the primary listener.
 :80 {
 	@portal host portal.* portal:80
 	handle @portal {
@@ -78,4 +78,21 @@
 	handle {
 		import staff-realm
 	}
+}
+
+# Local-appliance second listener.
+#
+# Production deployments use two distinct hostnames (portal.firm.com vs
+# app.firm.com) so the @portal matcher above routes by Host header. On
+# a single-host local appliance both URLs collapse to `localhost`, so
+# the same host can't disambiguate — the only thing that can is a
+# different port. PORTAL_BASE_URL in .env.appliance points at this
+# port so invitation emails, view-as links, and proposal magic links
+# land on the portal SPA cleanly without crossing realms.
+#
+# This block is a no-op in production: port 8088 isn't published in
+# docker-compose.prod.yml's caddy service. The local-override compose
+# binds it for local testing.
+:8088 {
+	import portal-realm
 }

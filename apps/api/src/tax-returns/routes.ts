@@ -16,15 +16,17 @@
 // add a finer-grained `tax:release` permission later.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clients, taxReturnReleases, taxReturnSections, taxReturns } from '@vibe/db/schema';
+import { clients, files, taxReturnReleases, taxReturnSections, taxReturns } from '@vibe/db/schema';
 import { and, isNull } from 'drizzle-orm';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { logger } from '../logger';
 import { createRelease, revokeRelease, ReleaseError } from './release-helper';
 import { appendAccessLog, exportAccessLogCsv, listAccessLog } from './access-log';
 import { AmendError, computeAmendDiff, createAmendedReturn, markOriginalSuperseded } from './amend';
@@ -72,6 +74,157 @@ const PatchSectionSchema = z
 export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router, ['returnId', 'releaseId', 'sectionId']);
+
+  // -------------------------------------------------------------------
+  // Manual intake — flag a file in the client's Files folder as a tax
+  // return. Creates a DRAFT tax_returns row pointing at the file plus a
+  // single catch-all section so the release flow (which scopes byte
+  // ranges by section) has something to work with. Full automated
+  // parsing (Drake/Lacerte/UltraTax exports, multi-section detection,
+  // per-recipient K-1 splits, etc.) is a separate scope; this gets a
+  // real return into the system today.
+  //
+  // Permission: engagement:write (same gate as release/amend — flagging
+  // a tax return is a partner/manager action).
+  // -------------------------------------------------------------------
+  const IntakeFromFileSchema = z.object({
+    fileId: z.string().uuid(),
+    taxYear: z.number().int().min(1900).max(2999),
+    formCode: z.string().min(1).max(40),
+    jurisdiction: z.string().min(1).max(40).default('federal'),
+    title: z.string().min(1).max(200).optional(),
+    engagementId: z.string().uuid().nullable().optional(),
+    totalPages: z.number().int().positive().nullable().optional(),
+  });
+
+  router.post(
+    '/intake-from-file',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = IntakeFromFileSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
+        return;
+      }
+      // Load file + scope-check via the firm column on files itself.
+      const [file] = await deps.db
+        .select({
+          id: files.id,
+          firmId: files.firmId,
+          clientId: files.clientId,
+          originalFilename: files.originalFilename,
+          mimeType: files.mimeType,
+          sha256: files.sha256,
+          deletedAt: files.deletedAt,
+          pendingUpload: files.pendingUpload,
+        })
+        .from(files)
+        .where(eq(files.id, parsed.data.fileId))
+        .limit(1);
+      if (!file || file.firmId !== session.firmId || file.deletedAt) {
+        res.status(404).json({ error: 'file_not_found' });
+        return;
+      }
+      if (file.pendingUpload) {
+        res.status(409).json({ error: 'file_pending_upload' });
+        return;
+      }
+      if (file.mimeType && !file.mimeType.includes('pdf')) {
+        // Non-PDF intake is allowed but we warn — release/extraction
+        // assumes a paged source. Surface a soft hint via response.
+        logger.warn(
+          { fileId: file.id, mimeType: file.mimeType },
+          'tax-return intake on non-pdf file',
+        );
+      }
+
+      // Refuse double-flagging the same file.
+      const [existing] = await deps.db
+        .select({ id: taxReturns.id })
+        .from(taxReturns)
+        .where(
+          and(
+            eq(taxReturns.firmId, session.firmId),
+            eq(taxReturns.sourceFileId, file.id),
+            isNull(taxReturns.amendsReturnId),
+          ),
+        )
+        .limit(1);
+      if (existing) {
+        res.status(409).json({ error: 'file_already_flagged', taxReturnId: existing.id });
+        return;
+      }
+
+      const title =
+        parsed.data.title?.trim() ||
+        `${parsed.data.formCode} · ${parsed.data.taxYear} · ${file.originalFilename}`;
+
+      const result = await deps.db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(taxReturns)
+          .values({
+            firmId: session.firmId,
+            clientId: file.clientId,
+            engagementId: parsed.data.engagementId ?? null,
+            taxYear: parsed.data.taxYear,
+            formCode: parsed.data.formCode,
+            jurisdiction: parsed.data.jurisdiction,
+            title,
+            status: 'DRAFT',
+            releaseKind: 'ORIGINAL',
+            sourceFileId: file.id,
+            sourceFileSha256: file.sha256,
+            totalPages: parsed.data.totalPages ?? null,
+          })
+          .returning({ id: taxReturns.id });
+        if (!row) throw new Error('tax_return_insert_failed');
+
+        // Seed one catch-all section covering pages 1..totalPages so the
+        // release flow has at least one selectable scope. When totalPages
+        // is unknown, default to 1..1 — partner can extend later via the
+        // sections PATCH endpoint.
+        const endPage = parsed.data.totalPages ?? 1;
+        await tx.insert(taxReturnSections).values({
+          returnId: row.id,
+          ordinal: 0,
+          depth: 0,
+          rawTitle: 'Full return',
+          normalizedTitle: 'Full return',
+          kind: 'UNKNOWN',
+          startPage: 1,
+          endPage,
+          releasable: true,
+          parseConfidence: 0,
+          isManualOverride: true,
+        });
+        return row.id;
+      });
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'tax_return',
+        entityId: result,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'intake_from_file',
+          fileId: file.id,
+          clientId: file.clientId,
+          taxYear: parsed.data.taxYear,
+          formCode: parsed.data.formCode,
+          jurisdiction: parsed.data.jurisdiction,
+        },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.warn({ err }, 'intake audit emit failed'));
+
+      res.status(201).json({ taxReturnId: result });
+    },
+  );
 
   router.post(
     '/:returnId/releases',
@@ -324,7 +477,9 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
   );
 
   // Helpful list for the staff UI: every return + latest live release
-  // per client. Read-only; permission is engagement:read.
+  // per client. Read-only; permission is engagement:read. Optional
+  // ?clientId= filter scopes the list to a single client — used by
+  // the client-dashboard Tax tab.
   router.get(
     '/',
     requirePermission(deps, 'engagement:read'),
@@ -334,6 +489,9 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
+      const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+      const conds = [eq(taxReturns.firmId, session.firmId)];
+      if (clientId) conds.push(eq(taxReturns.clientId, clientId));
       const rows = await deps.db
         .select({
           id: taxReturns.id,
@@ -351,7 +509,9 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         })
         .from(taxReturns)
         .innerJoin(clients, eq(clients.id, taxReturns.clientId))
-        .where(eq(taxReturns.firmId, session.firmId));
+        .where(and(...conds))
+        .orderBy(desc(taxReturns.taxYear), desc(taxReturns.createdAt))
+        .limit(500);
       res.json({ items: rows });
     },
   );

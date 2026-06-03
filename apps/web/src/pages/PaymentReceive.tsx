@@ -29,7 +29,12 @@ import { api } from '../api-client';
 // ---------------------------------------------------------------------
 
 type Mode = 'RECORD' | 'CHARGE';
-type PaymentMethod = 'CHECK' | 'CASH' | 'ACH_MANUAL' | 'OTHER' | 'CARD_STRIPE';
+// Loosened from a closed union in 0089 — paymentMethod is now an
+// UPPER_SNAKE key sourced from /admin/payment-method-types. The two
+// synthetic protocol values (CARD_STRIPE, CREDIT_APPLY) are kept
+// inline because they aren't catalog rows; they're injected by the
+// receive flow based on context.
+type PaymentMethod = string;
 
 interface PaymentConfig {
   stripeEnabled: boolean;
@@ -111,7 +116,11 @@ function centsToDollarsInput(c: number): string {
   return (c / 100).toFixed(2);
 }
 
-const RECORD_METHODS: { value: PaymentMethod; label: string }[] = [
+// Fallback method list when the catalog endpoint is unreachable (no
+// permission, dev seed missing, network glitch). Matches the four
+// built-ins seeded by bootstrap-firm so the form always renders
+// something usable.
+const FALLBACK_METHODS: { value: PaymentMethod; label: string }[] = [
   { value: 'CHECK', label: 'Check' },
   { value: 'CASH', label: 'Cash' },
   { value: 'ACH_MANUAL', label: 'ACH (manual)' },
@@ -202,6 +211,37 @@ function Inner({
         setError(e instanceof Error ? e.message : 'failed to load clients');
       }
     })();
+  }, []);
+
+  // 0089 — pull the firm's payment-method catalog. Falls back to the
+  // four built-ins (CHECK/CASH/ACH_MANUAL/OTHER) if the endpoint is
+  // unreachable so the form is never broken.
+  const [methods, setMethods] =
+    useState<{ value: PaymentMethod; label: string }[]>(FALLBACK_METHODS);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{
+          items: { key: string; label: string; active: boolean; displayOrder: number }[];
+        }>('/api/staff/admin/payment-method-types');
+        const active = (r.items ?? [])
+          .filter((m) => m.active)
+          .sort((a, b) => a.displayOrder - b.displayOrder)
+          .map((m) => ({ value: m.key, label: m.label }));
+        if (active.length > 0) {
+          setMethods(active);
+          // If the currently-selected method was deactivated/renamed
+          // out of the catalog, snap back to the first active.
+          if (!active.find((m) => m.value === paymentMethod)) {
+            setPaymentMethod(active[0]!.value);
+          }
+        }
+      } catch {
+        // Keep the fallback list silently — every staff role has
+        // taxonomy:read so failure here is very rare.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- When payer changes: load suggestions ----
@@ -651,7 +691,7 @@ function Inner({
                     fontSize: 13,
                   }}
                 >
-                  {RECORD_METHODS.map((m) => (
+                  {methods.map((m) => (
                     <option key={m.value} value={m.value}>
                       {m.label}
                     </option>

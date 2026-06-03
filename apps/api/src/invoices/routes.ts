@@ -51,6 +51,11 @@ import { publishWebhookEvent } from '../webhooks/publish';
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  // SMS dispatcher — wired from app.ts's sendPortalSms. Used by
+  // POST /invoices/:id/send-sms so staff can text the client a
+  // notification with the portal link. Optional; the endpoint
+  // returns 503 if the provider isn't configured.
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
   paymentProvider?: PaymentProvider | null;
   // Stage 1B — step-up gate for void/refund actions. Optional so tests
@@ -1186,6 +1191,39 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         emailedTo: sent.emailedTo,
       }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
       res.json({ ok: true, emailedTo: sent.emailedTo });
+    },
+  );
+
+  // Send an SMS to the client's billing contact pointing at the portal
+  // invoice page. Doesn't change invoice.status — SMS is a nudge, not
+  // the formal "sent" signal (that stays tied to email per Q30 read
+  // receipts). Returns 503 when SMS provider isn't configured, 404 if
+  // the client has no billing/primary contact with a phone, 502 on
+  // provider failure.
+  router.post(
+    '/:id/send-sms',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const sent = await sendInvoiceSms(deps, session.firmId, req.params['id']!);
+      if (!sent.ok) {
+        res.status(sent.status).json({ error: sent.error });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { sms: true, textedTo: sent.textedTo },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, textedTo: sent.textedTo });
     },
   );
 
@@ -2394,6 +2432,61 @@ async function sendInvoiceEmail(
     return { ok: false, status: 502, error: 'email_dispatch_failed' };
   }
   return { ok: true, emailedTo: billingContact.email };
+}
+
+async function sendInvoiceSms(
+  deps: InvoiceRoutesDeps,
+  firmId: string,
+  invoiceId: string,
+): Promise<{ ok: true; textedTo: string | null } | { ok: false; status: number; error: string }> {
+  if (!deps.db) return { ok: false, status: 503, error: 'db_unavailable' };
+  if (!deps.sendSms) return { ok: false, status: 503, error: 'sms_provider_not_configured' };
+  const [inv] = await deps.db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      totalCents: invoices.totalCents,
+      dueDate: invoices.dueDate,
+      clientId: invoices.clientId,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.firmId, firmId)))
+    .limit(1);
+  if (!inv) return { ok: false, status: 404, error: 'not_found' };
+  const [client] = await deps.db
+    .select({ name: clients.name })
+    .from(clients)
+    .where(eq(clients.id, inv.clientId))
+    .limit(1);
+  if (!client) return { ok: false, status: 404, error: 'client_not_found' };
+  const billingContact = await getBillingContact(deps.db, inv.clientId);
+  if (!billingContact?.phone) {
+    return { ok: false, status: 404, error: 'no_billing_phone' };
+  }
+  const portalBase = deps.portalBaseUrl ?? '';
+  const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
+  const total = (Number(inv.totalCents) / 100).toFixed(2);
+  // Keep the body short — SMS limits + many providers truncate around
+  // 160 chars per segment. ~140 leaves room for a short link rewrite.
+  const body =
+    `${client.name}: invoice ${inv.invoiceNumber} for $${total} is ready (due ${inv.dueDate}).` +
+    (link ? ` View: ${link}` : '');
+  try {
+    await deps.sendSms({ to: billingContact.phone, body });
+    await recordOutbound({
+      db: deps.db,
+      firmId,
+      clientId: inv.clientId,
+      channel: 'SMS',
+      body,
+      relatedEntityType: 'invoice',
+      relatedEntityId: inv.id,
+    }).catch((err) => logger.warn({ err }, 'comms record failed'));
+  } catch (err) {
+    logger.error({ err, invoiceId: inv.id }, 'invoice sms dispatch failed');
+    return { ok: false, status: 502, error: 'sms_dispatch_failed' };
+  }
+  return { ok: true, textedTo: billingContact.phone };
 }
 
 function clientIp(req: Request): string {

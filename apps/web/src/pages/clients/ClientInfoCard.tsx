@@ -17,6 +17,9 @@ interface Client {
   termsDays: number;
   invoiceConsolidationPreference: 'CONSOLIDATED' | 'SEPARATE';
   partnerInChargeId: string | null;
+  // 0092 — required on the row; FE allows editing across firm offices.
+  officeId?: string | null;
+  officeName?: string | null;
   createdAt: string;
   clientType?: 'INDIVIDUAL' | 'BUSINESS';
   clientFacingName?: string | null;
@@ -58,6 +61,9 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<Client>>({});
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [offices, setOffices] = useState<Array<{ id: string; name: string; isDefault: boolean }>>(
+    [],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,10 +71,16 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
     if (!editing || partners.length > 0) return;
     void (async () => {
       try {
-        const r = await api<{ users: Partner[] }>('/api/staff/admin/users');
-        setPartners(r.users ?? []);
+        const [u, o] = await Promise.all([
+          api<{ users: Partner[] }>('/api/staff/admin/users'),
+          api<{ offices: Array<{ id: string; name: string; isDefault: boolean }> }>(
+            '/api/staff/admin/offices',
+          ).catch(() => ({ offices: [] })),
+        ]);
+        setPartners(u.users ?? []);
+        setOffices(o.offices ?? []);
       } catch {
-        // Non-fatal: partner dropdown stays empty.
+        // Non-fatal: dropdowns stay empty.
       }
     })();
   }, [editing, partners.length]);
@@ -165,6 +177,18 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
               onChange={(val) => setDraft({ ...draft, partnerInChargeId: val })}
               options={partners.map<ComboboxOption>((p) => ({ value: p.id, label: p.fullName }))}
               placeholder="— none —"
+            />
+          </Field>
+          <Field label="Office">
+            <Combobox
+              ariaLabel="Office"
+              value={(v('officeId') as string) ?? ''}
+              onChange={(val) => setDraft({ ...draft, officeId: val })}
+              options={offices.map<ComboboxOption>((o) => ({
+                value: o.id,
+                label: o.isDefault ? `${o.name} (default)` : o.name,
+              }))}
+              placeholder="— select —"
             />
           </Field>
           <Field label="External ID">
@@ -350,6 +374,8 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
               <dd style={{ margin: 0 }}>{client.filingStatus}</dd>
             </>
           )}
+          <dt style={{ color: tokens.color.textMuted }}>Office</dt>
+          <dd style={{ margin: 0 }}>{client.officeName ?? '—'}</dd>
           <dt style={{ color: tokens.color.textMuted }}>Pipeline</dt>
           <dd style={{ margin: 0 }}>{client.pipelineStage ?? 'CLIENT'}</dd>
           <dt style={{ color: tokens.color.textMuted }}>Terms</dt>

@@ -1,3 +1,4 @@
+/* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
 // Client-detail Files tab (Phase 10 of FILE_MANAGER_ADDENDUM.md).
@@ -18,7 +19,7 @@
 // Permission gates rely on usePermission(); buttons are disabled with
 // a tooltip when missing rather than hidden.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
@@ -114,6 +115,9 @@ export function ClientFilesTab({
   // the freshly-indexed file list.
   const [justLinkedPath, setJustLinkedPath] = useState<string | null>(null);
   const [indexing, setIndexing] = useState(false);
+  // Tax-return intake — the file the partner is flagging. When non-null,
+  // the modal is open. Submit POSTs /api/staff/tax/returns/intake-from-file.
+  const [flagFor, setFlagFor] = useState<FileRow | null>(null);
 
   async function load(): Promise<void> {
     setError(null);
@@ -514,15 +518,37 @@ export function ClientFilesTab({
                 key: 'download',
                 header: '',
                 render: (r) => (
-                  <Button onClick={() => void download(r)} disabled={r.pendingUpload}>
-                    Download
-                  </Button>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setFlagFor(r)}
+                      disabled={r.pendingUpload}
+                      title="Flag this file as a tax return — creates a draft return that can be released to the client."
+                    >
+                      Flag as tax return
+                    </Button>
+                    <Button onClick={() => void download(r)} disabled={r.pendingUpload}>
+                      Download
+                    </Button>
+                  </div>
                 ),
               },
             ]}
           />
         </Card>
       </div>
+
+      {flagFor && (
+        <FlagAsTaxReturnDialog
+          file={flagFor}
+          onClose={() => setFlagFor(null)}
+          onCreated={() => {
+            setFlagFor(null);
+            void load();
+          }}
+        />
+      )}
 
       {uploadOpen && (
         <UploadDialog
@@ -902,4 +928,233 @@ function bufferToBase64(buf: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+// ---------------------------------------------------------------------
+// FlagAsTaxReturnDialog — minimal partner-facing intake form. Posts to
+// /api/staff/tax/returns/intake-from-file which validates firm scope,
+// inserts a DRAFT tax_returns row pointing at the file, and seeds one
+// catch-all section (the partner can split into per-recipient sections
+// later from /tax/returns/:id). Non-PDF files are allowed but the
+// release/extraction pipeline assumes a paged source.
+// ---------------------------------------------------------------------
+
+const FORM_CODE_OPTIONS = [
+  '1040',
+  '1040-X',
+  '1120',
+  '1120-S',
+  '1065',
+  '1041',
+  '990',
+  '709',
+  '706',
+  '5500',
+  'other',
+] as const;
+
+function FlagAsTaxReturnDialog({
+  file,
+  onClose,
+  onCreated,
+}: {
+  file: FileRow;
+  onClose: () => void;
+  onCreated: (taxReturnId: string) => void;
+}): JSX.Element {
+  const currentYear = new Date().getFullYear();
+  // Default to the prior calendar year — most flagging happens during
+  // the following tax season.
+  const [taxYear, setTaxYear] = useState<string>(String(currentYear - 1));
+  const [formCode, setFormCode] = useState<(typeof FORM_CODE_OPTIONS)[number]>('1040');
+  const [customForm, setCustomForm] = useState('');
+  const [jurisdiction, setJurisdiction] = useState('federal');
+  const [title, setTitle] = useState('');
+  const [totalPagesInput, setTotalPagesInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    setError(null);
+    const yearN = Number(taxYear);
+    if (!Number.isInteger(yearN) || yearN < 1900 || yearN > 2999) {
+      setError('Enter a valid tax year (1900–2999).');
+      return;
+    }
+    const code = formCode === 'other' ? customForm.trim() : formCode;
+    if (!code) {
+      setError('Form code is required.');
+      return;
+    }
+    const pages = totalPagesInput.trim() ? Number(totalPagesInput.trim()) : null;
+    if (pages !== null && (!Number.isInteger(pages) || pages < 1)) {
+      setError('Total pages must be a positive integer (or leave blank).');
+      return;
+    }
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        fileId: file.id,
+        taxYear: yearN,
+        formCode: code,
+        jurisdiction: jurisdiction.trim() || 'federal',
+      };
+      if (title.trim()) body['title'] = title.trim();
+      if (pages !== null) body['totalPages'] = pages;
+      const r = await api<{ taxReturnId: string }>('/api/staff/tax/returns/intake-from-file', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      onCreated(r.taxReturnId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'create_failed';
+      setError(
+        msg === 'file_already_flagged'
+          ? 'This file is already flagged as a tax return. Open the existing return from the Tax page.'
+          : msg === 'file_pending_upload'
+            ? 'Upload is still in progress — try again in a moment.'
+            : `Flag failed: ${msg}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isPdf = (file.mimeType ?? '').toLowerCase().includes('pdf');
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        paddingTop: 56,
+        zIndex: 200,
+      }}
+    >
+      <form onSubmit={(e) => void submit(e)} style={{ minWidth: 520, maxWidth: 640 }}>
+        <Card title="Flag file as tax return">
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            Source file:{' '}
+            <span style={{ fontFamily: tokens.font.mono }}>{file.originalFilename}</span>
+            {!isPdf && (
+              <span style={{ color: tokens.color.warning, marginLeft: 6 }}>
+                · not a PDF — release scoping assumes a paged document
+              </span>
+            )}
+          </p>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Tax year</label>
+                <input
+                  type="number"
+                  min={1900}
+                  max={2999}
+                  value={taxYear}
+                  onChange={(e) => setTaxYear(e.target.value)}
+                  style={dlgInput()}
+                />
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Form code</label>
+                <select
+                  value={formCode}
+                  onChange={(e) =>
+                    setFormCode(e.target.value as (typeof FORM_CODE_OPTIONS)[number])
+                  }
+                  style={dlgInput()}
+                >
+                  {FORM_CODE_OPTIONS.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Jurisdiction</label>
+                <input
+                  type="text"
+                  value={jurisdiction}
+                  onChange={(e) => setJurisdiction(e.target.value)}
+                  placeholder="federal, CA, NY…"
+                  style={dlgInput()}
+                />
+              </div>
+            </div>
+            {formCode === 'other' && (
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  Custom form code
+                </label>
+                <input
+                  type="text"
+                  value={customForm}
+                  onChange={(e) => setCustomForm(e.target.value)}
+                  placeholder="e.g. 1099-NEC"
+                  style={dlgInput()}
+                />
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 4 }}>
+              <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                Title (optional — defaults to &ldquo;{formCode} · {taxYear} ·{' '}
+                {file.originalFilename}&rdquo;)
+              </label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                style={dlgInput()}
+              />
+            </div>
+            <div style={{ display: 'grid', gap: 4 }}>
+              <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                Total pages (optional — needed for full-document release scoping)
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={totalPagesInput}
+                onChange={(e) => setTotalPagesInput(e.target.value)}
+                placeholder="Leave blank to set later"
+                style={dlgInput()}
+              />
+            </div>
+            {error && (
+              <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
+                {error}
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={busy}>
+                {busy ? 'Flagging…' : 'Flag as tax return'}
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </form>
+    </div>
+  );
+}
+
+function dlgInput(): React.CSSProperties {
+  return {
+    padding: '8px 10px',
+    fontSize: 13,
+    border: `1px solid ${tokens.color.border}`,
+    borderRadius: tokens.radius.sm,
+    background: tokens.color.surface,
+    color: tokens.color.text,
+  };
 }

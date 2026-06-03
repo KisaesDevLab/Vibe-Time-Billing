@@ -308,9 +308,20 @@ const server = app.listen(config.PORT, () => {
 // the appliance behaves as locked (503) until unseal resolves. Errors
 // are logged but don't crash the process — the operator can investigate
 // via /api/staff/admin/unlock/status.
-void bootCrypto(db).catch((err) => {
-  logger.error({ err }, 'crypto boot failed — appliance will report locked');
-});
+void bootCrypto(db)
+  .then(async () => {
+    // 0094 — after the firm key is unsealed, fold any UI-configured
+    // storage credentials into process.env so the existing
+    // buildStorageClient(process.env) call sites pick them up. Safe to
+    // await: bootCrypto resolves before the server starts handling
+    // requests (it's fire-and-forget from this point of view, but the
+    // promise chain serializes).
+    const { applyStorageSettingsFromDb } = await import('./admin/storage-settings/boot');
+    await applyStorageSettingsFromDb(db);
+  })
+  .catch((err) => {
+    logger.error({ err }, 'crypto boot failed — appliance will report locked');
+  });
 const isProd = config.NODE_ENV === 'production';
 const MAX_LISTEN_ATTEMPTS = isProd ? 16 : Number.POSITIVE_INFINITY;
 let listenAttempt = 0;

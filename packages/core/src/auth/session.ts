@@ -35,6 +35,15 @@ export interface PortalSession {
   csrfToken: string;
   ip: string | null;
   userAgent: string | null;
+  // Staff "view as client" — when set, the session was minted from an
+  // impersonation token (TR-5). Read-only: the portal middleware rejects
+  // non-GET requests, and the session auto-expires 60 min after creation.
+  // CLAUDE.md non-negotiable #2 still holds — this is a distinct portal
+  // session with its own cookie + signing key; the staff actor is captured
+  // only for audit + UI banner.
+  isImpersonation?: boolean;
+  impersonatedByStaffUserId?: string;
+  impersonatedByEmail?: string;
 }
 
 export type AnySession = StaffSession | PortalSession;

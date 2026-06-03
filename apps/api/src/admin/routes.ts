@@ -1198,10 +1198,33 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const items = await deps.db
+      let items = await deps.db
         .select()
         .from(notificationTemplates)
         .where(eq(notificationTemplates.firmId, firmId));
+      // Self-heal: firms that missed the bootstrap seed (or that were
+      // upgraded across the migration window) land here with zero rows.
+      // Run the same idempotent seeder used by /seed-defaults so the
+      // admin sees a fully-populated grid on first visit. Existing rows
+      // are preserved because seedNotificationTemplates uses
+      // ON CONFLICT DO NOTHING on (firm_id, kind, channel).
+      if (items.length === 0 && deps.db) {
+        const db = deps.db;
+        await db
+          .transaction(async (tx) => {
+            await seedNotificationTemplates(tx, firmId);
+          })
+          .catch((err) => {
+            // Non-fatal: GET still returns whatever rows exist. The
+            // admin can hit /seed-defaults explicitly to retry.
+            // eslint-disable-next-line no-console
+            console.warn('notification template auto-seed failed', err);
+          });
+        items = await db
+          .select()
+          .from(notificationTemplates)
+          .where(eq(notificationTemplates.firmId, firmId));
+      }
       res.json({ items });
     },
   );
@@ -1332,11 +1355,112 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const items = await deps.db
+      let items = await deps.db
         .select()
         .from(engagementStatusConfig)
         .where(eq(engagementStatusConfig.firmId, firmId))
         .orderBy(engagementStatusConfig.sortOrder);
+      // Self-heal: firms created after migration 0050 land here with
+      // zero rows because the backfill INSERT only fired against firms
+      // that existed at migration time. Seed defaults on first read.
+      if (items.length === 0) {
+        const DEFAULT_STATUS_CONFIGS: Array<{
+          workflowState:
+            | 'NO_STATUS'
+            | 'NOT_STARTED'
+            | 'READY'
+            | 'IN_PROGRESS'
+            | 'ON_HOLD'
+            | 'NEEDS_REVIEW'
+            | 'WITH_CLIENT'
+            | 'COMPLETED'
+            | 'CANCELED'
+            | 'DRAFT';
+          label: string;
+          color: string;
+          sortOrder: number;
+          kanbanVisible: boolean;
+        }> = [
+          {
+            workflowState: 'DRAFT',
+            label: 'Draft',
+            color: '#9ca3af',
+            sortOrder: 0,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'NOT_STARTED',
+            label: 'Not started',
+            color: '#6b7280',
+            sortOrder: 10,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'READY',
+            label: 'Ready',
+            color: '#3b82f6',
+            sortOrder: 20,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'IN_PROGRESS',
+            label: 'In progress',
+            color: '#f59e0b',
+            sortOrder: 30,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'ON_HOLD',
+            label: 'On hold',
+            color: '#a855f7',
+            sortOrder: 40,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'NEEDS_REVIEW',
+            label: 'Needs review',
+            color: '#ec4899',
+            sortOrder: 50,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'WITH_CLIENT',
+            label: 'With client',
+            color: '#0ea5e9',
+            sortOrder: 60,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'COMPLETED',
+            label: 'Completed',
+            color: '#22c55e',
+            sortOrder: 70,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'CANCELED',
+            label: 'Canceled',
+            color: '#737373',
+            sortOrder: 80,
+            kanbanVisible: true,
+          },
+          {
+            workflowState: 'NO_STATUS',
+            label: 'No status',
+            color: '#94a3b8',
+            sortOrder: 90,
+            kanbanVisible: true,
+          },
+        ];
+        await deps.db
+          .insert(engagementStatusConfig)
+          .values(DEFAULT_STATUS_CONFIGS.map((d) => ({ firmId, ...d, triggersClientComm: false })));
+        items = await deps.db
+          .select()
+          .from(engagementStatusConfig)
+          .where(eq(engagementStatusConfig.firmId, firmId))
+          .orderBy(engagementStatusConfig.sortOrder);
+      }
       res.json({ items });
     },
   );

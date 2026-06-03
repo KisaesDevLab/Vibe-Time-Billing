@@ -237,7 +237,9 @@ describe('TR-5 — POST /clients/:clientId/impersonate', () => {
     };
     expect(body.ttlSeconds).toBe(5 * 60);
     expect(body.token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    expect(body.portalUrl).toContain('?impersonate=');
+    // URL points to the portal SPA's /auth/impersonate route, which
+    // POSTs the token to /api/portal/auth/impersonate-exchange.
+    expect(body.portalUrl).toContain('/auth/impersonate?token=');
     // Verify the issued token roundtrips.
     const claims = await verifyImpersonationToken(SECRET, body.token);
     expect(claims.clientId).toBe(f.clientId);

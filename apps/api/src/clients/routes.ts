@@ -16,6 +16,7 @@ import {
   clients,
   engagements,
   invoices,
+  offices,
   portalInvitation,
   portalSession,
   userPinnedClients,
@@ -45,11 +46,27 @@ export interface ClientRoutesDeps extends RbacDeps {
   /** Phase 9 — required to enqueue folder-mutation jobs + drive the SSE
    *  progress channel. The api passes deps.redis straight through. */
   redis?: Redis;
+  /** 0092 followup — bulk email dispatch for the /bulk-email endpoint.
+   *  Uses the same staff-mail surface as statement / invoice sends so
+   *  HTML body + attachments work consistently. Optional so the router
+   *  still mounts in test environments without a mailer. */
+  sendStaffMail?: (args: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: string;
+    attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
+  }) => Promise<void>;
 }
 
 const ClientSchema = z.object({
   name: z.string().min(1).max(200),
   partnerInChargeId: z.string().uuid(),
+  // 0092 — every client belongs to one office. Optional on the wire
+  // because the create handler resolves a default from the caller's
+  // app_user.default_office_id when omitted; patch handler leaves the
+  // current value alone when omitted.
+  officeId: z.string().uuid().optional(),
   // v2 0027 — billing-contact fields moved off client onto client_contact.
   // Callers create the contact via /clients/:id/contacts.
   termsDays: z.number().int().min(0).max(365).optional(),
@@ -107,6 +124,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
     const externalId = typeof req.query['externalId'] === 'string' ? req.query['externalId'] : null;
     const clientType = typeof req.query['clientType'] === 'string' ? req.query['clientType'] : null;
+    const officeId = typeof req.query['officeId'] === 'string' ? req.query['officeId'] : null;
 
     const conds = [eq(clients.firmId, firmId)];
     if (q) {
@@ -143,6 +161,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     if (clientType === 'INDIVIDUAL' || clientType === 'BUSINESS') {
       conds.push(eq(clients.clientType, clientType));
     }
+    if (officeId) {
+      conds.push(eq(clients.officeId, officeId));
+    }
 
     // Pagination + sort. If no `page` is supplied, we keep the legacy
     // shape (just `items`, limit 500) so existing callers don't break.
@@ -161,8 +182,38 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       status: sql`${clients.status}`,
       createdAt: sql`${clients.createdAt}`,
       partnerName: sql`${appUsers.fullName}`,
+      // Reuse the same correlated subquery as the SELECT projection
+      // (defined just below) so sort matches what the user sees.
+      outstandingBalanceCents: sql`COALESCE((
+        SELECT SUM(${invoices.totalCents} - ${invoices.paidCents})
+        FROM ${invoices}
+        WHERE ${invoices.clientId} = ${clients.id}
+          AND ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE')
+      ), 0)`,
     };
     const orderExpr = sortMap[sortCol] ?? sortMap['name']!;
+
+    // Per-client outstanding balance — sum of (totalCents − paidCents)
+    // for invoices still owed by the client. Mirrors the formula used
+    // in apps/api/src/stats/routes.ts so list + detail agree.
+    const outstandingExpr = sql<number>`COALESCE((
+      SELECT SUM(${invoices.totalCents} - ${invoices.paidCents})
+      FROM ${invoices}
+      WHERE ${invoices.clientId} = ${clients.id}
+        AND ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE')
+    ), 0)`.as('outstanding_balance_cents');
+
+    // Per-client portal-access tag — the first ACTIVE access id for
+    // this client (or NULL when none). Drives the Clients list status
+    // pill styling + click-to-view-as behaviour.
+    const portalAccessExpr = sql<string | null>`(
+      SELECT cpa.id::text
+      FROM client_portal_access cpa
+      WHERE cpa.client_id = ${clients.id}
+        AND cpa.status = 'ACTIVE'
+      ORDER BY cpa.created_at ASC
+      LIMIT 1
+    )`.as('active_portal_access_id');
 
     const baseSelect = deps.db
       .select({
@@ -173,14 +224,19 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         externalId: clients.externalId,
         partnerInChargeId: clients.partnerInChargeId,
         partnerName: appUsers.fullName,
+        officeId: clients.officeId,
+        officeName: offices.name,
         termsDays: clients.termsDays,
         invoiceConsolidationPreference: clients.invoiceConsolidationPreference,
         createdAt: clients.createdAt,
         mailingCity: clients.mailingCity,
         mailingState: clients.mailingState,
+        outstandingBalanceCents: outstandingExpr,
+        activePortalAccessId: portalAccessExpr,
       })
       .from(clients)
-      .leftJoin(appUsers, eq(appUsers.id, clients.partnerInChargeId));
+      .leftJoin(appUsers, eq(appUsers.id, clients.partnerInChargeId))
+      .leftJoin(offices, eq(offices.id, clients.officeId));
 
     if (!paginated) {
       const items = await baseSelect
@@ -224,7 +280,14 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      res.json({ client });
+      // 0092 — resolve the office name so the InfoCard can render it
+      // without a second round trip.
+      const [office] = await deps.db
+        .select({ name: offices.name })
+        .from(offices)
+        .where(eq(offices.id, client.officeId))
+        .limit(1);
+      res.json({ client: { ...client, officeName: office?.name ?? null } });
     },
   );
 
@@ -240,9 +303,44 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       return;
     }
     const session = req.staffSession!;
+    // 0092 — resolve officeId. Caller-supplied wins; otherwise fall
+    // back to the staff user's default office; otherwise the firm's
+    // default office (is_default=true) or the earliest-created one.
+    let officeId: string | undefined = parsed.data.officeId;
+    if (!officeId) {
+      const [me] = await deps.db
+        .select({ defaultOfficeId: appUsers.defaultOfficeId })
+        .from(appUsers)
+        .where(eq(appUsers.id, session.appUserId))
+        .limit(1);
+      officeId = me?.defaultOfficeId ?? undefined;
+    }
+    if (!officeId) {
+      const [firmOffice] = await deps.db
+        .select({ id: offices.id })
+        .from(offices)
+        .where(eq(offices.firmId, firmId))
+        .orderBy(desc(offices.isDefault), asc(offices.createdAt))
+        .limit(1);
+      officeId = firmOffice?.id;
+    }
+    if (!officeId) {
+      res.status(400).json({ error: 'no_office_available_for_firm' });
+      return;
+    }
+    // Validate the resolved office belongs to the firm.
+    const [chosenOffice] = await deps.db
+      .select({ id: offices.id })
+      .from(offices)
+      .where(and(eq(offices.id, officeId), eq(offices.firmId, firmId)))
+      .limit(1);
+    if (!chosenOffice) {
+      res.status(400).json({ error: 'office_not_in_firm' });
+      return;
+    }
     const [row] = await deps.db
       .insert(clients)
-      .values({ firmId, ...parsed.data })
+      .values({ firmId, ...parsed.data, officeId })
       .returning({ id: clients.id });
     await emitAudit(deps.db, {
       action: 'CREATE',
@@ -270,6 +368,19 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       if (!parsed.success) {
         res.status(400).json({ error: 'invalid_payload' });
         return;
+      }
+      // 0092 — if officeId is being changed, validate it belongs to
+      // this firm before letting the update through.
+      if (parsed.data.officeId) {
+        const [target] = await deps.db
+          .select({ id: offices.id })
+          .from(offices)
+          .where(and(eq(offices.id, parsed.data.officeId), eq(offices.firmId, firmId)))
+          .limit(1);
+        if (!target) {
+          res.status(400).json({ error: 'office_not_in_firm' });
+          return;
+        }
       }
       await deps.db
         .update(clients)
@@ -378,6 +489,24 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(400).json({ error: 'rows_and_default_partner_required' });
         return;
       }
+      // 0092 — resolve the firm's default office once for every imported
+      // row. Bulk import doesn't expose a per-row office today; partners
+      // can re-file from the client detail page after import.
+      const bulkOfficeIdRaw = typeof req.body?.officeId === 'string' ? req.body.officeId : null;
+      let bulkOfficeId: string | null = bulkOfficeIdRaw;
+      if (!bulkOfficeId) {
+        const [firmOffice] = await deps.db
+          .select({ id: offices.id })
+          .from(offices)
+          .where(eq(offices.firmId, firmId))
+          .orderBy(desc(offices.isDefault), asc(offices.createdAt))
+          .limit(1);
+        bulkOfficeId = firmOffice?.id ?? null;
+      }
+      if (!bulkOfficeId) {
+        res.status(400).json({ error: 'no_office_available_for_firm' });
+        return;
+      }
       const created: string[] = [];
       const skipped: { row: number; reason: string }[] = [];
       for (let i = 0; i < rows.length && i < 1000; i++) {
@@ -395,6 +524,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
               firmId,
               name,
               partnerInChargeId,
+              officeId: bulkOfficeId,
               termsDays: typeof r['termsDays'] === 'number' ? r['termsDays'] : 30,
             })
             .returning({ id: clients.id });
@@ -941,6 +1071,148 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.warn({ err }, 'audit emit failed'));
       res.json({ ok: true, kind: parsed.data.kind });
+    },
+  );
+
+  // ----- bulk email --------------------------------------------------
+  //
+  // POST /api/staff/clients/bulk-email
+  // Body: { clientIds: uuid[], subject, body }
+  //
+  // Resolves each client's primary-or-billing contact email (falls back
+  // to any contact with an email when neither is flagged). Sends one
+  // message per email via the staff mailer. Returns per-client outcomes.
+  //
+  // Permission: client:write (the action is firm-initiated outbound
+  // communication; partners + managers gate this).
+  const BulkEmailSchema = z.object({
+    clientIds: z.array(z.string().uuid()).min(1).max(500),
+    subject: z.string().min(1).max(200),
+    body: z.string().min(1).max(20_000),
+  });
+
+  router.post(
+    '/bulk-email',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = BulkEmailSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail) {
+        res.status(503).json({ error: 'mail_dispatch_not_configured' });
+        return;
+      }
+
+      // Pull every targeted client + their contacts in two queries.
+      const clientRows = await deps.db
+        .select({ id: clients.id, name: clients.name })
+        .from(clients)
+        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, parsed.data.clientIds)));
+      if (clientRows.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      const clientIds = clientRows.map((c) => c.id);
+      const contactRows = await deps.db
+        .select({
+          clientId: clientContacts.clientId,
+          fullName: clientContacts.fullName,
+          email: clientContacts.email,
+          isPrimary: clientContacts.isPrimary,
+          isBilling: clientContacts.isBilling,
+          status: clientContacts.status,
+        })
+        .from(clientContacts)
+        .where(inArray(clientContacts.clientId, clientIds));
+
+      // Per-client: pick primary → billing → first-with-email; refuse
+      // when none of those exist or none has an email.
+      const byClient = new Map<string, typeof contactRows>();
+      for (const c of contactRows) {
+        if (c.status !== 'ACTIVE') continue;
+        const arr = byClient.get(c.clientId) ?? [];
+        arr.push(c);
+        byClient.set(c.clientId, arr);
+      }
+      const results: Array<{
+        clientId: string;
+        clientName: string;
+        sent: boolean;
+        to: string | null;
+        reason: string | null;
+      }> = [];
+      for (const client of clientRows) {
+        const contacts = byClient.get(client.id) ?? [];
+        const pick =
+          contacts.find((c) => c.isPrimary && c.email) ||
+          contacts.find((c) => c.isBilling && c.email) ||
+          contacts.find((c) => c.email);
+        if (!pick || !pick.email) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: false,
+            to: null,
+            reason: 'no_contact_with_email',
+          });
+          continue;
+        }
+        try {
+          await deps.sendStaffMail({
+            to: pick.email,
+            subject: parsed.data.subject,
+            body: parsed.data.body,
+          });
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: true,
+            to: pick.email,
+            reason: null,
+          });
+        } catch (err) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: false,
+            to: pick.email,
+            reason: err instanceof Error ? err.message : 'send_failed',
+          });
+        }
+      }
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        // Anchor on the first targeted client; full id list lives in after.
+        entityId: clientRows[0]!.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'bulk_email',
+          clientIds,
+          subject: parsed.data.subject,
+          sentCount: results.filter((r) => r.sent).length,
+          skippedCount: results.filter((r) => !r.sent).length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'bulk-email audit failed'));
+
+      res.json({
+        results,
+        summary: {
+          requested: clientIds.length,
+          sent: results.filter((r) => r.sent).length,
+          skipped: results.filter((r) => !r.sent).length,
+        },
+      });
     },
   );
 

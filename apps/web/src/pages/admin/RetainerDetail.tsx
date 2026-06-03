@@ -21,7 +21,7 @@ interface DetailResponse {
     tier: 'TIER_1' | 'TIER_2';
     returnType: string;
     taxYear: number;
-    status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
+    status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused' | 'pending_payment';
     hoursPurchased: string;
     hoursConsumed: string;
     priceCents: number;
@@ -41,6 +41,15 @@ interface DetailResponse {
     name: string;
     returnType: string | null;
     taxYear: number | null;
+  } | null;
+  purchaseInvoice: {
+    id: string;
+    invoiceNumber: string;
+    status: string;
+    totalCents: number;
+    paidCents: number;
+    issueDate: string;
+    dueDate: string;
   } | null;
   eligibility: Array<{ id: string; key: string; name: string }>;
   ledger: Array<{
@@ -91,7 +100,7 @@ export function RetainerDetailPage(): JSX.Element {
     return <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>;
   }
 
-  const { retainer, client, engagement, eligibility, ledger, timeline } = data;
+  const { retainer, client, engagement, eligibility, ledger, timeline, purchaseInvoice } = data;
   const hp = Number(retainer.hoursPurchased);
   const hc = Number(retainer.hoursConsumed);
   const remaining = hp - hc;
@@ -141,14 +150,70 @@ export function RetainerDetailPage(): JSX.Element {
                 ? 'warning'
                 : retainer.status === 'paused'
                   ? 'accent'
-                  : retainer.status === 'expired'
-                    ? 'neutral'
-                    : 'danger'
+                  : retainer.status === 'pending_payment'
+                    ? 'warning'
+                    : retainer.status === 'expired'
+                      ? 'neutral'
+                      : 'danger'
           }
         >
-          {retainer.status}
+          {retainer.status === 'pending_payment' ? 'awaiting payment' : retainer.status}
         </Pill>
       </header>
+
+      {purchaseInvoice && (
+        <Card title="Purchase invoice">
+          <div
+            style={{
+              display: 'grid',
+              gap: 12,
+              gridTemplateColumns: '1fr auto',
+              alignItems: 'center',
+            }}
+          >
+            <div style={{ display: 'grid', gap: 4, fontSize: 13 }}>
+              <div>
+                <Link
+                  to={`/invoices/${purchaseInvoice.id}`}
+                  style={{ color: tokens.color.accent, fontWeight: 600 }}
+                >
+                  {purchaseInvoice.invoiceNumber}
+                </Link>{' '}
+                <span style={{ color: tokens.color.textMuted }}>
+                  · ${(purchaseInvoice.totalCents / 100).toFixed(2)} · issued{' '}
+                  {new Date(purchaseInvoice.issueDate).toLocaleDateString()} · due{' '}
+                  {new Date(purchaseInvoice.dueDate).toLocaleDateString()}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                Paid ${(purchaseInvoice.paidCents / 100).toFixed(2)} of $
+                {(purchaseInvoice.totalCents / 100).toFixed(2)}
+                {retainer.status === 'pending_payment' && (
+                  <>
+                    {' · '}
+                    <strong style={{ color: tokens.color.warning }}>
+                      Retainer activates when this invoice is paid.
+                    </strong>
+                  </>
+                )}
+              </div>
+            </div>
+            <Pill
+              tone={
+                purchaseInvoice.status === 'PAID'
+                  ? 'success'
+                  : purchaseInvoice.status === 'PARTIAL'
+                    ? 'accent'
+                    : purchaseInvoice.status === 'VOIDED'
+                      ? 'neutral'
+                      : 'warning'
+              }
+            >
+              {purchaseInvoice.status}
+            </Pill>
+          </div>
+        </Card>
+      )}
 
       <Card title="Hours">
         <div style={{ display: 'grid', gap: 8 }}>

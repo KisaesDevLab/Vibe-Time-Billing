@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import {
   DEFAULT_FONT_SCALE,
+  FONT_SCALE_BASELINE,
   FONT_SCALE_STEPS,
   FONT_SCALE_STORAGE_KEY,
   tokens,
@@ -100,7 +101,10 @@ export function FontSizeControl({ className }: FontSizeControlProps): JSX.Elemen
   const idx = FONT_SCALE_STEPS.indexOf(scale);
   const atMin = idx <= 0;
   const atMax = idx >= FONT_SCALE_STEPS.length - 1;
-  const percent = Math.round(scale * 100);
+  // Percent label is relative to the re-anchored baseline so the
+  // user sees 85 / 100 / 115 / 130 even though the underlying zoom
+  // values are 0.98 / 1.15 / 1.32 / 1.5.
+  const percent = Math.round((scale / FONT_SCALE_BASELINE) * 100);
 
   return (
     <div

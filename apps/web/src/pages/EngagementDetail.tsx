@@ -11,6 +11,8 @@ import {
   dollarsInputToCents,
   percentInputToBps,
 } from '../lib/money';
+import { EngagementMessagesCard } from './messaging/EngagementMessagesCard';
+import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlansCard';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -59,6 +61,10 @@ interface Engagement {
   surchargeLabel: string | null;
   // 0054 — drives staff_rate_snapshot lookup at time-entry create.
   defaultRateCodeId: string | null;
+  // Categorizes the engagement for reports (Profitability /
+  // Realization / AR by Service Line). Service line is derived from
+  // engagement_type.service_line_id.
+  engagementTypeId: string | null;
   partnerId: string | null;
   managerId: string | null;
   startDate: string | null;
@@ -66,6 +72,17 @@ interface Engagement {
   // 0051 — external deadline (separate from end_date).
   dueDate: string | null;
   retainerLockedAt: string | null;
+}
+
+interface EngagementType {
+  id: string;
+  name: string;
+  serviceLineId: string | null;
+}
+
+interface ServiceLine {
+  id: string;
+  name: string;
 }
 
 interface RateCode {
@@ -158,6 +175,7 @@ interface EditDraft {
   surchargeFlatDollars: string;
   surchargeLabel: string;
   defaultRateCodeId: string;
+  engagementTypeId: string;
 }
 
 function emptyDraftFrom(e: Engagement): EditDraft {
@@ -182,6 +200,7 @@ function emptyDraftFrom(e: Engagement): EditDraft {
     surchargeFlatDollars: centsToDollarsInput(e.surchargeAmountCents),
     surchargeLabel: e.surchargeLabel ?? '',
     defaultRateCodeId: e.defaultRateCodeId ?? '',
+    engagementTypeId: e.engagementTypeId ?? '',
   };
 }
 
@@ -194,6 +213,8 @@ export function EngagementDetailPage(): JSX.Element {
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [firmUsers, setFirmUsers] = useState<FirmUser[]>([]);
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
+  const [engagementTypes, setEngagementTypes] = useState<EngagementType[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditDraft | null>(null);
@@ -203,7 +224,7 @@ export function EngagementDetailPage(): JSX.Element {
   async function reload(): Promise<void> {
     if (!id) return;
     try {
-      const [e, s, m, b, u, rc] = await Promise.all([
+      const [e, s, m, b, u, rc, et, sl] = await Promise.all([
         api<{ engagement: Engagement; assignments?: AssignmentRow[] }>(
           `/api/staff/engagements/${id}`,
         ),
@@ -214,6 +235,12 @@ export function EngagementDetailPage(): JSX.Element {
         })),
         api<{ users: FirmUser[] }>(`/api/staff/admin/users`).catch(() => ({ users: [] })),
         api<{ items: RateCode[] }>(`/api/staff/admin/rate-codes`).catch(() => ({ items: [] })),
+        api<{ items: EngagementType[] }>(`/api/staff/taxonomy/engagement-types`).catch(() => ({
+          items: [],
+        })),
+        api<{ items: ServiceLine[] }>(`/api/staff/taxonomy/service-lines`).catch(() => ({
+          items: [],
+        })),
       ]);
       setEngagement(e.engagement);
       setSummary(s.summary);
@@ -222,6 +249,8 @@ export function EngagementDetailPage(): JSX.Element {
       setAssignments(e.assignments ?? []);
       setFirmUsers((u.users ?? []).filter((x) => x.status === 'ACTIVE'));
       setRateCodes((rc.items ?? []).filter((x) => x.active));
+      setEngagementTypes(et.items ?? []);
+      setServiceLines(sl.items ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     }
@@ -296,6 +325,7 @@ export function EngagementDetailPage(): JSX.Element {
       if (draft.endDate) body.endDate = draft.endDate;
       body.dueDate = draft.dueDate || null;
       body.defaultRateCodeId = draft.defaultRateCodeId || null;
+      body.engagementTypeId = draft.engagementTypeId || null;
       // v2 — tax + surcharge.
       body.taxEnabled = draft.taxEnabled;
       if (draft.taxEnabled) {
@@ -528,6 +558,41 @@ export function EngagementDetailPage(): JSX.Element {
                 ))}
               </select>
             </Field>
+            <Field label="Type">
+              <select
+                value={draft.engagementTypeId}
+                onChange={(e) => setDraft({ ...draft, engagementTypeId: e.target.value })}
+                style={editFieldStyle}
+              >
+                <option value="">— none —</option>
+                {engagementTypes.map((t) => {
+                  const sl = serviceLines.find((s) => s.id === t.serviceLineId);
+                  return (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                      {sl ? ` — ${sl.name}` : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </Field>
+            <Field label="Service line">
+              <div
+                style={{
+                  ...editFieldStyle,
+                  background: tokens.color.bg,
+                  color: tokens.color.textMuted,
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                {(() => {
+                  const t = engagementTypes.find((x) => x.id === draft.engagementTypeId);
+                  const sl = serviceLines.find((s) => s.id === t?.serviceLineId);
+                  return sl?.name ?? '— derived from Type —';
+                })()}
+              </div>
+            </Field>
             <Field label="Mixed mode">
               <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
                 <input
@@ -671,6 +736,21 @@ export function EngagementDetailPage(): JSX.Element {
             <dd style={{ margin: 0 }}>
               {engagement.nteCapCents == null ? '—' : formatCents(engagement.nteCapCents)}
             </dd>
+            <dt style={{ color: tokens.color.textMuted }}>Type</dt>
+            <dd style={{ margin: 0 }}>
+              {(() => {
+                const t = engagementTypes.find((x) => x.id === engagement.engagementTypeId);
+                return t?.name ?? '—';
+              })()}
+            </dd>
+            <dt style={{ color: tokens.color.textMuted }}>Service line</dt>
+            <dd style={{ margin: 0 }}>
+              {(() => {
+                const t = engagementTypes.find((x) => x.id === engagement.engagementTypeId);
+                const sl = serviceLines.find((s) => s.id === t?.serviceLineId);
+                return sl?.name ?? '—';
+              })()}
+            </dd>
             <dt style={{ color: tokens.color.textMuted }}>Mixed mode</dt>
             <dd style={{ margin: 0 }}>{engagement.mixedModeEnabled ? 'yes' : 'no'}</dd>
             <dt style={{ color: tokens.color.textMuted }}>Fee passthrough</dt>
@@ -736,6 +816,12 @@ export function EngagementDetailPage(): JSX.Element {
         engagement={engagement}
         onGenerated={() => void reload()}
       />
+
+      {id && <EngagementMessagesCard engagementId={id} />}
+
+      {id && engagement && (
+        <EngagementRecurringPlansCard engagementId={id} engagementName={engagement.name} />
+      )}
 
       {milestones.length > 0 && (
         <Card title={`Milestones (${milestones.length})`}>

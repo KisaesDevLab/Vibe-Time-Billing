@@ -19,11 +19,17 @@
 //   PAID      → (terminal — use credit-memo via AR flow to refund)
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clients, engagements, taxPayments } from '@vibe/db/schema';
+import {
+  clientPortalAccess,
+  clients,
+  engagements,
+  portalIdentity,
+  taxPayments,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -32,13 +38,25 @@ import { logger } from '../logger';
 
 export interface TaxPaymentRoutesDeps extends RbacDeps {
   db: Database | null;
+  // 0091 followup — bulk reminder dispatch. Both are optional so the
+  // router still mounts in environments without mail/SMS configured
+  // (the reminder endpoint will surface a 503 in that case).
+  sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
 }
 
+// 0090 — `paymentUrl` is the resolved URL the portal links to so the
+// client can pay online. The FE looks it up from the tax_payment_type
+// catalog when the user picks the type, then sends it here. Stored
+// denormalized so the link is stable even if the catalog row is later
+// edited or removed.
+const URL_RE = /^https?:\/\/[^\s]+$/i;
 const CreateSchema = z.object({
   clientId: z.string().uuid(),
   engagementId: z.string().uuid().nullable().optional(),
   jurisdiction: z.string().min(1).max(120),
   paymentType: z.string().min(1).max(120),
+  paymentUrl: z.string().regex(URL_RE).max(2048).nullable().optional(),
   taxYear: z.number().int().min(1900).max(2200).optional(),
   amountCents: z.number().int().min(0),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -48,6 +66,7 @@ const CreateSchema = z.object({
 const PatchSchema = z.object({
   jurisdiction: z.string().min(1).max(120).optional(),
   paymentType: z.string().min(1).max(120).optional(),
+  paymentUrl: z.string().regex(URL_RE).max(2048).nullable().optional(),
   taxYear: z.number().int().min(1900).max(2200).nullable().optional(),
   amountCents: z.number().int().min(0).optional(),
   dueDate: z
@@ -96,11 +115,58 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
       if (dueTo && /^\d{4}-\d{2}-\d{2}$/.test(dueTo)) {
         conds.push(lte(taxPayments.dueDate, dueTo));
       }
+      // Per-column substring filters. Match the firm-wide payments page
+      // — one input per visible column, case-insensitive, ILIKE %term%.
+      const clientQ = strParam(req.query['clientQ']);
+      const jurisdictionQ = strParam(req.query['jurisdictionQ']);
+      const typeQ = strParam(req.query['typeQ']);
+      if (clientQ) conds.push(ilike(clients.name, `%${clientQ}%`));
+      if (jurisdictionQ) conds.push(ilike(taxPayments.jurisdiction, `%${jurisdictionQ}%`));
+      if (typeQ) conds.push(ilike(taxPayments.paymentType, `%${typeQ}%`));
+
+      const sortBy =
+        typeof req.query['sortBy'] === 'string' ? (req.query['sortBy'] as string) : 'dueDate';
+      const dir = req.query['dir'] === 'asc' ? 'asc' : 'desc';
+      const orderCol = (() => {
+        switch (sortBy) {
+          case 'client':
+            return clients.name;
+          case 'jurisdiction':
+            return taxPayments.jurisdiction;
+          case 'type':
+            return taxPayments.paymentType;
+          case 'amount':
+            return taxPayments.amountCents;
+          case 'dueDate':
+          default:
+            return taxPayments.dueDate;
+        }
+      })();
+      const orderExpr = dir === 'asc' ? asc(orderCol) : desc(orderCol);
+
       const items = await deps.db
-        .select()
+        .select({
+          id: taxPayments.id,
+          clientId: taxPayments.clientId,
+          clientName: clients.name,
+          engagementId: taxPayments.engagementId,
+          jurisdiction: taxPayments.jurisdiction,
+          paymentType: taxPayments.paymentType,
+          paymentUrl: taxPayments.paymentUrl,
+          taxYear: taxPayments.taxYear,
+          amountCents: taxPayments.amountCents,
+          dueDate: taxPayments.dueDate,
+          status: taxPayments.status,
+          paidDate: taxPayments.paidDate,
+          confirmationNumber: taxPayments.confirmationNumber,
+          notes: taxPayments.notes,
+          createdAt: taxPayments.createdAt,
+          updatedAt: taxPayments.updatedAt,
+        })
         .from(taxPayments)
+        .innerJoin(clients, eq(clients.id, taxPayments.clientId))
         .where(and(...conds))
-        .orderBy(desc(taxPayments.dueDate))
+        .orderBy(orderExpr)
         .limit(500);
       res.json({ items });
     },
@@ -181,6 +247,7 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
           engagementId: parsed.data.engagementId ?? null,
           jurisdiction: parsed.data.jurisdiction,
           paymentType: parsed.data.paymentType,
+          paymentUrl: parsed.data.paymentUrl ?? null,
           taxYear: parsed.data.taxYear ?? null,
           amountCents: parsed.data.amountCents,
           dueDate: parsed.data.dueDate,
@@ -370,5 +437,232 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
     },
   );
 
+  // ----- bulk reminder ---------------------------------------------
+  //
+  // Body: { paymentIds: uuid[], channels: ('email' | 'sms')[] }
+  // For every distinct client referenced by the payments, look up its
+  // ACTIVE portal contacts, then dispatch one message per channel per
+  // contact summarizing all of that client's selected upcoming
+  // payments. Returns per-client outcomes so the UI can render a
+  // success / partial / skipped breakdown.
+  //
+  // Permission: tax_payment:write (sending external comms is a write-
+  // class action). Audit row per client touched.
+
+  const BulkRemindSchema = z.object({
+    paymentIds: z.array(z.string().uuid()).min(1).max(500),
+    channels: z.array(z.enum(['email', 'sms'])).min(1),
+    note: z.string().max(500).optional(),
+  });
+
+  router.post(
+    '/bulk-remind',
+    requirePermission(deps, 'tax_payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = BulkRemindSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const wantsEmail = parsed.data.channels.includes('email');
+      const wantsSms = parsed.data.channels.includes('sms');
+      if (wantsEmail && !deps.sendEmail) {
+        res.status(503).json({ error: 'email_dispatch_not_configured' });
+        return;
+      }
+      if (wantsSms && !deps.sendSms) {
+        res.status(503).json({ error: 'sms_dispatch_not_configured' });
+        return;
+      }
+
+      // Load the selected payments, scoped to the firm.
+      const payments = await deps.db
+        .select({
+          id: taxPayments.id,
+          clientId: taxPayments.clientId,
+          clientName: clients.name,
+          jurisdiction: taxPayments.jurisdiction,
+          paymentType: taxPayments.paymentType,
+          paymentUrl: taxPayments.paymentUrl,
+          amountCents: taxPayments.amountCents,
+          dueDate: taxPayments.dueDate,
+          status: taxPayments.status,
+        })
+        .from(taxPayments)
+        .innerJoin(clients, eq(clients.id, taxPayments.clientId))
+        .where(
+          and(
+            eq(taxPayments.firmId, session.firmId),
+            inArray(taxPayments.id, parsed.data.paymentIds),
+          ),
+        );
+
+      // Group by client.
+      type Group = (typeof payments)[number] & { _grouped?: never };
+      const byClient = new Map<string, { name: string; items: Group[] }>();
+      for (const p of payments) {
+        const g = byClient.get(p.clientId);
+        if (g) g.items.push(p as Group);
+        else byClient.set(p.clientId, { name: p.clientName, items: [p as Group] });
+      }
+
+      // Resolve portal contacts per client (ACTIVE access only).
+      const contactsByClient = new Map<
+        string,
+        Array<{ email: string | null; phone: string | null; name: string }>
+      >();
+      if (byClient.size > 0) {
+        const clientIds = Array.from(byClient.keys());
+        const contactRows = await deps.db
+          .select({
+            clientId: clientPortalAccess.clientId,
+            email: portalIdentity.primaryEmail,
+            phone: portalIdentity.primaryPhone,
+            name: portalIdentity.fullName,
+          })
+          .from(clientPortalAccess)
+          .innerJoin(portalIdentity, eq(portalIdentity.id, clientPortalAccess.portalIdentityId))
+          .where(
+            and(
+              inArray(clientPortalAccess.clientId, clientIds),
+              eq(clientPortalAccess.status, 'ACTIVE'),
+            ),
+          );
+        for (const c of contactRows) {
+          const list = contactsByClient.get(c.clientId) ?? [];
+          list.push({ email: c.email, phone: c.phone, name: c.name });
+          contactsByClient.set(c.clientId, list);
+        }
+      }
+
+      const fmtCents = (n: number): string => `$${(n / 100).toFixed(2)}`;
+      const fmtDate = (d: string | Date): string => {
+        const s = typeof d === 'string' ? d : new Date(d).toISOString().slice(0, 10);
+        return s;
+      };
+      const noteBlock = parsed.data.note ? `\n\nFrom your CPA:\n${parsed.data.note}\n` : '';
+
+      const results: Array<{
+        clientId: string;
+        clientName: string;
+        sentEmail: number;
+        sentSms: number;
+        skipped: string[];
+        errors: string[];
+      }> = [];
+
+      for (const [clientId, group] of byClient) {
+        const contacts = contactsByClient.get(clientId) ?? [];
+        const skipped: string[] = [];
+        const errors: string[] = [];
+        let sentEmail = 0;
+        let sentSms = 0;
+
+        if (contacts.length === 0) {
+          skipped.push('no_active_portal_contacts');
+        }
+        // Compose the message body once per client (same for every contact).
+        const lines = group.items
+          .map(
+            (p) =>
+              `• ${fmtDate(p.dueDate)} — ${p.jurisdiction} ${p.paymentType}: ${fmtCents(
+                p.amountCents,
+              )}${p.paymentUrl ? ` (${p.paymentUrl})` : ''}`,
+          )
+          .join('\n');
+        const totalCents = group.items.reduce((acc, p) => acc + p.amountCents, 0);
+        const subject = `Upcoming tax payment reminder — ${group.name}`;
+        const body = `Hi from your CPA — this is a quick reminder of the following scheduled tax payments:\n\n${lines}\n\nTotal: ${fmtCents(
+          totalCents,
+        )}${noteBlock}\nIf you have already submitted any of these, please ignore this notice.`;
+        const smsBody = `Tax payment reminder: ${group.items.length} due (${fmtCents(
+          totalCents,
+        )}). See email or your portal for details.`;
+
+        for (const c of contacts) {
+          if (wantsEmail) {
+            if (!c.email) {
+              skipped.push(`${c.name}: no_email`);
+            } else {
+              try {
+                await deps.sendEmail!({ to: c.email, subject, body });
+                sentEmail += 1;
+              } catch (err) {
+                errors.push(`${c.name} email: ${err instanceof Error ? err.message : 'failed'}`);
+              }
+            }
+          }
+          if (wantsSms) {
+            if (!c.phone) {
+              skipped.push(`${c.name}: no_phone`);
+            } else {
+              try {
+                await deps.sendSms!({ to: c.phone, body: smsBody });
+                sentSms += 1;
+              } catch (err) {
+                errors.push(`${c.name} sms: ${err instanceof Error ? err.message : 'failed'}`);
+              }
+            }
+          }
+        }
+
+        results.push({
+          clientId,
+          clientName: group.name,
+          sentEmail,
+          sentSms,
+          skipped,
+          errors,
+        });
+
+        // Per-client audit so the timeline picks up the reminder event.
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'tax_payment',
+          // Use first payment id as the anchor entity — full id list lives in after.
+          entityId: group.items[0]!.id,
+          actorAppUserId: session.appUserId,
+          after: {
+            kind: 'bulk_remind',
+            clientId,
+            paymentIds: group.items.map((p) => p.id),
+            channels: parsed.data.channels,
+            sentEmail,
+            sentSms,
+            skipped,
+            errors,
+          },
+          ip: req.ip ?? null,
+          userAgent: req.get('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'bulk-remind audit failed'));
+      }
+
+      const summary = results.reduce(
+        (acc, r) => ({
+          clients: acc.clients + 1,
+          emailsSent: acc.emailsSent + r.sentEmail,
+          smsSent: acc.smsSent + r.sentSms,
+          clientsWithoutContact:
+            acc.clientsWithoutContact +
+            (r.skipped.length > 0 && r.sentEmail === 0 && r.sentSms === 0 ? 1 : 0),
+        }),
+        { clients: 0, emailsSent: 0, smsSent: 0, clientsWithoutContact: 0 },
+      );
+      res.json({ results, summary });
+    },
+  );
+
   return router;
 }
+
+function strParam(v: unknown): string | null {
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
+// Surface sql for downstream maintenance; unused-import lint guard.
+void sql;

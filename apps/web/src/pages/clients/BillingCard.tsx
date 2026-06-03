@@ -3,11 +3,23 @@
 // Client billing tab. Lists invoices + open credits for this client.
 // 0056 added the Credits subsection.
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+
+type YearFilter = 'current' | 'prior' | 'all';
+
+const CURRENT_YEAR = new Date().getFullYear();
+
+function inYearRange(iso: string | null | undefined, filter: YearFilter): boolean {
+  if (filter === 'all') return true;
+  if (!iso) return false;
+  const y = Number(iso.slice(0, 4));
+  if (!Number.isFinite(y)) return false;
+  return filter === 'current' ? y === CURRENT_YEAR : y === CURRENT_YEAR - 1;
+}
 
 interface Invoice {
   id: string;
@@ -57,7 +69,61 @@ export function BillingCard({ clientId }: Props): JSX.Element {
   const [items, setItems] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditMemo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [sendingId, setSendingId] = useState<string | null>(null);
   const [showVoidedCredits, setShowVoidedCredits] = useState(false);
+  // Defaults to current year so first paint matches the bias the user
+  // likely cares about — "what am I owed this year". `all` shows
+  // lifetime totals, useful for client takeovers / period audits.
+  const [yearFilter, setYearFilter] = useState<YearFilter>('current');
+
+  async function sendEmail(inv: Invoice): Promise<void> {
+    setSendingId(inv.id);
+    setError(null);
+    setNotice(null);
+    // /send for DRAFT (transitions status), /resend for everything else.
+    const path = inv.status === 'DRAFT' ? 'send' : 'resend';
+    try {
+      const r = await api<{ ok: true; emailedTo: string | null }>(
+        `/api/staff/invoices/${inv.id}/${path}`,
+        { method: 'POST', body: '{}' },
+      );
+      setNotice(
+        r.emailedTo
+          ? `Invoice ${inv.invoiceNumber} emailed to ${r.emailedTo}.`
+          : `Invoice ${inv.invoiceNumber} marked sent (no billing email on file).`,
+      );
+      await loadInvoices();
+    } catch (e) {
+      setError(`Email failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    } finally {
+      setSendingId(null);
+    }
+  }
+
+  async function sendSms(inv: Invoice): Promise<void> {
+    setSendingId(inv.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await api<{ ok: true; textedTo: string | null }>(
+        `/api/staff/invoices/${inv.id}/send-sms`,
+        { method: 'POST', body: '{}' },
+      );
+      setNotice(`Invoice ${inv.invoiceNumber} texted to ${r.textedTo ?? 'billing contact'}.`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown';
+      setError(
+        msg === 'no_billing_phone'
+          ? 'No phone on file for the client’s billing or primary contact.'
+          : msg === 'sms_provider_not_configured'
+            ? 'SMS provider not configured. Set one up in Admin → Messaging.'
+            : `SMS failed: ${msg}`,
+      );
+    } finally {
+      setSendingId(null);
+    }
+  }
 
   // New-credit form state
   const [adding, setAdding] = useState(false);
@@ -201,7 +267,19 @@ export function BillingCard({ clientId }: Props): JSX.Element {
     }
   }
 
-  const totals = items.reduce(
+  // Filter by issue date so the summary numbers and the visible
+  // invoices stay in lockstep — the user's mental model is "what I
+  // see in the table is what's in the totals".
+  const filteredItems = useMemo(
+    () => items.filter((i) => inYearRange(i.issueDate, yearFilter)),
+    [items, yearFilter],
+  );
+  const filteredCredits = useMemo(
+    () => credits.filter((c) => inYearRange(c.issuedDate, yearFilter)),
+    [credits, yearFilter],
+  );
+
+  const totals = filteredItems.reduce(
     (acc, i) => ({
       invoiced: acc.invoiced + i.totalCents,
       paid: acc.paid + i.paidCents,
@@ -209,27 +287,33 @@ export function BillingCard({ clientId }: Props): JSX.Element {
     }),
     { invoiced: 0, paid: 0, balance: 0 },
   );
-  const openCreditTotal = credits
+  const openCreditTotal = filteredCredits
     .filter((c) => c.status !== 'VOIDED' && c.status !== 'FULLY_APPLIED')
     .reduce((s, c) => s + c.remainingAmountCents, 0);
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
-      <Card title="Billing summary">
+      <Card
+        title="Billing summary"
+        action={<YearFilterToggle value={yearFilter} onChange={setYearFilter} />}
+      >
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
             {error}
           </p>
         )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-          <Stat label="Invoiced" value={formatCents(totals.invoiced)} />
+          <Stat label={`Invoiced ${yearLabel(yearFilter)}`} value={formatCents(totals.invoiced)} />
           <Stat label="Paid" value={formatCents(totals.paid)} />
           <Stat label="Outstanding" value={formatCents(totals.balance)} />
           <Stat label="Open credits" value={formatCents(openCreditTotal)} />
         </div>
       </Card>
 
-      <Card title={`Invoices (${items.length})`}>
+      <Card title={`Invoices (${filteredItems.length})`}>
+        {notice && (
+          <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }}>{notice}</p>
+        )}
         <Table<Invoice>
           columns={[
             {
@@ -276,15 +360,47 @@ export function BillingCard({ clientId }: Props): JSX.Element {
                 </Pill>
               ),
             },
+            {
+              key: 'notify',
+              header: '',
+              render: (i) => {
+                if (i.status === 'VOIDED') return null;
+                const busy = sendingId === i.id;
+                return (
+                  <div style={{ display: 'inline-flex', gap: 4 }}>
+                    <IconButton
+                      label={
+                        i.status === 'DRAFT'
+                          ? 'Email invoice to the billing contact (marks SENT)'
+                          : 'Resend invoice email to the billing contact'
+                      }
+                      glyph="✉"
+                      disabled={busy}
+                      onClick={() => void sendEmail(i)}
+                    />
+                    <IconButton
+                      label="Text the billing contact a link to this invoice"
+                      glyph="☏"
+                      disabled={busy}
+                      onClick={() => void sendSms(i)}
+                    />
+                  </div>
+                );
+              },
+            },
           ]}
-          rows={items}
+          rows={filteredItems}
           rowKey={(i) => i.id}
-          empty="No invoices issued yet for this client."
+          empty={
+            yearFilter === 'all'
+              ? 'No invoices issued yet for this client.'
+              : `No invoices in ${yearFilter === 'current' ? CURRENT_YEAR : CURRENT_YEAR - 1}. Switch to All time to see lifetime history.`
+          }
         />
       </Card>
 
       <Card
-        title={`Credits (${credits.length})`}
+        title={`Credits (${filteredCredits.length})`}
         action={
           <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
             <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
@@ -425,9 +541,13 @@ export function BillingCard({ clientId }: Props): JSX.Element {
               ),
             },
           ]}
-          rows={credits}
+          rows={filteredCredits}
           rowKey={(c) => c.id}
-          empty="No credits on file."
+          empty={
+            yearFilter === 'all'
+              ? 'No credits on file.'
+              : `No credits in ${yearFilter === 'current' ? CURRENT_YEAR : CURRENT_YEAR - 1}.`
+          }
         />
         {expandedMemoId && (
           <div
@@ -500,11 +620,106 @@ export function BillingCard({ clientId }: Props): JSX.Element {
   );
 }
 
+interface IconButtonProps {
+  label: string;
+  glyph: string;
+  disabled?: boolean;
+  onClick: () => void;
+}
+
+function IconButton({ label, glyph, disabled, onClick }: IconButtonProps): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      style={{
+        width: 28,
+        height: 28,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'transparent',
+        border: `1px solid ${tokens.color.border}`,
+        borderRadius: tokens.radius.sm,
+        color: disabled ? tokens.color.textMuted : tokens.color.text,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        fontSize: 14,
+        lineHeight: 1,
+        padding: 0,
+      }}
+    >
+      {glyph}
+    </button>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }): JSX.Element {
   return (
     <div>
       <div style={{ fontSize: 11, color: tokens.color.textMuted }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 600 }}>{value}</div>
+    </div>
+  );
+}
+
+function yearLabel(filter: YearFilter): string {
+  if (filter === 'all') return '(all time)';
+  if (filter === 'current') return `(${CURRENT_YEAR})`;
+  return `(${CURRENT_YEAR - 1})`;
+}
+
+interface YearFilterToggleProps {
+  value: YearFilter;
+  onChange: (next: YearFilter) => void;
+}
+
+function YearFilterToggle({ value, onChange }: YearFilterToggleProps): JSX.Element {
+  const options: Array<{ id: YearFilter; label: string }> = [
+    { id: 'current', label: `${CURRENT_YEAR}` },
+    { id: 'prior', label: `${CURRENT_YEAR - 1}` },
+    { id: 'all', label: 'All time' },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Filter by year"
+      style={{
+        display: 'inline-flex',
+        border: `1px solid ${tokens.color.border}`,
+        borderRadius: tokens.radius.sm,
+        overflow: 'hidden',
+        background: tokens.color.surface,
+      }}
+    >
+      {options.map((opt, i) => {
+        const active = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => onChange(opt.id)}
+            aria-pressed={active}
+            style={{
+              padding: '6px 12px',
+              border: 'none',
+              borderLeft: i === 0 ? 'none' : `1px solid ${tokens.color.border}`,
+              background: active ? tokens.color.accentMuted : 'transparent',
+              color: active ? tokens.color.accent : tokens.color.text,
+              fontSize: 12,
+              fontFamily: tokens.font.body,
+              fontWeight: active ? 600 : 500,
+              cursor: 'pointer',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

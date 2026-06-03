@@ -15,6 +15,7 @@ import { ApiTokensPage } from './ApiTokens';
 import { BackupPage } from './Backup';
 import { CloudflareTunnelPage } from './CloudflareTunnel';
 import { CompliancePage } from './Compliance';
+import { DataPage } from './Data';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
 import { EngagementStatusesPage } from './EngagementStatuses';
@@ -33,18 +34,18 @@ import { RateCodesPage } from './RateCodes';
 import { RatesPage } from './Rates';
 import { RecurringPlansPage } from './RecurringPlans';
 import { AppointmentsPage } from './Appointments';
-import { RetainerDashboardPage } from './RetainerDashboard';
-import { RetainerDetailPage } from './RetainerDetail';
 import { RetainerTierSettingsPage } from './RetainerTierSettings';
-import { TaxPaymentsPage } from './TaxPayments';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
 import { ServicesCatalogPage } from './ServicesCatalog';
 import { PackagesPage } from './Packages';
+import { PaymentMethodsPage } from './PaymentMethods';
+import { TaxPaymentCatalogPage } from './TaxPaymentCatalog';
 import { TermsTemplatesPage } from './TermsTemplates';
 import { StripeConnectPage } from './StripeConnect';
 import { StorageOnboardingPage } from './StorageOnboarding';
+import { StorageSettingsPage } from './StorageSettings';
 import { StorageConflictsListPage } from './StorageConflictsList';
 import { StorageConflictResolutionPage } from './StorageConflictResolution';
 import { TaxonomyPage } from './Taxonomy';
@@ -101,6 +102,8 @@ const GROUPS: Group[] = [
       },
       { key: 'services', label: 'Services catalog', href: '/admin/services' },
       { key: 'packages', label: 'Packages', href: '/admin/packages' },
+      { key: 'payment-methods', label: 'Payment methods', href: '/admin/payment-methods' },
+      { key: 'tax-payments', label: 'Tax payments', href: '/admin/tax-payments' },
       { key: 'terms', label: 'Terms templates', href: '/admin/terms-templates' },
       { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
       { key: 'letters', label: 'Engagement letters', href: '/admin/letters' },
@@ -117,8 +120,6 @@ const GROUPS: Group[] = [
       { key: 'banks', label: 'Hour banks', href: '/admin/hour-banks' },
       { key: 'banks-tx', label: 'Hour-bank tx', href: '/admin/hour-bank-tx' },
       { key: 'retainer-tiers', label: 'Retainer tiers', href: '/admin/retainer-tiers' },
-      { key: 'retainers', label: 'Retainers', href: '/admin/retainers' },
-      { key: 'tax-payments', label: 'Tax payments', href: '/admin/tax-payments' },
       { key: 'appointments', label: 'Appointments', href: '/admin/appointments' },
       { key: 'rules', label: 'Approval rules', href: '/admin/approval-rules' },
       { key: 'rfr', label: 'Required fields', href: '/admin/required-fields' },
@@ -149,8 +150,10 @@ const GROUPS: Group[] = [
     label: 'Operations',
     tabs: [
       { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
+      { key: 'data', label: 'Data', href: '/admin/data' },
       { key: 'backup', label: 'Backup', href: '/admin/backup' },
       { key: 'compliance', label: 'Compliance', href: '/admin/compliance' },
+      { key: 'storage-settings', label: 'Storage settings', href: '/admin/storage/settings' },
       { key: 'storage', label: 'Storage onboarding', href: '/admin/storage' },
       { key: 'storage-conflicts', label: 'Storage conflicts', href: '/admin/storage/conflicts' },
       { key: 'cloudflare-tunnel', label: 'Cloudflare Tunnel', href: '/admin/cloudflare-tunnel' },
@@ -268,15 +271,14 @@ export function AdminLayout(): JSX.Element {
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="recurring-engagements" element={<EngagementRecurrencesPage />} />
+        <Route path="payment-methods" element={<PaymentMethodsPage />} />
+        <Route path="tax-payments" element={<TaxPaymentCatalogPage />} />
         <Route path="rate-codes" element={<RateCodesPage />} />
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />
         <Route path="hour-bank-tx" element={<HourBankTxPage />} />
         <Route path="retainer-tiers" element={<RetainerTierSettingsPage />} />
-        <Route path="retainers" element={<RetainerDashboardPage />} />
-        <Route path="retainers/:id" element={<RetainerDetailPage />} />
-        <Route path="tax-payments" element={<TaxPaymentsPage />} />
         <Route path="appointments" element={<AppointmentsPage />} />
         <Route path="services" element={<ServicesCatalogPage />} />
         <Route path="packages" element={<PackagesPage />} />
@@ -296,9 +298,11 @@ export function AdminLayout(): JSX.Element {
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="notification-templates" element={<NotificationTemplatesPage />} />
         <Route path="jobs" element={<JobsPage />} />
+        <Route path="data" element={<DataPage />} />
         <Route path="backup" element={<BackupPage />} />
         <Route path="compliance" element={<CompliancePage />} />
         <Route path="api-tokens" element={<ApiTokensPage />} />
+        <Route path="storage/settings" element={<StorageSettingsPage />} />
         <Route path="storage" element={<StorageOnboardingPage />} />
         <Route path="storage/conflicts" element={<StorageConflictsListPage />} />
         <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />

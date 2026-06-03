@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { RecurringPlanComposer } from '../billing/RecurringPlanComposer';
 
 interface Plan {
   id: string;
@@ -27,6 +28,7 @@ export function RecurringPlansPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [prorationFor, setProrationFor] = useState<Plan | null>(null);
+  const [showCompose, setShowCompose] = useState(false);
 
   async function load(): Promise<void> {
     try {
@@ -78,7 +80,28 @@ export function RecurringPlansPage(): JSX.Element {
           </div>
         </Card>
       )}
-      <Card title="Recurring billing plans">
+      {showCompose && (
+        <RecurringPlanComposer
+          onCreated={() => {
+            setShowCompose(false);
+            void load();
+          }}
+          onCancel={() => setShowCompose(false)}
+        />
+      )}
+
+      <Card
+        title="Recurring billing plans"
+        action={
+          <Button
+            size="sm"
+            variant={showCompose ? 'ghost' : 'secondary'}
+            onClick={() => setShowCompose((v) => !v)}
+          >
+            {showCompose ? 'Cancel' : '+ New plan'}
+          </Button>
+        }
+      >
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>

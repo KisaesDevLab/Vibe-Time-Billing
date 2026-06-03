@@ -15,7 +15,9 @@ import { AppointmentsPage } from './pages/Appointments';
 import { EngagementsPage } from './pages/Engagements';
 import { FilePreviewPage } from './pages/FilePreview';
 import { FilesPage } from './pages/Files';
+import { AcceptInvitationPage } from './pages/AcceptInvitation';
 import { HomePage } from './pages/Home';
+import { ImpersonatePage } from './pages/Impersonate';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LettersPage } from './pages/Letters';
 import { LoginPage } from './pages/Login';
@@ -75,6 +77,8 @@ function PortalRoutes(): JSX.Element {
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
         <Route path="/auth/verify" element={<LoginPage />} />
+        <Route path="/auth/impersonate" element={<ImpersonatePage />} />
+        <Route path="/auth/accept" element={<AcceptInvitationPage />} />
         <Route path="/p/:token" element={<ProposalPage />} />
         <Route
           path="*"
@@ -279,6 +283,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       ]}
       trailing={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {me?.isImpersonation && <Pill tone="warning">view-as · read-only</Pill>}
           {me && (
             <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
               Client: <code>{me.activeClientId.slice(0, 8)}…</code>
@@ -287,13 +292,39 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           <FontSizeControl />
           <ThemeToggle />
           <Button variant="secondary" size="sm" onClick={() => void logout()}>
-            Sign out
+            {me?.isImpersonation ? 'End session' : 'Sign out'}
           </Button>
         </div>
       }
     >
+      {me?.isImpersonation && <ImpersonationBanner email={me.impersonatedByEmail} />}
       {children}
     </AppShell>
+  );
+}
+
+function ImpersonationBanner({ email }: { email: string | null | undefined }): JSX.Element {
+  return (
+    <div
+      role="status"
+      style={{
+        marginBottom: 12,
+        padding: '10px 14px',
+        background: 'rgba(245, 158, 11, 0.12)',
+        border: `1px solid ${tokens.color.warning}`,
+        borderRadius: tokens.radius.sm,
+        color: tokens.color.text,
+        fontSize: 13,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+      }}
+    >
+      <span style={{ fontWeight: 600 }}>Viewing as client</span>
+      <span style={{ color: tokens.color.textMuted }}>
+        Staff session{email ? ` (${email})` : ''} · read-only · expires within an hour.
+      </span>
+    </div>
   );
 }
 

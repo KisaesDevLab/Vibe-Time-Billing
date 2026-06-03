@@ -1,3 +1,4 @@
+/* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
 // R5 — Partner retainer dashboard. KPI strip + retainer table.
@@ -35,7 +36,7 @@ interface RetainerRow {
   hoursPurchased: string;
   hoursConsumed: string;
   expiryDate: string;
-  status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
+  status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused' | 'pending_payment';
   priceCents: number;
 }
 
@@ -68,6 +69,11 @@ export function RetainerDashboardPage(): JSX.Element {
   const [createHours, setCreateHours] = useState<number | ''>('');
   const [createPriceCents, setCreatePriceCents] = useState<number | ''>('');
   const [createNotes, setCreateNotes] = useState('');
+  // 0091 — billClient=true triggers the firm-initiated billing flow.
+  // Default true so the dashboard's "Create" path matches the common
+  // intent ("I want to bill the client a retainer"). Flip to record-only
+  // when payment was already collected.
+  const [billClient, setBillClient] = useState(true);
   const [tierConfigs, setTierConfigs] = useState<TierConfigOption[]>([]);
   const [engagements, setEngagements] = useState<EngagementOption[]>([]);
 
@@ -172,6 +178,7 @@ export function RetainerDashboardPage(): JSX.Element {
       if (createHours !== '') body['hoursPurchased'] = Number(createHours);
       if (createPriceCents !== '') body['priceCents'] = Number(createPriceCents);
       if (createNotes) body['notes'] = createNotes;
+      body['billClient'] = billClient;
       await api('/api/staff/retainers/manual', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -182,6 +189,7 @@ export function RetainerDashboardPage(): JSX.Element {
       setCreateHours('');
       setCreatePriceCents('');
       setCreateNotes('');
+      setBillClient(true);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'create failed');
@@ -269,12 +277,14 @@ export function RetainerDashboardPage(): JSX.Element {
                           ? 'warning'
                           : r.status === 'paused'
                             ? 'accent'
-                            : r.status === 'expired'
-                              ? 'neutral'
-                              : 'danger'
+                            : r.status === 'pending_payment'
+                              ? 'warning'
+                              : r.status === 'expired'
+                                ? 'neutral'
+                                : 'danger'
                     }
                   >
-                    {r.status}
+                    {r.status === 'pending_payment' ? 'awaiting payment' : r.status}
                   </Pill>
                 ),
               },
@@ -324,12 +334,66 @@ export function RetainerDashboardPage(): JSX.Element {
       </Card>
 
       {showCreate && (
-        <Card title="Create retainer (manual)">
+        <Card title="Create retainer">
           <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
-            Bypasses the portal-purchase flow — useful when the firm is collecting payment
-            out-of-band. Eligibility is copied from the tier config snapshot.
+            Eligibility is copied from the tier config snapshot. Pick how you want to handle
+            payment:
           </p>
           <div style={{ display: 'grid', gap: 12, maxWidth: 540 }}>
+            <fieldset
+              style={{
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+                padding: 12,
+                display: 'grid',
+                gap: 8,
+              }}
+            >
+              <legend
+                style={{
+                  padding: '0 6px',
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.4,
+                }}
+              >
+                Payment
+              </legend>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+                <input
+                  type="radio"
+                  checked={billClient}
+                  onChange={() => setBillClient(true)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  <strong>Bill the client</strong>
+                  <br />
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    Creates a sent AR invoice for the retainer purchase. Retainer is held in
+                    <em> pending_payment </em>and won&apos;t consume hours. Activates automatically
+                    when the invoice is paid.
+                  </span>
+                </span>
+              </label>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+                <input
+                  type="radio"
+                  checked={!billClient}
+                  onChange={() => setBillClient(false)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  <strong>Already paid (record only)</strong>
+                  <br />
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    Use when payment was collected out-of-band (cash, check, separate invoice) or
+                    you&apos;re comping hours. Retainer is active immediately.
+                  </span>
+                </span>
+              </label>
+            </fieldset>
             <label style={{ fontSize: 13, display: 'grid', gap: 4 }}>
               Engagement
               <select

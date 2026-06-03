@@ -313,6 +313,146 @@ export async function activateRetainerFromPaidInvoice(
   }
 }
 
+// =====================================================================
+// 0091 — activateRetainerFromDirectPaidInvoice
+//
+// Firm-initiated billing path. The invoice carries retainer_id (not
+// retainer_offer_id); the retainer was inserted in 'pending_payment'
+// by /retainers/manual with billClient=true. When the invoice tips to
+// fully paid, this handler flips the retainer to 'active', writes the
+// ACTIVATION ledger row, and schedules expiry warnings.
+//
+// Idempotent against payment retries: if the retainer is already
+// 'active' (or any non-pending_payment state), short-circuits.
+// =====================================================================
+
+export async function activateRetainerFromDirectPaidInvoice(
+  db: Database,
+  invoiceId: string,
+  args: {
+    actorAppUserId?: string | null;
+    now?: Date;
+    sendEmail?: RetainerMailDispatch;
+  } = {},
+): Promise<ActivationResult> {
+  const now = args.now ?? new Date();
+  let activatedRetainerId: string | null = null;
+  let activatedExpiryDate: string | null = null;
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [inv] = await tx
+        .select({
+          id: invoices.id,
+          retainerId: invoices.retainerId,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, invoiceId))
+        .limit(1);
+      if (!inv) {
+        return { kind: 'error', reason: 'invoice_not_found' } as const;
+      }
+      if (!inv.retainerId) {
+        return { kind: 'error', reason: 'invoice_not_a_retainer_purchase' } as const;
+      }
+
+      // Lock the retainer row. Webhook retries serialize here.
+      const retRows = await tx.execute(
+        drz`SELECT * FROM ${retainers}
+            WHERE id = ${inv.retainerId}
+            FOR UPDATE`,
+      );
+      const retainer = unwrapRow<{
+        id: string;
+        status: string;
+        hours_purchased: string | number;
+        expiry_date: string | Date;
+      }>(retRows);
+      if (!retainer) {
+        return { kind: 'error', reason: 'retainer_not_found' } as const;
+      }
+
+      // Idempotency — anything other than pending_payment means we
+      // already activated (or the row was manually advanced out-of-band).
+      if (retainer.status !== 'pending_payment') {
+        logger.info(
+          { invoiceId, retainerId: retainer.id, status: retainer.status },
+          'retainer direct activation: idempotent',
+        );
+        return { kind: 'idempotent', retainerId: retainer.id } as const;
+      }
+
+      await tx
+        .update(retainers)
+        .set({ status: 'active', updatedAt: now })
+        .where(eq(retainers.id, retainer.id));
+
+      await tx.insert(retainerLedger).values({
+        retainerId: retainer.id,
+        kind: 'ACTIVATION',
+        hoursDelta: '0',
+        hoursBalanceAfter: String(retainer.hours_purchased),
+        createdById: args.actorAppUserId ?? null,
+      });
+
+      activatedRetainerId = retainer.id;
+      activatedExpiryDate =
+        typeof retainer.expiry_date === 'string'
+          ? retainer.expiry_date
+          : new Date(retainer.expiry_date as unknown as Date).toISOString().slice(0, 10);
+      return { kind: 'activated', retainerId: retainer.id } as const;
+    });
+
+    if (activatedRetainerId && activatedExpiryDate) {
+      try {
+        const { scheduleRetainerWarnings } = await import('./scheduler');
+        await scheduleRetainerWarnings({
+          retainerId: activatedRetainerId,
+          expiryDate: activatedExpiryDate,
+          now,
+        });
+      } catch (err) {
+        logger.error(
+          { err, retainerId: activatedRetainerId },
+          'retainer direct activation post-commit scheduling failed',
+        );
+      }
+      if (args.sendEmail) {
+        try {
+          const { notifyRetainerActivated } = await import('./notifications');
+          await notifyRetainerActivated(db, activatedRetainerId, args.sendEmail);
+        } catch (err) {
+          logger.error(
+            { err, retainerId: activatedRetainerId },
+            'retainer direct activation notification failed',
+          );
+        }
+      }
+      await emitAudit(db, {
+        action: 'CREATE',
+        entityType: 'retainer',
+        entityId: activatedRetainerId,
+        actorAppUserId: args.actorAppUserId ?? null,
+        after: {
+          status: 'active',
+          activatedFromInvoiceId: invoiceId,
+          expiryDate: activatedExpiryDate,
+          kind: 'direct',
+        },
+      }).catch((err: unknown) =>
+        logger.warn(
+          { err, retainerId: activatedRetainerId },
+          'direct activation audit emit failed',
+        ),
+      );
+    }
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ err, invoiceId }, 'retainer direct activation failed');
+    return { kind: 'error', reason: msg };
+  }
+}
+
 function unwrapRow<T>(raw: unknown): T | null {
   if (!raw) return null;
   if (Array.isArray(raw)) {

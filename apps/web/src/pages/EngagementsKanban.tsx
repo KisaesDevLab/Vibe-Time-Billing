@@ -112,8 +112,8 @@ export function EngagementsKanban({
   if (columns.length === 0) {
     return (
       <p style={{ color: tokens.color.textMuted, fontSize: 13, padding: 12 }}>
-        No statuses are visible on the kanban. Toggle <code>kanbanVisible</code> in admin →
-        Engagement statuses.
+        No status columns visible. Click the <strong>⚙ Columns</strong> button above to choose which
+        statuses to show, or open <em>Admin → Engagement Statuses</em> to enable a column firm-wide.
       </p>
     );
   }

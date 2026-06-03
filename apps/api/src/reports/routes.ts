@@ -1637,5 +1637,217 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
     },
   );
 
+  // -------------------------------------------------------------------
+  // Payments Received report.
+  //
+  // GET /api/staff/reports/payments-received
+  //   ?from=YYYY-MM-DD       (default: first of current month)
+  //   ?to=YYYY-MM-DD         (default: today)
+  //   ?officeId=uuid         (optional — filter by the client's office)
+  //   ?paymentMethod=string  (optional — case-insensitive match)
+  //   ?sortBy=...&dir=...    (date | client | office | method | amount)
+  //
+  // Returns:
+  //   - rows: per-receipt detail (date, client, office, method, ref, amount)
+  //   - summary: { count, totalCents }
+  //   - byMethod / byOffice: aggregated splits
+  //   - methodOptions: distinct method values seen on the firm (for FE filter)
+  //
+  // Excludes status='PENDING' (those are unconfirmed intents). Includes
+  // POSTED + every other terminal status so credit-apply receipts show.
+  // Permission: payment:read.
+  // -------------------------------------------------------------------
+  router.get(
+    '/payments-received',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({
+          from: '',
+          to: '',
+          rows: [],
+          summary: { count: 0, totalCents: 0 },
+          byMethod: [],
+          byOffice: [],
+          methodOptions: [],
+        });
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const monthStart = `${today.slice(0, 7)}-01`;
+      const from =
+        typeof req.query['from'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query['from'])
+          ? req.query['from']
+          : monthStart;
+      const to =
+        typeof req.query['to'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query['to'])
+          ? req.query['to']
+          : today;
+      const officeId =
+        typeof req.query['officeId'] === 'string' && req.query['officeId'].length > 0
+          ? req.query['officeId']
+          : null;
+      const paymentMethod =
+        typeof req.query['paymentMethod'] === 'string' &&
+        req.query['paymentMethod'].trim().length > 0
+          ? req.query['paymentMethod'].trim()
+          : null;
+      const sortBy = typeof req.query['sortBy'] === 'string' ? req.query['sortBy'] : 'date';
+      const dir = req.query['dir'] === 'asc' ? 'asc' : 'desc';
+
+      // Source-of-truth is the `payment` table. payment_receipt is a
+      // convenience aggregation (subject + method + reference) created
+      // when staff hits Payments → Receive; legacy / seed / webhook-
+      // direct payments have no receipt. LEFT JOIN receipt so we still
+      // catch the orphans. Date comes from receipt.payment_date when
+      // present, otherwise payment.received_at.
+      const reportRows = await deps.db.execute(drz`
+        SELECT
+          p.id::text                                                       AS id,
+          COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date) AS payment_date,
+          c.id::text                                                       AS client_id,
+          c.name                                                           AS client_name,
+          c.office_id::text                                                AS office_id,
+          o.name                                                           AS office_name,
+          COALESCE(pr.payment_method, p.provider)                          AS payment_method,
+          p.provider                                                       AS provider,
+          COALESCE(pr.mode, 'RECORD')                                      AS mode,
+          pr.reference                                                     AS reference,
+          p.amount_cents                                                   AS total_cents,
+          p.status::text                                                   AS status
+        FROM vibetb.payment p
+        INNER JOIN vibetb.invoice  i ON i.id = p.invoice_id
+        INNER JOIN vibetb.client   c ON c.id = i.client_id
+        LEFT  JOIN vibetb.office   o ON o.id = c.office_id
+        LEFT  JOIN vibetb.payment_receipt pr ON pr.id = p.receipt_id
+        WHERE c.firm_id = ${session.firmId}
+          AND p.status = 'SUCCEEDED'
+          AND COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date)
+              BETWEEN ${from} AND ${to}
+          ${officeId ? drz`AND c.office_id = ${officeId}` : drz``}
+          ${paymentMethod ? drz`AND COALESCE(pr.payment_method, p.provider) ILIKE ${paymentMethod}` : drz``}
+        ORDER BY
+          CASE WHEN ${sortBy} = 'client'  AND ${dir} = 'asc'  THEN c.name END ASC,
+          CASE WHEN ${sortBy} = 'client'  AND ${dir} = 'desc' THEN c.name END DESC,
+          CASE WHEN ${sortBy} = 'office'  AND ${dir} = 'asc'  THEN o.name END ASC,
+          CASE WHEN ${sortBy} = 'office'  AND ${dir} = 'desc' THEN o.name END DESC,
+          CASE WHEN ${sortBy} = 'method'  AND ${dir} = 'asc'  THEN COALESCE(pr.payment_method, p.provider) END ASC,
+          CASE WHEN ${sortBy} = 'method'  AND ${dir} = 'desc' THEN COALESCE(pr.payment_method, p.provider) END DESC,
+          CASE WHEN ${sortBy} = 'amount'  AND ${dir} = 'asc'  THEN p.amount_cents END ASC,
+          CASE WHEN ${sortBy} = 'amount'  AND ${dir} = 'desc' THEN p.amount_cents END DESC,
+          CASE WHEN ${sortBy} = 'date'    AND ${dir} = 'asc'
+               THEN COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date) END ASC,
+          COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date) DESC
+        LIMIT 2000
+      `);
+      const rawRows =
+        (
+          reportRows as unknown as {
+            rows: Array<{
+              id: string;
+              payment_date: string | Date;
+              client_id: string;
+              client_name: string;
+              office_id: string | null;
+              office_name: string | null;
+              payment_method: string;
+              provider: string;
+              mode: string;
+              reference: string | null;
+              total_cents: string | number;
+              status: string;
+            }>;
+          }
+        ).rows ?? (reportRows as unknown as never[]);
+      const rows = (Array.isArray(rawRows) ? rawRows : []).map((r) => ({
+        id: r.id,
+        paymentDate:
+          typeof r.payment_date === 'string'
+            ? r.payment_date
+            : new Date(r.payment_date as unknown as Date).toISOString().slice(0, 10),
+        clientId: r.client_id,
+        clientName: r.client_name,
+        officeId: r.office_id,
+        officeName: r.office_name,
+        paymentMethod: r.payment_method ?? '—',
+        provider: r.provider,
+        mode: r.mode,
+        reference: r.reference,
+        totalCents: Number(r.total_cents),
+        status: r.status,
+      }));
+
+      const summary = rows.reduce(
+        (acc, r) => ({ count: acc.count + 1, totalCents: acc.totalCents + r.totalCents }),
+        { count: 0, totalCents: 0 },
+      );
+      const byMethodMap = new Map<string, { count: number; totalCents: number }>();
+      const byOfficeMap = new Map<string, { name: string; count: number; totalCents: number }>();
+      for (const r of rows) {
+        const m = byMethodMap.get(r.paymentMethod) ?? { count: 0, totalCents: 0 };
+        m.count += 1;
+        m.totalCents += r.totalCents;
+        byMethodMap.set(r.paymentMethod, m);
+        const oKey = r.officeId ?? 'none';
+        const o = byOfficeMap.get(oKey) ?? {
+          name: r.officeName ?? '— no office —',
+          count: 0,
+          totalCents: 0,
+        };
+        o.count += 1;
+        o.totalCents += r.totalCents;
+        byOfficeMap.set(oKey, o);
+      }
+
+      // Distinct method values seen in the firm — drives the FE filter
+      // dropdown. Pulls from both receipt.payment_method (when present)
+      // and payment.provider (for orphan rows) so the dropdown reflects
+      // what the user actually sees in the table.
+      const methodOpts = await deps.db.execute(drz`
+        SELECT DISTINCT method FROM (
+          SELECT pr.payment_method AS method
+          FROM vibetb.payment_receipt pr
+          WHERE pr.firm_id = ${session.firmId}
+            AND pr.payment_method IS NOT NULL
+          UNION
+          SELECT p.provider AS method
+          FROM vibetb.payment p
+          INNER JOIN vibetb.invoice i ON i.id = p.invoice_id
+          INNER JOIN vibetb.client  c ON c.id = i.client_id
+          WHERE c.firm_id = ${session.firmId}
+            AND p.receipt_id IS NULL
+        ) u
+        WHERE method IS NOT NULL
+        ORDER BY method
+      `);
+      const methodOptions = (
+        ((methodOpts as unknown as { rows: Array<{ method: string }> }).rows ??
+          (methodOpts as unknown as Array<{ method: string }>)) as Array<{ method: string }>
+      )
+        .map((r) => r.method)
+        .filter(Boolean);
+
+      res.json({
+        from,
+        to,
+        rows,
+        summary,
+        byMethod: Array.from(byMethodMap.entries()).map(([method, v]) => ({
+          method,
+          count: v.count,
+          totalCents: v.totalCents,
+        })),
+        byOffice: Array.from(byOfficeMap.entries()).map(([oid, v]) => ({
+          officeId: oid === 'none' ? null : oid,
+          name: v.name,
+          count: v.count,
+          totalCents: v.totalCents,
+        })),
+        methodOptions,
+      });
+    },
+  );
+
   return router;
 }

@@ -37,6 +37,8 @@ type ReturnType = (typeof RETURN_TYPES)[number];
 
 const TierInputSchema = z.object({
   name: z.string().min(1).max(120),
+  // 0093 — description copy. Optional, nullable; trimmed before insert.
+  description: z.string().max(4000).nullable().optional(),
   hours: z.number().positive().max(10000),
   baseFeeCents: z.number().int().nonnegative(),
   pctOfPrepFeeBps: z.number().int().min(0).max(10000),
@@ -109,6 +111,7 @@ export function createRetainerConfigRouter(deps: RetainerConfigRoutesDeps): Rout
         return {
           id: row.id,
           name: row.name,
+          description: row.description ?? null,
           hours: Number(row.hours),
           baseFeeCents: row.baseFeeCents,
           pctOfPrepFeeBps: row.pctOfPrepFeeBps,
@@ -155,11 +158,16 @@ export function createRetainerConfigRouter(deps: RetainerConfigRoutesDeps): Rout
             )
             .limit(1);
           let tierConfigId: string;
+          const description =
+            input.description != null && input.description.trim().length > 0
+              ? input.description.trim()
+              : null;
           if (existing) {
             await tx
               .update(retainerTierConfigs)
               .set({
                 name: input.name,
+                description,
                 hours: String(input.hours),
                 baseFeeCents: input.baseFeeCents,
                 pctOfPrepFeeBps: input.pctOfPrepFeeBps,
@@ -176,6 +184,7 @@ export function createRetainerConfigRouter(deps: RetainerConfigRoutesDeps): Rout
                 returnType: rt as ReturnType,
                 tier,
                 name: input.name,
+                description,
                 hours: String(input.hours),
                 baseFeeCents: input.baseFeeCents,
                 pctOfPrepFeeBps: input.pctOfPrepFeeBps,

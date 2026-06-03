@@ -72,7 +72,7 @@ async function main(): Promise<void> {
       await seedWorkCodes(tx, firmId, serviceLineIds);
       await seedEngagementTypes(tx, firmId, serviceLineIds);
       const reasonIds = await seedReasonCodes(tx, firmId);
-      const clientIds = await seedClients(tx, firmId, userIds);
+      const clientIds = await seedClients(tx, firmId, userIds, officeIds);
       await seedPortalIdentities(tx, firmId, clientIds, userIds);
       // v2 Sprint A — default notification templates (15 kinds × 2 channels).
       const tplCount = await seedNotificationTemplates(tx, firmId);
@@ -315,9 +315,16 @@ const CLIENT_SEED = [
   { name: 'Polson Bakery', terms: 15 },
 ];
 
-async function seedClients(tx: Tx, firmId: string, userIds: string[]): Promise<string[]> {
+async function seedClients(
+  tx: Tx,
+  firmId: string,
+  userIds: string[],
+  officeIds: string[],
+): Promise<string[]> {
   const partnerId = userIds[0];
   if (!partnerId) throw new Error('no partner user seeded');
+  const defaultOfficeId = officeIds[0];
+  if (!defaultOfficeId) throw new Error('no office seeded');
   const rows = await tx
     .insert(clients)
     .values(
@@ -325,6 +332,7 @@ async function seedClients(tx: Tx, firmId: string, userIds: string[]): Promise<s
         firmId,
         name: c.name,
         partnerInChargeId: userIds[idx % userIds.length] ?? partnerId,
+        officeId: officeIds[idx % officeIds.length] ?? defaultOfficeId,
         billingContactEmail: `billing@${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.example`,
         termsDays: c.terms,
       })),

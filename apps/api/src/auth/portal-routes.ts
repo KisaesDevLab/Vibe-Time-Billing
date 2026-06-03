@@ -7,6 +7,8 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import type { Redis } from 'ioredis';
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 
@@ -24,10 +26,11 @@ import {
   type PortalSession,
 } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
-import { clientPortalAccess, portalIdentity } from '@vibe/db/schema';
+import { clientPortalAccess, portalIdentity, portalInvitation } from '@vibe/db/schema';
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
+import { ImpersonationTokenError, verifyImpersonationToken } from '../tax-returns/impersonation';
 import { emitAudit } from './audit';
 import { clearSessionCookie, writeSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
@@ -39,6 +42,13 @@ export interface PortalRoutesDeps {
   sendEmail: (args: { to: string; subject: string; body: string }) => Promise<void>;
   sendSms: (args: { to: string; body: string }) => Promise<void>;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  /**
+   * TR-5 / view-as-client — the secret used to sign + verify staff
+   * impersonation JWTs (a key derived from STAFF_JWT_SECRET). When unset
+   * the /impersonate-exchange endpoint returns 503 so the appliance can
+   * still serve the portal in environments that haven't wired this up.
+   */
+  staffSecret?: string | null;
 }
 
 const LoginSchema = z.object({ contact: z.string().min(3).max(254) });
@@ -55,6 +65,8 @@ const VerifyOtpSchema = z.object({
   smsConsentVersion: z.string().max(40).optional(),
 });
 const SwitchClientSchema = z.object({ clientId: z.string().uuid() });
+const ImpersonateExchangeSchema = z.object({ token: z.string().min(20).max(4096) });
+const AcceptInvitationSchema = z.object({ token: z.string().min(8).max(200) });
 
 const GENERIC_RESPONSE = {
   ok: true,
@@ -294,10 +306,254 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
       firmId: s.firmId,
       activeClientId: s.activeClientId,
       csrfToken: s.csrfToken,
+      isImpersonation: s.isImpersonation ?? false,
+      impersonatedByEmail: s.impersonatedByEmail ?? null,
     });
   });
 
+  // TR-5 — staff "view as client" exchange. Trades a short-lived
+  // impersonation JWT (minted by POST /api/staff/clients/:id/impersonate)
+  // for a real __vibe_portal_session cookie scoped to the access row.
+  // The session is read-only (portal-middleware blocks non-GET) and
+  // soft-expires 60 min after createdAt regardless of cookie TTL.
+  router.post('/impersonate-exchange', async (req: Request, res: Response) => {
+    if (!deps.staffSecret) {
+      res.status(503).json({ error: 'impersonation_not_configured' });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = ImpersonateExchangeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    let claims;
+    try {
+      claims = await verifyImpersonationToken(deps.staffSecret, parsed.data.token);
+    } catch (err) {
+      const code = err instanceof ImpersonationTokenError ? err.code : 'invalid';
+      res.status(401).json({ error: 'invalid_token', code });
+      return;
+    }
+
+    // Resolve the access row → portal_identity_id and confirm the
+    // (access, client) pair the staff caller authorized in the token
+    // still exists + is active.
+    const [access] = await deps.db
+      .select({
+        id: clientPortalAccess.id,
+        portalIdentityId: clientPortalAccess.portalIdentityId,
+        clientId: clientPortalAccess.clientId,
+        status: clientPortalAccess.status,
+      })
+      .from(clientPortalAccess)
+      .where(eq(clientPortalAccess.id, claims.accessId))
+      .limit(1);
+    if (!access || access.clientId !== claims.clientId) {
+      res.status(404).json({ error: 'access_not_found' });
+      return;
+    }
+    if (access.status !== 'ACTIVE') {
+      res.status(403).json({ error: 'access_inactive' });
+      return;
+    }
+
+    const identity = await findIdentityById(deps.db, access.portalIdentityId);
+    if (!identity) {
+      res.status(404).json({ error: 'identity_not_found' });
+      return;
+    }
+
+    await issueSession(deps, res, req, identity.id, identity.firmId, {
+      impersonation: {
+        staffUserId: claims.staffUserId,
+        staffEmail: claims.staffEmail,
+        overrideActiveClientId: claims.clientId,
+      },
+    });
+  });
+
+  // Portal invitation acceptance — recipient of a portal_invitation
+  // email/SMS lands at portal.firm.com/auth/accept?token=<raw> which
+  // POSTs the raw token here. We:
+  //   1. SHA-256 the token + look up the invitation row
+  //   2. Validate it's ACTIVE + not expired
+  //   3. Find-or-create a portal_identity at the same firm matching
+  //      the invited email/phone (so existing identities get a new
+  //      access row attached without proliferating duplicates)
+  //   4. Create / reactivate the client_portal_access row (status=ACTIVE)
+  //   5. Mark the invitation USED + stamp portalIdentityId
+  //   6. Issue a portal session cookie so the invitee lands on the
+  //      portal home directly — they don't have to do a second
+  //      magic-link round-trip just to start their first session
+  router.post('/accept-invitation', async (req: Request, res: Response) => {
+    const parsed = AcceptInvitationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+
+    const tokenHash = createHash('sha256').update(parsed.data.token).digest('hex');
+    const [inv] = await deps.db
+      .select()
+      .from(portalInvitation)
+      .where(eq(portalInvitation.tokenHash, tokenHash))
+      .limit(1);
+    if (!inv) {
+      res.status(401).json({ error: 'invalid_token' });
+      return;
+    }
+    if (inv.status !== 'ACTIVE') {
+      res.status(410).json({ error: 'invitation_already_used', status: inv.status });
+      return;
+    }
+    if (inv.expiresAt.getTime() < Date.now()) {
+      await deps.db
+        .update(portalInvitation)
+        .set({ status: 'EXPIRED' })
+        .where(eq(portalInvitation.id, inv.id))
+        .catch(() => undefined);
+      res.status(410).json({ error: 'invitation_expired' });
+      return;
+    }
+
+    // Step 1 — find-or-create the portal_identity. Prefer matching on
+    // whichever contact was used to deliver the invitation; fall back
+    // to the other if it's also populated.
+    let identityId: string | null = null;
+    if (inv.invitedEmail) {
+      const [byEmail] = await deps.db
+        .select({ id: portalIdentity.id })
+        .from(portalIdentity)
+        .where(
+          and(
+            eq(portalIdentity.firmId, inv.firmId),
+            eq(portalIdentity.primaryEmail, inv.invitedEmail),
+          ),
+        )
+        .limit(1);
+      if (byEmail) identityId = byEmail.id;
+    }
+    if (!identityId && inv.invitedPhone) {
+      const [byPhone] = await deps.db
+        .select({ id: portalIdentity.id })
+        .from(portalIdentity)
+        .where(
+          and(
+            eq(portalIdentity.firmId, inv.firmId),
+            eq(portalIdentity.primaryPhone, inv.invitedPhone),
+          ),
+        )
+        .limit(1);
+      if (byPhone) identityId = byPhone.id;
+    }
+    if (!identityId) {
+      const now = new Date();
+      const [created] = await deps.db
+        .insert(portalIdentity)
+        .values({
+          firmId: inv.firmId,
+          fullName: inv.proposedFullName,
+          primaryEmail: inv.invitedEmail,
+          primaryEmailVerifiedAt: inv.deliveryChannel === 'EMAIL' && inv.invitedEmail ? now : null,
+          primaryPhone: inv.invitedPhone,
+          primaryPhoneVerifiedAt: inv.deliveryChannel === 'SMS' && inv.invitedPhone ? now : null,
+          preferredMethod: inv.deliveryChannel === 'SMS' ? 'SMS' : 'EMAIL',
+          status: 'ACTIVE',
+        })
+        .returning({ id: portalIdentity.id });
+      identityId = created!.id;
+    }
+
+    // Step 2 — find-or-create the client_portal_access row for this
+    // (identity, client) pair. INVITED → ACTIVE flip if a placeholder
+    // already exists; otherwise insert fresh.
+    const now = new Date();
+    const [existingAccess] = await deps.db
+      .select({ id: clientPortalAccess.id, status: clientPortalAccess.status })
+      .from(clientPortalAccess)
+      .where(
+        and(
+          eq(clientPortalAccess.portalIdentityId, identityId),
+          eq(clientPortalAccess.clientId, inv.clientId),
+        ),
+      )
+      .limit(1);
+    if (existingAccess) {
+      await deps.db
+        .update(clientPortalAccess)
+        .set({
+          status: 'ACTIVE',
+          role: inv.proposedRole,
+          acceptedAt: now,
+          revokedAt: null,
+          revokedBy: null,
+        })
+        .where(eq(clientPortalAccess.id, existingAccess.id));
+    } else {
+      await deps.db.insert(clientPortalAccess).values({
+        portalIdentityId: identityId,
+        clientId: inv.clientId,
+        role: inv.proposedRole,
+        status: 'ACTIVE',
+        invitedBy: inv.invitedBy,
+        invitedAt: inv.invitedAt,
+        acceptedAt: now,
+      });
+    }
+
+    // Step 3 — mark the invitation USED so the magic link can't be
+    // replayed and the staff UI's "Pending invitations" list updates.
+    await deps.db
+      .update(portalInvitation)
+      .set({
+        status: 'USED',
+        portalIdentityId: identityId,
+        usedAt: now,
+      })
+      .where(eq(portalInvitation.id, inv.id));
+
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'client_portal_access',
+      entityId: identityId,
+      actorPortalIdentityId: identityId,
+      activeClientId: inv.clientId,
+      after: { acceptedFromInvitationId: inv.id, clientId: inv.clientId },
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+    // Step 4 — issue a portal session so the invitee lands on the
+    // portal home directly with the right active client.
+    await issueSession(deps, res, req, identityId, inv.firmId);
+  });
+
   return router;
+}
+
+interface IssueSessionOptions {
+  /**
+   * TR-5 — when set, the session is flagged as staff impersonation:
+   * (1) the portal /me response surfaces a banner, (2) the middleware
+   * rejects non-GET requests, (3) the session soft-expires 60 min after
+   * createdAt regardless of the cookie TTL. The portal_identity_id and
+   * activeClientId still belong to the impersonated client; the staff
+   * actor is recorded for audit + UI only.
+   */
+  impersonation?: {
+    staffUserId: string;
+    staffEmail: string;
+    /** Pin the active client to the access row the token authorized. */
+    overrideActiveClientId: string;
+  };
 }
 
 async function issueSession(
@@ -306,10 +562,11 @@ async function issueSession(
   req: Request,
   identityId: string,
   firmId: string,
+  options: IssueSessionOptions = {},
 ): Promise<void> {
   // Default active client = first active access; require at least one.
-  let activeClientId: string | null = null;
-  if (deps.db) {
+  let activeClientId: string | null = options.impersonation?.overrideActiveClientId ?? null;
+  if (!activeClientId && deps.db) {
     const [first] = await deps.db
       .select({ clientId: clientPortalAccess.clientId })
       .from(clientPortalAccess)
@@ -337,24 +594,48 @@ async function issueSession(
     csrfToken: generateCsrfToken(),
     ip: clientIp(req),
     userAgent: req.header('user-agent') ?? null,
+    ...(options.impersonation
+      ? {
+          isImpersonation: true,
+          impersonatedByStaffUserId: options.impersonation.staffUserId,
+          impersonatedByEmail: options.impersonation.staffEmail,
+        }
+      : {}),
   };
   await deps.sessionStore.put(session);
   writeSessionCookie(res, 'portal', session.sid);
 
-  await emitAudit(deps.db, {
-    action: 'LOGIN',
-    entityType: 'portal_identity',
-    entityId: identityId,
-    actorPortalIdentityId: identityId,
-    activeClientId,
-    ip: session.ip,
-    userAgent: session.userAgent,
-  }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+  if (options.impersonation) {
+    // Audit attribution belongs to the staff actor; the impersonated
+    // identity rides along in the after payload so the row is still
+    // searchable by client + identity for reviews.
+    await emitAudit(deps.db, {
+      action: 'IMPERSONATE',
+      entityType: 'portal_identity',
+      entityId: identityId,
+      actorAppUserId: options.impersonation.staffUserId,
+      activeClientId,
+      after: { portalIdentityId: identityId, staffEmail: options.impersonation.staffEmail },
+      ip: session.ip,
+      userAgent: session.userAgent,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+  } else {
+    await emitAudit(deps.db, {
+      action: 'LOGIN',
+      entityType: 'portal_identity',
+      entityId: identityId,
+      actorPortalIdentityId: identityId,
+      activeClientId,
+      ip: session.ip,
+      userAgent: session.userAgent,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+  }
 
   res.json({
     ok: true,
     csrfToken: session.csrfToken,
     activeClientId,
+    ...(options.impersonation ? { isImpersonation: true as const } : {}),
   });
 }
 

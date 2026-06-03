@@ -21,6 +21,7 @@ type ReturnType = (typeof RETURN_TYPES)[number];
 interface TierShape {
   id: string;
   name: string;
+  description: string;
   hours: number;
   baseFeeCents: number;
   pctOfPrepFeeBps: number;
@@ -28,10 +29,14 @@ interface TierShape {
   eligibleWorkCodeIds: string[];
 }
 
+// Server returns description as nullable; client TierShape normalizes
+// to '' so the textarea is always a controlled string.
+type TierShapeFromServer = Omit<TierShape, 'description'> & { description: string | null };
+
 interface TierConfigResponse {
   returnType: ReturnType;
-  tier1: TierShape | null;
-  tier2: TierShape | null;
+  tier1: TierShapeFromServer | null;
+  tier2: TierShapeFromServer | null;
 }
 
 interface FirmSettings {
@@ -56,6 +61,7 @@ interface WorkCode {
 const DEFAULT_TIER: TierShape = {
   id: '',
   name: '',
+  description: '',
   hours: 0,
   baseFeeCents: 0,
   pctOfPrepFeeBps: 0,
@@ -85,8 +91,12 @@ export function RetainerTierSettingsPage(): JSX.Element {
         const r = await api<TierConfigResponse>(
           `/api/staff/admin/retainer/tier-configs?returnType=${activeReturn}`,
         );
-        setTier1(r.tier1 ?? { ...DEFAULT_TIER });
-        setTier2(r.tier2 ?? { ...DEFAULT_TIER });
+        setTier1(
+          r.tier1 ? { ...r.tier1, description: r.tier1.description ?? '' } : { ...DEFAULT_TIER },
+        );
+        setTier2(
+          r.tier2 ? { ...r.tier2, description: r.tier2.description ?? '' } : { ...DEFAULT_TIER },
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : 'load failed');
       } finally {
@@ -126,6 +136,7 @@ export function RetainerTierSettingsPage(): JSX.Element {
         body: JSON.stringify({
           tier1: {
             name: tier1.name,
+            description: tier1.description.trim() || null,
             hours: tier1.hours,
             baseFeeCents: tier1.baseFeeCents,
             pctOfPrepFeeBps: tier1.pctOfPrepFeeBps,
@@ -134,6 +145,7 @@ export function RetainerTierSettingsPage(): JSX.Element {
           },
           tier2: {
             name: tier2.name,
+            description: tier2.description.trim() || null,
             hours: tier2.hours,
             baseFeeCents: tier2.baseFeeCents,
             pctOfPrepFeeBps: tier2.pctOfPrepFeeBps,
@@ -410,6 +422,32 @@ function TierEditor({
         value={tier.name}
         onChange={(e) => onChange({ ...tier, name: e.target.value })}
       />
+      <label style={{ display: 'grid', gap: 4 }}>
+        <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+          Description{' '}
+          <span style={{ fontStyle: 'italic' }}>
+            (optional — shown on the portal offer card + the admin tier view)
+          </span>
+        </span>
+        <textarea
+          value={tier.description}
+          onChange={(e) => onChange({ ...tier, description: e.target.value })}
+          rows={3}
+          placeholder="E.g. Includes federal + one state, mid-year check-in call, and unlimited Q&A by email."
+          style={{
+            padding: '8px 10px',
+            fontSize: 13,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            background: tokens.color.surface,
+            color: tokens.color.text,
+            resize: 'vertical',
+            fontFamily: tokens.font.body,
+            boxSizing: 'border-box',
+            width: '100%',
+          }}
+        />
+      </label>
       <Input
         label="Hours covered"
         type="number"

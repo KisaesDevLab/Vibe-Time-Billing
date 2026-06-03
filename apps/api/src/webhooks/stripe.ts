@@ -248,6 +248,23 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
             } catch (err) {
               logger.error({ err, invoiceId: inv.id }, 'retainer activation threw');
             }
+          } else if (inv.retainerId) {
+            // 0091 — firm-initiated retainer bill (no offer).
+            try {
+              const { activateRetainerFromDirectPaidInvoice } =
+                await import('../retainers/activation');
+              const r = await activateRetainerFromDirectPaidInvoice(deps.db!, inv.id, {
+                sendEmail: deps.sendEmail,
+              });
+              if (r.kind === 'error') {
+                logger.error(
+                  { invoiceId: inv.id, reason: r.reason },
+                  'retainer direct activation error',
+                );
+              }
+            } catch (err) {
+              logger.error({ err, invoiceId: inv.id }, 'retainer direct activation threw');
+            }
           }
           // Phase 14 #14 — pay-to-unlock signal. If this invoice gated
           // attachment access and was the last unpaid pay-to-unlock

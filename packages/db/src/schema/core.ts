@@ -766,6 +766,99 @@ export const workCodes = pgTable(
   }),
 );
 
+// 0089 — firm-editable catalog of manually-recorded payment methods.
+// Replaces the hard-coded RECORD_METHODS list on the Receive Payment
+// form. CARD_STRIPE and CREDIT_APPLY remain synthetic (not seeded;
+// the receive UI injects them based on context — Stripe wired / open
+// credit memo).
+export const paymentMethodTypes = pgTable(
+  'payment_method_type',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(), // lower_snake; sent as `paymentMethod` to /receive
+    label: text('label').notNull(),
+    active: boolean('active').notNull().default(true),
+    displayOrder: smallint('display_order').notNull().default(100),
+    // System rows can be renamed/deactivated but not deleted.
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUnique: uniqueIndex('payment_method_type_firm_key_uk').on(t.firmId, t.key),
+    firmActiveOrderIdx: index('payment_method_type_firm_active_order_idx').on(
+      t.firmId,
+      t.active,
+      t.displayOrder,
+    ),
+  }),
+);
+
+// 0090 — Tax jurisdiction catalog. Firm-scoped enumeration that the
+// New Tax Payment form drives its Jurisdiction dropdown from.
+export const taxJurisdictions = pgTable(
+  'tax_jurisdiction',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    active: boolean('active').notNull().default(true),
+    displayOrder: smallint('display_order').notNull().default(100),
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmNameUnique: uniqueIndex('tax_jurisdiction_firm_name_uk').on(t.firmId, t.name),
+    firmActiveOrderIdx: index('tax_jurisdiction_firm_active_order_idx').on(
+      t.firmId,
+      t.active,
+      t.displayOrder,
+    ),
+  }),
+);
+
+// 0090 — Tax payment-type catalog. Each row is scoped to ONE
+// jurisdiction so the New Tax Payment form's Payment Type dropdown
+// can filter by the picked Jurisdiction. payment_url is the link the
+// client follows from the portal to pay online.
+export const taxPaymentTypeCatalog = pgTable(
+  'tax_payment_type',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    jurisdictionId: uuid('jurisdiction_id')
+      .notNull()
+      .references(() => taxJurisdictions.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    paymentUrl: text('payment_url'),
+    active: boolean('active').notNull().default(true),
+    displayOrder: smallint('display_order').notNull().default(100),
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    jurisdictionNameUnique: uniqueIndex('tax_payment_type_juris_name_uk').on(
+      t.jurisdictionId,
+      t.name,
+    ),
+    firmActiveOrderIdx: index('tax_payment_type_firm_active_order_idx').on(
+      t.firmId,
+      t.active,
+      t.displayOrder,
+    ),
+    jurisdictionIdx: index('tax_payment_type_jurisdiction_idx').on(t.jurisdictionId),
+  }),
+);
+
 export const engagementTypes = pgTable(
   'engagement_type',
   {
@@ -860,6 +953,11 @@ export const clients = pgTable(
     partnerInChargeId: uuid('partner_in_charge_id')
       .notNull()
       .references(() => appUsers.id),
+    // 0092 — every client belongs to one office. Multi-office firms
+    // can filter / route / report by office.
+    officeId: uuid('office_id')
+      .notNull()
+      .references(() => offices.id, { onDelete: 'restrict' }),
 
     // v2 0026 — CRM expansion
     clientType: clientType('client_type').notNull().default('BUSINESS'),
@@ -2193,6 +2291,13 @@ export const invoices = pgTable(
     // this column to find the offer to activate when this invoice is
     // marked paid.
     retainerOfferId: uuid('retainer_offer_id'),
+    // 0091 — when this invoice is a firm-initiated retainer bill
+    // (created via /retainers/manual with billClient=true), this points
+    // directly at the retainer row in pending_payment. Paying this
+    // invoice activates the retainer. Mutually exclusive with
+    // retainer_offer_id in practice — the offer flow uses the FK above
+    // and the firm-initiated flow uses this one.
+    retainerId: uuid('retainer_id'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -3086,6 +3191,11 @@ export const threads = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
+    // 0088 — denormalized client pointer so a single WHERE returns
+    // every thread for a client (both engagement-linked and
+    // client-direct). Engagement-linked threads have this populated
+    // from engagement.client_id at create time.
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'cascade' }),
     tDekWrapped: bytea('t_dek_wrapped').notNull(),
     status: text('status').notNull().default('ACTIVE'),
     title: text('title'),
@@ -3095,6 +3205,7 @@ export const threads = pgTable(
   },
   (t) => ({
     firmIdx: index('thread_firm_id_idx').on(t.firmId),
+    clientIdx: index('thread_client_id_idx').on(t.clientId),
     statusIdx: index('thread_status_idx').on(t.status),
     statusCk: check('thread_status_ck', sql`${t.status} IN ('ACTIVE', 'ARCHIVED')`),
   }),
@@ -3769,6 +3880,10 @@ export const taxPayments = pgTable(
     }),
     jurisdiction: text('jurisdiction').notNull(),
     paymentType: text('payment_type').notNull(),
+    // 0090 — denormalized "pay online" link snapshotted from the
+    // tax_payment_type catalog at create time so the portal CTA is
+    // stable even if the catalog row is later edited or removed.
+    paymentUrl: text('payment_url'),
     taxYear: integer('tax_year'),
     amountCents: bigint('amount_cents', { mode: 'number' }).notNull(),
     dueDate: date('due_date').notNull(),
@@ -3893,3 +4008,34 @@ export const cloudflareTunnelConfigs = pgTable(
     statusIdx: index('cloudflare_tunnel_status_idx').on(t.status),
   }),
 );
+
+// 0094 — UI-configurable file storage. The boot path merges this row
+// (sealed credentials decrypted by FirmKeyManager) with env-var
+// fallbacks. Provider selects which credential block applies.
+export const storageSettings = pgTable('storage_settings', {
+  firmId: uuid('firm_id')
+    .primaryKey()
+    .references(() => firms.id, { onDelete: 'cascade' }),
+  provider: text('provider').notNull().default('mock'),
+
+  b2Endpoint: text('b2_endpoint'),
+  b2Region: text('b2_region'),
+  b2Bucket: text('b2_bucket'),
+  b2KeyIdEncrypted: bytea('b2_key_id_encrypted'),
+  b2ApplicationKeyEncrypted: bytea('b2_application_key_encrypted'),
+  b2KeyIdHint: text('b2_key_id_hint'),
+
+  minioEndpoint: text('minio_endpoint'),
+  minioRegion: text('minio_region'),
+  minioBucket: text('minio_bucket'),
+  minioAccessKeyEncrypted: bytea('minio_access_key_encrypted'),
+  minioSecretKeyEncrypted: bytea('minio_secret_key_encrypted'),
+  minioAccessKeyHint: text('minio_access_key_hint'),
+
+  lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
+  lastTestedProvider: text('last_tested_provider'),
+  lastTestError: text('last_test_error'),
+
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedById: uuid('updated_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+});

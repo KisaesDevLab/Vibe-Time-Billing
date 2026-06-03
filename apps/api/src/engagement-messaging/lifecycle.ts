@@ -39,12 +39,21 @@ export async function provisionThreadForEngagement(
     .limit(1);
   if (existing) return existing.threadId;
 
+  // Denormalize the client_id onto the thread (column added in 0088)
+  // so client-scoped queries don't need to traverse the engagement
+  // link table.
+  const [eng] = await db
+    .select({ clientId: engagements.clientId })
+    .from(engagements)
+    .where(eq(engagements.id, args.engagementId))
+    .limit(1);
   const wrapped = generateWrappedTDek(db, args.firmId);
   return await db.transaction(async (tx) => {
     const [t] = await tx
       .insert(threads)
       .values({
         firmId: args.firmId,
+        clientId: eng?.clientId ?? null,
         tDekWrapped: wrapped,
         title: args.title ?? null,
       })

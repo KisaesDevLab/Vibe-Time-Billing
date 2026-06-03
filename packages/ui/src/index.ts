@@ -5,6 +5,7 @@ export {
   type ThemeMode,
   THEME_STORAGE_KEY,
   themeBootstrapScript,
+  FONT_SCALE_BASELINE,
   FONT_SCALE_STEPS,
   FONT_SCALE_STORAGE_KEY,
   DEFAULT_FONT_SCALE,

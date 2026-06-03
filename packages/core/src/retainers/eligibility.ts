@@ -11,7 +11,9 @@ export interface RetainerForEligibility {
   // R7 — 'paused' added so a firm can self-disable consumption
   // without voiding. The eligibility check treats it the same as
   // 'inactive' — entries route to billable WIP.
-  status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused';
+  // 0091 — 'pending_payment' added for firm-initiated billing; treated
+  // as inactive until the retainer-purchase invoice is paid.
+  status: 'active' | 'exhausted' | 'expired' | 'void' | 'paused' | 'pending_payment';
   expiryDate: string; // ISO date, e.g. '2029-04-15'
 }
 

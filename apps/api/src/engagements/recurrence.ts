@@ -18,14 +18,14 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { aliasedTable, and, desc, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { clients, engagementRecurrences, engagementTemplates, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { addUuidIdGuard } from '../lib/uuid-guard';
+import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { spawnNextEngagement } from './recurrence-spawn';
 
@@ -78,7 +78,12 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
   addUuidIdGuard(router);
 
   // List — firm-scoped, joins client + template + last engagement for
-  // a single-shot table render.
+  // a single-shot table render. Optional filters:
+  //   ?clientId=…  scope to one client (client-detail card)
+  //   ?dueOnly=true  only return recurrences ready to fire now
+  //                  (SCHEDULE && nextRunDate<=today, OR
+  //                   ON_COMPLETION && last engagement is null/CLOSED).
+  //                  Used by the firm-wide bulk dialog.
   router.get(
     '/',
     requirePermission(deps, 'engagement:read'),
@@ -88,6 +93,17 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
         res.json({ items: [] });
         return;
       }
+      const clientFilter = uuidQueryParam(req.query['clientId']);
+      if (clientFilter === 'invalid') {
+        res.status(400).json({ error: 'invalid_client_id' });
+        return;
+      }
+      const dueOnly = req.query['dueOnly'] === 'true';
+
+      const lastEng = aliasedTable(engagements, 'last_eng');
+      const conds = [eq(engagementRecurrences.firmId, session.firmId)];
+      if (clientFilter) conds.push(eq(engagementRecurrences.clientId, clientFilter));
+
       const rows = await deps.db
         .select({
           id: engagementRecurrences.id,
@@ -103,6 +119,8 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           seedPeriodMonth: engagementRecurrences.seedPeriodMonth,
           seedPeriodLabel: engagementRecurrences.seedPeriodLabel,
           lastEngagementId: engagementRecurrences.lastEngagementId,
+          lastEngagementName: lastEng.name,
+          lastEngagementStatus: lastEng.status,
           lastRunAt: engagementRecurrences.lastRunAt,
           status: engagementRecurrences.status,
           notes: engagementRecurrences.notes,
@@ -114,10 +132,27 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           engagementTemplates,
           eq(engagementTemplates.id, engagementRecurrences.templateId),
         )
-        .where(eq(engagementRecurrences.firmId, session.firmId))
+        .leftJoin(lastEng, eq(lastEng.id, engagementRecurrences.lastEngagementId))
+        .where(and(...conds))
         .orderBy(desc(engagementRecurrences.createdAt))
         .limit(500);
-      res.json({ items: rows });
+
+      const today = new Date().toISOString().slice(0, 10);
+      const enriched = rows.map((r) => {
+        const isScheduleDue =
+          r.status === 'ACTIVE' &&
+          r.triggerMode === 'SCHEDULE' &&
+          r.nextRunDate != null &&
+          (typeof r.nextRunDate === 'string' ? r.nextRunDate : String(r.nextRunDate)) <= today;
+        const isCompletionDue =
+          r.status === 'ACTIVE' &&
+          r.triggerMode === 'ON_COMPLETION' &&
+          (r.lastEngagementId == null || r.lastEngagementStatus === 'CLOSED');
+        const isDue = isScheduleDue || isCompletionDue;
+        return { ...r, isDue };
+      });
+      const items = dueOnly ? enriched.filter((r) => r.isDue) : enriched;
+      res.json({ items });
     },
   );
 
@@ -326,6 +361,52 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
         return;
       }
       res.json(result);
+    },
+  );
+
+  // Bulk run-now. Accepts an array of recurrence ids; calls
+  // spawnNextEngagement on each and returns per-id outcomes so the
+  // caller can render a result summary (spawned / approval queued /
+  // skipped / error).
+  router.post(
+    '/bulk-run',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const Schema = z.object({
+        recurrenceIds: z.array(z.string().uuid()).min(1).max(200),
+      });
+      const parsed = Schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const results: Array<{
+        recurrenceId: string;
+        kind: string;
+        engagementId?: string;
+        approvalRequestId?: string;
+        name?: string;
+        reason?: string;
+      }> = [];
+      for (const id of parsed.data.recurrenceIds) {
+        const out = await spawnNextEngagement({
+          db: deps.db,
+          recurrenceId: id,
+          firmId: session.firmId,
+          actorAppUserId: session.appUserId,
+        });
+        results.push({ recurrenceId: id, ...out });
+      }
+      const summary = results.reduce<Record<string, number>>((acc, r) => {
+        acc[r.kind] = (acc[r.kind] ?? 0) + 1;
+        return acc;
+      }, {});
+      res.json({ results, summary });
     },
   );
 

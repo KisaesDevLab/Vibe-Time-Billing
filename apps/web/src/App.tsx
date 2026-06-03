@@ -14,7 +14,7 @@ import { ArPage } from './pages/Ar';
 import { ArByServiceLinePage } from './pages/ArByServiceLine';
 import { ArSnapshotsPage } from './pages/ArSnapshots';
 import { AuditPage } from './pages/Audit';
-import { AuthProvider, useAuth } from './auth-context';
+import { AuthProvider, useAuth, usePermission } from './auth-context';
 import { BillingBatchesPage } from './pages/Billing';
 import { ClientDetailPage } from './pages/ClientDetail';
 import { ClientsPage } from './pages/Clients';
@@ -29,10 +29,14 @@ import { ProposalEditorPage } from './pages/ProposalEditor';
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
 import { LoginPage } from './pages/Login';
+import { MessagesPage } from './pages/Messages';
 import { OnboardingPage } from './pages/Onboarding';
 import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
+import { PaymentsReceivedReportPage } from './pages/reports/PaymentsReceivedReport';
+import { RetainerDashboardPage } from './pages/admin/RetainerDashboard';
+import { RetainerDetailPage } from './pages/admin/RetainerDetail';
 import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
 import { RequestsPage } from './pages/Requests';
 import { RequestDetailPage } from './pages/RequestDetail';
@@ -83,10 +87,17 @@ export function App(): JSX.Element {
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/requests" element={<RequestsPage />} />
                   <Route path="/requests/:id" element={<RequestDetailPage />} />
+                  <Route path="/messages" element={<MessagesPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/alerts" element={<AlertsPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
+                  <Route
+                    path="/reports/payments-received"
+                    element={<PaymentsReceivedReportPage />}
+                  />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
+                  <Route path="/retainers" element={<RetainersGate />} />
+                  <Route path="/retainers/:id" element={<RetainerDetailPage />} />
                   <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
                   <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
@@ -119,6 +130,10 @@ function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
 function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { logout } = useAuth();
   const location = useLocation();
+  // RBAC-gated nav items. retainer:read covers partner + manager today
+  // and surfaces firm-wide retainer dashboards. Staff without it still
+  // get the personal /my/retainers view but no top-level entry.
+  const canViewRetainers = usePermission('retainer:read');
   return (
     <AppShell
       brand="Vibe Time & Billing"
@@ -164,6 +179,17 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/invoices'),
         },
         { label: 'AR', href: '/ar', icon: '$', active: location.pathname.startsWith('/ar') },
+        ...(canViewRetainers
+          ? [
+              {
+                label: 'Retainers',
+                href: '/retainers',
+                icon: '◈',
+                active:
+                  location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
+              },
+            ]
+          : []),
         {
           label: 'Approvals',
           href: '/approvals',
@@ -175,6 +201,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/requests',
           icon: '☑',
           active: location.pathname.startsWith('/requests'),
+        },
+        {
+          label: 'Messages',
+          href: '/messages',
+          icon: '💬',
+          active: location.pathname.startsWith('/messages'),
         },
         {
           label: 'Reports',
@@ -228,6 +260,21 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       <QuickFind />
     </AppShell>
   );
+}
+
+/**
+ * Route-level gate for the firm-wide Retainers dashboard. Partners
+ * and managers see the full dashboard; staff without retainer:read get
+ * redirected to their personal /my/retainers view (which is scoped to
+ * their assigned engagements only). Keeps the URL meaningful for
+ * everyone without leaking firm-wide data.
+ */
+function RetainersGate(): JSX.Element {
+  const canViewFirmwide = usePermission('retainer:read');
+  if (!canViewFirmwide) {
+    return <Navigate to="/my/retainers" replace />;
+  }
+  return <RetainerDashboardPage />;
 }
 
 function FullPageMsg({ children }: { children: ReactNode }): JSX.Element {

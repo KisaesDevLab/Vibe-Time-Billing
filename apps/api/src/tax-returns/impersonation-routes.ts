@@ -16,10 +16,12 @@ import { eq, and } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { appUsers, clients, clientPortalAccess, taxReturnAccessLog } from '@vibe/db/schema';
+import { appUsers, clients, clientPortalAccess } from '@vibe/db/schema';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { logger } from '../logger';
 import { issueImpersonationToken, IMPERSONATION_TTL_SECONDS } from './impersonation';
 
 export interface ImpersonationRouteDeps extends RbacDeps {
@@ -96,15 +98,30 @@ export function createImpersonationRouter(deps: ImpersonationRouteDeps): Router 
         staffEmail,
       });
 
-      // Audit log (separate from tax_return_access_log — this is a
-      // staff-side audit, not a per-return access event).
-      // We'll write to tax_return_access_log with return_id=null
-      // semantics... actually the schema requires return_id NOT NULL.
-      // Skip the log here; impersonation is also audit-logged via the
-      // standard audit_log middleware on the staff route call.
-      void taxReturnAccessLog;
+      // Audit log — staff actor + portal_identity captured via the
+      // access row in the after payload. The portal-side exchange also
+      // emits its own IMPERSONATE row when the token is redeemed; both
+      // are needed because a token can be issued and never used.
+      await emitAudit(deps.db, {
+        action: 'IMPERSONATE',
+        entityType: 'client_portal_access',
+        entityId: parsed.data.accessId,
+        actorAppUserId: session.appUserId,
+        activeClientId: clientId,
+        after: {
+          phase: 'token_issued',
+          clientId,
+          accessId: parsed.data.accessId,
+          staffEmail,
+          expiresAt: expiresAt.toISOString(),
+        },
+        ip:
+          (req.headers?.['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '').trim() ||
+          null,
+        userAgent: typeof req.header === 'function' ? (req.header('user-agent') ?? null) : null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
-      const portalUrl = `${deps.portalBaseUrl.replace(/\/$/, '')}/portal?impersonate=${encodeURIComponent(token)}`;
+      const portalUrl = `${deps.portalBaseUrl.replace(/\/$/, '')}/auth/impersonate?token=${encodeURIComponent(token)}`;
 
       res.status(201).json({
         token,

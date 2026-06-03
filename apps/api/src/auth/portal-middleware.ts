@@ -45,6 +45,20 @@ declare global {
   }
 }
 
+// TR-5 — view-as-client sessions auto-expire 60 minutes after
+// `createdAt` regardless of the underlying cookie TTL. Keeps the
+// blast radius of a stolen impersonation cookie small without
+// requiring a custom Redis TTL path.
+const IMPERSONATION_SOFT_TTL_MS = 60 * 60 * 1000;
+
+// Endpoints a portal session is allowed to call even when the session
+// is in read-only impersonation mode. /auth/logout and /auth/me are
+// safety valves — log out always works, and /me drives the banner.
+function isImpersonationAllowedPath(originalUrl: string): boolean {
+  const path = originalUrl.split('?')[0] ?? originalUrl;
+  return path.endsWith('/api/portal/auth/logout') || path.endsWith('/api/portal/auth/me');
+}
+
 export function portalAuthDeps(store: SessionStore, db?: Database | null) {
   return {
     async requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -74,6 +88,28 @@ export function portalAuthDeps(store: SessionStore, db?: Database | null) {
           return;
         }
       }
+
+      // TR-5 — impersonation gates. Apply *after* the firm/license
+      // checks so the soft-TTL path destroys an expired session even
+      // when the cookie's underlying Redis TTL hasn't fired yet.
+      if (s.isImpersonation) {
+        if (Date.now() - s.createdAt > IMPERSONATION_SOFT_TTL_MS) {
+          await store.destroy('portal', sid);
+          res.status(401).json({ error: 'impersonation_expired' });
+          return;
+        }
+        const method = req.method.toUpperCase();
+        if (
+          method !== 'GET' &&
+          method !== 'HEAD' &&
+          method !== 'OPTIONS' &&
+          !isImpersonationAllowedPath(req.originalUrl)
+        ) {
+          res.status(403).json({ error: 'impersonation_is_read_only' });
+          return;
+        }
+      }
+
       await store.touch('portal', sid);
       req.portalSession = s;
       next();

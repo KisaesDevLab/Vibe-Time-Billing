@@ -331,6 +331,35 @@ Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #4. Firms running both Vibe T&B and
 Assumed default: **Defer GL export.** Confirm with operator before P11 (Stripe billing) and P22 (engagement lifecycle) whether MyBooks consumes T&B engagement data via shared-DB read or via API. Locked default is "no sync"; revisit pre-launch.
 Implication if wrong: If a friendly-fire firm needs GL export day-one, we add a P22.5 mini-phase to export engagement_scope + invoice rows as a queryable view for MyBooks. Tolerable cost; defer is the safer default.
 
+## Q38 — Phase 1 — Retainer addendum already implemented; re-execution would conflict
+**Date:** 2026-06-02 14:35
+**Context:** Kicking off `VIBE_TB_RETAINER_ADDENDUM_BUILD_PLAN.md` per `KICKOFF_PROMPT.md`. Phase 1's first step is "Create migration `NNNN_retainer_addendum.ts` under `db/migrations/`". A pre-flight audit shows the addendum is already largely built in this repo from an earlier autonomous pass labelled R1–R6.
+
+**Ambiguity:** The kickoff document treats the build as greenfield, but the repository already contains:
+- `packages/db/migrations/0065_retainer_addendum.sql` plus follow-ups 0066, 0067, 0068
+- `packages/db/src/schema/retainers.ts` defining `retainerTierConfigs`, `retainerTierEligibleServices`, `firmRetainerSettings`, `retainerOffers`, `retainers`, `retainerEligibleServices`, `retainerLedger` — every table the build plan's Phase 1 enumerates
+- `apps/api/src/retainers/` with activation, consumption, exports, feature-flag, notifications, offers, routes, scheduler (covering Phases 3, 6, 7, 8, 12)
+- Worker jobs `retainer-expiry-sweep`, `retainer-expiry-warning`, `retainer-offer-expiry-sweep`, `retainer-offer-reminder` (Phase 7)
+- Admin UI: `RetainerTierSettings`, `RetainerDashboard`, `RetainerDetail` (Phases 2, 9)
+- Staff UI: `StaffRetainerDashboard` (Phase 10)
+- Portal: `/portal/retainer-offers/:id`, `/portal/retainers` (Phases 5, 11)
+- `bootstrap-firm.ts` already seeds 12 retainer tier configs
+
+Running Phase 1 verbatim would (a) create a redundant migration that conflicts with 0065, (b) attempt to declare tables that already exist, and (c) probably break the live appliance running locally.
+
+The working tree is also dirty (~30 files modified from the current session's in-flight feature work on impersonation, tax catalog, payment-method catalog, engagement bill button, email/SMS icons, billable-only filter, year filter, client messages tab, etc.) — none committed yet per the user's standing "don't commit unless asked" instruction. Running `git checkout -b retainer-addendum/phase-1-schema` per kickoff §2 would put that work on the new branch.
+
+**Options considered:**
+- A: **Run a gap audit** — for each Phase 1–14 checklist item, mark whether it exists in code, partially exists, or is missing. Produce a `RETAINER_ADDENDUM_AUDIT.md` and treat any gaps as the actual scope. Skip duplicated work entirely.
+- B: **Diff existing schema vs build plan and only ship the deltas.** Probably overlaps with A but more targeted.
+- C: **Treat the kickoff literally**, ignore existing code, create migration `0091_retainer_addendum.sql`. Will fail at apply time because of unique-name collisions on tier_configs etc., and even if forced through would duplicate domain tables. Catastrophic.
+- D: **Stash the in-flight session work, branch off main, and run the audit there.** Cleanest history but risks losing/forgetting the in-flight unfinished features.
+
+**Recommendation:** **Option A.** Produce the audit first, surface the deltas, then the operator decides whether (1) the kickoff was meant to validate completeness (audit IS the deliverable), (2) a specific phase needs re-work, or (3) the kickoff was issued in error from another branch / fresh checkout. Either way, no schema work happens until the operator confirms.
+
+**Blocker:** yes
+**Workaround if non-blocking:** n/a — schema-level conflict, cannot proceed without operator direction.
+
 ---
 
 # CHANGE LOG
@@ -339,3 +368,4 @@ Implication if wrong: If a friendly-fire firm needs GL export day-one, we add a 
 - 2026-05-22 — Q31/Q32/Q33 added for file-manager rebuild (see `FILE_MANAGER_ADDENDUM.md`).
 - 2026-05-25 — Q34/Q35/Q36/Q37 added for proposal module kickoff (see `ADDENDUM-PROPOSAL-MODULE.md` §0.3). PP0 reverted; replacing with addendum's P01–P30 phasing.
 - 2026-05-24 — Q34–Q40 locked under Section L for Connect Integration absorption (see `CONNECT_INTEGRATION_ADDENDUM.md` §5).
+- 2026-06-02 — Q38 added: retainer addendum already implemented (migrations 0065–0068); kickoff Phase 1 blocked pending operator direction.

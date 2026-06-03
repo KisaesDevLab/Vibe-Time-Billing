@@ -53,6 +53,9 @@ export const retainerStatus = pgEnum('retainer_status', [
   // R7 — firm can self-disable an active retainer without voiding it.
   // Time entries route to WIP while paused. Resume flips back to active.
   'paused',
+  // 0091 — firm-initiated billing flow. Retainer exists but is awaiting
+  // payment on its purchase invoice; flips to 'active' when paid.
+  'pending_payment',
 ]);
 
 export const returnType = pgEnum('return_type', ['1040', '1065', '1120', '1120S', '1041', '990']);
@@ -85,6 +88,9 @@ export const retainerTierConfigs = pgTable(
     returnType: returnType('return_type').notNull(),
     tier: retainerTier('tier').notNull(),
     name: text('name').notNull(),
+    // 0093 — partner-facing copy describing what the tier covers.
+    // Optional; surfaces on the admin form and the portal offer page.
+    description: text('description'),
     hours: numeric('hours', { precision: 8, scale: 2 }).notNull(),
     baseFeeCents: bigint('base_fee_cents', { mode: 'number' }).notNull().default(0),
     // Stored as basis points (0..10000 → 0%..100%). Mirrors the codebase

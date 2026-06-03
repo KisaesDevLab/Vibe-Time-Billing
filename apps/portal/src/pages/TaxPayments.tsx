@@ -17,6 +17,9 @@ interface PortalTaxPaymentRow {
   engagementId: string | null;
   jurisdiction: string;
   paymentType: string;
+  // 0090 — pre-resolved "Pay online" link snapshotted from the firm's
+  // tax_payment_type catalog at create time.
+  paymentUrl: string | null;
   taxYear: number | null;
   amountCents: number;
   dueDate: string;
@@ -213,6 +216,10 @@ export function TaxPaymentsPage(): JSX.Element {
                         style={{
                           textAlign: 'right',
                           fontVariantNumeric: 'tabular-nums',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-end',
+                          gap: 4,
                         }}
                       >
                         <div style={{ fontWeight: 600 }}>{formatCents(row.amountCents)}</div>
@@ -227,7 +234,6 @@ export function TaxPaymentsPage(): JSX.Element {
                                   : d <= 30
                                     ? tokens.color.warning
                                     : tokens.color.textMuted,
-                            marginTop: 2,
                           }}
                         >
                           Due {row.dueDate}
@@ -237,6 +243,25 @@ export function TaxPaymentsPage(): JSX.Element {
                               ? ` (${d} day${d === 1 ? '' : 's'})`
                               : ''}
                         </div>
+                        {row.paymentUrl && (
+                          <a
+                            href={row.paymentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              fontSize: 12,
+                              padding: '4px 10px',
+                              borderRadius: tokens.radius.sm,
+                              background: tokens.color.accent,
+                              color: '#fff',
+                              textDecoration: 'none',
+                              fontWeight: 500,
+                              marginTop: 2,
+                            }}
+                          >
+                            Pay online ↗
+                          </a>
+                        )}
                       </div>
                     </div>
                   </li>

@@ -168,9 +168,13 @@ export function Combobox({
     }
   }
 
+  // Padding mirrors <Input> (10px/12px at md, 6px/10px at sm) so a
+  // Combobox sitting next to a text input lines up at the same height.
+  // Prior values (8px/10px md) produced a 4px shorter trigger which was
+  // visually inconsistent inside grid layouts that mix the two.
   const triggerStyle: CSSProperties = {
     width: width ?? '100%',
-    padding: size === 'sm' ? '6px 10px' : '8px 10px',
+    padding: size === 'sm' ? '6px 10px' : '10px 12px',
     background: disabled ? tokens.color.bg : tokens.color.surface,
     color: disabled
       ? tokens.color.textMuted
@@ -181,6 +185,7 @@ export function Combobox({
     borderRadius: tokens.radius.md,
     fontSize: size === 'sm' ? 13 : 14,
     fontFamily: tokens.font.body,
+    lineHeight: 1.4,
     textAlign: 'left',
     cursor: disabled ? 'not-allowed' : 'pointer',
     display: 'flex',

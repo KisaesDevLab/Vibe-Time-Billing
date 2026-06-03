@@ -338,9 +338,29 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
         res.json({ accesses: [], pendingInvitations: [] });
         return;
       }
+      // Join portal_identity so the UI can show name + contact for
+      // each access row instead of a bare UUID — staff need to know
+      // who they're revoking / impersonating.
       const accesses = await deps.db
-        .select()
+        .select({
+          id: clientPortalAccess.id,
+          portalIdentityId: clientPortalAccess.portalIdentityId,
+          clientId: clientPortalAccess.clientId,
+          role: clientPortalAccess.role,
+          status: clientPortalAccess.status,
+          invitedAt: clientPortalAccess.invitedAt,
+          acceptedAt: clientPortalAccess.acceptedAt,
+          revokedAt: clientPortalAccess.revokedAt,
+          fullName: portalIdentity.fullName,
+          primaryEmail: portalIdentity.primaryEmail,
+          primaryPhone: portalIdentity.primaryPhone,
+          primaryEmailVerifiedAt: portalIdentity.primaryEmailVerifiedAt,
+          primaryPhoneVerifiedAt: portalIdentity.primaryPhoneVerifiedAt,
+          identityStatus: portalIdentity.status,
+          lastLoginAt: portalIdentity.lastLoginAt,
+        })
         .from(clientPortalAccess)
+        .innerJoin(portalIdentity, eq(portalIdentity.id, clientPortalAccess.portalIdentityId))
         .where(eq(clientPortalAccess.clientId, req.params['clientId']!));
       const pending = await deps.db
         .select()
@@ -353,6 +373,173 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
           ),
         );
       res.json({ accesses, pendingInvitations: pending });
+    },
+  );
+
+  // PATCH the access row itself (role only — identity is edited via
+  // the /identity endpoint below). Lets staff demote a FULL access
+  // to VIEW_ONLY without revoking + re-inviting.
+  router.patch(
+    '/access/:accessId',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { role?: unknown };
+      const role =
+        body.role === 'FULL' || body.role === 'VIEW_ONLY' || body.role === 'PAY_ONLY'
+          ? body.role
+          : null;
+      if (!role) {
+        res.status(400).json({ error: 'invalid_role' });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({ accessId: clientPortalAccess.id, clientFirmId: clients.firmId })
+        .from(clientPortalAccess)
+        .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+        .where(eq(clientPortalAccess.id, req.params['accessId']!))
+        .limit(1);
+      if (!scope || scope.clientFirmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(clientPortalAccess)
+        .set({ role })
+        .where(eq(clientPortalAccess.id, scope.accessId));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client_portal_access',
+        entityId: scope.accessId,
+        actorAppUserId: session.appUserId,
+        after: { role },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // Reactivate a previously-revoked access (status INACTIVE → ACTIVE).
+  router.post(
+    '/access/:accessId/restore',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({
+          accessId: clientPortalAccess.id,
+          clientFirmId: clients.firmId,
+          currentStatus: clientPortalAccess.status,
+        })
+        .from(clientPortalAccess)
+        .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+        .where(eq(clientPortalAccess.id, req.params['accessId']!))
+        .limit(1);
+      if (!scope || scope.clientFirmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (scope.currentStatus === 'ACTIVE') {
+        res.json({ ok: true, alreadyActive: true });
+        return;
+      }
+      await deps.db
+        .update(clientPortalAccess)
+        .set({ status: 'ACTIVE', revokedAt: null, revokedBy: null, acceptedAt: new Date() })
+        .where(eq(clientPortalAccess.id, scope.accessId));
+      await emitAudit(deps.db, {
+        action: 'RESTORE',
+        entityType: 'client_portal_access',
+        entityId: scope.accessId,
+        actorAppUserId: session.appUserId,
+        after: { status: 'ACTIVE' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // Edit the underlying portal_identity (name / email / phone). Scoped
+  // by the access row so staff can only edit identities tied to a
+  // client at their firm — the identity itself is firm-scoped but we
+  // still want the access-row gate as defense in depth.
+  router.patch(
+    '/access/:accessId/identity',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { fullName?: unknown; email?: unknown; phone?: unknown };
+      const updates: Record<string, unknown> = {};
+      if (typeof body.fullName === 'string' && body.fullName.trim()) {
+        updates['fullName'] = body.fullName.trim();
+      }
+      if (typeof body.email === 'string') {
+        const e = body.email.trim();
+        updates['primaryEmail'] = e === '' ? null : e;
+      }
+      if (typeof body.phone === 'string') {
+        const p = body.phone.trim();
+        const normalized = p === '' ? null : normalizePhone(p);
+        if (p !== '' && !normalized) {
+          res.status(400).json({ error: 'invalid_phone' });
+          return;
+        }
+        updates['primaryPhone'] = normalized;
+      }
+      if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'no_changes' });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({
+          accessId: clientPortalAccess.id,
+          identityId: clientPortalAccess.portalIdentityId,
+          clientFirmId: clients.firmId,
+        })
+        .from(clientPortalAccess)
+        .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+        .where(eq(clientPortalAccess.id, req.params['accessId']!))
+        .limit(1);
+      if (!scope || scope.clientFirmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      try {
+        await deps.db
+          .update(portalIdentity)
+          .set({ ...updates, updatedAt: new Date() })
+          .where(eq(portalIdentity.id, scope.identityId));
+      } catch (err) {
+        // Most likely the firm_email or firm_phone unique index — another
+        // identity at this firm already has that contact value.
+        logger.warn({ err }, 'portal identity update failed');
+        res.status(409).json({ error: 'contact_in_use' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'portal_identity',
+        entityId: scope.identityId,
+        actorAppUserId: session.appUserId,
+        after: updates,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
     },
   );
 

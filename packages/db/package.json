@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/schema/index.ts",
-    "./seed-helpers": "./src/seed-helpers/index.ts"
+    "./seed-helpers": "./src/seed-helpers/index.ts",
+    "./scripts": "./src/scripts/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -50,6 +50,9 @@ export function createPortalTaxPaymentRouter(deps: PortalTaxPaymentDeps): Router
         engagementId: taxPayments.engagementId,
         jurisdiction: taxPayments.jurisdiction,
         paymentType: taxPayments.paymentType,
+        // 0090 — pre-resolved "Pay online" link snapshotted from the
+        // tax_payment_type catalog at create time.
+        paymentUrl: taxPayments.paymentUrl,
         taxYear: taxPayments.taxYear,
         amountCents: taxPayments.amountCents,
         dueDate: taxPayments.dueDate,

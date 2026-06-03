@@ -14,6 +14,8 @@ import type { Database } from '@vibe/db';
 import {
   clients,
   engagements,
+  invoiceLineItems,
+  invoices,
   retainerEligibleServices,
   retainerLedger,
   retainerOffers,
@@ -219,6 +221,50 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
           }
         ).rows ?? [];
 
+      // 0091 — load the purchase invoice if linked so the detail page
+      // can render its current status (Sent / Partial / Paid / Overdue).
+      let purchaseInvoice: {
+        id: string;
+        invoiceNumber: string;
+        status: string;
+        totalCents: number;
+        paidCents: number;
+        issueDate: string;
+        dueDate: string;
+      } | null = null;
+      if (retainer.purchaseInvoiceId) {
+        const [pi] = await deps.db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            status: invoices.status,
+            totalCents: invoices.totalCents,
+            paidCents: invoices.paidCents,
+            issueDate: invoices.issueDate,
+            dueDate: invoices.dueDate,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, retainer.purchaseInvoiceId))
+          .limit(1);
+        if (pi) {
+          purchaseInvoice = {
+            id: pi.id,
+            invoiceNumber: pi.invoiceNumber,
+            status: pi.status,
+            totalCents: pi.totalCents,
+            paidCents: pi.paidCents,
+            issueDate:
+              typeof pi.issueDate === 'string'
+                ? pi.issueDate
+                : new Date(pi.issueDate as unknown as Date).toISOString().slice(0, 10),
+            dueDate:
+              typeof pi.dueDate === 'string'
+                ? pi.dueDate
+                : new Date(pi.dueDate as unknown as Date).toISOString().slice(0, 10),
+          };
+        }
+      }
+
       res.json({
         retainer: {
           id: retainer.id,
@@ -240,6 +286,7 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
           voidedAt: retainer.voidedAt,
           voidedReason: retainer.voidedReason,
         },
+        purchaseInvoice,
         client,
         engagement,
         eligibility,
@@ -552,10 +599,22 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
   // ----- R7 — firm-initiated activation (no offer / no AR invoice) -----
   //
   // Manual path for a partner to create a retainer directly. Bypasses
-  // the portal-purchase chain — used when the firm is collecting
-  // payment out-of-band (cash, check, separate invoice) or comping
-  // hours. Still enforces D2 (UNIQUE engagement_id) and uses the same
-  // tier config + eligibility snapshot logic as the activation handler.
+  // the portal-purchase chain. Two modes:
+  //
+  //   billClient = false (default) — "record only"
+  //     Used when the firm collected payment out-of-band (cash, check,
+  //     separate invoice) or is comping hours. Retainer goes straight
+  //     to status='active', no invoice generated.
+  //
+  //   billClient = true (added 0091)
+  //     Firm wants to send the client an invoice for this retainer.
+  //     Retainer is inserted in status='pending_payment' and a SENT
+  //     AR invoice is created with invoice.retainer_id linked back.
+  //     When that invoice is paid, the activation hook flips the
+  //     retainer to active and writes the ACTIVATION ledger row.
+  //
+  // Both modes enforce D2 (UNIQUE engagement_id) and snapshot
+  // eligibility from the tier config (or override).
 
   router.post(
     '/manual',
@@ -585,6 +644,11 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         // omitted, copies the tier_config's eligibility snapshot.
         eligibleWorkCodeIds: z.array(z.string().uuid()).optional(),
         notes: z.string().max(1000).optional(),
+        // 0091 — when true, create a SENT AR invoice and put the
+        // retainer in pending_payment until the invoice is paid.
+        billClient: z.boolean().optional(),
+        // Defaults to 14 days from issueDate when billClient=true.
+        invoiceDueDays: z.number().int().min(0).max(180).optional(),
       });
       const parsed = Schema.safeParse(req.body);
       if (!parsed.success) {
@@ -658,14 +722,19 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
       const priceCents = parsed.data.priceCents ?? tierConfig.baseFeeCents;
       const name = parsed.data.name ?? tierConfig.name;
 
-      const retainerId = await deps.db.transaction(async (tx) => {
+      const billClient = parsed.data.billClient === true;
+      const initialStatus: 'active' | 'pending_payment' = billClient ? 'pending_payment' : 'active';
+      const invoiceDueDays = parsed.data.invoiceDueDays ?? 14;
+
+      const txResult = await deps.db.transaction(async (tx) => {
         const [retainer] = await tx
           .insert(retainers)
           .values({
             firmId: session.firmId,
             clientId: eng.clientId,
             engagementId: eng.id,
-            // R7 — no offer / no purchase invoice for manual activation.
+            // R7 — no offer for manual activation. purchase_invoice_id
+            // is set below when billClient=true.
             offerId: null,
             purchaseInvoiceId: null,
             tier: tierConfig.tier,
@@ -678,7 +747,7 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
             priceCents,
             purchaseDate,
             expiryDate,
-            status: 'active',
+            status: initialStatus,
             notes: parsed.data.notes ?? null,
           })
           .returning({ id: retainers.id });
@@ -706,42 +775,116 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
           .set({ retainerId: retainer.id })
           .where(eq(engagements.id, eng.id));
 
-        await tx.insert(retainerLedger).values({
-          retainerId: retainer.id,
-          kind: 'ACTIVATION',
-          hoursDelta: '0',
-          hoursBalanceAfter: String(hoursPurchased),
-          createdById: session.appUserId,
-        });
-        return retainer.id;
+        let invoiceId: string | null = null;
+        let invoiceNumber: string | null = null;
+
+        if (billClient) {
+          // Generate the AR invoice in a SENT state with retainer_id
+          // back-linked. Invoice number reuses the firm-wide sequence
+          // with a RET- prefix to match the portal-offer flow.
+          const [seqRow] = await tx
+            .select({
+              n: sql<number>`COALESCE(MAX(CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER)), 0)`,
+            })
+            .from(invoices)
+            .where(eq(invoices.firmId, session.firmId));
+          const next = Number(seqRow?.n ?? 0) + 1;
+          const year = new Date().getFullYear();
+          invoiceNumber = `RET-${year}-${String(next).padStart(4, '0')}`;
+          const issueDate = new Date().toISOString().slice(0, 10);
+          const dueDate = new Date(Date.now() + invoiceDueDays * 86_400_000)
+            .toISOString()
+            .slice(0, 10);
+
+          const [inv] = await tx
+            .insert(invoices)
+            .values({
+              firmId: session.firmId,
+              clientId: eng.clientId,
+              primaryEngagementId: eng.id,
+              invoiceNumber,
+              issueDate,
+              dueDate,
+              subtotalCents: priceCents,
+              totalCents: priceCents,
+              status: 'SENT',
+              retainerId: retainer.id,
+            })
+            .returning({ id: invoices.id });
+          if (!inv) throw new Error('invoice_insert_failed');
+          invoiceId = inv.id;
+
+          await tx.insert(invoiceLineItems).values({
+            invoiceId: inv.id,
+            kind: 'RETAINER',
+            description: `Retainer purchase — ${name}`,
+            amountCents: priceCents,
+            engagementId: eng.id,
+            sourceRefType: 'retainer',
+            sourceRefId: retainer.id,
+            sortOrder: 0,
+          });
+
+          // Back-link the retainer to the purchase invoice so the
+          // detail page can render it without a second join. Activation
+          // handler also checks this for idempotency.
+          await tx
+            .update(retainers)
+            .set({ purchaseInvoiceId: inv.id })
+            .where(eq(retainers.id, retainer.id));
+        } else {
+          // Record-only path — retainer is already active. Seed the
+          // ACTIVATION ledger row now (the bill-client path writes it
+          // at payment time via the activation handler instead).
+          await tx.insert(retainerLedger).values({
+            retainerId: retainer.id,
+            kind: 'ACTIVATION',
+            hoursDelta: '0',
+            hoursBalanceAfter: String(hoursPurchased),
+            createdById: session.appUserId,
+          });
+        }
+        return { retainerId: retainer.id, invoiceId, invoiceNumber };
       });
 
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'retainer',
-        entityId: retainerId,
+        entityId: txResult.retainerId,
         actorAppUserId: session.appUserId,
         after: {
-          kind: 'manual',
+          kind: billClient ? 'manual_billed' : 'manual',
           engagementId: eng.id,
           tierConfigId: tierConfig.id,
           hoursPurchased,
           priceCents,
+          status: initialStatus,
+          purchaseInvoiceId: txResult.invoiceId,
         },
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
-      // R4-followup — schedule expiry warnings for the manual retainer
-      // too. Same best-effort pattern as the activation path.
-      try {
-        const { scheduleRetainerWarnings } = await import('./scheduler');
-        void scheduleRetainerWarnings({ retainerId, expiryDate });
-      } catch (err) {
-        logger.error({ err, retainerId }, 'retainer warning scheduling failed (manual)');
+      // R4-followup — schedule expiry warnings only for already-active
+      // retainers. The bill-client flow schedules them at activation time.
+      if (initialStatus === 'active') {
+        try {
+          const { scheduleRetainerWarnings } = await import('./scheduler');
+          void scheduleRetainerWarnings({ retainerId: txResult.retainerId, expiryDate });
+        } catch (err) {
+          logger.error(
+            { err, retainerId: txResult.retainerId },
+            'retainer warning scheduling failed (manual)',
+          );
+        }
       }
 
-      res.status(201).json({ retainerId });
+      res.status(201).json({
+        retainerId: txResult.retainerId,
+        invoiceId: txResult.invoiceId,
+        invoiceNumber: txResult.invoiceNumber,
+        status: initialStatus,
+      });
     },
   );
 

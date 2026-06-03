@@ -28,6 +28,7 @@ import {
   creditMemos,
   firmSettings,
   invoices,
+  paymentMethodTypes,
   paymentReceipts,
   payments,
   portalIdentity,
@@ -78,13 +79,19 @@ const CreditApplicationInputSchema = z.object({
   amountCents: z.number().int().positive(),
 });
 
+// 0089 — `paymentMethod` is no longer a closed enum; it's an
+// UPPER_SNAKE catalog key from payment_method_type. The handler
+// validates the supplied key against the firm's active catalog plus
+// the two synthetic values (CARD_STRIPE, CREDIT_APPLY) that the
+// receive flow injects based on context — Stripe wired / open credit.
+const PAYMENT_METHOD_KEY_RE = /^[A-Z][A-Z0-9_]{0,62}[A-Z0-9]$/;
 const ReceiveRecordSchema = z.object({
   payerClientId: z.string().uuid(),
   paymentDate: z.string().regex(DATE_RE),
   reference: z.string().max(200).optional().nullable(),
   // CREDIT_APPLY is only valid when amountReceivedCents === 0 (validated
   // in the handler since it's interdependent with the amount).
-  paymentMethod: z.enum(['CHECK', 'CASH', 'ACH_MANUAL', 'OTHER', 'CARD_STRIPE', 'CREDIT_APPLY']),
+  paymentMethod: z.string().regex(PAYMENT_METHOD_KEY_RE),
   // Can be 0 when this is a pure credit-apply receipt.
   amountReceivedCents: z.number().int().nonnegative(),
   // Can be empty when this is a pure credit-apply receipt.
@@ -289,6 +296,32 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         // CARD_STRIPE must go through /receive/intent, never the record path.
         res.status(400).json({ error: 'use_intent_endpoint_for_card' });
         return;
+      }
+
+      // 0089 — validate paymentMethod against the firm's catalog.
+      // CREDIT_APPLY stays synthetic (not in catalog; injected when the
+      // client has an open credit memo); every other value must resolve
+      // to an active payment_method_type row.
+      if (data.paymentMethod !== 'CREDIT_APPLY') {
+        const [match] = await deps.db
+          .select({ key: paymentMethodTypes.key })
+          .from(paymentMethodTypes)
+          .where(
+            and(
+              eq(paymentMethodTypes.firmId, session.firmId),
+              eq(paymentMethodTypes.key, data.paymentMethod),
+              eq(paymentMethodTypes.active, true),
+            ),
+          )
+          .limit(1);
+        if (!match) {
+          res.status(400).json({
+            error: 'unknown_payment_method',
+            method: data.paymentMethod,
+            hint: 'Add the method under Admin → Catalog → Payment methods.',
+          });
+          return;
+        }
       }
 
       const totalAllocated = data.allocations.reduce((s, a) => s + a.amountCents, 0);
@@ -596,7 +629,10 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         // activation failure doesn't roll back the payment.
         for (const invId of result.promotedInvoiceIds) {
           const [invRow] = await deps.db
-            .select({ retainerOfferId: invoices.retainerOfferId })
+            .select({
+              retainerOfferId: invoices.retainerOfferId,
+              retainerId: invoices.retainerId,
+            })
             .from(invoices)
             .where(eq(invoices.id, invId))
             .limit(1);
@@ -612,6 +648,28 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
               }
             } catch (err) {
               logger.error({ err, invoiceId: invId }, 'retainer activation threw (post-commit)');
+            }
+          } else if (invRow?.retainerId) {
+            // 0091 — firm-initiated retainer bill. Direct retainer link
+            // bypasses the offer flow.
+            try {
+              const { activateRetainerFromDirectPaidInvoice } =
+                await import('../retainers/activation');
+              const r = await activateRetainerFromDirectPaidInvoice(deps.db, invId, {
+                actorAppUserId: session.appUserId,
+                sendEmail: deps.sendEmail,
+              });
+              if (r.kind === 'error') {
+                logger.error(
+                  { invoiceId: invId, reason: r.reason },
+                  'retainer direct activation error',
+                );
+              }
+            } catch (err) {
+              logger.error(
+                { err, invoiceId: invId },
+                'retainer direct activation threw (post-commit)',
+              );
             }
           }
         }

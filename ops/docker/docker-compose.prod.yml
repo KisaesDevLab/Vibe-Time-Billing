@@ -77,6 +77,10 @@ services:
       MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Stage 1B — envelope encryption master key. 32 bytes (base64 or
+      # hex). Required in production; if missing the api process exits
+      # at boot.
+      KMS_KEY: ${KMS_KEY:?KMS_KEY is required (run "openssl rand -base64 32")}
       # 0085 — tunnel sidecar shares this volume so the API can write
       # the run-token here when the admin provisions a Cloudflare tunnel.
       CLOUDFLARED_TOKEN_FILE: /run/cloudflared/token
@@ -107,7 +111,20 @@ services:
       # 0085 — worker polls the sidecar's metrics endpoint over the
       # docker network and writes a snapshot to the DB.
       CLOUDFLARED_METRICS_URL: http://cloudflared:2000
-    command: ['node', 'apps/worker/dist/index.js']
+    # tsc's rootDir auto-rises when @vibe/* path aliases pull source
+    # from other workspace packages, so the worker entry lands at
+    # apps/worker/dist/apps/worker/src/index.js — not at the top-level
+    # apps/worker/dist/index.js you'd expect from outDir alone. The
+    # node flags mirror entrypoint-api.sh: strip-types lets us load
+    # the .ts source that @vibe/* workspace package mains point at,
+    # and the resolve hook handles Bundler-style extensionless imports.
+    command:
+      - 'node'
+      - '--experimental-transform-types'
+      - '--no-warnings=ExperimentalWarning'
+      - '--import'
+      - '/app/ops/docker/esm-resolve-hook.mjs'
+      - 'apps/worker/dist/apps/worker/src/index.js'
     restart: unless-stopped
 
   caddy:

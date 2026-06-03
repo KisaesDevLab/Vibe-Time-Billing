@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+#
+# Local-test override for the appliance prod compose. Layer with:
+#   docker compose -f docker-compose.prod.yml \
+#                  -f docker-compose.local-override.yml \
+#                  --env-file ../../.env.appliance up -d
+#
+# Two adjustments vs the published shape:
+#
+#  1. cloudflared is shifted to a `local` profile so it stays off by
+#     default. The `cloudflare/cloudflared:latest` image is distroless
+#     and has no /bin/sh, which trips the wait-for-token wrapper in
+#     the prod compose. The sidecar is only useful once the firm has
+#     provisioned a real tunnel via the admin UI; for local testing
+#     we just hit Caddy on http://localhost.
+#
+#  2. caddy's depends_on for cloudflared is irrelevant on local — keep
+#     caddy on api healthcheck only.
+services:
+  cloudflared:
+    profiles: ['cloudflare']
+
+  # MailHog — sinkhole SMTP server with a browser UI. Lets us read
+  # sign-in magic links and any other outbound emails without wiring a
+  # real provider on local. Web UI: http://localhost:8025.
+  mailhog:
+    image: mailhog/mailhog
+    container_name: vibe-tb-mailhog
+    ports:
+      - '8025:8025'
+    restart: unless-stopped
+
+  # Point the api at the in-compose mailhog so SMTP actually delivers.
+  # (The base compose doesn't set MAIL_SMTP_* env vars; the API defaults
+  # to localhost:1025 which fails when api runs inside its own container.)
+  api:
+    environment:
+      MAIL_SMTP_HOST: mailhog
+      MAIL_SMTP_PORT: 1025
+      MAIL_SMTP_SECURE: 'false'
+      MAIL_FROM: 'Vibe Local <dev@localhost>'
+    # /data persists the firm-key seal file (.firm-key.seal) and the
+    # mock-provider local filesystem storage. Without this mount the
+    # seal is written to the container rootfs and lost on every
+    # docker compose recreate — which means storage-settings PUT (and
+    # any other encrypt-on-write flow) fails with "firm not unlocked".
+    volumes:
+      - appdata:/data
+
+  # The worker inherits the api image (with its curl /health healthcheck)
+  # but doesn't run an HTTP server, so the inherited probe never succeeds.
+  # Disable it locally — the BullMQ event loop and Redis connection are
+  # the real liveness signal, surfaced via worker logs.
+  worker:
+    healthcheck:
+      disable: true
+    # Worker also needs to unseal the firm key to decrypt secrets
+    # (e.g. webhook tokens). Share the same appdata volume as api.
+    volumes:
+      - appdata:/data
+
+  # Expose the portal-only Caddy listener (port 8088). A single-host
+  # local appliance can't disambiguate staff vs portal by hostname the
+  # way production (portal.firm.com / app.firm.com) does, so the local
+  # PORTAL_BASE_URL points at a separate port. Production keeps this
+  # port unbound — the @portal host matcher in Caddyfile routes the
+  # real subdomain traffic on the existing :80 listener.
+  caddy:
+    ports:
+      - '80:80'
+      - '443:443'
+      - '8088:8088'
+
+volumes:
+  appdata:

@@ -914,6 +914,12 @@ interface CardSpec {
 
 const REPORT_CARDS: CardSpec[] = [
   {
+    key: 'payments-received',
+    title: 'Payments received ★',
+    blurb: 'Date range / office / method filter, sortable rows + CSV export.',
+    href: '/reports/payments-received',
+  },
+  {
     key: 'realization',
     title: 'Realization',
     blurb: 'Original vs adjusted value by firm / timekeeper / engagement / client.',

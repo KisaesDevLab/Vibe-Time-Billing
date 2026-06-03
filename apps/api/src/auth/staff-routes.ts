@@ -232,7 +232,13 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json({
       ok: true,
       csrfToken: session.csrfToken,
-      needsTotpEnrollment: !user.totpEnrolledAt,
+      // Per CLAUDE.md non-negotiable #5 (revised by migration 0087), any
+      // of TOTP / email OTP / SMS OTP / passkey satisfies the second-factor
+      // requirement. We no longer force TOTP-specific enrollment after
+      // magic-link sign-in — the staff member lands on the dashboard and
+      // can enroll any of the four factor types from Account → Two-factor
+      // when they're ready. A separate nudge banner highlights the gap.
+      needsTotpEnrollment: false,
     });
   });
 

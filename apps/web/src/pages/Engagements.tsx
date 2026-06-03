@@ -139,12 +139,41 @@ export function EngagementsPage(): JSX.Element {
   // don't have to re-pick on each session.
   const [view, setView] = useState<'list' | 'kanban'>(() => {
     try {
-      return (localStorage.getItem('__vibe_eng_view') as 'list' | 'kanban') || 'list';
+      return (localStorage.getItem('__vibe_eng_view') as 'list' | 'kanban') || 'kanban';
     } catch {
-      return 'list';
+      return 'kanban';
     }
   });
   const [statusCols, setStatusCols] = useState<StatusColumn[]>([]);
+  // Per-user kanban column hides. Persisted to localStorage so each
+  // staff member's column filter survives reloads — independent of the
+  // firm-wide kanbanVisible toggle in admin → Engagement Statuses.
+  const [hiddenKanbanCols, setHiddenKanbanCols] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('__vibe_eng_kanban_hidden');
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? new Set<string>(parsed) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const [kanbanGearOpen, setKanbanGearOpen] = useState(false);
+
+  function toggleKanbanCol(state: string): void {
+    setHiddenKanbanCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(state)) next.delete(state);
+      else next.add(state);
+      try {
+        localStorage.setItem('__vibe_eng_kanban_hidden', JSON.stringify(Array.from(next)));
+      } catch {
+        // Storage may be disabled — in-memory state still drives the
+        // current session.
+      }
+      return next;
+    });
+  }
 
   const [sortBy, setSortBy] = useState<{ col: string; dir: SortDir }>({ col: '', dir: null });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -467,6 +496,97 @@ export function EngagementsPage(): JSX.Element {
                 ▦ Board
               </Button>
             </span>
+            {view === 'kanban' && (
+              <div style={{ position: 'relative' }}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setKanbanGearOpen((v) => !v)}
+                  title="Choose which status columns to show on this kanban (saved per-user)"
+                  aria-label="Kanban column settings"
+                  aria-expanded={kanbanGearOpen}
+                >
+                  ⚙ Columns
+                </Button>
+                {kanbanGearOpen && (
+                  <div
+                    role="dialog"
+                    aria-label="Kanban columns"
+                    style={{
+                      position: 'absolute',
+                      top: '110%',
+                      right: 0,
+                      minWidth: 240,
+                      background: tokens.color.bg,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                      padding: 10,
+                      zIndex: 50,
+                      display: 'grid',
+                      gap: 6,
+                      boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+                    }}
+                  >
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: 11,
+                        textTransform: 'uppercase',
+                        letterSpacing: 0.4,
+                        color: tokens.color.textMuted,
+                      }}
+                    >
+                      Show columns
+                    </p>
+                    {statusCols.map((col) => (
+                      <label
+                        key={col.workflowState}
+                        style={{ display: 'flex', gap: 8, fontSize: 13, alignItems: 'center' }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!hiddenKanbanCols.has(col.workflowState)}
+                          onChange={() => toggleKanbanCol(col.workflowState)}
+                        />
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: 10,
+                            height: 10,
+                            borderRadius: 5,
+                            background: col.color,
+                          }}
+                        />
+                        {col.label}
+                      </label>
+                    ))}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      <button
+                        type="button"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          fontSize: 11,
+                          color: tokens.color.accent,
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                        onClick={() => {
+                          setHiddenKanbanCols(new Set());
+                          try {
+                            localStorage.setItem('__vibe_eng_kanban_hidden', '[]');
+                          } catch {
+                            // Non-fatal: in-memory clear still applies.
+                          }
+                        }}
+                      >
+                        Show all
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <Button size="sm" variant="ghost" onClick={exportCsv}>
               ↓ CSV
             </Button>
@@ -533,7 +653,7 @@ export function EngagementsPage(): JSX.Element {
               priority: r.priority,
               clientName: r.clientName,
             }))}
-            columns={statusCols}
+            columns={statusCols.filter((c) => !hiddenKanbanCols.has(c.workflowState))}
             onMoved={() => void load()}
             onError={(m) => setError(m)}
           />
@@ -726,15 +846,8 @@ export function EngagementsPage(): JSX.Element {
                           <a href={`/clients/${r.clientId}`}>{r.clientName}</a>
                         </td>
                         <td style={td()}>{typeName ?? '—'}</td>
-                        <td style={td()}>
-                          {r.serviceLineName ? (
-                            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                              <Pill tone="neutral">{r.serviceLineCategory}</Pill>
-                              <span style={{ fontSize: 13 }}>{r.serviceLineName}</span>
-                            </span>
-                          ) : (
-                            '—'
-                          )}
+                        <td style={td()} title={r.serviceLineCategory ?? undefined}>
+                          {r.serviceLineName ?? '—'}
                         </td>
                         <td style={td()}>
                           {assigneeNames.length > 0 ? assigneeNames.join(', ') : '—'}

@@ -129,7 +129,14 @@ export function AppShell({
           flexDirection: 'column',
           position: 'sticky',
           top: 0,
-          height: '100vh',
+          // FontSizeControl applies `body { zoom: N }`, which scales every
+          // descendant uniformly. Viewport units inside a zoomed parent
+          // still refer to the real viewport, so a naive `height: 100vh`
+          // renders at `N × 100vh` on screen and overflows. Counter-
+          // divide by the same var so the sidebar always equals one
+          // actual screen-height regardless of zoom. Falls back to 100vh
+          // when the var is unset (zoom = 1).
+          height: 'calc(100vh / var(--vibe-font-scale, 1))',
           // Smooth width animation. Skip on prefers-reduced-motion via
           // CSS will require a media query; the 150ms ease is short
           // enough to be comfortable in either case.
