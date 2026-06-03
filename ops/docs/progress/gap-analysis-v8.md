@@ -1,5 +1,10 @@
 # Gap Analysis v8 — BUILD_PLAN vs. Codebase
 
+> **⚠ Superseded by `summary.md` (2026-06-03).** ~186 commits have landed since this audit, and
+> the three "Health of working tree" blockers below (WT-1/2/3) are all resolved and committed.
+> This file remains accurate as the line-by-line BUILD_PLAN punch list; for current headline
+> numbers and module scope read `summary.md`.
+
 **Generated:** 2026-05-21 (re-audit; supersedes `gap-analysis-v7.md`)
 **Method:** Walk of every numbered item in `BUILD_PLAN.md` against HEAD (commit `a3e3ebb`) plus the uncommitted working tree (theme system + QR TOTP + nodemailer + lockfile regen). v7's full row-by-row table remains the line-by-line baseline; this file records the delta and the remaining punch list.
 

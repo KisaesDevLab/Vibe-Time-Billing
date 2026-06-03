@@ -1,5 +1,11 @@
 # Depth-pass status — what is and isn't actually done
 
+> **⚠ Stale (pre-v8).** This accounting predates ~186 commits and the proposals, tax-returns,
+> retainers, file-manager-v2, connect, passkey, and cloudflare-tunnel modules. Its table count
+> (45) and test totals (175) are out of date. See **`summary.md`** (refreshed 2026-06-03) for
+> current numbers: 147 tables, 88 migrations, 1,414 tests passing across 158 files. Kept here as
+> the historical depth-rating rubric and phase-by-phase baseline.
+
 Honest accounting after the second pass. Each phase is rated on a 4-point scale:
 
 - **Shippable** — UI works, API works, tests cover it, no external service required.
