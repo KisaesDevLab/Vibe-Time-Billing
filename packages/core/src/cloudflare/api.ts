@@ -84,7 +84,9 @@ export interface IngressRule {
   originRequest?: {
     httpHostHeader?: string;
     noTLSVerify?: boolean;
-    connectTimeout?: string;
+    // Cloudflare's API expects an integer number of seconds here, NOT a
+    // duration string like "30s" (which fails with code 1056).
+    connectTimeout?: number;
   };
 }
 
@@ -104,6 +106,7 @@ export function createCloudflareClient(opts: CloudflareClientOptions): {
   listZones: (accountId?: string) => Promise<ZoneListItem[]>;
   getZone: (zoneId: string) => Promise<Zone>;
   createTunnel: (accountId: string, name: string) => Promise<Tunnel>;
+  findTunnelByName: (accountId: string, name: string) => Promise<Tunnel | null>;
   getTunnelToken: (accountId: string, tunnelId: string) => Promise<string>;
   setTunnelIngress: (
     accountId: string,
@@ -179,6 +182,17 @@ export function createCloudflareClient(opts: CloudflareClientOptions): {
         name,
         config_src: 'cloudflare',
       });
+    },
+
+    // Look up a live (non-deleted) tunnel by exact name — used to clean up
+    // an orphan left by a failed earlier provision so re-provision doesn't
+    // hit "tunnel with this name already exists" (code 1013).
+    async findTunnelByName(accountId: string, name: string): Promise<Tunnel | null> {
+      const list = await call<Tunnel[]>(
+        'GET',
+        `/accounts/${accountId}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`,
+      );
+      return list.find((t) => t.name === name) ?? null;
     },
 
     async getTunnelToken(accountId: string, tunnelId: string): Promise<string> {

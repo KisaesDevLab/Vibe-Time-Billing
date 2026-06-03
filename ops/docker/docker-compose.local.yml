@@ -165,6 +165,26 @@ services:
     networks:
       - default
 
+  # Optional connector for true end-to-end tunnel testing on local. Off by
+  # default (profile) — `docker compose ... up` without the profile skips it.
+  # The cloudflared image is distroless (no shell), so we pass the run-token
+  # via TUNNEL_TOKEN env (cloudflared reads it automatically on `tunnel run`)
+  # rather than the prod compose's file-wait wrapper.
+  #
+  #   TUNNEL_TOKEN=$(docker exec vibe-tb-api cat /run/cloudflared/token) \
+  #   docker compose -f ops/docker/docker-compose.local.yml \
+  #     --profile cloudflare up -d cloudflared
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: vibe-tb-cloudflared
+    profiles: ['cloudflare']
+    command: ['tunnel', '--no-autoupdate', '--metrics', '0.0.0.0:2000', 'run']
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN (docker exec vibe-tb-api cat /run/cloudflared/token)}
+    restart: unless-stopped
+    networks:
+      - default
+
 volumes:
   static-content:
   file-storage:

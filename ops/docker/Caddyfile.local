@@ -68,3 +68,47 @@ https://{$VIBE_HOST:localhost}:5196 {
     file_server
   }
 }
+
+# Cloudflare Tunnel origin. cloudflared forwards here (http://caddy:80) with
+# the Host header rewritten to app.<zone> (staff) or portal.<zone> (portal)
+# by the tunnel ingress, so we host-route like production. Plain HTTP is fine
+# — TLS already terminated at Cloudflare's edge. Not published to the host;
+# only the in-network cloudflared connector reaches it.
+:80 {
+  encode gzip zstd
+
+  @portal host portal.*
+  handle @portal {
+    handle /api/* {
+      reverse_proxy api:3001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Vibe-Realm portal
+        transport http {
+          read_timeout 120s
+        }
+      }
+    }
+    handle {
+      root * /srv/portal
+      try_files {path} /index.html
+      file_server
+    }
+  }
+
+  handle {
+    handle /api/* {
+      reverse_proxy api:3001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Vibe-Realm app
+        transport http {
+          read_timeout 120s
+        }
+      }
+    }
+    handle {
+      root * /srv/web
+      try_files {path} /index.html
+      file_server
+    }
+  }
+}

@@ -174,6 +174,10 @@ function buildMockClient(): {
         account_tag: accountId,
       };
     },
+    async findTunnelByName() {
+      // No orphan in tests by default.
+      return null;
+    },
     async getTunnelToken(_accountId, tunnelId) {
       log.getTunnelToken.push(tunnelId);
       return 'fake-run-token-XYZ';

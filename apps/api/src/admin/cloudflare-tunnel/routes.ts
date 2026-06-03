@@ -165,7 +165,7 @@ function buildIngress(
       originRequest: {
         httpHostHeader: canonicalHost,
         noTLSVerify: true,
-        connectTimeout: '30s',
+        connectTimeout: 30,
       },
     });
   }
@@ -405,7 +405,20 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           }
         }
 
-        const tunnel = await cf.createTunnel(d.accountId, d.tunnelName ?? 'vibe-tb');
+        // Also clean up any orphan tunnel of the same name left by a prior
+        // failed provision (its id never made it into the DB), so create
+        // doesn't fail with "tunnel with this name already exists" (1013).
+        const tunnelName = d.tunnelName ?? 'vibe-tb';
+        try {
+          const orphan = await cf.findTunnelByName(d.accountId, tunnelName);
+          if (orphan && orphan.id !== existing?.tunnelId) {
+            await cf.deleteTunnel(d.accountId, orphan.id);
+          }
+        } catch (err) {
+          logger.warn({ err }, 'cf tunnel: orphan tunnel cleanup failed (continuing)');
+        }
+
+        const tunnel = await cf.createTunnel(d.accountId, tunnelName);
         const runToken = await cf.getTunnelToken(d.accountId, tunnel.id);
 
         const ingress = buildIngress(
