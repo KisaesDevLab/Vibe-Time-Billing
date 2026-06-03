@@ -4070,3 +4070,58 @@ export const storageSettings = pgTable('storage_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   updatedById: uuid('updated_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
 });
+
+// =====================================================================
+// 0096 — Support knowledge base. Firm-scoped so a firm's edits stay
+// local; product articles are seeded with is_system=true (editable but
+// flagged). The AI support chat retrieves PUBLISHED articles to ground
+// its answers.
+// =====================================================================
+
+export const kbArticleStatus = pgEnum('kb_article_status', ['DRAFT', 'PUBLISHED', 'ARCHIVED']);
+
+export const kbCategories = pgTable(
+  'kb_category',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    slug: text('slug').notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmSlugUk: uniqueIndex('kb_category_firm_slug_uk').on(t.firmId, t.slug),
+  }),
+);
+
+export const kbArticles = pgTable(
+  'kb_article',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id').references(() => kbCategories.id, { onDelete: 'set null' }),
+    slug: text('slug').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary'),
+    bodyMarkdown: text('body_markdown').notNull(),
+    tags: text('tags').array(),
+    status: kbArticleStatus('status').notNull().default('PUBLISHED'),
+    isSystem: boolean('is_system').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    updatedById: uuid('updated_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmSlugUk: uniqueIndex('kb_article_firm_slug_uk').on(t.firmId, t.slug),
+    firmCategoryIdx: index('kb_article_firm_category_idx').on(t.firmId, t.categoryId),
+    firmStatusIdx: index('kb_article_firm_status_idx').on(t.firmId, t.status),
+  }),
+);

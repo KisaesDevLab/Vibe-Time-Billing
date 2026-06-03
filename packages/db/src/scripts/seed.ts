@@ -42,6 +42,7 @@ import {
 import { portalIdentity, clientPortalAccess } from '../schema/portal';
 import { seedNotificationTemplates } from '../seed-helpers/notification-templates';
 import { seedRetainerTierConfigs } from '../seed-helpers/retainer-tier-configs';
+import { seedKnowledgeBase } from '../seed-helpers/knowledge-base';
 
 const FIRM_NAME = 'Granite Peak CPAs';
 
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
       // Plus firm_retainer_settings row (feature_enabled defaults false).
       const tierCount = await seedRetainerTierConfigs(tx, firmId);
       log(`seeded ${tierCount} retainer tier config default(s)`);
+      const kb = await seedKnowledgeBase(tx, firmId);
+      log(`seeded knowledge base: ${kb.categories} categories, ${kb.articles} articles`);
       // Demo loop: one engagement on the first client, four timekeepers
       // post the canonical Vance scenario, a billing batch ties them
       // together, a hierarchical-cascade write-down is applied. Reports

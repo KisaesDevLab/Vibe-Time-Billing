@@ -18,6 +18,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { resolveEgressPolicy, type EgressDecision } from './egress';
+import { searchKbArticles } from '../help/queries';
 
 export interface AiRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -39,6 +40,19 @@ const DescribeSchema = z.object({
 const NarrativeSchema = z.object({
   realizationPct: z.number(),
   topDrivers: z.array(z.string()).max(20).optional(),
+});
+
+const ChatSchema = z.object({
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string().min(1).max(4000),
+      }),
+    )
+    .min(1)
+    .max(12),
+  maxTokens: z.number().int().min(64).max(2000).optional(),
 });
 
 // Firm-level AI opt-in (Phase 23 #28). Defaults to true; firms can set
@@ -960,6 +974,99 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       });
     },
   );
+
+  // ---------------------------------------------------------------------
+  // POST /chat — KB-grounded support assistant. Retrieves the most
+  // relevant published knowledge-base articles for the question and asks
+  // the model to answer from them. Open to any authenticated staff
+  // member (the /api/staff/ai mount already enforces auth+CSRF), since
+  // help should be universal. Respects provider wiring + the monthly
+  // budget like every other AI feature.
+  // ---------------------------------------------------------------------
+  router.post('/chat', async (req: Request, res: Response) => {
+    const parsed = ChatSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.staffSession!;
+    const provider = await pickProvider(deps, 'support-chat', session.firmId);
+    if (!provider) {
+      res.status(503).json({ error: 'no_ai_provider' });
+      return;
+    }
+    const budget = await loadBudget(deps, session.firmId, now());
+    if (budget.kind === 'exhausted') {
+      res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
+      return;
+    }
+
+    const messages = parsed.data.messages;
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+
+    // Retrieve KB context to ground the answer.
+    const hits = await searchKbArticles(deps.db, session.firmId, lastUser, 4);
+    const context = hits
+      .map(
+        (h, i) =>
+          `[Article ${i + 1}] ${h.title}\n${h.summary ? h.summary + '\n' : ''}${h.bodyMarkdown.slice(0, 1200)}`,
+      )
+      .join('\n\n---\n\n');
+
+    const systemPrompt =
+      'You are the in-app support assistant for Vibe Practice Management, a CPA ' +
+      'practice-management appliance. Answer the user using ONLY the support ' +
+      'articles provided below. Be concise and practical, and reference the ' +
+      'relevant screen or menu when helpful. If the answer is not covered by the ' +
+      'articles, say so plainly and suggest browsing the Knowledge Base or asking ' +
+      'a firm administrator — do not invent features.\n\n' +
+      (context
+        ? `SUPPORT ARTICLES:\n${context}`
+        : 'SUPPORT ARTICLES: (none matched this question)');
+
+    const history = messages
+      .slice(-8)
+      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+      .join('\n');
+
+    const started = Date.now();
+    try {
+      const result = await provider.complete({
+        systemPrompt,
+        userPrompt: `${history}\n\nAnswer the user's latest question.`,
+        maxTokens: parsed.data.maxTokens ?? 600,
+        temperature: 0.2,
+      });
+      await logAiRequest(deps, {
+        firmId: session.firmId,
+        providerId: provider.id,
+        feature: 'support_chat',
+        success: true,
+        appUserId: session.appUserId,
+        latencyMs: Date.now() - started,
+        usage: result.usage,
+        costCents: result.costEstimateCents,
+      });
+      res.json({
+        message: result.text.trim(),
+        providerId: result.providerId,
+        sources: hits.map((h) => ({ slug: h.slug, title: h.title })),
+        budget:
+          budget.kind === 'warn' ? { warn: true, remainingCents: budget.remainingCents } : null,
+      });
+    } catch (err) {
+      await logAiRequest(deps, {
+        firmId: session.firmId,
+        providerId: provider.id,
+        feature: 'support_chat',
+        success: false,
+        errorMessage: err instanceof Error ? err.message : 'unknown',
+        appUserId: session.appUserId,
+        latencyMs: Date.now() - started,
+      });
+      res.status(502).json({ error: 'ai_provider_failed' });
+    }
+  });
 
   return router;
 }

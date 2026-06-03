@@ -10,7 +10,8 @@ import { loadConfig } from './config';
 import { logger } from './logger';
 import { getRedis } from './auth/redis-client';
 import { createSessionStore } from './auth/session-store';
-import { createDb } from '@vibe/db';
+import { createDb, seedKnowledgeBase } from '@vibe/db';
+import { firms } from '@vibe/db/schema';
 import { bootCrypto } from './crypto/boot';
 
 import { createStripeProvider } from './payments/stripe';
@@ -347,6 +348,24 @@ void bootCrypto(db)
   .catch((err) => {
     logger.error({ err }, 'crypto boot failed — appliance will report locked');
   });
+
+// 0096 — ensure the support knowledge base is seeded for every firm.
+// Fire-and-forget + idempotent (insert-missing-only), so it ships KB
+// content with each deploy without clobbering admin-edited articles.
+// Skipped gracefully if the table isn't migrated yet.
+void (async () => {
+  try {
+    const firmRows = await db.select({ id: firms.id }).from(firms);
+    for (const f of firmRows) {
+      await seedKnowledgeBase(db, f.id);
+    }
+    if (firmRows.length > 0) {
+      logger.info({ firms: firmRows.length }, 'knowledge base ensured');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'knowledge-base seed skipped (not migrated yet?)');
+  }
+})();
 const isProd = config.NODE_ENV === 'production';
 const MAX_LISTEN_ATTEMPTS = isProd ? 16 : Number.POSITIVE_INFINITY;
 let listenAttempt = 0;

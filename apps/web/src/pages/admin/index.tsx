@@ -14,6 +14,7 @@ import { AiUsagePage } from './AiUsage';
 import { ApiTokensPage } from './ApiTokens';
 import { BackupPage } from './Backup';
 import { CloudflareTunnelPage } from './CloudflareTunnel';
+import { KnowledgeBaseAdminPage } from './KnowledgeBase';
 import { CompliancePage } from './Compliance';
 import { DataPage } from './Data';
 import { ApprovalRulesPage } from './ApprovalRules';
@@ -158,6 +159,11 @@ const GROUPS: Group[] = [
       { key: 'storage-conflicts', label: 'Storage conflicts', href: '/admin/storage/conflicts' },
       { key: 'cloudflare-tunnel', label: 'Cloudflare Tunnel', href: '/admin/cloudflare-tunnel' },
     ],
+  },
+  {
+    key: 'support',
+    label: 'Support',
+    tabs: [{ key: 'kb', label: 'Knowledge Base', href: '/admin/kb' }],
   },
 ];
 
@@ -307,6 +313,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="storage/conflicts" element={<StorageConflictsListPage />} />
         <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />
         <Route path="cloudflare-tunnel" element={<CloudflareTunnelPage />} />
+        <Route path="kb" element={<KnowledgeBaseAdminPage />} />
       </Routes>
     </div>
   );

@@ -85,6 +85,7 @@ import { createAttachmentRouter } from './attachments/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
+import { createHelpRouter } from './help/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createCloudflareTunnelRouter } from './admin/cloudflare-tunnel/routes';
 import { createStripeWebhookRouter } from './webhooks/stripe';
@@ -729,6 +730,11 @@ export function createApp(deps: AppDeps): Express {
     localProvider: deps.localAiProvider ?? null,
   });
   app.use('/api/staff/ai', auth.requireAuth, auth.requireCsrf, aiRouter);
+
+  // 0096 — support knowledge base (reads open to any staff; kb:manage
+  // gates article CRUD inside the router).
+  const helpRouter = createHelpRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/help', auth.requireAuth, auth.requireCsrf, helpRouter);
 
   const statsRouter = createStatsRouter({
     db: deps.db,

@@ -7,6 +7,9 @@ import * as schema from './schema';
 export * as schema from './schema';
 export { schema as schemaTables };
 
+// Seed helpers usable from the API (e.g. boot-time idempotent seeding).
+export { seedKnowledgeBase, KB_CATEGORIES, KB_ARTICLES } from './seed-helpers/knowledge-base';
+
 export type Database = PostgresJsDatabase<typeof schema>;
 
 export interface CreateDbOptions {

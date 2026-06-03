@@ -159,6 +159,11 @@ export const PERMISSION_KEYS = [
   // engagement_scope post-acceptance).
   'proposal:read',
   'proposal:write',
+
+  // 0096 — Support knowledge base. Reading is open to any authenticated
+  // staff (no key); kb:manage gates create/edit/archive of articles +
+  // categories. Granted to partner + manager (admin inherits all).
+  'kb:manage',
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -235,6 +240,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'service:write',
     'proposal:read',
     'proposal:write',
+    'kb:manage',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -290,6 +296,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'service:write',
     // P04 — manager sees the pipeline read-only; only partners author.
     'proposal:read',
+    'kb:manage',
   ]),
 
   senior: new Set<PermissionKey>([

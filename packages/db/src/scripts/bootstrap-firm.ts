@@ -52,6 +52,7 @@ import {
 } from '../schema/core';
 import { seedNotificationTemplates } from '../seed-helpers/notification-templates';
 import { seedRetainerTierConfigs } from '../seed-helpers/retainer-tier-configs';
+import { seedKnowledgeBase } from '../seed-helpers/knowledge-base';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -274,6 +275,12 @@ async function main(): Promise<void> {
       const tierCount = await seedRetainerTierConfigs(tx, firmId);
       // eslint-disable-next-line no-console
       console.log(`bootstrap: seeded ${tierCount} retainer tier config default(s)`);
+
+      const kb = await seedKnowledgeBase(tx, firmId);
+      // eslint-disable-next-line no-console
+      console.log(
+        `bootstrap: seeded knowledge base (${kb.categories} categories, ${kb.articles} articles)`,
+      );
 
       // 0089 — payment-method catalog built-ins. Matches the previously
       // hard-coded RECORD_METHODS list on PaymentReceive. is_system=true
