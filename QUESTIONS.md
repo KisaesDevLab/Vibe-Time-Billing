@@ -315,6 +315,7 @@ Implication if wrong: If Phase 5 ships before Phase 8 we have a useless boolean 
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #1. Partnership/S-corp/audit engagements often require ≥2 signers. The addendum locks "single-signer UI" for v1 but requires schema to remain plural so v1.5 only ships UI work.
 Assumed default: **Schema plural, UI single-signer.** `signatures` table from day one (no inline `signature_*` columns on `proposals`). Acceptance portal hides the "add signer" UI but the API tolerates ≥1 row. The reverted PP0 violated this by putting signature columns inline on `proposal`; the new P01 migration uses the plural design.
 Implication if wrong: If we needed multi-signer UI in v1, only the acceptance flow changes — no schema migration. If we needed inline columns instead, we'd have to migrate every signed proposal to a separate row. Accepted because plural is strictly more flexible.
+**RESOLVED 2026-06-03 (operator):** Build multi-signer UI now. Schema is already plural, so this is acceptance-flow + UI work only.
 
 ## Q35 — OpenSign AGPL boundary [proposal P15]
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #2. OpenSign is AGPL; T&B core is PolyForm Internal Use 1.0.0. AGPL infection would force the entire appliance source code under AGPL.
@@ -325,11 +326,13 @@ Implication if wrong: If AGPL is read as infecting any system that talks to the 
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #3. A firm with 200 clients cannot hand-enter all of them at onboarding. Locked decision is "no CSV in v1."
 Assumed default: **Defer CSV import.** Manual entry only in v1 per the locked architectural decision in §0.1. Document the 200-client friction as a v1.5 candidate. Mitigation: P02 may include a dev-only seed script that ingests a CSV for friendly-fire firms but the production UI ships without import.
 Implication if wrong: If a friendly-fire firm cannot stomach manual entry, we open a one-night CSV-import sprint inside P02. Surface this to the operator before P02 ships — easy to reverse mid-build, expensive to reverse post-release.
+**RESOLVED 2026-06-03 (operator):** Build the production CSV client-import UI now. Supersedes the "defer" default.
 
 ## Q37 — QBO/MyBooks GL export [proposal P11, P22]
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #4. Firms running both Vibe T&B and Vibe MyBooks may expect proposal revenue to flow into MyBooks GL. Locked decision is "no sync in v1."
 Assumed default: **Defer GL export.** Confirm with operator before P11 (Stripe billing) and P22 (engagement lifecycle) whether MyBooks consumes T&B engagement data via shared-DB read or via API. Locked default is "no sync"; revisit pre-launch.
 Implication if wrong: If a friendly-fire firm needs GL export day-one, we add a P22.5 mini-phase to export engagement_scope + invoice rows as a queryable view for MyBooks. Tolerable cost; defer is the safer default.
+**RESOLVED 2026-06-03 (operator):** Keep deferred. No GL sync in v1; revisit pre-launch.
 
 ## Q38 — Phase 1 — Retainer addendum already implemented; re-execution would conflict
 **Date:** 2026-06-02 14:35
@@ -360,6 +363,8 @@ The working tree is also dirty (~30 files modified from the current session's in
 **Blocker:** yes
 **Workaround if non-blocking:** n/a — schema-level conflict, cannot proceed without operator direction.
 
+**RESOLVED 2026-06-03 (operator):** Do NOT re-run the kickoff verbatim. Run Option A — a gap audit mapping each build-plan phase item to existing code, producing `RETAINER_ADDENDUM_AUDIT.md`; build only genuine gaps it surfaces. No redundant migration.
+
 ---
 
 # CHANGE LOG
@@ -369,3 +374,4 @@ The working tree is also dirty (~30 files modified from the current session's in
 - 2026-05-25 — Q34/Q35/Q36/Q37 added for proposal module kickoff (see `ADDENDUM-PROPOSAL-MODULE.md` §0.3). PP0 reverted; replacing with addendum's P01–P30 phasing.
 - 2026-05-24 — Q34–Q40 locked under Section L for Connect Integration absorption (see `CONNECT_INTEGRATION_ADDENDUM.md` §5).
 - 2026-06-02 — Q38 added: retainer addendum already implemented (migrations 0065–0068); kickoff Phase 1 blocked pending operator direction.
+- 2026-06-03 — Operator Q&A resolved open items: Q38 → run gap audit (Option A); Q36 → build CSV client-import UI now; Q37 → keep GL export deferred; Q34 (proposals) → build multi-signer UI now. Q35 (OpenSign AGPL) left open — proposals ship native HMAC e-sign, so the sidecar boundary is currently moot.
