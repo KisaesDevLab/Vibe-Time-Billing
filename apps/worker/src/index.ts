@@ -56,6 +56,7 @@ import { runHashFileTick } from './jobs/hash-file';
 import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
 import { runIntakeProcess } from './jobs/intake-process';
+import { runInternalMessageNotify } from './jobs/internal-message-notify';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
@@ -637,6 +638,9 @@ async function setup(): Promise<void> {
   // notifies. Same parallel-registration pattern as storage-mutation.
   setupIntakeProcessQueue();
 
+  // Staff-to-staff message notifications (debounced email/SMS fan-out).
+  setupInternalMessageNotifyQueue();
+
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
   startHealthServer();
 }
@@ -681,6 +685,52 @@ function setupIntakeProcessQueue(): void {
 let intakeWorkerRef: Worker<IntakeJobPayload> | null = null;
 let intakeQueueRef: Queue<IntakeJobPayload> | null = null;
 let intakeEventsRef: QueueEvents | null = null;
+
+const INTERNAL_MESSAGE_NOTIFY_QUEUE = 'internal-message-notify';
+interface InternalMessageNotifyPayload {
+  threadId: string;
+  messageId: string;
+  firmId: string;
+  senderAppUserId: string;
+}
+
+function setupInternalMessageNotifyQueue(): void {
+  if (!db) {
+    logger.warn('internal-message-notify queue not registered — db missing');
+    return;
+  }
+  const q = new Queue<InternalMessageNotifyPayload>(INTERNAL_MESSAGE_NOTIFY_QUEUE, { connection });
+  const evt = new QueueEvents(INTERNAL_MESSAGE_NOTIFY_QUEUE, { connection });
+  evt.on('failed', ({ jobId, failedReason }) => {
+    logger.error(
+      { jobId, queue: INTERNAL_MESSAGE_NOTIFY_QUEUE, failedReason },
+      'internal-message-notify job failed',
+    );
+  });
+  const w = new Worker<InternalMessageNotifyPayload>(
+    INTERNAL_MESSAGE_NOTIFY_QUEUE,
+    async (job) => {
+      const result = await runInternalMessageNotify(db!, logger, job.data, {
+        sendEmail: dunningSendEmail,
+        sendSms: dunningSendSms,
+        appBaseUrl: process.env['APP_BASE_URL'],
+      });
+      logger.info({ jobId: job.id, ...result }, 'internal-message-notify complete');
+    },
+    { connection, concurrency: 2 },
+  );
+  imNotifyWorkerRef = w;
+  imNotifyQueueRef = q;
+  imNotifyEventsRef = evt;
+  logger.info(
+    { queueName: INTERNAL_MESSAGE_NOTIFY_QUEUE },
+    'internal-message-notify queue registered',
+  );
+}
+
+let imNotifyWorkerRef: Worker<InternalMessageNotifyPayload> | null = null;
+let imNotifyQueueRef: Queue<InternalMessageNotifyPayload> | null = null;
+let imNotifyEventsRef: QueueEvents | null = null;
 
 function setupStorageMutationQueue(): void {
   if (!db || !storage) {
@@ -882,6 +932,9 @@ async function shutdown(): Promise<void> {
   if (intakeWorkerRef) await intakeWorkerRef.close();
   if (intakeQueueRef) await intakeQueueRef.close();
   if (intakeEventsRef) await intakeEventsRef.close();
+  if (imNotifyWorkerRef) await imNotifyWorkerRef.close();
+  if (imNotifyQueueRef) await imNotifyQueueRef.close();
+  if (imNotifyEventsRef) await imNotifyEventsRef.close();
   if (publishConnRef) await publishConnRef.quit();
   await connection.quit();
   if (closeDb) await closeDb();

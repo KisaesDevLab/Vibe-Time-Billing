@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { BRAND } from './brand';
+import { api } from './api-client';
 
 import { QuickFind } from './QuickFind';
 
@@ -35,6 +36,7 @@ import { MessagesPage } from './pages/Messages';
 import { OnboardingPage } from './pages/Onboarding';
 import { HelpPage } from './pages/Help';
 import { IntakeInboxPage } from './pages/IntakeInbox';
+import { InternalMessagesPage } from './pages/InternalMessages';
 import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
@@ -108,6 +110,7 @@ export function App(): JSX.Element {
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
                   <Route path="/appointments" element={<AppointmentsPage />} />
                   <Route path="/intake" element={<IntakeInboxPage />} />
+                  <Route path="/team" element={<InternalMessagesPage />} />
                   {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/help" element={<HelpPage />} />
@@ -142,6 +145,23 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   // and surfaces firm-wide retainer dashboards. Staff without it still
   // get the personal /my/retainers view but no top-level entry.
   const canViewRetainers = usePermission('retainer:read');
+  const [teamUnread, setTeamUnread] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const poll = (): void => {
+      void api<{ unread: number }>('/api/staff/internal-messaging/unread-count')
+        .then((r) => {
+          if (alive) setTeamUnread(r.unread);
+        })
+        .catch(() => undefined);
+    };
+    poll();
+    const t = setInterval(poll, 30000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [location.pathname]);
   return (
     <AppShell
       brand={BRAND}
@@ -215,6 +235,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/messages',
           icon: '💬',
           active: location.pathname.startsWith('/messages'),
+        },
+        {
+          label: teamUnread > 0 ? `Team (${teamUnread})` : 'Team',
+          href: '/team',
+          icon: '👥',
+          active: location.pathname.startsWith('/team'),
         },
         {
           label: 'Appointments',

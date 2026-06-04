@@ -3206,6 +3206,9 @@ export const threads = pgTable(
     tDekWrapped: bytea('t_dek_wrapped').notNull(),
     status: text('status').notNull().default('ACTIVE'),
     title: text('title'),
+    // 0105 — 'client' (the original client/engagement-scoped threads) vs
+    // 'internal' (staff-to-staff direct + group chat; client_id is null).
+    kind: text('kind').notNull().default('client'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
@@ -3215,6 +3218,7 @@ export const threads = pgTable(
     clientIdx: index('thread_client_id_idx').on(t.clientId),
     statusIdx: index('thread_status_idx').on(t.status),
     statusCk: check('thread_status_ck', sql`${t.status} IN ('ACTIVE', 'ARCHIVED')`),
+    kindCk: check('thread_kind_ck', sql`${t.kind} IN ('client', 'internal')`),
   }),
 );
 
@@ -3241,6 +3245,10 @@ export const threadMembers = pgTable(
     memberRole: text('member_role').notNull(),
     joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
     removedAt: timestamp('removed_at', { withTimezone: true }),
+    // 0105 — per-member read cursor (unread = messages after this) and the
+    // last time we emailed/texted this member about the thread (debounce).
+    lastReadAt: timestamp('last_read_at', { withTimezone: true }),
+    lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
   },
   (t) => ({
     threadIdx: index('thread_member_thread_id_idx').on(t.threadId),

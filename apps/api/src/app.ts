@@ -27,6 +27,7 @@ import { createTaxJurisdictionRouter, createTaxPaymentTypeRouter } from './admin
 import { createUnlockRouter, createLockMiddleware } from './admin/unlock';
 import { requireStepUpWithLockout } from './auth/step-up-middleware';
 import { createEngagementMessagingRouter } from './engagement-messaging/routes';
+import { createInternalMessagingRouter } from './internal-messaging/routes';
 import { createRequestRouter } from './requests/routes';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
@@ -593,6 +594,18 @@ export function createApp(deps: AppDeps): Express {
     auth.requireAuth,
     auth.requireCsrf,
     engagementMessagingRouter,
+  );
+
+  // 0105 — staff-to-staff direct + group messaging.
+  const internalMessagingRouter = createInternalMessagingRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/internal-messaging',
+    auth.requireAuth,
+    auth.requireCsrf,
+    internalMessagingRouter,
   );
 
   // Stage 3 — client requests workflow.
