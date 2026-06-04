@@ -316,7 +316,13 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           entityType: 'payment_receipt',
           entityId: pendingReceipt.id,
           after: { providerChargeId: intentId, status: 'FAILED' },
-        }).catch(() => undefined);
+        }).catch((err: unknown) =>
+          // PAYMENT audit is non-repudiable — don't swallow silently.
+          logger.error(
+            { err, receiptId: pendingReceipt.id },
+            'audit emit failed (payment_receipt FAILED)',
+          ),
+        );
         return;
       }
       const [pay] = await deps.db
@@ -425,7 +431,9 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
                 amountCents: excess,
                 sourcePaymentId: pay.id,
               },
-            }).catch(() => undefined);
+            }).catch((err: unknown) =>
+              logger.error({ err, payId: pay.id }, 'audit emit failed (credit_auto_refund_excess)'),
+            );
           } catch (err) {
             logger.warn({ err, payId: pay.id }, 'refund-excess credit creation failed');
           }
@@ -541,7 +549,9 @@ async function materializeReceiptIfPending(db: Database, intentId: string): Prom
       providerChargeId: intentId,
       allocationCount: allocations.length,
     },
-  }).catch(() => undefined);
+  }).catch((err: unknown) =>
+    logger.error({ err, receiptId: receipt.id }, 'audit emit failed (receive_materialized)'),
+  );
 
   return true;
 }

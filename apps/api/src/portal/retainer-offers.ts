@@ -203,7 +203,9 @@ export function createPortalRetainerOfferRouter(deps: PortalRetainerOfferDeps): 
     // doesn't get a follow-up after declining. Best-effort.
     try {
       const { cancelOfferReminders } = await import('../retainers/scheduler');
-      void cancelOfferReminders(offer.id);
+      // Await so a rejection inside the scheduler is caught + logged here
+      // rather than becoming an unhandled rejection.
+      await cancelOfferReminders(offer.id);
     } catch (err) {
       logger.error({ err, offerId: offer.id }, 'cancel offer reminders failed');
     }

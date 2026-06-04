@@ -119,7 +119,11 @@ export async function cancelOfferReminders(offerId: string): Promise<void> {
   try {
     for (const kind of ['onbill', 'day30', 'day55'] as const) {
       const jobId = `retainer-offer-reminder:${offerId}:${kind}`;
-      await queue.remove(jobId).catch(() => undefined);
+      await queue
+        .remove(jobId)
+        .catch((err: unknown) =>
+          logger.warn({ err, jobId, offerId }, 'retainer offer reminder removal failed'),
+        );
     }
     logger.info({ offerId }, 'retainer offer reminders cancelled');
   } catch (err) {
@@ -178,7 +182,11 @@ export async function cancelRetainerWarnings(retainerId: string): Promise<void> 
   try {
     for (const kind of ['90d', '60d', '30d', '7d'] as const) {
       const jobId = `retainer-expiry-warning:${retainerId}:${kind}`;
-      await queue.remove(jobId).catch(() => undefined);
+      await queue
+        .remove(jobId)
+        .catch((err: unknown) =>
+          logger.warn({ err, jobId, retainerId }, 'retainer expiry warning removal failed'),
+        );
     }
     logger.info({ retainerId }, 'retainer warnings cancelled');
   } catch (err) {

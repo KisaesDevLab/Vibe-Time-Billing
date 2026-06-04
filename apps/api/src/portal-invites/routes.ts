@@ -639,11 +639,22 @@ async function notifyExisting(
 ): Promise<void> {
   const subject = `You've been added to ${clientName} in your portal`;
   const body = `You now have access to ${clientName}. Sign in to the portal to view and pay invoices.`;
+  // Best-effort delivery, but log failures so a missing invite is diagnosable
+  // (don't swallow silently). channel only — no recipient PII in the log.
   if (args.deliveryChannel === 'EMAIL' && args.email && deps.sendEmail) {
-    await deps.sendEmail({ to: args.email, subject, body }).catch(() => undefined);
+    await deps
+      .sendEmail({ to: args.email, subject, body })
+      .catch((err: unknown) =>
+        logger.warn({ err, channel: 'EMAIL' }, 'portal invite notification failed'),
+      );
   } else if (args.deliveryChannel === 'SMS' && args.phone && deps.sendSms) {
     const normPhone = normalizePhone(args.phone);
-    if (normPhone) await deps.sendSms({ to: normPhone, body }).catch(() => undefined);
+    if (normPhone)
+      await deps
+        .sendSms({ to: normPhone, body })
+        .catch((err: unknown) =>
+          logger.warn({ err, channel: 'SMS' }, 'portal invite notification failed'),
+        );
   }
 }
 

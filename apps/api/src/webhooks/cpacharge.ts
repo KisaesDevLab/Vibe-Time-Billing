@@ -35,7 +35,9 @@ export function createCpaChargeWebhookRouter(deps: CpaChargeWebhookDeps): Router
       secret: deps.webhookSecret,
     });
     if (!ok) {
-      logger.warn({ signature }, 'cpacharge webhook signature mismatch');
+      // Never log the signature value itself (it's a credential). Log only
+      // that a mismatch occurred — matches the other webhook verifiers.
+      logger.warn({ result: 'mismatch' }, 'cpacharge webhook signature mismatch');
       res.status(401).json({ error: 'invalid_signature' });
       return;
     }
