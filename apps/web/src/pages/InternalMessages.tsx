@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Team messages — staff-to-staff direct + group chat. Thread list (with
-// unread counts) on the left, conversation on the right, plus a
+// Team messages panel — staff-to-staff direct + group chat. Thread list
+// (with unread counts) on the left, conversation on the right, plus a
 // new-conversation modal with a multi-staff picker. Light polling keeps it
-// fresh (no websockets in this stack).
+// fresh (no websockets in this stack). Rendered as the "Team" tab of the
+// Messages page.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -30,7 +31,7 @@ interface Msg {
   mine: boolean;
 }
 
-export function InternalMessagesPage(): JSX.Element {
+export function TeamMessagesPanel(): JSX.Element {
   const [threads, setThreads] = useState<ThreadRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -108,9 +109,18 @@ export function InternalMessagesPage(): JSX.Element {
   }
 
   return (
-    <div style={{ padding: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ fontSize: 20, margin: 0 }}>Team messages</h1>
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 4,
+        }}
+      >
+        <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+          Internal — these conversations are never visible to clients.
+        </span>
         <Button onClick={() => setShowNew(true)}>New conversation</Button>
       </div>
       {error && (
@@ -118,7 +128,7 @@ export function InternalMessagesPage(): JSX.Element {
       )}
 
       <div
-        style={{ display: 'flex', gap: 16, marginTop: 16, alignItems: 'stretch', height: '70vh' }}
+        style={{ display: 'flex', gap: 16, marginTop: 12, alignItems: 'stretch', height: '70vh' }}
       >
         {/* Thread list */}
         <div

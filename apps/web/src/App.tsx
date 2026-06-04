@@ -36,7 +36,6 @@ import { MessagesPage } from './pages/Messages';
 import { OnboardingPage } from './pages/Onboarding';
 import { HelpPage } from './pages/Help';
 import { IntakeInboxPage } from './pages/IntakeInbox';
-import { InternalMessagesPage } from './pages/InternalMessages';
 import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
@@ -110,7 +109,9 @@ export function App(): JSX.Element {
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
                   <Route path="/appointments" element={<AppointmentsPage />} />
                   <Route path="/intake" element={<IntakeInboxPage />} />
-                  <Route path="/team" element={<InternalMessagesPage />} />
+                  {/* Team chat is now the "Team" tab of /messages; keep the
+                      old path (and notification email links) working. */}
+                  <Route path="/team" element={<Navigate to="/messages?tab=team" replace />} />
                   {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/help" element={<HelpPage />} />
@@ -231,16 +232,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/requests'),
         },
         {
-          label: 'Messages',
+          label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
           href: '/messages',
           icon: '💬',
-          active: location.pathname.startsWith('/messages'),
-        },
-        {
-          label: teamUnread > 0 ? `Team (${teamUnread})` : 'Team',
-          href: '/team',
-          icon: '👥',
-          active: location.pathname.startsWith('/team'),
+          active:
+            location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
         },
         {
           label: 'Appointments',

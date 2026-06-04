@@ -1,19 +1,89 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Staff Messages page — unified inbox across every engagement thread the
-// signed-in staff user is a member of. Mirrors the portal /messages
-// shape: thread list on the left, message stream + composer on the
-// right. New threads aren't created here; they're provisioned
-// automatically when an engagement is created (see
-// apps/api/src/engagement-messaging/lifecycle.ts).
+// Staff Messages — one place for all conversations, split into two tabs:
+//   • Clients — staff ↔ client engagement threads (visible in the portal).
+//   • Team    — staff ↔ staff internal direct + group chat (never shared).
+//
+// The Clients panel lists every engagement thread the signed-in user is a
+// member of (threads are auto-provisioned on engagement create). The Team
+// panel is the internal-messaging UI.
 
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import { Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
 import { ThreadView } from './messaging/ThreadView';
+import { TeamMessagesPanel } from './InternalMessages';
+
+type Tab = 'clients' | 'team';
+
+export function MessagesPage(): JSX.Element {
+  const location = useLocation();
+  const initialTab: Tab = location.search.includes('tab=team') ? 'team' : 'clients';
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [teamUnread, setTeamUnread] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    const poll = (): void => {
+      void api<{ unread: number }>('/api/staff/internal-messaging/unread-count')
+        .then((r) => alive && setTeamUnread(r.unread))
+        .catch(() => undefined);
+    };
+    poll();
+    const t = setInterval(poll, 30000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [tab]);
+
+  return (
+    <div style={{ display: 'grid', gap: tokens.space.lg }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <TabButton active={tab === 'clients'} onClick={() => setTab('clients')}>
+          Clients
+        </TabButton>
+        <TabButton active={tab === 'team'} onClick={() => setTab('team')}>
+          Team{teamUnread > 0 ? ` (${teamUnread})` : ''}
+        </TabButton>
+      </div>
+      {tab === 'clients' ? <ClientMessagesPanel /> : <TeamMessagesPanel />}
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: '6px 14px',
+        borderRadius: tokens.radius.pill,
+        border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
+        background: active ? tokens.color.accentMuted : 'transparent',
+        color: active ? tokens.color.accent : tokens.color.text,
+        fontSize: 14,
+        fontWeight: active ? 600 : 400,
+        cursor: 'pointer',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
 interface ThreadRow {
   threadId: string;
@@ -23,7 +93,7 @@ interface ThreadRow {
   updatedAt: string;
 }
 
-export function MessagesPage(): JSX.Element {
+function ClientMessagesPanel(): JSX.Element {
   const [threads, setThreads] = useState<ThreadRow[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +117,7 @@ export function MessagesPage(): JSX.Element {
 
   if (threads == null) {
     return (
-      <Card title="Messages">
+      <Card title="Client conversations">
         <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>
       </Card>
     );
@@ -55,16 +125,16 @@ export function MessagesPage(): JSX.Element {
 
   if (threads.length === 0) {
     return (
-      <Card title="Messages">
+      <Card title="Client conversations">
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 13, marginBottom: 8 }} role="alert">
             {error}
           </p>
         )}
         <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-          You aren&apos;t a member of any message threads yet. Threads are created automatically
-          when an engagement is opened; ask the engagement partner to add you, or create an
-          engagement and invite a portal contact for that client.
+          You aren&apos;t a member of any client threads yet. Threads are created automatically when
+          an engagement is opened; ask the engagement partner to add you, or create an engagement
+          and invite a portal contact for that client.
         </p>
       </Card>
     );
