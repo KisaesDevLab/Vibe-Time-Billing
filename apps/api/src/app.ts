@@ -38,6 +38,7 @@ import { createClientRouter } from './clients/routes';
 // internal-files + folder-templates routers removed in Phase 0 of the
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
+import { createStatusHistoryRouter } from './engagements/status-history';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
@@ -511,6 +512,19 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/engagements', auth.requireAuth, auth.requireCsrf, engagementRouter);
+
+  // Firm-wide engagement progress-status change history report. Distinct
+  // mount so it never collides with the engagements /:id routes.
+  const statusHistoryRouter = createStatusHistoryRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/engagement-status-history',
+    auth.requireAuth,
+    auth.requireCsrf,
+    statusHistoryRouter,
+  );
 
   // 0083 — recurring engagements (CRUD + run-now). Worker sweep lives
   // in apps/worker/src/jobs/recurring-engagement.ts.

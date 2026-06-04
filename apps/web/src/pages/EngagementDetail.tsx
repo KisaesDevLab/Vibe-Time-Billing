@@ -12,6 +12,7 @@ import {
   percentInputToBps,
 } from '../lib/money';
 import { EngagementMessagesCard } from './messaging/EngagementMessagesCard';
+import { EngagementStatusHistoryCard } from './EngagementStatusHistoryCard';
 import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlansCard';
 
 const FEE_STRUCTURES = [
@@ -901,6 +902,8 @@ export function EngagementDetailPage(): JSX.Element {
       )}
 
       <EngagementNotes engagementId={id ?? ''} />
+
+      {id && <EngagementStatusHistoryCard engagementId={id} />}
     </div>
   );
 }

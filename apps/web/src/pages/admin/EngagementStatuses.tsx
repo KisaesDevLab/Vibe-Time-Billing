@@ -1,195 +1,147 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// 0050 — engagement workflow-state config. Per-firm overrides on the
-// pgEnum (workflow_state) values: label, color, sort order, kanban
-// visibility, and the "fires client communication on entry" flag.
-// Rows are seeded by migration; only edit is exposed.
+// Engagement progress-status catalog (0101). A compact list of the firm's
+// statuses; create/edit happens in a popup (StatusEditorModal) so the form
+// has room to grow as more per-status features land. Built-ins are
+// un-deletable; custom statuses are fully managed here.
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Input, Table, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
-
-interface StatusConfigRow {
-  firmId: string;
-  workflowState: string;
-  label: string;
-  color: string;
-  sortOrder: number;
-  kanbanVisible: boolean;
-  triggersClientComm: boolean;
-}
+import { StatusEditorModal, type StatusConfigRow } from './StatusEditorModal';
 
 export function EngagementStatusesPage(): JSX.Element {
   const [rows, setRows] = useState<StatusConfigRow[]>([]);
-  const [edits, setEdits] = useState<Record<string, Partial<StatusConfigRow>>>({});
-  const [savingState, setSavingState] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // editing: a row to edit, or 'new' to create, or null = modal closed.
+  const [editing, setEditing] = useState<StatusConfigRow | 'new' | null>(null);
 
   async function load(): Promise<void> {
-    const r = await api<{ items: StatusConfigRow[] }>('/api/staff/admin/engagement-statuses');
-    setRows(r.items ?? []);
-    setEdits({});
+    try {
+      const r = await api<{ items: StatusConfigRow[] }>('/api/staff/admin/engagement-statuses');
+      setRows(r.items ?? []);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+
+  // Inline toggle for the on-table checkboxes (optimistic, reverts on error).
+  async function toggle(row: StatusConfigRow, change: Partial<StatusConfigRow>): Promise<void> {
+    setRows((prev) =>
+      prev.map((r) => (r.workflowState === row.workflowState ? { ...r, ...change } : r)),
+    );
+    try {
+      await api(`/api/staff/admin/engagement-statuses/${row.workflowState}`, {
+        method: 'PATCH',
+        body: JSON.stringify(change),
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'update_failed');
+      void load();
+    }
   }
   useEffect(() => {
     void load();
   }, []);
 
-  function patch(state: string, change: Partial<StatusConfigRow>): void {
-    setEdits((prev) => ({ ...prev, [state]: { ...prev[state], ...change } }));
-  }
-
-  async function save(state: string): Promise<void> {
-    const e = edits[state];
-    if (!e || Object.keys(e).length === 0) return;
-    setSavingState(state);
-    setErr(null);
-    try {
-      await api(`/api/staff/admin/engagement-statuses/${state}`, {
-        method: 'PATCH',
-        body: JSON.stringify(e),
-      });
-      await load();
-    } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : 'save_failed');
-    } finally {
-      setSavingState(null);
-    }
-  }
-
-  function effective(row: StatusConfigRow): StatusConfigRow {
-    return { ...row, ...edits[row.workflowState] };
-  }
-
-  function isDirty(state: string): boolean {
-    return Boolean(edits[state] && Object.keys(edits[state]!).length > 0);
-  }
-
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1000 }}>
       <Card title="Engagement statuses">
-        <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0, marginBottom: 12 }}>
-          Customize the labels, colors, kanban visibility, and automation flags for each engagement
-          workflow state. New rows cannot be added — the underlying state set is fixed.
-        </p>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 12,
+            gap: 12,
+          }}
+        >
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            Your board statuses. Click one to edit its color, order, client-facing text, and more.
+            Built-ins can be edited but not deleted.
+          </p>
+          <Button variant="primary" onClick={() => setEditing('new')}>
+            + Add status
+          </Button>
+        </div>
         {err && <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }}>{err}</p>}
+
         <Table<StatusConfigRow>
           columns={[
             {
-              key: 'state',
-              header: 'State',
-              render: (r) => <code style={{ fontSize: 12 }}>{r.workflowState}</code>,
-            },
-            {
               key: 'label',
-              header: 'Label',
-              render: (r) => {
-                const v = effective(r);
-                return (
-                  <Input
-                    value={v.label}
-                    onChange={(e) => patch(r.workflowState, { label: e.target.value })}
+              header: 'Status',
+              render: (r) => (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 12,
+                      height: 12,
+                      borderRadius: 3,
+                      background: r.color,
+                      display: 'inline-block',
+                      flexShrink: 0,
+                    }}
                   />
-                );
-              },
+                  <span>{r.label}</span>
+                  {r.isSystem && <Pill tone="neutral">built-in</Pill>}
+                </div>
+              ),
             },
             {
-              key: 'color',
-              header: 'Color',
-              render: (r) => {
-                const v = effective(r);
-                return (
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <input
-                      type="color"
-                      value={v.color}
-                      aria-label="Color"
-                      onChange={(e) => patch(r.workflowState, { color: e.target.value })}
-                      style={{
-                        width: 32,
-                        height: 28,
-                        padding: 0,
-                        border: 'none',
-                        background: 'transparent',
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                        color: tokens.color.textMuted,
-                      }}
-                    >
-                      {v.color}
-                    </span>
-                  </div>
-                );
-              },
+              key: 'client',
+              header: 'Client sees',
+              render: (r) =>
+                r.clientLabel ? (
+                  <span style={{ fontSize: 13 }}>{r.clientLabel}</span>
+                ) : (
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>standard pill</span>
+                ),
             },
             {
-              key: 'sort',
-              header: 'Sort',
-              align: 'right',
-              render: (r) => {
-                const v = effective(r);
-                return (
-                  <Input
-                    type="number"
-                    value={String(v.sortOrder)}
-                    onChange={(e) =>
-                      patch(r.workflowState, { sortOrder: Number(e.target.value) || 0 })
-                    }
-                    style={{ width: 80, textAlign: 'right' }}
-                  />
-                );
-              },
+              key: 'clientVisible',
+              header: 'Show clients',
+              align: 'center',
+              render: (r) => (
+                <input
+                  type="checkbox"
+                  checked={r.clientVisible}
+                  aria-label={`Show ${r.label} to clients`}
+                  onChange={(e) => void toggle(r, { clientVisible: e.target.checked })}
+                />
+              ),
             },
             {
               key: 'kanban',
-              header: 'Kanban',
+              header: 'Board',
               align: 'center',
-              render: (r) => {
-                const v = effective(r);
-                return (
-                  <input
-                    type="checkbox"
-                    checked={v.kanbanVisible}
-                    aria-label="Visible on kanban"
-                    onChange={(e) => patch(r.workflowState, { kanbanVisible: e.target.checked })}
-                  />
-                );
-              },
+              render: (r) => (
+                <input
+                  type="checkbox"
+                  checked={r.kanbanVisible}
+                  aria-label={`Show ${r.label} on board`}
+                  onChange={(e) => void toggle(r, { kanbanVisible: e.target.checked })}
+                />
+              ),
             },
             {
-              key: 'comm',
-              header: 'Client comm',
-              align: 'center',
-              render: (r) => {
-                const v = effective(r);
-                return (
-                  <input
-                    type="checkbox"
-                    checked={v.triggersClientComm}
-                    aria-label="Triggers client communication"
-                    onChange={(e) =>
-                      patch(r.workflowState, { triggersClientComm: e.target.checked })
-                    }
-                  />
-                );
-              },
+              key: 'sort',
+              header: 'Order',
+              align: 'right',
+              render: (r) => (
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r.sortOrder}</span>
+              ),
             },
             {
-              key: 'save',
+              key: 'edit',
               header: '',
               align: 'right',
               render: (r) => (
-                <Button
-                  size="sm"
-                  variant={isDirty(r.workflowState) ? 'primary' : 'ghost'}
-                  disabled={!isDirty(r.workflowState) || savingState === r.workflowState}
-                  onClick={() => void save(r.workflowState)}
-                >
-                  {savingState === r.workflowState ? 'Saving…' : 'Save'}
+                <Button size="sm" variant="secondary" onClick={() => setEditing(r)}>
+                  Edit
                 </Button>
               ),
             },
@@ -198,6 +150,17 @@ export function EngagementStatusesPage(): JSX.Element {
           rowKey={(r) => r.workflowState}
         />
       </Card>
+
+      {editing !== null && (
+        <StatusEditorModal
+          status={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }

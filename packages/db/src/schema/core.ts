@@ -109,18 +109,10 @@ export const engagementStatus = pgEnum('engagement_status', [
 
 // v2 Part 2 — operational workflow state, distinct from billing
 // lifecycle status. Drives the /engagements list view (Canopy-style).
-export const engagementWorkflowState = pgEnum('engagement_workflow_state', [
-  'NO_STATUS',
-  'NOT_STARTED',
-  'READY',
-  'IN_PROGRESS',
-  'ON_HOLD',
-  'NEEDS_REVIEW',
-  'WITH_CLIENT',
-  'COMPLETED',
-  'CANCELED',
-  'DRAFT',
-]);
+// 0101 — relaxed from a pgEnum to a plain text key so firms can define
+// UNLIMITED custom progress statuses. The valid keys per firm live in
+// engagement_status_config; engagement.workflow_state carries a composite
+// FK to it. The 10 original values remain as seeded `is_system` rows.
 
 export const engagementPriority = pgEnum('engagement_priority', [
   'LOW',
@@ -1664,7 +1656,8 @@ export const engagements = pgTable(
     status: engagementStatus('status').notNull().default('PROPOSED'),
     // v2 Part 2 — operational workflow + priority (distinct from
     // lifecycle status above).
-    workflowState: engagementWorkflowState('workflow_state').notNull().default('NO_STATUS'),
+    // 0101 — text key into engagement_status_config (firm-scoped catalog).
+    workflowState: text('workflow_state').notNull().default('NO_STATUS'),
     priority: engagementPriority('priority').notNull().default('MEDIUM'),
     startDate: date('start_date'),
     endDate: date('end_date'),
@@ -3146,12 +3139,20 @@ export const engagementStatusConfig = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
-    workflowState: engagementWorkflowState('workflow_state').notNull(),
+    // 0101 — arbitrary text key (was the engagement_workflow_state enum).
+    workflowState: text('workflow_state').notNull(),
     label: text('label').notNull(),
     color: text('color').notNull().default('#6b7280'),
     sortOrder: integer('sort_order').notNull().default(0),
     kanbanVisible: boolean('kanban_visible').notNull().default(true),
     triggersClientComm: boolean('triggers_client_comm').notNull().default(false),
+    // 0101 — the 10 originals are is_system (un-deletable, key immutable);
+    // firm-created rows are deletable. Client-facing text shown in the
+    // portal in place of the internal label when set + client_visible.
+    isSystem: boolean('is_system').notNull().default(false),
+    clientLabel: text('client_label'),
+    clientDescription: text('client_description'),
+    clientVisible: boolean('client_visible').notNull().default(true),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

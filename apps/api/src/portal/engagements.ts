@@ -26,7 +26,15 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, clientRequests, engagements, milestonePlans, milestones } from '@vibe/db/schema';
+import {
+  appUsers,
+  clientRequests,
+  clients,
+  engagementStatusConfig,
+  engagements,
+  milestonePlans,
+  milestones,
+} from '@vibe/db/schema';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -86,6 +94,9 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
               e.due_date::text                  AS due_date,
               e.updated_at                      AS last_activity,
               partner.full_name                 AS partner_name,
+              esc.client_label                  AS client_label,
+              esc.client_description            AS client_description,
+              esc.client_visible                AS client_visible,
               (
                 SELECT COUNT(*)::int FROM ${clientRequests} cr
                 WHERE cr.engagement_id = e.id AND cr.status = 'OPEN'
@@ -114,6 +125,9 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
               )                                 AS next_milestone
             FROM ${engagements} e
             LEFT JOIN ${appUsers} partner ON partner.id = e.partner_id
+            LEFT JOIN ${clients} c ON c.id = e.client_id
+            LEFT JOIN ${engagementStatusConfig} esc
+              ON esc.firm_id = c.firm_id AND esc.workflow_state = e.workflow_state
             WHERE e.client_id IN (${sql.join(
               scope.clientIds.map((c) => sql`${c}::uuid`),
               sql`, `,
@@ -139,6 +153,9 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
               due_date: string | null;
               last_activity: Date | string;
               partner_name: string | null;
+              client_label: string | null;
+              client_description: string | null;
+              client_visible: boolean | null;
               open_request_count: number;
               total_milestones: number;
               completed_milestones: number;
@@ -169,6 +186,11 @@ export function createPortalEngagementRouter(deps: PortalEngagementDeps): Router
             workflowState: r.workflow_state,
             openRequestCount: r.open_request_count,
           }),
+          // 0101 — firm-defined client-facing text overrides the derived
+          // pill when set + visible; otherwise null and the portal falls
+          // back to the statusPill label.
+          clientLabel: r.client_visible === false ? null : r.client_label,
+          clientDescription: r.client_visible === false ? null : r.client_description,
           progressPct,
           nextMilestone: r.next_milestone,
           awaitingFromYou: r.open_request_count,

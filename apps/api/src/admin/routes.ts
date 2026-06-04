@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -1492,9 +1492,15 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
             kanbanVisible: true,
           },
         ];
-        await deps.db
-          .insert(engagementStatusConfig)
-          .values(DEFAULT_STATUS_CONFIGS.map((d) => ({ firmId, ...d, triggersClientComm: false })));
+        await deps.db.insert(engagementStatusConfig).values(
+          DEFAULT_STATUS_CONFIGS.map((d) => ({
+            firmId,
+            ...d,
+            triggersClientComm: false,
+            isSystem: true,
+            clientVisible: true,
+          })),
+        );
         items = await deps.db
           .select()
           .from(engagementStatusConfig)
@@ -1505,6 +1511,8 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // 0101 — presentation + client-facing fields. Any existing row (system
+  // or custom) is editable; the key (workflow_state) is immutable.
   const StatusConfigPatchSchema = z
     .object({
       label: z.string().min(1).max(60).optional(),
@@ -1515,22 +1523,94 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       sortOrder: z.number().int().min(0).max(9999).optional(),
       kanbanVisible: z.boolean().optional(),
       triggersClientComm: z.boolean().optional(),
+      clientLabel: z.string().max(120).nullable().optional(),
+      clientDescription: z.string().max(500).nullable().optional(),
+      clientVisible: z.boolean().optional(),
     })
     .strict();
 
-  const WORKFLOW_STATES = [
-    'NO_STATUS',
-    'NOT_STARTED',
-    'READY',
-    'IN_PROGRESS',
-    'ON_HOLD',
-    'NEEDS_REVIEW',
-    'WITH_CLIENT',
-    'COMPLETED',
-    'CANCELED',
-    'DRAFT',
-  ] as const;
-  type WorkflowState = (typeof WORKFLOW_STATES)[number];
+  // 0101 — derive a stable, unique-per-firm text key from a label.
+  function slugifyStatusKey(label: string): string {
+    const base =
+      label
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 40) || 'STATUS';
+    return base;
+  }
+
+  const StatusCreateSchema = z
+    .object({
+      label: z.string().min(1).max(60),
+      color: z
+        .string()
+        .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
+        .optional(),
+      sortOrder: z.number().int().min(0).max(9999).optional(),
+      kanbanVisible: z.boolean().optional(),
+      triggersClientComm: z.boolean().optional(),
+      clientLabel: z.string().max(120).nullable().optional(),
+      clientDescription: z.string().max(500).nullable().optional(),
+      clientVisible: z.boolean().optional(),
+    })
+    .strict();
+
+  // POST /engagement-statuses — create a firm-custom progress status.
+  router.post(
+    '/engagement-statuses',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = StatusCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const d = parsed.data;
+      // Dedupe the key within the firm.
+      const existingKeys = new Set(
+        (
+          await deps.db
+            .select({ ws: engagementStatusConfig.workflowState })
+            .from(engagementStatusConfig)
+            .where(eq(engagementStatusConfig.firmId, firmId))
+        ).map((r) => r.ws),
+      );
+      const baseKey = slugifyStatusKey(d.label);
+      let key = baseKey;
+      let n = 2;
+      while (existingKeys.has(key)) key = `${baseKey}_${n++}`;
+
+      await deps.db.insert(engagementStatusConfig).values({
+        firmId,
+        workflowState: key,
+        label: d.label,
+        color: d.color ?? '#6b7280',
+        sortOrder: d.sortOrder ?? 100,
+        kanbanVisible: d.kanbanVisible ?? true,
+        triggersClientComm: d.triggersClientComm ?? false,
+        isSystem: false,
+        clientLabel: d.clientLabel ?? null,
+        clientDescription: d.clientDescription ?? null,
+        clientVisible: d.clientVisible ?? true,
+      });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'engagement_status_config',
+        entityId: key,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: { workflowState: key, label: d.label },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true, workflowState: key });
+    },
+  );
 
   router.patch(
     '/engagement-statuses/:state',
@@ -1542,13 +1622,23 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         return;
       }
       const state = req.params['state'] as string;
-      if (!(WORKFLOW_STATES as readonly string[]).includes(state)) {
-        res.status(400).json({ error: 'invalid_state' });
-        return;
-      }
       const parsed = StatusConfigPatchSchema.safeParse(req.body);
       if (!parsed.success || Object.keys(parsed.data).length === 0) {
         res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [row] = await deps.db
+        .select({ ws: engagementStatusConfig.workflowState })
+        .from(engagementStatusConfig)
+        .where(
+          and(
+            eq(engagementStatusConfig.firmId, firmId),
+            eq(engagementStatusConfig.workflowState, state),
+          ),
+        )
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'unknown_state' });
         return;
       }
       await deps.db
@@ -1557,7 +1647,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .where(
           and(
             eq(engagementStatusConfig.firmId, firmId),
-            eq(engagementStatusConfig.workflowState, state as WorkflowState),
+            eq(engagementStatusConfig.workflowState, state),
           ),
         );
       await emitAudit(deps.db, {
@@ -1566,6 +1656,66 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         entityId: state,
         actorAppUserId: req.staffSession!.appUserId,
         after: parsed.data,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // DELETE /engagement-statuses/:state — custom + not-in-use only.
+  router.delete(
+    '/engagement-statuses/:state',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const state = req.params['state'] as string;
+      const [row] = await deps.db
+        .select({ isSystem: engagementStatusConfig.isSystem })
+        .from(engagementStatusConfig)
+        .where(
+          and(
+            eq(engagementStatusConfig.firmId, firmId),
+            eq(engagementStatusConfig.workflowState, state),
+          ),
+        )
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'unknown_state' });
+        return;
+      }
+      if (row.isSystem) {
+        res.status(409).json({ error: 'cannot_delete_system_status' });
+        return;
+      }
+      // In-use guard: engagement has no firm_id, so scope via client.
+      const { engagements, clients } = await import('@vibe/db/schema');
+      const [used] = await deps.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(engagements)
+        .innerJoin(clients, eq(engagements.clientId, clients.id))
+        .where(and(eq(clients.firmId, firmId), eq(engagements.workflowState, state)));
+      if ((used?.n ?? 0) > 0) {
+        res.status(409).json({ error: 'status_in_use', count: used?.n ?? 0 });
+        return;
+      }
+      await deps.db
+        .delete(engagementStatusConfig)
+        .where(
+          and(
+            eq(engagementStatusConfig.firmId, firmId),
+            eq(engagementStatusConfig.workflowState, state),
+          ),
+        );
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'engagement_status_config',
+        entityId: state,
+        actorAppUserId: req.staffSession!.appUserId,
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch(() => undefined);

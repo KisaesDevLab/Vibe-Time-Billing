@@ -21,6 +21,7 @@ import { DataPage } from './Data';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
 import { EngagementStatusesPage } from './EngagementStatuses';
+import { StatusHistoryPage } from './StatusHistory';
 import { FirmSettingsPage } from './FirmSettings';
 import { HolidaysPage } from './Holidays';
 import { HourBanksPage } from './HourBanks';
@@ -96,6 +97,7 @@ const GROUPS: Group[] = [
     tabs: [
       { key: 'taxonomy', label: 'Taxonomy', href: '/admin/taxonomy' },
       { key: 'statuses', label: 'Engagement statuses', href: '/admin/engagement-statuses' },
+      { key: 'status-history', label: 'Status history', href: '/admin/status-history' },
       { key: 'tpl', label: 'Templates', href: '/admin/templates' },
       {
         key: 'recurring-engagements',
@@ -277,6 +279,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="users/:id" element={<UserDetailPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
+        <Route path="status-history" element={<StatusHistoryPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="recurring-engagements" element={<EngagementRecurrencesPage />} />
         <Route path="payment-methods" element={<PaymentMethodsPage />} />

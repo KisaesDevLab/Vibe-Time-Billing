@@ -12,6 +12,7 @@ import {
   clients,
   engagementAssignments,
   engagementNotes,
+  engagementStatusConfig,
   engagementTemplates,
   engagementTypes,
   engagements,
@@ -24,6 +25,7 @@ import {
 } from '@vibe/db/schema';
 import { resolveEngagementName, type Period } from '@vibe/core/engagements';
 import { desc } from 'drizzle-orm';
+import { queryStatusHistory } from './status-history';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -194,23 +196,12 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       // v2 Part 2 — workflow_state filter (CSV multi-select).
       const wsRaw =
         typeof req.query['workflowState'] === 'string' ? req.query['workflowState'] : '';
-      const wsAllowed = [
-        'NO_STATUS',
-        'NOT_STARTED',
-        'READY',
-        'IN_PROGRESS',
-        'ON_HOLD',
-        'NEEDS_REVIEW',
-        'WITH_CLIENT',
-        'COMPLETED',
-        'CANCELED',
-        'DRAFT',
-      ] as const;
-      type WorkflowState = (typeof wsAllowed)[number];
+      // 0101 — workflow_state is now a free text key (firm catalog), so accept
+      // any non-empty CSV values; unknown keys simply match no rows.
       const wsValues = wsRaw
         .split(',')
         .map((s) => s.trim())
-        .filter((s): s is WorkflowState => (wsAllowed as readonly string[]).includes(s));
+        .filter((s) => s.length > 0);
       if (wsValues.length > 0) {
         conds.push(inArray(engagements.workflowState, wsValues));
       }
@@ -971,20 +962,23 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       }
       const body = req.body as { workflowState?: unknown };
       const ws = typeof body.workflowState === 'string' ? body.workflowState : '';
-      const allowed = [
-        'NO_STATUS',
-        'NOT_STARTED',
-        'READY',
-        'IN_PROGRESS',
-        'ON_HOLD',
-        'NEEDS_REVIEW',
-        'WITH_CLIENT',
-        'COMPLETED',
-        'CANCELED',
-        'DRAFT',
-      ] as const;
-      type WorkflowState = (typeof allowed)[number];
-      if (!(allowed as readonly string[]).includes(ws)) {
+      // 0101 — validate against the firm's status catalog (unlimited custom
+      // statuses), not a fixed enum.
+      if (!ws) {
+        res.status(400).json({ error: 'invalid_workflow_state' });
+        return;
+      }
+      const [statusRow] = await deps.db
+        .select({ ws: engagementStatusConfig.workflowState })
+        .from(engagementStatusConfig)
+        .where(
+          and(
+            eq(engagementStatusConfig.firmId, session.firmId),
+            eq(engagementStatusConfig.workflowState, ws),
+          ),
+        )
+        .limit(1);
+      if (!statusRow) {
         res.status(400).json({ error: 'invalid_workflow_state' });
         return;
       }
@@ -1005,7 +999,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       }
       await deps.db
         .update(engagements)
-        .set({ workflowState: ws as WorkflowState, updatedAt: new Date() })
+        .set({ workflowState: ws, updatedAt: new Date() })
         .where(eq(engagements.id, eng.id));
       await emitAudit(deps.db, {
         action: 'UPDATE',
@@ -1018,6 +1012,33 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
+    },
+  );
+
+  // Progress-status change history for one engagement (who / when / old → new).
+  router.get(
+    '/:id/status-history',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await queryStatusHistory(deps.db, {
+        firmId: session.firmId,
+        engagementId: eng.id,
+      });
+      res.json({ items });
     },
   );
 

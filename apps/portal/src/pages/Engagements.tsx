@@ -32,6 +32,10 @@ interface ActiveEngagement {
   dueDate: string | null;
   lastActivity: string;
   statusPill: StatusPill;
+  // 0101 — firm-defined client-facing text; overrides the derived pill label
+  // when set, falls back to STATUS_LABEL[statusPill] otherwise.
+  clientLabel?: string | null;
+  clientDescription?: string | null;
   progressPct: number | null;
   nextMilestone: NextMilestone | null;
   awaitingFromYou: number;
@@ -163,10 +167,16 @@ export function EngagementCard({
             <Pill tone="warning">{engagement.awaitingFromYou} awaiting you</Pill>
           )}
           <Pill tone={STATUS_TONE[engagement.statusPill]}>
-            {STATUS_LABEL[engagement.statusPill]}
+            {engagement.clientLabel ?? STATUS_LABEL[engagement.statusPill]}
           </Pill>
         </div>
       </div>
+
+      {engagement.clientDescription && (
+        <div style={{ marginTop: 8, fontSize: 12, color: tokens.color.textMuted }}>
+          {engagement.clientDescription}
+        </div>
+      )}
 
       {engagement.progressPct != null && (
         <div style={{ marginTop: 12 }}>

@@ -1,0 +1,316 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Create/edit popup for a single engagement progress status. One modal for
+// both create (status=null) and edit. Holds every per-status field today and
+// is the place future per-status features attach (add new sections here).
+// Modeled on the app's existing dialog pattern (fixed overlay + panel + Esc).
+
+import { useEffect, useState } from 'react';
+
+import { Button, tokens } from '@vibe/ui';
+
+import { api, type ApiError } from '../../api-client';
+
+export interface StatusConfigRow {
+  firmId: string;
+  workflowState: string;
+  label: string;
+  color: string;
+  sortOrder: number;
+  kanbanVisible: boolean;
+  triggersClientComm: boolean;
+  isSystem: boolean;
+  clientLabel: string | null;
+  clientDescription: string | null;
+  clientVisible: boolean;
+}
+
+interface Props {
+  status: StatusConfigRow | null; // null = create
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+const labelStyle: React.CSSProperties = {
+  display: 'block',
+  fontSize: 12,
+  color: tokens.color.textMuted,
+  marginBottom: 4,
+};
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  padding: 8,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 14,
+};
+
+export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Element {
+  const creating = status === null;
+  const [label, setLabel] = useState(status?.label ?? '');
+  const [color, setColor] = useState(status?.color ?? '#6b7280');
+  const [sortOrder, setSortOrder] = useState(status?.sortOrder ?? 100);
+  const [kanbanVisible, setKanbanVisible] = useState(status?.kanbanVisible ?? true);
+  const [clientLabel, setClientLabel] = useState(status?.clientLabel ?? '');
+  const [clientDescription, setClientDescription] = useState(status?.clientDescription ?? '');
+  const [clientVisible, setClientVisible] = useState(status?.clientVisible ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && !busy) onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose, busy]);
+
+  async function submit(): Promise<void> {
+    if (!label.trim()) return;
+    setBusy(true);
+    setError(null);
+    const body = {
+      label: label.trim(),
+      color,
+      sortOrder,
+      kanbanVisible,
+      clientLabel: clientLabel.trim() || null,
+      clientDescription: clientDescription.trim() || null,
+      clientVisible,
+    };
+    try {
+      if (creating) {
+        await api('/api/staff/admin/engagement-statuses', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      } else {
+        await api(`/api/staff/admin/engagement-statuses/${status!.workflowState}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+      }
+      onSaved();
+    } catch (err) {
+      setError((err as ApiError).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(): Promise<void> {
+    if (!status) return;
+    if (!window.confirm(`Delete status "${status.label}"? This cannot be undone.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/admin/engagement-statuses/${status.workflowState}`, {
+        method: 'DELETE',
+      });
+      onSaved();
+    } catch (err) {
+      const m = (err as ApiError).message;
+      setError(
+        m === 'status_in_use'
+          ? 'Cannot delete: this status is in use by one or more engagements. Reassign them first.'
+          : m === 'cannot_delete_system_status'
+            ? 'Built-in statuses cannot be deleted.'
+            : m,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={creating ? 'Add status' : 'Edit status'}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.4)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 60,
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        disabled={busy}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'transparent',
+          border: 'none',
+          cursor: busy ? 'wait' : 'pointer',
+        }}
+      />
+      <div
+        style={{
+          background: tokens.color.surface,
+          borderRadius: tokens.radius.md,
+          padding: 20,
+          width: 'min(560px, 92vw)',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+          position: 'relative',
+          zIndex: 1,
+        }}
+      >
+        <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>
+          {creating ? 'Add status' : `Edit “${status!.label}”`}
+          {status?.isSystem && (
+            <span style={{ fontSize: 12, color: tokens.color.textMuted, fontWeight: 400 }}>
+              {'  '}· built-in
+            </span>
+          )}
+        </h3>
+
+        <div style={{ display: 'grid', gap: 14 }}>
+          {/* Staff-facing */}
+          <div>
+            <span style={labelStyle}>Internal label (staff)</span>
+            <input
+              style={inputStyle}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. Awaiting documents"
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end' }}>
+            <div>
+              <span style={labelStyle}>Color</span>
+              <input
+                type="color"
+                value={color}
+                aria-label="Color"
+                onChange={(e) => setColor(e.target.value)}
+                style={{
+                  width: 48,
+                  height: 32,
+                  padding: 0,
+                  border: 'none',
+                  background: 'transparent',
+                }}
+              />
+            </div>
+            <div style={{ width: 110 }}>
+              <span style={labelStyle}>Board order</span>
+              <input
+                type="number"
+                style={inputStyle}
+                value={String(sortOrder)}
+                onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
+              />
+            </div>
+            <label
+              style={{
+                display: 'flex',
+                gap: 6,
+                alignItems: 'center',
+                fontSize: 13,
+                paddingBottom: 8,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={kanbanVisible}
+                onChange={(e) => setKanbanVisible(e.target.checked)}
+              />
+              Show on board
+            </label>
+          </div>
+
+          <hr
+            style={{
+              border: 'none',
+              borderTop: `1px solid ${tokens.color.border}`,
+              margin: '2px 0',
+            }}
+          />
+
+          {/* Client-facing */}
+          <div style={{ fontSize: 12, fontWeight: 600, color: tokens.color.textMuted }}>
+            CLIENT PORTAL
+          </div>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={clientVisible}
+              onChange={(e) => setClientVisible(e.target.checked)}
+            />
+            Show this status to clients
+          </label>
+          <div>
+            <span style={labelStyle}>Client label</span>
+            <input
+              style={inputStyle}
+              value={clientLabel}
+              onChange={(e) => setClientLabel(e.target.value)}
+              placeholder="Shown to clients (falls back to the standard pill if blank)"
+            />
+          </div>
+          <div>
+            <span style={labelStyle}>Client description</span>
+            <textarea
+              style={{ ...inputStyle, minHeight: 60, resize: 'vertical' }}
+              value={clientDescription}
+              onChange={(e) => setClientDescription(e.target.value)}
+              placeholder="Optional longer message clients see"
+            />
+          </div>
+
+          {error && (
+            <div
+              style={{
+                padding: 10,
+                background: 'rgba(220, 38, 38, 0.1)',
+                border: `1px solid ${tokens.color.danger}`,
+                borderRadius: tokens.radius.sm,
+                fontSize: 13,
+                color: tokens.color.danger,
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <div>
+              {!creating && !status!.isSystem && (
+                <Button variant="ghost" disabled={busy} onClick={() => void remove()}>
+                  Delete
+                </Button>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button variant="secondary" disabled={busy} onClick={onClose}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={busy || !label.trim()}
+                onClick={() => void submit()}
+              >
+                {busy ? 'Saving…' : creating ? 'Create' : 'Save'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
