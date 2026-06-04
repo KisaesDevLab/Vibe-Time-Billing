@@ -17,6 +17,7 @@ import {
   billingBatches,
   clients,
   engagements,
+  firmRetainerSettings,
   timeEntries,
 } from '@vibe/db/schema';
 import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billing';
@@ -386,6 +387,25 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         new Date().toISOString().slice(0, 10),
       );
 
+      // R2 — surface the firm's retainer feature flag + the default biller
+      // toggle so the biller's "Offer retainer to client" checkbox can
+      // initialize from firm_retainer_settings without calling the
+      // partner-only tier-config endpoint. Defaults mirror the schema
+      // (feature off, toggle on) when no settings row exists yet.
+      const session = req.staffSession!;
+      const [retainerSettings] = await deps.db
+        .select({
+          featureEnabled: firmRetainerSettings.featureEnabled,
+          defaultBillerToggleOn: firmRetainerSettings.defaultBillerToggleOn,
+        })
+        .from(firmRetainerSettings)
+        .where(eq(firmRetainerSettings.firmId, session.firmId))
+        .limit(1);
+      const retainer = {
+        featureEnabled: retainerSettings?.featureEnabled ?? false,
+        defaultBillerToggleOn: retainerSettings?.defaultBillerToggleOn ?? true,
+      };
+
       // 0052 — sum existing approved/applied adjustments on this batch
       // so the UI can show a true "Total to invoice" = INCLUDE sum +
       // signed adjustment total. Draft/Rejected/Reversed don't apply.
@@ -409,6 +429,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         engagement: eng,
         engagements: engs,
         adjustmentTotalCents,
+        retainer,
       });
     },
   );

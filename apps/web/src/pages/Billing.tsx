@@ -54,6 +54,9 @@ interface BatchDetail {
   // 0086 — full engagement list (primary first) for the batch header.
   engagements?: Array<{ id: string; name: string; clientId: string; clientName: string }>;
   adjustmentTotalCents?: number;
+  // R2 — firm retainer feature flag + biller-toggle default, so the
+  // "Offer retainer to client" checkbox can honor the firm setting.
+  retainer?: { featureEnabled: boolean; defaultBillerToggleOn: boolean };
 }
 
 interface ReasonCode {
@@ -446,8 +449,10 @@ function BatchDetailPage(): JSX.Element {
 
   // 0052 — invoice composition draft
   // R2 — biller toggle to auto-create a retainer offer on this invoice.
-  // Default true; the server-side suppression rules (no return_type,
-  // feature_enabled false, etc.) decide whether an offer actually lands.
+  // Initialized from the firm's default_biller_toggle_on once the batch
+  // detail loads (see load()); the server-side suppression rules (no
+  // return_type, feature_enabled false, etc.) still decide whether an
+  // offer actually lands. Starts true as a pre-load placeholder.
   const [offerRetainerOnGenerate, setOfferRetainerOnGenerate] = useState(true);
   const [invoiceDescription, setInvoiceDescription] = useState('');
   const [invoiceLines, setInvoiceLines] = useState<Array<{ description: string; dollars: string }>>(
@@ -460,6 +465,8 @@ function BatchDetailPage(): JSX.Element {
     try {
       const d = await api<BatchDetail>(`/api/staff/billing-batches/${id}`);
       setDetail(d);
+      // R2 — honor the firm's default biller-toggle preference.
+      if (d.retainer) setOfferRetainerOnGenerate(d.retainer.defaultBillerToggleOn);
       const m = new Map<string, BatchEntry['action']>();
       for (const e of d.entries) m.set(e.timeEntryId, e.action);
       setActions(m);

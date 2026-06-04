@@ -201,10 +201,16 @@ describe('billing-batch multi-engagement', () => {
 
   it('rejects engagements that belong to different clients with mixed_clients', async () => {
     const seed = await seedMinimalFirm(harness.db);
-    // Second client + engagement under the same firm.
+    // Second client + engagement under the same firm. 0092 made
+    // client.office_id NOT NULL, so attach a firm office.
+    const office = await harness.db.execute(
+      sql`INSERT INTO office (firm_id, name, timezone, is_default)
+          VALUES (${seed.firmId}, 'Branch', 'America/Chicago', false) RETURNING id`,
+    );
+    const officeId = (office as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${seed.firmId}, 'OtherCo', ${seed.appUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${seed.firmId}, 'OtherCo', ${seed.appUserId}, ${officeId}) RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const otherEngId = await seedSecondEngagement(harness.db, otherClientId, 'Other');
@@ -290,9 +296,14 @@ describe('billing-batch multi-engagement', () => {
           VALUES (${otherFirmId}, 'o@x.example', 'O', 'O', 'O') RETURNING id`,
     );
     const otherUserId = (otherUser as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const otherOffice = await harness.db.execute(
+      sql`INSERT INTO office (firm_id, name, timezone, is_default)
+          VALUES (${otherFirmId}, 'HQ', 'America/Chicago', true) RETURNING id`,
+    );
+    const otherOfficeId = (otherOffice as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${otherFirmId}, 'OtherCo', ${otherUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${otherFirmId}, 'OtherCo', ${otherUserId}, ${otherOfficeId}) RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const otherEngId = await seedSecondEngagement(harness.db, otherClientId, 'Cross');
@@ -341,6 +352,50 @@ describe('billing-batch multi-engagement', () => {
     expect(items[0]!.engagements.map((e) => e.id).sort()).toEqual(
       [seed.engagementId, eng2Id].sort(),
     );
+  });
+
+  it('GET /:id surfaces the firm retainer default-biller-toggle (R2)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const router = createBillingBatchRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const created = await invoke(router, 'post', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          engagementId: seed.engagementId,
+          periodStart: '2026-04-01',
+          periodEnd: '2026-04-30',
+        },
+      }),
+    });
+    const batchId = (created.jsonBody as { id: string }).id;
+
+    // No firm_retainer_settings row yet → schema defaults (feature off,
+    // toggle on).
+    const before = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    expect(before.statusCode).toBe(200);
+    expect((before.jsonBody as { retainer: { defaultBillerToggleOn: boolean } }).retainer).toEqual({
+      featureEnabled: false,
+      defaultBillerToggleOn: true,
+    });
+
+    // Firm turns the feature on but sets the biller toggle to default OFF.
+    await harness.db.execute(
+      sql`INSERT INTO firm_retainer_settings (firm_id, feature_enabled, default_biller_toggle_on)
+          VALUES (${seed.firmId}, true, false)`,
+    );
+    const after = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    expect((after.jsonBody as { retainer: { defaultBillerToggleOn: boolean } }).retainer).toEqual({
+      featureEnabled: true,
+      defaultBillerToggleOn: false,
+    });
   });
 
   it('generate-from-batch produces a consolidated invoice with per-line engagement_id and NULL primary', async () => {
