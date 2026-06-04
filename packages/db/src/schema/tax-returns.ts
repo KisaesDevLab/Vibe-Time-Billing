@@ -225,7 +225,9 @@ export const taxReturnShares = pgTable(
     releaseId: uuid('release_id')
       .notNull()
       .references(() => taxReturnReleases.id, { onDelete: 'cascade' }),
-    sharedByAccessId: uuid('shared_by_access_id').notNull(),
+    // 0102 — exactly one initiator: a portal client access OR a staff user.
+    sharedByAccessId: uuid('shared_by_access_id'),
+    sharedByAppUserId: uuid('shared_by_app_user_id'),
     recipientName: text('recipient_name').notNull(),
     recipientEmail: text('recipient_email').notNull(),
     recipientPhone: text('recipient_phone'),

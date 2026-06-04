@@ -25,6 +25,7 @@ import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { usePermission } from '../../auth-context';
+import { ShareFileDialog } from './ShareFileDialog';
 import { UnlinkedEmptyState } from './fmv2/UnlinkedEmptyState';
 import { IndexingToast } from './fmv2/IndexingToast';
 import { IndexingProgressBar } from './fmv2/IndexingProgressBar';
@@ -118,6 +119,7 @@ export function ClientFilesTab({
   // Tax-return intake — the file the partner is flagging. When non-null,
   // the modal is open. Submit POSTs /api/staff/tax/returns/intake-from-file.
   const [flagFor, setFlagFor] = useState<FileRow | null>(null);
+  const [shareFor, setShareFor] = useState<FileRow | null>(null);
 
   async function load(): Promise<void> {
     setError(null);
@@ -519,6 +521,17 @@ export function ClientFilesTab({
                 header: '',
                 render: (r) => (
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    {canPublish && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setShareFor(r)}
+                        disabled={r.pendingUpload}
+                        title="Share this file securely with an outside recipient via an expiring link."
+                      >
+                        Share
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
@@ -547,6 +560,14 @@ export function ClientFilesTab({
             setFlagFor(null);
             void load();
           }}
+        />
+      )}
+
+      {shareFor && (
+        <ShareFileDialog
+          file={shareFor}
+          onClose={() => setShareFor(null)}
+          onShared={() => setShareFor(null)}
         />
       )}
 

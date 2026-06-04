@@ -39,6 +39,8 @@ import { createClientRouter } from './clients/routes';
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
 import { createStatusHistoryRouter } from './engagements/status-history';
+import { createStatusOptionsRouter } from './engagements/status-options';
+import { createStaffFileShareRouter } from './files/share-routes';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
@@ -526,6 +528,18 @@ export function createApp(deps: AppDeps): Express {
     statusHistoryRouter,
   );
 
+  // Staff-readable progress-status list (for pickers, e.g. logging time).
+  const statusOptionsRouter = createStatusOptionsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/engagement-statuses',
+    auth.requireAuth,
+    auth.requireCsrf,
+    statusOptionsRouter,
+  );
+
   // 0083 — recurring engagements (CRUD + run-now). Worker sweep lives
   // in apps/worker/src/jobs/recurring-engagement.ts.
   const engagementRecurrenceRouter = createEngagementRecurrenceRouter({
@@ -968,6 +982,18 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/files', auth.requireAuth, auth.requireCsrf, fileVisibilityRouter);
+
+  // 0102 — staff-initiated secure file sharing (rich third-party links).
+  const staffFileShareRouter = createStaffFileShareRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+    sendEmail: deps.sendStaffMail
+      ? (m) => deps.sendStaffMail!({ to: m.to, subject: m.subject, body: m.body })
+      : undefined,
+    sendSms: deps.sendPortalSms,
+  });
+  app.use('/api/staff/files', auth.requireAuth, auth.requireCsrf, staffFileShareRouter);
 
   const connectRouter = createConnectRouter({
     db: deps.db,

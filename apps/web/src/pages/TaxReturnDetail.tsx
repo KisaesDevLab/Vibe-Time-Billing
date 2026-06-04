@@ -16,6 +16,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { ShareFileDialog } from './clients/ShareFileDialog';
 
 interface SectionRow {
   id: string;
@@ -54,6 +55,7 @@ interface ReturnDetail {
     totalPages: number | null;
     releasedAt: string | null;
     createdAt: string;
+    sourceFileId: string | null;
   };
   sections: SectionRow[];
   releases: ReleaseRow[];
@@ -64,6 +66,7 @@ export function TaxReturnDetailPage(): JSX.Element {
   const [data, setData] = useState<ReturnDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [releaseOpen, setReleaseOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     if (!returnId) return;
@@ -143,10 +146,31 @@ export function TaxReturnDetailPage(): JSX.Element {
           Imported {new Date(ret.createdAt).toLocaleDateString()}
           {ret.releasedAt && ` · last released ${new Date(ret.releasedAt).toLocaleDateString()}`}
         </p>
-        <div style={{ marginTop: tokens.space.md }}>
+        <div style={{ marginTop: tokens.space.md, display: 'flex', gap: 8 }}>
           <Button onClick={() => setReleaseOpen(true)}>Release to client</Button>
+          {ret.sourceFileId && (
+            <Button
+              variant="secondary"
+              onClick={() => setShareOpen(true)}
+              title="Securely share the return PDF with an outside recipient via an expiring link."
+            >
+              Share via link
+            </Button>
+          )}
         </div>
       </Card>
+
+      {shareOpen && ret.sourceFileId && (
+        <ShareFileDialog
+          file={{
+            id: ret.sourceFileId,
+            originalFilename: `${ret.taxYear} ${ret.formCode} ${ret.jurisdiction}.pdf`,
+            mimeType: 'application/pdf',
+          }}
+          onClose={() => setShareOpen(false)}
+          onShared={() => setShareOpen(false)}
+        />
+      )}
 
       <Card title={`Sections (${sections.length})`}>
         {sections.length === 0 ? (

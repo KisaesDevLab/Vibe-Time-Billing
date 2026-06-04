@@ -1,30 +1,36 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// CP11 — Public file-share endpoint (Build Plan §2.4).
+// CP11 / 0102 — Public file-share endpoint.
 //
 // GET /api/shared/:token
-//   No portal authentication. Token-only access — the URL itself is
-//   the bearer credential. Server validates: token unrevoked, not
-//   expired, file still client-visible + not deleted. On success
-//   redirects to a fresh presigned URL (mirrors the portal download
-//   flow). Every access — allowed or denied — writes a file_share_event
-//   row so the firm + creator can see who has been opening the link.
+//   No portal authentication. Token-only access — the URL itself is the
+//   bearer credential (argon2-hashed at rest; legacy sha256 tokens still
+//   accepted). The SHARE authorizes the file, so visibility is NOT
+//   required (a staff share can expose a private file deliberately).
+//   Validates: not revoked, not expired, file present + not deleted.
+//   On success: for a PDF flagged watermark, streams a recipient-stamped
+//   copy; otherwise redirects to a fresh presigned URL. Every access —
+//   allowed or denied — writes a file_share_event row.
 //
-// Mounted at /api/shared/* outside the portal-auth chain. We deliberately
-// keep this isolated from the portal/* tree so a bug in portal middleware
-// can't accidentally gate the share flow.
+// Mounted at /api/shared/* outside the portal-auth chain, isolated so a
+// bug in portal middleware can't gate the share flow.
 
-import { createHash } from 'node:crypto';
+import type { Readable } from 'node:stream';
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { fileShareEvents, fileShares, files } from '@vibe/db/schema';
+import { fileShareEvents, files } from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
-import { addUuidIdGuard } from './lib/uuid-guard';
 import { logger } from './logger';
+import {
+  resolveFileShareToken,
+  markFileShareViewed,
+  type ResolvedFileShare,
+} from './sharing/file-share-helper';
+import { watermarkPdf, recipientWatermarkText } from './sharing/watermark-pdf';
 
 export interface SharePublicDeps {
   db: Database | null;
@@ -56,36 +62,37 @@ async function logEvent(
   userAgent: string | null,
 ): Promise<void> {
   try {
-    await db.insert(fileShareEvents).values({
-      fileShareId,
-      outcome,
-      ip,
-      userAgent,
-    });
-    if (outcome === 'allowed') {
-      await db
-        .update(fileShares)
-        .set({
-          accessCount: sql`${fileShares.accessCount} + 1`,
-          lastAccessedAt: new Date(),
-        })
-        .where(eq(fileShares.id, fileShareId));
-    }
+    await db.insert(fileShareEvents).values({ fileShareId, outcome, ip, userAgent });
   } catch (err) {
     logger.error({ err, fileShareId, outcome }, 'file_share_event insert failed');
   }
 }
 
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}
+
+function isPdf(mimeType: string | null, filename: string): boolean {
+  return mimeType === 'application/pdf' || filename.toLowerCase().endsWith('.pdf');
+}
+
+function safeFilename(name: string): string {
+  return name.replace(/[^\w.\- ]+/g, '_').slice(0, 200) || 'document';
+}
+
 export function createSharePublicRouter(deps: SharePublicDeps): Router {
   const router = express.Router();
-  addUuidIdGuard(router);
 
   router.get('/:token', async (req: Request, res: Response) => {
     const token = req.params['token'] ?? '';
     const ip = clientIp(req);
     const userAgent = req.get('user-agent') ?? null;
-    // Tokens are 64-char hex (32 bytes). Reject anything obviously not.
-    if (!/^[0-9a-f]{32,128}$/i.test(token)) {
+    // Accept legacy 64-hex tokens and new `<uuid>.<base64url>` tokens.
+    if (!/^[A-Za-z0-9._-]{20,400}$/.test(token)) {
       res.status(404).type('text/plain').send('Not found');
       return;
     }
@@ -93,24 +100,20 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       res.status(503).type('text/plain').send('Service unavailable');
       return;
     }
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    const [share] = await deps.db
-      .select({
-        id: fileShares.id,
-        fileId: fileShares.fileId,
-        accessLevel: fileShares.accessLevel,
-        expiresAt: fileShares.expiresAt,
-        revokedAt: fileShares.revokedAt,
-      })
-      .from(fileShares)
-      .where(eq(fileShares.tokenHash, tokenHash))
-      .limit(1);
+
+    let share: ResolvedFileShare | null;
+    try {
+      share = await resolveFileShareToken(deps.db, token);
+    } catch (err) {
+      logger.error({ err }, 'share token resolve failed');
+      res.status(500).type('text/plain').send('Could not open this link.');
+      return;
+    }
     if (!share) {
-      // Don't leak whether the token was ever valid. Generic 404.
       res.status(404).type('text/plain').send('Not found');
       return;
     }
-    if (share.revokedAt) {
+    if (share.revokedAt || share.status === 'REVOKED') {
       await logEvent(deps.db, share.id, 'denied_revoked', ip, userAgent);
       res.status(410).type('text/plain').send('This link has been revoked.');
       return;
@@ -120,41 +123,63 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       res.status(410).type('text/plain').send('This link has expired.');
       return;
     }
+
     const [file] = await deps.db
       .select({
         id: files.id,
         storageKey: files.storageKey,
         originalFilename: files.originalFilename,
         mimeType: files.mimeType,
-        visibility: files.visibility,
         deletedAt: files.deletedAt,
         pendingUpload: files.pendingUpload,
       })
       .from(files)
       .where(eq(files.id, share.fileId))
       .limit(1);
-    if (
-      !file ||
-      file.deletedAt != null ||
-      file.pendingUpload ||
-      file.visibility !== 'client_visible'
-    ) {
+    // The share itself grants access — visibility is NOT required here.
+    if (!file || file.deletedAt != null || file.pendingUpload) {
       await logEvent(deps.db, share.id, 'denied_file_gone', ip, userAgent);
       res.status(410).type('text/plain').send('This file is no longer available.');
       return;
     }
+
     const storage = getStorage(deps);
     if (!storage) {
       res.status(503).type('text/plain').send('Storage unavailable.');
       return;
     }
+
+    const disposition = share.accessLevel === 'download' ? 'attachment' : 'inline';
+
     try {
+      // Watermarked PDFs are streamed (we must rewrite the bytes); everything
+      // else redirects to a short-lived presigned URL.
+      if (share.watermark && isPdf(file.mimeType, file.originalFilename)) {
+        const obj = await storage.get(file.storageKey);
+        const raw = await streamToBuffer(obj.body);
+        const stamped = await watermarkPdf(
+          raw,
+          recipientWatermarkText({
+            recipientName: share.recipientName,
+            organization: share.organization,
+          }),
+        );
+        await logEvent(deps.db, share.id, 'allowed', ip, userAgent);
+        await markFileShareViewed(deps.db, share.id);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `${disposition}; filename="${safeFilename(file.originalFilename)}"`,
+        );
+        res.send(stamped);
+        return;
+      }
+
       const url = await storage.presignGet(file.storageKey, PRESIGN_TTL_SECONDS);
       await logEvent(deps.db, share.id, 'allowed', ip, userAgent);
-      // Mock storage returns opaque URIs (mock-presign://...). Surface
-      // the URL via JSON in that case so the dev environment can still
-      // navigate / inspect.
+      await markFileShareViewed(deps.db, share.id);
       if (!/^https?:\/\//.test(url)) {
+        // Mock storage returns opaque URIs — surface via JSON for dev.
         res.json({
           ok: true,
           mode: 'mock',
@@ -167,15 +192,10 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       }
       res.redirect(302, url);
     } catch (err) {
-      logger.error({ err, shareId: share.id }, 'shared presign failed');
+      logger.error({ err, shareId: share.id }, 'shared access failed');
       res.status(500).type('text/plain').send('Could not generate access URL.');
     }
   });
 
   return router;
 }
-
-// Suppress unused-imports lint when the file-not-found branch isn't taken
-// during typecheck.
-void and;
-void isNull;

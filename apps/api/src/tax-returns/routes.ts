@@ -607,6 +607,8 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
           totalPages: taxReturns.totalPages,
           releasedAt: taxReturns.releasedAt,
           createdAt: taxReturns.createdAt,
+          // 0102 — backing PDF, so staff can share the return via the file flow.
+          sourceFileId: taxReturns.sourceFileId,
         })
         .from(taxReturns)
         .innerJoin(clients, eq(clients.id, taxReturns.clientId))

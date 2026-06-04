@@ -3740,8 +3740,11 @@ export const fileShares = pgTable(
       .notNull()
       .references(() => files.id, { onDelete: 'cascade' }),
     // FK to portal_identity in portal.ts — kept loose to avoid circular
-    // imports. Enforced by the migration.
+    // imports. Enforced by the migration. Exactly one of this /
+    // created_by_app_user_id is set (client vs staff initiator).
     createdByPortalIdentityId: uuid('created_by_portal_identity_id'),
+    // 0102 — staff initiator (loose FK to app_user).
+    createdByAppUserId: uuid('created_by_app_user_id'),
     tokenHash: text('token_hash').notNull().unique(),
     accessLevel: text('access_level').notNull().default('view'),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
@@ -3750,6 +3753,20 @@ export const fileShares = pgTable(
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     accessCount: integer('access_count').notNull().default(0),
     lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
+    // 0102 — rich third-party share fields (parity with tax_return_shares).
+    recipientName: text('recipient_name'),
+    recipientEmail: text('recipient_email'),
+    recipientPhone: text('recipient_phone'),
+    organization: text('organization'),
+    role: text('role'),
+    personalMessage: text('personal_message'),
+    require2fa: boolean('require_2fa').notNull().default(false),
+    verifyChannel: text('verify_channel').notNull().default('NONE'),
+    watermark: boolean('watermark').notNull().default(false),
+    status: text('status').notNull().default('SENT'),
+    firstViewedAt: timestamp('first_viewed_at', { withTimezone: true }),
+    lastViewedAt: timestamp('last_viewed_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   },
   (t) => ({
     fileIdx: index('file_share_file_idx').on(t.fileId),
