@@ -271,6 +271,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     // Section L Q39 — AI egress + Shield endpoint (Q39 + J.7/J.8)
     aiEgressEnabled: z.boolean().optional(),
     vibeShieldEndpoint: z.string().url().nullable().optional(),
+    // 0100 — cloud egress mode: 'shield' (reachable Vibe Shield) or
+    // 'direct' (appliance calls the provider API directly).
+    aiEgressMode: z.enum(['shield', 'direct']).optional(),
   });
 
   router.patch(

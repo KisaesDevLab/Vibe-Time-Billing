@@ -18,14 +18,21 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { resolveEgressPolicy, type EgressDecision } from './egress';
+import {
+  resolveFirmProviders as defaultResolveFirmProviders,
+  type ResolvedFirmProviders,
+} from './resolve-providers';
 import { searchKbArticles } from '../help/queries';
 
 export interface AiRoutesDeps extends RbacDeps {
   db: Database | null;
   redis: Redis;
-  // Caller picks which provider is preferred; routing logic lives here.
+  // Env/boot fallback providers; UI-entered (DB) providers take precedence.
   cloudProvider?: AiProvider | null;
   localProvider?: AiProvider | null;
+  /** Resolve per-firm providers from stored credentials (injectable for
+   *  tests). Defaults to the real DB-backed resolver. */
+  resolveProviders?: (db: Database | null, firmId: string) => Promise<ResolvedFirmProviders>;
   /** Override the wall clock for deterministic tests. */
   now?: () => Date;
 }
@@ -71,8 +78,10 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
   router.get(
     '/status',
     requirePermission(deps, 'time_entry:create'),
-    async (_req: Request, res: Response) => {
-      const provider = await pickProvider(deps);
+    async (req: Request, res: Response) => {
+      // Pass firmId so status reflects the firm's UI-entered providers +
+      // egress policy (the provider a real call would actually use).
+      const provider = await pickProvider(deps, undefined, req.staffSession?.firmId);
       res.json({
         enabled: firmOptedIn() && Boolean(provider),
         optedIn: firmOptedIn(),
@@ -1135,6 +1144,18 @@ async function pickProvider(
   firmId?: string,
 ): Promise<AiProvider | null> {
   const override = featureOverride(feature);
+
+  // 0100 — prefer the firm's UI-entered (DB) providers; fall back to the
+  // env/boot providers when none are configured.
+  let cloud = deps.cloudProvider ?? null;
+  let local = deps.localProvider ?? null;
+  if (firmId) {
+    const resolve = deps.resolveProviders ?? defaultResolveFirmProviders;
+    const firmProviders = await resolve(deps.db, firmId);
+    cloud = firmProviders.cloud ?? cloud;
+    local = firmProviders.local ?? local;
+  }
+
   // P5.1 — egress gate. Resolves the per-firm policy. If the firm is
   // local-only (default), cloud overrides are silently downgraded to
   // local. If shield is unreachable, cloud is denied. firmId is
@@ -1143,17 +1164,19 @@ async function pickProvider(
   if (firmId) {
     decision = await resolveEgressPolicy({ db: deps.db, redis: deps.redis, firmId });
   }
-  if (decision.kind !== 'shield-ok') {
+  // 0100 — cloud is permitted under either a reachable shield or the
+  // explicit direct egress mode.
+  const cloudAllowed = decision.kind === 'shield-ok' || decision.kind === 'direct-ok';
+  if (!cloudAllowed) {
     if (override === 'cloud') {
       logger.warn({ firmId, decision }, 'ai egress: cloud override blocked by policy');
     }
-    return deps.localProvider ?? null;
+    return local;
   }
-  // shield-ok: cloud allowed.
-  if (override === 'cloud') return deps.cloudProvider ?? deps.localProvider ?? null;
-  if (override === 'local') return deps.localProvider ?? deps.cloudProvider ?? null;
+  if (override === 'cloud') return cloud ?? local;
+  if (override === 'local') return local ?? cloud;
   // Q15 — local preferred even when cloud is permitted.
-  return deps.localProvider ?? deps.cloudProvider ?? null;
+  return local ?? cloud;
 }
 
 /**

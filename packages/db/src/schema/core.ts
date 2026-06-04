@@ -463,6 +463,10 @@ export const firmConfig = pgTable(
       .default(50000),
     aiEgressEnabled: boolean('ai_egress_enabled').notNull().default(false),
     vibeShieldEndpoint: text('vibe_shield_endpoint'),
+    // 0100 — cloud egress mode. 'shield' (default) requires a reachable
+    // Vibe Shield; 'direct' lets the appliance call the provider API
+    // directly (firm-owned key + budget cap + audit), no shield needed.
+    aiEgressMode: text('ai_egress_mode').notNull().default('shield'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -4043,6 +4047,53 @@ export const cloudflareTunnelHostnames = pgTable(
   (t) => ({
     firmHostUk: uniqueIndex('cf_tunnel_hostname_firm_host_uk').on(t.firmId, t.hostname),
     firmIdx: index('cf_tunnel_hostname_firm_idx').on(t.firmId),
+  }),
+);
+
+// 0100 — concrete AI provider kind for UI-entered credentials. Distinct
+// from the coarse `ai_provider` enum (which logs LOCAL_OLLAMA vs cloud in
+// ai_request_log) — this names the exact client to build.
+export const aiProviderKind = pgEnum('ai_provider_kind', [
+  'anthropic',
+  'openai_compatible',
+  'ollama',
+]);
+
+// 0100 — per-firm AI provider credentials entered via Admin → AI settings.
+// API keys are MFK-wrapped (bytea) exactly like the Cloudflare tunnel token;
+// plaintext never lives in the DB and is returned to the UI only as a
+// last-4 `api_key_hint`. One row per provider kind per firm. The boot/env
+// providers remain the fallback when a firm has no row.
+export const aiProviderCredential = pgTable(
+  'ai_provider_credential',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    providerId: aiProviderKind('provider_id').notNull(),
+    // Null for ollama (no key) and for updates that leave the key unchanged.
+    apiKeyEncrypted: bytea('api_key_encrypted'),
+    apiKeyHint: text('api_key_hint'),
+    // baseUrl: required for openai_compatible; optional override for ollama.
+    baseUrl: text('base_url'),
+    model: text('model'),
+    // Optional cost overrides, cents per 1M tokens (Stripe-style integers).
+    inputCentsPerMtok: integer('input_cents_per_mtok'),
+    outputCentsPerMtok: integer('output_cents_per_mtok'),
+    enabled: boolean('enabled').notNull().default(true),
+    status: text('status').notNull().default('UNTESTED'),
+    lastError: text('last_error'),
+    lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmProviderUk: uniqueIndex('ai_provider_credential_firm_provider_uk').on(
+      t.firmId,
+      t.providerId,
+    ),
+    firmIdx: index('ai_provider_credential_firm_idx').on(t.firmId),
   }),
 );
 

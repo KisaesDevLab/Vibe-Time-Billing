@@ -90,6 +90,7 @@ import { createAiRouter } from './ai/routes';
 import { createHelpRouter } from './help/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createCloudflareTunnelRouter } from './admin/cloudflare-tunnel/routes';
+import { createAiCredentialsRouter } from './admin/ai-credentials/routes';
 import { createStripeWebhookRouter } from './webhooks/stripe';
 import { createStripeConnectWebhookRouter } from './webhooks/stripe-connect';
 import { createCpaChargeWebhookRouter } from './webhooks/cpacharge';
@@ -464,6 +465,19 @@ export function createApp(deps: AppDeps): Express {
     auth.requireAuth,
     auth.requireCsrf,
     cloudflareTunnelRouter,
+  );
+
+  // 0100 — Admin → AI settings: UI-entered AI provider credentials.
+  const aiCredentialsRouter = createAiCredentialsRouter({
+    db: deps.db,
+    redis: deps.redis,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/ai-credentials',
+    auth.requireAuth,
+    auth.requireCsrf,
+    aiCredentialsRouter,
   );
 
   const taxonomyRouter = createTaxonomyRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });

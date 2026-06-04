@@ -11,6 +11,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { tokens } from '@vibe/ui';
 
 import { AiUsagePage } from './AiUsage';
+import { AiSettingsPage } from './AiSettings';
 import { ApiTokensPage } from './ApiTokens';
 import { BackupPage } from './Backup';
 import { CloudflareTunnelPage } from './CloudflareTunnel';
@@ -141,6 +142,7 @@ const GROUPS: Group[] = [
     key: 'ai',
     label: 'AI & Integrations',
     tabs: [
+      { key: 'ai-settings', label: 'AI settings', href: '/admin/ai-settings' },
       { key: 'ai', label: 'AI usage', href: '/admin/ai-usage' },
       { key: 'mcp-tokens', label: 'API tokens', href: '/admin/api-tokens' },
       { key: 'saved', label: 'Saved reports', href: '/admin/saved-reports' },
@@ -295,6 +297,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="approval-rules" element={<ApprovalRulesPage />} />
         <Route path="required-fields" element={<RequiredFieldRulesPage />} />
         <Route path="milestones" element={<MilestonesPage />} />
+        <Route path="ai-settings" element={<AiSettingsPage />} />
         <Route path="ai-usage" element={<AiUsagePage />} />
         <Route path="saved-reports" element={<SavedReportsPage />} />
         <Route path="webhooks" element={<WebhooksPage />} />

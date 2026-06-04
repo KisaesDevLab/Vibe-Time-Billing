@@ -28,6 +28,7 @@ import { firmConfig } from '@vibe/db/schema';
 export type EgressDecision =
   | { kind: 'local-only'; reason: 'firm-policy' }
   | { kind: 'shield-ok' }
+  | { kind: 'direct-ok' }
   | { kind: 'shield-unreachable' }
   | { kind: 'shield-not-configured' };
 
@@ -46,6 +47,7 @@ export async function resolveEgressPolicy(args: {
     .select({
       enabled: firmConfig.aiEgressEnabled,
       endpoint: firmConfig.vibeShieldEndpoint,
+      mode: firmConfig.aiEgressMode,
     })
     .from(firmConfig)
     .where(eq(firmConfig.firmId, args.firmId))
@@ -53,6 +55,11 @@ export async function resolveEgressPolicy(args: {
   // No firm_config row → fall through to the secure default.
   if (!row || !row.enabled) {
     return { kind: 'local-only', reason: 'firm-policy' };
+  }
+  // 0100 — direct mode: appliance calls the provider API directly (firm
+  // owns the key; budget cap + audit log still apply). No shield needed.
+  if (row.mode === 'direct') {
+    return { kind: 'direct-ok' };
   }
   if (!row.endpoint) {
     return { kind: 'shield-not-configured' };
