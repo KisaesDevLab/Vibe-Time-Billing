@@ -240,9 +240,10 @@ describe('portal requests flow', () => {
 
     // Make a file belonging to another client.
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
           VALUES (${ctx.firmId}, 'OtherCo',
-                  (SELECT id FROM app_user WHERE firm_id = ${ctx.firmId} LIMIT 1))
+                  (SELECT id FROM app_user WHERE firm_id = ${ctx.firmId} LIMIT 1),
+                  (SELECT id FROM office WHERE firm_id = ${ctx.firmId} ORDER BY is_default DESC LIMIT 1))
           RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;
@@ -309,9 +310,10 @@ describe('portal requests flow', () => {
     const ctx = await setupPortal();
     // Another client's request — same firm, different client_id.
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
           VALUES (${ctx.firmId}, 'OtherCo',
-                  (SELECT id FROM app_user WHERE firm_id = ${ctx.firmId} LIMIT 1))
+                  (SELECT id FROM app_user WHERE firm_id = ${ctx.firmId} LIMIT 1),
+                  (SELECT id FROM office WHERE firm_id = ${ctx.firmId} ORDER BY is_default DESC LIMIT 1))
           RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;

@@ -83,9 +83,15 @@ async function seedRetainerCtx(
         VALUES (${firmId}, 'partner@test.example', 'Pat Partner', 'Pat', 'Partner') RETURNING id`,
   );
   const appUserId = (user as unknown as { rows: { id: string }[] }).rows[0]!.id;
+  // 0092 made client.office_id NOT NULL — this fresh firm needs an office.
+  const office = await db.execute(
+    sql`INSERT INTO office (firm_id, name, timezone, is_default)
+        VALUES (${firmId}, 'HQ', 'America/Chicago', true) RETURNING id`,
+  );
+  const officeId = (office as unknown as { rows: { id: string }[] }).rows[0]!.id;
   const client = await db.execute(
-    sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-        VALUES (${firmId}, 'Acme Co', ${appUserId}) RETURNING id`,
+    sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+        VALUES (${firmId}, 'Acme Co', ${appUserId}, ${officeId}) RETURNING id`,
   );
   const clientId = (client as unknown as { rows: { id: string }[] }).rows[0]!.id;
   const eng = await db.execute(

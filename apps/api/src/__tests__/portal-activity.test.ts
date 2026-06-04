@@ -88,8 +88,9 @@ async function setupFixture(): Promise<Fixture> {
   const seed = await seedMinimalFirm(harness.db);
   // Add a second client + engagement in the same firm.
   const c2 = await harness.db.execute(
-    sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-        VALUES (${seed.firmId}, 'Other Co', ${seed.appUserId}) RETURNING id`,
+    sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+        VALUES (${seed.firmId}, 'Other Co', ${seed.appUserId},
+                (SELECT id FROM office WHERE firm_id = ${seed.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
   );
   const clientBId = (c2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
   // Fake portal_identity row (just need a uuid — table is in portal.ts).

@@ -122,7 +122,11 @@ describe('magic-link verify + session + CSRF', () => {
     expect(verify.status).toBe(200);
     expect(verify.body.ok).toBe(true);
     expect(verify.body.csrfToken).toMatch(/^[0-9a-f]{48}$/);
-    expect(verify.body.needsTotpEnrollment).toBe(true);
+    // Per CLAUDE.md decision #5 (revised by migration 0087): TOTP is no longer
+    // the sole mandatory factor. Magic-link verify no longer forces TOTP-specific
+    // enrollment — any of TOTP/email/SMS/passkey satisfies the requirement and the
+    // user can enroll later from Account settings. So this is always false now.
+    expect(verify.body.needsTotpEnrollment).toBe(false);
 
     const cookie = getCookie(verify, '__vibe_app_session');
     expect(cookie).toMatch(/^[0-9a-f]{64}$/);

@@ -149,8 +149,9 @@ describe('portal /engagements/active SQL', () => {
     );
     // Second client + engagement in the same firm.
     const c2 = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${seed.firmId}, 'Other Co', ${seed.appUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${seed.firmId}, 'Other Co', ${seed.appUserId},
+                  (SELECT id FROM office WHERE firm_id = ${seed.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
     );
     const c2Id = (c2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const e2 = await harness.db.execute(

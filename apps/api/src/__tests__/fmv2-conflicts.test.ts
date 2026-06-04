@@ -119,8 +119,9 @@ async function seedContestedConflict(): Promise<{
   const seed = await seedMinimalFirm(harness.db);
   // seed.clientId is the CURRENT binding client.
   const challenger = await harness.db.execute(
-    sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-        VALUES (${seed.firmId}, 'Challenger Client', ${seed.appUserId}) RETURNING id`,
+    sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+        VALUES (${seed.firmId}, 'Challenger Client', ${seed.appUserId},
+                (SELECT id FROM office WHERE firm_id = ${seed.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
   );
   const challengerId = (challenger as unknown as { rows: { id: string }[] }).rows[0]!.id;
   // Create current binding.

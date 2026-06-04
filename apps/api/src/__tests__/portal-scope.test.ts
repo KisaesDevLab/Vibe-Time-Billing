@@ -58,13 +58,15 @@ async function setupFixture(): Promise<{
   );
   const identityId = (id as unknown as { rows: { id: string }[] }).rows[0]!.id;
   const c2 = await harness.db.execute(
-    sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-        VALUES (${seed.firmId}, 'Client B', ${seed.appUserId}) RETURNING id`,
+    sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+        VALUES (${seed.firmId}, 'Client B', ${seed.appUserId},
+                (SELECT id FROM office WHERE firm_id = ${seed.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
   );
   const clientBId = (c2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
   const c3 = await harness.db.execute(
-    sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-        VALUES (${seed.firmId}, 'Client C (inactive)', ${seed.appUserId}) RETURNING id`,
+    sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+        VALUES (${seed.firmId}, 'Client C (inactive)', ${seed.appUserId},
+                (SELECT id FROM office WHERE firm_id = ${seed.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
   );
   const clientCId = (c3 as unknown as { rows: { id: string }[] }).rows[0]!.id;
   // Active accesses to A + B; revoked access to C.

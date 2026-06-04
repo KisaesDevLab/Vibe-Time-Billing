@@ -243,8 +243,9 @@ describe('FMv2 — POST /:id/folder/link', () => {
     // Pre-write a sentinel to a different client_id at a NEW path
     // (not pre-populated). We need a real UUID for that client_id.
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${f.firmId}, 'Other Smith', ${f.appUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${f.firmId}, 'Other Smith', ${f.appUserId},
+                  (SELECT id FROM office WHERE firm_id = ${f.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;
     await writeSentinel(storage, 'Smith Family/', {
@@ -351,8 +352,9 @@ describe('FMv2 — POST /:id/folder/create', () => {
     const f = await setup();
     // Make the otherClient first to use as sentinel target.
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${f.firmId}, 'Other', ${f.appUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${f.firmId}, 'Other', ${f.appUserId},
+                  (SELECT id FROM office WHERE firm_id = ${f.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;
     await writeSentinel(storage, 'My New Client Folder/', {

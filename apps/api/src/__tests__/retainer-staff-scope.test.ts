@@ -61,8 +61,9 @@ async function setupScopeFixture(): Promise<ScopeSetup> {
     opts: { partnerId?: string; managerId?: string; assignToMe?: boolean },
   ): Promise<{ engagementId: string; clientId: string }> {
     const client = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${seed.firmId}, ${label + ' Co'}, ${seed.appUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${seed.firmId}, ${label + ' Co'}, ${seed.appUserId},
+                  (SELECT id FROM office WHERE firm_id = ${seed.firmId} ORDER BY is_default DESC LIMIT 1)) RETURNING id`,
     );
     const clientId = (client as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const eng = await harness.db.execute(

@@ -357,9 +357,14 @@ describe('request list filter / sort / pagination', () => {
           VALUES (${otherFirmId}, 'o@x', 'O', 'O', 'O') RETURNING id`,
     );
     const otherUserId = (otherUser as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const otherOffice = await harness.db.execute(
+      sql`INSERT INTO office (firm_id, name, timezone, is_default)
+          VALUES (${otherFirmId}, 'HQ', 'America/Chicago', true) RETURNING id`,
+    );
+    const otherOfficeId = (otherOffice as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const otherClient = await harness.db.execute(
-      sql`INSERT INTO client (firm_id, name, partner_in_charge_id)
-          VALUES (${otherFirmId}, 'OtherCo', ${otherUserId}) RETURNING id`,
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${otherFirmId}, 'OtherCo', ${otherUserId}, ${otherOfficeId}) RETURNING id`,
     );
     const otherClientId = (otherClient as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const otherEng = await harness.db.execute(
