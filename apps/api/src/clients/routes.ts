@@ -31,6 +31,7 @@ import { logger } from '../logger';
 import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
 import { mountFileRoutes } from './files';
+import { mountClientImportRoutes } from './import';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
@@ -973,6 +974,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       res.json({ ok: true });
     },
   );
+
+  // Q36 — CSV client import (preview + commit).
+  mountClientImportRoutes(router, deps);
 
   // v2 Sprint B — multi-contact CRUD endpoints (workstream 1.2).
   mountContactRoutes(router, deps);

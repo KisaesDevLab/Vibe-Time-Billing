@@ -7,6 +7,7 @@ import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
+import { ImportClientsWizard } from './clients/ImportClientsWizard';
 import { RollDueRecurrencesDialog } from './clients/RollDueRecurrencesDialog';
 
 interface ClientRow {
@@ -52,6 +53,7 @@ export function ClientsPage(): JSX.Element {
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
   const [q, setQ] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [rollOpen, setRollOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -173,6 +175,9 @@ export function ClientsPage(): JSX.Element {
             <Button variant="secondary" onClick={() => setRollOpen(true)}>
               Roll due recurrences
             </Button>
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              Import clients
+            </Button>
             <Button onClick={() => setWizardOpen(true)}>+ New client</Button>
           </div>
         }
@@ -256,6 +261,14 @@ export function ClientsPage(): JSX.Element {
         onClose={() => setWizardOpen(false)}
         onCreated={() => void load()}
         users={users}
+      />
+
+      <ImportClientsWizard
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onCreated={() => void load()}
+        users={users}
+        offices={officeOptions}
       />
 
       {rollOpen && <RollDueRecurrencesDialog onClose={() => setRollOpen(false)} />}
