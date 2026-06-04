@@ -66,6 +66,18 @@ services:
       # volume mount.
       FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Q35 — OpenSign e-signature (AGPL). Deployed STANDALONE via
+      # ops/docker/opensign/ (real upstream Parse 4-service stack), reached
+      # over HTTP (see LICENSING.md). Self-host is a Parse Server: auth is
+      # the Parse App-Id + Master-Key pair (not a shared secret/bearer).
+      # Empty OPENSIGN_URL by default so a plain `up` uses native.
+      OPENSIGN_URL: ${OPENSIGN_URL:-}
+      OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
+      OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
+      OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
     # Inline the migrate-then-serve sequence (the appliance image doesn't
     # ship ops/docker/ — only ops/scripts/, so the prod compose's entrypoint
     # path won't resolve here).
@@ -115,6 +127,16 @@ services:
       DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
       REDIS_URL: redis://redis:6379
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Q35 — OpenSign completion poll (safety net for the webhook). Parse
+      # App-Id + Master-Key auth; standalone deploy (see ops/docker/opensign/).
+      OPENSIGN_URL: ${OPENSIGN_URL:-}
+      OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
+      OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
+      OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:-}
     entrypoint: ['/usr/bin/tini', '--']
     command:
       [
@@ -188,6 +210,34 @@ services:
     restart: unless-stopped
     networks:
       - default
+
+  # =====================================================================
+  # Q35 — OpenSign e-signature is deployed STANDALONE, not here.
+  #
+  # The real OpenSign self-host is the upstream 4-service Parse stack
+  # (opensign/opensignserver:main + opensign/opensign:main + mongo +
+  # caddy) — see ops/docker/opensign/docker-compose.yml. The fictional
+  # single `opensignlabs/opensign:v2.4.4` image does NOT exist, so there
+  # is deliberately NO opensign service in this compose.
+  #
+  # Bring OpenSign up:
+  #   docker compose -f ops/docker/opensign/docker-compose.yml \
+  #     --env-file ops/docker/opensign/.env.prod up -d
+  # UI: https://localhost:4001  (self-signed cert).
+  # Then point this appliance at it, e.g.:
+  #   OPENSIGN_URL=https://host.docker.internal:4001/api/app
+  #   OPENSIGN_APP_ID=opensign
+  #   OPENSIGN_MASTER_KEY=<from ops/docker/opensign/.env.prod>
+  #   OPENSIGN_PUBLIC_URL=https://localhost:4001
+  #   OPENSIGN_API_EMAIL / OPENSIGN_API_PASSWORD=<an OpenSign account>
+  # (or attach api/worker to the external `opensign-net` network and use
+  #  OPENSIGN_URL=http://opensign-server:8080/app).
+  #
+  # AGPL NETWORK-BOUNDARY CONSTRAINT (see LICENSING.md): OpenSign runs only
+  # as unmodified upstream images on its own network; the appliance reaches
+  # it over HTTP only and never gives it our object-store creds (the API
+  # fetch-and-stores the completion cert into our own storage).
+  # =====================================================================
 
 volumes:
   static-content:

@@ -77,6 +77,19 @@ services:
       MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Q32 — object storage. Production default is Backblaze B2 (firm
+      # owns the bucket + a restricted app key; customer-owned creds per
+      # non-negotiable #5). The B2_* vars are the authoritative source in
+      # prod and are threaded into BOTH api and worker (the worker has no
+      # admin-UI creds path). buildStorageClient throws a clear boot error
+      # if STORAGE_PROVIDER=b2 and any B2_* is missing. Set
+      # STORAGE_PROVIDER=mock only for a throwaway eval box.
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-b2}
+      B2_ENDPOINT: ${B2_ENDPOINT:-}
+      B2_REGION: ${B2_REGION:-}
+      B2_BUCKET: ${B2_BUCKET:-}
+      B2_KEY_ID: ${B2_KEY_ID:-}
+      B2_APPLICATION_KEY: ${B2_APPLICATION_KEY:-}
       # Stage 1B — envelope encryption master key. 32 bytes (base64 or
       # hex). Required in production; if missing the api process exits
       # at boot.
@@ -85,6 +98,31 @@ services:
       # the run-token here when the admin provisions a Cloudflare tunnel.
       CLOUDFLARED_TOKEN_FILE: /run/cloudflared/token
       CLOUDFLARED_METRICS_URL: http://cloudflared:2000
+      # Q35 — OpenSign e-signature (AGPL). OpenSign is deployed STANDALONE
+      # via ops/docker/opensign/docker-compose.yml (real upstream 4-service
+      # topology: opensign/opensignserver:main + opensign/opensign:main +
+      # mongo + caddy) on its own private network; the appliance reaches it
+      # over HTTP only (see LICENSING.md). There is NO opensign service in
+      # THIS compose by design.
+      #
+      # OpenSign self-host is a Parse Server: auth is the Parse header pair
+      # (App-Id + Master-Key), NOT a bearer/x-api-token. OPENSIGN_URL is the
+      # Parse API base (e.g. http://opensign-server:8080/app over a shared
+      # docker network, or the caddy https://…/api/app). Setting OPENSIGN_URL
+      # is what makes the per-firm 'opensign' provider selectable; absent →
+      # native is always used. The write paths need an OpenSign API account
+      # (OPENSIGN_API_EMAIL/PASSWORD) to mint a Parse session token. The
+      # webhook secret is the 64-char "Webhook Security Key" minted in the
+      # OpenSign UI; it verifies the inbound x-webhook-signature HMAC.
+      # OpenSign NEVER receives our object-store creds — the API
+      # fetch-and-stores the completion cert into our own storage.
+      OPENSIGN_URL: ${OPENSIGN_URL:-}
+      OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
+      OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
+      OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
     volumes:
       - cloudflared-run:/run/cloudflared
     entrypoint: ['/usr/bin/tini', '--', '/app/ops/docker/entrypoint-api.sh']
@@ -108,9 +146,34 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-vibe}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibe_tb}
       REDIS_URL: redis://redis:6379
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Q32 — object storage. The worker builds its StorageClient from env
+      # only (no admin-UI creds path), so the same B2_* set the api uses
+      # MUST be present here for storage-sync / hash / rename / pending
+      # sweep jobs to reach the same bucket. Keep these identical to the
+      # api service's storage block.
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-b2}
+      B2_ENDPOINT: ${B2_ENDPOINT:-}
+      B2_REGION: ${B2_REGION:-}
+      B2_BUCKET: ${B2_BUCKET:-}
+      B2_KEY_ID: ${B2_KEY_ID:-}
+      B2_APPLICATION_KEY: ${B2_APPLICATION_KEY:-}
       # 0085 — worker polls the sidecar's metrics endpoint over the
       # docker network and writes a snapshot to the DB.
       CLOUDFLARED_METRICS_URL: http://cloudflared:2000
+      # Q35 — the worker runs the OpenSign completion poll (safety net for
+      # the webhook). Same OPENSIGN_* set as the api (Parse App-Id +
+      # Master-Key, not a shared secret); the poll skips cleanly when
+      # OPENSIGN_URL is unset. The worker needs storage creds (B2_* above)
+      # to fetch-and-store the completion cert.
+      OPENSIGN_URL: ${OPENSIGN_URL:-}
+      OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
+      OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
+      OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
+      PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET}
     # tsc's rootDir auto-rises when @vibe/* path aliases pull source
     # from other workspace packages, so the worker entry lands at
     # apps/worker/dist/apps/worker/src/index.js — not at the top-level
@@ -169,6 +232,33 @@ services:
         echo "cloudflared: token present; starting tunnel"
         exec cloudflared --no-autoupdate tunnel --metrics 0.0.0.0:2000 run --token "$$(cat /run/cloudflared/token)"
     restart: unless-stopped
+
+  # =====================================================================
+  # Q35 — OpenSign e-signature is deployed STANDALONE, not here.
+  #
+  # The real OpenSign self-host is a 4-service Parse stack
+  # (opensign/opensignserver:main + opensign/opensign:main + mongo +
+  # caddy) — see ops/docker/opensign/docker-compose.yml. The fictional
+  # single `opensignlabs/opensign:v2.4.4` image does NOT exist; this
+  # appliance compose deliberately ships NO opensign service.
+  #
+  # AGPL NETWORK-BOUNDARY CONSTRAINT (see LICENSING.md): OpenSign is
+  # AGPL-3.0 and runs ONLY as unmodified upstream images on its own
+  # private network. The appliance imports/links/bundles none of it and
+  # reaches it over HTTP only. Native is the default e-sign provider;
+  # OpenSign is per-firm opt-in, honored only when OPENSIGN_URL is set.
+  # OpenSign is NEVER given our object-store creds — the API
+  # fetch-and-stores the completion certificate into our own storage.
+  #
+  # To deploy:
+  #   docker compose -f ops/docker/opensign/docker-compose.yml \
+  #     --env-file ops/docker/opensign/.env.prod up -d
+  # Then point this appliance at it via OPENSIGN_URL (and the matching
+  # OPENSIGN_APP_ID / OPENSIGN_MASTER_KEY / OPENSIGN_API_* / webhook key).
+  # If running both stacks on one host, attach api/worker to the
+  # `opensign-net` external network so OPENSIGN_URL can be
+  # http://opensign-server:8080/app.
+  # =====================================================================
 
   backup:
     image: postgres:16-alpine

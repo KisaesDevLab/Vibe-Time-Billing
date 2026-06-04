@@ -1,0 +1,9 @@
+# OpenSign ingress (upstream topology). Serves the React client and
+# proxies /api/* to the Parse server. localhost:4001 uses Caddy's internal
+# self-signed CA (browser warning is expected for local eval).
+{$HOST_URL} {
+	reverse_proxy client:3000
+	handle_path /api/* {
+		reverse_proxy server:8080
+	}
+}

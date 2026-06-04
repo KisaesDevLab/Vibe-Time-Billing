@@ -1,0 +1,78 @@
+# OpenSign self-host (official 4-service topology), adapted for this box.
+#
+# AGPL: OpenSign is AGPL-3.0 and runs ONLY as unmodified upstream images on
+# its own private network (see /LICENSING.md). The Vibe appliance never
+# imports/bundles/links OpenSign source — it talks to it over HTTP only.
+#
+# Differences from upstream OpenSignLabs/OpenSign/docker-compose.yml:
+#   - UI/caddy published on host 4001 (3001 is taken by vibe-tb-api), so
+#     HOST_URL=https://localhost:4001 and the caddy site is localhost:4001.
+#   - Dropped the 80/443 host binds (not needed for local access).
+#   - Secrets + cert + storage mode live in .env.prod (gitignored).
+#
+# Bring up:  docker compose -f ops/docker/opensign/docker-compose.yml --env-file ops/docker/opensign/.env.prod up -d
+# UI:        https://localhost:4001  (self-signed cert — accept the warning)
+
+services:
+  server:
+    image: opensign/opensignserver:main
+    container_name: opensign-server
+    volumes:
+      - opensign-files:/usr/src/app/files
+    ports:
+      - '8080:8080'
+    depends_on:
+      - mongo
+    env_file: .env.prod
+    environment:
+      - NODE_ENV=production
+      - SERVER_URL=https://localhost:4001/api/app
+      - PUBLIC_URL=https://localhost:4001
+    networks:
+      - opensign-net
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    container_name: opensign-mongo
+    volumes:
+      - opensign-mongo-data:/data/db
+    networks:
+      - opensign-net
+    restart: unless-stopped
+
+  client:
+    image: opensign/opensign:main
+    container_name: opensign-client
+    depends_on:
+      - server
+    env_file: .env.prod
+    networks:
+      - opensign-net
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: opensign-caddy
+    ports:
+      - '4001:4001'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - opensign-caddy-data:/data
+      - opensign-caddy-config:/config
+    environment:
+      - HOST_URL=localhost:4001
+    networks:
+      - opensign-net
+    restart: unless-stopped
+
+networks:
+  opensign-net:
+    name: opensign-net
+    driver: bridge
+
+volumes:
+  opensign-mongo-data:
+  opensign-files:
+  opensign-caddy-data:
+  opensign-caddy-config:
