@@ -3332,6 +3332,36 @@ export const messageReadReceipts = pgTable(
   }),
 );
 
+// 0106 — message attachments (images/files). Bytes are stored at objectKey
+// encrypted under the thread T-DEK (same key as message bodies); the
+// original filename is encrypted too. messageId is null while an upload is
+// pending and set when the composing message is posted.
+export const threadAttachments = pgTable(
+  'thread_attachment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    threadId: uuid('thread_id')
+      .notNull()
+      .references(() => threads.id, { onDelete: 'cascade' }),
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'cascade' }),
+    objectKey: text('object_key').notNull(),
+    originalFilenameEnc: bytea('original_filename_enc'),
+    mimeType: text('mime_type'),
+    byteSize: bigint('byte_size', { mode: 'number' }).notNull(),
+    createdByAppUserId: uuid('created_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    threadIdx: index('thread_attachment_thread_idx').on(t.threadId),
+    messageIdx: index('thread_attachment_message_idx').on(t.messageId),
+  }),
+);
+
 export const timeEntryMessageLinks = pgTable(
   'time_entry_message_link',
   {

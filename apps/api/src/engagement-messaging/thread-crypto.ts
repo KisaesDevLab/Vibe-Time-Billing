@@ -72,6 +72,34 @@ export async function encryptForThread(
   }
 }
 
+/** Encrypt raw bytes (e.g. an attachment) under the thread's T-DEK. */
+export async function encryptBytesForThread(
+  ctx: ThreadCryptoCtx,
+  bytes: Uint8Array,
+): Promise<Uint8Array> {
+  requireUnlockedFirmId();
+  const tDek = await unwrapThreadTDek(ctx);
+  try {
+    return encrypt(bytes, tDek).bytes;
+  } finally {
+    tDek.fill(0);
+  }
+}
+
+/** Decrypt raw bytes previously sealed with the thread's T-DEK. */
+export async function decryptBytesForThread(
+  ctx: ThreadCryptoCtx,
+  ciphertext: Uint8Array,
+): Promise<Uint8Array> {
+  requireUnlockedFirmId();
+  const tDek = await unwrapThreadTDek(ctx);
+  try {
+    return decrypt(ciphertext, tDek);
+  } finally {
+    tDek.fill(0);
+  }
+}
+
 /** Decrypt a stored ciphertext under the thread's T-DEK. */
 export async function decryptForThread(
   ctx: ThreadCryptoCtx,

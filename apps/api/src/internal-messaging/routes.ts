@@ -24,11 +24,18 @@ import {
   batchDecryptForThread,
 } from '../engagement-messaging/thread-crypto';
 import { enqueueMessageNotify, type InternalMessageNotifyJob } from './queue';
+import {
+  mountThreadAttachmentRoutes,
+  listAttachmentsByMessage,
+  linkPendingAttachments,
+} from '../messaging/attachments';
+import type { StorageClient } from '@vibe/storage';
 
 export interface InternalMessagingDeps extends RbacDeps {
   db: Database | null;
   /** Override the notify enqueue (tests stub this). */
   enqueueNotify?: (job: InternalMessageNotifyJob) => Promise<void>;
+  storageClient?: StorageClient;
 }
 
 const EXCERPT_MAX = 80;
@@ -38,7 +45,10 @@ const CreateSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   body: z.string().min(1).max(10_000).optional(),
 });
-const PostSchema = z.object({ body: z.string().min(1).max(10_000) });
+const PostSchema = z.object({
+  body: z.string().min(1).max(10_000),
+  attachmentIds: z.array(z.string().uuid()).max(20).optional(),
+});
 const AddMemberSchema = z.object({ appUserId: z.string().uuid() });
 
 export function createInternalMessagingRouter(deps: InternalMessagingDeps): Router {
@@ -390,6 +400,12 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
         { db: deps.db, firmId: session.firmId, threadId },
         rows.map((r) => r.bodyCiphertext),
       );
+      const attByMsg = await listAttachmentsByMessage(
+        deps.db,
+        session.firmId,
+        threadId,
+        rows.map((r) => r.id),
+      );
       const items = rows.map((r, i) => ({
         id: r.id,
         senderAppUserId: r.senderAppUserId,
@@ -397,6 +413,7 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
         body: bodies[i],
         createdAt: r.createdAt,
         mine: r.senderAppUserId === session.appUserId,
+        attachments: attByMsg.get(r.id) ?? [],
       }));
       // Mark read.
       await deps.db
@@ -437,6 +454,7 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
         session.firmId,
         parsed.data.body,
         enqueue,
+        parsed.data.attachmentIds,
       );
       res.status(201).json({ id });
     },
@@ -552,6 +570,14 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
     },
   );
 
+  // Attachment upload + download/preview (encrypted under the thread T-DEK).
+  mountThreadAttachmentRoutes(router, {
+    db: deps.db,
+    storageClient: deps.storageClient,
+    isMember: (threadId, appUserId) =>
+      deps.db ? isMember(deps.db, threadId, appUserId) : Promise.resolve(false),
+  });
+
   return router;
 }
 
@@ -587,6 +613,7 @@ async function postMessage(
   firmId: string,
   body: string,
   enqueue: (job: InternalMessageNotifyJob) => Promise<void>,
+  attachmentIds?: string[],
 ): Promise<string> {
   const ciphertext = await encryptForThread({ db, firmId, threadId }, body);
   const excerpt = body.slice(0, EXCERPT_MAX);
@@ -600,6 +627,7 @@ async function postMessage(
     })
     .returning({ id: messages.id });
   const messageId = row!.id;
+  await linkPendingAttachments(db, threadId, messageId, attachmentIds ?? []);
   await db.update(threads).set({ updatedAt: new Date() }).where(eq(threads.id, threadId));
   // Sender has implicitly read their own message.
   await db

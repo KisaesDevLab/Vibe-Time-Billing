@@ -38,6 +38,11 @@ import { logger } from '../logger';
 
 import { batchDecryptForThread, encryptForThread, generateWrappedTDek } from './thread-crypto';
 import { isMember } from './lifecycle';
+import {
+  mountThreadAttachmentRoutes,
+  listAttachmentsByMessage,
+  linkPendingAttachments,
+} from '../messaging/attachments';
 
 export interface EngagementMessagingDeps extends RbacDeps {
   db: Database | null;
@@ -45,6 +50,7 @@ export interface EngagementMessagingDeps extends RbacDeps {
 
 const PostMessageSchema = z.object({
   body: z.string().min(1).max(10_000),
+  attachmentIds: z.array(z.string().uuid()).max(20).optional(),
 });
 
 const AddMemberSchema = z.object({
@@ -186,6 +192,12 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           { db: deps.db, firmId: session.firmId, threadId },
           rows.map((r) => r.bodyCiphertext),
         );
+        const attByMsg = await listAttachmentsByMessage(
+          deps.db,
+          session.firmId,
+          threadId,
+          rows.map((r) => r.id),
+        );
         const items = rows.map((r, i) => ({
           id: r.id,
           senderAppUserId: r.senderAppUserId,
@@ -195,6 +207,7 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           body: plaintexts[i],
           editOfId: r.editOfId,
           createdAt: r.createdAt,
+          attachments: attByMsg.get(r.id) ?? [],
         }));
         res.json({ items });
       } catch (err) {
@@ -503,6 +516,9 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
             excerptPlaintext: excerpt,
           })
           .returning({ id: messages.id, createdAt: messages.createdAt });
+        if (row?.id) {
+          await linkPendingAttachments(deps.db, threadId, row.id, parsed.data.attachmentIds ?? []);
+        }
         await deps.db
           .update(threads)
           .set({ updatedAt: new Date() })
@@ -807,6 +823,13 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
   // Suppress unused-import warning for sql when not branching by query
   // shape. Retained for future ordering tweaks.
   void sql;
+
+  // Attachment upload + download/preview (encrypted under the thread T-DEK).
+  mountThreadAttachmentRoutes(router, {
+    db: deps.db,
+    isMember: (threadId, appUserId) =>
+      deps.db ? isMember(deps.db, { threadId, appUserId }) : Promise.resolve(false),
+  });
 
   return router;
 }

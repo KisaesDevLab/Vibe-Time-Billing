@@ -7,11 +7,19 @@
 // Bodies arrive decrypted from the API. The component never sees
 // ciphertext or any encryption material (CLAUDE.md non-negotiable).
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Button, tokens } from '@vibe/ui';
 
-import { api } from '../../api-client';
+import { api, getCsrfToken } from '../../api-client';
+
+export interface MessageAttachment {
+  id: string;
+  filename: string | null;
+  mimeType: string | null;
+  byteSize: number;
+  isImage: boolean;
+}
 
 export interface ThreadMessage {
   id: string;
@@ -24,6 +32,20 @@ export interface ThreadMessage {
   mine?: boolean;
   body: string;
   createdAt: string;
+  attachments?: MessageAttachment[];
+}
+
+interface PendingAttachment {
+  id: string;
+  filename: string;
+  byteSize: number;
+  isImage: boolean;
+}
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 interface ThreadViewProps {
@@ -55,6 +77,9 @@ export function ThreadView({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -79,16 +104,51 @@ export function ThreadView({
     void load();
   }, [load]);
 
+  async function uploadFiles(files: FileList | null): Promise<void> {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setError(null);
+    try {
+      for (const f of Array.from(files)) {
+        const qs = new URLSearchParams({
+          filename: f.name,
+          mimeType: f.type || 'application/octet-stream',
+        });
+        const res = await fetch(`${apiBase}/threads/${threadId}/attachments?${qs.toString()}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': f.type || 'application/octet-stream',
+            'X-CSRF-Token': getCsrfToken() ?? '',
+          },
+          body: f,
+          credentials: 'same-origin',
+        });
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        const a = (await res.json()) as PendingAttachment;
+        setPending((prev) => [...prev, a]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'upload_failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function send(): Promise<void> {
-    if (!draft.trim()) return;
+    const text = draft.trim();
+    if (!text && pending.length === 0) return;
     setBusy(true);
     setError(null);
+    // Attachment-only messages get a sensible caption.
+    const body =
+      text || (pending.length === 1 ? pending[0]!.filename : `Shared ${pending.length} files`);
     try {
       await api(`${apiBase}/threads/${threadId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ body: draft.trim() }),
+        body: JSON.stringify({ body, attachmentIds: pending.map((p) => p.id) }),
       });
       setDraft('');
+      setPending([]);
       await load();
       onSent?.();
     } catch (err) {
@@ -169,6 +229,46 @@ export function ThreadView({
                 <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', color: tokens.color.text }}>
                   {m.body}
                 </div>
+                {m.attachments && m.attachments.length > 0 && (
+                  <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+                    {m.attachments.map((a) => {
+                      const url = `${apiBase}/threads/${threadId}/attachments/${a.id}`;
+                      return a.isImage ? (
+                        <a key={a.id} href={url} target="_blank" rel="noreferrer">
+                          <img
+                            src={url}
+                            alt={a.filename ?? 'image'}
+                            style={{
+                              maxWidth: '100%',
+                              maxHeight: 240,
+                              borderRadius: tokens.radius.sm,
+                              border: `1px solid ${tokens.color.border}`,
+                              display: 'block',
+                            }}
+                          />
+                        </a>
+                      ) : (
+                        <a
+                          key={a.id}
+                          href={`${url}?download=1`}
+                          style={{
+                            fontSize: 12,
+                            color: tokens.color.accent,
+                            textDecoration: 'none',
+                            border: `1px solid ${tokens.color.border}`,
+                            borderRadius: tokens.radius.sm,
+                            padding: '4px 8px',
+                          }}
+                        >
+                          📎 {a.filename ?? 'file'}{' '}
+                          <span style={{ color: tokens.color.textMuted }}>
+                            ({fmtSize(a.byteSize)})
+                          </span>
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })
@@ -181,6 +281,44 @@ export function ThreadView({
         </p>
       )}
 
+      {pending.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {pending.map((p) => (
+            <span
+              key={p.id}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.pill,
+                padding: '2px 8px',
+                background: tokens.color.surface,
+              }}
+            >
+              {p.isImage ? '🖼' : '📎'} {p.filename}{' '}
+              <span style={{ color: tokens.color.textMuted }}>({fmtSize(p.byteSize)})</span>
+              <button
+                type="button"
+                aria-label={`Remove ${p.filename}`}
+                onClick={() => setPending((prev) => prev.filter((x) => x.id !== p.id))}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: tokens.color.danger,
+                  cursor: 'pointer',
+                  fontSize: 15,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div
         style={{
           display: 'flex',
@@ -188,6 +326,24 @@ export function ThreadView({
           alignItems: 'flex-end',
         }}
       >
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            void uploadFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+        <Button
+          variant="ghost"
+          onClick={() => fileInput.current?.click()}
+          disabled={uploading}
+          title="Attach files or images"
+        >
+          {uploading ? '…' : '📎'}
+        </Button>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -211,7 +367,10 @@ export function ThreadView({
             resize: 'vertical',
           }}
         />
-        <Button onClick={() => void send()} disabled={busy || !draft.trim()}>
+        <Button
+          onClick={() => void send()}
+          disabled={busy || (!draft.trim() && pending.length === 0)}
+        >
           {busy ? 'Sending…' : 'Send'}
         </Button>
       </div>
