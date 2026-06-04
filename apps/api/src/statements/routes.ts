@@ -22,6 +22,7 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { renderHtmlToPdf } from '../pdf/render';
 import { logger } from '../logger';
 
@@ -242,6 +243,9 @@ async function loadBranding(
 
 export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
   const router = express.Router();
+  // A non-UUID :clientId would otherwise reach Postgres as a 22P02 cast
+  // error (500); reject it up front as a clean 404.
+  addUuidIdGuard(router, ['clientId']);
 
   // GET /api/staff/statements/clients/:clientId — single client statement.
   // ?accept=pdf or Accept: application/pdf → PDF, else HTML.

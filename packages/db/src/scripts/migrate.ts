@@ -40,8 +40,14 @@ async function main(): Promise<void> {
       const body = await readFile(join(migrationsDir, f), 'utf8');
       // eslint-disable-next-line no-console
       console.log(`apply ${f}`);
-      await sql.unsafe(body);
-      await sql`INSERT INTO schema_migrations (filename) VALUES (${f})`;
+      // Apply the migration body + record it atomically: on any failure the
+      // whole file rolls back, so a partial migration can never be left
+      // committed-but-unrecorded. All migrations use only transaction-safe
+      // DDL (no CREATE INDEX CONCURRENTLY / VACUUM).
+      await sql.begin(async (tx) => {
+        await tx.unsafe(body);
+        await tx`INSERT INTO schema_migrations (filename) VALUES (${f})`;
+      });
     }
   } finally {
     await sql.end({ timeout: 5 });
