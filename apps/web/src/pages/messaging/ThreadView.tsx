@@ -16,9 +16,12 @@ import { api } from '../../api-client';
 export interface ThreadMessage {
   id: string;
   senderAppUserId: string | null;
-  senderPortalIdentityId: string | null;
+  senderPortalIdentityId?: string | null;
   senderName: string | null;
-  senderKind: 'staff' | 'client';
+  /** Client threads tag each message staff/client; internal threads omit it. */
+  senderKind?: 'staff' | 'client';
+  /** Internal threads flag the caller's own messages. */
+  mine?: boolean;
   body: string;
   createdAt: string;
 }
@@ -31,6 +34,12 @@ interface ThreadViewProps {
   maxHeight?: number;
   /** Called after a successful send so the parent can refresh thread metadata. */
   onSent?: () => void;
+  /** API mount the thread lives under. Defaults to client/engagement
+   *  messaging; the Team tab passes the internal-messaging mount. */
+  apiBase?: string;
+  /** 'client' shows the staff/client sender tags + portal hint; 'internal'
+   *  is plain staff chat (right-aligns your own messages via `mine`). */
+  variant?: 'client' | 'internal';
 }
 
 export function ThreadView({
@@ -38,6 +47,8 @@ export function ThreadView({
   embedded = false,
   maxHeight = 480,
   onSent,
+  apiBase = '/api/staff/engagement-messaging',
+  variant = 'client',
 }: ThreadViewProps): JSX.Element {
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -47,9 +58,7 @@ export function ThreadView({
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ items: ThreadMessage[] }>(
-        `/api/staff/engagement-messaging/threads/${threadId}/messages`,
-      );
+      const r = await api<{ items: ThreadMessage[] }>(`${apiBase}/threads/${threadId}/messages`);
       setMessages(r.items ?? []);
       setError(null);
     } catch (err) {
@@ -64,7 +73,7 @@ export function ThreadView({
     } finally {
       setLoading(false);
     }
-  }, [threadId]);
+  }, [threadId, apiBase]);
 
   useEffect(() => {
     void load();
@@ -75,7 +84,7 @@ export function ThreadView({
     setBusy(true);
     setError(null);
     try {
-      await api(`/api/staff/engagement-messaging/threads/${threadId}/messages`, {
+      await api(`${apiBase}/threads/${threadId}/messages`, {
         method: 'POST',
         body: JSON.stringify({ body: draft.trim() }),
       });
@@ -117,21 +126,28 @@ export function ThreadView({
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
         ) : messages.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
-            No messages yet. Send the first one below — your client will see it in the portal.
+            {variant === 'internal'
+              ? 'No messages yet. Send the first one below.'
+              : 'No messages yet. Send the first one below — your client will see it in the portal.'}
           </p>
         ) : (
           messages.map((m) => {
-            const isStaff = m.senderKind === 'staff';
+            // Right-align "my" side: own messages (internal) or staff (client).
+            const isRight = variant === 'internal' ? Boolean(m.mine) : m.senderKind === 'staff';
+            const tag =
+              variant === 'internal' ? '' : m.senderKind === 'staff' ? ' · staff' : ' · client';
+            const fallbackName =
+              variant === 'internal' ? 'Teammate' : m.senderKind === 'staff' ? 'Staff' : 'Client';
             return (
               <div
                 key={m.id}
                 style={{
-                  alignSelf: isStaff ? 'flex-end' : 'flex-start',
+                  alignSelf: isRight ? 'flex-end' : 'flex-start',
                   maxWidth: '75%',
                   border: `1px solid ${tokens.color.border}`,
                   borderRadius: tokens.radius.md,
                   padding: tokens.space.sm,
-                  background: isStaff ? tokens.color.accentMuted : tokens.color.surface,
+                  background: isRight ? tokens.color.accentMuted : tokens.color.surface,
                 }}
               >
                 <div
@@ -145,8 +161,8 @@ export function ThreadView({
                   }}
                 >
                   <span style={{ fontWeight: 500 }}>
-                    {m.senderName ?? (isStaff ? 'Staff' : 'Client')}
-                    {isStaff ? ' · staff' : ' · client'}
+                    {m.senderName ?? fallbackName}
+                    {tag}
                   </span>
                   <span>{new Date(m.createdAt).toLocaleString()}</span>
                 </div>
