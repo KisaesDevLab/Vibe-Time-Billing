@@ -300,16 +300,19 @@ Per the TB-standalone framing, the original addendum's plan to fold portal auth 
 Context: `FILE_MANAGER_ADDENDUM.md` v1 specifies a B2-backed sentinel-bound file manager that fundamentally conflicts with the v1 implementation shipped under migrations 0037 + 0038 (`client_folder` hierarchical, `client_file` flat, no virtual-drive coexistence).
 Assumed default: Replace the existing implementation. Drop `client_folder`, `client_folder_template`, `client_file` and their code in Phase 0. Stub `apps/api/src/clients/files.ts` with `410 Gone` until Phase 8 reintroduces uploads against the new schema.
 Implication if wrong: If existing customer data lived in `client_file`, it's lost. Accepted because no real production data is at risk at this point.
+**RESOLVED 2026-06-04 (operator):** Close as implemented. The rebuilt `files` schema shipped and is live; default stands.
 
 ## Q32 — B2 storage stub for development [files phase 1]
 Context: Addendum requires B2 as the canonical storage. B2 credentials are not yet available.
 Assumed default: Ship a `MockStorageClient` that implements the same `StorageClient` interface but writes under `STORAGE_LOCAL_PATH` (default `/data/storage-mock`). Production deploys flip `STORAGE_PROVIDER=b2` + the `B2_*` vars; tests gate the real-B2 integration suite behind `B2_INTEGRATION=1`.
 Implication if wrong: B2-specific quirks (consistency semantics, multipart upload, ETag format) won't be exercised until real wiring lands. Acceptable for v1 dev; documented in the master plan as deferred work.
+**RESOLVED 2026-06-04 (operator):** Production storage = **Backblaze B2**. `STORAGE_PROVIDER=b2` + `B2_*` env in production; firm supplies credentials (customer-owned, per non-negotiable #5). Mock remains the dev default. Document the wiring + exercise the B2 path.
 
 ## Q33 — Pending-upload column placement [files phase 5/8]
 Context: Phase 8 needs a `pending_upload` flag on `files` rows to mark in-flight presigned uploads.
 Assumed default: Add the column in the Phase 5 migration (`0046_files_storage_files.sql`) rather than a separate Phase 8 migration, since the schema for `files` is already being defined in that migration and adding the flag early is cheaper than a follow-up ALTER.
 Implication if wrong: If Phase 5 ships before Phase 8 we have a useless boolean column for ~one phase of life. Acceptable.
+**RESOLVED 2026-06-04 (operator):** Close as implemented. `files.pending_upload` + its partial indexes are live; default stands.
 
 ## Q34 — Multi-signer scope for Proposals v1 [proposal P01]
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #1. Partnership/S-corp/audit engagements often require ≥2 signers. The addendum locks "single-signer UI" for v1 but requires schema to remain plural so v1.5 only ships UI work.
@@ -321,6 +324,7 @@ Implication if wrong: If we needed multi-signer UI in v1, only the acceptance fl
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #2. OpenSign is AGPL; T&B core is PolyForm Internal Use 1.0.0. AGPL infection would force the entire appliance source code under AGPL.
 Assumed default: **OpenSign runs as a separate sidecar container reached over the network.** AGPL applies to the OpenSign binary only; the network boundary keeps T&B core's PolyForm license clean. One-line note to be added to `LICENSING.md` in P15. T&B does NOT statically link, NOT bundle, NOT import any OpenSign source.
 Implication if wrong: If AGPL is read as infecting any system that talks to the OpenSign API, we'd have to either (a) write our own e-signature backend or (b) license T&B under AGPL. We accept the standard reading per FSF/SFLC guidance that network communication via stable API is not derivation.
+**RESOLVED 2026-06-04 (operator):** Build out OpenSign now as a first-class alternative to the native HMAC backend, via the AGPL-isolated sidecar (network boundary; no static link/bundle/import). Wire real envelope creation, the sidecar signing UI handoff, signed-cert storage in object storage, and the poll/refresh hook; keep native as the default provider and the sidecar opt-in per firm. Add the AGPL note to `LICENSING.md`.
 
 ## Q36 — CSV client import in P02 [proposal P02]
 Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #3. A firm with 200 clients cannot hand-enter all of them at onboarding. Locked decision is "no CSV in v1."
@@ -365,6 +369,22 @@ The working tree is also dirty (~30 files modified from the current session's in
 
 **RESOLVED 2026-06-03 (operator):** Do NOT re-run the kickoff verbatim. Run Option A — a gap audit mapping each build-plan phase item to existing code, producing `RETAINER_ADDENDUM_AUDIT.md`; build only genuine gaps it surfaces. No redundant migration.
 
+## Q39 — B2 bucket version-lifecycle policy [storage / Q32 follow-up]
+Context: B2 retains every file version by default; the idempotent "latest wins" `put` accumulates hidden versions (storage cost + clutter). The appliance keeps its own append-only audit log + per-file SHA-256, so prior B2 object versions are not the integrity source of truth.
+**RESOLVED 2026-06-04 (operator):** **Keep-last-version only.** Document a B2 lifecycle rule that hides/deletes prior versions immediately in the storage runbook. No version-recovery cushion (acceptable given audit log + SHA-256).
+
+## Q40 — Multipart upload [storage / Q32 follow-up]
+Context: `put` + presigned PUT are single-part (B2 single-PUT S3 cap 5 GB; lower in practice through proxies). No multipart path exists.
+**RESOLVED 2026-06-04 (operator):** **Defer.** CPA documents (PDFs, returns, statements) sit well under single-part limits. Logged as a known gap; build chunked multipart only if a real large-file need appears.
+
+## Q41 — OpenSign sidecar deployment posture [proposal / Q35 follow-up]
+Context: OpenSign is built but profile-gated and off by default (needs `OPENSIGN_URL` + the `opensign`/`opensign-mongo` sidecar bundle + the per-firm setting flipped). Native HMAC e-sign is the active default.
+**RESOLVED 2026-06-04 (operator):** Keep it **off in default deploys**, but write an ops **deploy runbook** (`ops/docs/opensign-runbook.md`) so standing it up is turnkey when a firm wants it: bring up the sidecar + Mongo, set the shared/webhook secrets, point the firm setting at it, register the completion webhook, verify.
+
+## Q42 — B2 integration suite in CI [storage / Q32 follow-up]
+Context: the real-B2 round-trip suite (`packages/storage/src/__tests__/b2.integration.test.ts`) is gated behind `B2_INTEGRATION=1` + the five `B2_*` vars; today it only runs locally on demand.
+**RESOLVED 2026-06-04 (operator):** **Wire CI secrets.** Add a manual-dispatch (`workflow_dispatch`) CI job that injects throwaway-bucket B2 credentials from GitHub Actions secrets and runs the integration suite on demand. Creds are a dedicated throwaway bucket + restricted key, never production.
+
 ---
 
 # CHANGE LOG
@@ -375,3 +395,5 @@ The working tree is also dirty (~30 files modified from the current session's in
 - 2026-05-24 — Q34–Q40 locked under Section L for Connect Integration absorption (see `CONNECT_INTEGRATION_ADDENDUM.md` §5).
 - 2026-06-02 — Q38 added: retainer addendum already implemented (migrations 0065–0068); kickoff Phase 1 blocked pending operator direction.
 - 2026-06-03 — Operator Q&A resolved open items: Q38 → run gap audit (Option A); Q36 → build CSV client-import UI now; Q37 → keep GL export deferred; Q34 (proposals) → build multi-signer UI now. Q35 (OpenSign AGPL) left open — proposals ship native HMAC e-sign, so the sidecar boundary is currently moot.
+- 2026-06-04 — Operator Q&A resolved the remaining open items: Q31 → close as implemented (files schema rebuilt); Q33 → close as implemented (pending_upload live); Q32 → production storage = Backblaze B2 (firm-supplied creds; mock stays dev default); Q35 → build out OpenSign now as an AGPL-isolated sidecar alternative to native e-sign. All OPEN QUESTIONS Q31–Q38 now resolved.
+- 2026-06-04 — Q39–Q42 added + resolved (follow-ups surfaced by the Q32/Q35 builds): Q39 B2 lifecycle → keep-last-version; Q40 multipart → defer; Q41 OpenSign → keep off by default + write deploy runbook; Q42 B2 integration suite → wire manual-dispatch CI secrets.

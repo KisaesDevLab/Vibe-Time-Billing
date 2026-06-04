@@ -248,4 +248,31 @@ The first-pass audit's three "BLOCKERS" were all false:
 - Email templates **are** implemented inline (`notifications.ts`) — divergence from plan, but functional
 - Portal offer metadata **is** wired (`retainer-offers.ts:140`, plus migration 0067's `invoice.retainer_offer_id` FK)
 
+---
+
+## Verification re-run — 2026-06-03 (operator-requested, two independent read-only passes)
+
+Per operator direction (QUESTIONS.md Q38), the 2026-06-02 audit above was independently re-verified against current code. Several gaps were **overstated**; the system is in better shape than the audit claimed. Corrections:
+
+| Audit claim                                            | Re-verified verdict                                                                                                                                                                                       | Evidence                                                                                  |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Phase 4 toggle defaults **OFF**                        | **WRONG — defaults ON.** `Billing.tsx:451` `useState(true)`. The real (minor) gap is only that it never reads `firm_retainer_settings.default_biller_toggle_on`, so a firm that set it OFF still sees ON. | `apps/web/src/pages/Billing.tsx:451,965-979`                                              |
+| Phase 11 PDF "Retainer Activity Statement" **missing** | **WRONG — implemented.** Portal route `GET /:id/statement.pdf` renders via `buildActivityStatementHtml()` + `renderHtmlToPdf()`, with HTML fallback if Puppeteer is down.                                 | `apps/api/src/portal/retainers.ts:115-188`, `apps/api/src/retainers/exports.ts:107`       |
+| Phase 7 expiry ladder (90/60/30/7) **unverified**      | **CONFIRMED done.** All four bands scheduled.                                                                                                                                                             | `apps/api/src/retainers/scheduler.ts:149-154`; cron in `apps/worker/src/index.ts:524-525` |
+| Phase 14 tier-config backfill **missing**              | **PARTLY WRONG — tier-config backfill exists** (`bootstrap-firm.ts` seeds configs). Only the _legacy service-code → retainer_ conversion script is genuinely missing.                                     | `packages/db/src/scripts/bootstrap-firm.ts`                                               |
+| Docs: 5 files missing                                  | **PARTIAL — `docs/retainers.md` exists** (~11.7 KB). Still missing: `docs/retainers-admin.md`, `docs/retainers-api.md`, and a `docs/runbooks/` dir (expiry-recovery, data-fix).                           | filesystem                                                                                |
+| Test coverage ~13 files / ~250 cases                   | **OVERSTATED — 12 files, 66 cases.** Still solid unit/integration coverage; no Playwright E2E.                                                                                                            | `apps/api/src/__tests__/retainer*.test.ts`                                                |
+| Phase 12 MyBooks GL posting missing                    | **CONFIRMED missing.** `revenueGlAccount`/`offsetGlAccount` are captured in schema + UI but no code posts to them.                                                                                        | `packages/db/src/schema/retainers.ts`; no readers                                         |
+| Healthcheck `GET /api/health/retainers`                | **CONFIRMED exists.**                                                                                                                                                                                     | `apps/api/src/health/retainer-health.ts:38`                                               |
+
+**Corrected gap profile (what's actually left):**
+
+1. Phase 4 — toggle ignores firm `default_biller_toggle_on` (~30 min); optional UI polish: live price preview, override-pricing/eligibility modals, conditional rendering, 60-day tooltip (~4–6 hrs, nice-to-have).
+2. Phase 12 — MyBooks GL posting. **Intentionally deferred** per operator Q37 (2026-06-03). Not in scope.
+3. Phase 14 — legacy service-code → retainer backfill script (~3 hrs; only matters for firms migrating off ad-hoc service codes).
+4. Docs — `retainers-admin.md`, `retainers-api.md`, two runbooks (~4 hrs, support paperwork).
+5. Playwright E2E for the 12-step flow (~6 hrs, regression safety).
+
+**Verdict stands and strengthens: SHIPPABLE end-to-end.** The two items the 2026-06-02 audit ranked as top "Medium-impact" gaps (toggle-defaults-OFF, PDF statement) were false. No core-flow work is required; everything remaining is polish, an optional backfill, docs, and E2E.
+
 The system would pass a competent reviewer's acceptance pass today.
