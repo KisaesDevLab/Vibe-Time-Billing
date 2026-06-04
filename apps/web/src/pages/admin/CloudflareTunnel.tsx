@@ -18,7 +18,7 @@ import { Button, Card, Pill, tokens } from '@vibe/ui';
 import { api } from '../../api-client';
 
 type Status = 'INACTIVE' | 'PROVISIONING' | 'ACTIVE' | 'ERROR';
-type Realm = 'STAFF' | 'PORTAL';
+type Realm = 'STAFF' | 'PORTAL' | 'ESIGN';
 
 interface MetricsSnapshot {
   ready: boolean;
@@ -145,6 +145,7 @@ function HostnameRows({
           >
             <option value="STAFF">Staff</option>
             <option value="PORTAL">Portal</option>
+            <option value="ESIGN">E-sign</option>
           </select>
           <Button
             variant="ghost"
@@ -389,8 +390,16 @@ export function CloudflareTunnelPage(): JSX.Element {
                 )}
                 {config.hostnames.map((h) => (
                   <div key={h.hostname} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <Pill tone={h.realm === 'PORTAL' ? 'neutral' : 'success'}>
-                      {h.realm === 'PORTAL' ? 'Portal' : 'Staff'}
+                    <Pill
+                      tone={
+                        h.realm === 'PORTAL'
+                          ? 'neutral'
+                          : h.realm === 'ESIGN'
+                            ? 'warning'
+                            : 'success'
+                      }
+                    >
+                      {h.realm === 'PORTAL' ? 'Portal' : h.realm === 'ESIGN' ? 'E-sign' : 'Staff'}
                     </Pill>
                     <code style={{ fontSize: 13 }}>https://{h.hostname}</code>
                   </div>

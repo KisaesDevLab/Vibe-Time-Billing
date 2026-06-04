@@ -14,7 +14,7 @@ import type express from 'express';
 
 import { cloudflareTunnelConfigs } from '@vibe/db/schema';
 import type { createCloudflareClient } from '@vibe/core/cloudflare';
-import { type CloudflareClientOptions } from '@vibe/core/cloudflare';
+import { type CloudflareClientOptions, type IngressRule } from '@vibe/core/cloudflare';
 
 type CloudflareClient = ReturnType<typeof createCloudflareClient>;
 
@@ -120,7 +120,12 @@ interface MockClientLog {
   getZone: string[];
   createTunnel: Array<{ accountId: string; name: string }>;
   getTunnelToken: string[];
-  setTunnelIngress: Array<{ tunnelId: string; ingressLen: number; hosts: string[] }>;
+  setTunnelIngress: Array<{
+    tunnelId: string;
+    ingressLen: number;
+    hosts: string[];
+    rules: IngressRule[];
+  }>;
   upsertCnameRecord: Array<{ zoneId: string; hostname: string; target: string }>;
   findDnsRecord: Array<{ zoneId: string; hostname: string }>;
   deleteDnsRecord: string[];
@@ -187,6 +192,7 @@ function buildMockClient(): {
         tunnelId,
         ingressLen: config.ingress.length,
         hosts: config.ingress.filter((i) => i.hostname).map((i) => i.hostname!),
+        rules: config.ingress,
       });
     },
     async upsertCnameRecord(zoneId, hostname, target) {
@@ -513,6 +519,47 @@ describe('cloudflare-tunnel router', () => {
     ).config;
     expect(cfg.hostnames).toHaveLength(3);
     expect(cfg.hostnames.find((h) => h.hostname === 'clients.firm.example')!.realm).toBe('PORTAL');
+  });
+
+  it('POST /provision routes an ESIGN hostname to the OpenSign sidecar with no host rewrite', async () => {
+    const { factory, log } = buildMockClient();
+    const router = createCloudflareTunnelRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      commercialLicenseActive: true,
+      tokenFilePath: tokenFile,
+      createClient: factory,
+    });
+    const r = await invoke(router, 'post', '/provision', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          apiToken: VALID_TOKEN,
+          accountId: ACCOUNT_ID,
+          zoneId: ZONE_ID,
+          hostnames: [
+            { hostname: 'app.firm.example', realm: 'STAFF' },
+            { hostname: 'esign.firm.example', realm: 'ESIGN' },
+          ],
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    const rules = log.setTunnelIngress[0]!.rules;
+    const esign = rules.find((x) => x.hostname === 'esign.firm.example')!;
+    // ESIGN points at the OpenSign sidecar, host-agnostic (no Host rewrite).
+    expect(esign.service).toBe('http://opensign-caddy:4001');
+    expect(esign.originRequest?.httpHostHeader).toBeUndefined();
+    // STAFF still rewrites the Host header to the realm-canonical app host.
+    const staff = rules.find((x) => x.hostname === 'app.firm.example')!;
+    expect(staff.service).toBe('http://caddy:80');
+    expect(staff.originRequest?.httpHostHeader).toBe('app.firm.example');
+    // ESIGN gets a DNS CNAME like any active hostname (not license-gated).
+    expect(log.upsertCnameRecord.map((c) => c.hostname).sort()).toEqual([
+      'app.firm.example',
+      'esign.firm.example',
+    ]);
   });
 
   it('POST /update reconciles hostnames without recreating the tunnel', async () => {

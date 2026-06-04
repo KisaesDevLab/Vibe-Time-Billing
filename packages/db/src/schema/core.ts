@@ -3977,7 +3977,13 @@ export const cloudflareTunnelStatus = pgEnum('cloudflare_tunnel_status', [
 // client portal SPA. Drives the origin Host-header rewrite so Caddy's
 // existing `portal.*` matcher lands the request in the right realm
 // regardless of the public hostname label.
-export const cloudflareTunnelRealm = pgEnum('cloudflare_tunnel_realm', ['STAFF', 'PORTAL']);
+// 0099 — ESIGN → the OpenSign signing UI on the isolated sidecar
+// (opensign-caddy:4001); routes WITHOUT a Host-header rewrite.
+export const cloudflareTunnelRealm = pgEnum('cloudflare_tunnel_realm', [
+  'STAFF',
+  'PORTAL',
+  'ESIGN',
+]);
 
 export const cloudflareTunnelConfigs = pgTable(
   'cloudflare_tunnel_config',

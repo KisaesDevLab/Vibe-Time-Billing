@@ -19,12 +19,15 @@
 //      ingress + DNS without recreating the tunnel). POST /deprovision
 //      deletes the tunnel + all DNS records and clears the row.
 //
-// Realm routing: each hostname is tagged STAFF or PORTAL. The tunnel
-// ingress rewrites the origin Host header (originRequest.httpHostHeader)
-// to a realm-canonical host — portal.<zone> for PORTAL, app.<zone> for
-// STAFF — so Caddy's existing `@portal host portal.*` matcher routes the
-// request into the right realm regardless of the public hostname label.
-// No Caddyfile change required.
+// Realm routing: each hostname is tagged STAFF, PORTAL, or ESIGN. STAFF
+// and PORTAL rules rewrite the origin Host header
+// (originRequest.httpHostHeader) to a realm-canonical host — portal.<zone>
+// for PORTAL, app.<zone> for STAFF — so Caddy's existing
+// `@portal host portal.*` matcher routes the request into the right realm
+// regardless of the public hostname label. ESIGN rules instead route to
+// the OpenSign sidecar (opensign-caddy:4001) with NO Host rewrite, since
+// that Caddy serves a host-agnostic plain-HTTP site. No Caddyfile change
+// required for any realm.
 //
 // All secrets at rest are MFK-wrapped (via the firm key manager).
 // Plaintext never lives in the DB. PORTAL hostnames are always saved but
@@ -65,6 +68,11 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
   /** Origin URL the tunnel forwards traffic to (the caddy service inside
    *  the appliance docker network). Defaults to http://caddy:80. */
   originService?: string;
+  /** Origin URL for ESIGN-realm hostnames — the OpenSign sidecar's Caddy,
+   *  reached over the shared opensign-net bridge. Host-agnostic plain HTTP
+   *  (Cloudflare terminates TLS at the edge). Defaults to
+   *  http://opensign-caddy:4001. */
+  esignOriginService?: string;
   /** Override the CF client factory (tests inject a mock). */
   createClient?: (opts: CloudflareClientOptions) => CloudflareClient;
 }
@@ -72,7 +80,7 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
 const FQDN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 const HEX_ID_RE = /^[a-f0-9]{32,64}$/i;
 
-type Realm = 'STAFF' | 'PORTAL';
+type Realm = 'STAFF' | 'PORTAL' | 'ESIGN';
 interface HostnameSpec {
   hostname: string;
   realm: Realm;
@@ -80,7 +88,7 @@ interface HostnameSpec {
 
 const HostnameSchema = z.object({
   hostname: z.string().regex(FQDN_RE).max(253),
-  realm: z.enum(['STAFF', 'PORTAL']),
+  realm: z.enum(['STAFF', 'PORTAL', 'ESIGN']),
 });
 
 const DiscoverSchema = z.object({
@@ -154,10 +162,21 @@ function buildIngress(
   zoneName: string,
   licensed: boolean,
   originService: string,
+  esignOriginService: string,
 ): IngressRule[] {
   const ingress: IngressRule[] = [];
   for (const h of hostnames) {
     if (h.realm === 'PORTAL' && !licensed) continue;
+    // ESIGN routes to the OpenSign sidecar with NO Host-header rewrite —
+    // its Caddy serves a host-agnostic plain-HTTP site on :4001.
+    if (h.realm === 'ESIGN') {
+      ingress.push({
+        hostname: h.hostname,
+        service: esignOriginService,
+        originRequest: { connectTimeout: 30 },
+      });
+      continue;
+    }
     const canonicalHost = h.realm === 'PORTAL' ? `portal.${zoneName}` : `app.${zoneName}`;
     ingress.push({
       hostname: h.hostname,
@@ -181,6 +200,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
   const router = express.Router();
   const tokenFilePath = deps.tokenFilePath ?? '/run/cloudflared/token';
   const originService = deps.originService ?? 'http://caddy:80';
+  const esignOriginService = deps.esignOriginService ?? 'http://opensign-caddy:4001';
   const createCloudflareClient = deps.createClient ?? defaultCreateCloudflareClient;
 
   // Persist the hostname list for a firm: replace the child rows and keep
@@ -426,6 +446,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
           zone.name,
           deps.commercialLicenseActive,
           originService,
+          esignOriginService,
         );
         await cf.setTunnelIngress(d.accountId, tunnel.id, { ingress });
 
@@ -568,7 +589,13 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         const cnameTarget = `${row.tunnelId}.cfargotunnel.com`;
 
         // Rebuild ingress first (single API call; authoritative).
-        const ingress = buildIngress(next, zoneName, deps.commercialLicenseActive, originService);
+        const ingress = buildIngress(
+          next,
+          zoneName,
+          deps.commercialLicenseActive,
+          originService,
+          esignOriginService,
+        );
         await cf.setTunnelIngress(row.accountId ?? '', row.tunnelId, { ingress });
 
         // Delete DNS for removed hostnames.
