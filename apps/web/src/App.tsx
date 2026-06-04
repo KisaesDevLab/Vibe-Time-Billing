@@ -45,6 +45,7 @@ import { RequestsPage } from './pages/Requests';
 import { RequestDetailPage } from './pages/RequestDetail';
 import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
 import { TaxReturnsStaffPage } from './pages/TaxReturns';
+import { AppointmentsPage } from './pages/admin/Appointments';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 import { WipDashboardPage } from './pages/Wip';
@@ -104,6 +105,7 @@ export function App(): JSX.Element {
                   <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
                   <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
+                  <Route path="/appointments" element={<AppointmentsPage />} />
                   {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/help" element={<HelpPage />} />
@@ -211,6 +213,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/messages',
           icon: '💬',
           active: location.pathname.startsWith('/messages'),
+        },
+        {
+          label: 'Appointments',
+          href: '/appointments',
+          icon: '📅',
+          active: location.pathname.startsWith('/appointments'),
         },
         {
           label: 'Reports',
