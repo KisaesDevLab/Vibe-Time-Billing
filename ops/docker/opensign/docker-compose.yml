@@ -25,9 +25,9 @@ services:
       - mongo
     env_file: .env.prod
     environment:
+      # SERVER_URL + PUBLIC_URL come from .env.prod (public host esign.vcpa.app)
+      # so they stay in one place; only NODE_ENV is fixed here.
       - NODE_ENV=production
-      - SERVER_URL=https://localhost:4001/api/app
-      - PUBLIC_URL=https://localhost:4001
     networks:
       - opensign-net
     restart: unless-stopped
@@ -61,7 +61,9 @@ services:
       - opensign-caddy-data:/data
       - opensign-caddy-config:/config
     environment:
-      - HOST_URL=localhost:4001
+      # Port-only ':4001' (from .env.prod) → Caddy serves plain HTTP; Cloudflare
+      # does edge TLS. Falls back to localhost for a bare local eval.
+      - HOST_URL=${HOST_URL:-localhost:4001}
     networks:
       - opensign-net
     restart: unless-stopped

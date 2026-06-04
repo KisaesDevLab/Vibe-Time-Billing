@@ -115,6 +115,9 @@ services:
     restart: unless-stopped
     networks:
       - default
+      # Q35 — reach the standalone OpenSign Parse stack over its private
+      # bridge (opensign-server:8080), avoiding the self-signed TLS edge.
+      - opensign-net
 
   worker:
     image: vibe-time-billing:local
@@ -161,6 +164,8 @@ services:
     restart: unless-stopped
     networks:
       - default
+      # Q35 — opensign-poll reaches opensign-server:8080 over this bridge.
+      - opensign-net
 
   caddy:
     image: caddy:2-alpine
@@ -210,6 +215,9 @@ services:
     restart: unless-stopped
     networks:
       - default
+      # Q35 — reach opensign-caddy:4001 so a Cloudflare public hostname
+      # (e.g. esign.vcpa.app) can route to the OpenSign signing UI.
+      - opensign-net
 
   # =====================================================================
   # Q35 — OpenSign e-signature is deployed STANDALONE, not here.
@@ -254,4 +262,11 @@ volumes:
 networks:
   default:
     name: docker_default
+    external: true
+  # Q35 — the standalone OpenSign stack's private bridge (created by
+  # ops/docker/opensign/docker-compose.yml). api/worker join it to reach
+  # opensign-server:8080 over HTTP, never crossing the public TLS edge and
+  # never exposing the appliance to OpenSign beyond this link.
+  opensign-net:
+    name: opensign-net
     external: true
