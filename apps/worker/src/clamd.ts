@@ -24,6 +24,16 @@ export function isClamdConfigured(): boolean {
   return Boolean(process.env['CLAMD_HOST']);
 }
 
+/** Parse a clamd INSTREAM reply (may carry a trailing NUL from the 'z'
+ *  command prefix). Returns null when the reply is unrecognized. */
+export function parseClamdReply(raw: string): ClamScanResult | null {
+  const text = raw.replace(/\0+$/, '').trim();
+  const found = /:\s*(.+)\s+FOUND$/.exec(text);
+  if (found) return { status: 'infected', signature: found[1] };
+  if (/\bOK$/.test(text)) return { status: 'clean' };
+  return null;
+}
+
 function clamdHostPort(): { host: string; port: number } {
   return {
     host: process.env['CLAMD_HOST'] ?? '127.0.0.1',
@@ -55,17 +65,15 @@ export function clamdScan(buf: Buffer, timeoutMs = 60_000): Promise<ClamScanResu
     socket.on('error', (err) => done(() => reject(err)));
     socket.on('data', (d) => reply.push(d));
     socket.on('end', () => {
-      const text = Buffer.concat(reply).toString('utf8').trim();
-      if (/\bOK$/.test(text) && !/FOUND$/.test(text)) {
-        done(() => resolve({ status: 'clean' }));
+      const raw = Buffer.concat(reply).toString('utf8');
+      const parsed = parseClamdReply(raw);
+      if (parsed) {
+        done(() => resolve(parsed));
         return;
       }
-      const m = /:\s*(.+)\s+FOUND$/.exec(text);
-      if (m) {
-        done(() => resolve({ status: 'infected', signature: m[1] }));
-        return;
-      }
-      done(() => reject(new Error(`clamd unexpected reply: ${text || '(empty)'}`)));
+      done(() =>
+        reject(new Error(`clamd unexpected reply: ${raw.replace(/\0+$/, '') || '(empty)'}`)),
+      );
     });
 
     socket.on('connect', () => {

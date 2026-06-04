@@ -175,6 +175,14 @@ services:
       OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
       PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET}
+      # Mail/SMS for worker-originated notifications (dunning, alerts,
+      # document-intake emails). Mirrors the api provider selection; the
+      # provider's own secret env vars are supplied via the deployment's
+      # env-file the same way the api receives them.
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-smtp}
+      MAIL_FROM: ${MAIL_FROM:-}
+      SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      APP_BASE_URL: ${APP_BASE_URL}
       # Document-intake virus scanner (Phase D). The intake-process job
       # streams each quarantined object to clamd over TCP before assembly.
       # Empty host disables the scan gate (intake is off by default).

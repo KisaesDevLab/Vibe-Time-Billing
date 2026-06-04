@@ -16,7 +16,7 @@
 // File Manager); the per-record MFK DEK protects the session's PII columns
 // + the original filename. The worker deliberately holds no firm key.
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
 import type { Logger } from 'pino';
 
@@ -86,12 +86,14 @@ export async function runIntakeProcess(
       and(
         eq(intakeSessions.id, sessionId),
         eq(intakeSessions.firmId, firmId),
-        eq(intakeSessions.status, 'pending_scan'),
+        // 'processing' is included so a retried job (which set this status on
+        // its first, failed attempt) re-processes rather than skipping.
+        inArray(intakeSessions.status, ['pending_scan', 'processing']),
       ),
     )
     .limit(1);
   if (!session) {
-    // Already processed or gone — idempotent no-op.
+    // Already finalized (received/disposed/rejected) or gone — no-op.
     return { sessionId, outcome: 'skipped', scanned: 0, infected: 0, assembledPdf: false };
   }
 

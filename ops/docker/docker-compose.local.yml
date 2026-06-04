@@ -141,6 +141,16 @@ services:
       OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
       PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:-}
+      # Mail/SMS for worker-originated notifications (dunning, alerts,
+      # document-intake "new submission" emails). Mirrors the api block →
+      # MailHog locally. Without these the worker's mail dispatch is a no-op.
+      MAIL_PROVIDER: smtp
+      MAIL_FROM: 'Vibe Dev <dev@localhost>'
+      MAIL_SMTP_HOST: mailhog
+      MAIL_SMTP_PORT: '1025'
+      MAIL_SMTP_SECURE: 'false'
+      SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5195}
       # Document-intake virus scanner (Phase D). Reached over clamd TCP.
       # Empty host disables the scan gate (intake feature off by default).
       CLAMD_HOST: ${CLAMD_HOST:-}
