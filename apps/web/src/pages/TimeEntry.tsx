@@ -24,6 +24,13 @@ interface Engagement {
   // v2 Sprint E — needed for client-first filtering. Server already
   // returns it on /engagements; older callers ignored it.
   status?: string;
+  // Progress/board status — preselects the status picker when logging time.
+  workflowState?: string;
+}
+
+interface StatusOption {
+  workflowState: string;
+  label: string;
 }
 
 interface Client {
@@ -105,21 +112,26 @@ export function TimeEntryPage(): JSX.Element {
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [statusOptions, setStatusOptions] = useState<StatusOption[]>([]);
   const [pinnedClientIds, setPinnedClientIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void (async () => {
       try {
-        const [e, w, c, p] = await Promise.all([
+        const [e, w, c, p, s] = await Promise.all([
           api<{ items: Engagement[] }>('/api/staff/engagements'),
           api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
           api<{ items: Client[] }>('/api/staff/clients'),
           api<{ items: { clientId: string }[] }>('/api/staff/clients/pins').catch(() => ({
             items: [],
           })),
+          api<{ items: StatusOption[] }>('/api/staff/engagement-statuses').catch(() => ({
+            items: [],
+          })),
         ]);
         setEngagements(e.items ?? []);
         setWorkCodes(w.items ?? []);
+        setStatusOptions(s.items ?? []);
         // Sort pinned clients to top of the list.
         const pins = new Set((p.items ?? []).map((x) => x.clientId));
         setPinnedClientIds(pins);
@@ -178,8 +190,14 @@ export function TimeEntryPage(): JSX.Element {
           engagements={engagements}
           workCodes={workCodes}
           clients={clients}
+          statusOptions={statusOptions}
           pinnedClientIds={pinnedClientIds}
           onTogglePin={(id) => void togglePin(id)}
+          onEngagementStatusChanged={(engId, ws) =>
+            setEngagements((prev) =>
+              prev.map((e) => (e.id === engId ? { ...e, workflowState: ws } : e)),
+            )
+          }
         />
       )}
       {view === 'day' && <DayView engagements={engagements} clients={clients} />}
@@ -278,14 +296,18 @@ function LogView({
   engagements,
   workCodes,
   clients,
+  statusOptions,
   pinnedClientIds,
   onTogglePin,
+  onEngagementStatusChanged,
 }: {
   engagements: Engagement[];
   workCodes: WorkCode[];
   clients: Client[];
+  statusOptions: StatusOption[];
   pinnedClientIds: Set<string>;
   onTogglePin: (clientId: string) => void;
+  onEngagementStatusChanged: (engagementId: string, workflowState: string) => void;
 }): JSX.Element {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -314,6 +336,8 @@ function LogView({
   });
   const [engagementId, setEngagementId] = useState(initialEngagementId);
   const [workCodeId, setWorkCodeId] = useState('');
+  // Progress status to set on save; preselected to the engagement's current.
+  const [workflowState, setWorkflowState] = useState('');
   const [entryDate, setEntryDate] = useState(today());
   const [hours, setHours] = useState('1.00');
   const [description, setDescription] = useState(initialDescription);
@@ -437,6 +461,13 @@ function LogView({
     }
   }, [filteredEngagements, engagementId, engagements.length]);
 
+  // Keep the status picker in sync with the selected engagement's current
+  // progress status (so "save with no change" doesn't move it).
+  const currentWorkflowState = engagements.find((e) => e.id === engagementId)?.workflowState ?? '';
+  useEffect(() => {
+    setWorkflowState(currentWorkflowState);
+  }, [engagementId, currentWorkflowState]);
+
   // Persist last-used client.
   useEffect(() => {
     if (clientId) {
@@ -497,7 +528,9 @@ function LogView({
     setSubmitting(true);
     setError(null);
     try {
-      await api('/api/staff/time-entries', {
+      const statusToSet =
+        workflowState && workflowState !== currentWorkflowState ? workflowState : undefined;
+      const res = await api<{ workflowState?: string }>('/api/staff/time-entries', {
         method: 'POST',
         body: JSON.stringify({
           engagementId,
@@ -507,8 +540,12 @@ function LogView({
           description,
           outOfScopeOverride: outOfScope,
           linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
+          workflowState: statusToSet,
         }),
       });
+      if (statusToSet) {
+        onEngagementStatusChanged(engagementId, res.workflowState ?? statusToSet);
+      }
       setHours('1.00');
       setDescription('');
       setOutOfScope(false);
@@ -646,6 +683,23 @@ function LogView({
                 placeholder="— none —"
               />
             </div>
+            {engagementId && statusOptions.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Engagement status
+                </div>
+                <Combobox
+                  ariaLabel="Engagement status"
+                  value={workflowState}
+                  onChange={setWorkflowState}
+                  options={statusOptions.map<ComboboxOption>((s) => ({
+                    value: s.workflowState,
+                    label: s.label,
+                  }))}
+                  placeholder="— status —"
+                />
+              </div>
+            )}
             <Input
               label="Description"
               value={description}

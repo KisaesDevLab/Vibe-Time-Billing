@@ -13,6 +13,7 @@ import {
   clientRateOverrides,
   clients,
   engagementRateOverrides,
+  engagementStatusConfig,
   engagementThreadLinks,
   engagements,
   firmSettings,
@@ -129,6 +130,10 @@ const CreateSchema = z.object({
   // id must belong to the engagement's thread AND the user must be a
   // member of that thread. Validated server-side.
   linkedMessageIds: z.array(z.string().uuid()).max(50).optional(),
+  // Optionally advance the engagement's progress status as part of
+  // logging. Validated against the firm's status catalog; gated by the
+  // same time_entry:create permission as the entry itself.
+  workflowState: z.string().min(1).max(120).optional(),
 });
 
 const UpdateSchema = z.object({
@@ -392,6 +397,28 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(404).json({ error: 'client_not_found' });
         return;
       }
+
+      // Optional progress-status change. Validate up-front (fail fast,
+      // nothing created on a bad status); applied after the entry inserts.
+      let statusChange: { from: string; to: string } | null = null;
+      if (parsed.data.workflowState && parsed.data.workflowState !== eng.workflowState) {
+        const [statusRow] = await deps.db
+          .select({ ws: engagementStatusConfig.workflowState })
+          .from(engagementStatusConfig)
+          .where(
+            and(
+              eq(engagementStatusConfig.firmId, session.firmId),
+              eq(engagementStatusConfig.workflowState, parsed.data.workflowState),
+            ),
+          )
+          .limit(1);
+        if (!statusRow) {
+          res.status(400).json({ error: 'invalid_workflow_state' });
+          return;
+        }
+        statusChange = { from: eng.workflowState, to: parsed.data.workflowState };
+      }
+
       let serviceLineId: string | null = null;
       if (parsed.data.workCodeId) {
         const [wc] = await deps.db
@@ -521,6 +548,31 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           costRateSnapshotCents: snapshot.costRateCents,
         })
         .returning({ id: timeEntries.id });
+
+      // Apply the optional progress-status change (validated above). Uses
+      // the same entity_type as the dedicated PATCH so it flows into the
+      // engagement Status history. Best-effort audit (logged, not swallowed).
+      if (statusChange) {
+        await deps.db
+          .update(engagements)
+          .set({ workflowState: statusChange.to, updatedAt: new Date() })
+          .where(eq(engagements.id, eng.id));
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'engagement_workflow_state',
+          entityId: eng.id,
+          actorAppUserId: session.appUserId,
+          before: { workflowState: statusChange.from },
+          after: { workflowState: statusChange.to },
+          ip: req.ip ?? null,
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) =>
+          logger.error(
+            { err, engagementId: eng.id },
+            'audit emit failed (workflow_state via time entry)',
+          ),
+        );
+      }
 
       // Phase 10 #13 — auto-debit hour bank if this engagement has one.
       // Best-effort: don't fail the time entry if the bank can't be
@@ -693,6 +745,9 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         resolutionLevel: resolved.level,
         hourBankDebit,
         linkedMessages,
+        // Effective progress status after this save (lets the form update
+        // its local copy without a full reload).
+        workflowState: statusChange?.to ?? eng.workflowState,
       });
     },
   );
