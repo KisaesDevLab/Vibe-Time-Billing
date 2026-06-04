@@ -21,6 +21,7 @@ import { DataPage } from './Data';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
 import { EngagementStatusesPage } from './EngagementStatuses';
+import { IntakeSettingsPage } from './IntakeSettings';
 import { StatusHistoryPage } from './StatusHistory';
 import { FirmSettingsPage } from './FirmSettings';
 import { HolidaysPage } from './Holidays';
@@ -79,6 +80,7 @@ const GROUPS: Group[] = [
       { key: 'firm', label: 'Settings', href: '/admin/firm' },
       { key: 'offices', label: 'Offices', href: '/admin/offices' },
       { key: 'holidays', label: 'Holidays', href: '/admin/holidays' },
+      { key: 'intake', label: 'Document intake', href: '/admin/intake-settings' },
     ],
   },
   {
@@ -277,6 +279,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="users/:id" element={<UserDetailPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
+        <Route path="intake-settings" element={<IntakeSettingsPage />} />
         <Route path="status-history" element={<StatusHistoryPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="recurring-engagements" element={<EngagementRecurrencesPage />} />

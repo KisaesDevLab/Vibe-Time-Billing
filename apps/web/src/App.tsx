@@ -34,6 +34,7 @@ import { LoginPage } from './pages/Login';
 import { MessagesPage } from './pages/Messages';
 import { OnboardingPage } from './pages/Onboarding';
 import { HelpPage } from './pages/Help';
+import { IntakeInboxPage } from './pages/IntakeInbox';
 import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
@@ -106,6 +107,7 @@ export function App(): JSX.Element {
                   <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
                   <Route path="/appointments" element={<AppointmentsPage />} />
+                  <Route path="/intake" element={<IntakeInboxPage />} />
                   {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
                   <Route path="/account" element={<AccountPage />} />
                   <Route path="/help" element={<HelpPage />} />
@@ -219,6 +221,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/appointments',
           icon: '📅',
           active: location.pathname.startsWith('/appointments'),
+        },
+        {
+          label: 'Intake',
+          href: '/intake',
+          icon: '📥',
+          active: location.pathname.startsWith('/intake'),
         },
         {
           label: 'Reports',

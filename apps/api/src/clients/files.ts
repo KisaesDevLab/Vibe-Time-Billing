@@ -60,7 +60,8 @@ const CATEGORY_VALUES = [
   'correspondence',
   'other',
 ] as const;
-type Category = (typeof CATEGORY_VALUES)[number];
+export type Category = (typeof CATEGORY_VALUES)[number];
+export { CATEGORY_VALUES };
 
 const CATEGORY_SUBFOLDER: Record<Category, string> = {
   invoice: 'Invoices/',
@@ -117,7 +118,7 @@ interface ResolvedFolder {
   lastSyncedAt: Date | null;
 }
 
-async function loadClientFolder(
+export async function loadClientFolder(
   db: Database,
   firmId: string,
   clientId: string,
@@ -150,7 +151,7 @@ async function loadClientFolder(
   };
 }
 
-function normalizeSubfolder(input: string | undefined, category: Category): string {
+export function normalizeSubfolder(input: string | undefined, category: Category): string {
   const raw = input ?? CATEGORY_SUBFOLDER[category];
   if (raw === '') return '';
   // Sanitize each segment for Windows-safety and ensure trailing slash.
@@ -160,7 +161,7 @@ function normalizeSubfolder(input: string | undefined, category: Category): stri
   return `${parts.join('/')}/`;
 }
 
-async function loadFirmVisibilityRules(
+export async function loadFirmVisibilityRules(
   db: Database,
   firmId: string,
 ): Promise<coreStorage.VisibilityRule[]> {

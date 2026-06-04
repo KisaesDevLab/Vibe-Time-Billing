@@ -33,6 +33,7 @@ import { isIntakeEnabled } from './feature-flag';
 import { resolveApplianceFirmId } from './firm';
 import { newIntakeRecordKey, unwrapIntakeRecordKey, encField } from './crypto';
 import { enqueueIntakeProcess, type IntakeProcessJob } from './queue';
+import { resolveIntakeLink, markLinkUsed } from './links';
 
 export interface IntakePublicDeps {
   db: Database | null;
@@ -94,6 +95,7 @@ const SessionSchema = z
     clientEmail: z.string().trim().email().max(320).optional(),
     clientPhone: z.string().trim().min(7).max(40).optional(),
     message: z.string().trim().max(2000).optional(),
+    linkToken: z.string().max(200).optional(),
   })
   .refine((d) => Boolean(d.clientEmail || d.clientPhone), {
     message: 'an email or phone is required',
@@ -254,22 +256,38 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
       return;
     }
 
-    // The chosen staff member must have a visible, upload-accepting card.
-    const [card] = await deps.db
-      .select({ userId: intakeStaffCards.userId })
-      .from(intakeStaffCards)
-      .where(
-        and(
-          eq(intakeStaffCards.firmId, firmId),
-          eq(intakeStaffCards.userId, parsed.data.targetStaffId),
-          eq(intakeStaffCards.isVisible, true),
-          eq(intakeStaffCards.acceptingUploads, true),
-        ),
-      )
-      .limit(1);
-    if (!card) {
-      res.status(400).json({ error: 'staff_unavailable' });
-      return;
+    // Resolve the target. A valid tokenized link binds the staff member
+    // (and works even if their public card is hidden); otherwise the
+    // chosen staff member must have a visible, upload-accepting card.
+    let targetStaffId = parsed.data.targetStaffId;
+    let source: 'public' | 'tokenized_link' = 'public';
+    let linkTokenId: string | null = null;
+    if (parsed.data.linkToken) {
+      const link = await resolveIntakeLink(deps.db, firmId, parsed.data.linkToken);
+      if (!link) {
+        res.status(400).json({ error: 'invalid_link' });
+        return;
+      }
+      targetStaffId = link.targetStaffId;
+      source = 'tokenized_link';
+      linkTokenId = link.linkId;
+    } else {
+      const [card] = await deps.db
+        .select({ userId: intakeStaffCards.userId })
+        .from(intakeStaffCards)
+        .where(
+          and(
+            eq(intakeStaffCards.firmId, firmId),
+            eq(intakeStaffCards.userId, parsed.data.targetStaffId),
+            eq(intakeStaffCards.isVisible, true),
+            eq(intakeStaffCards.acceptingUploads, true),
+          ),
+        )
+        .limit(1);
+      if (!card) {
+        res.status(400).json({ error: 'staff_unavailable' });
+        return;
+      }
     }
 
     if (!cryptoReady(firmId)) {
@@ -284,17 +302,19 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
         .insert(intakeSessions)
         .values({
           firmId,
-          targetStaffId: parsed.data.targetStaffId,
+          targetStaffId,
           wrappedDek: Buffer.from(wrappedDek),
           clientNameEnc: encField(dek, parsed.data.clientName),
           clientEmailEnc: encField(dek, parsed.data.clientEmail ?? null),
           clientPhoneEnc: encField(dek, parsed.data.clientPhone ?? null),
           messageEnc: encField(dek, parsed.data.message ?? null),
-          source: 'public',
+          source,
+          linkTokenId,
           status: 'pending_scan',
         })
         .returning({ id: intakeSessions.id });
       sessionId = row!.id;
+      if (linkTokenId) await markLinkUsed(deps.db, linkTokenId);
     } catch (err) {
       logger.error({ err }, 'intake session create failed');
       res.status(503).json({ error: 'service_unavailable' });
@@ -302,6 +322,23 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
     }
 
     res.status(201).json({ sessionId });
+  });
+
+  // ── GET /link/:token — resolve a send-a-link token (pre-bind staff) ───
+  router.get('/link/:token', async (req: Request, res: Response) => {
+    const firmId = await requireEnabledFirm(res);
+    if (!firmId || !deps.db) return;
+    const link = await resolveIntakeLink(deps.db, firmId, req.params['token']!);
+    if (!link) {
+      res.status(404).json({ error: 'invalid_link' });
+      return;
+    }
+    const [staff] = await deps.db
+      .select({ name: appUsers.fullName })
+      .from(appUsers)
+      .where(eq(appUsers.id, link.targetStaffId))
+      .limit(1);
+    res.json({ targetStaffId: link.targetStaffId, staffName: staff?.name ?? null });
   });
 
   // Load a session that is still open for uploads (pending_scan, this firm).

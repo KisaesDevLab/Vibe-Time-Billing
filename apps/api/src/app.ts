@@ -69,6 +69,8 @@ import { createPortalFileShareRouter } from './portal/file-shares';
 import { createSharePublicRouter } from './share-public';
 import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
+import { createIntakeStaffRouter } from './intake/staff-routes';
+import { createIntakeCardRouter } from './intake/card-routes';
 import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
@@ -505,6 +507,24 @@ export function createApp(deps: AppDeps): Express {
     sendStaffMail: deps.sendStaffMail,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
+
+  // 0103 — Document Intake staff inbox + disposition + send-a-link.
+  const intakeStaffRouter = createIntakeStaffRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    intakeBaseUrl: process.env['INTAKE_BASE_URL'],
+    sendEmail: deps.sendStaffMail
+      ? (a) => deps.sendStaffMail!({ to: a.to, subject: a.subject, body: a.body })
+      : undefined,
+  });
+  app.use('/api/staff/intake', auth.requireAuth, auth.requireCsrf, intakeStaffRouter);
+
+  // 0103 — admin intake card settings (visibility/order/title/notify/headshot).
+  const intakeCardRouter = createIntakeCardRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/intake', auth.requireAuth, auth.requireCsrf, intakeCardRouter);
 
   // v1 internal-files + folder-templates routers removed in Phase 0
   // of the file-manager rebuild. Replacements ship in Phases 4 + 10
