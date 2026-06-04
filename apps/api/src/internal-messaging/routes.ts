@@ -574,8 +574,12 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
   mountThreadAttachmentRoutes(router, {
     db: deps.db,
     storageClient: deps.storageClient,
-    isMember: (threadId, appUserId) =>
-      deps.db ? isMember(deps.db, threadId, appUserId) : Promise.resolve(false),
+    authorize: async (req, threadId) => {
+      const s = req.staffSession;
+      if (!s || !deps.db) return null;
+      if (!(await isMember(deps.db, threadId, s.appUserId))) return null;
+      return { firmId: s.firmId, actorAppUserId: s.appUserId };
+    },
   });
 
   return router;

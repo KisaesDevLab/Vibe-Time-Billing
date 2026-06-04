@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { Button, tokens } from '@vibe/ui';
+import { Button, Paperclip, tokens } from '@vibe/ui';
 
 import { api, getCsrfToken } from '../../api-client';
 
@@ -342,18 +342,29 @@ export function ThreadView({
           disabled={uploading}
           title="Attach files or images"
         >
-          {uploading ? '…' : '📎'}
+          {uploading ? '…' : <Paperclip size={20} />}
         </Button>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onPaste={(e) => {
+            const imgs = Array.from(e.clipboardData.files).filter((f) =>
+              f.type.startsWith('image/'),
+            );
+            if (imgs.length > 0) {
+              e.preventDefault();
+              const dt = new DataTransfer();
+              imgs.forEach((f) => dt.items.add(f));
+              void uploadFiles(dt.files);
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               void send();
             }
           }}
-          placeholder="Type a reply… (Ctrl/Cmd+Enter to send)"
+          placeholder="Type a reply… (paste an image to attach; Ctrl/Cmd+Enter to send)"
           rows={3}
           style={{
             flex: 1,

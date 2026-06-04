@@ -29,9 +29,15 @@ import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { batchDecryptForThread, encryptForThread } from '../engagement-messaging/thread-crypto';
+import {
+  mountThreadAttachmentRoutes,
+  listAttachmentsByMessage,
+  linkPendingAttachments,
+} from '../messaging/attachments';
 
 const PostSchema = z.object({
   body: z.string().min(1).max(10_000),
+  attachmentIds: z.array(z.string().uuid()).max(20).optional(),
 });
 
 // Express.Request is augmented with `portalSession?` by portal-middleware
@@ -163,6 +169,12 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
         { db: deps.db, firmId: check.firmId, threadId },
         rows.map((r) => r.bodyCiphertext),
       );
+      const attByMsg = await listAttachmentsByMessage(
+        deps.db,
+        check.firmId,
+        threadId,
+        rows.map((r) => r.id),
+      );
       const items = rows.map((r, i) => ({
         id: r.id,
         senderAppUserId: r.senderAppUserId,
@@ -170,6 +182,12 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
         senderName: r.senderName,
         body: plaintexts[i],
         createdAt: r.createdAt,
+        // From the client's view, staff-sent messages are "theirs" (right
+        // side handled in the UI); expose mine for parity.
+        mine:
+          Boolean(r.senderPortalIdentityId) &&
+          r.senderPortalIdentityId === session.portalIdentityId,
+        attachments: attByMsg.get(r.id) ?? [],
       }));
       res.json({ items });
     } catch (err) {
@@ -223,6 +241,9 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
           excerptPlaintext: parsed.data.body.slice(0, 80),
         })
         .returning({ id: messages.id, createdAt: messages.createdAt });
+      if (row?.id) {
+        await linkPendingAttachments(deps.db, threadId, row.id, parsed.data.attachmentIds ?? []);
+      }
       await deps.db.update(threads).set({ updatedAt: new Date() }).where(eq(threads.id, threadId));
       await emitAudit(deps.db, {
         action: 'CREATE',
@@ -266,6 +287,18 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
       })
       .onConflictDoNothing();
     res.json({ ok: true });
+  });
+
+  // Attachment upload + download/preview, scoped to the portal identity's
+  // thread membership (and active client). Encrypted under the thread T-DEK.
+  mountThreadAttachmentRoutes(router, {
+    db: deps.db,
+    authorize: async (req, threadId) => {
+      const s = req.portalSession;
+      if (!s || !deps.db) return null;
+      const c = await memberAndFirmCheck(deps.db, threadId, s.portalIdentityId, s.activeClientId);
+      return c.ok ? { firmId: c.firmId } : null;
+    },
   });
 
   return router;

@@ -146,6 +146,27 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   // and surfaces firm-wide retainer dashboards. Staff without it still
   // get the personal /my/retainers view but no top-level entry.
   const canViewRetainers = usePermission('retainer:read');
+  // Per-area permission gates — a nav item is hidden when the signed-in
+  // staff user lacks the relevant permission (no role → nothing shows).
+  const can = {
+    clients: usePermission('client:read'),
+    time: usePermission('time_entry:read:own'),
+    engagements: usePermission('engagement:read'),
+    proposals: usePermission('proposal:read'),
+    billing: usePermission('billing_batch:read'),
+    wip: usePermission('report:realization:read'),
+    invoices: usePermission('invoice:read'),
+    ar: usePermission('report:ar:read'),
+    approvals: usePermission('approval:queue:read'),
+    requests: usePermission('requests:read'),
+    messages: usePermission('messaging:read'),
+    appointments: usePermission('appointment:read'),
+    intake: usePermission('storage:folder:view'),
+    reports: usePermission('report:realization:read'),
+    tax: usePermission('engagement:read'),
+    audit: usePermission('admin:audit:read'),
+    admin: usePermission('firm:settings:read'),
+  };
   const [teamUnread, setTeamUnread] = useState(0);
   useEffect(() => {
     let alive = true;
@@ -169,67 +190,83 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       collapseStorageKey="__vibe_staff_sidebar_collapsed"
       realmBadge={<Pill tone="accent">staff</Pill>}
       nav={[
-        { label: 'Dashboard', href: '/', icon: '⌂', active: location.pathname === '/' },
+        { label: 'Dashboard', href: '/', icon: '⌂', active: location.pathname === '/', show: true },
         {
           label: 'Clients',
           href: '/clients',
           icon: '◯',
           active: location.pathname.startsWith('/clients'),
+          show: can.clients,
         },
         {
           label: 'Time',
           href: '/time',
           icon: '◷',
           active: location.pathname.startsWith('/time'),
+          show: can.time,
         },
         {
           label: 'Engagements',
           href: '/engagements',
           icon: '❖',
           active: location.pathname.startsWith('/engagements'),
+          show: can.engagements,
         },
         {
           label: 'Proposals',
           href: '/proposals',
           icon: '✎',
           active: location.pathname.startsWith('/proposals'),
+          show: can.proposals,
         },
         {
           label: 'Billing',
           href: '/billing',
           icon: '▤',
           active: location.pathname.startsWith('/billing'),
+          show: can.billing,
         },
-        { label: 'WIP', href: '/wip', icon: '⊞', active: location.pathname.startsWith('/wip') },
+        {
+          label: 'WIP',
+          href: '/wip',
+          icon: '⊞',
+          active: location.pathname.startsWith('/wip'),
+          show: can.wip,
+        },
         {
           label: 'Invoices',
           href: '/invoices',
           icon: '⎙',
           active: location.pathname.startsWith('/invoices'),
+          show: can.invoices,
         },
-        { label: 'AR', href: '/ar', icon: '$', active: location.pathname.startsWith('/ar') },
-        ...(canViewRetainers
-          ? [
-              {
-                label: 'Retainers',
-                href: '/retainers',
-                icon: '◈',
-                active:
-                  location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
-              },
-            ]
-          : []),
+        {
+          label: 'AR',
+          href: '/ar',
+          icon: '$',
+          active: location.pathname.startsWith('/ar'),
+          show: can.ar,
+        },
+        {
+          label: 'Retainers',
+          href: '/retainers',
+          icon: '◈',
+          active: location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
+          show: canViewRetainers,
+        },
         {
           label: 'Approvals',
           href: '/approvals',
           icon: '✓',
           active: location.pathname.startsWith('/approvals'),
+          show: can.approvals,
         },
         {
           label: 'Requests',
           href: '/requests',
           icon: '☑',
           active: location.pathname.startsWith('/requests'),
+          show: can.requests,
         },
         {
           label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
@@ -237,63 +274,74 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '💬',
           active:
             location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
+          show: can.messages,
         },
         {
           label: 'Appointments',
           href: '/appointments',
           icon: '📅',
           active: location.pathname.startsWith('/appointments'),
+          show: can.appointments,
         },
         {
           label: 'Intake',
           href: '/intake',
           icon: '📥',
           active: location.pathname.startsWith('/intake'),
+          show: can.intake,
         },
         {
           label: 'Reports',
           href: '/reports',
           icon: '▦',
           active: location.pathname.startsWith('/reports'),
+          show: can.reports,
         },
         {
           label: 'Tax returns',
           href: '/tax/returns',
           icon: '⎚',
           active: location.pathname.startsWith('/tax/returns'),
+          show: can.tax,
         },
-        // Top-level Files nav removed in Phase 0; the v2 file manager lives on the client-detail Files tab.
         {
           label: 'Alerts',
           href: '/alerts',
           icon: '⚠︎',
           active: location.pathname.startsWith('/alerts'),
+          show: can.audit,
         },
         {
           label: 'Audit',
           href: '/audit',
           icon: '⊙',
           active: location.pathname.startsWith('/audit'),
+          show: can.audit,
         },
         {
           label: 'Admin',
           href: '/admin',
           icon: '⚙︎',
           active: location.pathname.startsWith('/admin'),
+          show: can.admin,
         },
         {
           label: 'Help',
           href: '/help',
           icon: '❓',
           active: location.pathname.startsWith('/help'),
+          show: true,
         },
         {
           label: 'Account',
           href: '/account',
           icon: '◐',
           active: location.pathname.startsWith('/account'),
+          show: true,
         },
-      ]}
+      ]
+        .filter((i) => i.show)
+        .map(({ label, href, icon, active }) => ({ label, href, icon, active }))}
       trailing={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <FontSizeControl />

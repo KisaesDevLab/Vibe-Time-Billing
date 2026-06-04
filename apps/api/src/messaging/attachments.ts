@@ -116,11 +116,20 @@ export async function linkPendingAttachments(
     );
 }
 
+/** Result of authorizing a caller for a thread: the thread firm (for
+ *  crypto) + an optional staff actor to stamp on uploads. */
+export interface AttachmentAuth {
+  firmId: string;
+  actorAppUserId?: string;
+}
+
 export interface AttachmentRouteDeps {
   db: Database | null;
   storageClient?: StorageClient;
-  /** Membership + firm scope check for the acting staff user. */
-  isMember: (threadId: string, appUserId: string) => Promise<boolean>;
+  /** Authorize the caller for the thread (membership enforced inside) and
+   *  return its firmId + optional staff actor, or null → 403. The only auth
+   *  difference between the staff and portal mounts. */
+  authorize: (req: Request, threadId: string) => Promise<AttachmentAuth | null>;
 }
 
 /** Mount POST upload + GET download/preview on a thread-scoped router. */
@@ -135,17 +144,17 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
     '/threads/:id/attachments',
     express.raw({ type: () => true, limit: MAX_ATTACHMENT_BYTES + 1024 }),
     async (req: Request, res: Response) => {
-      const session = req.staffSession!;
       if (!deps.db) {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
       const threadId = req.params['id']!;
-      if (!(await deps.isMember(threadId, session.appUserId))) {
+      const auth = await deps.authorize(req, threadId);
+      if (!auth) {
         res.status(403).json({ error: 'not_a_member' });
         return;
       }
-      if (!unlocked(session.firmId)) {
+      if (!unlocked(auth.firmId)) {
         res.status(503).json({ error: 'appliance_locked' });
         return;
       }
@@ -173,17 +182,17 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
         return;
       }
       try {
-        const ctx = { db: deps.db, firmId: session.firmId, threadId };
+        const ctx = { db: deps.db, firmId: auth.firmId, threadId };
         const [row] = await deps.db
           .insert(threadAttachments)
           .values({
-            firmId: session.firmId,
+            firmId: auth.firmId,
             threadId,
             objectKey: 'pending',
             originalFilenameEnc: Buffer.from(await encryptForThread(ctx, filename)),
             mimeType,
             byteSize: body.byteLength,
-            createdByAppUserId: session.appUserId,
+            createdByAppUserId: auth.actorAppUserId ?? null,
           })
           .returning({ id: threadAttachments.id });
         const attId = row!.id;
@@ -212,17 +221,17 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
 
   // GET /threads/:id/attachments/:attId   (inline preview; ?download=1 forces save)
   router.get('/threads/:id/attachments/:attId', async (req: Request, res: Response) => {
-    const session = req.staffSession!;
     if (!deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
       return;
     }
     const threadId = req.params['id']!;
-    if (!(await deps.isMember(threadId, session.appUserId))) {
+    const auth = await deps.authorize(req, threadId);
+    if (!auth) {
       res.status(403).json({ error: 'not_a_member' });
       return;
     }
-    if (!unlocked(session.firmId)) {
+    if (!unlocked(auth.firmId)) {
       res.status(503).json({ error: 'appliance_locked' });
       return;
     }
@@ -239,7 +248,7 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
         and(
           eq(threadAttachments.id, req.params['attId']!),
           eq(threadAttachments.threadId, threadId),
-          eq(threads.firmId, session.firmId),
+          eq(threads.firmId, auth.firmId),
         ),
       )
       .limit(1);
@@ -259,12 +268,12 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
       }
       const plain = await decryptBytesForThread(
-        { db: deps.db, firmId: session.firmId, threadId },
+        { db: deps.db, firmId: auth.firmId, threadId },
         Buffer.concat(chunks),
       );
       const filename = row.nameEnc
         ? ((await decryptForThread(
-            { db: deps.db, firmId: session.firmId, threadId },
+            { db: deps.db, firmId: auth.firmId, threadId },
             row.nameEnc,
           ).catch(() => null)) ?? 'attachment')
         : 'attachment';

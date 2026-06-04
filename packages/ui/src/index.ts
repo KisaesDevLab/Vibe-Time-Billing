@@ -13,6 +13,7 @@ export {
   fontScaleBootstrapScript,
 } from './tokens';
 export { Pill, type PillProps } from './Pill';
+export { Paperclip, type PaperclipProps } from './Paperclip';
 export { Button, type ButtonProps } from './Button';
 export { Input, type InputProps } from './Input';
 export { Card, type CardProps } from './Card';
