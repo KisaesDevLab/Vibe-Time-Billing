@@ -20,6 +20,28 @@ export async function api<T = unknown>(
     ...((init.headers as Record<string, string>) ?? {}),
   };
   const res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'omit' });
+  return parse<T>(res);
+}
+
+// Raw-body upload. The server reads the bytes directly (octet-stream) so we
+// avoid base64 inflation and the JSON body-size cap; filename + mimeType
+// ride in the query string.
+export async function uploadRaw<T = unknown>(
+  path: string,
+  data: Blob,
+  meta: { filename: string; mimeType: string },
+): Promise<T> {
+  const qs = new URLSearchParams({ filename: meta.filename, mimeType: meta.mimeType });
+  const res = await fetch(`${BASE}${path}?${qs.toString()}`, {
+    method: 'POST',
+    headers: { 'Content-Type': meta.mimeType || 'application/octet-stream' },
+    body: data,
+    credentials: 'omit',
+  });
+  return parse<T>(res);
+}
+
+async function parse<T>(res: Response): Promise<T> {
   const ct = res.headers.get('content-type') ?? '';
   const body: unknown = ct.includes('application/json') ? await res.json() : await res.text();
   if (!res.ok) {

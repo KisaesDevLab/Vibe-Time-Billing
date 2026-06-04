@@ -6,30 +6,70 @@
 // this surface, and so the intake Caddy site can safely proxy ONLY this
 // prefix.
 //
-// Phase B ships the shell: a permissive (credential-less) CORS gate, a
-// per-IP sliding-window rate limit on every route, and a health probe the
-// SPA uses to confirm reachability. Phase C adds the real endpoints
-// (GET /staff, POST /session, proxied POST /session/:id/files, complete,
-// headshot). All of those will additionally gate on isIntakeEnabled.
+// Surface (all gated on isIntakeEnabled for the single appliance firm):
+//   GET  /health                     — reachability probe (no firm leak)
+//   GET  /staff                      — visible, upload-accepting cards
+//   GET  /staff/:id/headshot         — streamed headshot (404 if none)
+//   POST /session                    — start a session (PII MFK-encrypted)
+//   POST /session/:id/files          — raw-body upload → quarantine prefix
+//   POST /session/:id/complete       — enqueue the worker pipeline
+//
+// Anonymous clients hold no key — PII columns + stored objects are
+// encrypted at rest under the firm MFK (per-record DEK), not E2EE.
 
 import express, { type Request, type Response, type Router, type NextFunction } from 'express';
 import type { Redis } from 'ioredis';
+import { z } from 'zod';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
+import { appUsers, intakeFiles, intakeSessions, intakeStaffCards } from '@vibe/db/schema';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
 import { checkAndIncrement } from '@vibe/core/auth';
 
 import { logger } from '../logger';
+import { getApplianceLockState } from '../crypto/boot';
+import { isIntakeEnabled } from './feature-flag';
+import { resolveApplianceFirmId } from './firm';
+import { newIntakeRecordKey, unwrapIntakeRecordKey, encField } from './crypto';
+import { enqueueIntakeProcess, type IntakeProcessJob } from './queue';
 
 export interface IntakePublicDeps {
   db: Database | null;
   redis: Redis;
+  storageClient?: StorageClient;
+  /** Override the worker enqueue (tests stub this to avoid a live queue). */
+  enqueue?: (job: IntakeProcessJob) => Promise<void>;
 }
 
-// Per-IP request ceiling across the whole public surface. Generous enough
-// for the SPA's load-time probe + a normal upload session, tight enough to
-// blunt scripted abuse. Per-session/file limits land in Phase C.
+// ── limits ──────────────────────────────────────────────────────────────
 const IP_WINDOW_SECONDS = 60;
 const IP_MAX_PER_WINDOW = 120;
+const SESSION_CREATE_WINDOW_SECONDS = 60 * 60;
+const SESSION_CREATE_MAX_PER_IP = 10;
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB per file
+const MAX_FILES_PER_SESSION = 30;
+const QUARANTINE_PREFIX = 'intake/quarantine';
+
+// Accepted upload types — documents + images the worker can assemble. The
+// extension blocklist is belt-and-suspenders over the allowlist.
+const ALLOWED_MIME = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/heic',
+  'image/heif',
+  'image/tiff',
+  'image/webp',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
+]);
+const BLOCKED_EXT =
+  /\.(exe|com|bat|cmd|msi|scr|pif|cpl|js|jse|vbs|vbe|wsf|wsh|ps1|sh|jar|app|dll|sys|reg)$/i;
 
 function clientIp(req: Request): string {
   const fwd = req.headers['x-forwarded-for'];
@@ -37,12 +77,34 @@ function clientIp(req: Request): string {
   return (first ?? req.ip ?? '0.0.0.0').trim();
 }
 
+function getStorage(deps: IntakePublicDeps): StorageClient | null {
+  if (deps.storageClient) return deps.storageClient;
+  try {
+    return buildStorageClient(process.env);
+  } catch {
+    return null;
+  }
+}
+
+// ── validation ──────────────────────────────────────────────────────────
+const SessionSchema = z
+  .object({
+    targetStaffId: z.string().uuid(),
+    clientName: z.string().trim().min(1).max(200),
+    clientEmail: z.string().trim().email().max(320).optional(),
+    clientPhone: z.string().trim().min(7).max(40).optional(),
+    message: z.string().trim().max(2000).optional(),
+  })
+  .refine((d) => Boolean(d.clientEmail || d.clientPhone), {
+    message: 'an email or phone is required',
+    path: ['clientEmail'],
+  });
+
 export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
   const router = express.Router();
 
-  // CORS: the SPA is served same-origin (Caddy hosts it and proxies this
-  // path), so credentials are never needed. Reflect the request origin and
-  // explicitly forbid credentials — an anonymous, cookie-less surface.
+  // CORS: anonymous, cookie-less surface served same-origin. Reflect the
+  // request origin and explicitly forbid credentials.
   router.use((req: Request, res: Response, next: NextFunction) => {
     const origin = req.headers.origin;
     if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
@@ -57,7 +119,8 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
     next();
   });
 
-  // Per-IP rate limit on every public intake route.
+  // Per-IP rate limit on every public intake route. Fail open on limiter
+  // errors so a Redis hiccup can't take the surface down.
   router.use((req: Request, res: Response, next: NextFunction) => {
     const ip = clientIp(req);
     void checkAndIncrement(deps.redis, {
@@ -74,16 +137,312 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
         next();
       })
       .catch((err: unknown) => {
-        // Fail open on limiter errors — Redis hiccups must not take the
-        // public surface down — but record it.
         logger.warn({ err }, 'intake rate limiter error; allowing request');
         next();
       });
   });
 
-  // Reachability probe for the SPA. Intentionally reveals nothing about the
-  // firm or whether intake is enabled — just that the service is up.
+  // Reachability probe — reveals nothing about the firm or feature state.
   router.get('/health', (_req: Request, res: Response) => {
+    res.json({ ok: true });
+  });
+
+  // Resolve the appliance firm + confirm the feature is on. Returns the
+  // firmId, or null after having already sent a 404 (so callers just bail).
+  async function requireEnabledFirm(res: Response): Promise<string | null> {
+    const firmId = await resolveApplianceFirmId(deps.db);
+    if (!firmId || !(await isIntakeEnabled(deps.db, firmId))) {
+      res.status(404).json({ error: 'not_found' });
+      return null;
+    }
+    return firmId;
+  }
+
+  function cryptoReady(firmId: string): boolean {
+    const lock = getApplianceLockState();
+    return lock.kind === 'unlocked' && lock.firmId === firmId;
+  }
+
+  // ── GET /staff — visible, upload-accepting cards ──────────────────────
+  router.get('/staff', async (_req: Request, res: Response) => {
+    const firmId = await requireEnabledFirm(res);
+    if (!firmId || !deps.db) return;
+    const rows = await deps.db
+      .select({
+        userId: intakeStaffCards.userId,
+        displayTitle: intakeStaffCards.displayTitle,
+        displayOrder: intakeStaffCards.displayOrder,
+        headshotObjectKey: intakeStaffCards.headshotObjectKey,
+        fullName: appUsers.fullName,
+      })
+      .from(intakeStaffCards)
+      .innerJoin(appUsers, eq(appUsers.id, intakeStaffCards.userId))
+      .where(
+        and(
+          eq(intakeStaffCards.firmId, firmId),
+          eq(intakeStaffCards.isVisible, true),
+          eq(intakeStaffCards.acceptingUploads, true),
+          eq(appUsers.status, 'ACTIVE'),
+        ),
+      )
+      .orderBy(intakeStaffCards.displayOrder, appUsers.fullName);
+
+    res.json({
+      staff: rows.map((r) => ({
+        id: r.userId,
+        name: r.fullName,
+        title: r.displayTitle,
+        hasHeadshot: Boolean(r.headshotObjectKey),
+      })),
+    });
+  });
+
+  // ── GET /staff/:id/headshot — streamed image (404 if none) ────────────
+  router.get('/staff/:id/headshot', async (req: Request, res: Response) => {
+    const firmId = await requireEnabledFirm(res);
+    if (!firmId || !deps.db) return;
+    const [card] = await deps.db
+      .select({ key: intakeStaffCards.headshotObjectKey })
+      .from(intakeStaffCards)
+      .where(
+        and(
+          eq(intakeStaffCards.firmId, firmId),
+          eq(intakeStaffCards.userId, req.params['id']!),
+          eq(intakeStaffCards.isVisible, true),
+        ),
+      )
+      .limit(1);
+    if (!card?.key) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const storage = getStorage(deps);
+    if (!storage) {
+      res.status(503).json({ error: 'storage_unavailable' });
+      return;
+    }
+    try {
+      const obj = await storage.get(card.key);
+      res.setHeader('Content-Type', obj.meta.contentType ?? 'image/jpeg');
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      obj.body.pipe(res);
+    } catch (err) {
+      logger.warn({ err }, 'intake headshot stream failed');
+      res.status(404).json({ error: 'not_found' });
+    }
+  });
+
+  // ── POST /session — start a session (PII encrypted at rest) ───────────
+  router.post('/session', async (req: Request, res: Response) => {
+    const firmId = await requireEnabledFirm(res);
+    if (!firmId || !deps.db) return;
+
+    const ipLimit = await checkAndIncrement(deps.redis, {
+      key: `rl:intake:session:ip:${clientIp(req)}`,
+      windowSeconds: SESSION_CREATE_WINDOW_SECONDS,
+      max: SESSION_CREATE_MAX_PER_IP,
+    }).catch(() => ({ allowed: true, retryAfterSeconds: 0 }));
+    if (!ipLimit.allowed) {
+      res.setHeader('Retry-After', String(ipLimit.retryAfterSeconds));
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+
+    const parsed = SessionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+
+    // The chosen staff member must have a visible, upload-accepting card.
+    const [card] = await deps.db
+      .select({ userId: intakeStaffCards.userId })
+      .from(intakeStaffCards)
+      .where(
+        and(
+          eq(intakeStaffCards.firmId, firmId),
+          eq(intakeStaffCards.userId, parsed.data.targetStaffId),
+          eq(intakeStaffCards.isVisible, true),
+          eq(intakeStaffCards.acceptingUploads, true),
+        ),
+      )
+      .limit(1);
+    if (!card) {
+      res.status(400).json({ error: 'staff_unavailable' });
+      return;
+    }
+
+    if (!cryptoReady(firmId)) {
+      res.status(503).json({ error: 'service_unavailable' });
+      return;
+    }
+
+    let sessionId: string;
+    try {
+      const { dek, wrappedDek } = newIntakeRecordKey(deps.db, firmId);
+      const [row] = await deps.db
+        .insert(intakeSessions)
+        .values({
+          firmId,
+          targetStaffId: parsed.data.targetStaffId,
+          wrappedDek: Buffer.from(wrappedDek),
+          clientNameEnc: encField(dek, parsed.data.clientName),
+          clientEmailEnc: encField(dek, parsed.data.clientEmail ?? null),
+          clientPhoneEnc: encField(dek, parsed.data.clientPhone ?? null),
+          messageEnc: encField(dek, parsed.data.message ?? null),
+          source: 'public',
+          status: 'pending_scan',
+        })
+        .returning({ id: intakeSessions.id });
+      sessionId = row!.id;
+    } catch (err) {
+      logger.error({ err }, 'intake session create failed');
+      res.status(503).json({ error: 'service_unavailable' });
+      return;
+    }
+
+    res.status(201).json({ sessionId });
+  });
+
+  // Load a session that is still open for uploads (pending_scan, this firm).
+  async function loadOpenSession(
+    db: Database,
+    firmId: string,
+    sessionId: string,
+  ): Promise<{ id: string; wrappedDek: Uint8Array } | null> {
+    if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return null;
+    const [row] = await db
+      .select({ id: intakeSessions.id, wrappedDek: intakeSessions.wrappedDek })
+      .from(intakeSessions)
+      .where(
+        and(
+          eq(intakeSessions.id, sessionId),
+          eq(intakeSessions.firmId, firmId),
+          eq(intakeSessions.status, 'pending_scan'),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  // ── POST /session/:id/files — raw-body upload → quarantine prefix ─────
+  // Raw body (octet-stream) so the global express.json() (1 MB cap, JSON
+  // only) ignores it; filename + mimeType ride in the query string.
+  router.post(
+    '/session/:id/files',
+    express.raw({ type: () => true, limit: MAX_FILE_BYTES + 1024 }),
+    async (req: Request, res: Response) => {
+      const firmId = await requireEnabledFirm(res);
+      if (!firmId || !deps.db) return;
+
+      const sessionId = req.params['id']!;
+      const session = await loadOpenSession(deps.db, firmId, sessionId);
+      if (!session) {
+        res.status(404).json({ error: 'session_not_found' });
+        return;
+      }
+
+      const filename =
+        String(req.query['filename'] ?? '')
+          .trim()
+          .slice(0, 255) || 'upload';
+      const mimeType = String(req.query['mimeType'] ?? 'application/octet-stream').slice(0, 200);
+
+      if (BLOCKED_EXT.test(filename) || !ALLOWED_MIME.has(mimeType)) {
+        res.status(415).json({ error: 'unsupported_type' });
+        return;
+      }
+
+      const body: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (body.byteLength === 0) {
+        res.status(400).json({ error: 'empty_body' });
+        return;
+      }
+      if (body.byteLength > MAX_FILE_BYTES) {
+        res.status(413).json({ error: 'file_too_large' });
+        return;
+      }
+
+      // Cap files per session.
+      const countRows = await deps.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(intakeFiles)
+        .where(eq(intakeFiles.sessionId, session.id));
+      if (Number(countRows[0]?.n ?? 0) >= MAX_FILES_PER_SESSION) {
+        res.status(409).json({ error: 'too_many_files' });
+        return;
+      }
+
+      if (!cryptoReady(firmId)) {
+        res.status(503).json({ error: 'service_unavailable' });
+        return;
+      }
+
+      const storage = getStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+
+      let fileId: string;
+      try {
+        const dek = unwrapIntakeRecordKey(deps.db, firmId, session.wrappedDek);
+        const [row] = await deps.db
+          .insert(intakeFiles)
+          .values({
+            sessionId: session.id,
+            originalFilenameEnc: encField(dek, filename),
+            objectKey: 'pending',
+            mimeType,
+            byteSize: body.byteLength,
+            kind: 'upload',
+            scanStatus: 'pending',
+          })
+          .returning({ id: intakeFiles.id });
+        fileId = row!.id;
+
+        const objectKey = `${QUARANTINE_PREFIX}/${session.id}/${fileId}`;
+        await storage.put(objectKey, body, { contentType: mimeType });
+        await deps.db.update(intakeFiles).set({ objectKey }).where(eq(intakeFiles.id, fileId));
+      } catch (err) {
+        logger.error({ err }, 'intake file upload failed');
+        res.status(502).json({ error: 'upload_failed' });
+        return;
+      }
+
+      res.status(201).json({ fileId });
+    },
+  );
+
+  // ── POST /session/:id/complete — enqueue the worker pipeline ──────────
+  router.post('/session/:id/complete', async (req: Request, res: Response) => {
+    const firmId = await requireEnabledFirm(res);
+    if (!firmId || !deps.db) return;
+
+    const sessionId = req.params['id']!;
+    const session = await loadOpenSession(deps.db, firmId, sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'session_not_found' });
+      return;
+    }
+
+    const fileCountRows = await deps.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, session.id));
+    if (Number(fileCountRows[0]?.n ?? 0) === 0) {
+      res.status(400).json({ error: 'no_files' });
+      return;
+    }
+
+    try {
+      await (deps.enqueue ?? enqueueIntakeProcess)({ sessionId: session.id, firmId });
+    } catch (err) {
+      logger.error({ err }, 'intake enqueue failed');
+      res.status(503).json({ error: 'service_unavailable' });
+      return;
+    }
+
     res.json({ ok: true });
   });
 
