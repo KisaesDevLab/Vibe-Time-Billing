@@ -60,7 +60,7 @@ export function TeamMessagesPanel(): JSX.Element {
     );
   }
 
-  const newBtn = <Button onClick={() => setShowNew(true)}>New conversation</Button>;
+  const newBtn = <Button onClick={() => setShowNew(true)}>New</Button>;
   const active = threads.find((t) => t.threadId === activeId) ?? null;
 
   return (
@@ -72,7 +72,7 @@ export function TeamMessagesPanel(): JSX.Element {
         <Card title={`Conversations (${threads.length})`} action={newBtn}>
           {threads.length === 0 ? (
             <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-              No conversations yet. Start one with “New conversation”.
+              No conversations yet. Start one with the “New” button.
             </p>
           ) : (
             <div

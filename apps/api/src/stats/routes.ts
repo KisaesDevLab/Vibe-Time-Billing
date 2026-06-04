@@ -6,10 +6,23 @@
 // realization_view in packages/db/migrations/0003_materialized_views.sql.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagements, invoices, payments, timeEntries } from '@vibe/db/schema';
+import {
+  approvalRequests,
+  clientRequests,
+  clients,
+  engagements,
+  intakeSessions,
+  invoices,
+  messageReadReceipts,
+  messages,
+  payments,
+  threadMembers,
+  threads,
+  timeEntries,
+} from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
@@ -96,6 +109,97 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           wipHours: Number(wipHours?.h ?? 0),
           wipAmountCents: Number(wipHours?.amount ?? 0),
         },
+      });
+    },
+  );
+
+  // Dashboard "inbox" card — unread/pending counts across the staff
+  // surfaces the signed-in user can act on. Gate on messaging:read (held
+  // by every staff role) since this is per-user attention, not firm KPIs.
+  router.get(
+    '/inbox-counts',
+    requirePermission(deps, 'messaging:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const empty = { clientMsg: 0, teamMsg: 0, requests: 0, intake: 0, approvals: 0 };
+      if (!deps.db) {
+        res.json(empty);
+        return;
+      }
+      const { firmId, appUserId } = session;
+      const n = (rows: { c: number }[]): number => Number(rows[0]?.c ?? 0);
+
+      // Unread client (engagement) messages: in client threads I'm an
+      // active member of, not sent by me, with no read receipt from me.
+      const clientMsg = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(messages)
+        .innerJoin(threads, eq(threads.id, messages.threadId))
+        .innerJoin(threadMembers, eq(threadMembers.threadId, threads.id))
+        .leftJoin(
+          messageReadReceipts,
+          and(
+            eq(messageReadReceipts.messageId, messages.id),
+            eq(messageReadReceipts.readerAppUserId, appUserId),
+          ),
+        )
+        .where(
+          and(
+            eq(threads.firmId, firmId),
+            eq(threads.kind, 'client'),
+            eq(threadMembers.appUserId, appUserId),
+            isNull(threadMembers.removedAt),
+            isNull(messages.deletedAt),
+            ne(messages.senderAppUserId, appUserId),
+            isNull(messageReadReceipts.id),
+          ),
+        );
+
+      // Unread team (internal) messages via the per-member read cursor.
+      const teamMsg = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(messages)
+        .innerJoin(threads, eq(threads.id, messages.threadId))
+        .innerJoin(threadMembers, eq(threadMembers.threadId, threads.id))
+        .where(
+          and(
+            eq(threads.firmId, firmId),
+            eq(threads.kind, 'internal'),
+            eq(threadMembers.appUserId, appUserId),
+            isNull(threadMembers.removedAt),
+            isNull(messages.deletedAt),
+            ne(messages.senderAppUserId, appUserId),
+            sql`(${threadMembers.lastReadAt} IS NULL OR ${messages.createdAt} > ${threadMembers.lastReadAt})`,
+          ),
+        );
+
+      const requests = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(clientRequests)
+        .where(
+          and(
+            eq(clientRequests.firmId, firmId),
+            inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
+          ),
+        );
+
+      const intake = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(intakeSessions)
+        .where(and(eq(intakeSessions.firmId, firmId), eq(intakeSessions.status, 'received')));
+
+      // Single-firm appliance → all PENDING approvals belong to this firm.
+      const approvals = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.status, 'PENDING'));
+
+      res.json({
+        clientMsg: n(clientMsg),
+        teamMsg: n(teamMsg),
+        requests: n(requests),
+        intake: n(intake),
+        approvals: n(approvals),
       });
     },
   );

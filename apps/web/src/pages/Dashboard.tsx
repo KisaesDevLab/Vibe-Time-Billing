@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
 
@@ -246,6 +247,8 @@ export function DashboardPage(): JSX.Element {
           </div>
         </Card>
       )}
+
+      <InboxCard />
 
       {/* 0051 — realization card moved above My active engagements. */}
       <Card
@@ -554,6 +557,92 @@ export function DashboardPage(): JSX.Element {
         </ul>
       </Card>
     </div>
+  );
+}
+
+interface InboxCounts {
+  clientMsg: number;
+  teamMsg: number;
+  requests: number;
+  intake: number;
+  approvals: number;
+}
+
+function InboxCard(): JSX.Element {
+  const navigate = useNavigate();
+  const [counts, setCounts] = useState<InboxCounts | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = (): void => {
+      void api<InboxCounts>('/api/staff/stats/inbox-counts')
+        .then((r) => alive && setCounts(r))
+        .catch(() => undefined);
+    };
+    load();
+    const t = setInterval(load, 30000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  const items: { key: keyof InboxCounts; label: string; href: string }[] = [
+    { key: 'clientMsg', label: 'Client Msg', href: '/messages' },
+    { key: 'teamMsg', label: 'Team Msg', href: '/messages?tab=team' },
+    { key: 'requests', label: 'Requests', href: '/requests' },
+    { key: 'intake', label: 'Intake', href: '/intake' },
+    { key: 'approvals', label: 'Approvals', href: '/approvals' },
+  ];
+
+  return (
+    <Card title="Needs attention">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
+        {items.map((it) => {
+          const value = counts ? counts[it.key] : 0;
+          const has = value > 0;
+          return (
+            <button
+              key={it.key}
+              type="button"
+              onClick={() => navigate(it.href)}
+              title={`Go to ${it.label}`}
+              style={{
+                display: 'grid',
+                gap: 4,
+                justifyItems: 'start',
+                textAlign: 'left',
+                padding: 12,
+                border: `1px solid ${has ? tokens.color.accent : tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                background: has ? tokens.color.accentMuted : 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 28,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  color: has ? tokens.color.accent : tokens.color.textMuted,
+                }}
+              >
+                {counts ? value : '—'}
+              </span>
+              <span
+                style={{
+                  fontSize: 13,
+                  color: has ? tokens.color.accent : tokens.color.text,
+                  fontWeight: has ? 600 : 400,
+                }}
+              >
+                {it.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 
