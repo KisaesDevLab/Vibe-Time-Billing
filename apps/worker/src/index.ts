@@ -22,6 +22,7 @@ import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
 import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
+import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -165,6 +166,8 @@ const QUEUES = [
   // reminder_days_before of its due date.
   'request-reminder',
   'cloudflare-tunnel-status',
+  // Q35 — OpenSign completion poll (safety net for the webhook).
+  'opensign-poll',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -448,6 +451,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runCloudflareTunnelStatusTick(db, logger, {});
     logger.info({ jobId: job.id, ...result }, 'cloudflare-tunnel-status complete');
   },
+  'opensign-poll': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'opensign-poll: no DB configured');
+      return;
+    }
+    const result = await runOpenSignPollTick(db, logger, { storage });
+    logger.info({ jobId: job.id, ...result }, 'opensign-poll complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -532,6 +543,10 @@ const CRON: Record<QueueName, string> = {
   // reminder_days_before of its due_date.
   'request-reminder': '0 3 * * *',
   'cloudflare-tunnel-status': '* * * * *',
+  // Q35 — poll OpenSign envelopes every 2 min as a safety net for any
+  // webhook delivery that never landed. Skips cleanly if OPENSIGN_URL
+  // is unset.
+  'opensign-poll': '*/2 * * * *',
 };
 
 function storageSyncCron(): string {

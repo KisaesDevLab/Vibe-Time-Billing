@@ -36,6 +36,10 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface AdminRoutesDeps extends RbacDeps {
   db: Database | null;
+  // Q35 — whether OPENSIGN_URL is configured on the appliance. Gates the
+  // 'opensign' e-sign provider option in the admin UI; when false the UI
+  // hides it and the server rejects selecting it.
+  openSignAvailable?: boolean;
 }
 
 const InviteSchema = z.object({
@@ -154,7 +158,20 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .from(firmSettings)
         .where(eq(firmSettings.firmId, firmId))
         .limit(1);
-      res.json({ firm, settings });
+      // Q35 — e-sign provider lives on firm_settings_proposals. Default
+      // to 'native' when no row exists yet.
+      const { firmSettingsProposals } = await import('@vibe/db/schema');
+      const [proposalSettings] = await deps.db
+        .select({ esignProvider: firmSettingsProposals.esignProvider })
+        .from(firmSettingsProposals)
+        .where(eq(firmSettingsProposals.firmId, firmId))
+        .limit(1);
+      res.json({
+        firm,
+        settings,
+        esignProvider: proposalSettings?.esignProvider ?? 'native',
+        openSignAvailable: Boolean(deps.openSignAvailable),
+      });
     },
   );
 
@@ -196,6 +213,26 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           .update(firms)
           .set({ ...firmData, updatedAt: new Date() })
           .where(eq(firms.id, firmId));
+      }
+      // Q35 — e-sign provider (firm_settings_proposals). Only honor a
+      // valid value; reject 'opensign' when the appliance has no
+      // OPENSIGN_URL configured so the UI can't enable a dead provider.
+      const esignParsed = z
+        .object({ esignProvider: z.enum(['native', 'opensign']) })
+        .safeParse(req.body);
+      if (esignParsed.success) {
+        if (esignParsed.data.esignProvider === 'opensign' && !deps.openSignAvailable) {
+          res.status(400).json({ error: 'opensign_not_available' });
+          return;
+        }
+        const { firmSettingsProposals } = await import('@vibe/db/schema');
+        await deps.db
+          .insert(firmSettingsProposals)
+          .values({ firmId, esignProvider: esignParsed.data.esignProvider })
+          .onConflictDoUpdate({
+            target: firmSettingsProposals.firmId,
+            set: { esignProvider: esignParsed.data.esignProvider, updatedAt: new Date() },
+          });
       }
       res.json({ ok: true });
     },

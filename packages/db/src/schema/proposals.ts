@@ -327,9 +327,76 @@ export const firmSettingsProposals = pgTable('firm_settings_proposals', {
     .$type<Record<string, unknown>>()
     .notNull()
     .default({}),
+  // 0098 — per-firm e-signature provider. 'native' (default) signs
+  // inline in our portal; 'opensign' delegates to the AGPL sidecar over
+  // HTTP (only honored when OPENSIGN_URL is configured). CHECK in the
+  // migration constrains the value to native|opensign.
+  esignProvider: text('esign_provider').notNull().default('native'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// =====================================================================
+// proposal_pending_mandate (0098 — OpenSign async completion context)
+// =====================================================================
+//
+// Stashes the Stripe ACH mandate inputs captured at the portal "start
+// OpenSign signing" step so the async completion (webhook / poll) can
+// capture the mandate idempotently. One row per signer signing attempt.
+
+export const proposalPendingMandate = pgTable(
+  'proposal_pending_mandate',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    proposalId: uuid('proposal_id')
+      .notNull()
+      .references(() => proposals.id, { onDelete: 'cascade' }),
+    signatureId: uuid('signature_id').notNull(),
+    selectedPackageId: uuid('selected_package_id'),
+    stripeCustomerId: text('stripe_customer_id'),
+    stripePaymentMethodId: text('stripe_payment_method_id'),
+    stripeMandateId: text('stripe_mandate_id'),
+    mandateTextRendered: text('mandate_text_rendered'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    signatureUk: uniqueIndex('proposal_pending_mandate_signature_uk').on(t.signatureId),
+    proposalIdx: index('proposal_pending_mandate_proposal_idx').on(t.proposalId),
+  }),
+);
+
+// =====================================================================
+// opensign_webhook_events (0098 — OpenSign webhook idempotency ledger)
+// =====================================================================
+//
+// Mirrors the Stripe webhook_events pattern: keyed on the OpenSign event
+// id so a redelivery is a no-op.
+
+export const opensignWebhookEvents = pgTable(
+  'opensign_webhook_events',
+  {
+    opensignEventId: text('opensign_event_id').primaryKey(),
+    firmId: uuid('firm_id').references(() => firms.id, { onDelete: 'cascade' }),
+    eventType: text('event_type').notNull(),
+    envelopeId: text('envelope_id'),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    state: text('state').notNull().default('PENDING'),
+    lastError: text('last_error'),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => ({
+    stateChk: check(
+      'opensign_webhook_events_state_chk',
+      sql`${t.state} IN ('PENDING', 'PROCESSED', 'FAILED', 'IGNORED')`,
+    ),
+    envelopeIdx: index('opensign_webhook_events_envelope_idx').on(t.envelopeId),
+  }),
+);
 
 // =====================================================================
 // proposals + versions
@@ -346,6 +413,9 @@ export const proposals = pgTable(
       .notNull()
       .references(() => clients.id, { onDelete: 'restrict' }),
     status: proposalStatus('status').notNull().default('DRAFT'),
+    // 0097 — PARALLEL (default) or SEQUENTIAL signer ordering. Stored as
+    // a CHECK-constrained text column (see migration) rather than an enum.
+    signingOrderMode: text('signing_order_mode').notNull().default('PARALLEL'),
     title: text('title').notNull(),
     brochureJsonb: jsonb('brochure_jsonb').$type<Record<string, unknown>>().notNull().default({}),
     totalOneTimeCents: bigint('total_one_time_cents', { mode: 'number' }).notNull().default(0),
@@ -518,13 +588,17 @@ export const signatures = pgTable(
       .references(() => proposals.id, { onDelete: 'cascade' }),
     role: signatureRole('role').notNull().default('PRIMARY'),
     sequence: integer('sequence').notNull().default(0),
+    // 0097 — does this signer gate ACCEPTED? WITNESS rows can be made
+    // non-required so they don't block the engagement freeze.
+    required: boolean('required').notNull().default(true),
     signerName: text('signer_name').notNull(),
     signerEmail: text('signer_email').notNull(),
     signerPhone: text('signer_phone'),
     signerIp: text('signer_ip'),
     signerUa: text('signer_ua'),
     clientAccountId: uuid('client_account_id'),
-    method: signatureMethod('method').notNull(),
+    // 0097 — nullable: a PENDING roster row has no signing method yet.
+    method: signatureMethod('method'),
     state: signatureState('state').notNull().default('PENDING'),
     typedName: text('typed_name'),
     signatureSvg: text('signature_svg'),
@@ -552,7 +626,7 @@ export const signatures = pgTable(
       sql`(${t.method} = 'TYPED_NAME' AND ${t.typedName} IS NOT NULL)
           OR (${t.method} = 'DRAWN_SVG' AND ${t.signatureSvg} IS NOT NULL)
           OR (${t.method} = 'OPENSIGN' AND ${t.opensignEnvelopeId} IS NOT NULL)
-          OR ${t.state} = 'PENDING'`,
+          OR (${t.method} IS NULL AND ${t.state} IN ('PENDING', 'DECLINED'))`,
     ),
     proposalIdx: index('signatures_proposal_idx').on(t.proposalId, t.sequence),
     stateIdx: index('signatures_state_idx').on(t.state),
@@ -652,6 +726,9 @@ export const magicLinks = pgTable(
     proposalId: uuid('proposal_id').references(() => proposals.id, { onDelete: 'cascade' }),
     engagementId: uuid('engagement_id'),
     clientAccountId: uuid('client_account_id'),
+    // 0097 — per-signer magic links for multi-signer proposals. NULL for
+    // the legacy single-link flow and other magic-link purposes.
+    signatureId: uuid('signature_id').references(() => signatures.id, { onDelete: 'cascade' }),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     usedAt: timestamp('used_at', { withTimezone: true }),
     usedFromIp: text('used_from_ip'),

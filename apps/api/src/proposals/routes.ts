@@ -27,7 +27,7 @@ import { and, asc, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clients, proposalVersions, proposals } from '@vibe/db/schema';
+import { clients, proposalVersions, proposals, signatures } from '@vibe/db/schema';
 import { isBlockTree, type ProposalBlockTree } from '@vibe/core/proposals';
 import { contentHash } from '@vibe/core/proposals/server';
 
@@ -333,8 +333,22 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
   // transitions DRAFT → SENT. Re-sending an already-SENT proposal
   // is a no-op for v1 (a "resend" UX comes later with magic-link
   // regeneration in P17).
+  // Q34 — optional signer roster. When present, the proposal becomes a
+  // multi-signer proposal: one PENDING signatures row is inserted per
+  // signer and acceptance gates on every required signer signing. When
+  // absent, the legacy single-signer behavior is preserved (the
+  // signature row is created at acceptance time).
+  const SignerSchema = z.object({
+    name: z.string().min(1).max(240),
+    email: z.string().email().max(240),
+    phone: z.string().max(40).nullable().optional(),
+    role: z.enum(['PRIMARY', 'COSIGNER', 'WITNESS']).optional(),
+    required: z.boolean().optional(),
+  });
   const SendSchema = z.object({
     expiresAt: z.string().datetime().nullable().optional(),
+    signers: z.array(SignerSchema).min(1).max(10).optional(),
+    signingOrderMode: z.enum(['PARALLEL', 'SEQUENTIAL']).optional(),
   });
   router.post(
     '/:id/send',
@@ -363,6 +377,22 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
         res.status(409).json({ error: 'not_sendable', currentStatus: prior.status });
         return;
       }
+
+      // Q34 — validate the signer roster (if any) before any writes.
+      const signers = parsed.data.signers;
+      if (signers) {
+        const emails = signers.map((s) => s.email.trim().toLowerCase());
+        if (new Set(emails).size !== emails.length) {
+          res.status(400).json({ error: 'duplicate_signer_email' });
+          return;
+        }
+        const requiredCount = signers.filter((s) => s.required !== false).length;
+        if (requiredCount < 1) {
+          res.status(400).json({ error: 'no_required_signer' });
+          return;
+        }
+      }
+
       // The next version number — should always be 1 for a first
       // send, but guard against partial states where a version
       // already exists.
@@ -394,26 +424,96 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
         reason: 'SENT',
         createdById: session.appUserId,
       });
+      const signingOrderMode = signers ? (parsed.data.signingOrderMode ?? 'PARALLEL') : 'PARALLEL';
       await deps.db
         .update(proposals)
         .set({
           status: 'SENT',
+          signingOrderMode,
           sentAt,
           expiresAt: parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null,
           updatedAt: sentAt,
         })
         .where(eq(proposals.id, prior.id));
+
+      // Q34 — insert one PENDING roster row per signer. First signer
+      // defaults to PRIMARY, the rest COSIGNER; sequence follows the
+      // submitted order so SEQUENTIAL signing has a stable gate.
+      if (signers) {
+        await deps.db.insert(signatures).values(
+          signers.map((s, i) => ({
+            proposalId: prior.id,
+            role: s.role ?? (i === 0 ? ('PRIMARY' as const) : ('COSIGNER' as const)),
+            sequence: i,
+            required: s.required !== false,
+            signerName: s.name,
+            signerEmail: s.email,
+            signerPhone: s.phone ?? null,
+            method: null,
+            state: 'PENDING' as const,
+          })),
+        );
+      }
+
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'proposal',
         entityId: prior.id,
         actorAppUserId: session.appUserId,
         before: { status: 'DRAFT' },
-        after: { status: 'SENT', version: nextVersion, hash },
+        after: {
+          status: 'SENT',
+          version: nextVersion,
+          hash,
+          signerCount: signers?.length ?? 0,
+          signingOrderMode,
+        },
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.json({ ok: true, version: nextVersion, contentHash: hash });
+      res.json({
+        ok: true,
+        version: nextVersion,
+        contentHash: hash,
+        signerCount: signers?.length ?? 0,
+        signingOrderMode,
+      });
+    },
+  );
+
+  // Q34 — list the signer roster + signing order for a proposal (staff).
+  router.get(
+    '/:id/signers',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ signers: [], signingOrderMode: 'PARALLEL' });
+        return;
+      }
+      const [prior] = await deps.db
+        .select({ id: proposals.id, signingOrderMode: proposals.signingOrderMode })
+        .from(proposals)
+        .where(and(eq(proposals.id, req.params['id']!), eq(proposals.firmId, session.firmId)))
+        .limit(1);
+      if (!prior) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: signatures.id,
+          signerName: signatures.signerName,
+          signerEmail: signatures.signerEmail,
+          role: signatures.role,
+          required: signatures.required,
+          sequence: signatures.sequence,
+          state: signatures.state,
+        })
+        .from(signatures)
+        .where(eq(signatures.proposalId, prior.id))
+        .orderBy(asc(signatures.sequence));
+      res.json({ signers: rows, signingOrderMode: prior.signingOrderMode });
     },
   );
 

@@ -39,7 +39,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
-import { Button, Card, Pill, SectionHeading, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
 import {
   addBlock,
   duplicateBlock,
@@ -72,6 +72,51 @@ interface ProposalDetail {
 
 function generateId(): string {
   return `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Q34 — signer roster (staff editor draft state).
+type SignerRole = 'PRIMARY' | 'COSIGNER' | 'WITNESS';
+interface SignerDraft {
+  key: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: SignerRole;
+  required: boolean;
+}
+interface SignerStatusRow {
+  id: string;
+  signerName: string;
+  signerEmail: string;
+  role: string;
+  required: boolean;
+  sequence: number;
+  state: 'PENDING' | 'SIGNED' | 'DECLINED';
+}
+
+const labelStyle = {
+  display: 'block',
+  fontSize: 12,
+  color: tokens.color.textMuted,
+  marginBottom: 4,
+} as const;
+
+function newSigner(role: SignerRole): SignerDraft {
+  return { key: generateId(), name: '', email: '', phone: '', role, required: true };
+}
+
+function validateSigners(signers: SignerDraft[]): string | null {
+  if (signers.length === 0) return null; // no roster → legacy single-signer
+  const emails: string[] = [];
+  for (const s of signers) {
+    if (!s.name.trim()) return 'Every signer needs a name.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email.trim()))
+      return `Invalid email: ${s.email || '(blank)'}`;
+    emails.push(s.email.trim().toLowerCase());
+  }
+  if (new Set(emails).size !== emails.length) return 'Signer emails must be unique.';
+  if (!signers.some((s) => s.required)) return 'At least one signer must be required.';
+  return null;
 }
 
 function coerceTree(raw: unknown): ProposalBlockTree {
@@ -116,6 +161,11 @@ export function ProposalEditorPage(): JSX.Element {
   const [versions, setVersions] = useState<
     { id: string; version: number; contentHash: string; reason: string; createdAt: string }[]
   >([]);
+  // Q34 — signer roster draft (pre-send) + post-send status.
+  const [signers, setSigners] = useState<SignerDraft[]>([]);
+  const [signingOrderMode, setSigningOrderMode] = useState<'PARALLEL' | 'SEQUENTIAL'>('PARALLEL');
+  const [signerStatus, setSignerStatus] = useState<SignerStatusRow[]>([]);
+  const [signerMsg, setSignerMsg] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -147,27 +197,98 @@ export function ProposalEditorPage(): JSX.Element {
     }
   }
 
+  async function loadSignerStatus(): Promise<void> {
+    try {
+      const r = await api<{ signers: SignerStatusRow[]; signingOrderMode: string }>(
+        `/api/staff/proposals/${id}/signers`,
+      );
+      setSignerStatus(r.signers ?? []);
+      if (r.signingOrderMode === 'SEQUENTIAL' || r.signingOrderMode === 'PARALLEL') {
+        setSigningOrderMode(r.signingOrderMode);
+      }
+    } catch {
+      // best-effort UI; failure shouldn't block the editor.
+    }
+  }
+
   useEffect(() => {
     void load();
     void loadVersions();
+    void loadSignerStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   async function send(): Promise<void> {
+    const validationErr = validateSigners(signers);
+    if (validationErr) {
+      setSignerMsg(validationErr);
+      return;
+    }
     setSending(true);
     setLoadErr(null);
+    setSignerMsg(null);
     try {
       await autosave.flush();
+      const body: Record<string, unknown> = {};
+      if (signers.length > 0) {
+        body['signingOrderMode'] = signingOrderMode;
+        body['signers'] = signers.map((s) => ({
+          name: s.name.trim(),
+          email: s.email.trim(),
+          phone: s.phone.trim() || null,
+          role: s.role,
+          required: s.required,
+        }));
+      }
       await api(`/api/staff/proposals/${id}/send`, {
         method: 'POST',
-        body: '{}',
+        body: JSON.stringify(body),
       });
+      // Mint + email each signer's link (multi-signer only).
+      if (signers.length > 0) {
+        await api(`/api/staff/proposals/${id}/mint-all-magic-links`, {
+          method: 'POST',
+          body: '{}',
+        });
+      }
       await load();
       await loadVersions();
+      await loadSignerStatus();
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : 'send_failed');
     } finally {
       setSending(false);
+    }
+  }
+
+  async function resendSigner(row: SignerStatusRow): Promise<void> {
+    setSignerMsg(null);
+    try {
+      await api(`/api/staff/proposals/${id}/mint-magic-link`, {
+        method: 'POST',
+        body: JSON.stringify({ signatureId: row.id }),
+      });
+      setSignerMsg(`Resent link to ${row.signerEmail}.`);
+    } catch (e) {
+      setSignerMsg(e instanceof Error ? e.message : 'resend_failed');
+    }
+  }
+
+  async function replaceSigner(row: SignerStatusRow): Promise<void> {
+    const email = window.prompt(`Replace signer ${row.signerName} — new email:`, row.signerEmail);
+    if (!email) return;
+    const name = window.prompt('New signer name:', row.signerName);
+    if (!name) return;
+    setSignerMsg(null);
+    try {
+      await api(`/api/staff/proposals/${id}/signers/${row.id}/replace`, {
+        method: 'POST',
+        body: JSON.stringify({ name: name.trim(), email: email.trim() }),
+      });
+      await loadSignerStatus();
+      setSignerMsg(`Re-invited ${email.trim()}.`);
+    } catch (e) {
+      setSignerMsg(e instanceof Error ? e.message : 'replace_failed');
     }
   }
 
@@ -395,6 +516,197 @@ export function ProposalEditorPage(): JSX.Element {
           )}
         </Card>
       </div>
+
+      <Card title="Signers">
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+          {detail.status === 'DRAFT'
+            ? 'Add one row per signer for a multi-signer proposal. Leave empty for the default single-signer flow.'
+            : 'Signing roster for this proposal.'}
+        </p>
+
+        {detail.status === 'DRAFT' && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ width: 220 }}>
+              <span style={labelStyle}>Signing order</span>
+              <Combobox
+                ariaLabel="Signing order"
+                value={signingOrderMode}
+                onChange={(v) =>
+                  setSigningOrderMode((v as 'PARALLEL' | 'SEQUENTIAL') ?? 'PARALLEL')
+                }
+                options={[
+                  { value: 'PARALLEL', label: 'Parallel (any order)' },
+                  { value: 'SEQUENTIAL', label: 'Sequential (one at a time)' },
+                ]}
+              />
+            </div>
+
+            {signers.map((s, i) => (
+              <div
+                key={s.key}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1.5fr 2fr 1.2fr 1.3fr auto auto',
+                  gap: 8,
+                  alignItems: 'end',
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  padding: 8,
+                }}
+              >
+                <div>
+                  <span style={labelStyle}>Name</span>
+                  <Input
+                    aria-label={`Signer ${i + 1} name`}
+                    value={s.name}
+                    onChange={(e) =>
+                      setSigners((prev) =>
+                        prev.map((x) => (x.key === s.key ? { ...x, name: e.target.value } : x)),
+                      )
+                    }
+                  />
+                </div>
+                <div>
+                  <span style={labelStyle}>Email</span>
+                  <Input
+                    aria-label={`Signer ${i + 1} email`}
+                    type="email"
+                    value={s.email}
+                    onChange={(e) =>
+                      setSigners((prev) =>
+                        prev.map((x) => (x.key === s.key ? { ...x, email: e.target.value } : x)),
+                      )
+                    }
+                  />
+                </div>
+                <div>
+                  <span style={labelStyle}>Phone</span>
+                  <Input
+                    aria-label={`Signer ${i + 1} phone`}
+                    value={s.phone}
+                    onChange={(e) =>
+                      setSigners((prev) =>
+                        prev.map((x) => (x.key === s.key ? { ...x, phone: e.target.value } : x)),
+                      )
+                    }
+                  />
+                </div>
+                <div>
+                  <span style={labelStyle}>Role</span>
+                  <Combobox
+                    ariaLabel={`Signer ${i + 1} role`}
+                    value={s.role}
+                    onChange={(v) =>
+                      setSigners((prev) =>
+                        prev.map((x) =>
+                          x.key === s.key ? { ...x, role: (v as SignerRole) ?? 'COSIGNER' } : x,
+                        ),
+                      )
+                    }
+                    options={[
+                      { value: 'PRIMARY', label: 'Primary' },
+                      { value: 'COSIGNER', label: 'Co-signer' },
+                      { value: 'WITNESS', label: 'Witness' },
+                    ]}
+                  />
+                </div>
+                <div>
+                  <span style={labelStyle}>Required</span>
+                  <input
+                    type="checkbox"
+                    aria-label={`Signer ${i + 1} required`}
+                    checked={s.required}
+                    onChange={(e) =>
+                      setSigners((prev) =>
+                        prev.map((x) =>
+                          x.key === s.key ? { ...x, required: e.target.checked } : x,
+                        ),
+                      )
+                    }
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSigners((prev) => prev.filter((x) => x.key !== s.key))}
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+            <div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  setSigners((prev) => [
+                    ...prev,
+                    newSigner(prev.length === 0 ? 'PRIMARY' : 'COSIGNER'),
+                  ])
+                }
+              >
+                + Add signer
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {signerStatus.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 6px' }}>
+              {signerStatus.filter((s) => s.state === 'SIGNED').length} of{' '}
+              {signerStatus.filter((s) => s.required).length} signed
+            </p>
+            <Table<SignerStatusRow>
+              columns={[
+                { key: 'name', header: 'Signer', render: (r) => r.signerName },
+                { key: 'email', header: 'Email', render: (r) => r.signerEmail },
+                { key: 'role', header: 'Role', render: (r) => <Pill>{r.role}</Pill> },
+                {
+                  key: 'state',
+                  header: 'State',
+                  render: (r) => (
+                    <Pill
+                      tone={
+                        r.state === 'SIGNED'
+                          ? 'success'
+                          : r.state === 'DECLINED'
+                            ? 'danger'
+                            : 'warning'
+                      }
+                    >
+                      {r.state}
+                    </Pill>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  header: '',
+                  render: (r) =>
+                    r.state === 'SIGNED' ? (
+                      <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>—</span>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <Button size="sm" variant="ghost" onClick={() => void resendSigner(r)}>
+                          Resend
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => void replaceSigner(r)}>
+                          Replace
+                        </Button>
+                      </div>
+                    ),
+                },
+              ]}
+              rows={signerStatus}
+              rowKey={(r) => r.id}
+            />
+          </div>
+        )}
+
+        {signerMsg && (
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8 }}>{signerMsg}</p>
+        )}
+      </Card>
 
       {versions.length > 0 && (
         <Card title="Versions">

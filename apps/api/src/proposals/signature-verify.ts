@@ -54,7 +54,10 @@ function dbRowToRecord(row: typeof signatures.$inferSelect): SignatureRecord {
     signerPhone: row.signerPhone,
     signerIp: row.signerIp,
     signerUa: row.signerUa,
-    method: row.method,
+    // method is nullable on PENDING roster rows (0097); a verifiable
+    // signature is always SIGNED with a method set, so '' is unreachable
+    // here and keeps the HMAC record shape stable.
+    method: row.method ?? '',
     state: row.state,
     typedName: row.typedName,
     signatureSvg: row.signatureSvg,

@@ -87,9 +87,14 @@ const MONTHS = [
   'December',
 ];
 
+type EsignProvider = 'native' | 'opensign';
+
 export function FirmSettingsPage(): JSX.Element {
   const [s, setS] = useState<Settings | null>(null);
   const [f, setF] = useState<Firm | null>(null);
+  // Q35 — e-sign provider (firm_settings_proposals.esign_provider).
+  const [esignProvider, setEsignProvider] = useState<EsignProvider>('native');
+  const [openSignAvailable, setOpenSignAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -101,9 +106,16 @@ export function FirmSettingsPage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ firm: Firm; settings: Settings }>('/api/staff/admin/firm-settings');
+        const r = await api<{
+          firm: Firm;
+          settings: Settings;
+          esignProvider?: EsignProvider;
+          openSignAvailable?: boolean;
+        }>('/api/staff/admin/firm-settings');
         setS(r.settings);
         setF(r.firm);
+        setEsignProvider(r.esignProvider ?? 'native');
+        setOpenSignAvailable(Boolean(r.openSignAvailable));
         try {
           const status = await api<{
             locked: boolean;
@@ -168,6 +180,8 @@ export function FirmSettingsPage(): JSX.Element {
           defaultAllocationMethod: f.defaultAllocationMethod,
           fiscalYearStartMonth: f.fiscalYearStartMonth,
           defaultTermsDays: f.defaultTermsDays,
+          // Q35 — e-sign provider (firm_settings_proposals).
+          esignProvider,
         }),
       });
       setSavedAt(Date.now());
@@ -377,6 +391,36 @@ export function FirmSettingsPage(): JSX.Element {
           />
           <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
             Used by Caddy routing templates. e.g. &ldquo;portal&rdquo; → portal.firm.com.
+          </p>
+        </div>
+      </Card>
+
+      <Card
+        title="E-signature"
+        action={
+          <Pill tone={esignProvider === 'opensign' ? 'success' : 'neutral'}>
+            {esignProvider === 'opensign' ? 'OpenSign' : 'Native'}
+          </Pill>
+        }
+      >
+        <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
+          <Select
+            label="Proposal e-signature provider"
+            value={esignProvider}
+            onChange={(v) => setEsignProvider(v as EsignProvider)}
+            options={[
+              { value: 'native', label: 'Native (typed name / drawn signature — default)' },
+              ...(openSignAvailable
+                ? [{ value: 'opensign', label: 'OpenSign (self-hosted sidecar)' }]
+                : []),
+            ]}
+          />
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+            Native signs inline in the client portal. OpenSign delegates signing to the self-hosted
+            OpenSign sidecar over the private docker network; the client confirms payment in our
+            portal, then signs in OpenSign&rsquo;s UI.
+            {!openSignAvailable &&
+              ' OpenSign is not configured on this appliance (set OPENSIGN_URL to enable it).'}
           </p>
         </div>
       </Card>

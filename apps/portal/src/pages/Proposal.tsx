@@ -45,6 +45,21 @@ interface BrochurePackage {
   highlighted?: boolean;
 }
 
+interface ThisSigner {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  sequence: number;
+  state: string;
+}
+
+interface RosterSigner {
+  name: string;
+  role: string;
+  state: string;
+}
+
 interface RedeemResponse {
   proposal: {
     id: string;
@@ -58,12 +73,19 @@ interface RedeemResponse {
     expiresAt: string | null;
   };
   magicLinkId: string;
+  // Q34 — present only for per-signer (multi-signer) links.
+  thisSigner?: ThisSigner;
+  signers?: RosterSigner[];
+  signedCount?: number;
+  requiredCount?: number;
+  signingOrderMode?: string;
 }
 
 interface AcceptResponse {
-  proposalId: string;
+  ok?: boolean;
   signatureId: string;
-  engagementId: string | null;
+  engagementId?: string | null;
+  remaining?: number;
 }
 
 type Step = 'loading' | 'review' | 'submitting' | 'done' | 'error';
@@ -275,6 +297,12 @@ export function ProposalPage(): JSX.Element {
         body: JSON.stringify({ token }),
       });
       setData(r);
+      // Q34 — prefill the signer identity from the per-signer link.
+      if (r.thisSigner) {
+        setSignerName(r.thisSigner.name);
+        setSignerEmail(r.thisSigner.email);
+        setTypedName(r.thisSigner.name);
+      }
       setStep('review');
     } catch (err) {
       const apiErr = err as ApiError;
@@ -335,7 +363,7 @@ export function ProposalPage(): JSX.Element {
           selectedPackageId: selectedPkg,
         }),
       });
-      setAccepted(r);
+      setAccepted({ ...r, remaining: r.remaining ?? 0 });
       setStep('done');
     } catch (err) {
       const apiErr = err as ApiError;
@@ -365,7 +393,13 @@ export function ProposalPage(): JSX.Element {
                   ? 'This proposal link could not be found.'
                   : error === 'proposal_unavailable'
                     ? 'This proposal is no longer available.'
-                    : `We couldn't load this proposal: ${error ?? 'unknown error'}.`}
+                    : error === 'already_signed'
+                      ? 'You have already signed this proposal. Thank you.'
+                      : error === 'declined'
+                        ? 'This signing request was declined. Please contact your firm if this is unexpected.'
+                        : error === 'not_your_turn'
+                          ? 'It is not your turn to sign yet. You will receive a fresh link once the earlier signer(s) have signed.'
+                          : `We couldn't load this proposal: ${error ?? 'unknown error'}.`}
           </p>
         </Card>
       </CenteredShell>
@@ -373,6 +407,7 @@ export function ProposalPage(): JSX.Element {
   }
 
   if (step === 'done' && accepted) {
+    const remaining = accepted.remaining ?? 0;
     return (
       <CenteredShell>
         <Card title="Thank you">
@@ -381,8 +416,11 @@ export function ProposalPage(): JSX.Element {
               ✅
             </div>
             <p style={{ fontSize: 15, lineHeight: 1.5, textAlign: 'center' }}>
-              Your acceptance has been recorded. Your firm will contact you with next steps and the
-              engagement letter.
+              {remaining > 0
+                ? `Your signature has been recorded. ${remaining} more signature${
+                    remaining === 1 ? '' : 's'
+                  } needed before this proposal is fully accepted.`
+                : 'Your acceptance has been recorded. Your firm will contact you with next steps and the engagement letter.'}
             </p>
             <div
               style={{
@@ -429,12 +467,52 @@ export function ProposalPage(): JSX.Element {
         Proposal
       </div>
 
+      {data.thisSigner && (
+        <Card title="Your signature">
+          <p style={{ fontSize: 14, margin: '0 0 8px' }}>
+            You are <strong>{data.thisSigner.role}</strong> — signer {data.thisSigner.sequence + 1}{' '}
+            of {data.requiredCount ?? data.signers?.length ?? 1}.
+          </p>
+          {data.signers && data.signers.length > 0 && (
+            <div style={{ display: 'grid', gap: 6 }}>
+              {data.signers.map((s, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ flex: 1 }}>
+                    {s.name} <span style={{ color: tokens.color.textMuted }}>({s.role})</span>
+                  </span>
+                  <Pill
+                    tone={
+                      s.state === 'SIGNED'
+                        ? 'success'
+                        : s.state === 'DECLINED'
+                          ? 'danger'
+                          : 'neutral'
+                    }
+                  >
+                    {s.state}
+                  </Pill>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
       <div
         style={{
           background: tokens.color.surface,
           padding: 24,
           borderRadius: tokens.radius.md,
           marginBottom: 16,
+          marginTop: 16,
         }}
       >
         {data.proposal.brochureJsonb.blocks.map((b, i) => renderBlock(b, b.id ?? String(i)))}

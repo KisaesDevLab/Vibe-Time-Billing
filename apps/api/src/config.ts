@@ -82,6 +82,33 @@ const Schema = z.object({
   AI_OPENAI_COST_OUTPUT_CENTS: z.coerce.number().nonnegative().optional(),
   VIBE_CONNECT_URL: z.string().optional(),
   VIBE_CONNECT_API_KEY: z.string().optional(),
+  // Q35 — OpenSign e-signature (AGPL; deployed standalone via
+  // ops/docker/opensign/, reached over HTTP — see LICENSING.md). All
+  // optional: presence of OPENSIGN_URL is what makes the per-firm
+  // 'opensign' provider selectable. Absent → native is always used and
+  // the admin UI hides the opensign option.
+  //
+  // OpenSign self-host is a Parse Server; server-to-server auth is the
+  // Parse header pair (App-Id + Master-Key), NOT a bearer/x-api-token.
+  // OPENSIGN_URL is the Parse API base, e.g.
+  //   https://opensign-caddy:4001/api/app  (via caddy), or
+  //   http://opensign-server:8080/app      (direct, in-network).
+  OPENSIGN_URL: z.string().optional(),
+  OPENSIGN_APP_ID: z.string().default('opensign'),
+  OPENSIGN_MASTER_KEY: z.string().optional(),
+  // Public UI origin for building signer URLs (defaults: derived from
+  // OPENSIGN_URL by stripping /api/app or /app).
+  OPENSIGN_PUBLIC_URL: z.string().optional(),
+  // Operator-provisioned OpenSign account used to mint a Parse session
+  // token for the write paths (savefile/savecontact/createdocumentfromapp
+  // require request.user). Without these, createEnvelope errors clearly
+  // but read/status/cert paths (master-keyed) still work.
+  OPENSIGN_API_EMAIL: z.string().optional(),
+  OPENSIGN_API_PASSWORD: z.string().optional(),
+  // The 64-char "Webhook Security Key" minted in the OpenSign UI
+  // (Settings → Webhook). HMAC-SHA256 secret for the x-webhook-signature
+  // header on inbound webhooks.
+  OPENSIGN_WEBHOOK_SECRET: z.string().optional(),
   // Mail provider secrets — only the matching one is read per MAIL_PROVIDER.
   MAIL_FROM: z.string().default('Vibe Practice Management <[email protected]>'),
   MAIL_SMTP_HOST: z.string().default('localhost'),

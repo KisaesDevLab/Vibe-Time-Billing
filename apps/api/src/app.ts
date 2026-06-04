@@ -8,7 +8,9 @@ import 'express-async-errors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import pinoHttp from 'pino-http';
 import type { Redis } from 'ioredis';
-import { sql as drizzleSql } from 'drizzle-orm';
+import { eq, sql as drizzleSql } from 'drizzle-orm';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
+import { firmSettingsProposals } from '@vibe/db/schema';
 
 const sqlOne = drizzleSql`SELECT 1`;
 
@@ -109,6 +111,8 @@ import { createSignatureVerifyRouter } from './proposals/signature-verify';
 import { createClientAccountRouter } from './proposals/client-accounts';
 import { createAcceptanceRouter } from './proposals/acceptance';
 import { createSectionViewRouter } from './proposals/section-views';
+import { createNativeProvider, createOpenSignProvider, type EsignProvider } from './esign/provider';
+import { createOpenSignWebhookRouter } from './webhooks/opensign';
 import { createQuickBillRouter } from './quick-bills/routes';
 import { createRenewalRouter } from './renewals/routes';
 import { createWipRouter } from './wip/routes';
@@ -177,6 +181,57 @@ export function createApp(deps: AppDeps): Express {
 
   app.disable('x-powered-by');
   app.set('trust proxy', true);
+
+  // Q35 — OpenSign completion webhook. MUST be mounted before the global
+  // express.json() so the raw request bytes survive for HMAC
+  // verification (the global parser would otherwise consume the body).
+  // Raw-body HMAC (x-webhook-signature) verified against
+  // OPENSIGN_WEBHOOK_SECRET; on a `completed` event it fetches+stores the
+  // cert in OUR storage (AGPL OpenSign never receives our creds) then
+  // advances the proposal under a FOR UPDATE lock (serializes with the
+  // worker poll).
+  {
+    const openSignConfigured = Boolean(config.OPENSIGN_URL);
+    let webhookStorage: StorageClient | null = null;
+    if (openSignConfigured) {
+      try {
+        webhookStorage = buildStorageClient(process.env);
+      } catch (err) {
+        logger.warn({ err }, 'storage client unavailable for opensign webhook');
+      }
+    }
+    app.use(
+      '/api/webhooks/opensign',
+      createOpenSignWebhookRouter({
+        db: deps.db,
+        provider:
+          openSignConfigured && config.OPENSIGN_URL
+            ? createOpenSignProvider({
+                baseUrl: config.OPENSIGN_URL,
+                appId: config.OPENSIGN_APP_ID,
+                masterKey: config.OPENSIGN_MASTER_KEY ?? '',
+                publicUrl: config.OPENSIGN_PUBLIC_URL,
+                apiEmail: config.OPENSIGN_API_EMAIL,
+                apiPassword: config.OPENSIGN_API_PASSWORD,
+              })
+            : null,
+        storage: webhookStorage,
+        webhookSecret: config.OPENSIGN_WEBHOOK_SECRET ?? null,
+        hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
+        sendProposalEmail: deps.sendStaffMail
+          ? (args) =>
+              deps.sendStaffMail!({
+                to: args.to,
+                subject: args.subject,
+                body: args.body,
+                html: args.html,
+              })
+          : undefined,
+        portalBaseUrl: config.PORTAL_BASE_URL,
+      }),
+    );
+  }
+
   app.use(express.json({ limit: '1mb' }));
   app.use(pinoHttp({ logger }));
 
@@ -363,7 +418,12 @@ export function createApp(deps: AppDeps): Express {
     res.json({ session: req.staffSession });
   });
 
-  const adminRouter = createAdminRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  const adminRouter = createAdminRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    // Q35 — gate the admin 'opensign' provider option on configuration.
+    openSignAvailable: Boolean(config.OPENSIGN_URL),
+  });
   app.use('/api/staff/admin', auth.requireAuth, auth.requireCsrf, adminRouter);
 
   const messagingRouter = createMessagingRouter({
@@ -986,6 +1046,17 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     portalBaseUrl: config.PORTAL_BASE_URL,
+    // Q34 — best-effort per-signer link delivery. Reuse the staff-mail
+    // surface when wired; absence never blocks the signing flow.
+    sendProposalEmail: deps.sendStaffMail
+      ? (args) =>
+          deps.sendStaffMail!({
+            to: args.to,
+            subject: args.subject,
+            body: args.body,
+            html: args.html,
+          })
+      : undefined,
   });
   app.use('/api/staff/proposals', auth.requireAuth, auth.requireCsrf, staffMagicLinkRouter);
 
@@ -1006,12 +1077,61 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/portal/client-accounts', clientAccountRouter);
 
+  // Q35 — per-firm e-sign provider resolution. Native is the default and
+  // is used unless the firm's firm_settings_proposals.esign_provider is
+  // 'opensign' AND OPENSIGN_URL is configured. If a firm is set to
+  // opensign but OPENSIGN_URL is unset we log a warning and fall back to
+  // native (non-fatal) — the appliance never breaks the signing flow.
+  const nativeEsign = createNativeProvider();
+  const openSignConfigured = Boolean(config.OPENSIGN_URL);
+  const resolveEsignProvider = async (firmId: string): Promise<EsignProvider> => {
+    if (!deps.db) return nativeEsign;
+    try {
+      const [row] = await deps.db
+        .select({ esignProvider: firmSettingsProposals.esignProvider })
+        .from(firmSettingsProposals)
+        .where(eq(firmSettingsProposals.firmId, firmId))
+        .limit(1);
+      if (row?.esignProvider === 'opensign') {
+        if (!openSignConfigured) {
+          logger.warn(
+            { firmId },
+            'firm set to opensign but OPENSIGN_URL unset — falling back to native',
+          );
+          return nativeEsign;
+        }
+        return createOpenSignProvider({
+          baseUrl: config.OPENSIGN_URL!,
+          appId: config.OPENSIGN_APP_ID,
+          masterKey: config.OPENSIGN_MASTER_KEY ?? '',
+          publicUrl: config.OPENSIGN_PUBLIC_URL,
+          apiEmail: config.OPENSIGN_API_EMAIL,
+          apiPassword: config.OPENSIGN_API_PASSWORD,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, firmId }, 'esign provider resolution failed — using native');
+    }
+    return nativeEsign;
+  };
+
   // P21 — portal acceptance flow. No auth middleware — the route
   // accepts magicLinkId or clientAccountId in the payload so a
   // magic-link-only client (no account) can complete acceptance.
   const acceptanceRouter = createAcceptanceRouter({
     db: deps.db,
     hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
+    resolveEsignProvider,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+    sendProposalEmail: deps.sendStaffMail
+      ? (args) =>
+          deps.sendStaffMail!({
+            to: args.to,
+            subject: args.subject,
+            body: args.body,
+            html: args.html,
+          })
+      : undefined,
   });
   app.use('/api/portal/proposals', acceptanceRouter);
 
