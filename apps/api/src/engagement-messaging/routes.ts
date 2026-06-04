@@ -97,6 +97,9 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           eq(threadMembers.appUserId, session.appUserId),
           isNull(threadMembers.removedAt),
           eq(threads.firmId, session.firmId),
+          // 0105 — client messaging lists only client threads; staff-to-staff
+          // (kind='internal') belongs to the Team tab, not here.
+          eq(threads.kind, 'client'),
         ),
       )
       .orderBy(desc(threads.updatedAt));

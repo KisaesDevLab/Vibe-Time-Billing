@@ -19,6 +19,7 @@ import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pgli
 import { resetFirmKeyManagerForTests, getFirmKeyManager } from '../crypto/manager';
 import { setApplianceLockState } from '../crypto/boot';
 import { createInternalMessagingRouter } from '../internal-messaging/routes';
+import { createEngagementMessagingRouter } from '../engagement-messaging/routes';
 import type { InternalMessageNotifyJob } from '../internal-messaging/queue';
 
 let harness: PgliteHarness;
@@ -152,6 +153,36 @@ describe('direct messages', () => {
     // Sender never has unread for their own messages.
     const senderCount = await request(app).get('/api/staff/internal-messaging/unread-count');
     expect(senderCount.body.unread).toBe(0);
+  });
+});
+
+describe('tab isolation', () => {
+  it('internal threads do not appear in the client (engagement) thread list', async () => {
+    await request(buildApp(seed.appUserId))
+      .post('/api/staff/internal-messaging/threads')
+      .send({ memberIds: [userB], body: 'team only' });
+
+    // Mount the client-messaging router with the same session and confirm
+    // the internal thread is excluded (kind='client' filter).
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { staffSession: unknown }).staffSession = {
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+      };
+      next();
+    });
+    app.use(
+      '/api/staff/engagement-messaging',
+      createEngagementMessagingRouter({
+        db: harness.db,
+        fakeUserRoles: new Map<string, RoleSlug[]>([[seed.appUserId, ['staff']]]),
+      }),
+    );
+    const res = await request(app).get('/api/staff/engagement-messaging/threads');
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(0);
   });
 });
 
