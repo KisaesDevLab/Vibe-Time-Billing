@@ -2739,6 +2739,140 @@ The Cloudflare Tunnel exposes the appliance on your own domain (\`app.<zone>\`, 
 - The sidecar reads only the token file, so it does not need restarting when hostnames change.
 `),
   },
+
+  // =================================================================== OpenSign e-sign
+  {
+    slug: 'esign-providers',
+    category: 'proposals',
+    title: 'E-signatures: native vs OpenSign',
+    summary: 'The two e-signature backends and how to choose.',
+    tags: ['e-sign', 'signature', 'opensign', 'native', 'proposals'],
+    sortOrder: 40,
+    body: md(`
+# E-signatures: native vs OpenSign
+
+Proposals are signed electronically. The firm chooses one of two e-signature backends in **Admin → Firm settings → E-sign provider**:
+
+- **Native** (default) — the built-in signer. The client signs **inside the Vibe client portal** (typed name or drawn signature). Each signature is sealed with a per-firm HMAC and is independently verifiable. No setup, no extra services.
+- **OpenSign** (optional) — an external open-source e-signature service run as an isolated sidecar. The client signs in **OpenSign's own signing UI**, which produces a signed PDF + a completion certificate. Richer signing experience, at the cost of running and configuring the OpenSign stack.
+
+## How they differ
+- **Where signing happens:** native = the Vibe portal; OpenSign = OpenSign's UI (the portal redirects the signer there).
+- **Completion:** native is synchronous (the signature lands as the client submits); OpenSign is asynchronous — OpenSign notifies the appliance via a signed webhook (with a worker poll as a safety net), then the signature is recorded.
+- **Setup:** native needs none; OpenSign requires standing up the sidecar and configuring it (see *Enabling OpenSign e-signatures*).
+- **Artifacts:** OpenSign additionally stores a signed PDF + certificate in the firm's own object storage.
+
+## What you'll see
+- The **E-sign provider** selector in firm settings only enables the **OpenSign** option when OpenSign is configured on the appliance (\`OPENSIGN_URL\` set). Until then it stays on **Native** and any mis-set value falls back to native with a logged warning.
+- The signer roster, signing order (parallel/sequential), and the all-required-signers gating that flips a proposal to **ACCEPTED** and freezes the engagement work the same way under **both** providers — including mixed rosters.
+
+## Tips
+- Native is the right choice for most firms — it's legally binding, verifiable, and zero-maintenance.
+- Pick OpenSign only if you specifically want OpenSign's signing UI / certificate workflow and are willing to run the sidecar.
+- Switching the provider only affects **new** signing sessions; in-flight signatures keep their original backend.
+`),
+  },
+  {
+    slug: 'opensign-signing',
+    category: 'proposals',
+    title: 'Signing a proposal with OpenSign',
+    summary: 'The send → portal → OpenSign signing flow when OpenSign is active.',
+    tags: ['opensign', 'e-sign', 'signature', 'proposals', 'portal'],
+    sortOrder: 50,
+    body: md(`
+# Signing a proposal with OpenSign
+
+When the firm's e-sign provider is **OpenSign**, sending a proposal works exactly as usual — the difference is where and how the client signs. Vibe keeps ownership of the brochure, package selection, and any Stripe ACH mandate; OpenSign handles only the signature.
+
+## Steps
+1. Build and **Send** the proposal as normal (define the signer roster + order; see *Building and sending proposals* and the multi-signer notes).
+2. The client opens their **portal magic link** and reviews the proposal, selects a package, and confirms payment details **in the Vibe portal**.
+3. When the client clicks **Sign**, the portal calls the OpenSign "start signing" step and **redirects the browser to OpenSign's signing UI** (URL of the form \`<opensign>/load/recipientSignPdf/<documentId>/<contactId>\`).
+4. The client signs in OpenSign. On completion OpenSign sends a **signed webhook** back to the appliance; if that's ever missed, a worker **poll runs every ~2 minutes** as a safety net.
+5. The appliance records the signature: the signer row flips to **SIGNED**, and the **signed PDF + certificate** are fetched from OpenSign and stored in the firm's own object storage (under \`opensign-certs/…\`).
+6. Once **all required signers** have completed (parallel or sequential), the proposal flips to **ACCEPTED** and the engagement scope is frozen — exactly once.
+
+## What you'll see
+- In **sequential** mode, the next signer's link is issued only after the prior signer completes; in **parallel** mode all signers can sign in any order.
+- A **declined** signer (in OpenSign) sets that signer's row to **DECLINED** and moves the proposal to **IN_PROGRESS** (staff-recoverable — you can replace/re-invite that signer).
+- Mixed rosters work: some signers can be native and some OpenSign on the same proposal; the proposal only completes when every required signer is done.
+
+## Tips
+- The signing URL is reached **through the portal**, not emailed raw — so the client always passes through the Vibe brochure/package/payment step first.
+- The certificate and signed PDF live in **your** storage, not OpenSign's — OpenSign never receives your storage credentials.
+- If a signature seems stuck after the client signed, the poll will reconcile it within a couple of minutes; see *OpenSign signing isn't completing*.
+`),
+  },
+  {
+    slug: 'opensign-setup',
+    category: 'integrations',
+    title: 'Enabling OpenSign e-signatures',
+    summary: 'Stand up the OpenSign sidecar and wire it to the appliance.',
+    tags: ['opensign', 'e-sign', 'setup', 'integration', 'admin'],
+    sortOrder: 30,
+    body: md(`
+# Enabling OpenSign e-signatures
+
+OpenSign is an **optional**, per-firm e-signature backend (native is the default). It runs as an isolated **AGPL** sidecar reached over HTTP — the appliance never bundles or links OpenSign source. This is an operator/admin task; the full reference is \`ops/docs/opensign-runbook.md\`.
+
+Important: the **self-hosted** OpenSign API is its **Parse Server cloud-function** API (\`/api/app/functions/…\`, authed with the Parse app id + master key) — **not** the hosted SaaS REST API or \`x-api-token\` (those don't exist on self-host).
+
+## Steps
+1. **Stand up the OpenSign stack** (four services — server, client, MongoDB, Caddy) from \`ops/docker/opensign/\`:
+   - \`docker compose -f ops/docker/opensign/docker-compose.yml up -d\`
+   - The UI comes up at \`https://localhost:4001\` (self-signed cert). Note the \`APP_ID\` + \`MASTER_KEY\` from \`ops/docker/opensign/.env.prod\`.
+2. **Create an OpenSign account** in that UI — this user becomes the document owner. (Create it through the UI; the API signup path is unreliable on the current build.)
+3. **Mint the webhook key**: in OpenSign, go to **Settings → Webhook**, generate the 64-character **Webhook Security Key**, and register the webhook URL \`https://<appliance>/api/webhooks/opensign\` for the events \`created / viewed / signed / completed / declined\`.
+4. **Set the appliance env** (read by both api and worker) and restart them:
+   - \`OPENSIGN_URL\` — the OpenSign API base reachable from the appliance.
+   - \`OPENSIGN_APP_ID\` (default \`opensign\`) and \`OPENSIGN_MASTER_KEY\` (from \`.env.prod\`).
+   - \`OPENSIGN_PUBLIC_URL\` — used to build signer URLs.
+   - \`OPENSIGN_API_EMAIL\` / \`OPENSIGN_API_PASSWORD\` — the account from step 2.
+   - \`OPENSIGN_WEBHOOK_SECRET\` — the key from step 3.
+5. **Flip the firm to OpenSign**: **Admin → Firm settings → E-sign provider → OpenSign**, Save.
+
+## What you'll see
+- Setting \`OPENSIGN_URL\` is what makes the **OpenSign** option selectable in firm settings; while it's unset the appliance stays native-only.
+- The webhook endpoint \`POST /api/webhooks/opensign\` returns **503** until \`OPENSIGN_WEBHOOK_SECRET\` is configured (mounted but inert) — that's expected before setup.
+- On completion the appliance fetches the signed PDF + certificate from OpenSign and stores them in the firm's object storage; OpenSign is never given storage credentials.
+
+## Tips
+- Keep the master key and the Webhook Security Key secret; rotate them together.
+- OpenSign brings its own MongoDB + signing certificate and adds real resource cost — leave it off unless a firm needs it.
+- Reach OpenSign either via its Caddy URL or, if co-located, by attaching api/worker to its docker network and using the in-network server address.
+`),
+  },
+  {
+    slug: 'opensign-troubleshooting',
+    category: 'troubleshooting',
+    title: "OpenSign signing isn't completing",
+    summary: 'Provider not selectable, webhook 503/401, or stuck signatures.',
+    tags: ['troubleshooting', 'opensign', 'e-sign', 'webhook'],
+    sortOrder: 50,
+    body: md(`
+# OpenSign signing isn't completing
+
+OpenSign signing is asynchronous, so most issues are configuration or webhook delivery — not the signature itself.
+
+## Symptoms
+- The **OpenSign** option is greyed out / not selectable in firm settings.
+- The webhook endpoint returns 503 or 401.
+- The client signed in OpenSign but the proposal never advances.
+
+## Causes & fixes
+1. **OpenSign option not selectable.** \`OPENSIGN_URL\` is unset, so the appliance is native-only (dormant). Fix: set the \`OPENSIGN_*\` env on **both** api and worker and restart (see *Enabling OpenSign e-signatures*).
+2. **Webhook returns 503 \`not configured\`.** \`OPENSIGN_WEBHOOK_SECRET\` isn't set on the appliance — the route is mounted but can't verify deliveries. Fix: mint the Webhook Security Key in OpenSign and set the env, then restart.
+3. **Webhook returns 401.** The HMAC didn't match — the appliance's \`OPENSIGN_WEBHOOK_SECRET\` differs from the key registered in OpenSign. Fix: re-copy the exact 64-char key into the env on both sides.
+4. **Client signed but nothing happened.** The webhook may have been blocked (network/firewall between OpenSign and the appliance). The worker **poll** reconciles stuck OpenSign signatures every ~2 minutes, so it usually self-heals. If not, confirm \`OPENSIGN_URL\` is reachable from the api/worker containers and that the document's webhook events are registered.
+5. **Signature recorded but no certificate/PDF.** The appliance fetches the signed PDF + certificate from OpenSign and stores them in the firm's object storage. Fix: confirm object storage is configured/healthy and that \`OPENSIGN_API_EMAIL\`/\`PASSWORD\` are valid (the fetch uses an OpenSign session).
+6. **Can't create the OpenSign account via API.** Use the OpenSign **UI** to create the document-owner account — the API signup path is unreliable on the current build.
+
+## Tips
+- "Dormant" (no \`OPENSIGN_URL\`) and "misconfigured" (503/401) are different states — check whether the option is even selectable before chasing webhooks.
+- Native e-sign keeps working throughout; you can always switch a firm back to **Native** in firm settings if OpenSign is down.
+- Full setup + the verified cloud-function contract live in \`ops/docs/opensign-runbook.md\`.
+`),
+  },
 ];
 
 export async function seedKnowledgeBase(
