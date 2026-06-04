@@ -271,7 +271,7 @@ services:
   # RAM resident, so a firm not using intake skips it. Enable with
   # `--profile intake` and set CLAMD_HOST=clamd on the worker.
   clamd:
-    image: clamav/clamav:1.3
+    image: clamav/clamav:stable
     container_name: vibe-tb-clamd
     profiles: ['intake']
     volumes:

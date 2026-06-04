@@ -203,7 +203,7 @@ services:
   # signature DB in memory, so a plain `up` skips it. Enable with
   # `--profile intake` and point the worker at it via CLAMD_HOST=clamd.
   clamd:
-    image: clamav/clamav:1.3
+    image: clamav/clamav:stable
     container_name: vibe-tb-clamd
     profiles: ['intake']
     volumes:
