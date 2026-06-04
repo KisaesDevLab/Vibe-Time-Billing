@@ -562,6 +562,83 @@ describe('cloudflare-tunnel router', () => {
     ]);
   });
 
+  it('POST /provision (licensed) rewrites an INTAKE hostname to intake.<zone>', async () => {
+    const { factory, log } = buildMockClient();
+    const router = createCloudflareTunnelRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      commercialLicenseActive: true,
+      tokenFilePath: tokenFile,
+      createClient: factory,
+    });
+    const r = await invoke(router, 'post', '/provision', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          apiToken: VALID_TOKEN,
+          accountId: ACCOUNT_ID,
+          zoneId: ZONE_ID,
+          hostnames: [
+            { hostname: 'app.firm.example', realm: 'STAFF' },
+            { hostname: 'intake.firm.example', realm: 'INTAKE' },
+          ],
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    const rules = log.setTunnelIngress[0]!.rules;
+    const intake = rules.find((x) => x.hostname === 'intake.firm.example')!;
+    // INTAKE routes to the appliance Caddy with a Host rewrite to the
+    // realm-canonical intake host (zoneName is 'firm.example' in this mock).
+    expect(intake.service).toBe('http://caddy:80');
+    expect(intake.originRequest?.httpHostHeader).toBe('intake.firm.example');
+    // Licensed → INTAKE gets a DNS CNAME.
+    expect(log.upsertCnameRecord.map((c) => c.hostname).sort()).toEqual([
+      'app.firm.example',
+      'intake.firm.example',
+    ]);
+  });
+
+  it('POST /provision (unlicensed) omits INTAKE ingress + DNS but records it', async () => {
+    const { factory, log } = buildMockClient();
+    const router = createCloudflareTunnelRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      commercialLicenseActive: false,
+      tokenFilePath: tokenFile,
+      createClient: factory,
+    });
+    await invoke(router, 'post', '/provision', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          apiToken: VALID_TOKEN,
+          accountId: ACCOUNT_ID,
+          zoneId: ZONE_ID,
+          hostnames: [
+            { hostname: 'app.firm.example', realm: 'STAFF' },
+            { hostname: 'intake.firm.example', realm: 'INTAKE' },
+          ],
+        },
+      }),
+    });
+    // Only staff + catch-all; INTAKE ingress + CNAME skipped while unlicensed.
+    expect(log.setTunnelIngress[0]!.hosts).toEqual(['app.firm.example']);
+    expect(log.setTunnelIngress[0]!.ingressLen).toBe(2);
+    expect(log.upsertCnameRecord.map((c) => c.hostname)).toEqual(['app.firm.example']);
+
+    // But the INTAKE hostname is still persisted so a re-license picks it up.
+    const g = await invoke(router, 'get', '/', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId }),
+    });
+    const cfg = (
+      g.jsonBody as { config: { hostnames: Array<{ hostname: string; realm: string }> } }
+    ).config;
+    expect(cfg.hostnames.find((h) => h.hostname === 'intake.firm.example')!.realm).toBe('INTAKE');
+  });
+
   it('POST /update reconciles hostnames without recreating the tunnel', async () => {
     const { factory, log } = buildMockClient();
     const router = createCloudflareTunnelRouter({

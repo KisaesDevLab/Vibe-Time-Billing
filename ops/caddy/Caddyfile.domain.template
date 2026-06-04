@@ -67,6 +67,44 @@
 }
 
 # =============================================================================
+# Public document intake: {{INTAKE_HOSTNAME}}   (OPTIONAL)
+#
+# Anonymous upload surface. Remove this whole block if the firm is not using
+# document intake (or leaving the in-app Cloudflare-tunnel provisioner to
+# publish intake.<zone> dynamically). SECURITY: exposes ONLY the public
+# intake API + the static intake SPA — no other /api/* path.
+# =============================================================================
+{{INTAKE_HOSTNAME}} {
+  header {
+    -Server
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+  }
+
+  # Only the anonymous public intake API is reachable here.
+  @intake_api path /api/public/intake/*
+  reverse_proxy @intake_api localhost:3001 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto https
+    header_up X-Vibe-Realm intake
+  }
+
+  # Refuse any other API path from the intake origin.
+  @other_api path /api/*
+  respond @other_api 404
+
+  # Static SPA — public intake
+  root * /app/apps/intake/dist
+  encode gzip zstd
+  try_files {path} /index.html
+  file_server
+}
+
+# =============================================================================
 # Health check (internal only)
 # =============================================================================
 :8080 {

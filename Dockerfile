@@ -82,6 +82,7 @@ COPY --from=builder /app/apps/worker/package.json ./apps/worker/
 COPY --from=builder /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=builder /app/apps/web/dist ./apps/web/dist
 COPY --from=builder /app/apps/portal/dist ./apps/portal/dist
+COPY --from=builder /app/apps/intake/dist ./apps/intake/dist
 COPY --from=builder /app/packages ./packages
 COPY ops/scripts ./ops/scripts
 # ops/docker contains entrypoint-api.sh referenced by docker-compose.prod.yml.

@@ -1,0 +1,22 @@
+{
+  "name": "Send Documents Securely",
+  "short_name": "Vibe Intake",
+  "description": "Securely send documents to your CPA firm — pick your contact and upload or scan.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1419",
+  "theme_color": "#0f6cbd",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

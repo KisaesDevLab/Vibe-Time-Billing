@@ -4003,10 +4003,14 @@ export const cloudflareTunnelStatus = pgEnum('cloudflare_tunnel_status', [
 // regardless of the public hostname label.
 // 0099 — ESIGN → the OpenSign signing UI on the isolated sidecar
 // (opensign-caddy:4001); routes WITHOUT a Host-header rewrite.
+// 0104 — INTAKE → the public document-intake SPA; routes to the appliance
+// Caddy with a Host rewrite to intake.<zone>, where Caddy exposes ONLY
+// /api/public/intake/* + the static intake SPA.
 export const cloudflareTunnelRealm = pgEnum('cloudflare_tunnel_realm', [
   'STAFF',
   'PORTAL',
   'ESIGN',
+  'INTAKE',
 ]);
 
 export const cloudflareTunnelConfigs = pgTable(

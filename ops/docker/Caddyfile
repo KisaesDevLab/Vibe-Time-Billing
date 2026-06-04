@@ -69,11 +69,43 @@
 	}
 }
 
+# Public document-intake realm (intake.<rp_id>). SECURITY: exposes ONLY the
+# anonymous public API (/api/public/intake/*) + the static intake SPA; any
+# other /api/* is refused so a visitor on the intake host can never reach an
+# authenticated staff/portal endpoint.
+(intake-realm) {
+	encode gzip zstd
+
+	handle /api/public/intake/* {
+		reverse_proxy api:3001 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Vibe-Realm intake
+			transport http {
+				read_timeout 120s
+			}
+		}
+	}
+
+	handle /api/* {
+		respond 404
+	}
+
+	handle {
+		root * /srv/intake
+		try_files {path} /index.html
+		file_server
+	}
+}
+
 # Hostname-based routing on the primary listener.
 :80 {
 	@portal host portal.* portal:80
 	handle @portal {
 		import portal-realm
+	}
+	@intake host intake.*
+	handle @intake {
+		import intake-realm
 	}
 	handle {
 		import staff-realm

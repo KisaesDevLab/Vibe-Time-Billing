@@ -29,10 +29,11 @@ services:
     command:
       - |
         set -eu
-        rm -rf /static-out/web /static-out/portal
+        rm -rf /static-out/web /static-out/portal /static-out/intake
         cp -r /app/apps/web/dist /static-out/web
         cp -r /app/apps/portal/dist /static-out/portal
-        echo "init-static: copied web + portal dists"
+        cp -r /app/apps/intake/dist /static-out/intake
+        echo "init-static: copied web + portal + intake dists"
     volumes:
       - static-content:/static-out
     restart: 'no'
@@ -187,6 +188,7 @@ services:
     ports:
       - '5195:5195'
       - '5196:5196'
+      - '5197:5197'
     volumes:
       - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
       - static-content:/srv:ro

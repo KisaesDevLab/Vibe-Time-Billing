@@ -68,6 +68,7 @@ import { createPortalTaxShareRouter } from './portal/tax-shares';
 import { createPortalFileShareRouter } from './portal/file-shares';
 import { createSharePublicRouter } from './share-public';
 import { createShareRecipientRouter } from './share-public/tax-recipient';
+import { createIntakePublicRouter } from './intake/public-routes';
 import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
@@ -770,6 +771,12 @@ export function createApp(deps: AppDeps): Express {
   // TR-7 — tax-return recipient page (3rd-party token surface).
   const taxRecipientRouter = createShareRecipientRouter({ db: deps.db });
   app.use('/shared/tax', taxRecipientRouter);
+
+  // 0103/0104 — public anonymous document-intake surface. Mounted outside
+  // the staff + portal auth chains (like /api/shared); the intake Caddy
+  // site proxies ONLY this prefix. CORS + per-IP rate limit live inside.
+  const intakePublicRouter = createIntakePublicRouter({ db: deps.db, redis: deps.redis });
+  app.use('/api/public/intake', intakePublicRouter);
 
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({

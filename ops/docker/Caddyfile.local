@@ -15,6 +15,7 @@
 #
 #   https://<VIBE_HOST>:5195 → staff app   (APP_BASE_URL)
 #   https://<VIBE_HOST>:5196 → client portal (PORTAL_BASE_URL)
+#   https://<VIBE_HOST>:5197 → public document intake (anonymous)
 
 {
   # Keep internal-CA cert issuance on, but don't spin up the :80 HTTP->HTTPS
@@ -69,6 +70,35 @@ https://{$VIBE_HOST:localhost}:5196 {
   }
 }
 
+# Public document-intake SPA. SECURITY: this origin must expose ONLY the
+# anonymous public API (/api/public/intake/*) + the static intake SPA. Any
+# other /api/* path is refused so a visitor on the intake host can never
+# reach an authenticated staff/portal endpoint.
+https://{$VIBE_HOST:localhost}:5197 {
+  tls internal
+  encode gzip zstd
+
+  handle /api/public/intake/* {
+    reverse_proxy api:3001 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Vibe-Realm intake
+      transport http {
+        read_timeout 120s
+      }
+    }
+  }
+
+  handle /api/* {
+    respond 404
+  }
+
+  handle {
+    root * /srv/intake
+    try_files {path} /index.html
+    file_server
+  }
+}
+
 # Cloudflare Tunnel origin. cloudflared forwards here (http://caddy:80) with
 # the Host header rewritten to app.<zone> (staff) or portal.<zone> (portal)
 # by the tunnel ingress, so we host-route like production. Plain HTTP is fine
@@ -90,6 +120,29 @@ https://{$VIBE_HOST:localhost}:5196 {
     }
     handle {
       root * /srv/portal
+      try_files {path} /index.html
+      file_server
+    }
+  }
+
+  # Public document-intake host (intake.<zone>). Exposes ONLY the anonymous
+  # public API + the intake SPA; all other /api/* is refused.
+  @intake host intake.*
+  handle @intake {
+    handle /api/public/intake/* {
+      reverse_proxy api:3001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Vibe-Realm intake
+        transport http {
+          read_timeout 120s
+        }
+      }
+    }
+    handle /api/* {
+      respond 404
+    }
+    handle {
+      root * /srv/intake
       try_files {path} /index.html
       file_server
     }

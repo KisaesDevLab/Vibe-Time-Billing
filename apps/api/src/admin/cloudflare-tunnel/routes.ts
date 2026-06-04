@@ -80,7 +80,7 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
 const FQDN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 const HEX_ID_RE = /^[a-f0-9]{32,64}$/i;
 
-type Realm = 'STAFF' | 'PORTAL' | 'ESIGN';
+type Realm = 'STAFF' | 'PORTAL' | 'ESIGN' | 'INTAKE';
 interface HostnameSpec {
   hostname: string;
   realm: Realm;
@@ -88,7 +88,7 @@ interface HostnameSpec {
 
 const HostnameSchema = z.object({
   hostname: z.string().regex(FQDN_RE).max(253),
-  realm: z.enum(['STAFF', 'PORTAL', 'ESIGN']),
+  realm: z.enum(['STAFF', 'PORTAL', 'ESIGN', 'INTAKE']),
 });
 
 const DiscoverSchema = z.object({
@@ -166,7 +166,9 @@ function buildIngress(
 ): IngressRule[] {
   const ingress: IngressRule[] = [];
   for (const h of hostnames) {
-    if (h.realm === 'PORTAL' && !licensed) continue;
+    // PORTAL + INTAKE are commercial-licensed surfaces — skip their ingress
+    // (and DNS) on an unlicensed appliance.
+    if ((h.realm === 'PORTAL' || h.realm === 'INTAKE') && !licensed) continue;
     // ESIGN routes to the OpenSign sidecar with NO Host-header rewrite —
     // its Caddy serves a host-agnostic plain-HTTP site on :4001.
     if (h.realm === 'ESIGN') {
@@ -177,7 +179,12 @@ function buildIngress(
       });
       continue;
     }
-    const canonicalHost = h.realm === 'PORTAL' ? `portal.${zoneName}` : `app.${zoneName}`;
+    const canonicalHost =
+      h.realm === 'PORTAL'
+        ? `portal.${zoneName}`
+        : h.realm === 'INTAKE'
+          ? `intake.${zoneName}`
+          : `app.${zoneName}`;
     ingress.push({
       hostname: h.hostname,
       service: originService,
@@ -450,12 +457,12 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         );
         await cf.setTunnelIngress(d.accountId, tunnel.id, { ingress });
 
-        // DNS CNAMEs → <tunnel>.cfargotunnel.com. PORTAL hostnames are
-        // recorded but get no DNS until licensed.
+        // DNS CNAMEs → <tunnel>.cfargotunnel.com. PORTAL + INTAKE hostnames
+        // are recorded but get no DNS until licensed.
         const cnameTarget = `${tunnel.id}.cfargotunnel.com`;
         const persisted: Array<HostnameSpec & { dnsRecordId: string | null }> = [];
         for (const h of hostnames) {
-          if (h.realm === 'PORTAL' && !deps.commercialLicenseActive) {
+          if ((h.realm === 'PORTAL' || h.realm === 'INTAKE') && !deps.commercialLicenseActive) {
             persisted.push({ ...h, dnsRecordId: null });
             continue;
           }
@@ -613,7 +620,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         // Upsert DNS for the new list; carry forward existing record ids.
         const persisted: Array<HostnameSpec & { dnsRecordId: string | null }> = [];
         for (const h of next) {
-          if (h.realm === 'PORTAL' && !deps.commercialLicenseActive) {
+          if ((h.realm === 'PORTAL' || h.realm === 'INTAKE') && !deps.commercialLicenseActive) {
             persisted.push({ ...h, dnsRecordId: null });
             continue;
           }
