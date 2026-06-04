@@ -21,7 +21,7 @@ live in `apps/worker/src/metrics.ts`.
 
 ## Environment knobs
 
-- `STORAGE_PROVIDER` — `mock` (default) | `b2`
+- `STORAGE_PROVIDER` — `mock` (default, dev) | `b2` (production) | `minio` (self-hosted/local)
 - `STORAGE_LOCAL_PATH` — mock-backing FS root (default `/data/storage-mock`)
 - `STORAGE_TOP_PREFIX` — bucket area to scan
 - `STORAGE_SYSTEM_PREFIX` — skipped (default `_system/`)
@@ -33,6 +33,79 @@ live in `apps/worker/src/metrics.ts`.
 - `PENDING_UPLOAD_MAX_AGE_MIN` — sweep threshold (default 30)
 - `B2_ENDPOINT` / `B2_REGION` / `B2_BUCKET` / `B2_KEY_ID` /
   `B2_APPLICATION_KEY` — required when `STORAGE_PROVIDER=b2`
+
+## Production setup: Backblaze B2 (Q32)
+
+Production object storage is Backblaze B2 (S3-compatible). The firm owns
+the bucket and a **restricted, bucket-scoped** application key — never the
+B2 master key, and never a Kisaes-held account (customer-owned
+credentials, non-negotiable #5). The `B2_*` env vars are the
+**authoritative** source in production and must be set for **both** the
+`api` and `worker` containers — the worker builds its storage client from
+env only and has no admin-UI credential path. (The admin UI's Storage
+Settings page remains a convenience + connectivity-test tool for the API;
+changes there require a restart and are not seen by the worker.)
+
+1. **Create the bucket.** B2 console → Buckets → *Create a Bucket* →
+   **Private** (no public files). Note the **region** token (e.g.
+   `us-west-004`) and the S3 **Endpoint** shown on the bucket (e.g.
+   `https://s3.us-west-004.backblazeb2.com`).
+2. **Create a restricted application key.** B2 → *App Keys* → *Add a New
+   Application Key*. Scope it to **that single bucket**, read+write
+   (list/read/write/delete). Capture the `keyID` and the one-time
+   `applicationKey` (shown only at creation).
+3. **Set env (both services).** In the appliance `.env` (read by
+   docker-compose for the `api` and `worker` services):
+
+   ```bash
+   STORAGE_PROVIDER=b2
+   B2_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+   B2_REGION=us-west-004
+   B2_BUCKET=your-bucket-name
+   B2_KEY_ID=<keyID>
+   B2_APPLICATION_KEY=<applicationKey>
+   ```
+
+   `buildStorageClient` throws a clear boot error if `STORAGE_PROVIDER=b2`
+   and any `B2_*` is missing, so a misconfigured deploy fails fast rather
+   than silently writing to ephemeral container FS.
+4. **Restart** `api` + `worker` so both re-read the env.
+5. **Verify two ways:**
+   - Admin → Storage settings → **Test** (runs a `list`+`put`+`delete`
+     probe under `_vibe_health/`).
+   - Operator-side integration suite against a throwaway bucket:
+
+     ```bash
+     B2_INTEGRATION=1 \
+     B2_ENDPOINT=… B2_REGION=… B2_BUCKET=… B2_KEY_ID=… B2_APPLICATION_KEY=… \
+     pnpm --filter @vibe/storage test
+     ```
+
+     This exercises put/head/get/delete, copy, list, a presigned-GET HTTP
+     download, and presigned-PUT HTTP uploads (the SigV4 header path that
+     causes B2 `403 SignatureDoesNotMatch` when mis-signed).
+6. **Bucket lifecycle (required — policy Q39).** B2 keeps every file
+   version by default; the idempotent "latest wins" `put` accumulates
+   hidden versions and cost. Set the bucket's **Lifecycle Settings** to
+   **"Keep only the last version of the file"** (B2 console → bucket →
+   Lifecycle Settings). The appliance's own append-only audit log +
+   per-file SHA-256 are the integrity source of truth, so prior B2 object
+   versions are not needed for recovery. (Multipart upload is a known gap
+   — single-part `put` only; see Q40 — fine for CPA documents.)
+
+Notes / known gaps:
+- **Multipart upload is not implemented** — `put` and presigned PUT are
+  single-part (B2 S3 single-PUT cap 5 GB; practical proxy limits lower).
+  If the firm routinely stores very large files, multipart is required
+  before GA.
+- **ETag ≠ content hash on B2** — multipart/opaque ETags aren't MD5; the
+  hash worker computes its own SHA-256 for integrity, so ETag is only a
+  change-detection token.
+- Raise `STORAGE_SYNC_CONCURRENCY` above the default 8 for B2 (budget
+  ~40ms/object).
+- The AWS S3 SDK (`@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`)
+  ships as a real dependency of `@vibe/storage`, so the production image
+  contains it deterministically.
 
 ## Failure-injection drills
 

@@ -88,4 +88,44 @@ describe.skipIf(!B2_ENABLED)('B2StorageClient — integration', () => {
     expect(url).toMatch(/^https:\/\//);
     await client.delete(key);
   });
+
+  it('presignGet URL actually downloads the object bytes over HTTP', async () => {
+    const key = `${prefix}presign-get.txt`;
+    await client.put(key, Buffer.from('download me', 'utf8'), { contentType: 'text/plain' });
+    const url = await client.presignGet(key, 60);
+    const resp = await fetch(url);
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toBe('download me');
+    await client.delete(key);
+  });
+
+  // The presignPut SigV4 header logic (conditional ContentType/ContentLength)
+  // is the documented source of B2 403 SignatureDoesNotMatch — exercise a
+  // real PUT over the wire with the presigned URL, then read it back.
+  it('presignPut URL accepts a real HTTP PUT with a signed content-type', async () => {
+    const key = `${prefix}presign-put-typed.txt`;
+    const url = await client.presignPut(key, { contentType: 'text/plain' }, 60);
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: 'uploaded via presigned put',
+    });
+    expect(resp.status).toBe(200);
+    const got = await client.get(key);
+    const chunks: Buffer[] = [];
+    for await (const chunk of got.body) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('uploaded via presigned put');
+    await client.delete(key);
+  });
+
+  it('presignPut URL accepts a PUT when no content-type was signed', async () => {
+    // Browser-unknown-MIME path: the client omits ContentType from the
+    // signature so the browser can PUT without a matching header.
+    const key = `${prefix}presign-put-untyped.bin`;
+    const url = await client.presignPut(key, {}, 60);
+    const resp = await fetch(url, { method: 'PUT', body: 'no content type here' });
+    expect(resp.status).toBe(200);
+    expect(await client.head(key)).not.toBeNull();
+    await client.delete(key);
+  });
 });

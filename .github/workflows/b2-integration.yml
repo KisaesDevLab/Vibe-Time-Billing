@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+#
+# B2 storage integration suite (Q42). On-demand only — never on push/PR —
+# so real Backblaze B2 credentials stay out of the default CI path. The
+# suite (packages/storage/src/__tests__/b2.integration.test.ts) runs a
+# real put/head/get/delete + copy + list + presigned GET/PUT round-trip
+# against a THROWAWAY bucket and cleans up after itself.
+#
+# Required GitHub Actions secrets (Settings → Secrets and variables →
+# Actions), all scoped to a disposable bucket + a restricted, bucket-only
+# application key — NEVER the production bucket or the B2 master key:
+#   B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID, B2_APPLICATION_KEY
+#
+# Run it:  gh workflow run b2-integration.yml
+
+name: B2 integration
+
+on:
+  workflow_dispatch:
+
+env:
+  PNPM_VERSION: 9.15.9
+  NODE_VERSION: 24.4.0
+
+jobs:
+  b2-integration:
+    name: B2 round-trip (throwaway bucket)
+    runs-on: ubuntu-latest
+    env:
+      B2_INTEGRATION: '1'
+      B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+      B2_REGION: ${{ secrets.B2_REGION }}
+      B2_BUCKET: ${{ secrets.B2_BUCKET }}
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — secrets present
+        run: |
+          if [ -z "${B2_BUCKET}" ] || [ -z "${B2_KEY_ID}" ] || [ -z "${B2_APPLICATION_KEY}" ] \
+             || [ -z "${B2_ENDPOINT}" ] || [ -z "${B2_REGION}" ]; then
+            echo "::error::B2_* secrets are not configured for this repo. Add them under Settings → Secrets (throwaway bucket only)."
+            exit 1
+          fi
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run B2 integration suite
+        run: pnpm --filter @vibe/storage test
