@@ -23,6 +23,7 @@ import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pgli
 import { resetFirmKeyManagerForTests, getFirmKeyManager } from '../crypto/manager';
 import { setApplianceLockState } from '../crypto/boot';
 import { createIntakePublicRouter } from '../intake/public-routes';
+import { intakeJobId } from '../intake/queue';
 import { resetApplianceFirmIdForTests } from '../intake/firm';
 import { unwrapIntakeRecordKey, decField } from '../intake/crypto';
 
@@ -262,6 +263,13 @@ describe('intake flow — session + upload + complete', () => {
     const res = await request(buildApp()).post(`/api/public/intake/session/${sessionId}/complete`);
     expect(res.status).toBe(200);
     expect(enqueued).toEqual([{ sessionId, firmId: seed.firmId }]);
+  });
+
+  it('builds a BullMQ-safe job id (no colon)', () => {
+    // BullMQ rejects a custom jobId containing ':'. Regression guard.
+    const id = intakeJobId('a2658f02-74b6-4b4d-bd67-e4f34b3e34a5');
+    expect(id).not.toContain(':');
+    expect(id).toBe('intake-process-a2658f02-74b6-4b4d-bd67-e4f34b3e34a5');
   });
 
   it('upload 404s for an unknown session', async () => {

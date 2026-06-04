@@ -30,11 +30,17 @@ export function getIntakeQueue(): Queue<IntakeProcessJob> {
   return queue;
 }
 
-/** Enqueue a completed session for the worker pipeline. Deterministic
- *  jobId so an accidental double-complete coalesces into one job. */
+/** Deterministic job id for a session. BullMQ forbids ':' in a custom
+ *  jobId, so we use a dash-joined form; the session id is already unique,
+ *  so an accidental double-complete coalesces into one job. */
+export function intakeJobId(sessionId: string): string {
+  return `intake-process-${sessionId}`;
+}
+
+/** Enqueue a completed session for the worker pipeline. */
 export async function enqueueIntakeProcess(job: IntakeProcessJob): Promise<void> {
   await getIntakeQueue().add('process', job, {
-    jobId: `intake-process:${job.sessionId}`,
+    jobId: intakeJobId(job.sessionId),
     attempts: 3,
     backoff: { type: 'exponential', delay: 10_000 },
     removeOnComplete: { age: 24 * 3600 },

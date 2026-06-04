@@ -55,6 +55,7 @@ import { runStorageSyncTick } from './jobs/storage-sync';
 import { runHashFileTick } from './jobs/hash-file';
 import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
+import { runIntakeProcess } from './jobs/intake-process';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
@@ -631,9 +632,55 @@ async function setup(): Promise<void> {
   // activation time; handlers fire after the queue delay elapses.
   setupRetainerDelayedQueues();
 
+  // Document-intake pipeline. Enqueued on demand by the API at
+  // /session/:id/complete (never on a schedule); scans + assembles +
+  // notifies. Same parallel-registration pattern as storage-mutation.
+  setupIntakeProcessQueue();
+
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
   startHealthServer();
 }
+
+const INTAKE_PROCESS_QUEUE = 'intake-process';
+interface IntakeJobPayload {
+  sessionId: string;
+  firmId: string;
+}
+
+function setupIntakeProcessQueue(): void {
+  if (!db || !storage) {
+    logger.warn(
+      { dbConfigured: Boolean(db), storageConfigured: Boolean(storage) },
+      'intake-process queue not registered — db or storage missing',
+    );
+    return;
+  }
+  const intakeQueue = new Queue<IntakeJobPayload>(INTAKE_PROCESS_QUEUE, { connection });
+  const intakeEvents = new QueueEvents(INTAKE_PROCESS_QUEUE, { connection });
+  intakeEvents.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: INTAKE_PROCESS_QUEUE, failedReason }, 'intake-process job failed');
+  });
+  const intakeWorker = new Worker<IntakeJobPayload>(
+    INTAKE_PROCESS_QUEUE,
+    async (job) => {
+      const result = await runIntakeProcess(db!, storage!, logger, job.data, {
+        sendEmail: dunningSendEmail,
+        sendSms: dunningSendSms,
+        appBaseUrl: process.env['APP_BASE_URL'],
+      });
+      logger.info({ jobId: job.id, ...result }, 'intake-process complete');
+    },
+    { connection, concurrency: 2 },
+  );
+  intakeWorkerRef = intakeWorker;
+  intakeQueueRef = intakeQueue;
+  intakeEventsRef = intakeEvents;
+  logger.info({ queueName: INTAKE_PROCESS_QUEUE }, 'intake-process queue registered');
+}
+
+let intakeWorkerRef: Worker<IntakeJobPayload> | null = null;
+let intakeQueueRef: Queue<IntakeJobPayload> | null = null;
+let intakeEventsRef: QueueEvents | null = null;
 
 function setupStorageMutationQueue(): void {
   if (!db || !storage) {
@@ -832,6 +879,9 @@ async function shutdown(): Promise<void> {
   if (expiryWarningWorkerRef) await expiryWarningWorkerRef.close();
   if (expiryWarningQueueRef) await expiryWarningQueueRef.close();
   if (expiryWarningEventsRef) await expiryWarningEventsRef.close();
+  if (intakeWorkerRef) await intakeWorkerRef.close();
+  if (intakeQueueRef) await intakeQueueRef.close();
+  if (intakeEventsRef) await intakeEventsRef.close();
   if (publishConnRef) await publishConnRef.quit();
   await connection.quit();
   if (closeDb) await closeDb();
