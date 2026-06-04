@@ -54,6 +54,8 @@ services:
       KMS_KEY: ${KMS_KEY:?KMS_KEY required (export from .env, 32 bytes base64)}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5195}
       PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:5196}
+      # Public document-intake SPA base — used to build "send a link" URLs.
+      INTAKE_BASE_URL: ${INTAKE_BASE_URL:-}
       COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       MAIL_PROVIDER: smtp
       MAIL_FROM: 'Vibe Dev <dev@localhost>'

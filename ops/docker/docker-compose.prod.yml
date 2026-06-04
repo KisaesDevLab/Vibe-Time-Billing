@@ -69,6 +69,9 @@ services:
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?portal jwt required}
       APP_BASE_URL: ${APP_BASE_URL}
       PORTAL_BASE_URL: ${PORTAL_BASE_URL}
+      # Public document-intake SPA base (e.g. https://intake.<zone>) — used
+      # to build "send a link" URLs. Optional; absent → path-only links.
+      INTAKE_BASE_URL: ${INTAKE_BASE_URL:-}
       # WebAuthn / passkeys — required when staff sign in with a passkey.
       # rp_id should be the bare domain (no scheme), e.g. firm.com.
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID}
