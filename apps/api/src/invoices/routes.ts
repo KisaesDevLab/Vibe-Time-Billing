@@ -1361,7 +1361,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
   router.post(
     '/:id/void',
     requireStepUp,
-    requirePermission(deps, 'invoice:write'),
+    // Void is destructive + partner-only by design (dedicated invoice:void
+    // key, granted only to partner/admin) — not the broader invoice:write.
+    requirePermission(deps, 'invoice:void'),
     async (req: Request, res: Response) => {
       const parsed = VoidSchema.safeParse(req.body);
       if (!parsed.success) {

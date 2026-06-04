@@ -146,6 +146,13 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   // and surfaces firm-wide retainer dashboards. Staff without it still
   // get the personal /my/retainers view but no top-level entry.
   const canViewRetainers = usePermission('retainer:read');
+  // Admin hub is visible to anyone who can administer *something* there.
+  // Hooks must run unconditionally, so resolve each then combine.
+  const adminFirmSettings = usePermission('firm:settings:read');
+  const adminUsersRead = usePermission('app_user:read');
+  const adminServiceWrite = usePermission('service:write');
+  const adminTaxonomyWrite = usePermission('taxonomy:write');
+  const adminRateRead = usePermission('rate:read');
   // Per-area permission gates — a nav item is hidden when the signed-in
   // staff user lacks the relevant permission (no role → nothing shows).
   const can = {
@@ -154,7 +161,9 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     engagements: usePermission('engagement:read'),
     proposals: usePermission('proposal:read'),
     billing: usePermission('billing_batch:read'),
-    wip: usePermission('report:realization:read'),
+    // WIP is engagement-scoped on the API (engagement:read); match it so the
+    // nav and the route agree.
+    wip: usePermission('engagement:read'),
     invoices: usePermission('invoice:read'),
     ar: usePermission('report:ar:read'),
     approvals: usePermission('approval:queue:read'),
@@ -165,7 +174,15 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     reports: usePermission('report:realization:read'),
     tax: usePermission('engagement:read'),
     audit: usePermission('admin:audit:read'),
-    admin: usePermission('firm:settings:read'),
+    // The Admin hub spans firm settings, users, rates, offices, catalog,
+    // etc. Show it to anyone who can administer *something* there (e.g. a
+    // manager has app_user:read + service:write), not just firm-settings.
+    admin:
+      adminFirmSettings ||
+      adminUsersRead ||
+      adminServiceWrite ||
+      adminTaxonomyWrite ||
+      adminRateRead,
   };
   const [teamUnread, setTeamUnread] = useState(0);
   useEffect(() => {
