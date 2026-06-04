@@ -71,6 +71,7 @@ import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createIntakeCardRouter } from './intake/card-routes';
+import { collectIntakeMetricsText } from './intake/metrics';
 import { createPortalRetainerRouter } from './portal/retainers';
 import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
@@ -335,6 +336,12 @@ export function createApp(deps: AppDeps): Express {
         if (retainerLines) lines.push(retainerLines);
       } catch (err) {
         logger.error({ err }, 'retainer metrics collection failed');
+      }
+      try {
+        const intakeLines = await collectIntakeMetricsText(deps.db);
+        if (intakeLines) lines.push(intakeLines);
+      } catch (err) {
+        logger.error({ err }, 'intake metrics collection failed');
       }
     }
     res.send(lines.join('\n') + '\n');
