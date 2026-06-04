@@ -459,6 +459,8 @@ export const firmConfig = pgTable(
     // Vibe Shield; 'direct' lets the appliance call the provider API
     // directly (firm-owned key + budget cap + audit), no shield needed.
     aiEgressMode: text('ai_egress_mode').notNull().default('shield'),
+    // 0103 — document intake feature toggle (license-gated, per firm).
+    intakeEnabled: boolean('intake_enabled').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -4198,5 +4200,162 @@ export const kbArticles = pgTable(
     firmSlugUk: uniqueIndex('kb_article_firm_slug_uk').on(t.firmId, t.slug),
     firmCategoryIdx: index('kb_article_firm_category_idx').on(t.firmId, t.categoryId),
     firmStatusIdx: index('kb_article_firm_status_idx').on(t.firmId, t.status),
+  }),
+);
+
+// =====================================================================
+// 0103 — Document Intake (INTAKE_ADDENDUM). Anonymous-friendly public
+// document intake routed into existing clients/engagements/folders.
+// PII + content columns are MFK-wrapped: each record carries a per-record
+// DEK (wrapped_dek) that encrypts its *_enc columns. See
+// apps/api/src/intake/crypto.ts.
+// =====================================================================
+
+// One row per staff member who can appear on the public intake grid.
+export const intakeStaffCards = pgTable(
+  'intake_staff_cards',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    isVisible: boolean('is_visible').notNull().default(false), // admin-controlled
+    displayOrder: integer('display_order').notNull().default(0), // admin-controlled
+    acceptingUploads: boolean('accepting_uploads').notNull().default(true), // staff
+    displayTitle: text('display_title'), // staff
+    headshotObjectKey: text('headshot_object_key'), // staff
+    notifyEmail: boolean('notify_email').notNull().default(true),
+    notifySms: boolean('notify_sms').notNull().default(false),
+    notifyInApp: boolean('notify_in_app').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUserUk: uniqueIndex('intake_staff_cards_firm_user_uk').on(t.firmId, t.userId),
+    firmVisibleIdx: index('intake_staff_cards_firm_visible_idx').on(t.firmId, t.isVisible),
+  }),
+);
+
+// Tokenized "send-a-link" records (reuses the argon2 token + deliverShare
+// pattern from sharing/file-share-helper.ts).
+export const intakeLinks = pgTable(
+  'intake_links',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    createdByUserId: uuid('created_by_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    targetStaffId: uuid('target_staff_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    wrappedDek: bytea('wrapped_dek'),
+    recipientEmailEnc: bytea('recipient_email_enc'),
+    recipientPhoneEnc: bytea('recipient_phone_enc'),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('intake_links_firm_idx').on(t.firmId),
+  }),
+);
+
+// One row per client intake event.
+export const intakeSessions = pgTable(
+  'intake_sessions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    targetStaffId: uuid('target_staff_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    wrappedDek: bytea('wrapped_dek').notNull(),
+    clientNameEnc: bytea('client_name_enc'),
+    clientEmailEnc: bytea('client_email_enc'),
+    clientPhoneEnc: bytea('client_phone_enc'),
+    messageEnc: bytea('message_enc'),
+    source: text('source').notNull().default('public'),
+    linkTokenId: uuid('link_token_id').references(() => intakeLinks.id, { onDelete: 'set null' }),
+    status: text('status').notNull().default('pending_scan'),
+    matchedClientId: uuid('matched_client_id').references(() => clients.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmStatusIdx: index('intake_sessions_firm_status_idx').on(t.firmId, t.status),
+    targetStaffIdx: index('intake_sessions_target_staff_idx').on(t.targetStaffId),
+    sourceCk: check('intake_sessions_source_ck', sql`${t.source} IN ('public', 'tokenized_link')`),
+    statusCk: check(
+      'intake_sessions_status_ck',
+      sql`${t.status} IN ('pending_scan', 'processing', 'received', 'disposed', 'rejected')`,
+    ),
+  }),
+);
+
+// Uploaded files within a session (stored under the quarantine key prefix
+// until the scan worker clears them).
+export const intakeFiles = pgTable(
+  'intake_files',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => intakeSessions.id, { onDelete: 'cascade' }),
+    originalFilenameEnc: bytea('original_filename_enc'),
+    objectKey: text('object_key').notNull(),
+    mimeType: text('mime_type'),
+    byteSize: bigint('byte_size', { mode: 'number' }).notNull(),
+    kind: text('kind').notNull().default('upload'),
+    scanStatus: text('scan_status').notNull().default('pending'),
+    assembledPdfObjectKey: text('assembled_pdf_object_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    sessionIdx: index('intake_files_session_idx').on(t.sessionId),
+    kindCk: check('intake_files_kind_ck', sql`${t.kind} IN ('upload', 'scan')`),
+    scanStatusCk: check(
+      'intake_files_scan_status_ck',
+      sql`${t.scanStatus} IN ('pending', 'clean', 'infected')`,
+    ),
+  }),
+);
+
+// Disposition / action trail.
+export const intakeActions = pgTable(
+  'intake_actions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => intakeSessions.id, { onDelete: 'cascade' }),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    action: text('action').notNull(),
+    targetClientId: uuid('target_client_id').references(() => clients.id, { onDelete: 'set null' }),
+    targetEngagementId: uuid('target_engagement_id').references(() => engagements.id, {
+      onDelete: 'set null',
+    }),
+    targetFolderId: uuid('target_folder_id').references(() => clientFolders.id, {
+      onDelete: 'set null',
+    }),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    sessionIdx: index('intake_actions_session_idx').on(t.sessionId),
+    actionCk: check(
+      'intake_actions_action_ck',
+      sql`${t.action} IN ('move', 'assign', 'review', 'archive', 'reject', 'leave')`,
+    ),
   }),
 );

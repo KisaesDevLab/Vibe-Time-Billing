@@ -174,6 +174,11 @@ services:
       OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
       PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET}
+      # Document-intake virus scanner (Phase D). The intake-process job
+      # streams each quarantined object to clamd over TCP before assembly.
+      # Empty host disables the scan gate (intake is off by default).
+      CLAMD_HOST: ${CLAMD_HOST:-}
+      CLAMD_PORT: ${CLAMD_PORT:-3310}
     # tsc's rootDir auto-rises when @vibe/* path aliases pull source
     # from other workspace packages, so the worker entry lands at
     # apps/worker/dist/apps/worker/src/index.js — not at the top-level
@@ -260,6 +265,24 @@ services:
   # http://opensign-server:8080/app.
   # =====================================================================
 
+  # Document-intake virus scanner. Reached by the worker's intake-process
+  # job over clamd TCP 3310. Opt-in profile — the signature DB needs ~1GB
+  # RAM resident, so a firm not using intake skips it. Enable with
+  # `--profile intake` and set CLAMD_HOST=clamd on the worker.
+  clamd:
+    image: clamav/clamav:1.3
+    container_name: vibe-tb-clamd
+    profiles: ['intake']
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ['CMD-SHELL', 'echo PING | nc -w 5 localhost 3310 | grep -q PONG']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
   backup:
     image: postgres:16-alpine
     container_name: vibe-tb-backup
@@ -293,3 +316,4 @@ volumes:
   caddy-config:
   cloudflared-run:
   static-content:
+  clamav-data:
