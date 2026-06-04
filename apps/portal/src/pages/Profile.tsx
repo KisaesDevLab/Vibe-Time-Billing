@@ -14,7 +14,16 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, EmptyState, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  Pill,
+  SectionHeading,
+  Table,
+  tokens,
+  useIsNarrow,
+} from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -41,6 +50,7 @@ interface SessionRow {
 }
 
 export function ProfilePage(): JSX.Element {
+  const narrow = useIsNarrow();
   const { logout } = useAuth();
   const [identity, setIdentity] = useState<IdentityResp['identity']>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -101,7 +111,7 @@ export function ProfilePage(): JSX.Element {
             <dl
               style={{
                 display: 'grid',
-                gridTemplateColumns: '160px 1fr',
+                gridTemplateColumns: narrow ? '1fr' : '160px 1fr',
                 gap: '8px 16px',
                 margin: 0,
                 fontSize: 14,

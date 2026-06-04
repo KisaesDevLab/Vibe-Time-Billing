@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { Button, Card, Paperclip, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Paperclip, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api, getCsrfToken } from '../api-client';
 
@@ -51,6 +51,7 @@ function fmtSize(n: number): string {
 }
 
 export function MessagesPage(): JSX.Element {
+  const narrow = useIsNarrow();
   const [threads, setThreads] = useState<ThreadRow[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageRow[]>([]);
@@ -162,228 +163,257 @@ export function MessagesPage(): JSX.Element {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: tokens.space.lg }}>
-      <Card title="Threads">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {threads.map((t) => (
-            <button
-              key={t.threadId}
-              type="button"
-              onClick={() => setActiveThreadId(t.threadId)}
-              style={{
-                textAlign: 'left',
-                padding: '8px 10px',
-                borderRadius: tokens.radius.sm,
-                background:
-                  activeThreadId === t.threadId ? tokens.color.accentMuted : 'transparent',
-                color: activeThreadId === t.threadId ? tokens.color.accent : tokens.color.text,
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 13,
-              }}
-            >
-              <div style={{ fontWeight: 500 }}>{t.title ?? 'Engagement'}</div>
-              <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                {t.status === 'ARCHIVED' ? (
-                  <Pill tone="neutral">Archived</Pill>
-                ) : (
-                  new Date(t.updatedAt).toLocaleString()
-                )}
-              </div>
-            </button>
-          ))}
-        </div>
-      </Card>
-
-      <Card
-        title={
-          activeThreadId
-            ? (threads.find((t) => t.threadId === activeThreadId)?.title ?? 'Thread')
-            : 'Select a thread'
-        }
-      >
-        {error && <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0 }}>{error}</p>}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: tokens.space.sm,
-            maxHeight: 480,
-            overflowY: 'auto',
-            paddingRight: tokens.space.sm,
-          }}
-        >
-          {messages.length === 0 ? (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No messages yet.</p>
-          ) : (
-            messages.map((m) => {
-              const isStaff = m.senderAppUserId != null;
-              return (
-                <div
-                  key={m.id}
-                  style={{
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.md,
-                    padding: tokens.space.sm,
-                    background: isStaff ? tokens.color.surface : tokens.color.accentMuted,
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: tokens.color.textMuted,
-                      marginBottom: 4,
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <span>{isStaff ? (m.senderName ?? 'Your accountant') : 'You'}</span>
-                    <span>{new Date(m.createdAt).toLocaleString()}</span>
-                  </div>
-                  <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.body}</div>
-                  {m.attachments && m.attachments.length > 0 && (
-                    <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
-                      {m.attachments.map((a) => {
-                        const url = `/api/portal/messaging/threads/${activeThreadId}/attachments/${a.id}`;
-                        return a.isImage ? (
-                          <a key={a.id} href={url} target="_blank" rel="noreferrer">
-                            <img
-                              src={url}
-                              alt={a.filename ?? 'image'}
-                              style={{
-                                maxWidth: '100%',
-                                maxHeight: 240,
-                                borderRadius: tokens.radius.sm,
-                                border: `1px solid ${tokens.color.border}`,
-                                display: 'block',
-                              }}
-                            />
-                          </a>
-                        ) : (
-                          <a
-                            key={a.id}
-                            href={`${url}?download=1`}
-                            style={{
-                              fontSize: 12,
-                              color: tokens.color.accent,
-                              textDecoration: 'none',
-                              border: `1px solid ${tokens.color.border}`,
-                              borderRadius: tokens.radius.sm,
-                              padding: '4px 8px',
-                            }}
-                          >
-                            {a.filename ?? 'file'}{' '}
-                            <span style={{ color: tokens.color.textMuted }}>
-                              ({fmtSize(a.byteSize)})
-                            </span>
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {pending.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: tokens.space.sm }}>
-            {pending.map((p) => (
-              <span
-                key={p.id}
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: narrow ? '1fr' : '260px 1fr',
+        gap: tokens.space.lg,
+      }}
+    >
+      {/* On phones, show one pane at a time: the thread list, or (once a
+          thread is picked) the conversation with a back button. */}
+      {(!narrow || !activeThreadId) && (
+        <Card title="Threads">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {threads.map((t) => (
+              <button
+                key={t.threadId}
+                type="button"
+                onClick={() => setActiveThreadId(t.threadId)}
                 style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  border: `1px solid ${tokens.color.border}`,
-                  borderRadius: tokens.radius.pill,
-                  padding: '2px 8px',
+                  textAlign: 'left',
+                  padding: '8px 10px',
+                  borderRadius: tokens.radius.sm,
+                  background:
+                    activeThreadId === t.threadId ? tokens.color.accentMuted : 'transparent',
+                  color: activeThreadId === t.threadId ? tokens.color.accent : tokens.color.text,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: 13,
                 }}
               >
-                {p.filename}{' '}
-                <span style={{ color: tokens.color.textMuted }}>({fmtSize(p.byteSize)})</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${p.filename}`}
-                  onClick={() => setPending((prev) => prev.filter((x) => x.id !== p.id))}
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    color: tokens.color.danger,
-                    cursor: 'pointer',
-                    fontSize: 15,
-                    lineHeight: 1,
-                  }}
-                >
-                  ×
-                </button>
-              </span>
+                <div style={{ fontWeight: 500 }}>{t.title ?? 'Engagement'}</div>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  {t.status === 'ARCHIVED' ? (
+                    <Pill tone="neutral">Archived</Pill>
+                  ) : (
+                    new Date(t.updatedAt).toLocaleString()
+                  )}
+                </div>
+              </button>
             ))}
           </div>
-        )}
+        </Card>
+      )}
 
-        <div
-          style={{
-            marginTop: tokens.space.md,
-            display: 'flex',
-            gap: tokens.space.sm,
-            alignItems: 'flex-end',
-          }}
+      {(!narrow || activeThreadId) && (
+        <Card
+          title={
+            activeThreadId
+              ? (threads.find((t) => t.threadId === activeThreadId)?.title ?? 'Thread')
+              : 'Select a thread'
+          }
+          action={
+            narrow && activeThreadId ? (
+              <button
+                type="button"
+                onClick={() => setActiveThreadId(null)}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: tokens.color.accent,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                ← Threads
+              </button>
+            ) : null
+          }
         >
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              void uploadFiles(e.target.files);
-              e.target.value = '';
-            }}
-          />
-          <Button
-            variant="ghost"
-            onClick={() => fileInput.current?.click()}
-            disabled={uploading || !activeThreadId}
-            title="Attach files or images"
-          >
-            <Paperclip size={20} />
-          </Button>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onPaste={(e) => {
-              const imgs = Array.from(e.clipboardData.files).filter((f) =>
-                f.type.startsWith('image/'),
-              );
-              if (imgs.length > 0) {
-                e.preventDefault();
-                void uploadFiles(imgs);
-              }
-            }}
-            placeholder="Type a reply… (paste an image to attach it)"
-            rows={3}
+          {error && <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0 }}>{error}</p>}
+          <div
             style={{
-              flex: 1,
-              padding: tokens.space.sm,
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.sm,
-              background: tokens.color.surface,
-              color: tokens.color.text,
-              fontSize: 13,
-              fontFamily: tokens.font.body,
-              resize: 'vertical',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: tokens.space.sm,
+              maxHeight: 480,
+              overflowY: 'auto',
+              paddingRight: tokens.space.sm,
             }}
-          />
-          <Button
-            onClick={() => void send()}
-            disabled={busy || (!draft.trim() && pending.length === 0)}
           >
-            {busy ? 'Sending…' : 'Send'}
-          </Button>
-        </div>
-      </Card>
+            {messages.length === 0 ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No messages yet.</p>
+            ) : (
+              messages.map((m) => {
+                const isStaff = m.senderAppUserId != null;
+                return (
+                  <div
+                    key={m.id}
+                    style={{
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                      padding: tokens.space.sm,
+                      background: isStaff ? tokens.color.surface : tokens.color.accentMuted,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                        marginBottom: 4,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span>{isStaff ? (m.senderName ?? 'Your accountant') : 'You'}</span>
+                      <span>{new Date(m.createdAt).toLocaleString()}</span>
+                    </div>
+                    <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.body}</div>
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+                        {m.attachments.map((a) => {
+                          const url = `/api/portal/messaging/threads/${activeThreadId}/attachments/${a.id}`;
+                          return a.isImage ? (
+                            <a key={a.id} href={url} target="_blank" rel="noreferrer">
+                              <img
+                                src={url}
+                                alt={a.filename ?? 'image'}
+                                style={{
+                                  maxWidth: '100%',
+                                  maxHeight: 240,
+                                  borderRadius: tokens.radius.sm,
+                                  border: `1px solid ${tokens.color.border}`,
+                                  display: 'block',
+                                }}
+                              />
+                            </a>
+                          ) : (
+                            <a
+                              key={a.id}
+                              href={`${url}?download=1`}
+                              style={{
+                                fontSize: 12,
+                                color: tokens.color.accent,
+                                textDecoration: 'none',
+                                border: `1px solid ${tokens.color.border}`,
+                                borderRadius: tokens.radius.sm,
+                                padding: '4px 8px',
+                              }}
+                            >
+                              {a.filename ?? 'file'}{' '}
+                              <span style={{ color: tokens.color.textMuted }}>
+                                ({fmtSize(a.byteSize)})
+                              </span>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {pending.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: tokens.space.sm }}>
+              {pending.map((p) => (
+                <span
+                  key={p.id}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 12,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.pill,
+                    padding: '2px 8px',
+                  }}
+                >
+                  {p.filename}{' '}
+                  <span style={{ color: tokens.color.textMuted }}>({fmtSize(p.byteSize)})</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${p.filename}`}
+                    onClick={() => setPending((prev) => prev.filter((x) => x.id !== p.id))}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: tokens.color.danger,
+                      cursor: 'pointer',
+                      fontSize: 15,
+                      lineHeight: 1,
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div
+            style={{
+              marginTop: tokens.space.md,
+              display: 'flex',
+              gap: tokens.space.sm,
+              alignItems: 'flex-end',
+            }}
+          >
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                void uploadFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <Button
+              variant="ghost"
+              onClick={() => fileInput.current?.click()}
+              disabled={uploading || !activeThreadId}
+              title="Attach files or images"
+            >
+              <Paperclip size={20} />
+            </Button>
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onPaste={(e) => {
+                const imgs = Array.from(e.clipboardData.files).filter((f) =>
+                  f.type.startsWith('image/'),
+                );
+                if (imgs.length > 0) {
+                  e.preventDefault();
+                  void uploadFiles(imgs);
+                }
+              }}
+              placeholder="Type a reply… (paste an image to attach it)"
+              rows={3}
+              style={{
+                flex: 1,
+                padding: tokens.space.sm,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+                fontSize: 13,
+                fontFamily: tokens.font.body,
+                resize: 'vertical',
+              }}
+            />
+            <Button
+              onClick={() => void send()}
+              disabled={busy || (!draft.trim() && pending.length === 0)}
+            >
+              {busy ? 'Sending…' : 'Send'}
+            </Button>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

@@ -8,7 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -26,6 +26,7 @@ interface OfferRow {
 }
 
 export function RetainerOfferPage(): JSX.Element {
+  const narrow = useIsNarrow();
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [offer, setOffer] = useState<OfferRow | null>(null);
@@ -125,7 +126,13 @@ export function RetainerOfferPage(): JSX.Element {
       </Card>
 
       {!isExpired && !isPurchased && !isDeclined && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: narrow ? '1fr' : '1fr 1fr',
+            gap: 16,
+          }}
+        >
           <TierCard
             label="Standard"
             badge="DEFAULT"

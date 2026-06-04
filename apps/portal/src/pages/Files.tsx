@@ -132,7 +132,13 @@ export function FilesPage(): JSX.Element {
         </Card>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: tokens.space.lg }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: narrow ? '1fr' : '220px 1fr',
+          gap: tokens.space.lg,
+        }}
+      >
         <Card title="Folders">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <button

@@ -61,6 +61,21 @@ export function AppShell({
     setCollapsed(readCollapsed(collapseStorageKey));
   }, [collapseStorageKey]);
 
+  // Auto-collapse to the icon rail on phones/narrow viewports so the
+  // sidebar doesn't eat the screen. The user can still expand it; this only
+  // sets the default when the viewport is (or becomes) narrow.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 720px)');
+    const apply = (matches: boolean): void => {
+      if (matches) setCollapsed(true);
+    };
+    apply(mq.matches);
+    const handler = (e: MediaQueryListEvent): void => apply(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
   const toggle = (): void => {
     setCollapsed((prev) => {
       const next = !prev;
