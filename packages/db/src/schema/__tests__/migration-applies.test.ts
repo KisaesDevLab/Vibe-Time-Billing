@@ -97,10 +97,17 @@ describe('migrations apply on a fresh db', () => {
         [firmId, 'p@example.com', 'P'],
       )
     ).rows[0]!.id;
+    // 0092 made client.office_id NOT NULL.
+    const officeId = (
+      await db.query<{ id: string }>(
+        `INSERT INTO office (firm_id, name, timezone, is_default) VALUES ($1, 'HQ', 'America/Chicago', true) RETURNING id`,
+        [firmId],
+      )
+    ).rows[0]!.id;
     const clientId = (
       await db.query<{ id: string }>(
-        `INSERT INTO client (firm_id, name, partner_in_charge_id) VALUES ($1, 'C', $2) RETURNING id`,
-        [firmId, partnerId],
+        `INSERT INTO client (firm_id, name, partner_in_charge_id, office_id) VALUES ($1, 'C', $2, $3) RETURNING id`,
+        [firmId, partnerId, officeId],
       )
     ).rows[0]!.id;
     const engId = (

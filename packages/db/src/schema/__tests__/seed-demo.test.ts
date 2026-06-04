@@ -62,10 +62,18 @@ describe('demo seed produces the Vance scenario', () => {
         [firmId, 'jenny@vance.example', 'Jenny Park'],
       )
     ).rows[0]!.id;
+    // 0092 made client.office_id NOT NULL — every firm needs a default
+    // office and every client references one.
+    const officeId = (
+      await db.query<{ id: string }>(
+        `INSERT INTO office (firm_id, name, timezone, is_default) VALUES ($1,'HQ','America/Chicago',true) RETURNING id`,
+        [firmId],
+      )
+    ).rows[0]!.id;
     const clientId = (
       await db.query<{ id: string }>(
-        `INSERT INTO client (firm_id, name, partner_in_charge_id) VALUES ($1,'Holland Mfg',$2) RETURNING id`,
-        [firmId, sarah],
+        `INSERT INTO client (firm_id, name, partner_in_charge_id, office_id) VALUES ($1,'Holland Mfg',$2,$3) RETURNING id`,
+        [firmId, sarah, officeId],
       )
     ).rows[0]!.id;
     const reasonId = (

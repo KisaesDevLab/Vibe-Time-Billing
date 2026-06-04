@@ -284,7 +284,8 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
       res.send(Buffer.from(plain));
     } catch (err) {
       logger.warn({ err, threadId }, 'attachment download failed');
-      res.status(404).json({ error: 'object_gone' });
+      // Guard against a double-send if bytes were already flushed.
+      if (!res.headersSent) res.status(404).json({ error: 'object_gone' });
     }
   });
 }

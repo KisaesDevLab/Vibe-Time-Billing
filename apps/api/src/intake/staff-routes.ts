@@ -155,21 +155,29 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
       for (const f of fileCounts)
         countBySession.set(f.sessionId, (countBySession.get(f.sessionId) ?? 0) + 1);
 
-      const sessions = rows.map((r) => {
-        const dek = unwrapIntakeRecordKey(deps.db!, firmId, r.wrappedDek);
-        return {
-          id: r.id,
-          status: r.status,
-          createdAt: r.createdAt,
-          clientName: decField(dek, r.clientNameEnc),
-          clientEmail: decField(dek, r.clientEmailEnc),
-          message: decField(dek, r.messageEnc),
-          targetStaffId: r.targetStaffId,
-          targetStaffName: r.staffName,
-          matchedClientId: r.matchedClientId,
-          fileCount: countBySession.get(r.id) ?? 0,
-        };
-      });
+      // Decrypt per row, tolerating a single bad/locked record rather than
+      // 500-ing the whole inbox (e.g. an appliance lock flip mid-request).
+      let sessions;
+      try {
+        sessions = rows.map((r) => {
+          const dek = unwrapIntakeRecordKey(deps.db!, firmId, r.wrappedDek);
+          return {
+            id: r.id,
+            status: r.status,
+            createdAt: r.createdAt,
+            clientName: decField(dek, r.clientNameEnc),
+            clientEmail: decField(dek, r.clientEmailEnc),
+            message: decField(dek, r.messageEnc),
+            targetStaffId: r.targetStaffId,
+            targetStaffName: r.staffName,
+            matchedClientId: r.matchedClientId,
+            fileCount: countBySession.get(r.id) ?? 0,
+          };
+        });
+      } catch {
+        res.status(503).json({ error: 'service_unavailable' });
+        return;
+      }
       res.json({ sessions });
     },
   );

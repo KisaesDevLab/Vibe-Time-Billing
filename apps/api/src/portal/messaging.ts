@@ -74,7 +74,7 @@ async function memberAndFirmCheck(
         isNull(threadMembers.removedAt),
       ),
     )
-    .where(eq(threads.id, threadId))
+    .where(and(eq(threads.id, threadId), eq(threads.kind, 'client')))
     .limit(1);
   if (!row) return { ok: false };
   if (row.clientId !== activeClientId) return { ok: false };
@@ -126,6 +126,7 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
           eq(threadMembers.portalIdentityId, session.portalIdentityId),
           isNull(threadMembers.removedAt),
           eq(engagements.clientId, session.activeClientId),
+          eq(threads.kind, 'client'),
         ),
       )
       .orderBy(desc(threads.updatedAt));
