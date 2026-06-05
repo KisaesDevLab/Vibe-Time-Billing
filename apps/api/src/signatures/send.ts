@@ -25,6 +25,7 @@ import type { StorageClient } from '@vibe/storage';
 import type { OpenSignClient } from '../esign/opensign-client';
 import type { PageGeometry } from './geometry';
 import { createSignatureDocument } from './opensign-document';
+import { formRequiresKba } from './profiles';
 import { validatePlacements, type PlacementInput, type ValidationError } from './validation';
 
 const DEFAULT_EXPIRY_DAYS = 30;
@@ -42,6 +43,7 @@ export type SendOutcome =
   | { kind: 'not_found' }
   | { kind: 'not_draft'; status: string }
   | { kind: 'no_source' }
+  | { kind: 'kba_required'; formType: string }
   | { kind: 'invalid'; errors: ValidationError[] };
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
@@ -73,6 +75,11 @@ export async function sendSignatureRequest(
   if (!request || request.firmId !== args.firmId) return { kind: 'not_found' };
   if (request.status !== 'draft') return { kind: 'not_draft', status: request.status };
   if (!request.sourceFileKey) return { kind: 'no_source' };
+  // IRS §8 — a KBA-gated form (individual 1040 8879) cannot go out the
+  // entity path. No KBA flow is wired yet, so block it outright.
+  if (formRequiresKba(request.formType)) {
+    return { kind: 'kba_required', formType: request.formType! };
+  }
 
   const signers = await db
     .select()

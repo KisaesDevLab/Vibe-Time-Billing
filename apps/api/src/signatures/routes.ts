@@ -22,6 +22,7 @@ import type { Database } from '@vibe/db';
 import {
   signatureEvents,
   signatureFieldPlacements,
+  signaturePlacementProfiles,
   signatureRequests,
   signatureSigners,
 } from '@vibe/db/schema';
@@ -32,6 +33,13 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
+import {
+  applyProfile,
+  listLatestProfiles,
+  seedDefaultProfiles,
+  SIGNATURE_FORM_REGISTRY,
+  type ProfileField,
+} from './profiles';
 import { sendSignatureRequest } from './send';
 import { FIELD_TYPES, validatePlacements, type PlacementInput } from './validation';
 
@@ -92,6 +100,26 @@ const PlacementSchema = z.object({
 
 const PlacementsSchema = z.object({
   placements: z.array(PlacementSchema).max(500),
+});
+
+const ProfileFieldSchema = z.object({
+  role: z.string().trim().min(1).max(80),
+  fieldType: z.enum(FIELD_TYPES as unknown as [string, ...string[]]),
+  pageNumber: z.number().int().positive(),
+  nx: z.number(),
+  ny: z.number(),
+  nw: z.number(),
+  nh: z.number(),
+  required: z.boolean().optional(),
+});
+
+const CreateProfileSchema = z.object({
+  formType: z.string().trim().min(1).max(40),
+  fields: z.array(ProfileFieldSchema).min(1).max(100),
+});
+
+const ApplyProfileSchema = z.object({
+  profileId: z.string().uuid(),
 });
 
 export function createSignaturesRouter(deps: SignaturesDeps): Router {
@@ -225,6 +253,187 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         after: { title: body.title, signerCount: body.signers.length, status: 'draft' },
       });
       res.status(201).json({ id: created });
+    },
+  );
+
+  // ---- Placement profiles (role-based, versioned) -------------------
+  // NOTE: these literal `/profiles` paths MUST be registered before the
+  // parameterized `/:id` routes below, or Express captures `profiles` as
+  // an :id (→ uuid parse error).
+
+  // GET /profiles — latest version of each form's profile + the form
+  // registry (so the UI can label forms + show the KBA constraint).
+  router.get(
+    '/profiles',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ profiles: [], registry: SIGNATURE_FORM_REGISTRY });
+        return;
+      }
+      const profiles = await listLatestProfiles(deps.db, firmId);
+      res.json({ profiles, registry: SIGNATURE_FORM_REGISTRY });
+    },
+  );
+
+  // POST /profiles/seed-defaults — install the 8879-S/C/PE + engagement
+  // letter starter profiles (idempotent). Deliberately does NOT seed a
+  // 1040 8879 (KBA-gated — see profiles.ts §8 note).
+  router.post(
+    '/profiles/seed-defaults',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const inserted = await seedDefaultProfiles(deps.db, firmId);
+      res.json({ ok: true, inserted });
+    },
+  );
+
+  // POST /profiles — create a new VERSION of a form's profile (next
+  // version number; never mutates an existing one, so sent requests keep
+  // the layout they were built with).
+  router.post(
+    '/profiles',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = CreateProfileSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+        return;
+      }
+      const existing = await deps.db
+        .select({ version: signaturePlacementProfiles.version })
+        .from(signaturePlacementProfiles)
+        .where(
+          and(
+            eq(signaturePlacementProfiles.firmId, firmId),
+            eq(signaturePlacementProfiles.formType, parsed.data.formType),
+          ),
+        )
+        .orderBy(desc(signaturePlacementProfiles.version))
+        .limit(1);
+      const nextVersion = (existing[0]?.version ?? 0) + 1;
+      const [row] = await deps.db
+        .insert(signaturePlacementProfiles)
+        .values({
+          firmId,
+          formType: parsed.data.formType,
+          version: nextVersion,
+          fields: parsed.data.fields,
+        })
+        .returning({ id: signaturePlacementProfiles.id });
+      res.status(201).json({ id: row!.id, version: nextVersion });
+    },
+  );
+
+  // POST /:id/apply-profile — expand a profile's role-based fields onto the
+  // draft's signers (matched by role) and save as placements (validated).
+  router.post(
+    '/:id/apply-profile',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ApplyProfileSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (request.status !== 'draft') {
+        res.status(409).json({ error: 'not_editable', status: request.status });
+        return;
+      }
+      const [profile] = await deps.db
+        .select()
+        .from(signaturePlacementProfiles)
+        .where(
+          and(
+            eq(signaturePlacementProfiles.id, parsed.data.profileId),
+            eq(signaturePlacementProfiles.firmId, firmId),
+          ),
+        )
+        .limit(1);
+      if (!profile) {
+        res.status(404).json({ error: 'profile_not_found' });
+        return;
+      }
+      const geometry = (request.pageGeometry as PageGeometry[] | null) ?? null;
+      if (!geometry) {
+        res.status(409).json({ error: 'geometry_required' });
+        return;
+      }
+      const signers = await deps.db
+        .select({ id: signatureSigners.id, role: signatureSigners.role })
+        .from(signatureSigners)
+        .where(eq(signatureSigners.requestId, request.id));
+
+      const applied = applyProfile(profile.fields as ProfileField[], signers, geometry);
+      const errors = validatePlacements(
+        signers.map((s) => s.id),
+        applied.placements as unknown as PlacementInput[],
+        geometry,
+      );
+      if (errors.length > 0) {
+        res
+          .status(422)
+          .json({ error: 'invalid_placements', errors, unmatchedRoles: applied.unmatchedRoles });
+        return;
+      }
+      await deps.db.transaction(async (tx) => {
+        await tx
+          .delete(signatureFieldPlacements)
+          .where(eq(signatureFieldPlacements.requestId, request.id));
+        await tx.insert(signatureFieldPlacements).values(
+          applied.placements.map((p) => ({
+            requestId: request.id,
+            signerId: p.signerId,
+            fieldType: p.fieldType,
+            pageNumber: p.pageNumber,
+            nx: p.nx,
+            ny: p.ny,
+            nw: p.nw,
+            nh: p.nh,
+            required: p.required,
+          })),
+        );
+        await recordEvent(tx as unknown as Database, request.id, actor, 'profile_applied', {
+          profileId: profile.id,
+          formType: profile.formType,
+          version: profile.version,
+          count: applied.placements.length,
+        });
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'signature_request',
+        entityId: request.id,
+        actorAppUserId: actor,
+        after: { profileApplied: profile.formType, version: profile.version },
+      });
+      res.json({
+        ok: true,
+        count: applied.placements.length,
+        unmatchedRoles: applied.unmatchedRoles,
+      });
     },
   );
 
@@ -638,6 +847,9 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
           return;
         case 'no_source':
           res.status(409).json({ error: 'no_source' });
+          return;
+        case 'kba_required':
+          res.status(409).json({ error: 'kba_required', formType: outcome.formType });
           return;
         case 'invalid':
           res.status(422).json({ error: 'invalid_placements', errors: outcome.errors });
