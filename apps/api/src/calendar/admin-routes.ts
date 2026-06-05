@@ -24,6 +24,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
 import { decField, encField, newCalendarRecordKey, unwrapCalendarRecordKey } from './crypto';
 import { testProvider } from './provider-test';
+import { hasWriteScope, type CalendarProvider } from './oauth';
 import { getCalendarSettings, upsertCalendarSettings } from './settings';
 
 export interface CalendarAdminDeps extends RbacDeps {
@@ -362,11 +363,17 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
           enabled: staffCalendarConnections.enabled,
           syncError: staffCalendarConnections.syncError,
           lastSyncedAt: staffCalendarConnections.lastSyncedAt,
+          scope: staffCalendarConnections.scope,
         })
         .from(staffCalendarConnections)
         .leftJoin(appUsers, eq(appUsers.id, staffCalendarConnections.staffId))
         .where(eq(staffCalendarConnections.firmId, firmId));
-      res.json({ connections: rows });
+      // BK-5 — surface which connections can receive appointment write-back.
+      const connections = rows.map(({ scope, ...r }) => ({
+        ...r,
+        canWrite: hasWriteScope(r.provider as CalendarProvider, scope),
+      }));
+      res.json({ connections });
     },
   );
 

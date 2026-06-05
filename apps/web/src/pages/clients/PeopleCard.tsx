@@ -30,6 +30,7 @@ interface PersonContact {
   roleId: string | null;
   isPrimary: boolean;
   isBilling: boolean;
+  receiveAppointmentReminders?: boolean;
   // 0115 — other clients this same person is also a contact of.
   alsoOn?: { clientId: string; name: string }[];
 }
@@ -485,6 +486,23 @@ function ManagePanel({
     }
   }
 
+  async function toggleReminders(next: boolean): Promise<void> {
+    if (!c) return;
+    setSaving(true);
+    onError('');
+    try {
+      await api(`/api/staff/clients/${clientId}/contacts/${c.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ receiveAppointmentReminders: next }),
+      });
+      onChanged('Updated.');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'flag_failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function removeContact(): Promise<void> {
     if (!c || !window.confirm('Remove this contact from the directory?')) return;
     setSaving(true);
@@ -602,6 +620,23 @@ function ManagePanel({
               Remove contact
             </Button>
           </div>
+          <label
+            style={{
+              display: 'inline-flex',
+              gap: 6,
+              alignItems: 'center',
+              fontSize: 12,
+              marginTop: 4,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={c.receiveAppointmentReminders !== false}
+              disabled={saving}
+              onChange={(e) => void toggleReminders(e.target.checked)}
+            />
+            Send appointment reminders to this contact
+          </label>
         </form>
       )}
 

@@ -66,6 +66,7 @@ export function mountPeopleRoutes(router: Router, deps: PeopleRoutesDeps): void 
           roleId: clientContacts.roleId,
           isPrimary: clientContacts.isPrimary,
           isBilling: clientContacts.isBilling,
+          receiveAppointmentReminders: clientContacts.receiveAppointmentReminders,
         })
         .from(clientContacts)
         .innerJoin(persons, eq(persons.id, clientContacts.personId))

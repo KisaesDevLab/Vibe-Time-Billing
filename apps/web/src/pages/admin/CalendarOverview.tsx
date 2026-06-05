@@ -25,6 +25,7 @@ interface HealthRow {
   enabled: boolean;
   syncError: string | null;
   lastSyncedAt: string | null;
+  canWrite: boolean;
 }
 
 export function CalendarOverviewPage(): JSX.Element {
@@ -94,7 +95,15 @@ export function CalendarOverviewPage(): JSX.Element {
       header: 'Last synced',
       render: (r) => (r.lastSyncedAt ? new Date(r.lastSyncedAt).toLocaleString() : 'never'),
     },
+    {
+      key: 'writeback',
+      header: 'Write-back',
+      render: (r) =>
+        r.canWrite ? <Pill tone="success">enabled</Pill> : <Pill tone="warning">read-only</Pill>,
+    },
   ];
+
+  const readOnlyCount = health.filter((c) => c.enabled && !c.canWrite).length;
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
@@ -117,6 +126,23 @@ export function CalendarOverviewPage(): JSX.Element {
       </Card>
 
       <Card title="Connection health">
+        {readOnlyCount > 0 && (
+          <p
+            style={{
+              fontSize: 13,
+              color: tokens.color.warning,
+              background: tokens.color.surface,
+              border: `1px solid ${tokens.color.warning}`,
+              borderRadius: tokens.radius.sm,
+              padding: '8px 10px',
+              marginTop: 0,
+            }}
+          >
+            {readOnlyCount} staff member{readOnlyCount === 1 ? ' has a' : 's have'} read-only
+            calendar connection{readOnlyCount === 1 ? '' : 's'}. Appointment write-back requires
+            reconnecting to grant calendar write access.
+          </p>
+        )}
         <Table
           columns={healthCols}
           rows={health}

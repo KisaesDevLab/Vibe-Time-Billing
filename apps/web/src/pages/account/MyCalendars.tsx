@@ -87,6 +87,20 @@ export function MyCalendarsCard(): JSX.Element | null {
     }
   }
 
+  async function refreshCalendars(connectionId: string): Promise<void> {
+    setBusy(true);
+    try {
+      await api(`/api/staff/calendar/connections/${connectionId}/refresh-calendars`, {
+        method: 'POST',
+      });
+      await load();
+    } catch {
+      // transient — status reflects on reload
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function disconnect(connectionId: string): Promise<void> {
     if (!window.confirm('Disconnect this calendar? Synced appointments are kept.')) return;
     setBusy(true);
@@ -152,6 +166,14 @@ export function MyCalendarsCard(): JSX.Element | null {
                           disabled={busy}
                         >
                           Sync now
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => void refreshCalendars(conn.id)}
+                          disabled={busy}
+                          title="Re-fetch the list of calendars from the provider"
+                        >
+                          Refresh calendars
                         </Button>
                         <Button
                           variant="danger"

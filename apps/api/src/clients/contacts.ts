@@ -32,6 +32,8 @@ const ContactCreateSchema = z.object({
   isPrimary: z.boolean().optional(),
   isBilling: z.boolean().optional(),
   isPortalIdentity: z.boolean().optional(),
+  // CAL-7 — per-contact appointment-reminder opt-out.
+  receiveAppointmentReminders: z.boolean().optional(),
 });
 
 const ContactPatchSchema = ContactCreateSchema.partial();
@@ -248,6 +250,9 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
               ...(data.isBilling !== undefined ? { isBilling: data.isBilling } : {}),
               ...(data.isPortalIdentity !== undefined
                 ? { isPortalIdentity: data.isPortalIdentity }
+                : {}),
+              ...(data.receiveAppointmentReminders !== undefined
+                ? { receiveAppointmentReminders: data.receiveAppointmentReminders }
                 : {}),
               updatedAt: new Date(),
             })
