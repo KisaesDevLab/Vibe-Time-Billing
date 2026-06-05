@@ -6,13 +6,14 @@
 // wins. Tokens resolve via the shared merge-token engine. An ICS is
 // generated and handed to the mailer (attachment when supported).
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, gt, inArray, lte } from 'drizzle-orm';
 
 import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
   appointmentParticipants,
+  appointmentRemindersSent,
   appointmentStaff,
   appointments,
   clientContacts,
@@ -25,12 +26,14 @@ import {
 } from '@vibe/db/schema';
 
 import { buildIcs, type IcsAttendee } from '../calendar/ics';
+import { getCalendarSettings } from '../calendar/settings';
 import { logger } from '../logger';
 
 export type AppointmentEmailEvent =
   | 'appointment_confirmation'
   | 'appointment_reschedule_confirmation'
   | 'appointment_cancellation'
+  | 'appointment_reminder'
   | 'appointment_reschedule_request_declined';
 
 interface Template {
@@ -77,6 +80,22 @@ Your appointment on {{ appointment.date }} at {{ appointment.time }} with
 {{ staff.names }} has been cancelled by {{ appointment.cancelled_by }}.
 
 Please contact us to find another time.
+
+— {{ firm.name }}`,
+  },
+  appointment_reminder: {
+    subject: 'Reminder: {{ appointment.subject }} on {{ appointment.date }}',
+    body: `Hi {{ client.name }},
+
+A reminder of your upcoming appointment:
+
+{{ appointment.subject }}
+{{ appointment.date }} at {{ appointment.time }} ({{ appointment.duration }} min)
+With: {{ staff.names }}
+{{ appointment.location_type_label }}: {{ appointment.location_detail }}
+
+Need to cancel? {{ appointment.cancel_url }}
+Need a different time? {{ appointment.reschedule_request_url }}
 
 — {{ firm.name }}`,
   },
@@ -385,6 +404,98 @@ export async function runAppointmentCancellationSend(
         ),
       )
       .catch(() => undefined);
+  }
+  return { sent };
+}
+
+/**
+ * Reminder heartbeat — sends pre-meeting reminders for SCHEDULED
+ * appointments at the firm's reminder offsets (calendar_settings.
+ * reminder_offsets_minutes), honoring per-contact opt-out, idempotent via
+ * appointment_reminders_sent. Run on a 5-minute cron from the worker.
+ */
+export async function runAppointmentReminderTick(
+  deps: EmailJobDeps,
+  nowArg?: Date,
+): Promise<{ sent: number }> {
+  const db = deps.db;
+  const now = nowArg ?? deps.now ?? new Date();
+  const MAX_LOOKAHEAD_MIN = 8 * 24 * 60;
+  const windowEnd = new Date(now.getTime() + MAX_LOOKAHEAD_MIN * 60_000);
+
+  const due = await db
+    .select({ id: appointments.id, firmId: appointments.firmId, startsAt: appointments.startsAt })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.status, 'SCHEDULED'),
+        gt(appointments.startsAt, now),
+        lte(appointments.startsAt, windowEnd),
+      ),
+    );
+
+  const offsetsByFirm = new Map<string, number[]>();
+  let sent = 0;
+
+  for (const appt of due) {
+    let offsets = offsetsByFirm.get(appt.firmId);
+    if (!offsets) {
+      const s = await getCalendarSettings(db, appt.firmId);
+      const raw = s.reminderOffsetsMinutes as unknown;
+      offsets = Array.isArray(raw) ? (raw as number[]) : [1440, 120];
+      offsetsByFirm.set(appt.firmId, offsets);
+    }
+    const elapsed = offsets.filter((o) => appt.startsAt.getTime() - o * 60_000 <= now.getTime());
+    if (elapsed.length === 0) continue;
+
+    const parts = await db
+      .select({
+        contactId: appointmentParticipants.clientContactId,
+        email: persons.email,
+        name: persons.fullName,
+        optIn: clientContacts.receiveAppointmentReminders,
+      })
+      .from(appointmentParticipants)
+      .innerJoin(clientContacts, eq(clientContacts.id, appointmentParticipants.clientContactId))
+      .innerJoin(persons, eq(persons.id, clientContacts.personId))
+      .where(eq(appointmentParticipants.appointmentId, appt.id));
+    const recipients = parts.filter((p) => p.email && p.optIn !== false);
+    if (recipients.length === 0) continue;
+
+    const already = await db
+      .select({
+        c: appointmentRemindersSent.clientContactId,
+        o: appointmentRemindersSent.reminderOffsetMinutes,
+      })
+      .from(appointmentRemindersSent)
+      .where(eq(appointmentRemindersSent.appointmentId, appt.id));
+    const sentSet = new Set(already.map((a) => `${a.c}:${a.o}`));
+
+    const loaded = await load(db, appt.id);
+    if (!loaded) continue;
+    const tpl = await loadTemplate(db, appt.firmId, 'appointment_reminder');
+    const ics = icsFor(loaded);
+    const ctx = buildCtx(loaded, deps.appBaseUrl ?? '');
+
+    for (const o of elapsed) {
+      for (const p of recipients) {
+        if (sentSet.has(`${p.contactId}:${o}`)) continue;
+        const { subject, body } = renderTemplate(tpl, {
+          ...ctx,
+          client: { name: p.name ?? loaded.clientName ?? 'there' },
+        });
+        await deps.sendEmail({ to: p.email!, subject, body, ics, icsFilename: 'appointment.ics' });
+        await db
+          .insert(appointmentRemindersSent)
+          .values({
+            appointmentId: appt.id,
+            clientContactId: p.contactId,
+            reminderOffsetMinutes: o,
+          })
+          .onConflictDoNothing();
+        sent++;
+      }
+    }
   }
   return { sent };
 }

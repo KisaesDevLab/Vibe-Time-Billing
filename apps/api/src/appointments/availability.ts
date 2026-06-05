@@ -369,6 +369,7 @@ export async function getMonthAvailability(args: {
   timezone: string;
   now?: Date;
   busyProvider: StaffBusyProvider;
+  excludeAppointmentId?: string;
 }): Promise<{ days: Record<string, boolean>; timezone: string }> {
   const { db, staffIds, year, month, durationMinutes, timezone, busyProvider } = args;
   const now = args.now ?? new Date();
@@ -384,6 +385,7 @@ export async function getMonthAvailability(args: {
       timezone,
       now,
       busyProvider,
+      excludeAppointmentId: args.excludeAppointmentId,
     });
     days[date] = res.slots.some((s) => s.available);
   }

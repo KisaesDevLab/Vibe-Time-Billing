@@ -219,6 +219,7 @@ function DetailDrawer({
   const [d, setD] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [rescheduling, setRescheduling] = useState(false);
 
   async function load(): Promise<void> {
     try {
@@ -355,9 +356,34 @@ function DetailDrawer({
             </div>
           )}
           {d.appointment.status === 'SCHEDULED' && (
-            <Button variant="danger" onClick={() => void cancel()} disabled={busy}>
-              Cancel appointment
-            </Button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button
+                variant="secondary"
+                onClick={() => setRescheduling((v) => !v)}
+                disabled={busy}
+              >
+                {rescheduling ? 'Close reschedule' : 'Reschedule'}
+              </Button>
+              <Button variant="danger" onClick={() => void cancel()} disabled={busy}>
+                Cancel appointment
+              </Button>
+            </div>
+          )}
+          {rescheduling && (
+            <SlotPicker
+              appointmentId={id}
+              submitLabel="Reschedule"
+              onCancel={() => setRescheduling(false)}
+              onSubmit={async (startsAt, endsAt) => {
+                await api(`/api/staff/appointments/${id}/reschedule`, {
+                  method: 'POST',
+                  body: JSON.stringify({ startsAt, endsAt }),
+                });
+                setRescheduling(false);
+                onChanged();
+                await load();
+              }}
+            />
           )}
         </div>
       )}
@@ -595,6 +621,219 @@ function MonthCalendar({
   );
 }
 
+// Reusable month-calendar + auto-loading slot picker for rescheduling an
+// existing appointment (staff + duration read from the appointment; the
+// appointment's own time is excluded from busy). Used by the detail drawer
+// and the reschedule inbox.
+function SlotPicker({
+  appointmentId,
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: {
+  appointmentId: string;
+  submitLabel: string;
+  onSubmit: (startsAt: string, endsAt: string) => Promise<void>;
+  onCancel: () => void;
+}): JSX.Element {
+  const [staffIds, setStaffIds] = useState<string[]>([]);
+  const [duration, setDuration] = useState(30);
+  const [ready, setReady] = useState(false);
+  const now = new Date();
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth() + 1);
+  const [monthAvail, setMonthAvail] = useState<Record<string, boolean>>({});
+  const [monthLoading, setMonthLoading] = useState(false);
+  const [date, setDate] = useState<string | null>(null);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotMsg, setSlotMsg] = useState<string | null>(null);
+  const [slot, setSlot] = useState<Slot | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api<{
+      appointment: { durationMinutes: number | null; startsAt: string; endsAt: string };
+      staff: { staffId: string }[];
+    }>(`/api/staff/appointments/${appointmentId}/detail`)
+      .then((d) => {
+        setStaffIds(d.staff.map((s) => s.staffId));
+        const dm =
+          d.appointment.durationMinutes ??
+          Math.round(
+            (new Date(d.appointment.endsAt).getTime() -
+              new Date(d.appointment.startsAt).getTime()) /
+              60000,
+          );
+        setDuration(dm || 30);
+        setReady(true);
+      })
+      .catch(() => setErr('Failed to load appointment.'));
+  }, [appointmentId]);
+
+  useEffect(() => {
+    if (!ready || staffIds.length === 0) return undefined;
+    let alive = true;
+    setMonthLoading(true);
+    const p = new URLSearchParams({
+      staffIds: staffIds.join(','),
+      year: String(viewYear),
+      month: String(viewMonth),
+      durationMinutes: String(duration),
+      excludeAppointmentId: appointmentId,
+    });
+    void api<{ days: Record<string, boolean> }>(`/api/staff/booking/slots/month?${p}`)
+      .then((r) => alive && setMonthAvail(r.days ?? {}))
+      .catch(() => alive && setMonthAvail({}))
+      .finally(() => alive && setMonthLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [ready, staffIds, duration, viewYear, viewMonth, appointmentId]);
+
+  useEffect(() => {
+    if (!date || staffIds.length === 0) return undefined;
+    let alive = true;
+    setSlotsLoading(true);
+    setSlot(null);
+    setSlotMsg(null);
+    const p = new URLSearchParams({
+      staffIds: staffIds.join(','),
+      date,
+      durationMinutes: String(duration),
+      excludeAppointmentId: appointmentId,
+    });
+    void api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${p}`)
+      .then((r) => {
+        if (!alive) return;
+        setSlots(r.slots ?? []);
+        if ((r.slots ?? []).length === 0) setSlotMsg(reasonMsg(r.reason));
+      })
+      .catch((e) => alive && setSlotMsg(e instanceof Error ? e.message : 'failed'))
+      .finally(() => alive && setSlotsLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [date, staffIds, duration, appointmentId]);
+
+  function navMonth(delta: number): void {
+    let y = viewYear;
+    let m = viewMonth + delta;
+    if (m < 1) {
+      m = 12;
+      y--;
+    }
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+    setViewYear(y);
+    setViewMonth(m);
+  }
+  const canPrev =
+    viewYear > now.getFullYear() ||
+    (viewYear === now.getFullYear() && viewMonth > now.getMonth() + 1);
+
+  async function submit(): Promise<void> {
+    if (!slot) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      await onSubmit(slot.start, slot.end);
+    } catch (e) {
+      const m = e instanceof Error ? e.message : 'failed';
+      setErr(/slot_taken/.test(m) ? 'That time isn’t available for all staff. Pick another.' : m);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: 12,
+        border: `1px solid ${tokens.color.border}`,
+        borderRadius: tokens.radius.sm,
+      }}
+    >
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 270px) 1fr', gap: 16 }}>
+        <MonthCalendar
+          year={viewYear}
+          month={viewMonth}
+          availability={monthAvail}
+          selected={date}
+          loading={monthLoading}
+          canPrev={canPrev}
+          onSelect={setDate}
+          onNav={navMonth}
+        />
+        <div>
+          {!date ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
+              Pick a day with openings.
+            </p>
+          ) : slotsLoading ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading times…</p>
+          ) : slots.length === 0 ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>{slotMsg}</p>
+          ) : (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
+                gap: 8,
+              }}
+            >
+              {slots.map((s) => {
+                const sel = slot?.start === s.start;
+                return (
+                  <button
+                    key={s.start}
+                    type="button"
+                    disabled={!s.available}
+                    onClick={() => setSlot(s)}
+                    style={{
+                      padding: '8px 6px',
+                      borderRadius: tokens.radius.sm,
+                      fontSize: 13,
+                      cursor: s.available ? 'pointer' : 'not-allowed',
+                      border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                      background: sel
+                        ? tokens.color.accent
+                        : s.available
+                          ? tokens.color.surface
+                          : tokens.color.bg,
+                      color: sel
+                        ? '#fff'
+                        : s.available
+                          ? tokens.color.text
+                          : tokens.color.textMuted,
+                      textDecoration: s.available ? 'none' : 'line-through',
+                    }}
+                  >
+                    {fmtTime(s.start)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{err}</p>}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <Button size="sm" onClick={() => void submit()} disabled={!slot || busy}>
+          {busy ? 'Saving…' : submitLabel}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   const { me } = useAuth();
   const [staff, setStaff] = useState<BookableStaff[]>([]);
@@ -621,6 +860,8 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     { id: string; fullName: string; email: string | null }[]
   >([]);
   const [participantIds, setParticipantIds] = useState<string[]>([]);
+  const [engagements, setEngagements] = useState<{ id: string; name: string }[]>([]);
+  const [engagementId, setEngagementId] = useState('');
   const [subject, setSubject] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -631,7 +872,9 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     const qs = new URLSearchParams(window.location.search);
     const qClient = qs.get('clientId');
     const qStaff = qs.get('staffId');
+    const qEng = qs.get('engagementId');
     if (qClient) setClientId(qClient);
+    if (qEng) setEngagementId(qEng);
     void api<{ items: BookableStaff[] }>('/api/staff/appointments/bookable-staff')
       .then((r) => {
         const list = r.items ?? [];
@@ -657,6 +900,8 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     if (!clientId) {
       setContacts([]);
       setParticipantIds([]);
+      setEngagements([]);
+      setEngagementId('');
       return;
     }
     void api<{ items: { id: string; fullName: string; email: string | null }[] }>(
@@ -664,6 +909,16 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     )
       .then((r) => setContacts(r.items ?? []))
       .catch(() => setContacts([]));
+    void api<{ items: { id: string; name: string }[] }>(
+      `/api/staff/engagements?clientId=${clientId}`,
+    )
+      .then((r) => {
+        const items = r.items ?? [];
+        setEngagements(items);
+        // Keep a (deep-linked) engagement only if it belongs to this client.
+        setEngagementId((prev) => (items.some((e) => e.id === prev) ? prev : ''));
+      })
+      .catch(() => setEngagements([]));
   }, [clientId]);
 
   // Changing staff/duration invalidates a picked day/slot.
@@ -787,6 +1042,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           location,
           locationDetail: locationDetail || null,
           clientId: clientId || null,
+          engagementId: clientId && engagementId ? engagementId : null,
           participantContactIds: participantIds,
           internalNotes: internalNotes || null,
         }),
@@ -818,6 +1074,8 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setSlotMsg(null);
     setClientId('');
     setParticipantIds([]);
+    setEngagements([]);
+    setEngagementId('');
     setSubject('');
     setInternalNotes('');
     setErr(null);
@@ -1085,6 +1343,19 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                 clearable
               />
             </div>
+            {clientId && engagements.length > 0 && (
+              <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                Engagement (optional — adds a note to the engagement)
+                <Combobox
+                  ariaLabel="Engagement"
+                  value={engagementId}
+                  onChange={setEngagementId}
+                  options={engagements.map((e) => ({ value: e.id, label: e.name }))}
+                  placeholder="No engagement"
+                  clearable
+                />
+              </div>
+            )}
             {clientId && contacts.length > 0 && (
               <div>
                 <div style={fieldLabel}>Participants (emailed a confirmation)</div>
@@ -1195,10 +1466,15 @@ function InboxTab({ onResolved }: { onResolved: () => void }): JSX.Element {
         </div>
       ))}
       {pick && (
-        <AcceptModal
-          request={pick}
-          onClose={() => setPick(null)}
-          onDone={() => {
+        <SlotPicker
+          appointmentId={pick.appointmentId}
+          submitLabel="Reschedule to this time"
+          onCancel={() => setPick(null)}
+          onSubmit={async (startsAt, endsAt) => {
+            await api(`/api/staff/appointments/reschedule-requests/${pick.id}/accept`, {
+              method: 'POST',
+              body: JSON.stringify({ startsAt, endsAt }),
+            });
             setPick(null);
             onResolved();
             void load();
@@ -1206,81 +1482,6 @@ function InboxTab({ onResolved }: { onResolved: () => void }): JSX.Element {
         />
       )}
     </Card>
-  );
-}
-
-function AcceptModal({
-  request,
-  onClose,
-  onDone,
-}: {
-  request: { id: string; appointmentId: string };
-  onClose: () => void;
-  onDone: () => void;
-}): JSX.Element {
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(): Promise<void> {
-    setErr(null);
-    setBusy(true);
-    try {
-      await api(`/api/staff/appointments/reschedule-requests/${request.id}/accept`, {
-        method: 'POST',
-        body: JSON.stringify({
-          startsAt: new Date(start).toISOString(),
-          endsAt: new Date(end).toISOString(),
-        }),
-      });
-      onDone();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'failed';
-      setErr(
-        /slot_taken/.test(msg) ? 'That time isn’t available for all staff. Pick another.' : msg,
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div
-      style={{
-        marginTop: 12,
-        padding: 12,
-        border: `1px solid ${tokens.color.border}`,
-        borderRadius: tokens.radius.sm,
-      }}
-    >
-      <div style={{ fontSize: 13, marginBottom: 6 }}>
-        Pick a new time (re-validated against availability):
-      </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <Input
-          label="Start"
-          type="datetime-local"
-          value={start}
-          onChange={(e) => setStart(e.target.value)}
-        />
-        <Input
-          label="End"
-          type="datetime-local"
-          value={end}
-          onChange={(e) => setEnd(e.target.value)}
-        />
-      </div>
-      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Button size="sm" onClick={() => void submit()} disabled={!start || !end || busy}>
-          {busy ? 'Rescheduling…' : 'Reschedule'}
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onClose}>
-          Cancel
-        </Button>
-      </div>
-    </div>
   );
 }
 

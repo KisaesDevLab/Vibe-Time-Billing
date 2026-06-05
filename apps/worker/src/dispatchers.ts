@@ -9,8 +9,19 @@
 
 import type { Logger } from 'pino';
 
-export type MailDispatch = (args: { to: string; subject: string; body: string }) => Promise<void>;
+export interface MailArgs {
+  to: string;
+  subject: string;
+  body: string;
+  html?: string;
+  /** Raw .ics content attached as appointment.ics (calendar invites). */
+  ics?: string;
+}
+export type MailDispatch = (args: MailArgs) => Promise<void>;
 export type SmsDispatch = (args: { to: string; body: string }) => Promise<void>;
+
+const ICS_FILENAME = 'appointment.ics';
+const ICS_CONTENT_TYPE = 'text/calendar; charset=utf-8; method=REQUEST';
 
 export async function buildMailDispatch(log: Logger): Promise<MailDispatch | undefined> {
   const provider = process.env['MAIL_PROVIDER'] ?? 'console';
@@ -30,6 +41,18 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
           To: args.to,
           Subject: args.subject,
           TextBody: args.body,
+          ...(args.html ? { HtmlBody: args.html } : {}),
+          ...(args.ics
+            ? {
+                Attachments: [
+                  {
+                    Name: ICS_FILENAME,
+                    Content: Buffer.from(args.ics).toString('base64'),
+                    ContentType: ICS_CONTENT_TYPE,
+                  },
+                ],
+              }
+            : {}),
         }),
       });
       if (!r.ok) throw new Error(`postmark_${r.status}`);
@@ -41,7 +64,20 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
       const r = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from, to: args.to, subject: args.subject, text: args.body }),
+        body: JSON.stringify({
+          from,
+          to: args.to,
+          subject: args.subject,
+          text: args.body,
+          ...(args.html ? { html: args.html } : {}),
+          ...(args.ics
+            ? {
+                attachments: [
+                  { filename: ICS_FILENAME, content: Buffer.from(args.ics).toString('base64') },
+                ],
+              }
+            : {}),
+        }),
       });
       if (!r.ok) throw new Error(`resend_${r.status}`);
     };
@@ -58,7 +94,20 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
           : undefined,
     });
     return async (args) => {
-      await transport.sendMail({ from, to: args.to, subject: args.subject, text: args.body });
+      await transport.sendMail({
+        from,
+        to: args.to,
+        subject: args.subject,
+        text: args.body,
+        ...(args.html ? { html: args.html } : {}),
+        ...(args.ics
+          ? {
+              attachments: [
+                { filename: ICS_FILENAME, content: args.ics, contentType: ICS_CONTENT_TYPE },
+              ],
+            }
+          : {}),
+      });
     };
   }
   log.info({ provider }, 'worker mail dispatcher disabled (no provider configured)');

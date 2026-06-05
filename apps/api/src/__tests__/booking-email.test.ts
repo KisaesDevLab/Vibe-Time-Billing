@@ -8,6 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 
 import {
   appointmentParticipants,
+  appointmentRemindersSent,
   appointmentStaff,
   appointments,
   notificationTemplates,
@@ -22,6 +23,7 @@ import {
 import {
   runAppointmentConfirmationSend,
   runAppointmentCancellationSend,
+  runAppointmentReminderTick,
   type AppointmentMail,
 } from '../appointments/email-jobs';
 
@@ -153,5 +155,73 @@ describe('appointment cancellation email', () => {
       .from(appointmentParticipants)
       .where(eq(appointmentParticipants.appointmentId, apptId));
     expect(p!.cancellationSentAt).not.toBeNull();
+  });
+});
+
+async function seadApptAt(startsAt: Date, opts: { reminders?: boolean } = {}): Promise<string> {
+  const [appt] = await harness.db
+    .insert(appointments)
+    .values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      title: 'Reminder me',
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 30 * 60000),
+      durationMinutes: 30,
+      location: 'VIDEO',
+      status: 'SCHEDULED',
+      leadAppUserId: seed.appUserId,
+      createdById: seed.appUserId,
+      cancelToken: sql`gen_random_uuid()` as never,
+      rescheduleToken: sql`gen_random_uuid()` as never,
+    })
+    .returning({ id: appointments.id });
+  const c = await seedContact(harness.db, {
+    firmId: seed.firmId,
+    clientId: seed.clientId,
+    fullName: 'Rem Contact',
+    email: 'rem@client.example',
+    receiveAppointmentReminders: opts.reminders ?? true,
+  });
+  await harness.db
+    .insert(appointmentParticipants)
+    .values({ appointmentId: appt!.id, clientContactId: c.contactId });
+  return appt!.id;
+}
+
+describe('appointment reminder tick', () => {
+  it('fires once per offset, is idempotent, attaches ics', async () => {
+    // start in 90 min → the 120-min offset window has elapsed (default offsets [1440,120]).
+    const apptId = await seadApptAt(new Date(Date.now() + 90 * 60000));
+    const rec = recorder();
+    const r1 = await runAppointmentReminderTick({ db: harness.db, sendEmail: rec.send });
+    expect(r1.sent).toBeGreaterThanOrEqual(1);
+    expect(rec.mails[0]!.to).toBe('rem@client.example');
+    expect(rec.mails[0]!.subject).toContain('Reminder');
+    expect(rec.mails[0]!.ics).toContain('BEGIN:VCALENDAR');
+    const ledger = await harness.db
+      .select()
+      .from(appointmentRemindersSent)
+      .where(eq(appointmentRemindersSent.appointmentId, apptId));
+    expect(ledger.length).toBe(r1.sent);
+    // Second run sends nothing new (idempotent).
+    const rec2 = recorder();
+    const r2 = await runAppointmentReminderTick({ db: harness.db, sendEmail: rec2.send });
+    expect(r2.sent).toBe(0);
+  });
+
+  it('skips contacts who opted out of reminders', async () => {
+    await seadApptAt(new Date(Date.now() + 90 * 60000), { reminders: false });
+    const rec = recorder();
+    const r = await runAppointmentReminderTick({ db: harness.db, sendEmail: rec.send });
+    expect(r.sent).toBe(0);
+  });
+
+  it('does not remind for appointments outside the offset window', async () => {
+    // start in 30 days → neither 1440 (1d) nor 120 (2h) offset has elapsed.
+    await seadApptAt(new Date(Date.now() + 30 * 24 * 60 * 60000));
+    const rec = recorder();
+    const r = await runAppointmentReminderTick({ db: harness.db, sendEmail: rec.send });
+    expect(r.sent).toBe(0);
   });
 });

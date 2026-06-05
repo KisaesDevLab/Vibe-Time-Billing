@@ -212,6 +212,31 @@ export const staffNotifications = pgTable(
   }),
 );
 
+// Reminder idempotency ledger (one row per appointment × contact × offset).
+export const appointmentRemindersSent = pgTable(
+  'appointment_reminders_sent',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    appointmentId: uuid('appointment_id')
+      .notNull()
+      .references(() => appointments.id, { onDelete: 'cascade' }),
+    clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
+      onDelete: 'cascade',
+    }),
+    reminderOffsetMinutes: integer('reminder_offset_minutes').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveryStatus: text('delivery_status').notNull().default('sent'),
+  },
+  (t) => ({
+    uniq: uniqueIndex('appointment_reminders_sent_uk').on(
+      t.appointmentId,
+      t.clientContactId,
+      t.reminderOffsetMinutes,
+    ),
+    apptIdx: index('appointment_reminders_sent_appt_idx').on(t.appointmentId),
+  }),
+);
+
 export type StaffNotification = typeof staffNotifications.$inferSelect;
 
 // BK-8 — v2 client self-booking public links (stub; feature-gated).

@@ -28,6 +28,7 @@ import {
   appUsers,
   appointmentEngagementNotes,
   appointmentParticipants,
+  appointmentRemindersSent,
   appointmentRescheduleRequests,
   appointmentStaff,
   appointmentTypes,
@@ -817,6 +818,11 @@ async function rescheduleAppointment(
     .update(appointments)
     .set({ startsAt, endsAt, durationMinutes, lastRescheduledAt: now, updatedAt: now })
     .where(eq(appointments.id, appt.id));
+  // Reset reminders so they re-fire against the new time.
+  await db
+    .delete(appointmentRemindersSent)
+    .where(eq(appointmentRemindersSent.appointmentId, appt.id))
+    .catch(() => undefined);
   for (const staffId of staffIds) {
     await queue
       .providerUpdate({ appointmentId: appt.id, staffId })

@@ -95,20 +95,34 @@ export async function runCalendarSyncTick(
       }
     } catch (err) {
       result.errors += 1;
-      const failures = (conn.consecutiveFailures ?? 0) + 1;
-      const disable = failures >= MAX_CONSECUTIVE_FAILURES;
+      // Transient transport errors (429 rate-limit, 5xx) must NOT count
+      // toward the 5-strike auto-disable — a throttled-but-healthy provider
+      // would otherwise get its connection turned off. Record the error and
+      // retry on the next tick; only hard/unknown errors accrue strikes.
+      const transient =
+        err instanceof SyncHttpError && (err.kind === 'rate' || err.kind === 'server');
       const message =
         err instanceof SyncHttpError ? `http_${err.status}` : String((err as Error).message);
-      await db
-        .update(staffCalendarConnections)
-        .set({
-          consecutiveFailures: failures,
-          syncError: message,
-          enabled: disable ? false : conn.enabled,
-          updatedAt: now,
-        })
-        .where(eq(staffCalendarConnections.id, conn.id));
-      log.warn({ err, connectionId: conn.id, failures }, 'calendar sync failed');
+      if (transient) {
+        await db
+          .update(staffCalendarConnections)
+          .set({ syncError: message, updatedAt: now })
+          .where(eq(staffCalendarConnections.id, conn.id));
+        log.warn({ err, connectionId: conn.id }, 'calendar sync transient error (will retry)');
+      } else {
+        const failures = (conn.consecutiveFailures ?? 0) + 1;
+        const disable = failures >= MAX_CONSECUTIVE_FAILURES;
+        await db
+          .update(staffCalendarConnections)
+          .set({
+            consecutiveFailures: failures,
+            syncError: message,
+            enabled: disable ? false : conn.enabled,
+            updatedAt: now,
+          })
+          .where(eq(staffCalendarConnections.id, conn.id));
+        log.warn({ err, connectionId: conn.id, failures }, 'calendar sync failed');
+      }
     }
   }
 

@@ -115,6 +115,10 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         }
       }
 
+      const excludeAppointmentId =
+        typeof req.query['excludeAppointmentId'] === 'string'
+          ? req.query['excludeAppointmentId']
+          : undefined;
       const timezone = await firmTimezone(deps.db, session.firmId);
       const result = await getAvailableSlots({
         db: deps.db,
@@ -123,6 +127,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         durationMinutes,
         timezone,
         busyProvider: providerFor(session.firmId),
+        excludeAppointmentId,
       });
       if (deps.redis && !deps.busyProvider) {
         try {
@@ -164,6 +169,10 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         res.status(404).json({ error: 'unknown_staff' });
         return;
       }
+      const excludeAppointmentId =
+        typeof req.query['excludeAppointmentId'] === 'string'
+          ? req.query['excludeAppointmentId']
+          : undefined;
       const timezone = await firmTimezone(deps.db, session.firmId);
       const result = await getMonthAvailability({
         db: deps.db,
@@ -173,6 +182,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         durationMinutes,
         timezone,
         busyProvider: providerFor(session.firmId),
+        excludeAppointmentId,
       });
       res.json(result);
     },

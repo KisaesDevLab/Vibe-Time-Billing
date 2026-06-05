@@ -50,6 +50,7 @@ import {
   runAppointmentConfirmationSend,
   runAppointmentRescheduleConfirmationSend,
   runAppointmentCancellationSend,
+  runAppointmentReminderTick,
   type SendAppointmentEmail,
 } from '../../api/src/appointments/email-jobs';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
@@ -207,6 +208,8 @@ const QUEUES = [
   'calendar-reminders',
   // 0112 — post-appointment time-entry suggestions.
   'calendar-time-suggestion',
+  // BK gap fix — pre-meeting reminders for booked appointments (D-BK-06).
+  'appointment-reminders',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -548,6 +551,27 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runCalendarSuggestionTick(db);
     logger.info({ jobId: job.id, ...result }, 'calendar-time-suggestion complete');
   },
+  'appointment-reminders': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'appointment-reminders: no DB configured');
+      return;
+    }
+    const sendEmail: SendAppointmentEmail = async (mail) => {
+      if (!dunningSendEmail) return;
+      await dunningSendEmail({
+        to: mail.to,
+        subject: mail.subject,
+        body: mail.body,
+        ics: mail.ics,
+      });
+    };
+    const result = await runAppointmentReminderTick({
+      db,
+      sendEmail,
+      appBaseUrl: process.env['APP_BASE_URL'],
+    });
+    logger.info({ jobId: job.id, ...result }, 'appointment-reminders complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -645,6 +669,8 @@ const CRON: Record<QueueName, string> = {
   'calendar-reminders': '*/5 * * * *',
   // 0112 — post-appointment time suggestions every 5 min.
   'calendar-time-suggestion': '*/5 * * * *',
+  // Appointment reminders every 5 min (offsets gated in-job).
+  'appointment-reminders': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {
@@ -880,9 +906,9 @@ function setupAppointmentEmailQueues(): void {
   const appBaseUrl = process.env['APP_BASE_URL'];
   const sendEmail: SendAppointmentEmail = async (mail) => {
     if (!dunningSendEmail) return;
-    // MailDispatch can't carry attachments; the ICS + html degrade to the
-    // text body (which already contains the details + cancel/reschedule links).
-    await dunningSendEmail({ to: mail.to, subject: mail.subject, body: mail.body });
+    // The .ics is attached as appointment.ics so recipients get a real
+    // calendar invite (SMTP/Postmark/Resend all carry it now).
+    await dunningSendEmail({ to: mail.to, subject: mail.subject, body: mail.body, ics: mail.ics });
   };
   const register = <T>(name: string, run: (job: { data: T }) => Promise<unknown>): void => {
     const evt = new QueueEvents(name, { connection });
