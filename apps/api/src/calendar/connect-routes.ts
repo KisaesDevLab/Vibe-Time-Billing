@@ -8,7 +8,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNull, lt, lte, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -18,6 +18,7 @@ import {
   calendarProviderConfig,
   staffCalendarConnections,
   staffCalendarSelections,
+  staffTimeSuggestionLog,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
@@ -179,6 +180,135 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
       }),
     });
   });
+
+  // GET /suggestions — pending time-entry suggestions for this staff.
+  router.get('/suggestions', async (req: Request, res: Response) => {
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.json({ suggestions: [] });
+      return;
+    }
+    const now = new Date();
+    const rows = await deps.db
+      .select({
+        id: staffTimeSuggestionLog.id,
+        eventId: calendarEvents.id,
+        subject: calendarEvents.subject,
+        startAt: calendarEvents.startAt,
+        endAt: calendarEvents.endAt,
+        clientId: calendarEventMatches.clientId,
+        clientName: clients.name,
+      })
+      .from(staffTimeSuggestionLog)
+      .innerJoin(calendarEvents, eq(calendarEvents.id, staffTimeSuggestionLog.eventId))
+      .leftJoin(
+        calendarEventMatches,
+        and(
+          eq(calendarEventMatches.eventId, calendarEvents.id),
+          eq(calendarEventMatches.matchStatus, 'confirmed'),
+        ),
+      )
+      .leftJoin(clients, eq(clients.id, calendarEventMatches.clientId))
+      .where(
+        and(
+          eq(staffTimeSuggestionLog.staffId, staffId),
+          or(
+            eq(staffTimeSuggestionLog.action, 'pending'),
+            and(
+              eq(staffTimeSuggestionLog.action, 'snoozed'),
+              lte(staffTimeSuggestionLog.snoozedUntil, now),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(calendarEvents.startAt))
+      .limit(20);
+    res.json({
+      suggestions: rows.map((r) => ({
+        ...r,
+        durationMinutes:
+          r.startAt && r.endAt
+            ? Math.max(0, Math.round((r.endAt.getTime() - r.startAt.getTime()) / 60000))
+            : 0,
+      })),
+    });
+  });
+
+  // POST /suggestions/:id/dismiss
+  router.post('/suggestions/:id/dismiss', async (req: Request, res: Response) => {
+    await mutateSuggestion(req, res, { action: 'dismissed' });
+  });
+
+  // POST /suggestions/:id/snooze — 1h; auto-dismiss after 3 snoozes.
+  router.post('/suggestions/:id/snooze', async (req: Request, res: Response) => {
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const [row] = await deps.db
+      .select()
+      .from(staffTimeSuggestionLog)
+      .where(
+        and(
+          eq(staffTimeSuggestionLog.id, req.params['id']!),
+          eq(staffTimeSuggestionLog.staffId, staffId),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const count = row.snoozeCount + 1;
+    await deps.db
+      .update(staffTimeSuggestionLog)
+      .set(
+        count >= 3
+          ? { action: 'dismissed', snoozeCount: count }
+          : {
+              action: 'snoozed',
+              snoozeCount: count,
+              snoozedUntil: new Date(Date.now() + 3600_000),
+            },
+      )
+      .where(eq(staffTimeSuggestionLog.id, row.id));
+    res.json({ ok: true, autoDismissed: count >= 3 });
+  });
+
+  // POST /suggestions/:id/log — link a logged time entry.
+  router.post('/suggestions/:id/log', async (req: Request, res: Response) => {
+    const timeEntryId =
+      typeof req.body?.timeEntryId === 'string' ? (req.body.timeEntryId as string) : null;
+    await mutateSuggestion(req, res, { action: 'logged', timeEntryId });
+  });
+
+  async function mutateSuggestion(
+    req: Request,
+    res: Response,
+    set: { action: string; timeEntryId?: string | null },
+  ): Promise<void> {
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const [row] = await deps.db
+      .update(staffTimeSuggestionLog)
+      .set(set)
+      .where(
+        and(
+          eq(staffTimeSuggestionLog.id, req.params['id']!),
+          eq(staffTimeSuggestionLog.staffId, staffId),
+        ),
+      )
+      .returning({ id: staffTimeSuggestionLog.id });
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ ok: true });
+  }
 
   // POST /connect/:provider — begin OAuth; returns the authorize URL.
   router.post('/connect/:provider', async (req: Request, res: Response) => {

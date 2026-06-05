@@ -27,6 +27,7 @@ import { runSignaturesPollTick } from './jobs/signatures-poll';
 import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
 import { runCalendarMatch } from '../../api/src/calendar/match';
 import { runCalendarReminderTick } from '../../api/src/calendar/reminder-tick';
+import { runCalendarSuggestionTick } from '../../api/src/calendar/suggestion-tick';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -180,6 +181,8 @@ const QUEUES = [
   'calendar-sync',
   // 0111 — Calendar appointment reminders.
   'calendar-reminders',
+  // 0112 — post-appointment time-entry suggestions.
+  'calendar-time-suggestion',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -513,6 +516,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     });
     logger.info({ jobId: job.id, ...result }, 'calendar-reminders complete');
   },
+  'calendar-time-suggestion': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'calendar-time-suggestion: no DB configured');
+      return;
+    }
+    const result = await runCalendarSuggestionTick(db);
+    logger.info({ jobId: job.id, ...result }, 'calendar-time-suggestion complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -608,6 +619,8 @@ const CRON: Record<QueueName, string> = {
   'calendar-sync': '*/5 * * * *',
   // 0111 — appointment reminder scheduler every 5 min.
   'calendar-reminders': '*/5 * * * *',
+  // 0112 — post-appointment time suggestions every 5 min.
+  'calendar-time-suggestion': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {

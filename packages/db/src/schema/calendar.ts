@@ -253,6 +253,33 @@ export const calendarEventMatches = pgTable(
   }),
 );
 
+// CAL-8 — post-appointment time-entry suggestion log (one per event).
+export const staffTimeSuggestionLog = pgTable(
+  'staff_time_suggestion_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => calendarEvents.id, { onDelete: 'cascade' }),
+    staffId: uuid('staff_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    suggestedAt: timestamp('suggested_at', { withTimezone: true }).notNull().defaultNow(),
+    action: text('action').notNull().default('pending'),
+    timeEntryId: uuid('time_entry_id'),
+    snoozedUntil: timestamp('snoozed_until', { withTimezone: true }),
+    snoozeCount: integer('snooze_count').notNull().default(0),
+  },
+  (t) => ({
+    eventUk: uniqueIndex('staff_time_suggestion_log_event_uk').on(t.eventId),
+    staffActionIdx: index('staff_time_suggestion_log_staff_action_idx').on(t.staffId, t.action),
+    actionCk: check(
+      'staff_time_suggestion_log_action_ck',
+      sql`${t.action} IN ('pending','logged','dismissed','snoozed')`,
+    ),
+  }),
+);
+
 // CAL-6/CAL-7 — one-click RSVP token per (event, contact).
 export const calendarRsvpTokens = pgTable(
   'calendar_rsvp_tokens',

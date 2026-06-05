@@ -7,6 +7,7 @@ import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { MyCalendarPanel } from './calendar/MyCalendarPanel';
+import { TimeSuggestionBanner } from './calendar/TimeSuggestionBanner';
 
 interface RealizationItem {
   key: string;
@@ -228,6 +229,7 @@ export function DashboardPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <AlertsCallout />
+      <TimeSuggestionBanner />
       {summary && (
         <Card title="Firm at a glance">
           <div
