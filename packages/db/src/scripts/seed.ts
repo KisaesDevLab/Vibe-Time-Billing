@@ -42,6 +42,7 @@ import {
 import { portalIdentity, clientPortalAccess } from '../schema/portal';
 import { seedNotificationTemplates } from '../seed-helpers/notification-templates';
 import { seedRetainerTierConfigs } from '../seed-helpers/retainer-tier-configs';
+import { seedAppointmentTypes } from '../seed-helpers/appointment-types';
 import { seedKnowledgeBase } from '../seed-helpers/knowledge-base';
 
 const FIRM_NAME = 'Granite Peak CPAs';
@@ -82,6 +83,9 @@ async function main(): Promise<void> {
       // Plus firm_retainer_settings row (feature_enabled defaults false).
       const tierCount = await seedRetainerTierConfigs(tx, firmId);
       log(`seeded ${tierCount} retainer tier config default(s)`);
+      // BK-1 — default appointment types (5) for the booking system.
+      const apptTypeCount = await seedAppointmentTypes(tx, firmId);
+      log(`seeded ${apptTypeCount} appointment type default(s)`);
       const kb = await seedKnowledgeBase(tx, firmId);
       log(`seeded knowledge base: ${kb.categories} categories, ${kb.articles} articles`);
       // Demo loop: one engagement on the first client, four timekeepers

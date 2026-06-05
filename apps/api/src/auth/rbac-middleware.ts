@@ -39,6 +39,20 @@ export function requirePermission(deps: RbacDeps, key: PermissionKey) {
   };
 }
 
+/**
+ * Resolve whether a given staff user holds a permission. Used for
+ * "self OR permission" gates (e.g. a staff member edits their own
+ * booking settings; an admin edits anyone's).
+ */
+export async function userHasPermission(
+  deps: RbacDeps,
+  appUserId: string,
+  key: PermissionKey,
+): Promise<boolean> {
+  const slugs = await loadRoleSlugs(deps, appUserId);
+  return hasPermission(unionPermissions(slugs), key);
+}
+
 async function loadRoleSlugs(deps: RbacDeps, appUserId: string): Promise<RoleSlug[]> {
   if (deps.fakeUserRoles) {
     return deps.fakeUserRoles.get(appUserId) ?? [];

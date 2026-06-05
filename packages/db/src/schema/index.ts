@@ -6,3 +6,4 @@ export * from './proposals';
 export * from './tax-returns';
 export * from './signatures';
 export * from './calendar';
+export * from './booking';

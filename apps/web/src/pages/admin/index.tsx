@@ -13,6 +13,7 @@ import { tokens } from '@vibe/ui';
 import { AiUsagePage } from './AiUsage';
 import { AiSettingsPage } from './AiSettings';
 import { ApiTokensPage } from './ApiTokens';
+import { AppointmentTypesPage } from './AppointmentTypes';
 import { BackupPage } from './Backup';
 import { CloudflareTunnelPage } from './CloudflareTunnel';
 import { KnowledgeBaseAdminPage } from './KnowledgeBase';
@@ -169,6 +170,13 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    key: 'scheduling',
+    label: 'Scheduling',
+    tabs: [
+      { key: 'appointment-types', label: 'Appointment types', href: '/admin/appointment-types' },
+    ],
+  },
+  {
     key: 'support',
     label: 'Support',
     tabs: [{ key: 'kb', label: 'Knowledge Base', href: '/admin/kb' }],
@@ -292,6 +300,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="payment-methods" element={<PaymentMethodsPage />} />
         <Route path="tax-payments" element={<TaxPaymentCatalogPage />} />
         <Route path="rate-codes" element={<RateCodesPage />} />
+        <Route path="appointment-types" element={<AppointmentTypesPage />} />
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />

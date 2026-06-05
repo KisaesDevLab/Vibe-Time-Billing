@@ -3913,6 +3913,25 @@ export const appointmentLocation = pgEnum('appointment_location', [
   'IN_PERSON',
 ]);
 
+// BK-1 — booking enums (declared before `appointments` so the
+// cancelled_by_actor column can use the enum type eagerly).
+export const providerWriteStatus = pgEnum('provider_write_status', [
+  'pending',
+  'written',
+  'failed',
+]);
+export const appointmentCancelledBy = pgEnum('appointment_cancelled_by', ['staff', 'client']);
+export const rescheduleRequestStatus = pgEnum('reschedule_request_status', [
+  'pending',
+  'accepted',
+  'declined',
+]);
+export const appointmentRsvpStatus = pgEnum('appointment_rsvp_status', [
+  'pending',
+  'confirmed',
+  'declined',
+]);
+
 export const appointments = pgTable(
   'appointment',
   {
@@ -3945,6 +3964,21 @@ export const appointments = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    // BK-1 — booking additions. type/duration/internal notes; signed
+    // tokens for client-side cancel/reschedule; whether staff or client
+    // cancelled; when last rescheduled. Multi-staff lives in
+    // appointment_staff (booking.ts); the single lead_app_user_id above
+    // is retained for back-compat.
+    appointmentTypeId: uuid('appointment_type_id').references(() => appointmentTypes.id, {
+      onDelete: 'set null',
+    }),
+    durationMinutes: integer('duration_minutes'),
+    internalNotes: text('internal_notes'),
+    cancelToken: uuid('cancel_token'),
+    rescheduleToken: uuid('reschedule_token'),
+    tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+    cancelledByActor: appointmentCancelledBy('cancelled_by_actor'),
+    lastRescheduledAt: timestamp('last_rescheduled_at', { withTimezone: true }),
   },
   (t) => ({
     firmStartsIdx: index('appointment_firm_starts_idx').on(t.firmId, t.startsAt),
@@ -3953,11 +3987,46 @@ export const appointments = pgTable(
       .on(t.leadAppUserId, t.startsAt)
       .where(sql`lead_app_user_id IS NOT NULL`),
     timeOrderCk: check('appointment_time_order', sql`${t.endsAt} > ${t.startsAt}`),
+    cancelTokenUk: uniqueIndex('appointment_cancel_token_uk')
+      .on(t.cancelToken)
+      .where(sql`cancel_token IS NOT NULL`),
+    rescheduleTokenUk: uniqueIndex('appointment_reschedule_token_uk')
+      .on(t.rescheduleToken)
+      .where(sql`reschedule_token IS NOT NULL`),
+    clientStatusIdx: index('appointment_client_status_idx')
+      .on(t.clientId, t.status)
+      .where(sql`client_id IS NOT NULL`),
   }),
 );
 
 export type Appointment = typeof appointments.$inferSelect;
 export type NewAppointment = typeof appointments.$inferInsert;
+
+// BK-1 — the firm-managed appointment type library (enums above).
+export const appointmentTypes = pgTable(
+  'appointment_type',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    defaultDurationMinutes: integer('default_duration_minutes').notNull().default(30),
+    defaultLocationType: appointmentLocation('default_location_type').notNull().default('VIDEO'),
+    description: text('description'),
+    color: text('color'),
+    isActive: boolean('is_active').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmSortIdx: index('appointment_type_firm_sort_idx').on(t.firmId, t.sortOrder),
+  }),
+);
+
+export type AppointmentType = typeof appointmentTypes.$inferSelect;
+export type NewAppointmentType = typeof appointmentTypes.$inferInsert;
 
 // =====================================================================
 // 0069 — Tax payments (CP1)

@@ -119,6 +119,8 @@ import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createAppointmentRouter } from './appointments/routes';
+import { createAppointmentTypeRouter } from './appointments/types-routes';
+import { createBookingSettingsRouter } from './appointments/booking-settings-routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
@@ -1196,6 +1198,24 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, appointmentRouter);
+
+  // BK-1 — appointment type library (firm config) + per-staff booking
+  // settings/availability.
+  const appointmentTypeRouter = createAppointmentTypeRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/appointment-types',
+    auth.requireAuth,
+    auth.requireCsrf,
+    appointmentTypeRouter,
+  );
+  const bookingSettingsRouter = createBookingSettingsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/booking', auth.requireAuth, auth.requireCsrf, bookingSettingsRouter);
 
   // P02 — services catalog + tags (proposal addendum). read for
   // partner/manager/senior/staff; write for partner + manager.
