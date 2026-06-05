@@ -24,6 +24,7 @@ import { runRequestReminderTick } from './jobs/request-reminder';
 import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
+import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -173,6 +174,8 @@ const QUEUES = [
   'opensign-poll',
   // 0108 — Signatures module completion poll + expiry sweep.
   'signatures-poll',
+  // 0109 — Calendar poll sync heartbeat (per-firm interval gated in-job).
+  'calendar-sync',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -472,6 +475,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runSignaturesPollTick(db, logger, { storage });
     logger.info({ jobId: job.id, ...result }, 'signatures-poll complete');
   },
+  'calendar-sync': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'calendar-sync: no DB configured');
+      return;
+    }
+    const result = await runCalendarSyncTick(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'calendar-sync complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -562,6 +573,9 @@ const CRON: Record<QueueName, string> = {
   'opensign-poll': '*/2 * * * *',
   // 0108 — reconcile signature_requests + sweep expiries every 2 min.
   'signatures-poll': '*/2 * * * *',
+  // 0109 — calendar poll heartbeat every 5 min (per-firm interval gated
+  // in-job, so the effective interval is max(5, configured)).
+  'calendar-sync': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {

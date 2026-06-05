@@ -17,6 +17,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
 import { decField, encField, newCalendarRecordKey, unwrapCalendarRecordKey } from './crypto';
 import { testProvider } from './provider-test';
+import { getCalendarSettings, upsertCalendarSettings } from './settings';
 
 export interface CalendarAdminDeps extends RbacDeps {
   db: Database | null;
@@ -43,6 +44,12 @@ const TestSchema = z.object({
   clientId: z.string().trim().min(1).max(400).optional(),
   clientSecret: z.string().trim().min(1).max(1000).optional(),
   tenantId: z.string().trim().max(200).optional(),
+});
+
+const SettingsSchema = z.object({
+  syncIntervalMinutes: z.number().int().min(5).max(60).optional(),
+  lookbackDays: z.number().int().min(1).max(60).optional(),
+  lookaheadDays: z.number().int().min(7).max(365).optional(),
 });
 
 export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
@@ -228,6 +235,40 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
         deps.testFetch ?? fetch,
       );
       res.json(result);
+    },
+  );
+
+  // GET /settings — sync interval + lookback/lookahead (with defaults).
+  router.get(
+    '/settings',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ syncIntervalMinutes: 15, lookbackDays: 7, lookaheadDays: 90 });
+        return;
+      }
+      res.json(await getCalendarSettings(deps.db, firmId));
+    },
+  );
+
+  // PUT /settings — update sync tunables (clamped server-side).
+  router.put(
+    '/settings',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = SettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body' });
+        return;
+      }
+      const saved = await upsertCalendarSettings(deps.db, firmId, parsed.data);
+      res.json(saved);
     },
   );
 

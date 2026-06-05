@@ -36,6 +36,25 @@ const bytea = customType<{ data: Buffer; default: false }>({
   },
 });
 
+// CAL-3 — firm-level sync tunables (one row per firm).
+export const calendarSettings = pgTable(
+  'calendar_settings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    syncIntervalMinutes: integer('sync_interval_minutes').notNull().default(15),
+    lookbackDays: integer('lookback_days').notNull().default(7),
+    lookaheadDays: integer('lookahead_days').notNull().default(90),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUk: uniqueIndex('calendar_settings_firm_uk').on(t.firmId),
+  }),
+);
+
 // CAL-1 — firm-level OAuth app registration per provider (admin-entered).
 export const calendarProviderConfig = pgTable(
   'calendar_provider_config',

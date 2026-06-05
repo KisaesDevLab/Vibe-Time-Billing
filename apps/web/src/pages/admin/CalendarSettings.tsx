@@ -49,6 +49,7 @@ export function CalendarSettingsPage(): JSX.Element {
         <div style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</div>
       ) : (
         <>
+          <SyncSettingsCard />
           <ProviderCard
             provider="microsoft"
             title="Microsoft 365 / Outlook"
@@ -64,6 +65,77 @@ export function CalendarSettingsPage(): JSX.Element {
         </>
       )}
     </div>
+  );
+}
+
+function SyncSettingsCard(): JSX.Element {
+  const [interval, setInterval] = useState(15);
+  const [lookback, setLookback] = useState(7);
+  const [lookahead, setLookahead] = useState(90);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api<{ syncIntervalMinutes: number; lookbackDays: number; lookaheadDays: number }>(
+      '/api/staff/admin/calendar/settings',
+    ).then((s) => {
+      setInterval(s.syncIntervalMinutes);
+      setLookback(s.lookbackDays);
+      setLookahead(s.lookaheadDays);
+    });
+  }, []);
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api('/api/staff/admin/calendar/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          syncIntervalMinutes: interval,
+          lookbackDays: lookback,
+          lookaheadDays: lookahead,
+        }),
+      });
+      setMsg('Saved.');
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'save_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Sync schedule">
+      <div style={{ display: 'grid', gap: tokens.space.md, gridTemplateColumns: '1fr 1fr 1fr' }}>
+        <Input
+          label="Interval (min, 5–60)"
+          type="number"
+          value={String(interval)}
+          onChange={(e) => setInterval(Number(e.target.value))}
+        />
+        <Input
+          label="Look back (days)"
+          type="number"
+          value={String(lookback)}
+          onChange={(e) => setLookback(Number(e.target.value))}
+        />
+        <Input
+          label="Look ahead (days)"
+          type="number"
+          value={String(lookahead)}
+          onChange={(e) => setLookahead(Number(e.target.value))}
+        />
+      </div>
+      <div
+        style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: tokens.space.md }}
+      >
+        {msg && <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{msg}</span>}
+        <Button onClick={() => void save()} disabled={busy}>
+          Save schedule
+        </Button>
+      </div>
+    </Card>
   );
 }
 

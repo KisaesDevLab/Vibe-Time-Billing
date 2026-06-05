@@ -29,6 +29,8 @@ import {
 } from './connect-shared';
 import { getProviderCreds, loadConnection } from './store';
 import { ensureFreshAccessToken } from './token-manager';
+import { getCalendarSettings } from './settings';
+import { syncConnection } from './sync';
 
 export interface CalendarConnectDeps {
   db: Database | null;
@@ -214,6 +216,64 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
     } catch (err) {
       logger.warn({ err, connectionId: conn.id }, 'calendar refresh failed');
       res.status(502).json({ error: 'refresh_failed' });
+    }
+  });
+
+  // GET /connections/:id/status — for the "Sync Now" spinner poll.
+  router.get('/connections/:id/status', async (req: Request, res: Response) => {
+    const firmId = req.staffSession!.firmId;
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const conn = await loadConnection(deps.db, firmId, req.params['id']!);
+    if (!conn || conn.staffId !== staffId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({
+      lastSyncedAt: conn.lastSyncedAt,
+      syncError: conn.syncError,
+      enabled: conn.enabled,
+    });
+  });
+
+  // POST /connections/:id/sync — staff-triggered manual sync (rate-limited
+  // 1/60s). Runs inline (one connection, bounded) and returns the result.
+  router.post('/connections/:id/sync', async (req: Request, res: Response) => {
+    const firmId = req.staffSession!.firmId;
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const conn = await loadConnection(deps.db, firmId, req.params['id']!);
+    if (!conn || conn.staffId !== staffId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const lockKey = `cal:sync:lock:${conn.id}`;
+    if (await deps.stateStore.get(lockKey)) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+    await deps.stateStore.set(lockKey, '1', 60);
+    try {
+      const settings = await getCalendarSettings(deps.db, firmId);
+      const outcome = await syncConnection(
+        {
+          db: deps.db,
+          fetchImpl: doFetch,
+          lookbackDays: settings.lookbackDays,
+          lookaheadDays: settings.lookaheadDays,
+        },
+        conn,
+      );
+      res.status(202).json(outcome);
+    } catch (err) {
+      logger.warn({ err, connectionId: conn.id }, 'manual calendar sync failed');
+      res.status(502).json({ error: 'sync_failed' });
     }
   });
 

@@ -75,6 +75,18 @@ export function MyCalendarsCard(): JSX.Element | null {
     }
   }
 
+  async function syncNow(connectionId: string): Promise<void> {
+    setBusy(true);
+    try {
+      await api(`/api/staff/calendar/connections/${connectionId}/sync`, { method: 'POST' });
+      await load();
+    } catch {
+      // rate-limited or transient — ignore; status reflects on reload
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function disconnect(connectionId: string): Promise<void> {
     if (!window.confirm('Disconnect this calendar? Synced appointments are kept.')) return;
     setBusy(true);
@@ -131,15 +143,24 @@ export function MyCalendarsCard(): JSX.Element | null {
                   ) : (
                     <Pill tone="neutral">Not connected</Pill>
                   )}
-                  <div style={{ marginLeft: 'auto' }}>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
                     {conn ? (
-                      <Button
-                        variant="danger"
-                        onClick={() => void disconnect(conn.id)}
-                        disabled={busy}
-                      >
-                        Disconnect
-                      </Button>
+                      <>
+                        <Button
+                          variant="secondary"
+                          onClick={() => void syncNow(conn.id)}
+                          disabled={busy}
+                        >
+                          Sync now
+                        </Button>
+                        <Button
+                          variant="danger"
+                          onClick={() => void disconnect(conn.id)}
+                          disabled={busy}
+                        >
+                          Disconnect
+                        </Button>
+                      </>
                     ) : (
                       <Button onClick={() => void connect(p.provider)} disabled={busy}>
                         Connect
