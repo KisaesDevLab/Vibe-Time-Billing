@@ -30,6 +30,7 @@ import {
   appointmentParticipants,
   appointmentRescheduleRequests,
   appointmentStaff,
+  appointmentTypes,
   appointments,
   clientContacts,
   clients,
@@ -37,6 +38,8 @@ import {
   engagements,
   offices,
   persons,
+  staffBookingSettings,
+  staffCalendarConnections,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
@@ -111,6 +114,67 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       createFreeBusyProvider({ db: deps.db!, firmId, fetchImpl: deps.fetchImpl })
     );
   }
+
+  // ---- read helpers for the booking form -----------------------------
+  router.get(
+    '/bookable-staff',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: appUsers.id,
+          name: appUsers.fullName,
+          bookingEnabled: staffBookingSettings.bookingEnabled,
+        })
+        .from(appUsers)
+        .leftJoin(staffBookingSettings, eq(staffBookingSettings.staffId, appUsers.id))
+        .where(and(eq(appUsers.firmId, session.firmId), eq(appUsers.status, 'ACTIVE')));
+      const conns = await deps.db
+        .select({ staffId: staffCalendarConnections.staffId })
+        .from(staffCalendarConnections)
+        .where(
+          and(
+            eq(staffCalendarConnections.firmId, session.firmId),
+            eq(staffCalendarConnections.enabled, true),
+          ),
+        );
+      const connected = new Set(conns.map((c) => c.staffId));
+      const items = rows
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          bookingEnabled: r.bookingEnabled ?? true,
+          hasConnection: connected.has(r.id),
+        }))
+        .filter((r) => r.bookingEnabled);
+      res.json({ items });
+    },
+  );
+
+  router.get(
+    '/appointment-types',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(appointmentTypes)
+        .where(
+          and(eq(appointmentTypes.firmId, session.firmId), eq(appointmentTypes.isActive, true)),
+        )
+        .orderBy(appointmentTypes.sortOrder);
+      res.json({ items });
+    },
+  );
 
   // ---- create (multi-staff) ------------------------------------------
   router.post(
@@ -352,6 +416,40 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
           ),
         );
       res.json({ appointment: appt, staff, participants, rescheduleRequests: requests });
+    },
+  );
+
+  // ---- retry a failed per-staff calendar write -----------------------
+  router.post(
+    '/:id/staff/:staffId/retry-write',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const [appt] = await db
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(and(eq(appointments.id, req.params['id']!), eq(appointments.firmId, session.firmId)))
+        .limit(1);
+      if (!appt) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const staffId = req.params['staffId']!;
+      await db
+        .update(appointmentStaff)
+        .set({ providerWriteStatus: 'pending', providerWriteError: null, updatedAt: new Date() })
+        .where(
+          and(eq(appointmentStaff.appointmentId, appt.id), eq(appointmentStaff.staffId, staffId)),
+        );
+      await queue
+        .providerWrite({ appointmentId: appt.id, staffId })
+        .catch((err: unknown) => logger.warn({ err }, 'enqueue retry providerWrite failed'));
+      res.json({ ok: true });
     },
   );
 

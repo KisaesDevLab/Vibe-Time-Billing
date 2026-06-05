@@ -50,7 +50,8 @@ import { RequestsPage } from './pages/Requests';
 import { RequestDetailPage } from './pages/RequestDetail';
 import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
 import { TaxReturnsStaffPage } from './pages/TaxReturns';
-import { AppointmentsPage } from './pages/admin/Appointments';
+import { AppointmentsPage } from './pages/Appointments';
+import { NotificationsPage as StaffNotificationsPage } from './pages/Notifications';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 import { WipDashboardPage } from './pages/Wip';
@@ -114,6 +115,7 @@ export function App(): JSX.Element {
                   <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
                   <Route path="/appointments" element={<AppointmentsPage />} />
+                  <Route path="/notifications" element={<StaffNotificationsPage />} />
                   <Route path="/intake" element={<IntakeInboxPage />} />
                   {/* Team chat is now the "Team" tab of /messages; keep the
                       old path (and notification email links) working. */}
@@ -193,6 +195,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   };
   const [teamUnread, setTeamUnread] = useState(0);
   const [calUnmatched, setCalUnmatched] = useState(0);
+  const [notifUnread, setNotifUnread] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = (): void => {
@@ -204,6 +207,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       void api<{ count: number }>('/api/staff/calendar/unmatched/count')
         .then((r) => {
           if (alive) setCalUnmatched(r.count);
+        })
+        .catch(() => undefined);
+      void api<{ count: number }>('/api/staff/notifications/unread-count')
+        .then((r) => {
+          if (alive) setNotifUnread(r.count);
         })
         .catch(() => undefined);
     };
@@ -393,6 +401,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
 
         // ---- Utility footer (divider, no header) ----
+        {
+          section: '',
+          label: notifUnread > 0 ? `Notifications (${notifUnread})` : 'Notifications',
+          href: '/notifications',
+          icon: '🔔',
+          active: location.pathname.startsWith('/notifications'),
+          show: true,
+        },
         {
           section: '',
           label: 'Admin',

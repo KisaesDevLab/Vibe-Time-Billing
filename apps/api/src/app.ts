@@ -124,6 +124,7 @@ import { createBookingSettingsRouter } from './appointments/booking-settings-rou
 import { createSlotsRouter } from './appointments/slots-routes';
 import { createBookingRouter } from './appointments/booking-routes';
 import { createAppointmentPublicRouter } from './appointments/public-routes';
+import { createNotificationCenterRouter } from './notifications/center-routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
@@ -1243,6 +1244,10 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/booking', auth.requireAuth, auth.requireCsrf, slotsRouter);
+
+  // BK-7 — in-app staff notification center.
+  const notificationCenterRouter = createNotificationCenterRouter({ db: deps.db });
+  app.use('/api/staff/notifications', auth.requireAuth, auth.requireCsrf, notificationCenterRouter);
 
   // P02 — services catalog + tags (proposal addendum). read for
   // partner/manager/senior/staff; write for partner + manager.

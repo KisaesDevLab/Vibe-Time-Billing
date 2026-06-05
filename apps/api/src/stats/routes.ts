@@ -11,6 +11,7 @@ import { and, eq, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   approvalRequests,
+  staffNotifications,
   clientRequests,
   clients,
   engagements,
@@ -121,7 +122,14 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
     requirePermission(deps, 'messaging:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const empty = { clientMsg: 0, teamMsg: 0, requests: 0, intake: 0, approvals: 0 };
+      const empty = {
+        clientMsg: 0,
+        teamMsg: 0,
+        requests: 0,
+        intake: 0,
+        approvals: 0,
+        notifications: 0,
+      };
       if (!deps.db) {
         res.json(empty);
         return;
@@ -194,12 +202,24 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         .from(approvalRequests)
         .where(eq(approvalRequests.status, 'PENDING'));
 
+      // BK-7 — unread in-app notifications for this staff user.
+      const notifications = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(staffNotifications)
+        .where(
+          and(
+            eq(staffNotifications.recipientAppUserId, appUserId),
+            eq(staffNotifications.status, 'UNREAD'),
+          ),
+        );
+
       res.json({
         clientMsg: n(clientMsg),
         teamMsg: n(teamMsg),
         requests: n(requests),
         intake: n(intake),
         approvals: n(approvals),
+        notifications: n(notifications),
       });
     },
   );
