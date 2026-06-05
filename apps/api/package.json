@@ -36,7 +36,8 @@
     "pino-http": "^10.1.0",
     "puppeteer": "^23.0.0",
     "qrcode": "^1.5.3",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "fuse.js": "^7.0.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

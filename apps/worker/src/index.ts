@@ -25,6 +25,7 @@ import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
 import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
+import { runCalendarMatch } from '../../api/src/calendar/match';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -480,7 +481,16 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'calendar-sync: no DB configured');
       return;
     }
-    const result = await runCalendarSyncTick(db, logger);
+    const result = await runCalendarSyncTick(db, logger, {
+      // CAL-4 — match each newly-ingested event right after sync.
+      onNewEvents: async (eventIds) => {
+        for (const id of eventIds) {
+          await runCalendarMatch(db, id).catch((err) =>
+            logger.warn({ err, eventId: id }, 'calendar match failed'),
+          );
+        }
+      },
+    });
     logger.info({ jobId: job.id, ...result }, 'calendar-sync complete');
   },
 };

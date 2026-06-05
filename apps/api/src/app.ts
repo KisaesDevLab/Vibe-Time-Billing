@@ -74,6 +74,7 @@ import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createSignaturesRouter } from './signatures/routes';
 import { createCalendarAdminRouter } from './calendar/admin-routes';
 import { createCalendarConnectRouter } from './calendar/connect-routes';
+import { createCalendarMatchRouter } from './calendar/match-routes';
 import { createCalendarPublicRouter } from './calendar/public-routes';
 import type { OAuthStateStore } from './calendar/connect-shared';
 import { createIntakeCardRouter } from './intake/card-routes';
@@ -582,6 +583,12 @@ export function createApp(deps: AppDeps): Express {
       stateStore: calendarStateStore,
       redirectBase: config.APP_BASE_URL,
     }),
+  );
+  app.use(
+    '/api/staff/calendar',
+    auth.requireAuth,
+    auth.requireCsrf,
+    createCalendarMatchRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }),
   );
 
   // v1 internal-files + folder-templates routers removed in Phase 0
