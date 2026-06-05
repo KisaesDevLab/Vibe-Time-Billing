@@ -14,7 +14,13 @@ import { and, eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clients, firmRetainerSettings, retainerOffers } from '@vibe/db/schema';
+import {
+  clientContacts,
+  clients,
+  firmRetainerSettings,
+  persons,
+  retainerOffers,
+} from '@vibe/db/schema';
 
 import type { MailDispatch } from '../dispatchers';
 
@@ -111,15 +117,19 @@ export async function runRetainerOfferReminder(
 }
 
 async function resolveBillingEmail(db: Database, clientId: string): Promise<string | null> {
+  // 0115 — email is canonical on person; isBilling/isPrimary precedence
+  // stays per-client on client_contact.
   const billing = await db
-    .select({ email: clientContacts.email })
+    .select({ email: persons.email })
     .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isBilling, true)))
     .limit(1);
   if (billing[0]?.email) return billing[0].email;
   const primary = await db
-    .select({ email: clientContacts.email })
+    .select({ email: persons.email })
     .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isPrimary, true)))
     .limit(1);
   return primary[0]?.email ?? null;

@@ -8,7 +8,7 @@
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clients } from '@vibe/db/schema';
+import { clientContacts, clients, persons } from '@vibe/db/schema';
 
 export interface MatchInput {
   email?: string | null;
@@ -47,15 +47,17 @@ export async function suggestClients(
 
   // Pull active clients + their contacts (single firm; sets are small).
   const contactRows = await db
+    // 0115 — name/email/phone are canonical on person.
     .select({
       clientId: clientContacts.clientId,
       clientName: clients.name,
-      email: clientContacts.email,
-      phone: clientContacts.phone,
-      fullName: clientContacts.fullName,
+      email: persons.email,
+      phone: persons.phone,
+      fullName: persons.fullName,
     })
     .from(clientContacts)
     .innerJoin(clients, eq(clients.id, clientContacts.clientId))
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clients.firmId, firmId), eq(clients.status, 'ACTIVE')));
 
   const clientRows = await db

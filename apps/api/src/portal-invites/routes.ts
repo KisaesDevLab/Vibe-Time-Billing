@@ -10,15 +10,23 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clientPortalAccess, clients, portalIdentity, portalInvitation } from '@vibe/db/schema';
+import {
+  clientContacts,
+  clientPortalAccess,
+  clients,
+  persons,
+  portalIdentity,
+  portalInvitation,
+} from '@vibe/db/schema';
 import { normalizePhone } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { findOrCreatePerson } from '../clients/person-helpers';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -40,8 +48,46 @@ const InviteSchema = z
     phone: z.string().min(5).max(40).optional(),
     role: z.enum(['FULL', 'VIEW_ONLY', 'PAY_ONLY']).default('FULL'),
     deliveryChannel: z.enum(['EMAIL', 'SMS']).default('EMAIL'),
+    // 0114 — link this access to an existing directory contact. Optional;
+    // omitted = auto-match by email, else a standalone (3rd-party) access.
+    clientContactId: z.string().uuid().optional(),
   })
   .refine((d) => d.email || d.phone, { message: 'email or phone required' });
+
+// Resolve which directory contact (if any) an invite should link to:
+// the explicit contact when valid for this client, else a same-client
+// contact whose email matches. Returns null for a true 3rd party.
+async function resolveContactLink(
+  db: Database,
+  clientId: string,
+  explicitId: string | undefined,
+  email: string | undefined,
+): Promise<string | null> {
+  if (explicitId) {
+    const [c] = await db
+      .select({ id: clientContacts.id })
+      .from(clientContacts)
+      .where(and(eq(clientContacts.id, explicitId), eq(clientContacts.clientId, clientId)))
+      .limit(1);
+    if (c) return c.id;
+  }
+  if (email) {
+    // 0115 — contact email is canonical on person; match through the join.
+    const [c] = await db
+      .select({ id: clientContacts.id })
+      .from(clientContacts)
+      .innerJoin(persons, eq(persons.id, clientContacts.personId))
+      .where(
+        and(
+          eq(clientContacts.clientId, clientId),
+          sql`lower(${persons.email}) = ${email.toLowerCase()}`,
+        ),
+      )
+      .limit(1);
+    if (c) return c.id;
+  }
+  return null;
+}
 
 export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
   const router = express.Router();
@@ -107,6 +153,13 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
         if (row) existingIdentity = row;
       }
 
+      const contactLink = await resolveContactLink(
+        deps.db,
+        client.id,
+        parsed.data.clientContactId,
+        parsed.data.email,
+      );
+
       if (existingIdentity) {
         // Either grant access immediately or no-op if already granted.
         const [already] = await deps.db
@@ -128,7 +181,19 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
             invitedBy: session.appUserId,
             invitedAt: new Date(),
             acceptedAt: new Date(),
+            clientContactId: contactLink,
           });
+        } else if (contactLink) {
+          // Backfill the link on a pre-existing access if it had none.
+          await deps.db
+            .update(clientPortalAccess)
+            .set({ clientContactId: contactLink })
+            .where(
+              and(
+                eq(clientPortalAccess.id, already.id),
+                isNull(clientPortalAccess.clientContactId),
+              ),
+            );
         }
         await notifyExisting(deps, parsed.data, client.name);
         await emitAudit(deps.db, {
@@ -540,6 +605,84 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
+    },
+  );
+
+  // 0114 — promote a portal-only access (a 3rd party not yet in the
+  // directory) into a client_contact, and link them. Lets staff pull an
+  // outside advisor/attorney into the firm's contact list with one click.
+  router.post(
+    '/access/:accessId/add-contact',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [scope] = await deps.db
+        .select({
+          accessId: clientPortalAccess.id,
+          clientId: clientPortalAccess.clientId,
+          contactId: clientPortalAccess.clientContactId,
+          clientFirmId: clients.firmId,
+          identityId: portalIdentity.id,
+          identityPersonId: portalIdentity.personId,
+          fullName: portalIdentity.fullName,
+          email: portalIdentity.primaryEmail,
+          phone: portalIdentity.primaryPhone,
+        })
+        .from(clientPortalAccess)
+        .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+        .innerJoin(portalIdentity, eq(portalIdentity.id, clientPortalAccess.portalIdentityId))
+        .where(eq(clientPortalAccess.id, req.params['accessId']!))
+        .limit(1);
+      if (!scope || scope.clientFirmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (scope.contactId) {
+        res.status(409).json({ error: 'already_linked', contactId: scope.contactId });
+        return;
+      }
+      // 0115 — find-or-create the firm person (may link to an existing
+      // person), and converge the portal identity onto it.
+      const personId =
+        scope.identityPersonId ??
+        (await findOrCreatePerson(deps.db, {
+          firmId: session.firmId,
+          fullName: scope.fullName,
+          email: scope.email,
+          phone: scope.phone,
+        }));
+      const [contact] = await deps.db
+        .insert(clientContacts)
+        .values({
+          clientId: scope.clientId,
+          personId,
+          isPortalIdentity: true,
+        })
+        .returning({ id: clientContacts.id });
+      await deps.db
+        .update(clientPortalAccess)
+        .set({ clientContactId: contact!.id })
+        .where(eq(clientPortalAccess.id, scope.accessId));
+      if (!scope.identityPersonId) {
+        await deps.db
+          .update(portalIdentity)
+          .set({ personId })
+          .where(eq(portalIdentity.id, scope.identityId));
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'client_contact',
+        entityId: contact!.id,
+        actorAppUserId: session.appUserId,
+        after: { clientId: scope.clientId, fromPortalAccess: scope.accessId },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ contactId: contact!.id });
     },
   );
 

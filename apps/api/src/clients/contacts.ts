@@ -13,10 +13,11 @@ import { and, eq, ne } from 'drizzle-orm';
 import { type Request, type Response, type Router } from 'express';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clients } from '@vibe/db/schema';
+import { clientContacts, clients, persons } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { findOrCreatePerson } from './person-helpers';
 
 export interface ContactRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -72,9 +73,28 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // 0115 — name/email/phone are canonical on person; project them
+      // flat so existing consumers see the same shape.
       const items = await deps.db
-        .select()
+        .select({
+          id: clientContacts.id,
+          clientId: clientContacts.clientId,
+          personId: clientContacts.personId,
+          fullName: persons.fullName,
+          email: persons.email,
+          phone: persons.phone,
+          mobile: persons.mobile,
+          roleId: clientContacts.roleId,
+          isPrimary: clientContacts.isPrimary,
+          isBilling: clientContacts.isBilling,
+          isPortalIdentity: clientContacts.isPortalIdentity,
+          receiveAppointmentReminders: clientContacts.receiveAppointmentReminders,
+          status: clientContacts.status,
+          createdAt: clientContacts.createdAt,
+          updatedAt: clientContacts.updatedAt,
+        })
         .from(clientContacts)
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
         .where(eq(clientContacts.clientId, clientId));
       res.json({ items });
     },
@@ -100,35 +120,46 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
         return;
       }
       const data = parsed.data;
-      const created = await deps.db.transaction(async (tx) => {
-        if (data.isPrimary === true) {
-          await tx
-            .update(clientContacts)
-            .set({ isPrimary: false, updatedAt: new Date() })
-            .where(eq(clientContacts.clientId, clientId));
-        }
-        if (data.isBilling === true) {
-          await tx
-            .update(clientContacts)
-            .set({ isBilling: false, updatedAt: new Date() })
-            .where(eq(clientContacts.clientId, clientId));
-        }
-        const [row] = await tx
-          .insert(clientContacts)
-          .values({
-            clientId,
+      let created;
+      try {
+        created = await deps.db.transaction(async (tx) => {
+          if (data.isPrimary === true) {
+            await tx
+              .update(clientContacts)
+              .set({ isPrimary: false, updatedAt: new Date() })
+              .where(eq(clientContacts.clientId, clientId));
+          }
+          if (data.isBilling === true) {
+            await tx
+              .update(clientContacts)
+              .set({ isBilling: false, updatedAt: new Date() })
+              .where(eq(clientContacts.clientId, clientId));
+          }
+          // 0115 — name/email/phone live on the firm-global person.
+          const personId = await findOrCreatePerson(tx, {
+            firmId,
             fullName: data.fullName,
-            roleId: data.roleId ?? null,
             email: data.email ?? null,
             phone: data.phone ?? null,
             mobile: data.mobile ?? null,
-            isPrimary: data.isPrimary ?? false,
-            isBilling: data.isBilling ?? false,
-            isPortalIdentity: data.isPortalIdentity ?? false,
-          })
-          .returning();
-        return row;
-      });
+          });
+          const [row] = await tx
+            .insert(clientContacts)
+            .values({
+              clientId,
+              personId,
+              roleId: data.roleId ?? null,
+              isPrimary: data.isPrimary ?? false,
+              isBilling: data.isBilling ?? false,
+              isPortalIdentity: data.isPortalIdentity ?? false,
+            })
+            .returning();
+          return row;
+        });
+      } catch {
+        res.status(409).json({ error: 'contact_in_use' });
+        return;
+      }
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'client_contact',
@@ -137,7 +168,8 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
         after: created
           ? {
               clientId,
-              fullName: created.fullName,
+              personId: created.personId,
+              fullName: data.fullName,
               isPrimary: created.isPrimary,
               isBilling: created.isBilling,
             }
@@ -177,38 +209,58 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
         return;
       }
       const data = parsed.data;
-      const updated = await deps.db.transaction(async (tx) => {
-        if (data.isPrimary === true) {
-          await tx
+      // 0115 — name/email/phone/mobile are canonical on person. Editing them
+      // updates the shared person row, so the change propagates to this
+      // person across EVERY client they're a contact of (single source of
+      // truth). Per-client flags stay on client_contact.
+      const personFields: Record<string, unknown> = {};
+      if (data.fullName !== undefined) personFields['fullName'] = data.fullName;
+      if (data.email !== undefined) personFields['email'] = data.email;
+      if (data.phone !== undefined) personFields['phone'] = data.phone;
+      if (data.mobile !== undefined) personFields['mobile'] = data.mobile;
+
+      let updated;
+      try {
+        updated = await deps.db.transaction(async (tx) => {
+          if (data.isPrimary === true) {
+            await tx
+              .update(clientContacts)
+              .set({ isPrimary: false, updatedAt: new Date() })
+              .where(and(eq(clientContacts.clientId, clientId), ne(clientContacts.id, contactId)));
+          }
+          if (data.isBilling === true) {
+            await tx
+              .update(clientContacts)
+              .set({ isBilling: false, updatedAt: new Date() })
+              .where(and(eq(clientContacts.clientId, clientId), ne(clientContacts.id, contactId)));
+          }
+          if (Object.keys(personFields).length > 0) {
+            await tx
+              .update(persons)
+              .set({ ...personFields, updatedAt: new Date() })
+              .where(eq(persons.id, existing.personId));
+          }
+          const [row] = await tx
             .update(clientContacts)
-            .set({ isPrimary: false, updatedAt: new Date() })
-            .where(and(eq(clientContacts.clientId, clientId), ne(clientContacts.id, contactId)));
-        }
-        if (data.isBilling === true) {
-          await tx
-            .update(clientContacts)
-            .set({ isBilling: false, updatedAt: new Date() })
-            .where(and(eq(clientContacts.clientId, clientId), ne(clientContacts.id, contactId)));
-        }
-        const [row] = await tx
-          .update(clientContacts)
-          .set({
-            ...(data.fullName !== undefined ? { fullName: data.fullName } : {}),
-            ...(data.roleId !== undefined ? { roleId: data.roleId } : {}),
-            ...(data.email !== undefined ? { email: data.email } : {}),
-            ...(data.phone !== undefined ? { phone: data.phone } : {}),
-            ...(data.mobile !== undefined ? { mobile: data.mobile } : {}),
-            ...(data.isPrimary !== undefined ? { isPrimary: data.isPrimary } : {}),
-            ...(data.isBilling !== undefined ? { isBilling: data.isBilling } : {}),
-            ...(data.isPortalIdentity !== undefined
-              ? { isPortalIdentity: data.isPortalIdentity }
-              : {}),
-            updatedAt: new Date(),
-          })
-          .where(eq(clientContacts.id, contactId))
-          .returning();
-        return row;
-      });
+            .set({
+              ...(data.roleId !== undefined ? { roleId: data.roleId } : {}),
+              ...(data.isPrimary !== undefined ? { isPrimary: data.isPrimary } : {}),
+              ...(data.isBilling !== undefined ? { isBilling: data.isBilling } : {}),
+              ...(data.isPortalIdentity !== undefined
+                ? { isPortalIdentity: data.isPortalIdentity }
+                : {}),
+              updatedAt: new Date(),
+            })
+            .where(eq(clientContacts.id, contactId))
+            .returning();
+          return row;
+        });
+      } catch {
+        // Likely the (firm, lower(email)) unique index — another person in
+        // the firm already uses that email.
+        res.status(409).json({ error: 'contact_in_use' });
+        return;
+      }
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'client_contact',

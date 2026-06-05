@@ -32,6 +32,8 @@ const ArticleCreateSchema = z.object({
   categorySlug: z.string().regex(SLUG_RE).max(120).nullable().optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
+  // 0113 — realm visibility; 'client'/'both' expose to the client portal.
+  audience: z.enum(['staff', 'client', 'both']).optional(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -186,6 +188,7 @@ export function createHelpRouter(deps: HelpRoutesDeps): Router {
           summary: kbArticles.summary,
           categoryId: kbArticles.categoryId,
           status: kbArticles.status,
+          audience: kbArticles.audience,
           isSystem: kbArticles.isSystem,
           sortOrder: kbArticles.sortOrder,
           updatedAt: kbArticles.updatedAt,
@@ -262,6 +265,7 @@ export function createHelpRouter(deps: HelpRoutesDeps): Router {
             bodyMarkdown: d.bodyMarkdown,
             tags: d.tags ?? null,
             status: d.status ?? 'PUBLISHED',
+            audience: d.audience ?? 'staff',
             isSystem: false,
             sortOrder: d.sortOrder ?? 0,
             updatedById: session.appUserId,
@@ -305,6 +309,7 @@ export function createHelpRouter(deps: HelpRoutesDeps): Router {
       if (d.bodyMarkdown !== undefined) set['bodyMarkdown'] = d.bodyMarkdown;
       if (d.tags !== undefined) set['tags'] = d.tags;
       if (d.status !== undefined) set['status'] = d.status;
+      if (d.audience !== undefined) set['audience'] = d.audience;
       if (d.sortOrder !== undefined) set['sortOrder'] = d.sortOrder;
       if (d.categorySlug !== undefined) {
         set['categoryId'] = await categoryIdForSlug(session.firmId, d.categorySlug);

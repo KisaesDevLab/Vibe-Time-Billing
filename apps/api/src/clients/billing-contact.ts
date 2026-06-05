@@ -14,7 +14,7 @@
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientContacts } from '@vibe/db/schema';
+import { clientContacts, persons } from '@vibe/db/schema';
 
 export interface BillingContactSnapshot {
   fullName: string;
@@ -22,32 +22,42 @@ export interface BillingContactSnapshot {
   phone: string | null;
 }
 
+// 0115 — name/email/phone are canonical on `person`; the billing/primary
+// precedence flags stay per-client on client_contact. The return shape is
+// unchanged so all consumers (invoices, AR, statements, engagement
+// letters, dunning, retainer reminders) keep working without edits.
+async function pick(
+  db: Database,
+  clientId: string,
+  flag: typeof clientContacts.isBilling | typeof clientContacts.isPrimary,
+): Promise<BillingContactSnapshot | null> {
+  const [row] = await db
+    .select({
+      fullName: persons.fullName,
+      email: persons.email,
+      phone: persons.phone,
+    })
+    .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
+    .where(and(eq(clientContacts.clientId, clientId), eq(flag, true)))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function getBillingContact(
   db: Database,
   clientId: string,
 ): Promise<BillingContactSnapshot | null> {
-  // Single round-trip: fetch up to 2 rows ordered so isBilling wins,
-  // then isPrimary. (Drizzle doesn't expose a CASE-WHEN order easily;
-  // a two-step fetch keeps it simple and the table is small per client.)
-  const billing = await db
-    .select({
-      fullName: clientContacts.fullName,
-      email: clientContacts.email,
-      phone: clientContacts.phone,
-    })
-    .from(clientContacts)
-    .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isBilling, true)))
-    .limit(1);
-  if (billing[0]) return billing[0];
+  return (
+    (await pick(db, clientId, clientContacts.isBilling)) ??
+    (await pick(db, clientId, clientContacts.isPrimary))
+  );
+}
 
-  const primary = await db
-    .select({
-      fullName: clientContacts.fullName,
-      email: clientContacts.email,
-      phone: clientContacts.phone,
-    })
-    .from(clientContacts)
-    .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isPrimary, true)))
-    .limit(1);
-  return primary[0] ?? null;
+/** Convenience: the billing/primary contact's email (null if none). */
+export async function getBillingContactEmail(
+  db: Database,
+  clientId: string,
+): Promise<string | null> {
+  return (await getBillingContact(db, clientId))?.email ?? null;
 }

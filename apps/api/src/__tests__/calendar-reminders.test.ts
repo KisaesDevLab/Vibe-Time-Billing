@@ -11,11 +11,15 @@ import {
   calendarEvents,
   calendarRemindersSent,
   calendarRsvpTokens,
-  clientContacts,
   staffCalendarConnections,
 } from '@vibe/db/schema';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import { runCalendarReminderTick } from '../calendar/reminder-tick';
 
 let harness: PgliteHarness;
@@ -34,7 +38,8 @@ async function setupConfirmedEvent(startInMinutes: number, optOut = false): Prom
       accessTokenEnc: Buffer.from([1]),
     })
     .returning({ id: staffCalendarConnections.id });
-  await harness.db.insert(clientContacts).values({
+  await seedContact(harness.db, {
+    firmId: seed.firmId,
     clientId: seed.clientId,
     fullName: 'Client Contact',
     email: 'contact@co.example',

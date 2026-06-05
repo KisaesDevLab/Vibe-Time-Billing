@@ -25,11 +25,14 @@ import { appointments, clients, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { CalendarWriteService, isCalendarWriteEnabled } from '../calendar/write-service';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
 export interface AppointmentRoutesDeps extends RbacDeps {
   db: Database | null;
+  /** Injectable for tests; defaults to global fetch (used by calendar write-back). */
+  fetchImpl?: typeof fetch;
 }
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?/;
@@ -61,6 +64,18 @@ const CancelSchema = z.object({ reason: z.string().min(1).max(400) });
 export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // CAL-9 — when calendar write-back is enabled, an appointment is mirrored
+  // onto the lead staff member's connected calendar. The mirror's
+  // calendar_events id is stored in appointment.external_ref so later
+  // edits/cancellations propagate. All pushes are best-effort: a calendar
+  // failure never blocks the appointment itself.
+  const writeService = new CalendarWriteService();
+  const doFetch = deps.fetchImpl ?? fetch;
+
+  function locationText(location: string, detail: string | null | undefined): string {
+    return detail && detail.trim() ? detail : location;
+  }
 
   router.get(
     '/',
@@ -163,6 +178,10 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
           return;
         }
       }
+      const leadId = parsed.data.leadAppUserId ?? session.appUserId;
+      const startsAt = new Date(parsed.data.startsAt);
+      const endsAt = new Date(parsed.data.endsAt);
+      const location = parsed.data.location ?? 'VIDEO';
       const [row] = await deps.db
         .insert(appointments)
         .values({
@@ -171,16 +190,49 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
           engagementId: parsed.data.engagementId ?? null,
           title: parsed.data.title,
           description: parsed.data.description ?? null,
-          startsAt: new Date(parsed.data.startsAt),
-          endsAt: new Date(parsed.data.endsAt),
-          location: parsed.data.location ?? 'VIDEO',
+          startsAt,
+          endsAt,
+          location,
           locationDetail: parsed.data.locationDetail ?? null,
-          leadAppUserId: parsed.data.leadAppUserId ?? session.appUserId,
+          leadAppUserId: leadId,
           status: 'SCHEDULED',
           createdById: session.appUserId,
         })
         .returning({ id: appointments.id });
       if (!row) throw new Error('appointment_insert_failed');
+
+      // CAL-9 — push to the lead's calendar (best-effort, flag-gated).
+      let calendarPushed = false;
+      if (isCalendarWriteEnabled()) {
+        try {
+          const target = await writeService.resolveTarget(deps.db, session.firmId, leadId);
+          if (target) {
+            const { eventId } = await writeService.createEvent(
+              { db: deps.db, fetchImpl: doFetch },
+              {
+                firmId: session.firmId,
+                staffId: leadId,
+                connectionId: target.connectionId,
+                calendarId: target.calendarId,
+                input: {
+                  title: parsed.data.title,
+                  start: startsAt,
+                  end: endsAt,
+                  location: locationText(location, parsed.data.locationDetail),
+                },
+                actorAppUserId: session.appUserId,
+              },
+            );
+            await deps.db
+              .update(appointments)
+              .set({ externalRef: eventId })
+              .where(eq(appointments.id, row.id));
+            calendarPushed = true;
+          }
+        } catch (err) {
+          logger.warn({ err, appointmentId: row.id }, 'appointment calendar push failed');
+        }
+      }
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'appointment',
@@ -195,7 +247,7 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.status(201).json({ id: row.id });
+      res.status(201).json({ id: row.id, calendarPushed });
     },
   );
 
@@ -246,6 +298,34 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         return;
       }
       await deps.db.update(appointments).set(patch).where(eq(appointments.id, prior.id));
+
+      // CAL-9 — propagate the edit to the mirrored calendar event.
+      if (isCalendarWriteEnabled() && prior.externalRef && prior.leadAppUserId) {
+        try {
+          const nextLocation = (patch['location'] as string) ?? prior.location;
+          const nextDetail =
+            'locationDetail' in patch
+              ? (patch['locationDetail'] as string | null)
+              : prior.locationDetail;
+          await writeService.updateEvent(
+            { db: deps.db, fetchImpl: doFetch },
+            {
+              firmId: session.firmId,
+              staffId: prior.leadAppUserId,
+              eventId: prior.externalRef,
+              patch: {
+                ...(patch['title'] != null ? { title: patch['title'] as string } : {}),
+                ...(patch['startsAt'] instanceof Date ? { start: patch['startsAt'] } : {}),
+                ...(patch['endsAt'] instanceof Date ? { end: patch['endsAt'] } : {}),
+                location: locationText(nextLocation, nextDetail),
+              },
+              actorAppUserId: session.appUserId,
+            },
+          );
+        } catch (err) {
+          logger.warn({ err, appointmentId: prior.id }, 'appointment calendar update failed');
+        }
+      }
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'appointment',
@@ -298,6 +378,23 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
           updatedAt: now,
         })
         .where(eq(appointments.id, row.id));
+
+      // CAL-9 — remove the mirrored calendar event on cancellation.
+      if (isCalendarWriteEnabled() && row.externalRef && row.leadAppUserId) {
+        try {
+          await writeService.deleteEvent(
+            { db: deps.db, fetchImpl: doFetch },
+            {
+              firmId: session.firmId,
+              staffId: row.leadAppUserId,
+              eventId: row.externalRef,
+              actorAppUserId: session.appUserId,
+            },
+          );
+        } catch (err) {
+          logger.warn({ err, appointmentId: row.id }, 'appointment calendar delete failed');
+        }
+      }
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'appointment',

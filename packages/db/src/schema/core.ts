@@ -1327,6 +1327,42 @@ export const files = pgTable(
 // unique indexes).
 // =====================================================================
 
+// 0115 — firm-global directory person. Canonical source of name/email/
+// phone for the firm; one row per human, referenced by many client_contact
+// rows (per-client) and optionally a portal_identity (login). Email is the
+// firm-unique identity key; phone/mobile are non-unique lookup hints
+// (shared numbers are legitimate).
+export const persons = pgTable(
+  'person',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    fullName: text('full_name').notNull(),
+    email: text('email'),
+    phone: text('phone'),
+    mobile: text('mobile'),
+    status: entityStatus('status').notNull().default('ACTIVE'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('person_firm_idx').on(t.firmId),
+    // Real DB index is functional (lower(email)) — see 0115 migration; the
+    // declaration here is approximate (hand-written SQL is authoritative).
+    firmEmailUk: uniqueIndex('person_firm_email_uk')
+      .on(t.firmId, t.email)
+      .where(sql`email IS NOT NULL`),
+    firmPhoneIdx: index('person_firm_phone_idx')
+      .on(t.firmId, t.phone)
+      .where(sql`phone IS NOT NULL`),
+    firmMobileIdx: index('person_firm_mobile_idx')
+      .on(t.firmId, t.mobile)
+      .where(sql`mobile IS NOT NULL`),
+  }),
+);
+
 export const clientContacts = pgTable(
   'client_contact',
   {
@@ -1334,7 +1370,12 @@ export const clientContacts = pgTable(
     clientId: uuid('client_id')
       .notNull()
       .references(() => clients.id, { onDelete: 'cascade' }),
-    fullName: text('full_name').notNull(),
+    // 0115 — canonical identity link. name/email/phone now live on person;
+    // the columns below are retained (deprecated) until 0116 drops them.
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'restrict' }),
+    fullName: text('full_name'),
     roleId: uuid('role_id').references(() => contactRoles.id, { onDelete: 'set null' }),
     email: text('email'),
     phone: text('phone'),
@@ -1350,6 +1391,7 @@ export const clientContacts = pgTable(
   },
   (t) => ({
     clientIdx: index('client_contact_client_idx').on(t.clientId),
+    personIdx: index('client_contact_person_idx').on(t.personId),
     primaryUk: uniqueIndex('client_contact_primary_uk')
       .on(t.clientId)
       .where(sql`is_primary = true`),
@@ -4201,6 +4243,10 @@ export const storageSettings = pgTable('storage_settings', {
 
 export const kbArticleStatus = pgEnum('kb_article_status', ['DRAFT', 'PUBLISHED', 'ARCHIVED']);
 
+// 0113 — which realm an article is visible to. Default 'staff' keeps
+// content internal unless an admin exposes it to the client portal.
+export const kbAudience = pgEnum('kb_audience', ['staff', 'client', 'both']);
+
 export const kbCategories = pgTable(
   'kb_category',
   {
@@ -4234,6 +4280,8 @@ export const kbArticles = pgTable(
     bodyMarkdown: text('body_markdown').notNull(),
     tags: text('tags').array(),
     status: kbArticleStatus('status').notNull().default('PUBLISHED'),
+    // 0113 — realm visibility; default 'staff' so nothing leaks to clients.
+    audience: kbAudience('audience').notNull().default('staff'),
     isSystem: boolean('is_system').notNull().default(false),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedById: uuid('updated_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
@@ -4244,6 +4292,7 @@ export const kbArticles = pgTable(
     firmSlugUk: uniqueIndex('kb_article_firm_slug_uk').on(t.firmId, t.slug),
     firmCategoryIdx: index('kb_article_firm_category_idx').on(t.firmId, t.categoryId),
     firmStatusIdx: index('kb_article_firm_status_idx').on(t.firmId, t.status),
+    firmAudienceIdx: index('kb_article_firm_audience_idx').on(t.firmId, t.audience),
   }),
 );
 

@@ -9,7 +9,7 @@ import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clientRequests, clients, engagements } from '@vibe/db/schema';
+import { clientContacts, clientRequests, clients, engagements, persons } from '@vibe/db/schema';
 
 import type { MailDispatch } from '../dispatchers';
 
@@ -85,11 +85,12 @@ export async function runRequestReminderTick(
     ? await db
         .select({
           clientId: clientContacts.clientId,
-          email: clientContacts.email,
+          email: persons.email,
           isBilling: clientContacts.isBilling,
           isPrimary: clientContacts.isPrimary,
         })
         .from(clientContacts)
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
         .where(inArray(clientContacts.clientId, clientIds))
     : [];
   const billingByClient = new Map<string, string>();

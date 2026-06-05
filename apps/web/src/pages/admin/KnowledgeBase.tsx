@@ -22,6 +22,7 @@ interface ManageArticle {
   summary: string | null;
   categoryId: string | null;
   status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  audience: 'staff' | 'client' | 'both';
   isSystem: boolean;
 }
 interface FullArticle extends ManageArticle {
@@ -36,6 +37,7 @@ interface Draft {
   summary: string;
   categorySlug: string;
   status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  audience: 'staff' | 'client' | 'both';
   bodyMarkdown: string;
 }
 
@@ -46,6 +48,7 @@ const EMPTY: Draft = {
   summary: '',
   categorySlug: '',
   status: 'PUBLISHED',
+  audience: 'staff',
   bodyMarkdown: '',
 };
 
@@ -102,6 +105,7 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
       summary: r.article.summary ?? '',
       categorySlug: a.categoryId ? (catById.get(a.categoryId)?.slug ?? '') : '',
       status: r.article.status,
+      audience: a.audience,
       bodyMarkdown: r.article.bodyMarkdown,
     });
   }
@@ -119,6 +123,7 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
             summary: draft.summary || undefined,
             categorySlug: draft.categorySlug || null,
             status: draft.status,
+            audience: draft.audience,
             bodyMarkdown: draft.bodyMarkdown,
           }),
         });
@@ -131,6 +136,7 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
             summary: draft.summary || undefined,
             categorySlug: draft.categorySlug || null,
             status: draft.status,
+            audience: draft.audience,
             bodyMarkdown: draft.bodyMarkdown,
           }),
         });
@@ -228,6 +234,25 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
                   <option value="ARCHIVED">Archived</option>
                 </select>
               </div>
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Audience
+                </div>
+                <select
+                  style={inputStyle}
+                  value={draft.audience}
+                  onChange={(e) =>
+                    setDraft({ ...draft, audience: e.target.value as Draft['audience'] })
+                  }
+                >
+                  <option value="staff">Staff only</option>
+                  <option value="client">Clients only</option>
+                  <option value="both">Staff &amp; clients</option>
+                </select>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>
+                  Client-visible articles appear in the portal help center and the client AI chat.
+                </div>
+              </div>
             </div>
             <Input
               label="Summary"
@@ -290,6 +315,9 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
               >
                 {a.status}
               </Pill>
+              {a.audience !== 'staff' && (
+                <Pill tone="accent">{a.audience === 'both' ? 'client+staff' : 'client'}</Pill>
+              )}
               {a.isSystem && <Pill tone="neutral">system</Pill>}
               <Button variant="secondary" onClick={() => void edit(a.id)}>
                 Edit

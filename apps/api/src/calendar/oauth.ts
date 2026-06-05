@@ -7,17 +7,54 @@
 // bundle weight to the API/worker for endpoints we call directly).
 //
 // v1 is read-only: Microsoft `Calendars.Read offline_access User.Read`,
-// Google `calendar.readonly`. Write-back (CAL-9) expands the scopes behind
-// FEATURE_CALENDAR_WRITE.
+// Google `calendar.readonly`. Write-back (CAL-9) expands the scopes to
+// ReadWrite behind FEATURE_CALENDAR_WRITE — newly-connected (or re-consented)
+// staff are then granted the write scope and TB can push events back.
 
 export type CalendarProvider = 'microsoft' | 'google';
 
 type Fetch = typeof fetch;
 
-export const SCOPES: Record<CalendarProvider, string> = {
+/** CAL-9 — two-way calendar sync is gated behind this appliance flag. */
+export function isCalendarWriteEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['FEATURE_CALENDAR_WRITE'] === 'true';
+}
+
+const READ_SCOPES: Record<CalendarProvider, string> = {
   microsoft: 'offline_access User.Read Calendars.Read',
   google: 'https://www.googleapis.com/auth/calendar.readonly',
 };
+
+const WRITE_SCOPES: Record<CalendarProvider, string> = {
+  microsoft: 'offline_access User.Read Calendars.ReadWrite',
+  google: 'https://www.googleapis.com/auth/calendar.events',
+};
+
+/** The OAuth scopes to request — widened to write when the flag is on. */
+export function scopesFor(
+  provider: CalendarProvider,
+  writeEnabled: boolean = isCalendarWriteEnabled(),
+): string {
+  return (writeEnabled ? WRITE_SCOPES : READ_SCOPES)[provider];
+}
+
+/**
+ * Whether a connection's *granted* scope string permits writes. A read-only
+ * connection made before the flag was enabled must re-consent before TB can
+ * push to it.
+ */
+export function hasWriteScope(provider: CalendarProvider, grantedScope: string | null): boolean {
+  if (!grantedScope) return false;
+  const s = grantedScope.toLowerCase();
+  return provider === 'microsoft'
+    ? s.includes('calendars.readwrite')
+    : s.includes('auth/calendar.events') ||
+        s.includes('auth/calendar ') ||
+        s.endsWith('auth/calendar');
+}
+
+/** Back-compat: the read scopes (the v1 default). Prefer `scopesFor`. */
+export const SCOPES: Record<CalendarProvider, string> = READ_SCOPES;
 
 export interface AuthorizeInput {
   clientId: string;
@@ -34,7 +71,7 @@ export function buildAuthorizeUrl(provider: CalendarProvider, input: AuthorizeIn
       response_type: 'code',
       redirect_uri: input.redirectUri,
       response_mode: 'query',
-      scope: SCOPES.microsoft,
+      scope: scopesFor('microsoft'),
       state: input.state,
     });
     return `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize?${p}`;
@@ -43,7 +80,7 @@ export function buildAuthorizeUrl(provider: CalendarProvider, input: AuthorizeIn
     client_id: input.clientId,
     response_type: 'code',
     redirect_uri: input.redirectUri,
-    scope: SCOPES.google,
+    scope: scopesFor('google'),
     access_type: 'offline', // ask Google for a refresh token
     prompt: 'consent',
     include_granted_scopes: 'true',
@@ -104,7 +141,7 @@ export async function exchangeCode(
     redirect_uri: input.redirectUri,
     grant_type: 'authorization_code',
   });
-  if (provider === 'microsoft') body.set('scope', SCOPES.microsoft);
+  if (provider === 'microsoft') body.set('scope', scopesFor('microsoft'));
   const res = await fetchImpl(tokenUrl(provider, input.tenantId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -136,7 +173,7 @@ export async function refreshTokens(
     refresh_token: input.refreshToken,
     grant_type: 'refresh_token',
   });
-  if (provider === 'microsoft') body.set('scope', SCOPES.microsoft);
+  if (provider === 'microsoft') body.set('scope', scopesFor('microsoft'));
   const res = await fetchImpl(tokenUrl(provider, input.tenantId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

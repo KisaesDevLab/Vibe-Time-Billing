@@ -8,7 +8,12 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import {
   notifyRetainerActivated,
   notifyRetainerExhausted,
@@ -47,10 +52,14 @@ async function seedRetainerFor(opts: {
   const { firmId, clientId, engagementId, appUserId } = seed;
 
   if (opts.withBillingContact) {
-    await harness.db.execute(
-      sql`INSERT INTO client_contact (client_id, full_name, email, is_primary, is_billing)
-          VALUES (${clientId}, 'Pat Payer', 'pat@example.com', true, true)`,
-    );
+    await seedContact(harness.db, {
+      firmId,
+      clientId,
+      fullName: 'Pat Payer',
+      email: 'pat@example.com',
+      isPrimary: true,
+      isBilling: true,
+    });
   }
 
   // Ensure the client has a partner-in-charge set (seedMinimalFirm

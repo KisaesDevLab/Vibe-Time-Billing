@@ -17,6 +17,7 @@ import {
   engagements,
   invoices,
   offices,
+  persons,
   portalInvitation,
   portalSession,
   userPinnedClients,
@@ -30,8 +31,10 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
+import { mountPeopleRoutes } from './people';
 import { mountFileRoutes } from './files';
 import { mountClientImportRoutes } from './import';
+import { findOrCreatePerson } from './person-helpers';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
@@ -133,10 +136,12 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       // value, via jsonb::text cast), and contacts (email/phone) via
       // EXISTS subquery. GIN index keeps the custom-fields path cheap.
       const like = `%${q}%`;
+      // 0115 — contact email/phone/mobile live on person (joined here).
       const contactMatch = sql`EXISTS (
         SELECT 1 FROM client_contact cc
+        JOIN person p ON p.id = cc.person_id
         WHERE cc.client_id = ${clients.id}
-        AND (cc.email ILIKE ${like} OR cc.phone ILIKE ${like} OR cc.mobile ILIKE ${like})
+        AND (p.email ILIKE ${like} OR p.phone ILIKE ${like} OR p.mobile ILIKE ${like})
       )`;
       const customMatch = sql`${clients.customFields}::text ILIKE ${like}`;
       const expr = or(
@@ -541,11 +546,16 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
               typeof r['billingContactName'] === 'string' && r['billingContactName'].trim()
                 ? r['billingContactName']
                 : name;
-            await deps.db.insert(clientContacts).values({
-              clientId: newRow.id,
+            // 0115 — name/email/phone live on the firm-global person.
+            const personId = await findOrCreatePerson(deps.db, {
+              firmId,
               fullName: contactName,
               email,
               phone,
+            });
+            await deps.db.insert(clientContacts).values({
+              clientId: newRow.id,
+              personId,
               isPrimary: true,
               isBilling: Boolean(email || phone),
             });
@@ -585,8 +595,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           id: clients.id,
           name: clients.name,
           status: clients.status,
-          billingContactEmail: clientContacts.email,
-          billingContactPhone: clientContacts.phone,
+          billingContactEmail: persons.email,
+          billingContactPhone: persons.phone,
           termsDays: clients.termsDays,
           createdAt: clients.createdAt,
         })
@@ -595,6 +605,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           clientContacts,
           and(eq(clientContacts.clientId, clients.id), eq(clientContacts.isBilling, true)),
         )
+        .leftJoin(persons, eq(persons.id, clientContacts.personId))
         .where(eq(clients.firmId, firmId))
         .limit(10000);
       const header = [
@@ -981,6 +992,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // v2 Sprint B — multi-contact CRUD endpoints (workstream 1.2).
   mountContactRoutes(router, deps);
 
+  mountPeopleRoutes(router, deps);
+
   // v2 Sprint C — tasks (1.3) + communications (1.5).
   mountTaskRoutes(router, deps);
   // Phase 8 of FILE_MANAGER_ADDENDUM.md — app upload path. The new
@@ -1127,13 +1140,14 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       const contactRows = await deps.db
         .select({
           clientId: clientContacts.clientId,
-          fullName: clientContacts.fullName,
-          email: clientContacts.email,
+          fullName: persons.fullName,
+          email: persons.email,
           isPrimary: clientContacts.isPrimary,
           isBilling: clientContacts.isBilling,
           status: clientContacts.status,
         })
         .from(clientContacts)
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
         .where(inArray(clientContacts.clientId, clientIds));
 
       // Per-client: pick primary → billing → first-with-email; refuse

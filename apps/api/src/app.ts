@@ -103,6 +103,8 @@ import { createAttachmentRouter } from './attachments/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
+import { createPortalAiRouter } from './ai/portal-routes';
+import { createPortalHelpRouter } from './help/portal-routes';
 import { createHelpRouter } from './help/routes';
 import { createApiTokenRouter } from './admin/api-tokens';
 import { createCloudflareTunnelRouter } from './admin/cloudflare-tunnel/routes';
@@ -959,6 +961,23 @@ export function createApp(deps: AppDeps): Express {
     localProvider: deps.localAiProvider ?? null,
   });
   app.use('/api/staff/ai', auth.requireAuth, auth.requireCsrf, aiRouter);
+
+  // Portal-realm help center + KB-grounded AI chat (client-visible content
+  // only). Portal auth is applied per-route inside the routers.
+  app.use(
+    '/api/portal/help',
+    createPortalHelpRouter({ db: deps.db, requireAuth: portal.requireAuth }),
+  );
+  app.use(
+    '/api/portal/ai',
+    createPortalAiRouter({
+      db: deps.db,
+      redis: deps.redis,
+      cloudProvider: deps.cloudAiProvider ?? null,
+      localProvider: deps.localAiProvider ?? null,
+      requireAuth: portal.requireAuth,
+    }),
+  );
 
   // 0096 — support knowledge base (reads open to any staff; kb:manage
   // gates article CRUD inside the router).

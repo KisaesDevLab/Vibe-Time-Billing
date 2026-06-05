@@ -110,9 +110,15 @@ async function seedRetainerCtx(
   );
   const workCodeId = (wc as unknown as { rows: { id: string }[] }).rows[0]!.id;
   const contactEmail = 'biller@acme.example';
+  // 0115 — name/email live on the firm-global person; contact links to it.
+  const pr = await db.execute(
+    sql`INSERT INTO person (firm_id, full_name, email)
+        VALUES (${firmId}, 'Billy Biller', ${contactEmail}) RETURNING id`,
+  );
+  const personId = (pr as unknown as { rows: { id: string }[] }).rows[0]!.id;
   await db.execute(
-    sql`INSERT INTO client_contact (client_id, full_name, email, is_primary, is_billing)
-        VALUES (${clientId}, 'Billy Biller', ${contactEmail}, true, true)`,
+    sql`INSERT INTO client_contact (client_id, person_id, is_primary, is_billing)
+        VALUES (${clientId}, ${personId}, true, true)`,
   );
   await db.execute(
     sql`INSERT INTO firm_retainer_settings (firm_id, feature_enabled)

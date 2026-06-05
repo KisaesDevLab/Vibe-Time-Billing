@@ -45,7 +45,7 @@ import {
 import { relations, sql } from 'drizzle-orm';
 
 // External tables — imported from sibling schema files
-import { firms, clients, appUsers } from './core';
+import { firms, clients, appUsers, clientContacts, persons } from './core';
 
 // =====================================================================
 // ENUMS
@@ -226,6 +226,10 @@ export const portalIdentity = pgTable(
     lastLoginChannel: portalChannel('last_login_channel'),
     lastLoginIp: text('last_login_ip'),
 
+    // 0115 — directory link. The login credentials above stay authoritative
+    // for auth; person is the firm-global directory identity.
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
+
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -234,6 +238,7 @@ export const portalIdentity = pgTable(
       .defaultNow(),
   },
   (t) => ({
+    personIdx: index('portal_identity_person_idx').on(t.personId),
     // Within a firm, an email or phone is unique. Postgres treats NULL
     // as distinct from any other NULL, so multiple identities can have
     // a NULL email or phone — but two identities cannot share the same
@@ -343,6 +348,14 @@ export const clientPortalAccess = pgTable(
       onDelete: 'set null',
     }),
 
+    // 0114 — optional link to the firm's directory entry for this person.
+    // NULL = a 3rd party with portal access who isn't a contact of the
+    // client (outside CPA, attorney, advisor). Set when an invite is
+    // raised from / matched to a contact.
+    clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
+      onDelete: 'set null',
+    }),
+
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -351,6 +364,7 @@ export const clientPortalAccess = pgTable(
       .defaultNow(),
   },
   (t) => ({
+    contactIdx: index('client_portal_access_contact_idx').on(t.clientContactId),
     // Each identity has at most one access row per client. If the
     // person is removed and re-added, the same row is reactivated
     // (status returns to ACTIVE) — preserving the audit trail.

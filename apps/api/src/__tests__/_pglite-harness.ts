@@ -118,6 +118,53 @@ export async function seedMinimalFirm(db: Database): Promise<{
 }
 
 /**
+ * 0115 — seed a directory contact + its firm-global person. name/email/
+ * phone live on person; per-client flags on client_contact.
+ */
+export async function seedContact(
+  db: Database,
+  opts: {
+    firmId: string;
+    clientId: string;
+    fullName: string;
+    email?: string | null;
+    phone?: string | null;
+    mobile?: string | null;
+    isPrimary?: boolean;
+    isBilling?: boolean;
+    isPortalIdentity?: boolean;
+    receiveAppointmentReminders?: boolean;
+    roleId?: string | null;
+  },
+): Promise<{ contactId: string; personId: string }> {
+  const [person] = await db
+    .insert(schema.persons)
+    .values({
+      firmId: opts.firmId,
+      fullName: opts.fullName,
+      email: opts.email ?? null,
+      phone: opts.phone ?? null,
+      mobile: opts.mobile ?? null,
+    })
+    .returning({ id: schema.persons.id });
+  const [contact] = await db
+    .insert(schema.clientContacts)
+    .values({
+      clientId: opts.clientId,
+      personId: person!.id,
+      isPrimary: opts.isPrimary ?? false,
+      isBilling: opts.isBilling ?? false,
+      isPortalIdentity: opts.isPortalIdentity ?? false,
+      ...(opts.receiveAppointmentReminders !== undefined
+        ? { receiveAppointmentReminders: opts.receiveAppointmentReminders }
+        : {}),
+      ...(opts.roleId !== undefined ? { roleId: opts.roleId } : {}),
+    })
+    .returning({ id: schema.clientContacts.id });
+  return { contactId: contact!.id, personId: person!.id };
+}
+
+/**
  * Resolve the appliance lock state for crypto-aware tests. The
  * shipped `getApplianceLockState()` reads module-level state set at
  * boot — tests can short-circuit by stubbing the manager.

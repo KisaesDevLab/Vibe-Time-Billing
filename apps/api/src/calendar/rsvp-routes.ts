@@ -8,10 +8,15 @@ import express, { type Request, type Response, type Router } from 'express';
 import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { calendarEvents, calendarRsvpTokens, clientContacts } from '@vibe/db/schema';
+import { calendarEvents, calendarRsvpTokens, clientContacts, persons } from '@vibe/db/schema';
+
+import { logger } from '../logger';
+import { CalendarWriteService } from './write-service';
 
 export interface RsvpDeps {
   db: Database | null;
+  /** Injectable for tests; defaults to global fetch (calendar write-back). */
+  fetchImpl?: typeof fetch;
 }
 
 interface Attendee {
@@ -33,6 +38,8 @@ function esc(s: string): string {
 
 export function createRsvpRouter(deps: RsvpDeps): Router {
   const router = express.Router();
+  const writeService = new CalendarWriteService();
+  const doFetch = deps.fetchImpl ?? fetch;
 
   async function resolve(token: string) {
     if (!deps.db) return null;
@@ -43,6 +50,7 @@ export function createRsvpRouter(deps: RsvpDeps): Router {
         expiresAt: calendarRsvpTokens.expiresAt,
         contactId: calendarRsvpTokens.clientContactId,
         eventId: calendarEvents.id,
+        firmId: calendarEvents.firmId,
         subject: calendarEvents.subject,
         startAt: calendarEvents.startAt,
         location: calendarEvents.location,
@@ -123,8 +131,9 @@ export function createRsvpRouter(deps: RsvpDeps): Router {
       // Reflect the response into the event's attendee list (by contact email).
       if (row.contactId) {
         const [contact] = await deps.db
-          .select({ email: clientContacts.email })
+          .select({ email: persons.email })
           .from(clientContacts)
+          .innerJoin(persons, eq(persons.id, clientContacts.personId))
           .where(eq(clientContacts.id, row.contactId))
           .limit(1);
         const email = contact?.email?.toLowerCase();
@@ -139,6 +148,17 @@ export function createRsvpRouter(deps: RsvpDeps): Router {
             .update(calendarEvents)
             .set({ attendees: next, updatedAt: now })
             .where(eq(calendarEvents.id, row.eventId));
+
+          // CAL-9 — push the updated response to the provider event when
+          // write-back is enabled (best-effort; never blocks the RSVP).
+          try {
+            await writeService.writeBackAttendees(
+              { db: deps.db, fetchImpl: doFetch },
+              { firmId: row.firmId, eventId: row.eventId },
+            );
+          } catch (err) {
+            logger.warn({ err, eventId: row.eventId }, 'rsvp attendee write-back failed');
+          }
         }
       }
 

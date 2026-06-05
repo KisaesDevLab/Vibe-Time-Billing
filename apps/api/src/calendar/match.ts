@@ -7,7 +7,13 @@
 import { and, eq, isNotNull, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { calendarEventMatches, calendarEvents, clientContacts, clients } from '@vibe/db/schema';
+import {
+  calendarEventMatches,
+  calendarEvents,
+  clientContacts,
+  clients,
+  persons,
+} from '@vibe/db/schema';
 
 import { matchEvent, type EventForMatch } from './matcher';
 
@@ -50,10 +56,12 @@ export async function runCalendarMatch(
       .from(clients)
       .where(and(eq(clients.firmId, event.firmId), eq(clients.status, 'ACTIVE'))),
     db
-      .select({ clientId: clientContacts.clientId, email: clientContacts.email })
+      // 0115 — contact email is canonical on person.
+      .select({ clientId: clientContacts.clientId, email: persons.email })
       .from(clientContacts)
       .innerJoin(clients, eq(clients.id, clientContacts.clientId))
-      .where(and(eq(clients.firmId, event.firmId), isNotNull(clientContacts.email))),
+      .innerJoin(persons, eq(persons.id, clientContacts.personId))
+      .where(and(eq(clients.firmId, event.firmId), isNotNull(persons.email))),
   ]);
 
   const result = matchEvent(

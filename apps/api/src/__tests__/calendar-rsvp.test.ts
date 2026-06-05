@@ -8,14 +8,14 @@ import express from 'express';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
 
-import {
-  calendarEvents,
-  calendarRsvpTokens,
-  clientContacts,
-  staffCalendarConnections,
-} from '@vibe/db/schema';
+import { calendarEvents, calendarRsvpTokens, staffCalendarConnections } from '@vibe/db/schema';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import { buildIcs } from '../calendar/ics';
 import { createRsvpRouter } from '../calendar/rsvp-routes';
 
@@ -59,10 +59,13 @@ async function makeTokenedEvent(opts: { expiresAt: Date }): Promise<{ token: str
       accessTokenEnc: Buffer.from([1]),
     })
     .returning({ id: staffCalendarConnections.id });
-  const [contact] = await harness.db
-    .insert(clientContacts)
-    .values({ clientId: seed.clientId, fullName: 'Client', email: 'client@co.example' })
-    .returning({ id: clientContacts.id });
+  const { contactId } = await seedContact(harness.db, {
+    firmId: seed.firmId,
+    clientId: seed.clientId,
+    fullName: 'Client',
+    email: 'client@co.example',
+  });
+  const contact = { id: contactId };
   const [ev] = await harness.db
     .insert(calendarEvents)
     .values({

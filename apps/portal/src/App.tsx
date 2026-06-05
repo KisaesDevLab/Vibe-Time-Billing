@@ -16,6 +16,7 @@ import { EngagementsPage } from './pages/Engagements';
 import { FilePreviewPage } from './pages/FilePreview';
 import { FilesPage } from './pages/Files';
 import { AcceptInvitationPage } from './pages/AcceptInvitation';
+import { HelpPage } from './pages/Help';
 import { HomePage } from './pages/Home';
 import { ImpersonatePage } from './pages/Impersonate';
 import { PortalInvoicesPage } from './pages/Invoices';
@@ -101,6 +102,7 @@ function PortalRoutes(): JSX.Element {
                   <Route path="/alt-contacts" element={<AltContactsPage />} />
                   <Route path="/profile" element={<ProfilePage />} />
                   <Route path="/activity" element={<ActivityPage />} />
+                  <Route path="/help" element={<HelpPage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
                   <Route path="/notifications" element={<NotificationPrefsPage />} />
                   <Route path="/retainer-offers/:id" element={<RetainerOfferPage />} />
@@ -267,6 +269,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/activity',
           icon: '📜',
           active: location.pathname.startsWith('/activity'),
+        },
+        {
+          label: 'Help',
+          href: '/help',
+          icon: '❔',
+          active: location.pathname.startsWith('/help'),
         },
         {
           label: 'Switch client',

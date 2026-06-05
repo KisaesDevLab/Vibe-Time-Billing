@@ -12,12 +12,16 @@ import { eq } from 'drizzle-orm';
 import {
   calendarEventMatches,
   calendarEvents,
-  clientContacts,
   clients,
   staffCalendarConnections,
 } from '@vibe/db/schema';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import { matchEvent, cleanSubject, type ClientForMatch } from '../calendar/matcher';
 import { runCalendarMatch } from '../calendar/match';
 import { createCalendarMatchRouter } from '../calendar/match-routes';
@@ -147,9 +151,12 @@ function app(): express.Express {
 describe('runCalendarMatch + review API (CAL-4)', () => {
   it('auto-confirms on an exact email match and is idempotent', async () => {
     // seedMinimalFirm creates a client; add a contact email for it.
-    await harness.db
-      .insert(clientContacts)
-      .values({ clientId: seed.clientId, fullName: 'CFO', email: 'cfo@acme.example' });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'CFO',
+      email: 'cfo@acme.example',
+    });
     const eventId = await insertEvent({
       subject: 'Quarterly review',
       organizerEmail: 'cfo@acme.example',

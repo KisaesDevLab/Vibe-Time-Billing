@@ -9,7 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clients, retainers } from '@vibe/db/schema';
+import { clientContacts, clients, persons, retainers } from '@vibe/db/schema';
 
 import type { MailDispatch } from '../dispatchers';
 
@@ -92,14 +92,16 @@ export async function runRetainerExpiryWarning(
 
 async function resolveBillingEmail(db: Database, clientId: string): Promise<string | null> {
   const billing = await db
-    .select({ email: clientContacts.email })
+    .select({ email: persons.email })
     .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isBilling, true)))
     .limit(1);
   if (billing[0]?.email) return billing[0].email;
   const primary = await db
-    .select({ email: clientContacts.email })
+    .select({ email: persons.email })
     .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isPrimary, true)))
     .limit(1);
   return primary[0]?.email ?? null;

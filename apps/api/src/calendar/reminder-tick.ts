@@ -15,6 +15,7 @@ import {
   calendarRemindersSent,
   calendarRsvpTokens,
   clientContacts,
+  persons,
 } from '@vibe/db/schema';
 
 import { getCalendarSettings } from './settings';
@@ -94,8 +95,10 @@ export async function runCalendarReminderTick(
 
     // Contacts that accept reminders + have an email.
     const contacts = await db
-      .select({ id: clientContacts.id, name: clientContacts.fullName, email: clientContacts.email })
+      // 0115 — name/email canonical on person; reminder opt-out per contact.
+      .select({ id: clientContacts.id, name: persons.fullName, email: persons.email })
       .from(clientContacts)
+      .innerJoin(persons, eq(persons.id, clientContacts.personId))
       .where(
         and(
           eq(clientContacts.clientId, ev.clientId),

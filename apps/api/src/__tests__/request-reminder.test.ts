@@ -10,7 +10,12 @@ import { eq, sql } from 'drizzle-orm';
 
 import { clientRequests } from '@vibe/db/schema';
 import { runRequestReminderTick } from '../../../worker/src/jobs/request-reminder';
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 
 let harness: PgliteHarness;
 const silentLog = pino({ level: 'silent' });
@@ -31,10 +36,14 @@ async function seedContext(): Promise<{
 }> {
   const seed = await seedMinimalFirm(harness.db);
   // Billing contact w/ email so the dispatcher has a target.
-  await harness.db.execute(
-    sql`INSERT INTO client_contact (client_id, full_name, email, is_primary, is_billing)
-        VALUES (${seed.clientId}, 'Billing User', 'bill@example.com', true, true)`,
-  );
+  await seedContact(harness.db, {
+    firmId: seed.firmId,
+    clientId: seed.clientId,
+    fullName: 'Billing User',
+    email: 'bill@example.com',
+    isPrimary: true,
+    isBilling: true,
+  });
   return {
     firmId: seed.firmId,
     clientId: seed.clientId,
@@ -213,10 +222,13 @@ describe('runRequestReminderTick', () => {
   it('falls back to the primary contact when no isBilling contact exists', async () => {
     const seed = await seedMinimalFirm(harness.db);
     // Primary-only contact, no billing flag.
-    await harness.db.execute(
-      sql`INSERT INTO client_contact (client_id, full_name, email, is_primary, is_billing)
-          VALUES (${seed.clientId}, 'Primary', 'primary@example.com', true, false)`,
-    );
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Primary',
+      email: 'primary@example.com',
+      isPrimary: true,
+    });
     await harness.db.execute(
       sql`INSERT INTO client_request
             (firm_id, engagement_id, title, status, due_date, reminder_days_before)
@@ -241,10 +253,13 @@ describe('runRequestReminderTick', () => {
   it('skips when no email is resolvable for the client', async () => {
     const seed = await seedMinimalFirm(harness.db);
     // Contact exists but no email.
-    await harness.db.execute(
-      sql`INSERT INTO client_contact (client_id, full_name, is_primary, is_billing)
-          VALUES (${seed.clientId}, 'No email contact', true, true)`,
-    );
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'No email contact',
+      isPrimary: true,
+      isBilling: true,
+    });
     await harness.db.execute(
       sql`INSERT INTO client_request
             (firm_id, engagement_id, title, status, due_date, reminder_days_before)

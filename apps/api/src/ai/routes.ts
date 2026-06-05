@@ -22,7 +22,7 @@ import {
   resolveFirmProviders as defaultResolveFirmProviders,
   type ResolvedFirmProviders,
 } from './resolve-providers';
-import { searchKbArticles } from '../help/queries';
+import { searchKbArticles, type KbAudience } from '../help/queries';
 
 export interface AiRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -999,82 +999,15 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       return;
     }
     const session = req.staffSession!;
-    const provider = await pickProvider(deps, 'support-chat', session.firmId);
-    if (!provider) {
-      res.status(503).json({ error: 'no_ai_provider' });
-      return;
-    }
-    const budget = await loadBudget(deps, session.firmId, now());
-    if (budget.kind === 'exhausted') {
-      res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
-      return;
-    }
-
-    const messages = parsed.data.messages;
-    const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
-
-    // Retrieve KB context to ground the answer.
-    const hits = await searchKbArticles(deps.db, session.firmId, lastUser, 4);
-    const context = hits
-      .map(
-        (h, i) =>
-          `[Article ${i + 1}] ${h.title}\n${h.summary ? h.summary + '\n' : ''}${h.bodyMarkdown.slice(0, 1200)}`,
-      )
-      .join('\n\n---\n\n');
-
-    const systemPrompt =
-      'You are the in-app support assistant for Vibe Practice Management, a CPA ' +
-      'practice-management appliance. Answer the user using ONLY the support ' +
-      'articles provided below. Be concise and practical, and reference the ' +
-      'relevant screen or menu when helpful. If the answer is not covered by the ' +
-      'articles, say so plainly and suggest browsing the Knowledge Base or asking ' +
-      'a firm administrator — do not invent features.\n\n' +
-      (context
-        ? `SUPPORT ARTICLES:\n${context}`
-        : 'SUPPORT ARTICLES: (none matched this question)');
-
-    const history = messages
-      .slice(-8)
-      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-      .join('\n');
-
-    const started = Date.now();
-    try {
-      const result = await provider.complete({
-        systemPrompt,
-        userPrompt: `${history}\n\nAnswer the user's latest question.`,
-        maxTokens: parsed.data.maxTokens ?? 600,
-        temperature: 0.2,
-      });
-      await logAiRequest(deps, {
-        firmId: session.firmId,
-        providerId: provider.id,
-        feature: 'support_chat',
-        success: true,
-        appUserId: session.appUserId,
-        latencyMs: Date.now() - started,
-        usage: result.usage,
-        costCents: result.costEstimateCents,
-      });
-      res.json({
-        message: result.text.trim(),
-        providerId: result.providerId,
-        sources: hits.map((h) => ({ slug: h.slug, title: h.title })),
-        budget:
-          budget.kind === 'warn' ? { warn: true, remainingCents: budget.remainingCents } : null,
-      });
-    } catch (err) {
-      await logAiRequest(deps, {
-        firmId: session.firmId,
-        providerId: provider.id,
-        feature: 'support_chat',
-        success: false,
-        errorMessage: err instanceof Error ? err.message : 'unknown',
-        appUserId: session.appUserId,
-        latencyMs: Date.now() - started,
-      });
-      res.status(502).json({ error: 'ai_provider_failed' });
-    }
+    // Staff see all articles (no audience filter).
+    const out = await runKbChat(deps, {
+      firmId: session.firmId,
+      messages: parsed.data.messages,
+      maxTokens: parsed.data.maxTokens,
+      actorAppUserId: session.appUserId,
+      feature: 'support_chat',
+    });
+    sendKbChat(res, out);
   });
 
   return router;
@@ -1226,7 +1159,8 @@ interface LogArgs {
   feature: string;
   success: boolean;
   errorMessage?: string;
-  appUserId: string;
+  // Null for portal-realm callers (no app_user); the column is nullable.
+  appUserId: string | null;
   latencyMs: number;
   usage?: { inputTokens: number; outputTokens: number };
   costCents?: number;
@@ -1257,4 +1191,132 @@ async function logAiRequest(deps: AiRoutesDeps, args: LogArgs): Promise<void> {
       appUserId: args.appUserId,
     })
     .catch((err: unknown) => logger.error({ err }, 'ai log failed'));
+}
+
+// =====================================================================
+// KB-grounded support chat — shared by the staff (/api/staff/ai/chat)
+// and portal (/api/portal/ai/chat) routers. Framework-agnostic: returns
+// a discriminated result the caller maps to HTTP. `audiences` restricts
+// KB retrieval to a realm (portal passes ['client','both']); omitting it
+// searches all articles (staff). `actorAppUserId` is null for portal.
+// =====================================================================
+export interface KbChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+export interface KbChatArgs {
+  firmId: string;
+  messages: KbChatMessage[];
+  maxTokens?: number;
+  audiences?: KbAudience[];
+  actorAppUserId?: string | null;
+  feature?: string;
+}
+export type KbChatResult =
+  | {
+      ok: true;
+      message: string;
+      providerId: string;
+      sources: { slug: string; title: string }[];
+      budget: { warn: true; remainingCents: number } | null;
+    }
+  | { ok: false; status: number; error: string; resetsOn?: string };
+
+export async function runKbChat(deps: AiRoutesDeps, args: KbChatArgs): Promise<KbChatResult> {
+  const nowFn = deps.now ?? (() => new Date());
+  const feature = args.feature ?? 'support_chat';
+  const provider = await pickProvider(deps, 'support-chat', args.firmId);
+  if (!provider) return { ok: false, status: 503, error: 'no_ai_provider' };
+
+  const budget = await loadBudget(deps, args.firmId, nowFn());
+  if (budget.kind === 'exhausted') {
+    return { ok: false, status: 402, error: 'ai_budget_exhausted', resetsOn: budget.resetsOn };
+  }
+
+  const lastUser = [...args.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+
+  // Retrieve KB context to ground the answer (realm-scoped).
+  const hits = await searchKbArticles(deps.db, args.firmId, lastUser, 4, args.audiences);
+  const context = hits
+    .map(
+      (h, i) =>
+        `[Article ${i + 1}] ${h.title}\n${h.summary ? h.summary + '\n' : ''}${h.bodyMarkdown.slice(0, 1200)}`,
+    )
+    .join('\n\n---\n\n');
+
+  const systemPrompt =
+    'You are the in-app support assistant for Vibe Practice Management, a CPA ' +
+    'practice-management appliance. Answer the user using ONLY the support ' +
+    'articles provided below. Be concise and practical, and reference the ' +
+    'relevant screen or menu when helpful. If the answer is not covered by the ' +
+    'articles, say so plainly and suggest browsing the Knowledge Base or asking ' +
+    'a firm administrator — do not invent features.\n\n' +
+    (context ? `SUPPORT ARTICLES:\n${context}` : 'SUPPORT ARTICLES: (none matched this question)');
+
+  const history = args.messages
+    .slice(-8)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n');
+
+  const started = Date.now();
+  try {
+    const result = await provider.complete({
+      systemPrompt,
+      userPrompt: `${history}\n\nAnswer the user's latest question.`,
+      maxTokens: args.maxTokens ?? 600,
+      temperature: 0.2,
+    });
+    await logAiRequest(deps, {
+      firmId: args.firmId,
+      providerId: provider.id,
+      feature,
+      success: true,
+      appUserId: args.actorAppUserId ?? null,
+      latencyMs: Date.now() - started,
+      usage: result.usage,
+      costCents: result.costEstimateCents,
+    });
+    return {
+      ok: true,
+      message: result.text.trim(),
+      providerId: result.providerId,
+      sources: hits.map((h) => ({ slug: h.slug, title: h.title })),
+      budget: budget.kind === 'warn' ? { warn: true, remainingCents: budget.remainingCents } : null,
+    };
+  } catch (err) {
+    await logAiRequest(deps, {
+      firmId: args.firmId,
+      providerId: provider.id,
+      feature,
+      success: false,
+      errorMessage: err instanceof Error ? err.message : 'unknown',
+      appUserId: args.actorAppUserId ?? null,
+      latencyMs: Date.now() - started,
+    });
+    return { ok: false, status: 502, error: 'ai_provider_failed' };
+  }
+}
+
+/** Map a KbChatResult onto an Express response. */
+export function sendKbChat(res: Response, out: KbChatResult): void {
+  if (!out.ok) {
+    res.status(out.status).json({
+      error: out.error,
+      ...(out.resetsOn ? { resetsOn: out.resetsOn } : {}),
+    });
+    return;
+  }
+  res.json({
+    message: out.message,
+    providerId: out.providerId,
+    sources: out.sources,
+    budget: out.budget,
+  });
+}
+
+/** Whether AI support chat is usable for a firm (provider wired + opted in). */
+export async function kbChatAvailable(deps: AiRoutesDeps, firmId: string): Promise<boolean> {
+  if (!firmOptedIn()) return false;
+  const provider = await pickProvider(deps, 'support-chat', firmId);
+  return Boolean(provider);
 }

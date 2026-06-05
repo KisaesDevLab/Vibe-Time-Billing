@@ -34,9 +34,21 @@ interface ArticleDef {
   tags: string[];
   sortOrder: number;
   body: string;
+  // 0113 — realm visibility. Omitted = 'staff' (internal). Client-facing
+  // articles are tagged 'both' so they appear in the portal help center +
+  // ground the portal AI support chat, and staff can still see them.
+  audience?: 'staff' | 'client' | 'both';
 }
 
 export const KB_CATEGORIES: ReadonlyArray<CategoryDef> = [
+  {
+    // 0113 — client-facing help. Its articles are audience 'both', so this
+    // is the category the portal help center + AI chat surface to clients.
+    slug: 'client-help',
+    title: 'Using Your Portal',
+    description: 'For clients: sign in, pay invoices, upload documents, and message your firm.',
+    sortOrder: 5,
+  },
   {
     slug: 'getting-started',
     title: 'Getting Started',
@@ -2873,6 +2885,164 @@ OpenSign signing is asynchronous, so most issues are configuration or webhook de
 - Full setup + the verified cloud-function contract live in \`ops/docs/opensign-runbook.md\`.
 `),
   },
+
+  // =================================================================== Using Your Portal
+  // Client-facing (audience 'both'): these surface in the portal help center
+  // and ground the portal AI support chat. Written FOR the client, not staff.
+  {
+    slug: 'client-signing-in',
+    category: 'client-help',
+    title: 'Signing in to your portal',
+    summary: 'How to sign in with a secure link and a one-time code.',
+    tags: ['portal', 'sign in', 'login', 'access'],
+    sortOrder: 10,
+    audience: 'both',
+    body: md(`
+# Signing in to your portal
+
+Your firm's client portal lets you view invoices, pay securely, share documents, and message your team — all in one place.
+
+## How sign-in works
+1. Go to your firm's portal web address (your firm will share the link, e.g. \`portal.yourfirm.com\`).
+2. Enter your email or mobile number and request a sign-in link or code.
+3. Open the email or text and click the link (or enter the 6-digit code).
+4. The first time you sign in on a new device, we send a quick one-time code to confirm it's really you.
+
+## Tips
+- There's no password to remember — each sign-in uses a fresh secure link or code.
+- Links expire after a short time for your security. If yours expired, just request a new one.
+- If you have access to more than one account (for example, a business and your personal return), use **Switch** in the menu to move between them.
+
+If you can't sign in, contact your firm — they can re-send your invitation or update your email or mobile number.
+`),
+  },
+  {
+    slug: 'client-viewing-paying-invoices',
+    category: 'client-help',
+    title: 'Viewing and paying invoices',
+    summary: 'Find your invoices and pay securely by card or bank transfer.',
+    tags: ['invoices', 'pay', 'payment', 'billing'],
+    sortOrder: 20,
+    audience: 'both',
+    body: md(`
+# Viewing and paying invoices
+
+## Find your invoices
+Open **Invoices** from the menu. You'll see what's due, what's paid, and the amount outstanding. Select any invoice to see the detail and download a PDF.
+
+## Pay an invoice
+1. Open the invoice and choose **Pay**.
+2. Enter your card or bank (ACH) details on the secure payment screen.
+3. Submit — you'll see a confirmation and the invoice updates to paid.
+
+## Good to know
+- Payments are processed securely; your firm never sees your full card number.
+- If you've saved a payment method, you can reuse it next time.
+- A processing fee may be added depending on your firm's settings and the payment type — it's shown before you confirm.
+- Some documents unlock automatically once the related invoice is paid.
+
+Questions about a charge? Use **Messages** to ask your firm directly.
+`),
+  },
+  {
+    slug: 'client-uploading-documents',
+    category: 'client-help',
+    title: 'Uploading requested documents',
+    summary: 'Respond to document requests and upload files securely.',
+    tags: ['documents', 'upload', 'requests', 'files'],
+    sortOrder: 30,
+    audience: 'both',
+    body: md(`
+# Uploading requested documents
+
+When your firm needs paperwork from you (W-2s, receipts, statements), they'll send a **request**.
+
+## Respond to a request
+1. Open **Requests** from the menu — open items show what's needed.
+2. Select a request to see the checklist and any notes.
+3. Choose **Upload** and pick your files (PDF, images, and common document types are supported).
+4. Mark items complete as you go; your firm is notified automatically.
+
+## Upload files any time
+You can also open **Files** to upload or view documents your firm has shared with you, even without a specific request.
+
+## Tips
+- Clear photos of paper documents are fine — make sure the whole page is in frame and readable.
+- Large files may take a moment to upload; wait for the confirmation before closing.
+- Everything you upload is encrypted and visible only to your firm.
+`),
+  },
+  {
+    slug: 'client-messaging-your-firm',
+    category: 'client-help',
+    title: 'Messaging your firm',
+    summary: 'Send secure messages and attachments to your team.',
+    tags: ['messages', 'contact', 'secure messaging'],
+    sortOrder: 40,
+    audience: 'both',
+    body: md(`
+# Messaging your firm
+
+Use **Messages** to communicate securely with your firm instead of regular email.
+
+## Send a message
+1. Open **Messages** from the menu.
+2. Type your message and attach files if needed.
+3. Send — your firm is notified and can reply in the same thread.
+
+## Why use portal messages
+- Messages are encrypted and tied to your account, so sensitive details stay protected.
+- Everything stays in one place, so nothing gets lost in a crowded inbox.
+- You'll get a notification when your firm replies.
+
+For time-sensitive matters, your firm's phone number and email are on the portal — check the footer or your welcome message.
+`),
+  },
+  {
+    slug: 'client-your-appointments',
+    category: 'client-help',
+    title: 'Your appointments',
+    summary: 'See upcoming meetings and add them to your calendar.',
+    tags: ['appointments', 'meetings', 'calendar', 'schedule'],
+    sortOrder: 50,
+    audience: 'both',
+    body: md(`
+# Your appointments
+
+Open **Appointments** to see meetings your firm has scheduled with you.
+
+## What you'll see
+- Upcoming meetings with the date, time, and how to join (video link, phone, or in person).
+- Who you're meeting with at the firm.
+- Recent past appointments.
+
+## Add to your calendar
+Choose **Add to calendar** on an appointment to download a calendar file you can open in Outlook, Google Calendar, or Apple Calendar.
+
+If you need to reschedule or have a question about a meeting, send your firm a message from the **Messages** tab.
+`),
+  },
+  {
+    slug: 'client-getting-help',
+    category: 'client-help',
+    title: 'Getting help',
+    summary: 'Use the in-portal assistant or contact your firm.',
+    tags: ['help', 'support', 'assistant', 'ai'],
+    sortOrder: 60,
+    audience: 'both',
+    body: md(`
+# Getting help
+
+## Ask the portal assistant
+Open **Help** and use **Ask AI** to get instant answers about using the portal — paying an invoice, uploading documents, finding a statement, and more. The assistant answers from your firm's help articles.
+
+## Browse help articles
+The **Help** section also has short how-to articles you can read any time.
+
+## Contact your firm
+For anything about your specific account, returns, or charges, message your firm directly from **Messages** — they're the best source for account-specific answers. The assistant won't have access to your private records and will point you to your firm for those.
+`),
+  },
 ];
 
 export async function seedKnowledgeBase(
@@ -2918,6 +3088,7 @@ export async function seedKnowledgeBase(
         bodyMarkdown: a.body,
         tags: a.tags,
         status: 'PUBLISHED',
+        audience: a.audience ?? 'staff',
         isSystem: true,
         sortOrder: a.sortOrder,
       })
@@ -2933,6 +3104,7 @@ export async function seedKnowledgeBase(
           summary: a.summary,
           bodyMarkdown: a.body,
           tags: a.tags,
+          audience: a.audience ?? 'staff',
           sortOrder: a.sortOrder,
           updatedAt: new Date(),
         },

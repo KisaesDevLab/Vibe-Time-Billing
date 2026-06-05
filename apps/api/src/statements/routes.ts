@@ -12,7 +12,15 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, eq, inArray, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clients, firmSettings, firms, invoices, payments } from '@vibe/db/schema';
+import {
+  clientContacts,
+  clients,
+  firmSettings,
+  firms,
+  invoices,
+  payments,
+  persons,
+} from '@vibe/db/schema';
 import {
   combineStatementsHtml,
   renderStatementHtml,
@@ -443,8 +451,9 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
           continue;
         }
         const [billing] = await deps.db
-          .select({ email: clientContacts.email })
+          .select({ email: persons.email })
           .from(clientContacts)
+          .innerJoin(persons, eq(persons.id, clientContacts.personId))
           .where(and(eq(clientContacts.clientId, cid), eq(clientContacts.isBilling, true)))
           .limit(1);
         if (!billing?.email) {

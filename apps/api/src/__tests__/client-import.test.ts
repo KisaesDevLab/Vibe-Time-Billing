@@ -8,7 +8,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql, eq, and } from 'drizzle-orm';
 import type express from 'express';
 
-import { clients, clientContacts } from '@vibe/db/schema';
+import { clients, clientContacts, persons } from '@vibe/db/schema';
 
 import type { RoleSlug } from '@vibe/core/rbac';
 
@@ -164,9 +164,15 @@ describe('client CSV import', () => {
       .from(clients)
       .where(and(eq(clients.firmId, seed.firmId), eq(clients.name, 'Alpha LLC')));
     expect(alpha[0]!.partnerInChargeId).toBe(seed.appUserId);
+    // 0115 — email is canonical on the linked person.
     const contacts = await harness.db
-      .select()
+      .select({
+        isPrimary: clientContacts.isPrimary,
+        isBilling: clientContacts.isBilling,
+        email: persons.email,
+      })
       .from(clientContacts)
+      .innerJoin(persons, eq(persons.id, clientContacts.personId))
       .where(eq(clientContacts.clientId, alpha[0]!.id));
     expect(contacts[0]!.isPrimary).toBe(true);
     expect(contacts[0]!.isBilling).toBe(true);

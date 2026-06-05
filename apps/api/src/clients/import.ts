@@ -20,6 +20,7 @@ import { appUsers, clientContacts, clients, offices } from '@vibe/db/schema';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { findOrCreatePerson } from './person-helpers';
 
 export interface ClientImportDeps extends RbacDeps {
   db: Database | null;
@@ -547,11 +548,16 @@ export function mountClientImportRoutes(router: Router, deps: ClientImportDeps):
             if (!newRow) continue;
             createdIds.push(newRow.id);
             if (prepared.contact) {
-              await tx.insert(clientContacts).values({
-                clientId: newRow.id,
+              // 0115 — name/email/phone live on the firm-global person.
+              const personId = await findOrCreatePerson(tx, {
+                firmId,
                 fullName: prepared.contact.fullName,
                 email: prepared.contact.email,
                 phone: prepared.contact.phone,
+              });
+              await tx.insert(clientContacts).values({
+                clientId: newRow.id,
+                personId,
                 isPrimary: true,
                 isBilling: Boolean(prepared.contact.email || prepared.contact.phone),
               });

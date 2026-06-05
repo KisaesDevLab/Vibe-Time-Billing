@@ -23,6 +23,7 @@ import {
   clients,
   engagementAssignments,
   engagements,
+  persons,
   retainers,
 } from '@vibe/db/schema';
 
@@ -85,15 +86,18 @@ async function loadSummary(db: Database, retainerId: string): Promise<RetainerSu
 }
 
 async function billingContactEmail(db: Database, clientId: string): Promise<string | null> {
+  // 0115 — email canonical on person; precedence flags stay on contact.
   const [billing] = await db
-    .select({ email: clientContacts.email })
+    .select({ email: persons.email })
     .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isBilling, true)))
     .limit(1);
   if (billing?.email) return billing.email;
   const [primary] = await db
-    .select({ email: clientContacts.email })
+    .select({ email: persons.email })
     .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.isPrimary, true)))
     .limit(1);
   return primary?.email ?? null;

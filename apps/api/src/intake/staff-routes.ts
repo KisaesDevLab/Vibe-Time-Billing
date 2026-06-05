@@ -246,7 +246,8 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
     },
   );
 
-  // GET /sessions/:id/files/:fileId/download — stream the object.
+  // GET /sessions/:id/files/:fileId/download — stream the object. Pass
+  // ?inline=1 to render it in the browser (preview) instead of downloading.
   router.get(
     '/sessions/:id/files/:fileId/download',
     requirePermission(deps, 'storage:folder:view'),
@@ -288,15 +289,76 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           : (decField(dek, f.originalFilenameEnc) ?? 'document');
       try {
         const obj = await storage.get(f.objectKey);
+        const inline = req.query['inline'] === '1' || req.query['disposition'] === 'inline';
         res.setHeader('Content-Type', f.mimeType ?? 'application/octet-stream');
         res.setHeader(
           'Content-Disposition',
-          `attachment; filename="${filename.replace(/"/g, '')}"`,
+          `${inline ? 'inline' : 'attachment'}; filename="${filename.replace(/"/g, '')}"`,
         );
         obj.body.pipe(res);
       } catch {
         res.status(404).json({ error: 'object_gone' });
       }
+    },
+  );
+
+  // DELETE /sessions/:id/files/:fileId — remove a received file from an
+  // open (received/processing) submission. Deletes the stored object +
+  // the row; audit-logged. The session itself is left in place so the
+  // remaining files can still be filed (or the session rejected).
+  router.delete(
+    '/sessions/:id/files/:fileId',
+    requirePermission(deps, 'storage:folder:edit'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actorId = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!requireUnlocked(firmId, res)) return;
+
+      const [s] = await deps.db
+        .select({ id: intakeSessions.id })
+        .from(intakeSessions)
+        .where(
+          and(
+            eq(intakeSessions.id, req.params['id']!),
+            eq(intakeSessions.firmId, firmId),
+            inArray(intakeSessions.status, ['received', 'processing']),
+          ),
+        )
+        .limit(1);
+      if (!s) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [f] = await deps.db
+        .select({ id: intakeFiles.id, objectKey: intakeFiles.objectKey })
+        .from(intakeFiles)
+        .where(and(eq(intakeFiles.id, req.params['fileId']!), eq(intakeFiles.sessionId, s.id)))
+        .limit(1);
+      if (!f) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+
+      // Best-effort object removal — the row is the source of truth.
+      const storage = getStorage(deps);
+      if (storage) {
+        await storage.delete(f.objectKey).catch(() => undefined);
+      }
+      await deps.db.delete(intakeFiles).where(eq(intakeFiles.id, f.id));
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'intake_session',
+        entityId: s.id,
+        actorAppUserId: actorId,
+        after: { deletedFileId: f.id },
+      }).catch(() => undefined);
+
+      res.json({ ok: true });
     },
   );
 

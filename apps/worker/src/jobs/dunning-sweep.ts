@@ -18,6 +18,7 @@ import {
   engagements,
   invoiceReminderLog,
   invoices,
+  persons,
 } from '@vibe/db/schema';
 import { stepsDueOn, type DunningStepKind } from '@vibe/core/dunning';
 
@@ -53,9 +54,10 @@ export async function runDunningSweep(
       paidCents: invoices.paidCents,
       clientId: invoices.clientId,
       clientName: clients.name,
-      // v2 0027 — billing email/phone live on client_contact (isBilling).
-      billingContactEmail: clientContacts.email,
-      billingContactPhone: clientContacts.phone,
+      // 0115 — name/email/phone are canonical on person; the isBilling
+      // precedence stays on client_contact.
+      billingContactEmail: persons.email,
+      billingContactPhone: persons.phone,
       primaryEngagementId: invoices.primaryEngagementId,
       firmId: invoices.firmId,
     })
@@ -65,6 +67,7 @@ export async function runDunningSweep(
       clientContacts,
       and(eq(clientContacts.clientId, clients.id), eq(clientContacts.isBilling, true)),
     )
+    .leftJoin(persons, eq(persons.id, clientContacts.personId))
     .where(
       and(
         inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),

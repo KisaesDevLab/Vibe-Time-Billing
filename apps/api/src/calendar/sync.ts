@@ -232,7 +232,9 @@ export async function syncConnection(
     }
 
     // Soft-delete live events for this calendar that the provider no longer
-    // returns (and explicit Google tombstones).
+    // returns (and explicit Google tombstones). TB-origin events (CAL-9
+    // write-back) are excluded: TB owns them, and provider propagation lag
+    // could otherwise soft-delete one between the push and the next poll.
     const tombstones = new Set(events.filter((e) => e.deleted).map((e) => e.providerEventId));
     const current = await db
       .select({ id: calendarEvents.id, providerEventId: calendarEvents.providerEventId })
@@ -241,6 +243,7 @@ export async function syncConnection(
         and(
           eq(calendarEvents.connectionId, connection.id),
           eq(calendarEvents.calendarId, sel.calendarId),
+          eq(calendarEvents.tbOrigin, false),
           isNull(calendarEvents.softDeletedAt),
         ),
       );

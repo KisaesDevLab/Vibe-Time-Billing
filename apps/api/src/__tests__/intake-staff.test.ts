@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  clientContacts,
   clientFolders,
   files,
   intakeActions,
@@ -24,7 +23,12 @@ import {
 } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import { resetFirmKeyManagerForTests, getFirmKeyManager } from '../crypto/manager';
 import { setApplianceLockState } from '../crypto/boot';
 import { createIntakeStaffRouter } from '../intake/staff-routes';
@@ -152,9 +156,12 @@ async function makeReceivedSession(): Promise<string> {
 
 describe('auto-match', () => {
   it('ranks an exact email match highest', async () => {
-    await harness.db
-      .insert(clientContacts)
-      .values({ clientId: seed.clientId, fullName: 'Jane Client', email: 'jane@example.com' });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Jane Client',
+      email: 'jane@example.com',
+    });
     const matches = await suggestClients(harness.db, seed.firmId, {
       email: 'jane@example.com',
       name: 'Jane',
@@ -164,9 +171,12 @@ describe('auto-match', () => {
   });
 
   it('matches a phone by its last 10 digits', async () => {
-    await harness.db
-      .insert(clientContacts)
-      .values({ clientId: seed.clientId, fullName: 'Jane', phone: '(555) 123-4567' });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Jane',
+      phone: '(555) 123-4567',
+    });
     const matches = await suggestClients(harness.db, seed.firmId, { phone: '+1 555 123 4567' });
     expect(matches[0]?.clientId).toBe(seed.clientId);
     expect(matches[0]?.reasons).toContain('phone');
@@ -199,9 +209,12 @@ describe('inbox + disposition', () => {
   });
 
   it('detail surfaces files + auto-match suggestions', async () => {
-    await harness.db
-      .insert(clientContacts)
-      .values({ clientId: seed.clientId, fullName: 'Jane', email: 'jane@example.com' });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Jane',
+      email: 'jane@example.com',
+    });
     const sessionId = await makeReceivedSession();
     const res = await request(buildApp()).get(`/api/staff/intake/sessions/${sessionId}`);
     expect(res.status).toBe(200);
@@ -236,6 +249,43 @@ describe('inbox + disposition', () => {
       .from(intakeActions)
       .where(eq(intakeActions.sessionId, sessionId));
     expect(actions[0]!.action).toBe('move');
+  });
+
+  it('previews a file inline', async () => {
+    const sessionId = await makeReceivedSession();
+    const [f] = await harness.db
+      .select({ id: intakeFiles.id })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, sessionId));
+    const res = await request(buildApp()).get(
+      `/api/staff/intake/sessions/${sessionId}/files/${f!.id}/download?inline=1`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toMatch(/^inline/);
+    expect(res.headers['content-type']).toContain('application/pdf');
+  });
+
+  it('deletes a received file', async () => {
+    const sessionId = await makeReceivedSession();
+    const [f] = await harness.db
+      .select({ id: intakeFiles.id })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, sessionId));
+    const res = await request(buildApp()).delete(
+      `/api/staff/intake/sessions/${sessionId}/files/${f!.id}`,
+    );
+    expect(res.status).toBe(200);
+    const remaining = await harness.db
+      .select({ id: intakeFiles.id })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, sessionId));
+    expect(remaining).toHaveLength(0);
+    // The session itself remains for further handling.
+    const [sess] = await harness.db
+      .select({ status: intakeSessions.status })
+      .from(intakeSessions)
+      .where(eq(intakeSessions.id, sessionId));
+    expect(sess!.status).toBe('received');
   });
 
   it('rejects a session', async () => {

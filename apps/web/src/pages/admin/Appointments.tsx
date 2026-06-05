@@ -34,6 +34,8 @@ interface AppointmentRow {
   leadAppUserId: string | null;
   status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
   cancelledReason: string | null;
+  /** CAL-9 — set when the appointment is mirrored to the lead's calendar. */
+  externalRef: string | null;
 }
 
 interface ClientOption {
@@ -54,6 +56,7 @@ export function AppointmentsPage(): JSX.Element {
   const [items, setItems] = useState<AppointmentRow[]>([]);
   const [clients, setClients] = useState<ClientOption[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const [showCreate, setShowCreate] = useState(false);
   const [createClientId, setCreateClientId] = useState('');
@@ -96,8 +99,9 @@ export function AppointmentsPage(): JSX.Element {
   async function performCreate(): Promise<void> {
     if (!createClientId || !createTitle || !createStartsAt || !createEndsAt) return;
     setError(null);
+    setNotice(null);
     try {
-      await api('/api/staff/appointments', {
+      const res = await api<{ id: string; calendarPushed?: boolean }>('/api/staff/appointments', {
         method: 'POST',
         body: JSON.stringify({
           clientId: createClientId,
@@ -109,6 +113,7 @@ export function AppointmentsPage(): JSX.Element {
           description: createDescription || undefined,
         }),
       });
+      if (res.calendarPushed) setNotice('Added to the lead’s connected calendar.');
       setShowCreate(false);
       setCreateClientId('');
       setCreateTitle('');
@@ -232,7 +237,16 @@ export function AppointmentsPage(): JSX.Element {
               {
                 key: 'status',
                 header: 'Status',
-                render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill>,
+                render: (r) => (
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <Pill tone={statusTone(r.status)}>{r.status}</Pill>
+                    {r.externalRef && r.status === 'SCHEDULED' && (
+                      <span title="Mirrored to the lead’s connected calendar">
+                        <Pill tone="neutral">📅 On calendar</Pill>
+                      </span>
+                    )}
+                  </div>
+                ),
               },
               {
                 key: 'actions',
@@ -342,6 +356,7 @@ export function AppointmentsPage(): JSX.Element {
         </Card>
       )}
 
+      {notice && <p style={{ color: tokens.color.accent, fontSize: 12 }}>{notice}</p>}
       {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
     </div>
   );

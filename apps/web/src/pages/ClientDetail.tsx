@@ -7,11 +7,10 @@ import { Button, Card, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { BillingCard } from './clients/BillingCard';
 import { ClientInfoCard } from './clients/ClientInfoCard';
-import { PortalAccessCard } from './clients/PortalAccessCard';
+import { PeopleCard } from './clients/PeopleCard';
 import { TaxPaymentsCard } from './clients/TaxPaymentsCard';
 import { ClientMessagesCard } from './messaging/ClientMessagesCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
-import { ContactsCard } from './clients/ContactsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
 import { ClientFilesTab } from './clients/ClientFilesTab';
 import { ClientRequestsCard } from './clients/ClientRequestsCard';
@@ -282,9 +281,7 @@ export function ClientDetailPage(): JSX.Element {
             onSaved={(updated) => setClient({ ...client, ...updated })}
           />
 
-          <ContactsCard clientId={client.id} />
-
-          <PortalAccessCard clientId={client.id} />
+          <PeopleCard clientId={client.id} />
 
           <TasksCard clientId={client.id} compact users={staff} />
 

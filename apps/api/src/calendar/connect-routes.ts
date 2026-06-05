@@ -35,7 +35,12 @@ import { getProviderCreds, loadConnection } from './store';
 import { ensureFreshAccessToken } from './token-manager';
 import { getCalendarSettings } from './settings';
 import { syncConnection } from './sync';
-import { isCalendarWriteEnabled } from './write-service';
+import {
+  CalendarWriteError,
+  CalendarWriteService,
+  isCalendarWriteEnabled,
+  type WriteEventInput,
+} from './write-service';
 
 export interface CalendarConnectDeps {
   db: Database | null;
@@ -182,18 +187,152 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
     });
   });
 
-  // CAL-9 — write-back v2 stubs. Gated behind FEATURE_CALENDAR_WRITE; 501
-  // until two-way sync ships (see docs/calendar-writeback-v2.md).
-  const writeStub = (_req: Request, res: Response): void => {
-    if (!isCalendarWriteEnabled()) {
-      res.status(501).json({ error: 'calendar_write_not_enabled' });
+  // CAL-9 — write-back (two-way sync). Gated behind FEATURE_CALENDAR_WRITE;
+  // returns 501 while the flag is off (see docs/calendar-writeback-v2.md).
+  const writeService = new CalendarWriteService();
+
+  const WRITE_ERROR_STATUS: Record<CalendarWriteError['code'], number> = {
+    write_disabled: 501,
+    not_found: 404,
+    not_configured: 409,
+    write_scope_missing: 409,
+    reauth_required: 409,
+    provider_failed: 502,
+  };
+
+  function handleWriteError(err: unknown, res: Response, connectionId?: string): void {
+    if (err instanceof CalendarWriteError) {
+      res.status(WRITE_ERROR_STATUS[err.code]).json({ error: err.code });
       return;
     }
-    res.status(501).json({ error: 'calendar_writeback_not_implemented' });
-  };
-  router.post('/events', writeStub);
-  router.patch('/events/:id', writeStub);
-  router.delete('/events/:id', writeStub);
+    logger.warn({ err, connectionId }, 'calendar write-back failed');
+    res.status(502).json({ error: 'write_failed' });
+  }
+
+  function writeGuard(res: Response): boolean {
+    if (!isCalendarWriteEnabled()) {
+      res.status(501).json({ error: 'calendar_write_not_enabled' });
+      return false;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return false;
+    }
+    return true;
+  }
+
+  const CreateEventSchema = z.object({
+    connectionId: z.string().uuid(),
+    calendarId: z.string().min(1),
+    title: z.string().min(1).max(500),
+    start: z.string().datetime({ offset: true }),
+    end: z.string().datetime({ offset: true }),
+    location: z.string().max(1000).nullish(),
+    attendees: z.array(z.string().email()).max(100).optional(),
+  });
+
+  const UpdateEventSchema = z
+    .object({
+      title: z.string().min(1).max(500).optional(),
+      start: z.string().datetime({ offset: true }).optional(),
+      end: z.string().datetime({ offset: true }).optional(),
+      location: z.string().max(1000).nullish(),
+      attendees: z.array(z.string().email()).max(100).optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, { message: 'empty_patch' });
+
+  // POST /events — create a TB-origin event on a connected calendar.
+  router.post('/events', async (req: Request, res: Response) => {
+    if (!writeGuard(res)) return;
+    const parsed = CreateEventSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_body', issues: parsed.error.flatten() });
+      return;
+    }
+    const start = new Date(parsed.data.start);
+    const end = new Date(parsed.data.end);
+    if (end.getTime() <= start.getTime()) {
+      res.status(400).json({ error: 'ends_before_starts' });
+      return;
+    }
+    const input: WriteEventInput = {
+      title: parsed.data.title,
+      start,
+      end,
+      location: parsed.data.location ?? null,
+      attendees: parsed.data.attendees ?? [],
+    };
+    try {
+      const out = await writeService.createEvent(
+        { db: deps.db!, fetchImpl: doFetch },
+        {
+          firmId: req.staffSession!.firmId,
+          staffId: req.staffSession!.appUserId,
+          connectionId: parsed.data.connectionId,
+          calendarId: parsed.data.calendarId,
+          input,
+          actorAppUserId: req.staffSession!.appUserId,
+        },
+      );
+      res.status(201).json(out);
+    } catch (err) {
+      handleWriteError(err, res, parsed.data.connectionId);
+    }
+  });
+
+  // PATCH /events/:id — update a TB-origin event we own.
+  router.patch('/events/:id', async (req: Request, res: Response) => {
+    if (!writeGuard(res)) return;
+    const parsed = UpdateEventSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_body', issues: parsed.error.flatten() });
+      return;
+    }
+    const patch: Partial<WriteEventInput> = {};
+    if (parsed.data.title !== undefined) patch.title = parsed.data.title;
+    if (parsed.data.start !== undefined) patch.start = new Date(parsed.data.start);
+    if (parsed.data.end !== undefined) patch.end = new Date(parsed.data.end);
+    if (parsed.data.location !== undefined) patch.location = parsed.data.location ?? null;
+    if (parsed.data.attendees !== undefined) patch.attendees = parsed.data.attendees;
+    if (patch.start && patch.end && patch.end.getTime() <= patch.start.getTime()) {
+      res.status(400).json({ error: 'ends_before_starts' });
+      return;
+    }
+    try {
+      await writeService.updateEvent(
+        { db: deps.db!, fetchImpl: doFetch },
+        {
+          firmId: req.staffSession!.firmId,
+          staffId: req.staffSession!.appUserId,
+          eventId: req.params['id']!,
+          patch,
+          actorAppUserId: req.staffSession!.appUserId,
+        },
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      handleWriteError(err, res);
+    }
+  });
+
+  // DELETE /events/:id — delete a TB-origin event we own.
+  router.delete('/events/:id', async (req: Request, res: Response) => {
+    if (!writeGuard(res)) return;
+    try {
+      await writeService.deleteEvent(
+        { db: deps.db!, fetchImpl: doFetch },
+        {
+          firmId: req.staffSession!.firmId,
+          staffId: req.staffSession!.appUserId,
+          eventId: req.params['id']!,
+          actorAppUserId: req.staffSession!.appUserId,
+        },
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      handleWriteError(err, res);
+    }
+  });
 
   // GET /suggestions — pending time-entry suggestions for this staff.
   router.get('/suggestions', async (req: Request, res: Response) => {

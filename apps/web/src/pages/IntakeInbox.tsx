@@ -125,6 +125,26 @@ export function IntakeInboxPage(): JSX.Element {
     }
   }
 
+  async function deleteFile(fileId: string): Promise<void> {
+    if (!selected) return;
+    if (
+      !window.confirm('Delete this file? This removes it from the submission and cannot be undone.')
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/intake/sessions/${selected}/files/${fileId}`, { method: 'DELETE' });
+      // Refresh the open submission + the list (file counts).
+      await openSession(selected);
+      await loadList();
+    } catch (err) {
+      setError((err as ApiError).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function reject(): Promise<void> {
     if (!selected) return;
     setBusy(true);
@@ -221,20 +241,48 @@ export function IntakeInboxPage(): JSX.Element {
                   Files
                 </div>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
-                  {detail.files.map((f) => (
-                    <li key={f.id} style={{ fontSize: 13 }}>
-                      <a
-                        href={`/api/staff/intake/sessions/${detail.session.id}/files/${f.id}/download`}
-                        style={{ color: tokens.color.accent }}
+                  {detail.files.map((f) => {
+                    const base = `/api/staff/intake/sessions/${detail.session.id}/files/${f.id}/download`;
+                    return (
+                      <li
+                        key={f.id}
+                        style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}
                       >
-                        {f.filename ?? 'document'}
-                      </a>{' '}
-                      <span style={{ color: tokens.color.textMuted }}>
-                        ({(f.byteSize / 1024).toFixed(0)} KB
-                        {f.kind === 'scan' ? ', assembled' : ''})
-                      </span>
-                    </li>
-                  ))}
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <a href={base} style={{ color: tokens.color.accent }}>
+                            {f.filename ?? 'document'}
+                          </a>{' '}
+                          <span style={{ color: tokens.color.textMuted }}>
+                            ({(f.byteSize / 1024).toFixed(0)} KB
+                            {f.kind === 'scan' ? ', assembled' : ''})
+                          </span>
+                        </span>
+                        <a
+                          href={`${base}?inline=1`}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: tokens.color.accent, fontSize: 12 }}
+                        >
+                          Preview
+                        </a>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void deleteFile(f.id)}
+                          style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: tokens.color.danger,
+                            fontSize: 12,
+                            cursor: busy ? 'default' : 'pointer',
+                            padding: 0,
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
 
