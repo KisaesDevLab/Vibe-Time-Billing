@@ -28,6 +28,19 @@ import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
 import { runCalendarMatch } from '../../api/src/calendar/match';
 import { runCalendarReminderTick } from '../../api/src/calendar/reminder-tick';
 import { runCalendarSuggestionTick } from '../../api/src/calendar/suggestion-tick';
+import {
+  runAppointmentProviderWrite,
+  runAppointmentProviderUpdate,
+  runAppointmentProviderDelete,
+  type ProviderJobDeps,
+  type ProviderJobResult,
+} from '../../api/src/appointments/provider-jobs';
+import {
+  APPOINTMENT_PROVIDER_WRITE_QUEUE,
+  APPOINTMENT_PROVIDER_UPDATE_QUEUE,
+  APPOINTMENT_PROVIDER_DELETE_QUEUE,
+  type ProviderJob,
+} from '../../api/src/appointments/queue';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -713,6 +726,10 @@ async function setup(): Promise<void> {
   // Staff-to-staff message notifications (debounced email/SMS fan-out).
   setupInternalMessageNotifyQueue();
 
+  // BK-5 — per-staff appointment calendar write-back (enqueued on demand
+  // by the booking API; no schedule).
+  setupAppointmentProviderQueues();
+
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
   startHealthServer();
 }
@@ -803,6 +820,40 @@ function setupInternalMessageNotifyQueue(): void {
 let imNotifyWorkerRef: Worker<InternalMessageNotifyPayload> | null = null;
 let imNotifyQueueRef: Queue<InternalMessageNotifyPayload> | null = null;
 let imNotifyEventsRef: QueueEvents | null = null;
+
+const apptWorkerRefs: Worker<ProviderJob>[] = [];
+const apptEventRefs: QueueEvents[] = [];
+
+function setupAppointmentProviderQueues(): void {
+  if (!db) {
+    logger.warn('appointment provider queues not registered — db missing');
+    return;
+  }
+  const defs: Array<
+    [string, (deps: ProviderJobDeps, job: ProviderJob) => Promise<ProviderJobResult>]
+  > = [
+    [APPOINTMENT_PROVIDER_WRITE_QUEUE, runAppointmentProviderWrite],
+    [APPOINTMENT_PROVIDER_UPDATE_QUEUE, runAppointmentProviderUpdate],
+    [APPOINTMENT_PROVIDER_DELETE_QUEUE, runAppointmentProviderDelete],
+  ];
+  for (const [name, fn] of defs) {
+    const evt = new QueueEvents(name, { connection });
+    evt.on('failed', ({ jobId, failedReason }) => {
+      logger.error({ jobId, queue: name, failedReason }, 'appointment provider job failed');
+    });
+    const w = new Worker<ProviderJob>(
+      name,
+      async (job) => {
+        const result = await fn({ db: db! }, job.data);
+        logger.info({ jobId: job.id, queue: name, result }, 'appointment provider job complete');
+      },
+      { connection, concurrency: 3 },
+    );
+    apptWorkerRefs.push(w);
+    apptEventRefs.push(evt);
+  }
+  logger.info({ queues: defs.map((d) => d[0]) }, 'appointment provider queues registered');
+}
 
 function setupStorageMutationQueue(): void {
   if (!db || !storage) {
