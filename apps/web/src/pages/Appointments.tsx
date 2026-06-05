@@ -4,9 +4,9 @@
 // booking wizard, the appointments list with a detail drawer, the
 // reschedule inbox, and per-staff availability. Hash-routed tabs.
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
-import { Button, Card, Combobox, Input, MultiCombobox, Pill, Table, Tabs, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -384,20 +384,238 @@ function Section({ title, children }: { title: string; children: ReactNode }): J
 }
 
 // ---------------------------------------------------------------- Book
+// Calendly-style two-pane booker: a compact setup header (type + staff +
+// auto duration/location) over a month calendar (bookable days bolded)
+// with auto-loading time slots; client/details + confirm slide in once a
+// slot is picked. Single-staff is the fast default (current user); add
+// more staff to book the free/busy intersection.
+
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+const ymd = (y: number, m: number, d: number): string => `${y}-${pad2(m)}-${pad2(d)}`;
+function todayYmd(): string {
+  const n = new Date();
+  return ymd(n.getFullYear(), n.getMonth() + 1, n.getDate());
+}
+function initials(name: string): string {
+  const p = name.trim().split(/\s+/);
+  return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '?';
+}
+function fmtDayHeading(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function reasonMsg(reason?: string): string {
+  return reason === 'staff_unavailable'
+    ? 'A selected staff member isn’t available that day.'
+    : reason === 'within_notice'
+      ? 'Too soon to book — outside the minimum notice window.'
+      : 'No open times on this day.';
+}
+
+function StaffChip({ name, onRemove }: { name: string; onRemove?: () => void }): JSX.Element {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '3px 8px 3px 4px',
+        borderRadius: 999,
+        background: tokens.color.accentMuted,
+        fontSize: 12,
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 20,
+          height: 20,
+          borderRadius: 999,
+          background: tokens.color.accent,
+          color: '#fff',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 10,
+          fontWeight: 600,
+        }}
+      >
+        {initials(name)}
+      </span>
+      {name}
+      {onRemove && (
+        <button
+          type="button"
+          aria-label={`Remove ${name}`}
+          onClick={onRemove}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            cursor: 'pointer',
+            color: tokens.color.textMuted,
+            fontSize: 13,
+            lineHeight: 1,
+          }}
+        >
+          ✕
+        </button>
+      )}
+    </span>
+  );
+}
+
+function MonthCalendar({
+  year,
+  month,
+  availability,
+  selected,
+  loading,
+  canPrev,
+  onSelect,
+  onNav,
+}: {
+  year: number;
+  month: number;
+  availability: Record<string, boolean>;
+  selected: string | null;
+  loading: boolean;
+  canPrev: boolean;
+  onSelect: (d: string) => void;
+  onNav: (delta: number) => void;
+}): JSX.Element {
+  const firstDow = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const today = todayYmd();
+  const cells: (string | null)[] = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(ymd(year, month, d));
+  const navBtn = (disabled: boolean): React.CSSProperties => ({
+    border: 'none',
+    background: 'transparent',
+    cursor: disabled ? 'default' : 'pointer',
+    color: disabled ? tokens.color.textMuted : tokens.color.text,
+    fontSize: 18,
+    padding: '0 8px',
+  });
+  return (
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 8,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => onNav(-1)}
+          disabled={!canPrev}
+          aria-label="Previous month"
+          style={navBtn(!canPrev)}
+        >
+          ‹
+        </button>
+        <strong style={{ fontSize: 14 }}>
+          {MONTH_NAMES[month - 1]} {year}
+        </strong>
+        <button
+          type="button"
+          onClick={() => onNav(1)}
+          aria-label="Next month"
+          style={navBtn(false)}
+        >
+          ›
+        </button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+        {WEEKDAYS.map((w) => (
+          <div key={w} style={{ textAlign: 'center', fontSize: 10, color: tokens.color.textMuted }}>
+            {w}
+          </div>
+        ))}
+        {cells.map((c, i) => {
+          if (!c) return <div key={`e${i}`} />;
+          const day = Number(c.slice(-2));
+          const open = availability[c] === true;
+          const isPast = c < today;
+          const isSel = c === selected;
+          const clickable = open && !isPast;
+          return (
+            <button
+              key={c}
+              type="button"
+              disabled={!clickable}
+              onClick={() => onSelect(c)}
+              style={{
+                aspectRatio: '1',
+                borderRadius: tokens.radius.sm,
+                fontSize: 13,
+                cursor: clickable ? 'pointer' : 'default',
+                border: isSel ? `1.5px solid ${tokens.color.accent}` : '1px solid transparent',
+                background: isSel ? tokens.color.accent : 'transparent',
+                color: isSel ? '#fff' : clickable ? tokens.color.text : tokens.color.textMuted,
+                fontWeight: clickable && !isSel ? 600 : 400,
+                opacity: isPast ? 0.35 : 1,
+              }}
+            >
+              {day}
+            </button>
+          );
+        })}
+      </div>
+      {loading && (
+        <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 6 }}>
+          Loading availability…
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
-  const [step, setStep] = useState(1);
+  const { me } = useAuth();
   const [staff, setStaff] = useState<BookableStaff[]>([]);
   const [types, setTypes] = useState<ApptType[]>([]);
+  const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
   const [selStaff, setSelStaff] = useState<string[]>([]);
   const [typeId, setTypeId] = useState('');
   const [duration, setDuration] = useState(30);
   const [location, setLocation] = useState<LocationType>('VIDEO');
   const [locationDetail, setLocationDetail] = useState('');
-  const [date, setDate] = useState('');
+  const [showOpts, setShowOpts] = useState(false);
+  const now = new Date();
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth() + 1);
+  const [monthAvail, setMonthAvail] = useState<Record<string, boolean>>({});
+  const [monthLoading, setMonthLoading] = useState(false);
+  const [date, setDate] = useState<string | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [slotMsg, setSlotMsg] = useState<string | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
   const [slot, setSlot] = useState<Slot | null>(null);
-  const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
   const [clientId, setClientId] = useState('');
   const [contacts, setContacts] = useState<
     { id: string; fullName: string; email: string | null }[]
@@ -406,11 +624,25 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   const [subject, setSubject] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
 
   useEffect(() => {
+    const qs = new URLSearchParams(window.location.search);
+    const qClient = qs.get('clientId');
+    const qStaff = qs.get('staffId');
+    if (qClient) setClientId(qClient);
     void api<{ items: BookableStaff[] }>('/api/staff/appointments/bookable-staff')
-      .then((r) => setStaff(r.items ?? []))
+      .then((r) => {
+        const list = r.items ?? [];
+        setStaff(list);
+        setSelStaff((prev) => {
+          if (prev.length) return prev;
+          if (qStaff && list.some((s) => s.id === qStaff)) return [qStaff];
+          if (me?.appUserId && list.some((s) => s.id === me.appUserId)) return [me.appUserId];
+          return prev;
+        });
+      })
       .catch(() => undefined);
     void api<{ items: ApptType[] }>('/api/staff/appointments/appointment-types')
       .then((r) => setTypes(r.items ?? []))
@@ -418,12 +650,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     void api<{ items: { id: string; name: string }[] }>('/api/staff/clients')
       .then((r) => setClients(r.items ?? []))
       .catch(() => undefined);
-    // Deep-link prefill: /appointments?clientId=…&staffId=…#book
-    const qs = new URLSearchParams(window.location.search);
-    const qClient = qs.get('clientId');
-    const qStaff = qs.get('staffId');
-    if (qClient) setClientId(qClient);
-    if (qStaff) setSelStaff((prev) => (prev.includes(qStaff) ? prev : [...prev, qStaff]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -439,59 +666,115 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       .catch(() => setContacts([]));
   }, [clientId]);
 
-  // Any change to the inputs that define a slot invalidates a previously
-  // picked slot — otherwise a stale slot (sized for the old duration/date/
-  // staff) could be submitted, producing a 409 or an inconsistent record.
+  // Changing staff/duration invalidates a picked day/slot.
   useEffect(() => {
-    setSlots([]);
+    setDate(null);
     setSlot(null);
+    setSlots([]);
     setSlotMsg(null);
-  }, [selStaff, duration, date]);
+  }, [selStaff, duration]);
+
+  // Month availability (which days have any open slot) auto-loads.
+  useEffect(() => {
+    if (selStaff.length === 0) {
+      setMonthAvail({});
+      return undefined;
+    }
+    let alive = true;
+    setMonthLoading(true);
+    const params = new URLSearchParams({
+      staffIds: selStaff.join(','),
+      year: String(viewYear),
+      month: String(viewMonth),
+      durationMinutes: String(duration),
+    });
+    void api<{ days: Record<string, boolean> }>(`/api/staff/booking/slots/month?${params}`)
+      .then((r) => {
+        if (alive) setMonthAvail(r.days ?? {});
+      })
+      .catch(() => {
+        if (alive) setMonthAvail({});
+      })
+      .finally(() => {
+        if (alive) setMonthLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selStaff, duration, viewYear, viewMonth]);
+
+  const loadSlots = useCallback(
+    (d: string) => {
+      let alive = true;
+      setSlotsLoading(true);
+      setSlotMsg(null);
+      setSlot(null);
+      const params = new URLSearchParams({
+        staffIds: selStaff.join(','),
+        date: d,
+        durationMinutes: String(duration),
+      });
+      void api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${params}`)
+        .then((r) => {
+          if (!alive) return;
+          setSlots(r.slots ?? []);
+          if ((r.slots ?? []).length === 0) setSlotMsg(reasonMsg(r.reason));
+        })
+        .catch((e) => {
+          if (alive) setSlotMsg(e instanceof Error ? e.message : 'failed');
+        })
+        .finally(() => {
+          if (alive) setSlotsLoading(false);
+        });
+      return () => {
+        alive = false;
+      };
+    },
+    [selStaff, duration],
+  );
+
+  // Slots auto-load when a day is selected.
+  useEffect(() => {
+    if (!date || selStaff.length === 0) {
+      setSlots([]);
+      return undefined;
+    }
+    return loadSlots(date);
+  }, [date, selStaff, duration, loadSlots]);
 
   function pickType(t: ApptType): void {
+    if (typeId === t.id) {
+      setTypeId('');
+      return;
+    }
     setTypeId(t.id);
     setDuration(t.defaultDurationMinutes);
     setLocation(t.defaultLocationType);
-    if (!subject) setSubject(t.name);
+    if (!subject || types.some((x) => x.name === subject)) setSubject(t.name);
   }
-
-  async function findTimes(): Promise<void> {
-    setSlotMsg(null);
-    setSlots([]);
-    setSlot(null);
-    if (selStaff.length === 0) {
-      setSlotMsg('Select at least one staff member in step 1 first.');
-      return;
+  function navMonth(delta: number): void {
+    let y = viewYear;
+    let m = viewMonth + delta;
+    if (m < 1) {
+      m = 12;
+      y--;
     }
-    if (!date) {
-      setSlotMsg('Pick a date.');
-      return;
+    if (m > 12) {
+      m = 1;
+      y++;
     }
-    try {
-      const params = new URLSearchParams({
-        staffIds: selStaff.join(','),
-        date,
-        durationMinutes: String(duration),
-      });
-      const r = await api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${params}`);
-      setSlots(r.slots ?? []);
-      if ((r.slots ?? []).length === 0) {
-        setSlotMsg(
-          r.reason === 'staff_unavailable'
-            ? 'A selected staff member has no availability that day.'
-            : r.reason === 'within_notice'
-              ? 'Too soon to book — outside the minimum notice window.'
-              : 'No shared availability on this date.',
-        );
-      }
-    } catch (e) {
-      setSlotMsg(e instanceof Error ? e.message : 'failed');
-    }
+    setViewYear(y);
+    setViewMonth(m);
   }
+  const canPrev =
+    viewYear > now.getFullYear() ||
+    (viewYear === now.getFullYear() && viewMonth > now.getMonth() + 1);
+  const staffName = (id: string): string => staff.find((s) => s.id === id)?.name ?? id;
 
   async function confirm(): Promise<void> {
     if (!slot) return;
     setErr(null);
+    setSubmitting(true);
     try {
       await api('/api/staff/appointments/book', {
         method: 'POST',
@@ -501,11 +784,9 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           subject: subject.trim() || 'Appointment',
           startsAt: slot.start,
           endsAt: slot.end,
-          durationMinutes: duration,
           location,
           locationDetail: locationDetail || null,
           clientId: clientId || null,
-          engagementId: null,
           participantContactIds: participantIds,
           internalNotes: internalNotes || null,
         }),
@@ -513,44 +794,46 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       setDone(true);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'failed';
-      if (/slot_taken|409/.test(msg)) {
-        setErr('That slot was just taken. Pick a new time.');
-        setStep(2);
+      if (/slot_taken/.test(msg)) {
+        setErr('That time was just taken — please pick another.');
+        if (date) loadSlots(date);
       } else {
         setErr(msg);
       }
+    } finally {
+      setSubmitting(false);
     }
+  }
+
+  function resetAll(): void {
+    setDone(false);
+    setTypeId('');
+    setDuration(30);
+    setLocation('VIDEO');
+    setLocationDetail('');
+    setShowOpts(false);
+    setDate(null);
+    setSlots([]);
+    setSlot(null);
+    setSlotMsg(null);
+    setClientId('');
+    setParticipantIds([]);
+    setSubject('');
+    setInternalNotes('');
+    setErr(null);
   }
 
   if (done) {
     return (
       <Card title="Appointment booked">
-        <p style={{ fontSize: 14 }}>✓ {subject} is booked.</p>
+        <p style={{ fontSize: 14 }}>
+          ✓ {subject || 'Appointment'} —{' '}
+          {slot ? `${fmtDayHeading(date!)} at ${fmtTime(slot.start)}` : ''} with{' '}
+          {selStaff.map(staffName).join(', ')}.
+        </p>
         <div style={{ display: 'flex', gap: 8 }}>
           <Button onClick={onBooked}>View appointments</Button>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              // Full reset — leftover internalNotes/participants from a prior
-              // booking must not carry into the next one.
-              setDone(false);
-              setStep(1);
-              setSelStaff([]);
-              setTypeId('');
-              setDuration(30);
-              setLocation('VIDEO');
-              setLocationDetail('');
-              setDate('');
-              setSlots([]);
-              setSlot(null);
-              setSlotMsg(null);
-              setClientId('');
-              setParticipantIds([]);
-              setSubject('');
-              setInternalNotes('');
-              setErr(null);
-            }}
-          >
+          <Button variant="secondary" onClick={resetAll}>
             Book another
           </Button>
         </div>
@@ -558,36 +841,16 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     );
   }
 
-  const staffOpts = staff.map((s) => ({
-    value: s.id,
-    label: s.hasConnection ? s.name : `${s.name} (read-only cal)`,
-  }));
+  const addOpts = staff.filter((s) => !selStaff.includes(s.id));
 
   return (
-    <Card title={`Book appointment — step ${step} of 4`}>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-        {['Staff & type', 'Date & time', 'Client & details', 'Review'].map((l, i) => (
-          <Pill key={l} tone={step === i + 1 ? 'accent' : step > i + 1 ? 'success' : 'neutral'}>
-            {i + 1}. {l}
-          </Pill>
-        ))}
-      </div>
-      {err && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{err}</p>}
-
-      {step === 1 && (
-        <div style={{ display: 'grid', gap: 12, maxWidth: 560 }}>
-          <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-            <div style={{ marginBottom: 4 }}>Staff (slots = when all are free)</div>
-            <MultiCombobox
-              options={staffOpts}
-              selected={selStaff}
-              onChange={setSelStaff}
-              placeholder="Select staff…"
-              ariaLabel="Select staff"
-            />
-          </div>
+    <Card title="Book appointment">
+      {err && <p style={{ color: tokens.color.danger, fontSize: 13, marginTop: 0 }}>{err}</p>}
+      <div style={{ display: 'grid', gap: 16 }}>
+        {/* Type */}
+        {types.length > 0 && (
           <div>
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>Type</div>
+            <div style={fieldLabel}>Type</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {types.map((t) => (
                 <button
@@ -595,198 +858,284 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                   type="button"
                   onClick={() => pickType(t)}
                   style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
                     padding: '8px 12px',
                     borderRadius: tokens.radius.sm,
                     cursor: 'pointer',
                     border: `1.5px solid ${typeId === t.id ? tokens.color.accent : tokens.color.border}`,
                     background: typeId === t.id ? tokens.color.accentMuted : tokens.color.surface,
                     color: tokens.color.text,
+                    fontSize: 13,
                   }}
                 >
-                  {t.name} · {t.defaultDurationMinutes}m
+                  {t.color && (
+                    <span
+                      aria-hidden
+                      style={{ width: 10, height: 10, borderRadius: 999, background: t.color }}
+                    />
+                  )}
+                  {t.name}
+                  <span style={{ color: tokens.color.textMuted }}>{t.defaultDurationMinutes}m</span>
                 </button>
               ))}
             </div>
           </div>
-          <Input
-            label="Duration (min)"
-            type="number"
-            value={String(duration)}
-            onChange={(e) => setDuration(Number(e.target.value) || 30)}
-          />
-          <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
-            Location
-            <select
-              value={location}
-              onChange={(e) => setLocation(e.target.value as LocationType)}
-              style={selectStyle}
-            >
-              <option value="IN_PERSON">In-person</option>
-              <option value="PHONE">Phone</option>
-              <option value="VIDEO">Video</option>
-            </select>
-          </label>
-          <Input
-            label={
-              location === 'VIDEO'
-                ? 'Meeting link'
-                : location === 'PHONE'
-                  ? 'Call notes'
-                  : 'Address'
-            }
-            value={locationDetail}
-            onChange={(e) => setLocationDetail(e.target.value)}
-          />
-          <div>
-            <Button onClick={() => setStep(2)} disabled={selStaff.length === 0 || duration < 5}>
-              Next: Date & time →
-            </Button>
-          </div>
-        </div>
-      )}
+        )}
 
-      {step === 2 && (
-        <div style={{ display: 'grid', gap: 12, maxWidth: 560 }}>
-          <Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          <div>
-            <Button variant="secondary" onClick={() => void findTimes()} disabled={!date}>
-              Find times
-            </Button>
-          </div>
-          {slotMsg && <p style={{ fontSize: 13, color: tokens.color.textMuted }}>{slotMsg}</p>}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {slots.map((s) => (
-              <button
-                key={s.start}
-                type="button"
-                disabled={!s.available}
-                onClick={() => setSlot(s)}
-                title={
-                  s.available
-                    ? 'Available'
-                    : `Busy: ${s.staffAvailability.filter((p) => !p.free).length} staff`
-                }
-                style={{
-                  padding: '8px 10px',
-                  borderRadius: tokens.radius.sm,
-                  cursor: s.available ? 'pointer' : 'not-allowed',
-                  border: `1.5px solid ${slot?.start === s.start ? tokens.color.accent : tokens.color.border}`,
-                  background:
-                    slot?.start === s.start
-                      ? tokens.color.accent
-                      : s.available
-                        ? tokens.color.surface
-                        : tokens.color.bg,
-                  color:
-                    slot?.start === s.start
-                      ? '#fff'
-                      : s.available
-                        ? tokens.color.text
-                        : tokens.color.textMuted,
-                  textDecoration: s.available ? 'none' : 'line-through',
-                }}
-              >
-                {new Date(s.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-              </button>
+        {/* With (staff) + inline duration/location */}
+        <div>
+          <div style={fieldLabel}>With</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {selStaff.map((id) => (
+              <StaffChip
+                key={id}
+                name={staffName(id)}
+                onRemove={() => setSelStaff((p) => p.filter((x) => x !== id))}
+              />
             ))}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Button variant="secondary" onClick={() => setStep(1)}>
-              ← Back
-            </Button>
-            <Button onClick={() => setStep(3)} disabled={!slot}>
-              Next: Client & details →
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === 3 && (
-        <div style={{ display: 'grid', gap: 12, maxWidth: 560 }}>
-          <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-            <div style={{ marginBottom: 4 }}>Client (optional)</div>
-            <Combobox
-              options={clients.map((c) => ({ value: c.id, label: c.name }))}
-              value={clientId}
-              onChange={setClientId}
-              placeholder="No client"
-              clearable
-              ariaLabel="Client"
-            />
-          </div>
-          {clientId && contacts.length > 0 && (
-            <div>
-              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-                Participants
+            {addOpts.length > 0 && (
+              <div style={{ width: 170 }}>
+                <Combobox
+                  ariaLabel="Add staff"
+                  value=""
+                  onChange={(v) => {
+                    if (v) setSelStaff((p) => (p.includes(v) ? p : [...p, v]));
+                  }}
+                  options={addOpts.map((s) => ({
+                    value: s.id,
+                    label: s.hasConnection ? s.name : `${s.name} (read-only cal)`,
+                  }))}
+                  placeholder="+ add staff"
+                  size="sm"
+                />
               </div>
-              {contacts.map((c) => (
-                <label
-                  key={c.id}
-                  style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+            )}
+            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              {duration} min · {LOC_LABEL[location]}
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowOpts((v) => !v)}
+              aria-label="Edit duration & location"
+              style={{
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                color: tokens.color.textMuted,
+                fontSize: 16,
+              }}
+            >
+              ⋯
+            </button>
+          </div>
+          {showOpts && (
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                flexWrap: 'wrap',
+                marginTop: 8,
+                alignItems: 'flex-end',
+              }}
+            >
+              <Input
+                label="Duration (min)"
+                type="number"
+                value={String(duration)}
+                onChange={(e) => setDuration(Number(e.target.value) || 30)}
+                style={{ width: 110 }}
+              />
+              <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                Location
+                <select
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value as LocationType)}
+                  style={selectStyle}
                 >
-                  <input
-                    type="checkbox"
-                    checked={participantIds.includes(c.id)}
-                    onChange={(e) =>
-                      setParticipantIds((prev) =>
-                        e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
-                      )
-                    }
-                  />
-                  {c.fullName} {c.email ? `· ${c.email}` : ''}
-                </label>
-              ))}
+                  <option value="IN_PERSON">In-person</option>
+                  <option value="PHONE">Phone</option>
+                  <option value="VIDEO">Video</option>
+                </select>
+              </label>
+              <Input
+                label={
+                  location === 'VIDEO'
+                    ? 'Meeting link'
+                    : location === 'PHONE'
+                      ? 'Call notes'
+                      : 'Address'
+                }
+                value={locationDetail}
+                onChange={(e) => setLocationDetail(e.target.value)}
+              />
             </div>
           )}
-          <Input label="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
-          <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
-            Internal notes (staff only)
-            <textarea
-              value={internalNotes}
-              onChange={(e) => setInternalNotes(e.target.value)}
-              rows={3}
-              style={{ ...selectStyle, width: '100%', resize: 'vertical' }}
-            />
-          </label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Button variant="secondary" onClick={() => setStep(2)}>
-              ← Back
-            </Button>
-            <Button onClick={() => setStep(4)}>Review →</Button>
-          </div>
+          {selStaff.length > 1 && (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '6px 0 0' }}>
+              Showing times when all {selStaff.length} are free.
+            </p>
+          )}
         </div>
-      )}
 
-      {step === 4 && slot && (
-        <div style={{ display: 'grid', gap: 10, maxWidth: 560 }}>
-          <div style={{ fontSize: 14 }}>
-            <strong>{subject || 'Appointment'}</strong>
+        {/* When — two-pane calendar + slots */}
+        {selStaff.length === 0 ? (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+            Add a staff member to see open times.
+          </p>
+        ) : (
+          <div
+            style={{ display: 'grid', gridTemplateColumns: 'minmax(230px, 290px) 1fr', gap: 20 }}
+          >
+            <MonthCalendar
+              year={viewYear}
+              month={viewMonth}
+              availability={monthAvail}
+              selected={date}
+              loading={monthLoading}
+              canPrev={canPrev}
+              onSelect={setDate}
+              onNav={navMonth}
+            />
             <div>
-              {new Date(slot.start).toLocaleString()} · {duration} min
+              {!date ? (
+                <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
+                  Pick a day with openings (bold) to see times.
+                </p>
+              ) : (
+                <>
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>{fmtDayHeading(date)}</div>
+                  {slotsLoading ? (
+                    <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading times…</p>
+                  ) : slots.length === 0 ? (
+                    <p style={{ fontSize: 13, color: tokens.color.textMuted }}>{slotMsg}</p>
+                  ) : (
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
+                        gap: 8,
+                      }}
+                    >
+                      {slots.map((s) => {
+                        const sel = slot?.start === s.start;
+                        return (
+                          <button
+                            key={s.start}
+                            type="button"
+                            disabled={!s.available}
+                            onClick={() => setSlot(s)}
+                            title={s.available ? 'Available' : 'Unavailable'}
+                            style={{
+                              padding: '9px 6px',
+                              borderRadius: tokens.radius.sm,
+                              fontSize: 13,
+                              cursor: s.available ? 'pointer' : 'not-allowed',
+                              border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                              background: sel
+                                ? tokens.color.accent
+                                : s.available
+                                  ? tokens.color.surface
+                                  : tokens.color.bg,
+                              color: sel
+                                ? '#fff'
+                                : s.available
+                                  ? tokens.color.text
+                                  : tokens.color.textMuted,
+                              textDecoration: s.available ? 'none' : 'line-through',
+                            }}
+                          >
+                            {fmtTime(s.start)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
-            <div>
-              Staff: {selStaff.map((id) => staff.find((s) => s.id === id)?.name ?? id).join(', ')}
+          </div>
+        )}
+
+        {/* Details — slide in once a time is chosen */}
+        {slot && (
+          <div
+            style={{
+              borderTop: `1px solid ${tokens.color.border}`,
+              paddingTop: 14,
+              display: 'grid',
+              gap: 12,
+              maxWidth: 560,
+            }}
+          >
+            <div style={{ fontSize: 13 }}>
+              <strong>{fmtDayHeading(date!)}</strong> at <strong>{fmtTime(slot.start)}</strong> ·{' '}
+              {duration} min · {selStaff.map(staffName).join(', ')}
             </div>
-            <div>
-              {LOC_LABEL[location]}
-              {locationDetail ? `: ${locationDetail}` : ''}
+            <Input label="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
+            <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              Client (optional)
+              <Combobox
+                ariaLabel="Client"
+                value={clientId}
+                onChange={setClientId}
+                options={clients.map((c) => ({ value: c.id, label: c.name }))}
+                placeholder="No client"
+                clearable
+              />
             </div>
-            {clientId && <div>Client: {clients.find((c) => c.id === clientId)?.name}</div>}
-            {participantIds.length > 0 && (
-              <div>{participantIds.length} participant(s) will be emailed.</div>
+            {clientId && contacts.length > 0 && (
+              <div>
+                <div style={fieldLabel}>Participants (emailed a confirmation)</div>
+                {contacts.map((c) => (
+                  <label
+                    key={c.id}
+                    style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={participantIds.includes(c.id)}
+                      onChange={(e) =>
+                        setParticipantIds((prev) =>
+                          e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
+                        )
+                      }
+                    />
+                    {c.fullName}
+                    {c.email ? ` · ${c.email}` : ''}
+                  </label>
+                ))}
+              </div>
             )}
+            <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              Internal notes (staff only)
+              <textarea
+                value={internalNotes}
+                onChange={(e) => setInternalNotes(e.target.value)}
+                rows={2}
+                style={{ ...selectStyle, width: '100%', resize: 'vertical' }}
+              />
+            </label>
+            <div>
+              <Button onClick={() => void confirm()} disabled={submitting}>
+                {submitting ? 'Booking…' : 'Confirm booking'}
+              </Button>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Button variant="secondary" onClick={() => setStep(3)}>
-              ← Back
-            </Button>
-            <Button onClick={() => void confirm()}>Confirm booking</Button>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </Card>
   );
 }
+
+const fieldLabel: React.CSSProperties = {
+  fontSize: 11,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+  color: tokens.color.textMuted,
+  marginBottom: 6,
+};
 
 // --------------------------------------------------------------- Inbox
 function InboxTab({ onResolved }: { onResolved: () => void }): JSX.Element {
