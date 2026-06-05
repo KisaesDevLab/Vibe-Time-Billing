@@ -15,6 +15,7 @@
 // picks the provider per firm.
 
 import { sanitizeSignatureSvg } from '../portal/signature-svg';
+import { createOpenSignClient, type ParseDoc } from './opensign-client';
 
 export type EsignEnvelopeStatus = 'PENDING' | 'SIGNED' | 'DECLINED' | 'CANCELLED';
 
@@ -186,107 +187,10 @@ export interface OpenSignProviderOptions {
   fetchImpl?: typeof fetch;
 }
 
-interface ParseDoc {
-  objectId?: string;
-  IsCompleted?: boolean;
-  IsDeclined?: boolean;
-  IsSigned?: boolean;
-  SignedUrl?: string;
-  CertificateUrl?: string;
-  updatedAt?: string;
-  AuditTrail?: Array<{ Activity?: string; SignedOn?: string; UserPtr?: { Email?: string } }>;
-  Signers?: Array<{ objectId?: string; Email?: string }>;
-  [k: string]: unknown;
-}
-
 export function createOpenSignProvider(opts: OpenSignProviderOptions): EsignProvider {
-  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch);
-  const base = opts.baseUrl.replace(/\/$/, '');
-  const publicUrl = (
-    opts.publicUrl ?? base.replace(/\/api\/app$/, '').replace(/\/app$/, '')
-  ).replace(/\/$/, '');
-
-  // Cached session context (lazily minted from the API account).
-  let session: {
-    sessionToken: string;
-    // _User pointer id (CreatedBy)
-    userId: string;
-    // contracts_Users pointer id (ExtUserPtr)
-    extUserId: string;
-  } | null = null;
-
-  // Invoke a Parse cloud function. `auth` selects which credential to
-  // present. Returns the unwrapped `result`. Throws on transport/Parse
-  // errors AND on soft `{ error }` payloads embedded in the result.
-  async function callFn(
-    fn: string,
-    params: Record<string, unknown>,
-    auth: 'master' | 'session',
-  ): Promise<unknown> {
-    const headers: Record<string, string> = {
-      'X-Parse-Application-Id': opts.appId,
-      'Content-Type': 'application/json',
-    };
-    if (auth === 'master') {
-      headers['X-Parse-Master-Key'] = opts.masterKey;
-    } else {
-      if (!session) throw new Error('opensign_session_unavailable');
-      headers['X-Parse-Session-Token'] = session.sessionToken;
-    }
-    const res = await fetchImpl(`${base}/functions/${fn}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(params),
-    });
-    const json = (await res.json().catch(() => ({}))) as { result?: unknown; error?: string };
-    if (!res.ok) {
-      throw new Error(`opensign_${fn}_failed: ${json.error ?? res.status}`);
-    }
-    const result = json.result;
-    if (result && typeof result === 'object' && 'error' in (result as Record<string, unknown>)) {
-      throw new Error(
-        `opensign_${fn}_failed: ${String((result as Record<string, unknown>)['error'])}`,
-      );
-    }
-    return result;
-  }
-
-  // Mint (or reuse) a user session token from the operator API account
-  // and resolve the ExtUserPtr (contracts_Users) + CreatedBy (_User)
-  // pointers the create flow requires.
-  async function ensureSession(): Promise<NonNullable<typeof session>> {
-    if (session) return session;
-    if (!opts.apiEmail || !opts.apiPassword) {
-      throw new Error(
-        'opensign_api_account_unconfigured — set OPENSIGN_API_EMAIL/OPENSIGN_API_PASSWORD',
-      );
-    }
-    const login = (await callFn(
-      'loginuser',
-      { email: opts.apiEmail, password: opts.apiPassword },
-      'master',
-    )) as { sessionToken?: string; objectId?: string };
-    if (!login?.sessionToken || !login?.objectId) {
-      throw new Error('opensign_login_failed: no session token returned');
-    }
-    // Resolve the contracts_Users (ExtUserPtr) objectId for this account.
-    const ext = (await callFn('getUserDetails', { email: opts.apiEmail }, 'master')) as {
-      objectId?: string;
-    };
-    if (!ext?.objectId) {
-      throw new Error('opensign_extuser_not_found — API account has no contracts_Users row');
-    }
-    session = {
-      sessionToken: login.sessionToken,
-      userId: login.objectId,
-      extUserId: ext.objectId,
-    };
-    return session;
-  }
-
-  function ptr(className: string, objectId: string) {
-    return { __type: 'Pointer', className, objectId };
-  }
+  // The proposal provider and the Signatures module share ONE Parse client.
+  const client = createOpenSignClient(opts);
+  const publicUrl = client.publicUrl;
 
   // Base64-encode the document for savefile (OpenSign flattens the PDF).
   function toBase64(s: string): string {
@@ -318,59 +222,40 @@ export function createOpenSignProvider(opts: OpenSignProviderOptions): EsignProv
     };
   }
 
-  // Fetch raw PDF bytes from an OpenSign file URL (presigned or local
-  // JWT-token URL). For local storage the URL points at the OpenSign
-  // server's /files/ endpoint; we GET it directly with the appId header.
-  async function fetchPdfUrl(url: string): Promise<CertificatePdf> {
-    const res = await fetchImpl(url, {
-      method: 'GET',
-      headers: { 'X-Parse-Application-Id': opts.appId },
-    });
-    if (!res.ok) {
-      throw new Error(`opensign_certificate_fetch_failed: ${res.status}`);
-    }
-    const contentType = res.headers.get('content-type') ?? 'application/pdf';
-    const body = Buffer.from(await res.arrayBuffer());
-    return { body, contentType };
-  }
-
   return {
     id: 'opensign',
     async createEnvelope(input) {
-      const ctx = await ensureSession();
+      const ctx = await client.ensureSession();
 
       // 1. Upload the document PDF (base64) → returns a file URL.
-      const upload = (await callFn(
-        'savefile',
-        {
-          fileBase64: toBase64(input.documentHtml),
-          fileName: `${input.documentTitle.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'document'}.pdf`,
-        },
-        'session',
-      )) as { url?: string };
-      if (!upload?.url) throw new Error('opensign_savefile_failed: no url');
+      const upload = await client.saveFile({
+        base64: toBase64(input.documentHtml),
+        fileName: `${input.documentTitle.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'document'}.pdf`,
+      });
 
       // 2. Create / resolve the signer contact (contracts_Contactbook).
-      const contact = (await callFn(
-        'savecontact',
-        { name: input.signerName, email: input.signerEmail },
-        'session',
-      )) as { objectId?: string };
-      if (!contact?.objectId) throw new Error('opensign_savecontact_failed: no objectId');
+      const contact = await client.saveContact({
+        name: input.signerName,
+        email: input.signerEmail,
+      });
 
       // 3. Create the document and queue it for signature.
       const document = {
         Name: input.documentTitle,
         URL: upload.url,
-        ExtUserPtr: ptr('contracts_Users', ctx.extUserId),
-        CreatedBy: ptr('_User', ctx.userId),
+        ExtUserPtr: client.ptr('contracts_Users', ctx.extUserId),
+        CreatedBy: client.ptr('_User', ctx.userId),
         SendinOrder: false,
         SentToOthers: true,
         IsEnableOTP: false,
-        Signers: [ptr('contracts_Contactbook', contact.objectId)],
+        Signers: [client.ptr('contracts_Contactbook', contact.objectId)],
         DocSentAt: { __type: 'Date', iso: new Date().toISOString() },
       };
-      const created = (await callFn('createdocumentfromapp', { document }, 'session')) as ParseDoc;
+      const created = (await client.callFn(
+        'createdocumentfromapp',
+        { document },
+        'session',
+      )) as ParseDoc;
       const envelopeId = String(created?.objectId ?? '');
       if (!envelopeId) throw new Error('opensign_createdocument_failed: no objectId');
 
@@ -390,24 +275,21 @@ export function createOpenSignProvider(opts: OpenSignProviderOptions): EsignProv
       );
     },
     async getStatus(envelopeId) {
-      const doc = (await callFn('getDocument', { docId: envelopeId }, 'master')) as ParseDoc;
-      return deserialize(doc);
+      return deserialize(await client.getDocument(envelopeId));
     },
     async fetchCertificatePdf(envelopeId) {
       // Resolve the document, then fetch the signed PDF bytes. Prefer the
       // completion certificate (audit trail); fall back to the signed
       // document URL. generatecertificate is idempotent + master-keyed.
-      const doc = (await callFn('getDocument', { docId: envelopeId }, 'master')) as ParseDoc;
+      const doc = await client.getDocument(envelopeId);
       let certUrl = doc.CertificateUrl;
       if (!certUrl) {
-        const gen = (await callFn('generatecertificate', { docId: envelopeId }, 'master')) as {
-          CertificateUrl?: string;
-        };
+        const gen = await client.generateCertificate(envelopeId);
         certUrl = gen?.CertificateUrl;
       }
       const target = certUrl ?? doc.SignedUrl;
       if (!target) throw new Error('opensign_certificate_unavailable: no signed/certificate url');
-      return fetchPdfUrl(target);
+      return client.fetchPdfUrl(target);
     },
   };
 }
