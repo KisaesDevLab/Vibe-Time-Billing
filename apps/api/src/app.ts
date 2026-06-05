@@ -71,6 +71,7 @@ import { createSharePublicRouter } from './share-public';
 import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
+import { createSignaturesRouter } from './signatures/routes';
 import { createIntakeCardRouter } from './intake/card-routes';
 import { collectIntakeMetricsText } from './intake/metrics';
 import { createPortalRetainerRouter } from './portal/retainers';
@@ -533,6 +534,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/intake', auth.requireAuth, auth.requireCsrf, intakeCardRouter);
+
+  // 0108 — Signatures module (OpenSign): request/signer/placement CRUD.
+  const signaturesRouter = createSignaturesRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signaturesRouter);
 
   // v1 internal-files + folder-templates routers removed in Phase 0
   // of the file-manager rebuild. Replacements ship in Phases 4 + 10
