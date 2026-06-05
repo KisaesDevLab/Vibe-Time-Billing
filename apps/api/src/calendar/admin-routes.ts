@@ -1,0 +1,235 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// CAL-1 — firm admin OAuth app registration (mounted at
+// /api/staff/admin/calendar). Stores Microsoft 365 / Google client
+// credentials encrypted under the firm MFK; never returns secrets. A
+// provider must be enabled before staff can connect it (CAL-2).
+
+import express, { type Request, type Response, type Router } from 'express';
+import { z } from 'zod';
+import { and, eq } from 'drizzle-orm';
+
+import type { Database } from '@vibe/db';
+import { calendarProviderConfig } from '@vibe/db/schema';
+
+import { emitAudit } from '../auth/audit';
+import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getApplianceLockState } from '../crypto/boot';
+import { decField, encField, newCalendarRecordKey, unwrapCalendarRecordKey } from './crypto';
+import { testProvider } from './provider-test';
+
+export interface CalendarAdminDeps extends RbacDeps {
+  db: Database | null;
+  /** Injected in tests for the Test-Connection probe; defaults to global fetch. */
+  testFetch?: typeof fetch;
+}
+
+const PROVIDERS = ['microsoft', 'google'] as const;
+type Provider = (typeof PROVIDERS)[number];
+
+function isProvider(v: string): v is Provider {
+  return (PROVIDERS as readonly string[]).includes(v);
+}
+
+const UpsertSchema = z.object({
+  clientId: z.string().trim().min(1).max(400),
+  // Optional on update: omit to preserve the stored secret (masked input).
+  clientSecret: z.string().trim().min(1).max(1000).optional(),
+  tenantId: z.string().trim().max(200).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const TestSchema = z.object({
+  clientId: z.string().trim().min(1).max(400).optional(),
+  clientSecret: z.string().trim().min(1).max(1000).optional(),
+  tenantId: z.string().trim().max(200).optional(),
+});
+
+export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
+  const router = express.Router();
+
+  function requireUnlocked(firmId: string, res: Response): boolean {
+    const lock = getApplianceLockState();
+    if (lock.kind !== 'unlocked' || lock.firmId !== firmId) {
+      res.status(503).json({ error: 'appliance_locked' });
+      return false;
+    }
+    return true;
+  }
+
+  async function loadConfig(db: Database, firmId: string, provider: Provider) {
+    const [row] = await db
+      .select()
+      .from(calendarProviderConfig)
+      .where(
+        and(
+          eq(calendarProviderConfig.firmId, firmId),
+          eq(calendarProviderConfig.provider, provider),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  // GET /providers — status of both providers (never the secrets).
+  router.get(
+    '/providers',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ providers: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          provider: calendarProviderConfig.provider,
+          enabled: calendarProviderConfig.enabled,
+          clientIdEnc: calendarProviderConfig.clientIdEnc,
+          tenantIdEnc: calendarProviderConfig.tenantIdEnc,
+          updatedAt: calendarProviderConfig.updatedAt,
+        })
+        .from(calendarProviderConfig)
+        .where(eq(calendarProviderConfig.firmId, firmId));
+      const byProvider = new Map(rows.map((r) => [r.provider, r]));
+      res.json({
+        providers: PROVIDERS.map((p) => {
+          const r = byProvider.get(p);
+          return {
+            provider: p,
+            configured: Boolean(r),
+            enabled: r?.enabled ?? false,
+            hasTenant: Boolean(r?.tenantIdEnc),
+            updatedAt: r?.updatedAt ?? null,
+          };
+        }),
+      });
+    },
+  );
+
+  // PUT /providers/:provider — create/update the app registration.
+  router.put(
+    '/providers/:provider',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      const provider = req.params['provider']!;
+      if (!isProvider(provider)) {
+        res.status(400).json({ error: 'unknown_provider' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!requireUnlocked(firmId, res)) return;
+      const parsed = UpsertSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+        return;
+      }
+      if (provider === 'microsoft' && !parsed.data.tenantId) {
+        res.status(400).json({ error: 'tenant_id_required' });
+        return;
+      }
+
+      const existing = await loadConfig(deps.db, firmId, provider);
+      // Resolve the secret: use the submitted one, else preserve the stored
+      // one (the UI masks it and may omit on edits).
+      let secret = parsed.data.clientSecret;
+      if (!secret) {
+        if (!existing) {
+          res.status(400).json({ error: 'client_secret_required' });
+          return;
+        }
+        const dek = unwrapCalendarRecordKey(deps.db, firmId, existing.tDekWrapped);
+        secret = decField(dek, existing.clientSecretEnc) ?? '';
+      }
+
+      const { dek, wrappedDek } = newCalendarRecordKey(deps.db, firmId);
+      const values = {
+        firmId,
+        provider,
+        tDekWrapped: Buffer.from(wrappedDek),
+        clientIdEnc: encField(dek, parsed.data.clientId)!,
+        clientSecretEnc: encField(dek, secret)!,
+        tenantIdEnc: encField(dek, parsed.data.tenantId ?? null),
+        enabled: parsed.data.enabled ?? existing?.enabled ?? false,
+        updatedAt: new Date(),
+      };
+      await deps.db
+        .insert(calendarProviderConfig)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [calendarProviderConfig.firmId, calendarProviderConfig.provider],
+          set: {
+            tDekWrapped: values.tDekWrapped,
+            clientIdEnc: values.clientIdEnc,
+            clientSecretEnc: values.clientSecretEnc,
+            tenantIdEnc: values.tenantIdEnc,
+            enabled: values.enabled,
+            updatedAt: values.updatedAt,
+          },
+        });
+      await emitAudit(deps.db, {
+        action: existing ? 'UPDATE' : 'CREATE',
+        entityType: 'calendar_provider_config',
+        entityId: firmId,
+        actorAppUserId: actor,
+        after: {
+          provider,
+          enabled: values.enabled,
+          secretRotated: Boolean(parsed.data.clientSecret),
+        },
+      });
+      res.json({ ok: true });
+    },
+  );
+
+  // POST /providers/:provider/test — verify credentials (submitted or stored).
+  router.post(
+    '/providers/:provider/test',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const provider = req.params['provider']!;
+      if (!isProvider(provider)) {
+        res.status(400).json({ error: 'unknown_provider' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!requireUnlocked(firmId, res)) return;
+      const parsed = TestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body' });
+        return;
+      }
+
+      let { clientId, clientSecret, tenantId } = parsed.data;
+      if (!clientId || !clientSecret) {
+        const existing = await loadConfig(deps.db, firmId, provider);
+        if (!existing) {
+          res.status(400).json({ error: 'not_configured' });
+          return;
+        }
+        const dek = unwrapCalendarRecordKey(deps.db, firmId, existing.tDekWrapped);
+        clientId = clientId ?? decField(dek, existing.clientIdEnc) ?? '';
+        clientSecret = clientSecret ?? decField(dek, existing.clientSecretEnc) ?? '';
+        tenantId = tenantId ?? decField(dek, existing.tenantIdEnc) ?? undefined;
+      }
+
+      const result = await testProvider(
+        provider,
+        { clientId, clientSecret, tenantId },
+        deps.testFetch ?? fetch,
+      );
+      res.json(result);
+    },
+  );
+
+  return router;
+}

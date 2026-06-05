@@ -72,6 +72,7 @@ import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createSignaturesRouter } from './signatures/routes';
+import { createCalendarAdminRouter } from './calendar/admin-routes';
 import { createIntakeCardRouter } from './intake/card-routes';
 import { collectIntakeMetricsText } from './intake/metrics';
 import { createPortalRetainerRouter } from './portal/retainers';
@@ -554,6 +555,14 @@ export function createApp(deps: AppDeps): Express {
       : undefined,
   });
   app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signaturesRouter);
+
+  // 0109 — Calendar Integration: firm admin OAuth app registration.
+  app.use(
+    '/api/staff/admin/calendar',
+    auth.requireAuth,
+    auth.requireCsrf,
+    createCalendarAdminRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }),
+  );
 
   // v1 internal-files + folder-templates routers removed in Phase 0
   // of the file-manager rebuild. Replacements ship in Phases 4 + 10
