@@ -99,7 +99,17 @@ async function onePagePdf(): Promise<Buffer> {
   return Buffer.from(await pdf.save());
 }
 
-function buildApp(client: OpenSignClient, storage: StorageClient): express.Express {
+interface SentMail {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+function buildApp(
+  client: OpenSignClient,
+  storage: StorageClient,
+  mailbox?: SentMail[],
+): express.Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -116,6 +126,11 @@ function buildApp(client: OpenSignClient, storage: StorageClient): express.Expre
       fakeUserRoles: new Map([[seed.appUserId, ['admin']]]),
       storageClient: storage,
       openSignClient: client,
+      sendEmail: mailbox
+        ? async (a) => {
+            mailbox.push({ to: a.to, subject: a.subject, body: a.body });
+          }
+        : undefined,
     }),
   );
   return app;
@@ -322,5 +337,104 @@ describe('signatures send + reconcile (phase 6+7)', () => {
       .from(signatureRequests)
       .where(eq(signatureRequests.id, id));
     expect(row!.status).toBe('expired');
+  });
+
+  it('emails every signer their signing link on a parallel send', async () => {
+    const storage = memStorage();
+    const mailbox: SentMail[] = [];
+    const app = buildApp(mockClient(), storage, mailbox);
+    // Two parallel signers.
+    const create = await request(app)
+      .post('/api/staff/signatures')
+      .send({
+        title: 'Engagement',
+        signers: [
+          { name: 'A', email: 'a@co.example' },
+          { name: 'B', email: 'b@co.example' },
+        ],
+      });
+    const id = create.body.id as string;
+    const pdf = await onePagePdf();
+    await request(app)
+      .post(`/api/staff/signatures/${id}/source`)
+      .set('Content-Type', 'application/pdf')
+      .send(pdf);
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerIds = (detail.body.signers as { id: string }[]).map((s) => s.id);
+    await request(app)
+      .put(`/api/staff/signatures/${id}/placements`)
+      .send({
+        placements: signerIds.map((sid) => ({
+          signerId: sid,
+          fieldType: 'signature',
+          pageNumber: 1,
+          nx: 0.1,
+          ny: 0.7,
+          nw: 0.3,
+          nh: 0.05,
+        })),
+      });
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+
+    expect(mailbox.map((m) => m.to).sort()).toEqual(['a@co.example', 'b@co.example']);
+    // Each email carries that signer's OpenSign signing URL.
+    expect(mailbox.every((m) => m.body.includes('/load/recipientSignPdf/doc_sent_1/'))).toBe(true);
+  });
+
+  it('voids a sent request (terminal; reconcile then ignores it)', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    const { id } = await preparedRequest(app);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+
+    const v = await request(app).post(`/api/staff/signatures/${id}/void`);
+    expect(v.status).toBe(200);
+    let [row] = await harness.db
+      .select()
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id));
+    expect(row!.status).toBe('voided');
+
+    // A late completion webhook/poll is a no-op on a terminal request.
+    const out = await reconcileSignatureRequestByDocument(
+      {
+        db: harness.db,
+        storage,
+        client: mockClient({ doc: () => ({ objectId: 'doc_sent_1', IsCompleted: true }) }),
+      },
+      'doc_sent_1',
+    );
+    expect(out.kind).toBe('ignored');
+    [row] = await harness.db.select().from(signatureRequests).where(eq(signatureRequests.id, id));
+    expect(row!.status).toBe('voided');
+
+    // Voiding an already-terminal request is rejected.
+    const again = await request(app).post(`/api/staff/signatures/${id}/void`);
+    expect(again.status).toBe(409);
+  });
+
+  it('serves the signed PDF after completion', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    const { id } = await preparedRequest(app);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    await reconcileSignatureRequestByDocument(
+      {
+        db: harness.db,
+        storage,
+        client: mockClient({
+          doc: () => ({
+            objectId: 'doc_sent_1',
+            IsCompleted: true,
+            SignedUrl: 'http://os/files/signed.pdf',
+          }),
+        }),
+      },
+      'doc_sent_1',
+    );
+    const dl = await request(app).get(`/api/staff/signatures/${id}/signed`);
+    expect(dl.status).toBe(200);
+    expect(dl.headers['content-type']).toContain('application/pdf');
+    expect(dl.headers['content-disposition']).toContain('attachment');
   });
 });

@@ -538,10 +538,20 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/admin/intake', auth.requireAuth, auth.requireCsrf, intakeCardRouter);
 
-  // 0108 — Signatures module (OpenSign): request/signer/placement CRUD.
+  // 0108 — Signatures module (OpenSign): request/signer/placement CRUD,
+  // transactional send, and signer notification (OpenSign emails nothing —
+  // we deliver each signer their link via the firm's mail provider).
+  const signatureExpiryDays = Number(process.env['SIGNATURE_EXPIRY_DAYS']);
   const signaturesRouter = createSignaturesRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    expiresInDays:
+      Number.isFinite(signatureExpiryDays) && signatureExpiryDays > 0
+        ? signatureExpiryDays
+        : undefined,
+    sendEmail: deps.sendStaffMail
+      ? (a) => deps.sendStaffMail!({ to: a.to, subject: a.subject, body: a.body, html: a.html })
+      : undefined,
   });
   app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signaturesRouter);
 

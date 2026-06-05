@@ -24,16 +24,21 @@ import { signatureEvents, signatureRequests, signatureSigners } from '@vibe/db/s
 import type { StorageClient } from '@vibe/storage';
 
 import type { OpenSignClient, ParseDoc } from '../esign/opensign-client';
+import { notifySigner, signerSigningUrl, type SignerMailer } from './notify';
 
 export interface ReconcileDeps {
   db: Database;
   client: OpenSignClient;
   storage: StorageClient;
+  /** For sequential (sendInOrder) requests: notify the next pending signer
+   *  once the prior one signs. Best-effort; absent when mail isn't wired
+   *  (the poll path passes none — the webhook is primary for this). */
+  notify?: SignerMailer;
 }
 
 export type ReconcileOutcome =
   | { kind: 'ignored'; reason: 'unknown_document' | 'already_terminal' | 'no_change' }
-  | { kind: 'updated'; status: string; signedCount: number };
+  | { kind: 'updated'; requestId: string; status: string; signedCount: number };
 
 const TERMINAL = new Set(['completed', 'declined', 'expired', 'voided']);
 
@@ -83,7 +88,8 @@ export async function reconcileSignatureRequestByDocument(
   const signers = await db
     .select()
     .from(signatureSigners)
-    .where(eq(signatureSigners.requestId, request.id));
+    .where(eq(signatureSigners.requestId, request.id))
+    .orderBy(signatureSigners.order);
 
   // A completed doc means everyone signed even if the audit trail is terse.
   const isSigned = (email: string): boolean => completed || signedEmails.has(email.toLowerCase());
@@ -102,7 +108,10 @@ export async function reconcileSignatureRequestByDocument(
     }
   }
 
-  let result: ReconcileOutcome = { kind: 'ignored', reason: 'no_change' };
+  // Plainly-typed advance flag — set inside the txn closure, then read
+  // outside (a union-typed `let` reassigned only in a closure trips TS's
+  // control-flow narrowing, so we track the status as a string instead).
+  let advancedStatus: string | null = null;
   await db.transaction(async (tx) => {
     const [locked] = await tx
       .select()
@@ -129,7 +138,6 @@ export async function reconcileSignatureRequestByDocument(
     else if (signedCount > 0) nextStatus = 'partially_signed';
 
     if (nextStatus === locked.status && signedCount === locked.signedCount) {
-      result = { kind: 'ignored', reason: 'no_change' };
       return;
     }
 
@@ -151,10 +159,31 @@ export async function reconcileSignatureRequestByDocument(
       detail: { signedCount, signerCount: signers.length },
     });
 
-    result = { kind: 'updated', status: nextStatus, signedCount };
+    advancedStatus = nextStatus;
   });
 
-  return result;
+  // Sequential hand-off: when a signer just signed and the request is still
+  // awaiting others, email the next pending signer their link (OpenSign
+  // sends nothing). Best-effort; only on a real advance to avoid re-spam.
+  if (advancedStatus === 'partially_signed' && request.sendInOrder && deps.notify) {
+    const next = signers.find((s) => !isSigned(s.email) && s.opensignSignerId);
+    if (next?.opensignSignerId) {
+      await notifySigner(deps.notify, {
+        to: next.email,
+        name: next.name,
+        title: request.title,
+        signingUrl: signerSigningUrl(
+          deps.client.publicUrl,
+          opensignDocumentId,
+          next.opensignSignerId,
+        ),
+      });
+    }
+  }
+
+  return advancedStatus
+    ? { kind: 'updated', requestId: request.id, status: advancedStatus, signedCount }
+    : { kind: 'ignored', reason: 'no_change' };
 }
 
 /**

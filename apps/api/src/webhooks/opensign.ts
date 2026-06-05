@@ -200,15 +200,27 @@ async function dispatch(
   if (deps.openSignClient && deps.storage) {
     try {
       const r = await reconcileSignatureRequestByDocument(
-        { db, client: deps.openSignClient, storage: deps.storage },
+        {
+          db,
+          client: deps.openSignClient,
+          storage: deps.storage,
+          // Reuse the configured mailer to hand off to the next sequential
+          // signer (best-effort).
+          notify: deps.sendProposalEmail,
+        },
         envelopeId,
       );
       if (r.kind === 'updated') {
         await emitAudit(db, {
           action: 'UPDATE',
           entityType: 'signature_request.reconciled',
-          entityId: envelopeId,
-          after: { status: r.status, signedCount: r.signedCount, via: 'webhook' },
+          entityId: r.requestId,
+          after: {
+            status: r.status,
+            signedCount: r.signedCount,
+            documentId: envelopeId,
+            via: 'webhook',
+          },
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
         return 'PROCESSED';
       }

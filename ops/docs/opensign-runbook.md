@@ -162,6 +162,47 @@ flow and caches the session token + the ExtUser/CreatedBy pointers.
 - **Resource cost:** OpenSign (4 services + MongoDB) adds meaningful
   memory/disk; size the host accordingly before enabling.
 
+## Signatures module (0108) — production checklist
+
+The Signatures module (arbitrary-PDF multi-signer requests under
+`/api/staff/signatures`, distinct from proposals) reuses the same OpenSign
+instance, the one Parse client (`apps/api/src/esign/opensign-client.ts`),
+and the same `/api/webhooks/opensign` endpoint. Before relying on it in
+production:
+
+- **Migration:** `0108_signatures_module.sql` applies automatically at API
+  boot (highest migration wins). Verify `vibetb.signature_requests` exists.
+- **Env (reuses the proposal vars):** `OPENSIGN_URL`, `OPENSIGN_APP_ID`,
+  `OPENSIGN_MASTER_KEY`, `OPENSIGN_PUBLIC_URL`, `OPENSIGN_API_EMAIL`,
+  `OPENSIGN_API_PASSWORD`, `OPENSIGN_WEBHOOK_SECRET`. Optional:
+  `SIGNATURE_EXPIRY_DAYS` (default 30).
+- **Signer notification is OURS, not OpenSign's.** `createdocumentfromapp`
+  emails no one. On send we email each signer their signing link via the
+  firm's configured mail provider (`MAIL_PROVIDER` + `MAIL_FROM` …), so
+  **mail MUST be configured** or signers never receive a link. Parallel
+  sends notify everyone at once; sequential (`sendInOrder`) notifies the
+  first signer on send and the next signer from the webhook reconcile as
+  each completes. All notifications are best-effort — the per-signer link is
+  also shown to staff on the request detail page as a fallback.
+- **Webhook:** the same HMAC-verified `/api/webhooks/opensign` reconciles
+  signature requests by `opensign_document_id` (disjoint from proposal
+  envelope ids; tried first, falls through to the proposal path on no
+  match). Configure the OpenSign Webhook with the shared secret as already
+  documented above.
+- **Poll safety net:** the `signatures-poll` BullMQ worker runs every 2 min
+  (reconciles in-flight requests + sweeps past-expiry → `expired`). Ensure
+  the worker container is running.
+- **Storage:** source + signed PDFs live under `signatures/<firmId>/…` in
+  the configured object store (B2/MinIO). OpenSign never holds our creds —
+  we hand it bytes and pull the signed PDF back to our bucket on completion.
+- **Lifecycle ops:** staff can void a sent request (`POST /:id/void` —
+  local-terminal; OpenSign exposes no cancel function so the upstream doc is
+  abandoned and further events are ignored) and download the completed PDF
+  (`GET /:id/signed`).
+- **IRS §8 gate:** entity 8879-S/C/PE profiles are seeded; the individual
+  1040 `8879` is KBA-gated — not seeded, and a send is blocked (409
+  `kba_required`) until a KBA flow is attached. Do not bypass.
+
 ## Disabling
 
 Set the firm back to **Native** in admin, then stop the standalone stack:

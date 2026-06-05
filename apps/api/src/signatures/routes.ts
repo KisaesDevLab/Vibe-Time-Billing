@@ -33,6 +33,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
+import type { SignerMailer } from './notify';
 import {
   applyProfile,
   listLatestProfiles,
@@ -51,6 +52,8 @@ export interface SignaturesDeps extends RbacDeps {
   openSignClient?: OpenSignClient;
   /** Days until a sent request expires (default 30). */
   expiresInDays?: number;
+  /** Delivers each signer their signing link on send (OpenSign won't). */
+  sendEmail?: SignerMailer;
 }
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
@@ -837,6 +840,82 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
     },
   );
 
+  // GET /:id/signed — stream the completed signed PDF (stored at completion
+  // by reconcile). Only available once completed.
+  router.get(
+    '/:id/signed',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = getStorage();
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request || !request.signedFileUrl) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      try {
+        const obj = await storage.get(request.signedFileUrl);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${request.title.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'signed'}.pdf"`,
+        );
+        res.setHeader('Cache-Control', 'private, no-store');
+        obj.body.pipe(res);
+      } catch {
+        res.status(404).json({ error: 'signed_unavailable' });
+      }
+    },
+  );
+
+  // POST /:id/void — cancel a request that's been sent (or a draft). Marks
+  // it terminal so the poll/webhook stop reconciling it. OpenSign has no
+  // exposed cancel cloud function, so the upstream document is simply
+  // abandoned; any further signer events are ignored (terminal guard).
+  router.post(
+    '/:id/void',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (['completed', 'declined', 'expired', 'voided'].includes(request.status)) {
+        res.status(409).json({ error: 'already_terminal', status: request.status });
+        return;
+      }
+      await deps.db
+        .update(signatureRequests)
+        .set({ status: 'voided', updatedAt: new Date() })
+        .where(eq(signatureRequests.id, request.id));
+      await recordEvent(deps.db, request.id, actor, 'voided', { from: request.status });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'signature_request.voided',
+        entityId: request.id,
+        actorAppUserId: actor,
+        before: { status: request.status },
+        after: { status: 'voided' },
+      });
+      res.json({ ok: true });
+    },
+  );
+
   // POST /:id/send — transactional send through OpenSign (draft → sent).
   router.post(
     '/:id/send',
@@ -857,7 +936,13 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
       let outcome;
       try {
         outcome = await sendSignatureRequest(
-          { db: deps.db, storage, client, expiresInDays: deps.expiresInDays },
+          {
+            db: deps.db,
+            storage,
+            client,
+            expiresInDays: deps.expiresInDays,
+            sendEmail: deps.sendEmail,
+          },
           { requestId: req.params['id']!, firmId, actor },
         );
       } catch (err) {

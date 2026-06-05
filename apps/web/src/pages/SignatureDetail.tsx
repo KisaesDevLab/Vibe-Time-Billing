@@ -196,6 +196,23 @@ export function SignatureDetailPage(): JSX.Element {
     }
   }
 
+  async function voidRequest(): Promise<void> {
+    if (!window.confirm('Void this request? Signers can no longer complete it.')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/signatures/${id}/void`, { method: 'POST' });
+      await load();
+    } catch (err) {
+      setError(messageFor(err as ApiError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isTerminal = ['completed', 'declined', 'expired', 'voided'].includes(request.status);
+  const canVoid = !isTerminal && request.status !== 'draft';
+
   const signerCols: TableColumn<Signer>[] = [
     { key: 'name', header: 'Name', render: (s) => s.name },
     { key: 'email', header: 'Email', render: (s) => s.email },
@@ -225,6 +242,19 @@ export function SignatureDetailPage(): JSX.Element {
         action={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Pill tone={statusTone(request.status)}>{statusLabel(request.status)}</Pill>
+            {request.status === 'completed' && (
+              <Button
+                variant="secondary"
+                onClick={() => window.open(`/api/staff/signatures/${id}/signed`, '_blank')}
+              >
+                Download signed PDF
+              </Button>
+            )}
+            {canVoid && canWrite && (
+              <Button variant="danger" onClick={() => void voidRequest()} disabled={busy}>
+                Void
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => navigate('/signatures')}>
               ← Back
             </Button>

@@ -25,6 +25,7 @@ import type { StorageClient } from '@vibe/storage';
 import type { OpenSignClient } from '../esign/opensign-client';
 import type { PageGeometry } from './geometry';
 import { createSignatureDocument } from './opensign-document';
+import { notifySigner, type SignerMailer } from './notify';
 import { formRequiresKba } from './profiles';
 import { validatePlacements, type PlacementInput, type ValidationError } from './validation';
 
@@ -36,6 +37,9 @@ export interface SendDeps {
   client: OpenSignClient;
   /** Days until the request expires (default 30). */
   expiresInDays?: number;
+  /** Delivers each signer their signing link (OpenSign won't). Best-effort;
+   *  absent when mail isn't configured. */
+  sendEmail?: SignerMailer;
 }
 
 export type SendOutcome =
@@ -185,6 +189,38 @@ export async function sendSignatureRequest(
       detail: { opensignDocumentId: created.opensignDocumentId, signers: signers.length },
     });
   });
+
+  // Notify signers of their signing link (OpenSign sends nothing itself).
+  // Parallel → all at once; sequential → only the first, the rest are
+  // notified from reconcile as each completes. Best-effort: a mail failure
+  // never undoes the committed send.
+  if (deps.sendEmail) {
+    const urlBySigner = new Map(created.signers.map((s) => [s.signerId, s.signingUrl]));
+    const toNotify = request.sendInOrder ? signers.slice(0, 1) : signers;
+    let notified = 0;
+    for (const s of toNotify) {
+      const url = urlBySigner.get(s.id);
+      if (!url) continue;
+      if (
+        await notifySigner(deps.sendEmail, {
+          to: s.email,
+          name: s.name,
+          title: request.title,
+          signingUrl: url,
+        })
+      )
+        notified += 1;
+    }
+    await db
+      .insert(signatureEvents)
+      .values({
+        requestId: request.id,
+        actor: 'system',
+        event: 'signers_notified',
+        detail: { notified, sequential: request.sendInOrder },
+      })
+      .catch(() => undefined);
+  }
 
   return { kind: 'sent', opensignDocumentId: created.opensignDocumentId, expiresAt };
 }
