@@ -221,7 +221,10 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       realmBadge={<Pill tone="accent">staff</Pill>}
       nav={[
         { label: 'Dashboard', href: '/', icon: '⌂', active: location.pathname === '/', show: true },
+
+        // ---- Work: who you serve, the work, your time + schedule ----
         {
+          section: 'Work',
           label: 'Clients',
           href: '/clients',
           icon: '◯',
@@ -229,13 +232,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.clients,
         },
         {
-          label: 'Time',
-          href: '/time',
-          icon: '◷',
-          active: location.pathname.startsWith('/time'),
-          show: can.time,
-        },
-        {
+          section: 'Work',
           label: 'Engagements',
           href: '/engagements',
           icon: '❖',
@@ -243,6 +240,41 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.engagements,
         },
         {
+          section: 'Work',
+          label: 'Time',
+          href: '/time',
+          icon: '◷',
+          active: location.pathname.startsWith('/time'),
+          show: can.time,
+        },
+        {
+          section: 'Work',
+          label: 'Tax returns',
+          href: '/tax/returns',
+          icon: '⎚',
+          active: location.pathname.startsWith('/tax/returns'),
+          show: can.tax,
+        },
+        {
+          section: 'Work',
+          label: 'Appointments',
+          href: '/appointments',
+          icon: '📅',
+          active: location.pathname.startsWith('/appointments'),
+          show: can.appointments,
+        },
+        {
+          section: 'Work',
+          label: calUnmatched > 0 ? `Calendar (${calUnmatched})` : 'Calendar',
+          href: '/calendar/unmatched',
+          icon: '📆',
+          active: location.pathname.startsWith('/calendar'),
+          show: can.appointments,
+        },
+
+        // ---- Documents: outbound (proposals/e-sign) + inbound ----
+        {
+          section: 'Documents',
           label: 'Proposals',
           href: '/proposals',
           icon: '✎',
@@ -250,6 +282,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.proposals,
         },
         {
+          section: 'Documents',
           label: 'Signatures',
           href: '/signatures',
           icon: '✒',
@@ -257,55 +290,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.signatures,
         },
         {
-          label: calUnmatched > 0 ? `Calendar (${calUnmatched})` : 'Calendar',
-          href: '/calendar/unmatched',
-          icon: '📆',
-          active: location.pathname.startsWith('/calendar'),
-          show: calUnmatched > 0,
-        },
-        {
-          label: 'Billing',
-          href: '/billing',
-          icon: '▤',
-          active: location.pathname.startsWith('/billing'),
-          show: can.billing,
-        },
-        {
-          label: 'WIP',
-          href: '/wip',
-          icon: '⊞',
-          active: location.pathname.startsWith('/wip'),
-          show: can.wip,
-        },
-        {
-          label: 'Invoices',
-          href: '/invoices',
-          icon: '⎙',
-          active: location.pathname.startsWith('/invoices'),
-          show: can.invoices,
-        },
-        {
-          label: 'AR',
-          href: '/ar',
-          icon: '$',
-          active: location.pathname.startsWith('/ar'),
-          show: can.ar,
-        },
-        {
-          label: 'Retainers',
-          href: '/retainers',
-          icon: '◈',
-          active: location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
-          show: canViewRetainers,
-        },
-        {
-          label: 'Approvals',
-          href: '/approvals',
-          icon: '✓',
-          active: location.pathname.startsWith('/approvals'),
-          show: can.approvals,
-        },
-        {
+          section: 'Documents',
           label: 'Requests',
           href: '/requests',
           icon: '☑',
@@ -313,6 +298,93 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.requests,
         },
         {
+          section: 'Documents',
+          label: 'Intake',
+          href: '/intake',
+          icon: '📥',
+          active: location.pathname.startsWith('/intake'),
+          show: can.intake,
+        },
+
+        // ---- Billing: WIP → pre-bills → invoices → retainers → A/R ----
+        {
+          section: 'Billing',
+          label: 'WIP',
+          href: '/wip',
+          icon: '⊞',
+          active: location.pathname.startsWith('/wip'),
+          show: can.wip,
+        },
+        {
+          section: 'Billing',
+          label: 'Billing',
+          href: '/billing',
+          icon: '▤',
+          active: location.pathname.startsWith('/billing'),
+          show: can.billing,
+        },
+        {
+          section: 'Billing',
+          label: 'Invoices',
+          href: '/invoices',
+          icon: '⎙',
+          active: location.pathname.startsWith('/invoices'),
+          show: can.invoices,
+        },
+        {
+          section: 'Billing',
+          label: 'Retainers',
+          href: '/retainers',
+          icon: '◈',
+          active: location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
+          show: canViewRetainers,
+        },
+        {
+          section: 'Billing',
+          label: 'A / R',
+          href: '/ar',
+          icon: '$',
+          active: location.pathname.startsWith('/ar'),
+          show: can.ar,
+        },
+
+        // ---- Oversight: review + insight ----
+        {
+          section: 'Oversight',
+          label: 'Approvals',
+          href: '/approvals',
+          icon: '✓',
+          active: location.pathname.startsWith('/approvals'),
+          show: can.approvals,
+        },
+        {
+          section: 'Oversight',
+          label: 'Reports',
+          href: '/reports',
+          icon: '▦',
+          active: location.pathname.startsWith('/reports'),
+          show: can.reports,
+        },
+        {
+          section: 'Oversight',
+          label: 'Alerts',
+          href: '/alerts',
+          icon: '⚠︎',
+          active: location.pathname.startsWith('/alerts'),
+          show: can.audit,
+        },
+        {
+          section: 'Oversight',
+          label: 'Audit',
+          href: '/audit',
+          icon: '⊙',
+          active: location.pathname.startsWith('/audit'),
+          show: can.audit,
+        },
+
+        // ---- Utility footer (divider, no header) ----
+        {
+          section: '',
           label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
           href: '/messages',
           icon: '💬',
@@ -321,48 +393,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.messages,
         },
         {
-          label: 'Appointments',
-          href: '/appointments',
-          icon: '📅',
-          active: location.pathname.startsWith('/appointments'),
-          show: can.appointments,
-        },
-        {
-          label: 'Intake',
-          href: '/intake',
-          icon: '📥',
-          active: location.pathname.startsWith('/intake'),
-          show: can.intake,
-        },
-        {
-          label: 'Reports',
-          href: '/reports',
-          icon: '▦',
-          active: location.pathname.startsWith('/reports'),
-          show: can.reports,
-        },
-        {
-          label: 'Tax returns',
-          href: '/tax/returns',
-          icon: '⎚',
-          active: location.pathname.startsWith('/tax/returns'),
-          show: can.tax,
-        },
-        {
-          label: 'Alerts',
-          href: '/alerts',
-          icon: '⚠︎',
-          active: location.pathname.startsWith('/alerts'),
-          show: can.audit,
-        },
-        {
-          label: 'Audit',
-          href: '/audit',
-          icon: '⊙',
-          active: location.pathname.startsWith('/audit'),
-          show: can.audit,
-        },
-        {
+          section: '',
           label: 'Admin',
           href: '/admin',
           icon: '⚙︎',
@@ -370,6 +401,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: can.admin,
         },
         {
+          section: '',
           label: 'Help',
           href: '/help',
           icon: '❓',
@@ -377,6 +409,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           show: true,
         },
         {
+          section: '',
           label: 'Account',
           href: '/account',
           icon: '◐',
@@ -385,7 +418,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
       ]
         .filter((i) => i.show)
-        .map(({ label, href, icon, active }) => ({ label, href, icon, active }))}
+        .map(({ label, href, icon, active, section }) => ({ label, href, icon, active, section }))}
       trailing={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <FontSizeControl />

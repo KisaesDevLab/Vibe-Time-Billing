@@ -189,74 +189,94 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       }
       realmBadge={<Pill tone="success">portal</Pill>}
       nav={[
+        // Quick access, pinned at top.
         { label: 'Overview', href: '/', icon: '⌂', active: location.pathname === '/' },
-        {
-          label: 'Engagements',
-          href: '/engagements',
-          icon: '◉',
-          active: location.pathname.startsWith('/engagements'),
-        },
-        {
-          label: 'Appointments',
-          href: '/appointments',
-          icon: '📅',
-          active: location.pathname.startsWith('/appointments'),
-        },
-        {
-          label: 'Invoices',
-          href: '/invoices',
-          icon: '⎙',
-          active: location.pathname.startsWith('/invoices'),
-        },
         {
           label: 'Messages',
           href: '/messages',
           icon: '💬',
           active: location.pathname.startsWith('/messages'),
         },
+
+        // ---- Billing & payments ----
         {
-          label: 'Requests',
-          href: '/requests',
-          icon: '☑',
-          active: location.pathname.startsWith('/requests'),
+          section: 'Billing & payments',
+          label: 'Invoices',
+          href: '/invoices',
+          icon: '⎙',
+          active: location.pathname.startsWith('/invoices'),
         },
         {
-          label: 'Letters',
-          href: '/letters',
-          icon: '✉',
-          active: location.pathname.startsWith('/letters'),
-        },
-        {
-          label: 'Files',
-          href: '/files',
-          icon: '▥',
-          active: location.pathname.startsWith('/files'),
-        },
-        {
-          label: 'Tax payments',
-          href: '/tax-payments',
-          icon: '📅',
-          active: location.pathname.startsWith('/tax-payments'),
-        },
-        {
-          label: 'Tax returns',
-          href: '/tax/returns',
-          icon: '⎚',
-          active: location.pathname.startsWith('/tax/returns'),
-        },
-        {
+          section: 'Billing & payments',
           label: 'Statement',
           href: '/statement',
           icon: '▦',
           active: location.pathname.startsWith('/statement'),
         },
         {
+          section: 'Billing & payments',
           label: 'Payment methods',
           href: '/payment-methods',
           icon: '$',
           active: location.pathname.startsWith('/payment-methods'),
         },
         {
+          section: 'Billing & payments',
+          label: 'Tax payments',
+          href: '/tax-payments',
+          icon: '📅',
+          active: location.pathname.startsWith('/tax-payments'),
+        },
+
+        // ---- Documents ----
+        {
+          section: 'Documents',
+          label: 'Requests',
+          href: '/requests',
+          icon: '☑',
+          active: location.pathname.startsWith('/requests'),
+        },
+        {
+          section: 'Documents',
+          label: 'Files',
+          href: '/files',
+          icon: '▥',
+          active: location.pathname.startsWith('/files'),
+        },
+        {
+          section: 'Documents',
+          label: 'Letters',
+          href: '/letters',
+          icon: '✉',
+          active: location.pathname.startsWith('/letters'),
+        },
+
+        // ---- Your work ----
+        {
+          section: 'Your work',
+          label: 'Engagements',
+          href: '/engagements',
+          icon: '◉',
+          active: location.pathname.startsWith('/engagements'),
+        },
+        {
+          section: 'Your work',
+          label: 'Appointments',
+          href: '/appointments',
+          icon: '📅',
+          active: location.pathname.startsWith('/appointments'),
+        },
+        {
+          section: 'Your work',
+          label: 'Tax returns',
+          href: '/tax/returns',
+          icon: '⎚',
+          active: location.pathname.startsWith('/tax/returns'),
+        },
+
+        // ---- Account (divider, no header) ----
+        {
+          section: '',
           label: 'Profile',
           href: '/profile',
           icon: '☏',
@@ -265,28 +285,32 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
             location.pathname.startsWith('/alt-contacts'),
         },
         {
+          section: '',
+          label: 'Notifications',
+          href: '/notifications',
+          icon: '⚠︎',
+          active: location.pathname.startsWith('/notifications'),
+        },
+        {
+          section: '',
           label: 'Activity',
           href: '/activity',
           icon: '📜',
           active: location.pathname.startsWith('/activity'),
         },
         {
+          section: '',
           label: 'Help',
           href: '/help',
           icon: '❔',
           active: location.pathname.startsWith('/help'),
         },
         {
+          section: '',
           label: 'Switch client',
           href: '/switch',
           icon: '⇄',
           active: location.pathname.startsWith('/switch'),
-        },
-        {
-          label: 'Notifications',
-          href: '/notifications',
-          icon: '⚠︎',
-          active: location.pathname.startsWith('/notifications'),
         },
       ]}
       trailing={

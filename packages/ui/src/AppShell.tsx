@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 
 import { tokens } from './tokens';
 
@@ -11,6 +11,12 @@ export interface NavItem {
    *  first letter of `label`. Pass a short symbol (1–2 chars) for best
    *  results — emoji and Unicode arrows render fine. */
   icon?: ReactNode;
+  /** Optional section grouping. When an item's `section` differs from the
+   *  previous item's, a separator is rendered before it: an uppercase
+   *  header for a non-empty string, or a plain divider for an empty
+   *  string (use '' to fence off a trailing utility group). Items with no
+   *  `section` continue the current group with no separator. */
+  section?: string;
 }
 
 export interface AppShellProps {
@@ -225,48 +231,81 @@ export function AppShell({
             overflowY: 'auto',
           }}
         >
-          {nav.map((n) => {
+          {nav.map((n, i) => {
             const glyph = n.icon ?? (typeof n.label === 'string' ? n.label.slice(0, 1) : '·');
-            return (
-              <a
-                key={n.href}
-                href={n.href}
-                aria-current={n.active ? 'page' : undefined}
-                title={collapsed ? n.label : undefined}
-                style={{
-                  color: n.active ? tokens.color.accent : tokens.color.text,
-                  textDecoration: 'none',
-                  fontSize: 13,
-                  padding: collapsed ? '8px 0' : '8px 12px',
-                  borderRadius: tokens.radius.sm,
-                  background: n.active ? tokens.color.accentMuted : 'transparent',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  justifyContent: collapsed ? 'center' : 'flex-start',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                }}
-              >
-                <span
+            // Section separator: render when this item's section differs
+            // from the previous item's. A non-empty section shows an
+            // uppercase header (a thin rule when collapsed); an empty
+            // string shows just a rule. Undefined continues the group.
+            const prevSection = i > 0 ? nav[i - 1]!.section : undefined;
+            const showSeparator = n.section !== undefined && n.section !== prevSection;
+            const separator = showSeparator ? (
+              collapsed || n.section === '' ? (
+                <div
                   aria-hidden
                   style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 24,
-                    minWidth: 24,
-                    fontSize: 13,
-                    fontWeight: n.active ? 600 : 500,
-                    color: n.active ? tokens.color.accent : tokens.color.textMuted,
+                    height: 1,
+                    background: tokens.color.border,
+                    margin: `${i === 0 ? 0 : 8}px ${collapsed ? 4 : 8}px 6px`,
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: 0.6,
+                    textTransform: 'uppercase',
+                    color: tokens.color.textMuted,
+                    padding: '12px 12px 4px',
                   }}
                 >
-                  {glyph}
-                </span>
-                {!collapsed && (
-                  <span style={{ textOverflow: 'ellipsis', overflow: 'hidden' }}>{n.label}</span>
-                )}
-              </a>
+                  {n.section}
+                </div>
+              )
+            ) : null;
+            return (
+              <Fragment key={n.href}>
+                {separator}
+                <a
+                  href={n.href}
+                  aria-current={n.active ? 'page' : undefined}
+                  title={collapsed ? n.label : undefined}
+                  style={{
+                    color: n.active ? tokens.color.accent : tokens.color.text,
+                    textDecoration: 'none',
+                    fontSize: 13,
+                    padding: collapsed ? '8px 0' : '8px 12px',
+                    borderRadius: tokens.radius.sm,
+                    background: n.active ? tokens.color.accentMuted : 'transparent',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    justifyContent: collapsed ? 'center' : 'flex-start',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 24,
+                      minWidth: 24,
+                      fontSize: 13,
+                      fontWeight: n.active ? 600 : 500,
+                      color: n.active ? tokens.color.accent : tokens.color.textMuted,
+                    }}
+                  >
+                    {glyph}
+                  </span>
+                  {!collapsed && (
+                    <span style={{ textOverflow: 'ellipsis', overflow: 'hidden' }}>{n.label}</span>
+                  )}
+                </a>
+              </Fragment>
             );
           })}
         </nav>
