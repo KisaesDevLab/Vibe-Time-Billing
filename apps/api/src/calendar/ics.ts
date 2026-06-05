@@ -3,6 +3,11 @@
 // CAL-6 — minimal RFC 5545 .ics builder for "Add to calendar". Hand-rolled
 // (no extra dependency); covers the fields a single appointment needs.
 
+export interface IcsAttendee {
+  email: string;
+  name?: string | null;
+}
+
 export interface IcsEvent {
   uid: string;
   title: string | null;
@@ -11,6 +16,13 @@ export interface IcsEvent {
   location?: string | null;
   description?: string | null;
   organizerName?: string | null;
+  /** BK-6 — organizer mailbox; defaults to a noreply placeholder. */
+  organizerEmail?: string | null;
+  /** BK-6 — invited attendees (staff + client contacts). */
+  attendees?: IcsAttendee[];
+  /** Cancellation .ics uses METHOD:CANCEL + STATUS:CANCELLED. */
+  method?: 'PUBLISH' | 'CANCEL';
+  status?: 'CONFIRMED' | 'CANCELLED';
 }
 
 function fmt(d: Date): string {
@@ -45,7 +57,7 @@ export function buildIcs(event: IcsEvent, now: Date = new Date()): string {
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
     'PRODID:-//Vibe Time & Billing//Calendar//EN',
-    'METHOD:PUBLISH',
+    `METHOD:${event.method ?? 'PUBLISH'}`,
     'BEGIN:VEVENT',
     `UID:${event.uid}`,
     `DTSTAMP:${fmt(now)}`,
@@ -55,7 +67,16 @@ export function buildIcs(event: IcsEvent, now: Date = new Date()): string {
   if (event.title) lines.push(`SUMMARY:${escape(event.title)}`);
   if (event.location) lines.push(`LOCATION:${escape(event.location)}`);
   if (event.description) lines.push(`DESCRIPTION:${escape(event.description)}`);
-  if (event.organizerName) lines.push(`ORGANIZER;CN=${escape(event.organizerName)}:mailto:noreply`);
+  const organizerMail = event.organizerEmail ?? 'noreply';
+  if (event.organizerName || event.organizerEmail) {
+    const cn = event.organizerName ? `;CN=${escape(event.organizerName)}` : '';
+    lines.push(`ORGANIZER${cn}:mailto:${organizerMail}`);
+  }
+  for (const a of event.attendees ?? []) {
+    const cn = a.name ? `;CN=${escape(a.name)}` : '';
+    lines.push(`ATTENDEE${cn};RSVP=TRUE:mailto:${a.email}`);
+  }
+  if (event.status) lines.push(`STATUS:${event.status}`);
   lines.push('END:VEVENT', 'END:VCALENDAR');
   return lines.map(fold).join('\r\n') + '\r\n';
 }

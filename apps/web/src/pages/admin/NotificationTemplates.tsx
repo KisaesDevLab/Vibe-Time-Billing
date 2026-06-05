@@ -24,6 +24,19 @@ const KINDS: ReadonlyArray<{ key: string; label: string; channels: Array<'EMAIL'
   { key: 'payment_received', label: 'Payment received', channels: ['EMAIL'] },
   { key: 'magic_link', label: 'Magic link sign-in', channels: ['EMAIL'] },
   { key: 'sms_otp', label: 'SMS OTP', channels: ['SMS'] },
+  // BK-6 — appointment booking emails.
+  { key: 'appointment_confirmation', label: 'Appointment confirmation', channels: ['EMAIL'] },
+  {
+    key: 'appointment_reschedule_confirmation',
+    label: 'Appointment rescheduled',
+    channels: ['EMAIL'],
+  },
+  { key: 'appointment_cancellation', label: 'Appointment cancelled', channels: ['EMAIL'] },
+  {
+    key: 'appointment_reschedule_request_declined',
+    label: 'Reschedule request declined',
+    channels: ['EMAIL'],
+  },
 ];
 
 const SAMPLE_VARIABLES = [
@@ -36,6 +49,16 @@ const SAMPLE_VARIABLES = [
   'firm.displayName',
   'firm.supportEmail',
   'firm.supportPhone',
+  // BK-6 — appointment tokens.
+  'appointment.subject',
+  'appointment.date',
+  'appointment.time',
+  'appointment.duration',
+  'appointment.location_type_label',
+  'appointment.location_detail',
+  'appointment.cancel_url',
+  'appointment.reschedule_request_url',
+  'staff.names',
 ];
 
 export function NotificationTemplatesPage(): JSX.Element {

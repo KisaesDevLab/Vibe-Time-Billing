@@ -39,8 +39,19 @@ import {
   APPOINTMENT_PROVIDER_WRITE_QUEUE,
   APPOINTMENT_PROVIDER_UPDATE_QUEUE,
   APPOINTMENT_PROVIDER_DELETE_QUEUE,
+  APPOINTMENT_CONFIRMATION_QUEUE,
+  APPOINTMENT_RESCHEDULE_CONFIRMATION_QUEUE,
+  APPOINTMENT_CANCELLATION_QUEUE,
   type ProviderJob,
+  type AppointmentJob,
+  type CancellationJob,
 } from '../../api/src/appointments/queue';
+import {
+  runAppointmentConfirmationSend,
+  runAppointmentRescheduleConfirmationSend,
+  runAppointmentCancellationSend,
+  type SendAppointmentEmail,
+} from '../../api/src/appointments/email-jobs';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -730,6 +741,9 @@ async function setup(): Promise<void> {
   // by the booking API; no schedule).
   setupAppointmentProviderQueues();
 
+  // BK-6 — appointment confirmation / reschedule / cancellation emails.
+  setupAppointmentEmailQueues();
+
   logger.info({ queues: QUEUES, dbConfigured: Boolean(db) }, 'vibe-tb-worker started');
   startHealthServer();
 }
@@ -853,6 +867,49 @@ function setupAppointmentProviderQueues(): void {
     apptEventRefs.push(evt);
   }
   logger.info({ queues: defs.map((d) => d[0]) }, 'appointment provider queues registered');
+}
+
+const apptEmailWorkerRefs: Worker[] = [];
+const apptEmailEventRefs: QueueEvents[] = [];
+
+function setupAppointmentEmailQueues(): void {
+  if (!db) {
+    logger.warn('appointment email queues not registered — db missing');
+    return;
+  }
+  const appBaseUrl = process.env['APP_BASE_URL'];
+  const sendEmail: SendAppointmentEmail = async (mail) => {
+    if (!dunningSendEmail) return;
+    // MailDispatch can't carry attachments; the ICS + html degrade to the
+    // text body (which already contains the details + cancel/reschedule links).
+    await dunningSendEmail({ to: mail.to, subject: mail.subject, body: mail.body });
+  };
+  const register = <T>(name: string, run: (job: { data: T }) => Promise<unknown>): void => {
+    const evt = new QueueEvents(name, { connection });
+    evt.on('failed', ({ jobId, failedReason }) => {
+      logger.error({ jobId, queue: name, failedReason }, 'appointment email job failed');
+    });
+    const w = new Worker<T>(
+      name,
+      async (job) => {
+        const result = await run(job);
+        logger.info({ jobId: job.id, queue: name, result }, 'appointment email job complete');
+      },
+      { connection, concurrency: 2 },
+    );
+    apptEmailWorkerRefs.push(w as unknown as Worker);
+    apptEmailEventRefs.push(evt);
+  };
+  register<AppointmentJob>(APPOINTMENT_CONFIRMATION_QUEUE, (job) =>
+    runAppointmentConfirmationSend({ db: db!, sendEmail, appBaseUrl }, job.data),
+  );
+  register<AppointmentJob>(APPOINTMENT_RESCHEDULE_CONFIRMATION_QUEUE, (job) =>
+    runAppointmentRescheduleConfirmationSend({ db: db!, sendEmail, appBaseUrl }, job.data),
+  );
+  register<CancellationJob>(APPOINTMENT_CANCELLATION_QUEUE, (job) =>
+    runAppointmentCancellationSend({ db: db!, sendEmail, appBaseUrl }, job.data),
+  );
+  logger.info('appointment email queues registered');
 }
 
 function setupStorageMutationQueue(): void {

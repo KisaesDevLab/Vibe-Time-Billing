@@ -43,8 +43,22 @@ function clientIp(req: Request): string {
   return (first ?? req.ip ?? '0.0.0.0').trim();
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Browser form submits are urlencoded → render HTML; API calls are JSON. */
+function wantsHtml(req: Request): boolean {
+  return req.is('application/x-www-form-urlencoded') !== false;
+}
+
 export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Router {
   const router = express.Router();
+  router.use(express.urlencoded({ extended: false }));
   const queue = deps.queue ?? bullBookingQueue;
   const nowFn = deps.now ?? ((): Date => new Date());
 
@@ -67,6 +81,77 @@ export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Rout
         logger.warn({ err }, 'appointment public rate limiter error; allowing');
         next();
       });
+  });
+
+  // --- server-rendered confirm pages (links from emails) -------------
+  function page(title: string, bodyHtml: string): string {
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f8;color:#1c2127;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}.card{background:#fff;border:1px solid #e3e6ea;border-radius:12px;padding:32px;max-width:420px;width:100%}h1{font-size:20px;margin:0 0 12px}p{color:#5b6470;font-size:14px;line-height:1.5}button,.btn{display:inline-block;margin-top:16px;padding:10px 16px;border-radius:8px;border:none;background:#2563eb;color:#fff;font-size:14px;cursor:pointer;text-decoration:none}textarea{width:100%;box-sizing:border-box;margin-top:12px;padding:8px;border:1px solid #cdd2d8;border-radius:8px;font:inherit}</style></head><body><div class="card">${bodyHtml}</div></body></html>`;
+  }
+
+  async function loadByToken(
+    field: 'cancel' | 'reschedule',
+    token: string,
+  ): Promise<typeof appointments.$inferSelect | null> {
+    if (!UUID_RE.test(token) || !deps.db) return null;
+    const col = field === 'cancel' ? appointments.cancelToken : appointments.rescheduleToken;
+    const [appt] = await deps.db.select().from(appointments).where(eq(col, token)).limit(1);
+    return appt ?? null;
+  }
+
+  router.get('/:cancelToken/cancel', async (req: Request, res: Response) => {
+    const appt = await loadByToken('cancel', req.params['cancelToken']!);
+    const now = nowFn();
+    if (!appt || (appt.tokenExpiresAt && appt.tokenExpiresAt.getTime() < now.getTime())) {
+      res
+        .status(410)
+        .send(
+          page(
+            'Link expired',
+            `<h1>This link has expired</h1><p>Please contact the firm directly to make changes.</p>`,
+          ),
+        );
+      return;
+    }
+    if (appt.status !== 'SCHEDULED') {
+      res.send(
+        page(
+          'Appointment',
+          `<h1>Nothing to cancel</h1><p>This appointment is already ${appt.status.toLowerCase()}.</p>`,
+        ),
+      );
+      return;
+    }
+    res.send(
+      page(
+        'Cancel appointment',
+        `<h1>Cancel this appointment?</h1><p>${escapeHtml(appt.title)}</p>
+         <form method="POST"><button type="submit">Yes, cancel</button></form>`,
+      ),
+    );
+  });
+
+  router.get('/:rescheduleToken/request', async (req: Request, res: Response) => {
+    const appt = await loadByToken('reschedule', req.params['rescheduleToken']!);
+    const now = nowFn();
+    if (!appt || (appt.tokenExpiresAt && appt.tokenExpiresAt.getTime() < now.getTime())) {
+      res
+        .status(410)
+        .send(
+          page(
+            'Link expired',
+            `<h1>This link has expired</h1><p>Please contact the firm directly.</p>`,
+          ),
+        );
+      return;
+    }
+    res.send(
+      page(
+        'Request a new time',
+        `<h1>Request a different time</h1><p>${escapeHtml(appt.title)}</p>
+         <form method="POST"><textarea name="message" rows="3" placeholder="Optional: when works better?"></textarea>
+         <button type="submit">Send request</button></form>`,
+      ),
+    );
   });
 
   router.post('/:cancelToken/cancel', async (req: Request, res: Response) => {
@@ -124,6 +209,12 @@ export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Rout
     await queue
       .cancellationSend({ appointmentId: appt.id, cancelledBy: 'client' })
       .catch((err: unknown) => logger.warn({ err }, 'enqueue cancellation failed'));
+    if (wantsHtml(req)) {
+      res.send(
+        page('Cancelled', `<h1>Appointment cancelled</h1><p>Thanks — we've let the team know.</p>`),
+      );
+      return;
+    }
     res.json({ status: 'cancelled' });
   });
 
@@ -181,6 +272,15 @@ export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Rout
           })
           .catch((err: unknown) => logger.warn({ err }, 'staff_notification insert failed'));
       }
+    }
+    if (wantsHtml(req)) {
+      res.send(
+        page(
+          'Request sent',
+          `<h1>Request sent</h1><p>The team will reach out to confirm a new time.</p>`,
+        ),
+      );
+      return;
     }
     res.json({ status: 'requested' });
   });
