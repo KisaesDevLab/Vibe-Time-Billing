@@ -4,3 +4,4 @@ export * from './portal';
 export * from './retainers';
 export * from './proposals';
 export * from './tax-returns';
+export * from './signatures';

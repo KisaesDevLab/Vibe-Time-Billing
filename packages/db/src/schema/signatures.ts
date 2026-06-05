@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// 0108 — Signatures module (OpenSign Integration Addendum). Arbitrary-PDF
+// e-signature requests with drag-to-place fields and reusable, role-based
+// placement profiles. Distinct from the proposal `signatures` table (which
+// is proposal-bound + field-less); this module reuses the existing esign
+// provider / webhook / poll but owns its own request lifecycle.
+//
+// Field positions are stored NORMALIZED ({nx,ny,nw,nh} ∈ [0,1] of page
+// dims) so they survive any render scale; per-page point geometry is read
+// from the PDF MediaBox at upload (pageGeometry). A single adapter
+// (toOpenSignPlaceholder) maps normalized → OpenSign editor-pixel space.
+
+import {
+  boolean,
+  check,
+  doublePrecision,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+import { appUsers, clients, firms } from './core';
+
+export const signatureRequests = pgTable(
+  'signature_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'set null' }),
+    opensignDocumentId: text('opensign_document_id'),
+    title: text('title').notNull(),
+    status: text('status').notNull().default('draft'),
+    signerCount: integer('signer_count').notNull().default(0),
+    signedCount: integer('signed_count').notNull().default(0),
+    sourceFileKey: text('source_file_key'),
+    signedFileUrl: text('signed_file_url'),
+    // [{ pageNumber, widthPt, heightPt }] read from each page's MediaBox.
+    pageGeometry: jsonb('page_geometry'),
+    formType: text('form_type'),
+    sendInOrder: boolean('send_in_order').notNull().default(false),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdBy: uuid('created_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmStatusIdx: index('signature_requests_firm_status_idx').on(t.firmId, t.status),
+    opensignIdx: index('signature_requests_opensign_idx').on(t.opensignDocumentId),
+    statusCk: check(
+      'signature_requests_status_ck',
+      sql`${t.status} IN ('draft','sent','partially_signed','completed','declined','expired','voided')`,
+    ),
+  }),
+);
+
+export const signatureSigners = pgTable(
+  'signature_signers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => signatureRequests.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    email: text('email').notNull(),
+    role: text('role'),
+    order: integer('order').notNull().default(1),
+    status: text('status').notNull().default('pending'),
+    signedAt: timestamp('signed_at', { withTimezone: true }),
+    opensignSignerId: text('opensign_signer_id'),
+  },
+  (t) => ({
+    requestIdx: index('signature_signers_request_idx').on(t.requestId),
+    statusCk: check(
+      'signature_signers_status_ck',
+      sql`${t.status} IN ('pending','viewed','signed','declined')`,
+    ),
+  }),
+);
+
+export const signatureFieldPlacements = pgTable(
+  'signature_field_placements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => signatureRequests.id, { onDelete: 'cascade' }),
+    signerId: uuid('signer_id')
+      .notNull()
+      .references(() => signatureSigners.id, { onDelete: 'cascade' }),
+    fieldType: text('field_type').notNull(),
+    pageNumber: integer('page_number').notNull(),
+    nx: doublePrecision('nx').notNull(),
+    ny: doublePrecision('ny').notNull(),
+    nw: doublePrecision('nw').notNull(),
+    nh: doublePrecision('nh').notNull(),
+    required: boolean('required').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index('signature_field_placements_request_idx').on(t.requestId),
+    signerIdx: index('signature_field_placements_signer_idx').on(t.signerId),
+    fieldTypeCk: check(
+      'signature_field_placements_type_ck',
+      sql`${t.fieldType} IN ('signature','initials','date','text','checkbox')`,
+    ),
+  }),
+);
+
+export const signaturePlacementProfiles = pgTable(
+  'signature_placement_profiles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    formType: text('form_type').notNull(),
+    version: integer('version').notNull().default(1),
+    // [{ role, fieldType, pageNumber, nx, ny, nw, nh, required }]
+    fields: jsonb('fields').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmFormIdx: index('signature_placement_profiles_firm_form_idx').on(
+      t.firmId,
+      t.formType,
+      t.version,
+    ),
+  }),
+);
+
+export const signatureEvents = pgTable(
+  'signature_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => signatureRequests.id, { onDelete: 'cascade' }),
+    actor: text('actor').notNull(),
+    event: text('event').notNull(),
+    detail: jsonb('detail'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index('signature_events_request_idx').on(t.requestId),
+  }),
+);
