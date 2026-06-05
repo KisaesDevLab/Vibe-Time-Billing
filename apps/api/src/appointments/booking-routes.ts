@@ -199,16 +199,28 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         res.status(400).json({ error: 'ends_before_starts' });
         return;
       }
-      const durationMinutes =
-        data.durationMinutes ?? Math.round((endsAt.getTime() - startsAt.getTime()) / 60000);
+      // Duration is ALWAYS derived from the times — never trust a client
+      // durationMinutes (it would let a short validated slot persist a long
+      // appointment that overruns the window / overlaps others).
+      const durationMinutes = Math.round((endsAt.getTime() - startsAt.getTime()) / 60000);
+
+      // Dedup staff (the array may repeat a member; appointment_staff has a
+      // unique (appointment_id, staff_id) constraint that would 500 otherwise).
+      const staffIds = [...new Set(data.staffIds)];
 
       // Staff must belong to the firm.
       const staff = await db
         .select({ id: appUsers.id })
         .from(appUsers)
-        .where(and(inArray(appUsers.id, data.staffIds), eq(appUsers.firmId, session.firmId)));
-      if (staff.length !== new Set(data.staffIds).size) {
+        .where(and(inArray(appUsers.id, staffIds), eq(appUsers.firmId, session.firmId)));
+      if (staff.length !== staffIds.length) {
         res.status(400).json({ error: 'unknown_staff' });
+        return;
+      }
+
+      // An engagement may only be attached alongside its client.
+      if (data.engagementId && !data.clientId) {
+        res.status(400).json({ error: 'engagement_requires_client' });
         return;
       }
 
@@ -238,21 +250,43 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         }
       }
 
+      // Appointment type (if any) must belong to the firm.
+      if (data.appointmentTypeId) {
+        const [t] = await db
+          .select({ id: appointmentTypes.id })
+          .from(appointmentTypes)
+          .where(
+            and(
+              eq(appointmentTypes.id, data.appointmentTypeId),
+              eq(appointmentTypes.firmId, session.firmId),
+            ),
+          )
+          .limit(1);
+        if (!t) {
+          res.status(400).json({ error: 'unknown_appointment_type' });
+          return;
+        }
+      }
+
       // Server-side slot re-validation (intersection across staff).
       const tz = await firmTimezone(db, session.firmId);
       const avail = await getAvailableSlots({
         db,
-        staffIds: data.staffIds,
+        staffIds,
         date: dateInTz(startsAt, tz),
         durationMinutes,
         timezone: tz,
         now: nowFn(),
         busyProvider: providerFor(session.firmId),
       });
-      const match = avail.slots.find((s) => s.start === startsAt.toISOString());
+      const match = avail.slots.find(
+        (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),
+      );
       if (!match || !match.available) {
         const blocking = match?.staffAvailability.find((p) => !p.free)?.staffId ?? null;
-        res.status(409).json({ code: 'slot_taken', staffId: blocking });
+        // `error` mirrors `code` so the FE api-client (which reads body.error)
+        // surfaces it and the wizard can jump back to the time step.
+        res.status(409).json({ error: 'slot_taken', code: 'slot_taken', staffId: blocking });
         return;
       }
 
@@ -297,7 +331,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
             location: data.location ?? 'VIDEO',
             locationDetail: data.locationDetail ?? null,
             internalNotes: data.internalNotes ?? null,
-            leadAppUserId: data.staffIds[0]!,
+            leadAppUserId: staffIds[0]!,
             status: 'SCHEDULED',
             cancelToken,
             rescheduleToken,
@@ -308,7 +342,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         const apptId = row!.id;
         await tx
           .insert(appointmentStaff)
-          .values(data.staffIds.map((staffId) => ({ appointmentId: apptId, staffId })));
+          .values(staffIds.map((staffId) => ({ appointmentId: apptId, staffId })));
         if (participantIds.length > 0) {
           await tx
             .insert(appointmentParticipants)
@@ -334,7 +368,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       });
 
       // Fan-out: per-staff calendar write + one confirmation email.
-      for (const staffId of data.staffIds) {
+      for (const staffId of staffIds) {
         await queue
           .providerWrite({ appointmentId, staffId })
           .catch((err: unknown) =>
@@ -354,12 +388,12 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         entityType: 'appointment',
         entityId: appointmentId,
         actorAppUserId: session.appUserId,
-        after: { subject: data.subject, staffIds: data.staffIds, startsAt: data.startsAt },
+        after: { subject: data.subject, staffIds, startsAt: data.startsAt },
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
-      res.status(201).json({ id: appointmentId, staffIds: data.staffIds });
+      res.status(201).json({ id: appointmentId, staffIds });
     },
   );
 
@@ -647,6 +681,10 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      if (reqRow.status !== 'pending') {
+        res.status(409).json({ error: 'already_resolved', status: reqRow.status });
+        return;
+      }
       const out = await rescheduleAppointment(
         deps,
         queue,
@@ -665,7 +703,12 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       await db
         .update(appointmentRescheduleRequests)
         .set({ status: 'accepted', resolvedAt: nowFn(), resolvedByStaffId: session.appUserId })
-        .where(eq(appointmentRescheduleRequests.id, reqRow.id));
+        .where(
+          and(
+            eq(appointmentRescheduleRequests.id, reqRow.id),
+            eq(appointmentRescheduleRequests.status, 'pending'),
+          ),
+        );
       res.json({ ok: true });
     },
   );
@@ -681,7 +724,10 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       }
       const db = deps.db;
       const [reqRow] = await db
-        .select({ id: appointmentRescheduleRequests.id })
+        .select({
+          id: appointmentRescheduleRequests.id,
+          status: appointmentRescheduleRequests.status,
+        })
         .from(appointmentRescheduleRequests)
         .innerJoin(appointments, eq(appointments.id, appointmentRescheduleRequests.appointmentId))
         .where(
@@ -695,10 +741,19 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      if (reqRow.status !== 'pending') {
+        res.status(409).json({ error: 'already_resolved', status: reqRow.status });
+        return;
+      }
       await db
         .update(appointmentRescheduleRequests)
         .set({ status: 'declined', resolvedAt: nowFn(), resolvedByStaffId: session.appUserId })
-        .where(eq(appointmentRescheduleRequests.id, reqRow.id));
+        .where(
+          and(
+            eq(appointmentRescheduleRequests.id, reqRow.id),
+            eq(appointmentRescheduleRequests.status, 'pending'),
+          ),
+        );
       // Decline email to the requesting contact is sent in BK-6.
       res.json({ ok: true });
     },
@@ -750,10 +805,12 @@ async function rescheduleAppointment(
     busyProvider: providerFor(firmId),
     excludeAppointmentId: appt.id,
   });
-  const match = avail.slots.find((s) => s.start === startsAt.toISOString());
+  const match = avail.slots.find(
+    (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),
+  );
   if (!match || !match.available) {
     const blocking = match?.staffAvailability.find((p) => !p.free)?.staffId ?? null;
-    return { status: 409, body: { code: 'slot_taken', staffId: blocking } };
+    return { status: 409, body: { error: 'slot_taken', code: 'slot_taken', staffId: blocking } };
   }
   const now = nowFn();
   await db

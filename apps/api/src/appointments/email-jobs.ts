@@ -6,7 +6,7 @@
 // wins. Tokens resolve via the shared merge-token engine. An ICS is
 // generated and handed to the mailer (attachment when supported).
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
 import type { Database } from '@vibe/db';
@@ -294,10 +294,10 @@ async function sendToParticipants(
   ctx: MergeContext,
   ics: string,
   cancelledBy?: string,
-): Promise<number> {
+): Promise<{ sent: number; contactIds: string[] }> {
   const tpl = await loadTemplate(deps.db, l.appt.firmId, event);
   void cancelledBy;
-  let sent = 0;
+  const contactIds: string[] = [];
   for (const p of l.participants) {
     if (!p.email) continue;
     const { subject, body } = renderTemplate(tpl, {
@@ -305,9 +305,9 @@ async function sendToParticipants(
       client: { name: p.name ?? l.clientName ?? 'there' },
     });
     await deps.sendEmail({ to: p.email, subject, body, ics, icsFilename: 'appointment.ics' });
-    sent++;
+    contactIds.push(p.contactId);
   }
-  return sent;
+  return { sent: contactIds.length, contactIds };
 }
 
 export async function runAppointmentConfirmationSend(
@@ -318,12 +318,23 @@ export async function runAppointmentConfirmationSend(
   if (!l) return { sent: 0 };
   const ctx = buildCtx(l, deps.appBaseUrl ?? '');
   const ics = icsFor(l);
-  const sent = await sendToParticipants(deps, l, 'appointment_confirmation', ctx, ics);
-  if (sent > 0) {
+  const { sent, contactIds } = await sendToParticipants(
+    deps,
+    l,
+    'appointment_confirmation',
+    ctx,
+    ics,
+  );
+  if (contactIds.length > 0) {
     await deps.db
       .update(appointmentParticipants)
       .set({ confirmationSentAt: deps.now ?? new Date() })
-      .where(eq(appointmentParticipants.appointmentId, job.appointmentId))
+      .where(
+        and(
+          eq(appointmentParticipants.appointmentId, job.appointmentId),
+          inArray(appointmentParticipants.clientContactId, contactIds),
+        ),
+      )
       .catch((err: unknown) => logger.warn({ err }, 'confirmation stamp failed'));
   }
   return { sent };
@@ -337,7 +348,13 @@ export async function runAppointmentRescheduleConfirmationSend(
   if (!l) return { sent: 0 };
   const ctx = buildCtx(l, deps.appBaseUrl ?? '');
   const ics = icsFor(l);
-  const sent = await sendToParticipants(deps, l, 'appointment_reschedule_confirmation', ctx, ics);
+  const { sent } = await sendToParticipants(
+    deps,
+    l,
+    'appointment_reschedule_confirmation',
+    ctx,
+    ics,
+  );
   return { sent };
 }
 
@@ -349,7 +366,7 @@ export async function runAppointmentCancellationSend(
   if (!l) return { sent: 0 };
   const ctx = buildCtx(l, deps.appBaseUrl ?? '', job.cancelledBy);
   const ics = icsFor(l, { cancel: true });
-  const sent = await sendToParticipants(
+  const { sent, contactIds } = await sendToParticipants(
     deps,
     l,
     'appointment_cancellation',
@@ -357,11 +374,16 @@ export async function runAppointmentCancellationSend(
     ics,
     job.cancelledBy,
   );
-  if (sent > 0) {
+  if (contactIds.length > 0) {
     await deps.db
       .update(appointmentParticipants)
       .set({ cancellationSentAt: deps.now ?? new Date() })
-      .where(eq(appointmentParticipants.appointmentId, job.appointmentId))
+      .where(
+        and(
+          eq(appointmentParticipants.appointmentId, job.appointmentId),
+          inArray(appointmentParticipants.clientContactId, contactIds),
+        ),
+      )
       .catch(() => undefined);
   }
   return { sent };

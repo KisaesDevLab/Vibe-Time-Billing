@@ -180,6 +180,10 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
   // active row for the day short-circuits the whole intersection.
   const windowsByStaff = new Map<string, Window[]>();
   for (const id of staffIds) {
+    // A staff member who turned booking off is not bookable at all.
+    if (!settingsByStaff.get(id)!.bookingEnabled) {
+      return empty({ reason: 'staff_unavailable', staffId: id });
+    }
     const rows = availRows.filter((r) => r.staffId === id && r.isActive);
     if (rows.length === 0) return empty({ reason: 'staff_unavailable', staffId: id });
     windowsByStaff.set(
@@ -228,6 +232,26 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     windowEnd,
     args.excludeAppointmentId,
   );
+  // On reschedule, the appointment's OWN provider/mirror event still shows
+  // up in free/busy (getSchedule returns no ids to filter by); drop busy
+  // intervals that exactly match the appointment's current window so it
+  // doesn't block rescheduling to an overlapping time.
+  let selfWindow: { start: number; end: number } | null = null;
+  if (args.excludeAppointmentId) {
+    const [self] = await db
+      .select({ start: appointments.startsAt, end: appointments.endsAt })
+      .from(appointments)
+      .where(eq(appointments.id, args.excludeAppointmentId))
+      .limit(1);
+    if (self?.start && self.end) {
+      selfWindow = { start: self.start.getTime(), end: self.end.getTime() };
+    }
+  }
+  const isSelfEvent = (b: BusyInterval): boolean =>
+    selfWindow !== null &&
+    b.start.getTime() === selfWindow.start &&
+    b.end.getTime() === selfWindow.end;
+
   for (const id of staffIds) {
     let busy: BusyInterval[] = [];
     try {
@@ -235,13 +259,16 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     } catch {
       busy = [];
     }
-    busyByStaff.set(id, [...busy, ...(bookingBusy.get(id) ?? [])]);
+    busyByStaff.set(
+      id,
+      [...busy, ...(bookingBusy.get(id) ?? [])].filter((b) => !isSelfEvent(b)),
+    );
   }
 
   const durMs = durationMinutes * MIN;
   const stepMs = increment * MIN;
   const slots: Slot[] = [];
-  let candidatesWithinAvail = 0;
+  let noticeSkipped = 0;
 
   for (let t = gridMin; t + durMs <= gridMax + 1; t += stepMs) {
     const start = new Date(t);
@@ -253,8 +280,10 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
         .some((w) => start.getTime() >= w.start.getTime() && end.getTime() <= w.end.getTime()),
     );
     if (!withinAll) continue;
-    candidatesWithinAvail++;
-    if (start.getTime() < noticeCutoff.getTime()) continue; // notice filter
+    if (start.getTime() < noticeCutoff.getTime()) {
+      noticeSkipped++;
+      continue; // notice filter
+    }
 
     const blockedStart = new Date(t - maxBefore * MIN);
     const blockedEnd = new Date(t + durMs + maxAfter * MIN);
@@ -273,7 +302,9 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     });
   }
 
-  if (slots.length === 0 && candidatesWithinAvail > 0) {
+  // Only call it "within_notice" when the day actually had in-window
+  // candidates that were filtered SOLELY by the notice window (not busy).
+  if (slots.length === 0 && noticeSkipped > 0) {
     return empty({ reason: 'within_notice' });
   }
   return { slots, timezone, date };

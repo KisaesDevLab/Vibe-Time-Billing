@@ -170,13 +170,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS staff_booking_settings_staff_uk
 -- calendar_events id) carry it across as 'written'.
 INSERT INTO vibetb.appointment_staff
   (appointment_id, staff_id, calendar_event_id, provider_write_status, written_at)
+-- 'written' only when external_ref is a real calendar_events UUID we can
+-- carry into calendar_event_id; otherwise leave 'pending' (a later
+-- reschedule/retry will create the event) so status never claims "written"
+-- without a usable event handle.
 SELECT a.id,
        a.lead_app_user_id,
        CASE WHEN a.external_ref ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
             THEN a.external_ref::uuid ELSE NULL END,
-       CASE WHEN nullif(a.external_ref, '') IS NOT NULL THEN 'written'::provider_write_status
-            ELSE 'pending'::provider_write_status END,
-       CASE WHEN nullif(a.external_ref, '') IS NOT NULL THEN a.created_at ELSE NULL END
+       CASE WHEN a.external_ref ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+            THEN 'written'::provider_write_status ELSE 'pending'::provider_write_status END,
+       CASE WHEN a.external_ref ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+            THEN a.created_at ELSE NULL END
 FROM vibetb.appointment a
 WHERE a.lead_app_user_id IS NOT NULL
 ON CONFLICT (appointment_id, staff_id) DO NOTHING;

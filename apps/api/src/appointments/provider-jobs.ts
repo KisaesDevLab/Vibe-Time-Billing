@@ -121,6 +121,10 @@ export async function runAppointmentProviderWrite(
   if (!isCalendarWriteEnabled()) return { status: 'skipped', reason: 'write_disabled' };
   const { appt, row } = await loadPair(db, job.appointmentId, job.staffId);
   if (!appt || !row || appt.status === 'CANCELLED') return { status: 'skipped' };
+  // Idempotency: if an event was already written for this staff (e.g. a
+  // retry after the DB update raced, or a double-delivered job), update it
+  // in place instead of creating a duplicate provider event.
+  if (row.calendarEventId) return runAppointmentProviderUpdate(deps, job);
 
   const svc = new CalendarWriteService();
   const target = await svc.resolveTarget(db, appt.firmId, job.staffId);

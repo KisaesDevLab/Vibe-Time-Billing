@@ -15,7 +15,8 @@ import { and, eq } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
-import { offices } from '@vibe/db/schema';
+import { appUsers, offices } from '@vibe/db/schema';
+import { inArray } from 'drizzle-orm';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
@@ -43,6 +44,17 @@ function parseStaffIds(raw: unknown): string[] {
         .filter(Boolean),
     ),
   ];
+}
+
+/** Every requested staff id must belong to the caller's firm (no cross-firm
+ *  free/busy disclosure). */
+async function staffInFirm(db: Database, staffIds: string[], firmId: string): Promise<boolean> {
+  if (staffIds.length === 0) return false;
+  const rows = await db
+    .select({ id: appUsers.id })
+    .from(appUsers)
+    .where(and(inArray(appUsers.id, staffIds), eq(appUsers.firmId, firmId)));
+  return rows.length === staffIds.length;
 }
 
 async function firmTimezone(db: Database, firmId: string): Promise<string> {
@@ -83,6 +95,10 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         durationMinutes <= 0
       ) {
         res.status(400).json({ error: 'invalid_params' });
+        return;
+      }
+      if (!(await staffInFirm(deps.db, staffIds, session.firmId))) {
+        res.status(404).json({ error: 'unknown_staff' });
         return;
       }
 
@@ -142,6 +158,10 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         durationMinutes <= 0
       ) {
         res.status(400).json({ error: 'invalid_params' });
+        return;
+      }
+      if (!(await staffInFirm(deps.db, staffIds, session.firmId))) {
+        res.status(404).json({ error: 'unknown_staff' });
         return;
       }
       const timezone = await firmTimezone(deps.db, session.firmId);
