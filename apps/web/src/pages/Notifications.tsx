@@ -93,11 +93,15 @@ export function NotificationsPage(): JSX.Element {
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               {n.actionUrl && (
-                <a href={n.actionUrl}>
-                  <Button size="sm" variant="secondary">
-                    Open
-                  </Button>
-                </a>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    window.location.href = n.actionUrl!;
+                  }}
+                >
+                  Open
+                </Button>
               )}
               {n.status === 'UNREAD' && (
                 <Button size="sm" variant="secondary" onClick={() => void mark(n.id, 'read')}>

@@ -731,9 +731,14 @@ function UpcomingBookingsPanel(): JSX.Element {
     <Card
       title="Upcoming bookings (7 days)"
       action={
-        <a href="/appointments#book">
-          <Button size="sm">Book appointment</Button>
-        </a>
+        <Button
+          size="sm"
+          onClick={() => {
+            window.location.href = '/appointments#book';
+          }}
+        >
+          Book appointment
+        </Button>
       }
     >
       {rows.length === 0 ? (

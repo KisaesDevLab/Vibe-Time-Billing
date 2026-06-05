@@ -220,3 +220,26 @@ describe('appointment provider write-back', () => {
     expect(r.status).toBe('skipped');
   });
 });
+
+describe('provider write idempotency', () => {
+  it('a second write routes to update — no duplicate calendar event', async () => {
+    await seedConn(GOOGLE_WRITE);
+    const apptId = await seedAppt();
+    const deps = { db: harness.db, fetchImpl: mockFetch };
+    const first = await runAppointmentProviderWrite(deps, {
+      appointmentId: apptId,
+      staffId: seed.appUserId,
+    });
+    expect(first.status).toBe('written');
+    const second = await runAppointmentProviderWrite(deps, {
+      appointmentId: apptId,
+      staffId: seed.appUserId,
+    });
+    expect(second.status).toBe('updated'); // routed to update, not a new create
+    const events = await harness.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.staffId, seed.appUserId));
+    expect(events).toHaveLength(1);
+  });
+});

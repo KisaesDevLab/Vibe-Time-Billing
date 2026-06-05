@@ -471,3 +471,54 @@ describe('createFreeBusyProvider — fallback', () => {
     expect(ten.available).toBe(true);
   });
 });
+
+// ---- QA regression cases (post-review hardening) --------------------
+describe('getAvailableSlots — QA hardening', () => {
+  it('bookingEnabled=false → not bookable (staff_unavailable)', async () => {
+    const a = seed.appUserId;
+    await harness.db
+      .insert(staffBookingSettings)
+      .values({ staffId: a, minNoticeHours: 0, slotIncrementMinutes: 60, bookingEnabled: false });
+    await setAvail(a, MONDAY, '09:00', '12:00');
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+    });
+    expect(res.slots).toHaveLength(0);
+    expect(res.reason).toBe('staff_unavailable');
+  });
+
+  it('reschedule excludes the appointment’s own busy + matching provider block', async () => {
+    const { sql } = await import('drizzle-orm');
+    const a = seed.appUserId;
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setAvail(a, MONDAY, '09:00', '12:00');
+    const appt = await harness.db.execute(
+      sql`INSERT INTO appointment (firm_id, client_id, title, starts_at, ends_at, status, lead_app_user_id)
+          VALUES (${seed.firmId}, ${seed.clientId}, 'Self', ${`${MONDAY}T09:00:00Z`}, ${`${MONDAY}T10:00:00Z`}, 'SCHEDULED', ${a})
+          RETURNING id`,
+    );
+    const apptId = (appt as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`INSERT INTO appointment_staff (appointment_id, staff_id) VALUES (${apptId}, ${a})`,
+    );
+    // Provider also reports the same window busy (the appt's own event).
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({ [a]: [I(MONDAY, '09:00', '10:00')] }),
+      excludeAppointmentId: apptId,
+    });
+    const nine = res.slots.find((s) => s.start === `${MONDAY}T09:00:00.000Z`)!;
+    expect(nine.available).toBe(true); // own booking + matching provider block excluded
+  });
+});

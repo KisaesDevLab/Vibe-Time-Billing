@@ -10,6 +10,7 @@ import { Button, Card, Combobox, Input, MultiCombobox, Pill, Table, Tabs, tokens
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
+import { BookingSettingsEditor } from './BookingSettingsEditor';
 
 type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
 const LOC_LABEL: Record<LocationType, string> = {
@@ -217,20 +218,35 @@ function DetailDrawer({
 }): JSX.Element {
   const [d, setD] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   async function load(): Promise<void> {
-    const r = await api<Detail>(`/api/staff/appointments/${id}/detail`);
-    setD(r);
+    try {
+      const r = await api<Detail>(`/api/staff/appointments/${id}/detail`);
+      setD(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'failed to load');
+    }
   }
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Escape closes the drawer (keyboard accessibility).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   async function cancel(): Promise<void> {
     if (!confirm('Cancel this appointment? Staff calendars + participants will be notified.'))
       return;
     setBusy(true);
+    setErr(null);
     try {
       await api(`/api/staff/appointments/${id}/cancel`, {
         method: 'POST',
@@ -238,18 +254,26 @@ function DetailDrawer({
       });
       onChanged();
       onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'cancel failed');
     } finally {
       setBusy(false);
     }
   }
   async function retry(staffId: string): Promise<void> {
-    await api(`/api/staff/appointments/${id}/staff/${staffId}/retry-write`, { method: 'POST' });
-    await load();
+    setErr(null);
+    try {
+      await api(`/api/staff/appointments/${id}/staff/${staffId}/retry-write`, { method: 'POST' });
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'retry failed');
+    }
   }
 
   return (
     <div
       role="dialog"
+      aria-modal="true"
       aria-label="Appointment detail"
       style={{
         position: 'fixed',
@@ -271,7 +295,8 @@ function DetailDrawer({
           Close
         </Button>
       </div>
-      {!d && <p style={{ color: tokens.color.textMuted }}>Loading…</p>}
+      {err && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{err}</p>}
+      {!d && !err && <p style={{ color: tokens.color.textMuted }}>Loading…</p>}
       {d && (
         <div style={{ display: 'grid', gap: tokens.space.md, marginTop: tokens.space.md }}>
           <div style={{ fontSize: 13 }}>
@@ -393,6 +418,12 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     void api<{ items: { id: string; name: string }[] }>('/api/staff/clients')
       .then((r) => setClients(r.items ?? []))
       .catch(() => undefined);
+    // Deep-link prefill: /appointments?clientId=…&staffId=…#book
+    const qs = new URLSearchParams(window.location.search);
+    const qClient = qs.get('clientId');
+    const qStaff = qs.get('staffId');
+    if (qClient) setClientId(qClient);
+    if (qStaff) setSelStaff((prev) => (prev.includes(qStaff) ? prev : [...prev, qStaff]));
   }, []);
 
   useEffect(() => {
@@ -408,6 +439,15 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       .catch(() => setContacts([]));
   }, [clientId]);
 
+  // Any change to the inputs that define a slot invalidates a previously
+  // picked slot — otherwise a stale slot (sized for the old duration/date/
+  // staff) could be submitted, producing a 409 or an inconsistent record.
+  useEffect(() => {
+    setSlots([]);
+    setSlot(null);
+    setSlotMsg(null);
+  }, [selStaff, duration, date]);
+
   function pickType(t: ApptType): void {
     setTypeId(t.id);
     setDuration(t.defaultDurationMinutes);
@@ -419,7 +459,14 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setSlotMsg(null);
     setSlots([]);
     setSlot(null);
-    if (selStaff.length === 0 || !date) return;
+    if (selStaff.length === 0) {
+      setSlotMsg('Select at least one staff member in step 1 first.');
+      return;
+    }
+    if (!date) {
+      setSlotMsg('Pick a date.');
+      return;
+    }
     try {
       const params = new URLSearchParams({
         staffIds: selStaff.join(','),
@@ -484,12 +531,24 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           <Button
             variant="secondary"
             onClick={() => {
+              // Full reset — leftover internalNotes/participants from a prior
+              // booking must not carry into the next one.
               setDone(false);
               setStep(1);
               setSelStaff([]);
+              setTypeId('');
+              setDuration(30);
+              setLocation('VIDEO');
+              setLocationDetail('');
+              setDate('');
+              setSlots([]);
               setSlot(null);
-              setSubject('');
+              setSlotMsg(null);
               setClientId('');
+              setParticipantIds([]);
+              setSubject('');
+              setInternalNotes('');
+              setErr(null);
             }}
           >
             Book another
@@ -813,9 +872,11 @@ function AcceptModal({
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function submit(): Promise<void> {
     setErr(null);
+    setBusy(true);
     try {
       await api(`/api/staff/appointments/reschedule-requests/${request.id}/accept`, {
         method: 'POST',
@@ -826,7 +887,12 @@ function AcceptModal({
       });
       onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed');
+      const msg = e instanceof Error ? e.message : 'failed';
+      setErr(
+        /slot_taken/.test(msg) ? 'That time isn’t available for all staff. Pick another.' : msg,
+      );
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -858,8 +924,8 @@ function AcceptModal({
       </div>
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Button size="sm" onClick={() => void submit()} disabled={!start || !end}>
-          Reschedule
+        <Button size="sm" onClick={() => void submit()} disabled={!start || !end || busy}>
+          {busy ? 'Rescheduling…' : 'Reschedule'}
         </Button>
         <Button size="sm" variant="secondary" onClick={onClose}>
           Cancel
@@ -874,18 +940,9 @@ function AvailabilityTab(): JSX.Element {
   const { me } = useAuth();
   const id = me?.appUserId;
   if (!id) return <Card title="Availability">Sign in required.</Card>;
-  return (
-    <Card title="My booking availability">
-      <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
-        Manage your weekly hours, buffers, and the booking on/off switch on your staff
-        profile&apos;s Booking tab. Bookable slots are the intersection of those hours with your
-        connected calendar&apos;s free/busy.
-      </p>
-      <a href={`/admin/users/${id}`} style={{ color: tokens.color.accent, fontSize: 14 }}>
-        Open my Booking settings →
-      </a>
-    </Card>
-  );
+  // Self-service: the per-staff booking endpoints are self-or-admin, so a
+  // staff member edits their own hours here (no admin profile page needed).
+  return <BookingSettingsEditor userId={id} />;
 }
 
 const selectStyle: React.CSSProperties = {

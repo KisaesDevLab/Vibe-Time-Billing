@@ -31,6 +31,7 @@ import {
 import { createBookingRouter } from '../appointments/booking-routes';
 import { createAppointmentRouter } from '../appointments/routes';
 import { createAppointmentPublicRouter } from '../appointments/public-routes';
+import { createSlotsRouter } from '../appointments/slots-routes';
 import type { BusyInterval, StaffBusyProvider } from '../appointments/availability';
 import type { BookingQueue } from '../appointments/queue';
 
@@ -134,6 +135,10 @@ function buildApp(opts: {
   };
   app.use('/api/staff/appointments', createBookingRouter(deps));
   app.use('/api/staff/appointments', createAppointmentRouter({ db: harness.db, fakeUserRoles }));
+  app.use(
+    '/api/staff/booking',
+    createSlotsRouter({ db: harness.db, fakeUserRoles, busyProvider: opts.busyProvider }),
+  );
   app.use(
     '/api/public/appointments',
     createAppointmentPublicRouter({
@@ -391,5 +396,110 @@ describe('public token flows', () => {
     expect(after!.status).toBe('accepted');
     const [appt2] = await harness.db.select().from(appointments).where(eq(appointments.id, id));
     expect(appt2!.startsAt.toISOString()).toBe(`${MONDAY}T15:00:00.000Z`);
+  });
+});
+
+// ---- QA regression cases (post-review hardening) --------------------
+describe('QA hardening', () => {
+  it('derives duration from times — a bogus client durationMinutes cannot shrink validation', async () => {
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId],
+        subject: 'Long',
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 5, // lie — real span is 60
+      });
+    expect(res.status).toBe(201);
+    const [appt] = await harness.db
+      .select()
+      .from(appointments)
+      .where(eq(appointments.id, res.body.id));
+    expect(appt!.durationMinutes).toBe(60);
+  });
+
+  it('/slots rejects a staff id from another firm (404)', async () => {
+    // Second firm + its staff.
+    const f2 = await harness.db.execute(
+      sql`INSERT INTO firm (name) VALUES ('Other Firm') RETURNING id`,
+    );
+    const otherFirmId = (f2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const u2 = await harness.db.execute(
+      sql`INSERT INTO app_user (firm_id, email, full_name, first_name, last_name)
+          VALUES (${otherFirmId}, 'x@other.example', 'X', 'X', 'Y') RETURNING id`,
+    );
+    const otherStaff = (u2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app).get(
+      `/api/staff/booking/slots?staffIds=${otherStaff}&date=${MONDAY}&durationMinutes=60`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects an appointmentTypeId from another firm (400)', async () => {
+    const f2 = await harness.db.execute(
+      sql`INSERT INTO firm (name) VALUES ('Other Firm 2') RETURNING id`,
+    );
+    const otherFirmId = (f2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const t = await harness.db.execute(
+      sql`INSERT INTO appointment_type (firm_id, name, default_duration_minutes, default_location_type)
+          VALUES (${otherFirmId}, 'Foreign', 30, 'VIDEO') RETURNING id`,
+    );
+    const foreignType = (t as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId],
+        appointmentTypeId: foreignType,
+        subject: 'X',
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 60,
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('unknown_appointment_type');
+  });
+
+  it('duplicate staffIds are deduped (no 500)', async () => {
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId, seed.appUserId],
+        subject: 'Dup',
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 60,
+      });
+    expect(res.status).toBe(201);
+    const rows = await harness.db
+      .select()
+      .from(appointmentStaff)
+      .where(eq(appointmentStaff.appointmentId, res.body.id));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('engagementId without clientId is rejected (400)', async () => {
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId],
+        subject: 'X',
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 60,
+        engagementId: seed.engagementId,
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('engagement_requires_client');
   });
 });

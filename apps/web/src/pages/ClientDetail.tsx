@@ -858,9 +858,14 @@ function ClientAppointmentsCard({ clientId }: { clientId: string }): JSX.Element
     <Card
       title={`Appointments (${rows.length})`}
       action={
-        <a href="/appointments#book">
-          <Button size="sm">Book appointment</Button>
-        </a>
+        <Button
+          size="sm"
+          onClick={() => {
+            window.location.href = `/appointments?clientId=${clientId}#book`;
+          }}
+        >
+          Book appointment
+        </Button>
       }
     >
       <Table<ClientApptRow>
