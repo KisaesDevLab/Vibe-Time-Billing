@@ -121,6 +121,7 @@ import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createAppointmentRouter } from './appointments/routes';
 import { createAppointmentTypeRouter } from './appointments/types-routes';
 import { createBookingSettingsRouter } from './appointments/booking-settings-routes';
+import { createSlotsRouter } from './appointments/slots-routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
@@ -1216,6 +1217,14 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/booking', auth.requireAuth, auth.requireCsrf, bookingSettingsRouter);
+
+  // BK-2 — multi-staff slot availability (free/busy intersection).
+  const slotsRouter = createSlotsRouter({
+    db: deps.db,
+    redis: deps.redis,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/booking', auth.requireAuth, auth.requireCsrf, slotsRouter);
 
   // P02 — services catalog + tags (proposal addendum). read for
   // partner/manager/senior/staff; write for partner + manager.

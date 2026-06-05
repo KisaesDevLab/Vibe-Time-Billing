@@ -7,6 +7,8 @@ import express from 'express';
 import request from 'supertest';
 import { sql } from 'drizzle-orm';
 
+import type { RoleSlug } from '@vibe/core/rbac';
+
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { createAppointmentTypeRouter } from '../appointments/types-routes';
 import { createBookingSettingsRouter } from '../appointments/booking-settings-routes';
@@ -22,7 +24,7 @@ afterEach(async () => {
   await harness.close();
 });
 
-function buildApp(opts: { roles?: string[]; appUserId?: string } = {}): express.Express {
+function buildApp(opts: { roles?: RoleSlug[]; appUserId?: string } = {}): express.Express {
   const app = express();
   app.use(express.json());
   const appUserId = opts.appUserId ?? seed.appUserId;
@@ -33,7 +35,7 @@ function buildApp(opts: { roles?: string[]; appUserId?: string } = {}): express.
     };
     next();
   });
-  const fakeUserRoles = new Map([[appUserId, opts.roles ?? ['admin']]]);
+  const fakeUserRoles = new Map<string, RoleSlug[]>([[appUserId, opts.roles ?? ['admin']]]);
   app.use(
     '/api/staff/admin/appointment-types',
     createAppointmentTypeRouter({ db: harness.db, fakeUserRoles }),
