@@ -26,14 +26,26 @@ import {
   signatureSigners,
 } from '@vibe/db/schema';
 
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
+
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import type { PageGeometry } from './geometry';
+import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
+import { capturePageGeometry, type PageGeometry } from './geometry';
+import { sendSignatureRequest } from './send';
 import { FIELD_TYPES, validatePlacements, type PlacementInput } from './validation';
 
 export interface SignaturesDeps extends RbacDeps {
   db: Database | null;
+  /** Injected in tests; falls back to buildStorageClient(env) in prod. */
+  storageClient?: StorageClient;
+  /** Injected in tests; falls back to openSignClientFromEnv() in prod. */
+  openSignClient?: OpenSignClient;
+  /** Days until a sent request expires (default 30). */
+  expiresInDays?: number;
 }
+
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 const GeometrySchema = z.array(
   z.object({
@@ -84,6 +96,23 @@ const PlacementsSchema = z.object({
 
 export function createSignaturesRouter(deps: SignaturesDeps): Router {
   const router = express.Router();
+
+  function getStorage(): StorageClient | null {
+    if (deps.storageClient) return deps.storageClient;
+    try {
+      return buildStorageClient(process.env);
+    } catch {
+      return null;
+    }
+  }
+  function getOpenSign(): OpenSignClient | null {
+    return deps.openSignClient ?? openSignClientFromEnv();
+  }
+
+  // Source PDF object key: signatures/<firmId>/<requestId>/source.pdf.
+  function sourceKey(firmId: string, requestId: string): string {
+    return `signatures/${firmId}/${requestId}/source.pdf`;
+  }
 
   // Load a firm-scoped request row (null if missing / other firm).
   async function loadRequest(db: Database, firmId: string, id: string) {
@@ -498,6 +527,135 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         before: { title: request.title, status: 'draft' },
       });
       res.json({ ok: true });
+    },
+  );
+
+  // POST /:id/source — upload the source PDF (raw application/pdf body).
+  // Captures per-page MediaBox geometry and stores the bytes; sets
+  // sourceFileKey + pageGeometry on the draft. Re-uploadable while draft.
+  router.post(
+    '/:id/source',
+    express.raw({ type: 'application/pdf', limit: MAX_PDF_BYTES }),
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = getStorage();
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (request.status !== 'draft') {
+        res.status(409).json({ error: 'not_editable', status: request.status });
+        return;
+      }
+      const body = req.body as Buffer;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        res.status(400).json({ error: 'empty_pdf' });
+        return;
+      }
+
+      let geometry: PageGeometry[];
+      try {
+        geometry = await capturePageGeometry(body);
+      } catch {
+        res.status(400).json({ error: 'invalid_pdf' });
+        return;
+      }
+      if (geometry.length === 0) {
+        res.status(400).json({ error: 'pdf_has_no_pages' });
+        return;
+      }
+
+      const key = sourceKey(firmId, request.id);
+      await storage.put(key, body, { contentType: 'application/pdf' });
+      await deps.db
+        .update(signatureRequests)
+        .set({ sourceFileKey: key, pageGeometry: geometry, updatedAt: new Date() })
+        .where(eq(signatureRequests.id, request.id));
+      await recordEvent(deps.db, request.id, actor, 'source_uploaded', {
+        pages: geometry.length,
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'signature_request',
+        entityId: request.id,
+        actorAppUserId: actor,
+        after: { sourceUploaded: true, pages: geometry.length },
+      });
+      res.json({ ok: true, pages: geometry.length, geometry });
+    },
+  );
+
+  // POST /:id/send — transactional send through OpenSign (draft → sent).
+  router.post(
+    '/:id/send',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = getStorage();
+      const client = getOpenSign();
+      if (!storage || !client) {
+        res.status(503).json({ error: 'opensign_not_configured' });
+        return;
+      }
+      let outcome;
+      try {
+        outcome = await sendSignatureRequest(
+          { db: deps.db, storage, client, expiresInDays: deps.expiresInDays },
+          { requestId: req.params['id']!, firmId, actor },
+        );
+      } catch (err) {
+        // OpenSign create failed AFTER validation but BEFORE any local
+        // write — the request is still a clean draft (no rollback needed).
+        // Record the failed attempt so staff can see why and retry.
+        await recordEvent(deps.db, req.params['id']!, actor, 'send_failed', {
+          error: String(err),
+        }).catch(() => undefined);
+        res.status(502).json({ error: 'opensign_send_failed' });
+        return;
+      }
+      switch (outcome.kind) {
+        case 'not_found':
+          res.status(404).json({ error: 'not_found' });
+          return;
+        case 'not_draft':
+          res.status(409).json({ error: 'not_draft', status: outcome.status });
+          return;
+        case 'no_source':
+          res.status(409).json({ error: 'no_source' });
+          return;
+        case 'invalid':
+          res.status(422).json({ error: 'invalid_placements', errors: outcome.errors });
+          return;
+        case 'sent':
+          await emitAudit(deps.db, {
+            action: 'UPDATE',
+            entityType: 'signature_request.sent',
+            entityId: req.params['id']!,
+            actorAppUserId: actor,
+            after: {
+              opensignDocumentId: outcome.opensignDocumentId,
+              expiresAt: outcome.expiresAt.toISOString(),
+            },
+          });
+          res.json({ ok: true, opensignDocumentId: outcome.opensignDocumentId });
+          return;
+      }
     },
   );
 

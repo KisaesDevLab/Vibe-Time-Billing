@@ -122,6 +122,7 @@ import { createClientAccountRouter } from './proposals/client-accounts';
 import { createAcceptanceRouter } from './proposals/acceptance';
 import { createSectionViewRouter } from './proposals/section-views';
 import { createNativeProvider, createOpenSignProvider, type EsignProvider } from './esign/provider';
+import { openSignClientFromEnv } from './esign/opensign-client';
 import { createOpenSignWebhookRouter } from './webhooks/opensign';
 import { createQuickBillRouter } from './quick-bills/routes';
 import { createRenewalRouter } from './renewals/routes';
@@ -226,6 +227,8 @@ export function createApp(deps: AppDeps): Express {
               })
             : null,
         storage: webhookStorage,
+        // 0108 — Signatures module reconcile (document-id keyed).
+        openSignClient: openSignConfigured ? openSignClientFromEnv() : null,
         webhookSecret: config.OPENSIGN_WEBHOOK_SECRET ?? null,
         hmacSeed: config.PROPOSAL_SIGNATURE_HMAC_SEED ?? config.PORTAL_JWT_SECRET ?? null,
         sendProposalEmail: deps.sendStaffMail

@@ -44,6 +44,8 @@ import { logger } from '../logger';
 import { completeOpenSignEnvelope } from '../esign/opensign-complete';
 import { type SendProposalEmail } from '../proposals/magic-links';
 import type { EsignProvider } from '../esign/provider';
+import type { OpenSignClient } from '../esign/opensign-client';
+import { reconcileSignatureRequestByDocument } from '../signatures/reconcile';
 
 export interface OpenSignWebhookDeps {
   db: Database | null;
@@ -55,6 +57,11 @@ export interface OpenSignWebhookDeps {
   hmacSeed: string | null;
   sendProposalEmail?: SendProposalEmail;
   portalBaseUrl?: string;
+  // Signatures module (0108): low-level client used to reconcile
+  // signature_requests by document id. The document-id space is disjoint
+  // from proposal envelope ids, so this never collides with the proposal
+  // completion path. Null when OpenSign isn't wired.
+  openSignClient?: OpenSignClient | null;
 }
 
 // Real OpenSign self-host webhook payload (Settings → Webhook).
@@ -185,6 +192,36 @@ async function dispatch(
 ): Promise<'PROCESSED' | 'IGNORED'> {
   const db = deps.db!;
   if (!envelopeId) return 'IGNORED';
+
+  // Signatures module first (0108): the document-id space is disjoint from
+  // proposal envelope ids, so a match here means this is a Signatures
+  // request and we're done. We always re-fetch the authoritative document
+  // inside reconcile rather than trusting the webhook payload.
+  if (deps.openSignClient && deps.storage) {
+    try {
+      const r = await reconcileSignatureRequestByDocument(
+        { db, client: deps.openSignClient, storage: deps.storage },
+        envelopeId,
+      );
+      if (r.kind === 'updated') {
+        await emitAudit(db, {
+          action: 'UPDATE',
+          entityType: 'signature_request.reconciled',
+          entityId: envelopeId,
+          after: { status: r.status, signedCount: r.signedCount, via: 'webhook' },
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+        return 'PROCESSED';
+      }
+      if (r.reason !== 'unknown_document') {
+        // It IS a signatures request (terminal/no-change) — don't fall
+        // through to the proposal path for the same id.
+        return 'IGNORED';
+      }
+    } catch (err) {
+      logger.error({ err, envelopeId }, 'signatures reconcile failed');
+      // Fall through: if it wasn't ours, the proposal path may handle it.
+    }
+  }
 
   switch (event.event) {
     case 'completed': {

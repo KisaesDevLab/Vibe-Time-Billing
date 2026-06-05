@@ -238,3 +238,21 @@ export function createOpenSignClient(opts: OpenSignClientOptions): OpenSignClien
     fetchPdfUrl,
   };
 }
+
+/**
+ * Build the shared client from the OPENSIGN_* env (same vars the proposal
+ * provider + poll worker read). Returns null when OpenSign isn't wired
+ * (OPENSIGN_URL unset) so callers can degrade cleanly.
+ */
+export function openSignClientFromEnv(env: NodeJS.ProcessEnv = process.env): OpenSignClient | null {
+  const baseUrl = env['OPENSIGN_URL'];
+  if (!baseUrl) return null;
+  return createOpenSignClient({
+    baseUrl,
+    appId: env['OPENSIGN_APP_ID'] ?? 'opensign',
+    masterKey: env['OPENSIGN_MASTER_KEY'] ?? '',
+    publicUrl: env['OPENSIGN_PUBLIC_URL'],
+    apiEmail: env['OPENSIGN_API_EMAIL'],
+    apiPassword: env['OPENSIGN_API_PASSWORD'],
+  });
+}
