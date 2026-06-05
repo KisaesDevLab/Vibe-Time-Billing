@@ -73,6 +73,9 @@ import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createSignaturesRouter } from './signatures/routes';
 import { createCalendarAdminRouter } from './calendar/admin-routes';
+import { createCalendarConnectRouter } from './calendar/connect-routes';
+import { createCalendarPublicRouter } from './calendar/public-routes';
+import type { OAuthStateStore } from './calendar/connect-shared';
 import { createIntakeCardRouter } from './intake/card-routes';
 import { collectIntakeMetricsText } from './intake/metrics';
 import { createPortalRetainerRouter } from './portal/retainers';
@@ -564,6 +567,23 @@ export function createApp(deps: AppDeps): Express {
     createCalendarAdminRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }),
   );
 
+  // 0109 — per-staff calendar connect + management (self-service).
+  const calendarStateStore: OAuthStateStore = {
+    set: (k, v, ttl) => deps.redis.setex(k, ttl, v).then(() => undefined),
+    get: (k) => deps.redis.get(k),
+    del: (k) => deps.redis.del(k).then(() => undefined),
+  };
+  app.use(
+    '/api/staff/calendar',
+    auth.requireAuth,
+    auth.requireCsrf,
+    createCalendarConnectRouter({
+      db: deps.db,
+      stateStore: calendarStateStore,
+      redirectBase: config.APP_BASE_URL,
+    }),
+  );
+
   // v1 internal-files + folder-templates routers removed in Phase 0
   // of the file-manager rebuild. Replacements ship in Phases 4 + 10
   // (storage onboarding + per-client UI per FILE_MANAGER_ADDENDUM.md).
@@ -847,6 +867,19 @@ export function createApp(deps: AppDeps): Express {
   // site proxies ONLY this prefix. CORS + per-IP rate limit live inside.
   const intakePublicRouter = createIntakePublicRouter({ db: deps.db, redis: deps.redis });
   app.use('/api/public/intake', intakePublicRouter);
+
+  // 0109 — PUBLIC calendar OAuth callback. Must be outside the staff auth
+  // chain: the provider redirects cross-site and the SameSite=Strict
+  // session cookie isn't sent — identity comes from the Redis state nonce.
+  app.use(
+    '/api/calendar',
+    createCalendarPublicRouter({
+      db: deps.db,
+      stateStore: calendarStateStore,
+      redirectBase: config.APP_BASE_URL,
+      appBaseUrl: config.APP_BASE_URL,
+    }),
+  );
 
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({
