@@ -23,6 +23,7 @@ import { EngagementLettersPage } from './EngagementLetters';
 import { EngagementStatusesPage } from './EngagementStatuses';
 import { IntakeSettingsPage } from './IntakeSettings';
 import { CalendarSettingsPage } from './CalendarSettings';
+import { CalendarOverviewPage } from './CalendarOverview';
 import { StatusHistoryPage } from './StatusHistory';
 import { FirmSettingsPage } from './FirmSettings';
 import { HolidaysPage } from './Holidays';
@@ -149,6 +150,7 @@ const GROUPS: Group[] = [
       { key: 'ai', label: 'AI usage', href: '/admin/ai-usage' },
       { key: 'mcp-tokens', label: 'API tokens', href: '/admin/api-tokens' },
       { key: 'calendar', label: 'Calendar integrations', href: '/admin/calendar' },
+      { key: 'calendar-overview', label: 'Calendar overview', href: '/admin/calendar-overview' },
       { key: 'saved', label: 'Saved reports', href: '/admin/saved-reports' },
     ],
   },
@@ -283,6 +285,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
         <Route path="intake-settings" element={<IntakeSettingsPage />} />
         <Route path="calendar" element={<CalendarSettingsPage />} />
+        <Route path="calendar-overview" element={<CalendarOverviewPage />} />
         <Route path="status-history" element={<StatusHistoryPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="recurring-engagements" element={<EngagementRecurrencesPage />} />

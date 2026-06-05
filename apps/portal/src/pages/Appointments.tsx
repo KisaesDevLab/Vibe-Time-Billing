@@ -13,6 +13,7 @@ import { Card, EmptyState, Pill, SectionHeading, Stat, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useScope } from '../scope-context';
+import { CalendarAppointments } from './CalendarAppointments';
 
 interface AppointmentRow {
   id: string;
@@ -93,6 +94,8 @@ export function AppointmentsPage(): JSX.Element {
           Showing appointments from <strong>all clients you can access</strong>.
         </div>
       )}
+
+      <CalendarAppointments />
 
       <section>
         <SectionHeading title="Summary" eyebrow="At a glance" />
