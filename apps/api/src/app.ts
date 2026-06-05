@@ -906,6 +906,12 @@ export function createApp(deps: AppDeps): Express {
     createAppointmentPublicRouter({ db: deps.db, redis: deps.redis }),
   );
 
+  // BK-8 — v2 client self-booking public link (stubbed behind a flag).
+  // See docs/public-booking-v2.md for the intended v2 flow.
+  app.get('/api/public/book/:slug', (_req, res) => {
+    res.status(501).json({ error: 'not_implemented', feature: 'public_booking' });
+  });
+
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({
     db: deps.db,

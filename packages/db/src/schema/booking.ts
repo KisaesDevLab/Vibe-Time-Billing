@@ -214,6 +214,29 @@ export const staffNotifications = pgTable(
 
 export type StaffNotification = typeof staffNotifications.$inferSelect;
 
+// BK-8 — v2 client self-booking public links (stub; feature-gated).
+export const staffPublicBookingLinks = pgTable(
+  'staff_public_booking_link',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    staffId: uuid('staff_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    slug: text('slug').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    allowedAppointmentTypeIds: jsonb('allowed_appointment_type_ids'),
+    customMessage: text('custom_message'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    slugUk: uniqueIndex('staff_public_booking_link_slug_uk').on(t.slug),
+    staffIdx: index('staff_public_booking_link_staff_idx').on(t.staffId),
+  }),
+);
+
 export type AppointmentStaff = typeof appointmentStaff.$inferSelect;
 export type NewAppointmentStaff = typeof appointmentStaff.$inferInsert;
 export type AppointmentParticipant = typeof appointmentParticipants.$inferSelect;
