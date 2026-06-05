@@ -62,6 +62,7 @@ import { createPortalProfileRouter } from './portal/profile';
 import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
 import { createPortalActivityRouter } from './portal/activity';
 import { createPortalAppointmentRouter } from './portal/appointments';
+import { createPortalCalendarRouter } from './portal/calendar';
 import { createPortalEngagementAutopayRouter } from './portal/engagement-autopay';
 import { createPortalEngagementRouter } from './portal/engagements';
 import { createPortalTaxReturnRouter } from './portal/tax-returns';
@@ -76,6 +77,7 @@ import { createCalendarAdminRouter } from './calendar/admin-routes';
 import { createCalendarConnectRouter } from './calendar/connect-routes';
 import { createCalendarMatchRouter } from './calendar/match-routes';
 import { createCalendarPublicRouter } from './calendar/public-routes';
+import { createRsvpRouter } from './calendar/rsvp-routes';
 import type { OAuthStateStore } from './calendar/connect-shared';
 import { createIntakeCardRouter } from './intake/card-routes';
 import { collectIntakeMetricsText } from './intake/metrics';
@@ -887,6 +889,8 @@ export function createApp(deps: AppDeps): Express {
       appBaseUrl: config.APP_BASE_URL,
     }),
   );
+  // 0109 — PUBLIC one-click RSVP (no login; token-authenticated).
+  app.use('/api/calendar/rsvp', createRsvpRouter({ db: deps.db }));
 
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({
@@ -894,6 +898,12 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/appointments', portalAppointmentRouter);
+
+  // 0109 — portal calendar appointments (synced from staff calendars).
+  app.use(
+    '/api/portal/calendar/appointments',
+    createPortalCalendarRouter({ db: deps.db, requireAuth: portal.requireAuth }),
+  );
 
   // P4.4 — portal step-up challenge endpoints.
   const portalStepUpRouter = createPortalStepUpRouter({

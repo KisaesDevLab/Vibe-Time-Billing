@@ -7,10 +7,17 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { calendarProviderConfig } from '@vibe/db/schema';
+import {
+  appUsers,
+  calendarEventMatches,
+  calendarEvents,
+  calendarProviderConfig,
+  clients,
+  staffCalendarConnections,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -269,6 +276,96 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
       }
       const saved = await upsertCalendarSettings(deps.db, firmId, parsed.data);
       res.json(saved);
+    },
+  );
+
+  // GET /overview — all-staff appointments (filterable). Admin/partner view.
+  router.get(
+    '/overview',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const conds = [eq(calendarEvents.firmId, firmId), isNull(calendarEvents.softDeletedAt)];
+      const from = req.query['from'] ? new Date(String(req.query['from'])) : null;
+      const to = req.query['to'] ? new Date(String(req.query['to'])) : null;
+      if (from && !Number.isNaN(from.getTime())) conds.push(gte(calendarEvents.startAt, from));
+      if (to && !Number.isNaN(to.getTime())) conds.push(lte(calendarEvents.startAt, to));
+      if (req.query['staffId'])
+        conds.push(eq(calendarEvents.staffId, String(req.query['staffId'])));
+
+      const rows = await deps.db
+        .select({
+          id: calendarEvents.id,
+          subject: calendarEvents.subject,
+          startAt: calendarEvents.startAt,
+          endAt: calendarEvents.endAt,
+          staffName: appUsers.fullName,
+          clientName: clients.name,
+          matchTier: calendarEventMatches.matchTier,
+          matchStatus: calendarEventMatches.matchStatus,
+        })
+        .from(calendarEvents)
+        .leftJoin(appUsers, eq(appUsers.id, calendarEvents.staffId))
+        .leftJoin(calendarEventMatches, eq(calendarEventMatches.eventId, calendarEvents.id))
+        .leftJoin(clients, eq(clients.id, calendarEventMatches.clientId))
+        .where(and(...conds))
+        .orderBy(desc(calendarEvents.startAt))
+        .limit(1000);
+
+      if (String(req.query['format'] ?? '') === 'csv') {
+        const header = 'subject,staff,client,start,end,match_tier,match_status\n';
+        const csv = rows
+          .map((r) =>
+            [
+              r.subject ?? '',
+              r.staffName ?? '',
+              r.clientName ?? '',
+              r.startAt?.toISOString() ?? '',
+              r.endAt?.toISOString() ?? '',
+              r.matchTier ?? '',
+              r.matchStatus ?? '',
+            ]
+              .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+              .join(','),
+          )
+          .join('\n');
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename="calendar-overview.csv"');
+        res.send(header + csv);
+        return;
+      }
+      res.json({ items: rows });
+    },
+  );
+
+  // GET /health — all staff connections' sync health.
+  router.get(
+    '/health',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ connections: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: staffCalendarConnections.id,
+          staffName: appUsers.fullName,
+          provider: staffCalendarConnections.provider,
+          providerEmail: staffCalendarConnections.providerEmail,
+          enabled: staffCalendarConnections.enabled,
+          syncError: staffCalendarConnections.syncError,
+          lastSyncedAt: staffCalendarConnections.lastSyncedAt,
+        })
+        .from(staffCalendarConnections)
+        .leftJoin(appUsers, eq(appUsers.id, staffCalendarConnections.staffId))
+        .where(eq(staffCalendarConnections.firmId, firmId));
+      res.json({ connections: rows });
     },
   );
 
