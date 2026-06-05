@@ -98,8 +98,12 @@ afterEach(async () => {
 
 describe('calendar dashboard endpoints (CAL-5)', () => {
   it('/events/my resolves the confirmed client name and respects the window', async () => {
-    const inTwoHours = new Date(Date.now() + 2 * 3600_000);
-    const eventId = await makeEvent(inTwoHours);
+    // Midday today — always inside the [startOfDay, +24h) "today" window
+    // regardless of the wall clock (now+2h would roll into tomorrow when
+    // the suite runs late in the day, a pre-existing time-of-day flake).
+    const now = new Date();
+    const middayToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+    const eventId = await makeEvent(middayToday);
     await harness.db.insert(calendarEventMatches).values({
       eventId,
       clientId: seed.clientId,

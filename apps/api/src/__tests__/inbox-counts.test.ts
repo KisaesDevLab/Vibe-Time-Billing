@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 describe('GET /stats/inbox-counts', () => {
-  it('returns all five counts, zero when nothing is pending', async () => {
+  it('returns all counts, zero when nothing is pending', async () => {
     const res = await request(buildApp()).get('/api/staff/stats/inbox-counts');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -55,6 +55,7 @@ describe('GET /stats/inbox-counts', () => {
       requests: 0,
       intake: 0,
       approvals: 0,
+      notifications: 0, // BK-7 — in-app staff notifications
     });
   });
 
