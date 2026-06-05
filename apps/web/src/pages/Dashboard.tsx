@@ -255,6 +255,8 @@ export function DashboardPage(): JSX.Element {
 
       <MyCalendarPanel />
 
+      <UpcomingBookingsPanel />
+
       {/* 0051 — realization card moved above My active engagements. */}
       <Card
         title="Realization by timekeeper"
@@ -705,3 +707,50 @@ const headerBtn: React.CSSProperties = {
   color: 'inherit',
   cursor: 'pointer',
 };
+
+// BK-8 — upcoming TB-originated appointments for the next 7 days.
+interface UpcomingAppt {
+  id: string;
+  title: string;
+  startsAt: string;
+  status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+}
+
+function UpcomingBookingsPanel(): JSX.Element {
+  const [rows, setRows] = useState<UpcomingAppt[]>([]);
+  useEffect(() => {
+    const from = new Date().toISOString();
+    const to = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+    void api<{ items: UpcomingAppt[] }>(
+      `/api/staff/appointments?status=SCHEDULED&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    )
+      .then((r) => setRows(r.items ?? []))
+      .catch(() => setRows([]));
+  }, []);
+  return (
+    <Card
+      title="Upcoming bookings (7 days)"
+      action={
+        <a href="/appointments#book">
+          <Button size="sm">Book appointment</Button>
+        </a>
+      }
+    >
+      {rows.length === 0 ? (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+          No appointments in the next 7 days.
+        </p>
+      ) : (
+        <Table<UpcomingAppt>
+          columns={[
+            { key: 'when', header: 'When', render: (r) => new Date(r.startsAt).toLocaleString() },
+            { key: 'title', header: 'Subject', render: (r) => r.title },
+          ]}
+          rows={rows}
+          rowKey={(r) => r.id}
+          empty="None."
+        />
+      )}
+    </Card>
+  );
+}

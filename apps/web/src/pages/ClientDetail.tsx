@@ -79,6 +79,7 @@ type Tab =
   | 'files'
   | 'tasks'
   | 'engagements'
+  | 'appointments'
   | 'billing'
   | 'tax';
 
@@ -246,6 +247,7 @@ export function ClientDetailPage(): JSX.Element {
           { key: 'files', label: 'Files' },
           { key: 'tasks', label: 'Tasks' },
           { key: 'engagements', label: 'Engagements', badge: engagements.length },
+          { key: 'appointments', label: 'Appointments' },
           { key: 'billing', label: 'Billing' },
           { key: 'tax', label: 'Tax' },
         ]}
@@ -408,6 +410,8 @@ export function ClientDetailPage(): JSX.Element {
           </Card>
         </>
       )}
+
+      {tab === 'appointments' && <ClientAppointmentsCard clientId={client.id} />}
 
       {tab === 'billing' && <BillingCard clientId={client.id} />}
 
@@ -830,5 +834,65 @@ function MergeDialog({
         )}
       </div>
     </div>
+  );
+}
+
+// BK-8 — client appointments tab. Lists this client's appointments and
+// deep-links to the booking wizard.
+interface ClientApptRow {
+  id: string;
+  title: string;
+  startsAt: string;
+  status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  location: 'VIDEO' | 'PHONE' | 'IN_PERSON';
+}
+
+function ClientAppointmentsCard({ clientId }: { clientId: string }): JSX.Element {
+  const [rows, setRows] = useState<ClientApptRow[]>([]);
+  useEffect(() => {
+    void api<{ items: ClientApptRow[] }>(`/api/staff/appointments?clientId=${clientId}`)
+      .then((r) => setRows(r.items ?? []))
+      .catch(() => setRows([]));
+  }, [clientId]);
+  return (
+    <Card
+      title={`Appointments (${rows.length})`}
+      action={
+        <a href="/appointments#book">
+          <Button size="sm">Book appointment</Button>
+        </a>
+      }
+    >
+      <Table<ClientApptRow>
+        columns={[
+          {
+            key: 'when',
+            header: 'Date & time',
+            render: (r) => new Date(r.startsAt).toLocaleString(),
+          },
+          { key: 'title', header: 'Subject', render: (r) => r.title },
+          {
+            key: 'status',
+            header: 'Status',
+            render: (r) => (
+              <Pill
+                tone={
+                  r.status === 'SCHEDULED'
+                    ? 'accent'
+                    : r.status === 'COMPLETED'
+                      ? 'success'
+                      : 'neutral'
+                }
+              >
+                {r.status.toLowerCase()}
+              </Pill>
+            ),
+          },
+        ]}
+        rows={rows}
+        rowKey={(r) => r.id}
+        empty="No appointments for this client yet."
+      />
+    </Card>
   );
 }
