@@ -15,11 +15,13 @@
   },
   "dependencies": {
     "@vibe/core": "workspace:*",
+    "@vibe/crypto": "workspace:*",
     "@vibe/db": "workspace:*",
     "@vibe/storage": "workspace:*",
     "@vibe/types": "workspace:*",
     "bullmq": "^5.7.0",
     "drizzle-orm": "^0.30.10",
+    "fuse.js": "^7.0.0",
     "ioredis": "^5.4.1",
     "nodemailer": "^8.0.7",
     "pdf-lib": "^1.17.1",
