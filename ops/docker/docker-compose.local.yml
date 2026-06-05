@@ -56,6 +56,10 @@ services:
       PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:5196}
       # Public document-intake SPA base — used to build "send a link" URLs.
       INTAKE_BASE_URL: ${INTAKE_BASE_URL:-}
+      # BK-5 — appointment booking pushes events to staff calendars.
+      FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
+      # BK-8 — v2 client self-booking links (stub; off in v1).
+      FEATURE_PUBLIC_BOOKING: ${FEATURE_PUBLIC_BOOKING:-false}
       COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       MAIL_PROVIDER: smtp
       MAIL_FROM: 'Vibe Dev <dev@localhost>'
@@ -153,6 +157,8 @@ services:
       MAIL_SMTP_SECURE: 'false'
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5195}
+      # BK-5 — appointment booking calendar write-back jobs.
+      FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
       # Document-intake virus scanner (Phase D). Reached over clamd TCP.
       # Empty host disables the scan gate (intake feature off by default).
       CLAMD_HOST: ${CLAMD_HOST:-}
