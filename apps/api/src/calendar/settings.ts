@@ -12,13 +12,18 @@ export interface CalendarSettings {
   syncIntervalMinutes: number;
   lookbackDays: number;
   lookaheadDays: number;
+  /** Minutes-before-start reminder offsets (e.g. [1440, 120]). */
+  reminderOffsetsMinutes: number[];
 }
 
 export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
   syncIntervalMinutes: 15,
   lookbackDays: 7,
   lookaheadDays: 90,
+  reminderOffsetsMinutes: [1440, 120],
 };
+
+const ALLOWED_OFFSETS = new Set([10080, 4320, 1440, 120]); // 7d, 3d, 1d, 2h
 
 function clampInt(v: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(v)) return fallback;
@@ -32,10 +37,14 @@ export async function getCalendarSettings(db: Database, firmId: string): Promise
     .where(eq(calendarSettings.firmId, firmId))
     .limit(1);
   if (!row) return { ...DEFAULT_CALENDAR_SETTINGS };
+  const offsets = Array.isArray(row.reminderOffsetsMinutes)
+    ? (row.reminderOffsetsMinutes as number[])
+    : DEFAULT_CALENDAR_SETTINGS.reminderOffsetsMinutes;
   return {
     syncIntervalMinutes: row.syncIntervalMinutes,
     lookbackDays: row.lookbackDays,
     lookaheadDays: row.lookaheadDays,
+    reminderOffsetsMinutes: offsets,
   };
 }
 
@@ -45,6 +54,9 @@ export async function upsertCalendarSettings(
   patch: Partial<CalendarSettings>,
 ): Promise<CalendarSettings> {
   const current = await getCalendarSettings(db, firmId);
+  const offsets = (patch.reminderOffsetsMinutes ?? current.reminderOffsetsMinutes)
+    .filter((n) => ALLOWED_OFFSETS.has(n))
+    .sort((a, b) => b - a);
   const next: CalendarSettings = {
     syncIntervalMinutes: clampInt(
       patch.syncIntervalMinutes ?? current.syncIntervalMinutes,
@@ -54,6 +66,7 @@ export async function upsertCalendarSettings(
     ),
     lookbackDays: clampInt(patch.lookbackDays ?? current.lookbackDays, 1, 60, 7),
     lookaheadDays: clampInt(patch.lookaheadDays ?? current.lookaheadDays, 7, 365, 90),
+    reminderOffsetsMinutes: offsets.length ? offsets : current.reminderOffsetsMinutes,
   };
   await db
     .insert(calendarSettings)

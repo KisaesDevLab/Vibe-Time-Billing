@@ -1342,6 +1342,8 @@ export const clientContacts = pgTable(
     isPrimary: boolean('is_primary').notNull().default(false),
     isBilling: boolean('is_billing').notNull().default(false),
     isPortalIdentity: boolean('is_portal_identity').notNull().default(false),
+    // CAL-7 — appointment reminder opt-out (default on).
+    receiveAppointmentReminders: boolean('receive_appointment_reminders').notNull().default(true),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -68,22 +68,38 @@ export function CalendarSettingsPage(): JSX.Element {
   );
 }
 
+const REMINDER_OFFSETS: Array<{ minutes: number; label: string }> = [
+  { minutes: 10080, label: '7 days before' },
+  { minutes: 4320, label: '3 days before' },
+  { minutes: 1440, label: '1 day before' },
+  { minutes: 120, label: '2 hours before' },
+];
+
 function SyncSettingsCard(): JSX.Element {
   const [interval, setInterval] = useState(15);
   const [lookback, setLookback] = useState(7);
   const [lookahead, setLookahead] = useState(90);
+  const [offsets, setOffsets] = useState<number[]>([1440, 120]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    void api<{ syncIntervalMinutes: number; lookbackDays: number; lookaheadDays: number }>(
-      '/api/staff/admin/calendar/settings',
-    ).then((s) => {
+    void api<{
+      syncIntervalMinutes: number;
+      lookbackDays: number;
+      lookaheadDays: number;
+      reminderOffsetsMinutes: number[];
+    }>('/api/staff/admin/calendar/settings').then((s) => {
       setInterval(s.syncIntervalMinutes);
       setLookback(s.lookbackDays);
       setLookahead(s.lookaheadDays);
+      setOffsets(s.reminderOffsetsMinutes ?? [1440, 120]);
     });
   }, []);
+
+  function toggleOffset(m: number): void {
+    setOffsets((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+  }
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -95,6 +111,7 @@ function SyncSettingsCard(): JSX.Element {
           syncIntervalMinutes: interval,
           lookbackDays: lookback,
           lookaheadDays: lookahead,
+          reminderOffsetsMinutes: offsets,
         }),
       });
       setMsg('Saved.');
@@ -126,6 +143,23 @@ function SyncSettingsCard(): JSX.Element {
           value={String(lookahead)}
           onChange={(e) => setLookahead(Number(e.target.value))}
         />
+      </div>
+      <div style={{ marginTop: tokens.space.md }}>
+        <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 6 }}>
+          Appointment reminders
+        </div>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          {REMINDER_OFFSETS.map((o) => (
+            <label key={o.minutes} style={{ display: 'flex', gap: 6, fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={offsets.includes(o.minutes)}
+                onChange={() => toggleOffset(o.minutes)}
+              />
+              {o.label}
+            </label>
+          ))}
+        </div>
       </div>
       <div
         style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: tokens.space.md }}

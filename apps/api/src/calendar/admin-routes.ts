@@ -57,6 +57,7 @@ const SettingsSchema = z.object({
   syncIntervalMinutes: z.number().int().min(5).max(60).optional(),
   lookbackDays: z.number().int().min(1).max(60).optional(),
   lookaheadDays: z.number().int().min(7).max(365).optional(),
+  reminderOffsetsMinutes: z.array(z.number().int()).max(4).optional(),
 });
 
 export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {

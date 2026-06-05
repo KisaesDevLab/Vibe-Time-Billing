@@ -47,11 +47,39 @@ export const calendarSettings = pgTable(
     syncIntervalMinutes: integer('sync_interval_minutes').notNull().default(15),
     lookbackDays: integer('lookback_days').notNull().default(7),
     lookaheadDays: integer('lookahead_days').notNull().default(90),
+    // CAL-7 — reminder offsets in minutes before start (default 1d + 2h).
+    reminderOffsetsMinutes: jsonb('reminder_offsets_minutes').notNull().default([1440, 120]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     firmUk: uniqueIndex('calendar_settings_firm_uk').on(t.firmId),
+  }),
+);
+
+// CAL-7 — ledger of reminders already dispatched (idempotency per
+// event × contact × offset).
+export const calendarRemindersSent = pgTable(
+  'calendar_reminders_sent',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => calendarEvents.id, { onDelete: 'cascade' }),
+    clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
+      onDelete: 'cascade',
+    }),
+    reminderOffsetMinutes: integer('reminder_offset_minutes').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveryStatus: text('delivery_status').notNull().default('sent'),
+    rsvpTokenId: uuid('rsvp_token_id'),
+  },
+  (t) => ({
+    uniq: uniqueIndex('calendar_reminders_sent_uk').on(
+      t.eventId,
+      t.clientContactId,
+      t.reminderOffsetMinutes,
+    ),
   }),
 );
 

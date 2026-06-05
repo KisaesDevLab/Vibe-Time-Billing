@@ -26,6 +26,7 @@ import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
 import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
 import { runCalendarMatch } from '../../api/src/calendar/match';
+import { runCalendarReminderTick } from '../../api/src/calendar/reminder-tick';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
   runRetainerOfferReminder,
@@ -177,6 +178,8 @@ const QUEUES = [
   'signatures-poll',
   // 0109 — Calendar poll sync heartbeat (per-firm interval gated in-job).
   'calendar-sync',
+  // 0111 — Calendar appointment reminders.
+  'calendar-reminders',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -493,6 +496,23 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     });
     logger.info({ jobId: job.id, ...result }, 'calendar-sync complete');
   },
+  'calendar-reminders': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'calendar-reminders: no DB configured');
+      return;
+    }
+    const result = await runCalendarReminderTick(db, logger, {
+      sendEmail: dunningSendEmail
+        ? (a) => dunningSendEmail!({ to: a.to, subject: a.subject, body: a.body })
+        : undefined,
+      rsvpBaseUrl:
+        process.env['CALENDAR_RSVP_BASE_URL'] ??
+        process.env['PORTAL_BASE_URL'] ??
+        process.env['APP_BASE_URL'] ??
+        '',
+    });
+    logger.info({ jobId: job.id, ...result }, 'calendar-reminders complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -586,6 +606,8 @@ const CRON: Record<QueueName, string> = {
   // 0109 — calendar poll heartbeat every 5 min (per-firm interval gated
   // in-job, so the effective interval is max(5, configured)).
   'calendar-sync': '*/5 * * * *',
+  // 0111 — appointment reminder scheduler every 5 min.
+  'calendar-reminders': '*/5 * * * *',
 };
 
 function storageSyncCron(): string {
