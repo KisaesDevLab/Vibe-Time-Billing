@@ -98,12 +98,20 @@
 }
 
 # Hostname-based routing on the primary listener.
+#
+# Match on the `portal.` / `intake.` host PREFIX via a Host header regex.
+# Caddy's `host` matcher wildcard `*` only matches a SINGLE label, so the old
+# `host portal.*` matched `portal.com` but NOT `portal.firm.com` — every
+# real (multi-label) portal/intake host silently fell through to the
+# staff fallback below and served the firm login. A prefix regex matches
+# any zone depth. The tunnel rewrites the origin Host to the canonical
+# portal.<zone> / intake.<zone> / app.<zone>, so these anchors are exact.
 :80 {
-	@portal host portal.* portal:80
+	@portal header_regexp Host (?i)^portal\.
 	handle @portal {
 		import portal-realm
 	}
-	@intake host intake.*
+	@intake header_regexp Host (?i)^intake\.
 	handle @intake {
 		import intake-realm
 	}

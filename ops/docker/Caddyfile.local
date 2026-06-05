@@ -107,7 +107,10 @@ https://{$VIBE_HOST:localhost}:5197 {
 :80 {
   encode gzip zstd
 
-  @portal host portal.*
+  # Prefix match via header_regexp on Host: Caddy's `host` wildcard `*` only
+  # matches one label, so `host portal.*` misses `portal.firm.com`. The Host
+  # header regex matches any zone depth.
+  @portal header_regexp Host (?i)^portal\.
   handle @portal {
     handle /api/* {
       reverse_proxy api:3001 {
@@ -127,7 +130,7 @@ https://{$VIBE_HOST:localhost}:5197 {
 
   # Public document-intake host (intake.<zone>). Exposes ONLY the anonymous
   # public API + the intake SPA; all other /api/* is refused.
-  @intake host intake.*
+  @intake header_regexp Host (?i)^intake\.
   handle @intake {
     handle /api/public/intake/* {
       reverse_proxy api:3001 {
