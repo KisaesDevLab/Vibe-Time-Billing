@@ -8,10 +8,13 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  calendarEventMatches,
+  calendarEvents,
+  clients,
   calendarProviderConfig,
   staffCalendarConnections,
   staffCalendarSelections,
@@ -90,6 +93,88 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
           providerEmail: conn?.providerEmail ?? null,
           syncError: conn?.syncError ?? null,
           lastSyncedAt: conn?.lastSyncedAt ?? null,
+        };
+      }),
+    });
+  });
+
+  // GET /events/my?view=today|week — this staff's upcoming appointments
+  // with resolved match + client name (for the dashboard panel).
+  router.get('/events/my', async (req: Request, res: Response) => {
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.json({ events: [] });
+      return;
+    }
+    const view = String(req.query['view'] ?? 'today');
+    const now = new Date();
+    let start: Date;
+    let end: Date;
+    if (view === 'week') {
+      start = now;
+      end = new Date(now.getTime() + 7 * 86400_000);
+    } else {
+      start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      end = new Date(start.getTime() + 86400_000);
+    }
+
+    const rows = await deps.db
+      .select({
+        id: calendarEvents.id,
+        subject: calendarEvents.subject,
+        startAt: calendarEvents.startAt,
+        endAt: calendarEvents.endAt,
+        location: calendarEvents.location,
+        webLink: calendarEvents.webLink,
+        provider: staffCalendarConnections.provider,
+      })
+      .from(calendarEvents)
+      .leftJoin(
+        staffCalendarConnections,
+        eq(staffCalendarConnections.id, calendarEvents.connectionId),
+      )
+      .where(
+        and(
+          eq(calendarEvents.staffId, staffId),
+          isNull(calendarEvents.softDeletedAt),
+          gte(calendarEvents.startAt, start),
+          lt(calendarEvents.startAt, end),
+        ),
+      )
+      .orderBy(asc(calendarEvents.startAt))
+      .limit(200);
+
+    const eventIds = rows.map((r) => r.id);
+    const matches = eventIds.length
+      ? await deps.db
+          .select({
+            eventId: calendarEventMatches.eventId,
+            status: calendarEventMatches.matchStatus,
+            tier: calendarEventMatches.matchTier,
+            clientId: calendarEventMatches.clientId,
+            clientName: clients.name,
+          })
+          .from(calendarEventMatches)
+          .leftJoin(clients, eq(clients.id, calendarEventMatches.clientId))
+          .where(inArray(calendarEventMatches.eventId, eventIds))
+      : [];
+    // One match per event: prefer confirmed.
+    const byEvent = new Map<string, (typeof matches)[number]>();
+    for (const m of matches) {
+      const cur = byEvent.get(m.eventId);
+      if (!cur || (m.status === 'confirmed' && cur.status !== 'confirmed'))
+        byEvent.set(m.eventId, m);
+    }
+
+    res.json({
+      events: rows.map((r) => {
+        const m = byEvent.get(r.id);
+        return {
+          ...r,
+          matchStatus: m?.status ?? null,
+          matchTier: m?.tier ?? null,
+          clientId: m?.clientId ?? null,
+          clientName: m?.clientName ?? null,
         };
       }),
     });

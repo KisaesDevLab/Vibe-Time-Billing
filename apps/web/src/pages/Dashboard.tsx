@@ -6,6 +6,7 @@ import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
+import { MyCalendarPanel } from './calendar/MyCalendarPanel';
 
 interface RealizationItem {
   key: string;
@@ -249,6 +250,8 @@ export function DashboardPage(): JSX.Element {
       )}
 
       <InboxCard />
+
+      <MyCalendarPanel />
 
       {/* 0051 — realization card moved above My active engagements. */}
       <Card

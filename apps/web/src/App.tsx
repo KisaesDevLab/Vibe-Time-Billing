@@ -30,6 +30,7 @@ import { ProposalCreatePage } from './pages/ProposalCreate';
 import { ProposalEditorPage } from './pages/ProposalEditor';
 import { SignaturesPage } from './pages/Signatures';
 import { SignatureDetailPage } from './pages/SignatureDetail';
+import { CalendarUnmatchedPage } from './pages/CalendarUnmatched';
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
@@ -85,6 +86,7 @@ export function App(): JSX.Element {
                   <Route path="/proposals/:id/edit" element={<ProposalEditorPage />} />
                   <Route path="/signatures" element={<SignaturesPage />} />
                   <Route path="/signatures/:id" element={<SignatureDetailPage />} />
+                  <Route path="/calendar/unmatched" element={<CalendarUnmatchedPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/wip" element={<WipDashboardPage />} />
@@ -190,12 +192,18 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       adminRateRead,
   };
   const [teamUnread, setTeamUnread] = useState(0);
+  const [calUnmatched, setCalUnmatched] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = (): void => {
       void api<{ unread: number }>('/api/staff/internal-messaging/unread-count')
         .then((r) => {
           if (alive) setTeamUnread(r.unread);
+        })
+        .catch(() => undefined);
+      void api<{ count: number }>('/api/staff/calendar/unmatched/count')
+        .then((r) => {
+          if (alive) setCalUnmatched(r.count);
         })
         .catch(() => undefined);
     };
@@ -247,6 +255,13 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '✒',
           active: location.pathname.startsWith('/signatures'),
           show: can.signatures,
+        },
+        {
+          label: calUnmatched > 0 ? `Calendar (${calUnmatched})` : 'Calendar',
+          href: '/calendar/unmatched',
+          icon: '📆',
+          active: location.pathname.startsWith('/calendar'),
+          show: calUnmatched > 0,
         },
         {
           label: 'Billing',

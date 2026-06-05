@@ -80,6 +80,28 @@ export function createCalendarMatchRouter(deps: CalendarMatchDeps): Router {
     res.json({ items: rows });
   });
 
+  // GET /unmatched/count — badge count of this staff's pending events.
+  router.get('/unmatched/count', async (req: Request, res: Response) => {
+    const firmId = req.staffSession!.firmId;
+    const staffId = req.staffSession!.appUserId;
+    if (!deps.db) {
+      res.json({ count: 0 });
+      return;
+    }
+    const rows = await deps.db
+      .select({ id: calendarEventMatches.id })
+      .from(calendarEventMatches)
+      .innerJoin(calendarEvents, eq(calendarEvents.id, calendarEventMatches.eventId))
+      .where(
+        and(
+          eq(calendarEvents.firmId, firmId),
+          eq(calendarEvents.staffId, staffId),
+          eq(calendarEventMatches.matchStatus, 'pending'),
+        ),
+      );
+    res.json({ count: rows.length });
+  });
+
   // POST /matches/:id/confirm — link the chosen client.
   router.post('/matches/:id/confirm', async (req: Request, res: Response) => {
     const firmId = req.staffSession!.firmId;
