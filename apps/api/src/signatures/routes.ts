@@ -805,6 +805,38 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
     },
   );
 
+  // GET /:id/source — stream the stored source PDF back to staff (the field
+  // editor renders it client-side via pdf.js). Firm-scoped.
+  router.get(
+    '/:id/source',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = getStorage();
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request || !request.sourceFileKey) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      try {
+        const obj = await storage.get(request.sourceFileKey);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Cache-Control', 'private, no-store');
+        obj.body.pipe(res);
+      } catch {
+        res.status(404).json({ error: 'source_unavailable' });
+      }
+    },
+  );
+
   // POST /:id/send — transactional send through OpenSign (draft → sent).
   router.post(
     '/:id/send',

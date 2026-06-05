@@ -28,6 +28,8 @@ import { EngagementsPage } from './pages/Engagements';
 import { ProposalsListPage } from './pages/Proposals';
 import { ProposalCreatePage } from './pages/ProposalCreate';
 import { ProposalEditorPage } from './pages/ProposalEditor';
+import { SignaturesPage } from './pages/Signatures';
+import { SignatureDetailPage } from './pages/SignatureDetail';
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
@@ -81,6 +83,8 @@ export function App(): JSX.Element {
                   <Route path="/proposals" element={<ProposalsListPage />} />
                   <Route path="/proposals/new" element={<ProposalCreatePage />} />
                   <Route path="/proposals/:id/edit" element={<ProposalEditorPage />} />
+                  <Route path="/signatures" element={<SignaturesPage />} />
+                  <Route path="/signatures/:id" element={<SignatureDetailPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/wip" element={<WipDashboardPage />} />
@@ -160,6 +164,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     time: usePermission('time_entry:read:own'),
     engagements: usePermission('engagement:read'),
     proposals: usePermission('proposal:read'),
+    signatures: usePermission('proposal:read'),
     billing: usePermission('billing_batch:read'),
     // WIP is engagement-scoped on the API (engagement:read); match it so the
     // nav and the route agree.
@@ -235,6 +240,13 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '✎',
           active: location.pathname.startsWith('/proposals'),
           show: can.proposals,
+        },
+        {
+          label: 'Signatures',
+          href: '/signatures',
+          icon: '✒',
+          active: location.pathname.startsWith('/signatures'),
+          show: can.signatures,
         },
         {
           label: 'Billing',

@@ -23,6 +23,7 @@
     "@vibe/core": "workspace:*",
     "@vibe/types": "workspace:*",
     "@vibe/ui": "workspace:*",
+    "pdfjs-dist": "^4.7.76",
     "qrcode": "^1.5.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
