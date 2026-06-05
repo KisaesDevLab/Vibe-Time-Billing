@@ -35,6 +35,7 @@ import { getProviderCreds, loadConnection } from './store';
 import { ensureFreshAccessToken } from './token-manager';
 import { getCalendarSettings } from './settings';
 import { syncConnection } from './sync';
+import { isCalendarWriteEnabled } from './write-service';
 
 export interface CalendarConnectDeps {
   db: Database | null;
@@ -180,6 +181,19 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
       }),
     });
   });
+
+  // CAL-9 — write-back v2 stubs. Gated behind FEATURE_CALENDAR_WRITE; 501
+  // until two-way sync ships (see docs/calendar-writeback-v2.md).
+  const writeStub = (_req: Request, res: Response): void => {
+    if (!isCalendarWriteEnabled()) {
+      res.status(501).json({ error: 'calendar_write_not_enabled' });
+      return;
+    }
+    res.status(501).json({ error: 'calendar_writeback_not_implemented' });
+  };
+  router.post('/events', writeStub);
+  router.patch('/events/:id', writeStub);
+  router.delete('/events/:id', writeStub);
 
   // GET /suggestions — pending time-entry suggestions for this staff.
   router.get('/suggestions', async (req: Request, res: Response) => {
