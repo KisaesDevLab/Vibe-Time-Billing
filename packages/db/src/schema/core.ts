@@ -3939,9 +3939,8 @@ export const appointments = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
-    clientId: uuid('client_id')
-      .notNull()
-      .references(() => clients.id, { onDelete: 'restrict' }),
+    // BK-1 — nullable: booking allows client-less internal meetings.
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'restrict' }),
     engagementId: uuid('engagement_id').references(() => engagements.id, {
       onDelete: 'restrict',
     }),

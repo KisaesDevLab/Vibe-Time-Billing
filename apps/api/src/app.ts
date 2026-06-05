@@ -122,6 +122,8 @@ import { createAppointmentRouter } from './appointments/routes';
 import { createAppointmentTypeRouter } from './appointments/types-routes';
 import { createBookingSettingsRouter } from './appointments/booking-settings-routes';
 import { createSlotsRouter } from './appointments/slots-routes';
+import { createBookingRouter } from './appointments/booking-routes';
+import { createAppointmentPublicRouter } from './appointments/public-routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
@@ -897,6 +899,12 @@ export function createApp(deps: AppDeps): Express {
   // 0109 — PUBLIC one-click RSVP (no login; token-authenticated).
   app.use('/api/calendar/rsvp', createRsvpRouter({ db: deps.db }));
 
+  // BK-4 — PUBLIC appointment cancel / reschedule-request (token, no login).
+  app.use(
+    '/api/public/appointments',
+    createAppointmentPublicRouter({ db: deps.db, redis: deps.redis }),
+  );
+
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({
     db: deps.db,
@@ -1194,6 +1202,16 @@ export function createApp(deps: AppDeps): Express {
 
   // CP12 — appointments (read for everyone with appointment:read,
   // write for partner + manager).
+  // BK-4 — multi-staff booking endpoints. Mounted BEFORE the legacy
+  // single-staff router so /book, /:id/reschedule, /:id/cancel (multi),
+  // /:id/detail, and /reschedule-requests take precedence; legacy create
+  // (POST /) + single-lead cancel still serve old callers + tests.
+  const bookingRouter = createBookingRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, bookingRouter);
+
   const appointmentRouter = createAppointmentRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,

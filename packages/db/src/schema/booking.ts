@@ -17,6 +17,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   time,
@@ -33,6 +34,7 @@ import {
   clientContacts,
   engagementNotes,
   engagements,
+  firms,
   providerWriteStatus,
   rescheduleRequestStatus,
 } from './core';
@@ -177,6 +179,40 @@ export const staffBookingSettings = pgTable(
     staffUk: uniqueIndex('staff_booking_settings_staff_uk').on(t.staffId),
   }),
 );
+
+// BK-7 — in-app staff notification center (written from BK-4/BK-5).
+export const staffNotifications = pgTable(
+  'staff_notification',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    recipientAppUserId: uuid('recipient_app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    entityType: text('entity_type').notNull(),
+    entityId: uuid('entity_id'),
+    title: text('title').notNull(),
+    body: text('body'),
+    actionUrl: text('action_url'),
+    status: text('status').notNull().default('UNREAD'),
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    readAt: timestamp('read_at', { withTimezone: true }),
+  },
+  (t) => ({
+    recipientStatusIdx: index('staff_notification_recipient_status_idx').on(
+      t.recipientAppUserId,
+      t.status,
+    ),
+    entityIdx: index('staff_notification_entity_idx').on(t.entityType, t.entityId),
+    createdIdx: index('staff_notification_created_idx').on(t.createdAt),
+  }),
+);
+
+export type StaffNotification = typeof staffNotifications.$inferSelect;
 
 export type AppointmentStaff = typeof appointmentStaff.$inferSelect;
 export type NewAppointmentStaff = typeof appointmentStaff.$inferInsert;

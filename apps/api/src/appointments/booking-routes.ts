@@ -1,0 +1,682 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// BK-4 — multi-staff booking API. Mounted at /api/staff/appointments
+// BEFORE the legacy single-staff router so the new create/cancel/detail
+// paths take precedence; legacy create (POST /) still serves the old
+// admin page + calendar write-back tests.
+//
+//   POST /book                                   — create (multi-staff)
+//   POST /:id/reschedule                          — staff reschedule
+//   POST /:id/cancel                              — staff cancel (multi-aware)
+//   GET  /:id/detail                              — appt + staff + participants
+//   GET  /reschedule-requests/count              — pending count (badge)
+//   GET  /reschedule-requests                    — pending list (inbox)
+//   POST /reschedule-requests/:requestId/accept  — accept (reschedule)
+//   POST /reschedule-requests/:requestId/decline — decline
+//
+// Calendar fan-out + emails are enqueued (consumed by the worker in
+// BK-5/BK-6). The slot is re-validated server-side; a taken slot → 409.
+
+import crypto from 'node:crypto';
+
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { z } from 'zod';
+
+import type { Database } from '@vibe/db';
+import {
+  appUsers,
+  appointmentEngagementNotes,
+  appointmentParticipants,
+  appointmentRescheduleRequests,
+  appointmentStaff,
+  appointments,
+  clientContacts,
+  clients,
+  engagementNotes,
+  engagements,
+  offices,
+  persons,
+} from '@vibe/db/schema';
+
+import { emitAudit } from '../auth/audit';
+import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { createFreeBusyProvider } from '../calendar/freebusy';
+import { addUuidIdGuard } from '../lib/uuid-guard';
+import { logger } from '../logger';
+import { getAvailableSlots, type StaffBusyProvider } from './availability';
+import { bullBookingQueue, type BookingQueue } from './queue';
+
+export interface BookingRoutesDeps extends RbacDeps {
+  db: Database | null;
+  queue?: BookingQueue;
+  /** Test seam — free/busy source for slot re-validation. */
+  busyProvider?: StaffBusyProvider;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+}
+
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?/;
+const TOKEN_TTL_MS = 7 * 24 * 3600 * 1000;
+
+const BookSchema = z.object({
+  staffIds: z.array(z.string().uuid()).min(1).max(10),
+  appointmentTypeId: z.string().uuid().nullable().optional(),
+  subject: z.string().min(1).max(240),
+  startsAt: z.string().regex(ISO_RE),
+  endsAt: z.string().regex(ISO_RE),
+  durationMinutes: z.number().int().min(5).max(480).optional(),
+  location: z.enum(['VIDEO', 'PHONE', 'IN_PERSON']).optional(),
+  locationDetail: z.string().max(1000).nullable().optional(),
+  clientId: z.string().uuid().nullable().optional(),
+  engagementId: z.string().uuid().nullable().optional(),
+  participantContactIds: z.array(z.string().uuid()).max(50).optional(),
+  internalNotes: z.string().max(4000).nullable().optional(),
+});
+
+const RescheduleSchema = z.object({
+  startsAt: z.string().regex(ISO_RE),
+  endsAt: z.string().regex(ISO_RE),
+});
+
+async function firmTimezone(db: Database, firmId: string): Promise<string> {
+  const [row] = await db
+    .select({ tz: offices.timezone })
+    .from(offices)
+    .where(and(eq(offices.firmId, firmId), eq(offices.isDefault, true)))
+    .limit(1);
+  return row?.tz ?? 'America/Chicago';
+}
+
+function dateInTz(at: Date, tz: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+export function createBookingRouter(deps: BookingRoutesDeps): Router {
+  const router = express.Router();
+  addUuidIdGuard(router);
+  const queue = deps.queue ?? bullBookingQueue;
+  const nowFn = deps.now ?? ((): Date => new Date());
+
+  function providerFor(firmId: string): StaffBusyProvider {
+    return (
+      deps.busyProvider ??
+      createFreeBusyProvider({ db: deps.db!, firmId, fetchImpl: deps.fetchImpl })
+    );
+  }
+
+  // ---- create (multi-staff) ------------------------------------------
+  router.post(
+    '/book',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = BookSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const data = parsed.data;
+      const startsAt = new Date(data.startsAt);
+      const endsAt = new Date(data.endsAt);
+      if (endsAt.getTime() <= startsAt.getTime()) {
+        res.status(400).json({ error: 'ends_before_starts' });
+        return;
+      }
+      const durationMinutes =
+        data.durationMinutes ?? Math.round((endsAt.getTime() - startsAt.getTime()) / 60000);
+
+      // Staff must belong to the firm.
+      const staff = await db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(inArray(appUsers.id, data.staffIds), eq(appUsers.firmId, session.firmId)));
+      if (staff.length !== new Set(data.staffIds).size) {
+        res.status(400).json({ error: 'unknown_staff' });
+        return;
+      }
+
+      // Client / engagement scoping.
+      if (data.clientId) {
+        const [c] = await db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(and(eq(clients.id, data.clientId), eq(clients.firmId, session.firmId)))
+          .limit(1);
+        if (!c) {
+          res.status(404).json({ error: 'client_not_found' });
+          return;
+        }
+        if (data.engagementId) {
+          const [e] = await db
+            .select({ id: engagements.id })
+            .from(engagements)
+            .where(
+              and(eq(engagements.id, data.engagementId), eq(engagements.clientId, data.clientId)),
+            )
+            .limit(1);
+          if (!e) {
+            res.status(400).json({ error: 'engagement_not_in_client' });
+            return;
+          }
+        }
+      }
+
+      // Server-side slot re-validation (intersection across staff).
+      const tz = await firmTimezone(db, session.firmId);
+      const avail = await getAvailableSlots({
+        db,
+        staffIds: data.staffIds,
+        date: dateInTz(startsAt, tz),
+        durationMinutes,
+        timezone: tz,
+        now: nowFn(),
+        busyProvider: providerFor(session.firmId),
+      });
+      const match = avail.slots.find((s) => s.start === startsAt.toISOString());
+      if (!match || !match.available) {
+        const blocking = match?.staffAvailability.find((p) => !p.free)?.staffId ?? null;
+        res.status(409).json({ code: 'slot_taken', staffId: blocking });
+        return;
+      }
+
+      // Participants must belong to the client.
+      const participantIds = [...new Set(data.participantContactIds ?? [])];
+      if (participantIds.length > 0) {
+        if (!data.clientId) {
+          res.status(400).json({ error: 'participants_require_client' });
+          return;
+        }
+        const valid = await db
+          .select({ id: clientContacts.id })
+          .from(clientContacts)
+          .where(
+            and(
+              inArray(clientContacts.id, participantIds),
+              eq(clientContacts.clientId, data.clientId),
+            ),
+          );
+        if (valid.length !== participantIds.length) {
+          res.status(400).json({ error: 'invalid_participant' });
+          return;
+        }
+      }
+
+      const cancelToken = crypto.randomUUID();
+      const rescheduleToken = crypto.randomUUID();
+      const tokenExpiresAt = new Date(endsAt.getTime() + TOKEN_TTL_MS);
+
+      const appointmentId = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(appointments)
+          .values({
+            firmId: session.firmId,
+            clientId: data.clientId ?? null,
+            engagementId: data.engagementId ?? null,
+            appointmentTypeId: data.appointmentTypeId ?? null,
+            title: data.subject,
+            startsAt,
+            endsAt,
+            durationMinutes,
+            location: data.location ?? 'VIDEO',
+            locationDetail: data.locationDetail ?? null,
+            internalNotes: data.internalNotes ?? null,
+            leadAppUserId: data.staffIds[0]!,
+            status: 'SCHEDULED',
+            cancelToken,
+            rescheduleToken,
+            tokenExpiresAt,
+            createdById: session.appUserId,
+          })
+          .returning({ id: appointments.id });
+        const apptId = row!.id;
+        await tx
+          .insert(appointmentStaff)
+          .values(data.staffIds.map((staffId) => ({ appointmentId: apptId, staffId })));
+        if (participantIds.length > 0) {
+          await tx
+            .insert(appointmentParticipants)
+            .values(participantIds.map((cid) => ({ appointmentId: apptId, clientContactId: cid })));
+        }
+        if (data.engagementId) {
+          const noteBody = `Appointment scheduled: ${data.subject} on ${startsAt.toISOString()}. Location: ${data.locationDetail ?? data.location ?? 'VIDEO'}.`;
+          const [note] = await tx
+            .insert(engagementNotes)
+            .values({
+              engagementId: data.engagementId,
+              authorId: session.appUserId,
+              body: noteBody,
+            })
+            .returning({ id: engagementNotes.id });
+          await tx.insert(appointmentEngagementNotes).values({
+            appointmentId: apptId,
+            engagementId: data.engagementId,
+            noteId: note!.id,
+          });
+        }
+        return apptId;
+      });
+
+      // Fan-out: per-staff calendar write + one confirmation email.
+      for (const staffId of data.staffIds) {
+        await queue
+          .providerWrite({ appointmentId, staffId })
+          .catch((err: unknown) =>
+            logger.warn({ err, appointmentId, staffId }, 'enqueue providerWrite failed'),
+          );
+      }
+      if (participantIds.length > 0) {
+        await queue
+          .confirmationSend({ appointmentId })
+          .catch((err: unknown) =>
+            logger.warn({ err, appointmentId }, 'enqueue confirmation failed'),
+          );
+      }
+
+      await emitAudit(db, {
+        action: 'CREATE',
+        entityType: 'appointment',
+        entityId: appointmentId,
+        actorAppUserId: session.appUserId,
+        after: { subject: data.subject, staffIds: data.staffIds, startsAt: data.startsAt },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      res.status(201).json({ id: appointmentId, staffIds: data.staffIds });
+    },
+  );
+
+  // ---- detail (staff + participants + pending reschedule) ------------
+  router.get(
+    '/:id/detail',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const db = deps.db;
+      const [appt] = await db
+        .select()
+        .from(appointments)
+        .where(and(eq(appointments.id, req.params['id']!), eq(appointments.firmId, session.firmId)))
+        .limit(1);
+      if (!appt) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const staff = await db
+        .select({
+          staffId: appointmentStaff.staffId,
+          name: appUsers.fullName,
+          writeStatus: appointmentStaff.providerWriteStatus,
+          writeError: appointmentStaff.providerWriteError,
+        })
+        .from(appointmentStaff)
+        .innerJoin(appUsers, eq(appUsers.id, appointmentStaff.staffId))
+        .where(eq(appointmentStaff.appointmentId, appt.id));
+      const participants = await db
+        .select({
+          id: appointmentParticipants.id,
+          contactId: appointmentParticipants.clientContactId,
+          name: persons.fullName,
+          email: persons.email,
+          rsvpStatus: appointmentParticipants.rsvpStatus,
+          confirmationSentAt: appointmentParticipants.confirmationSentAt,
+        })
+        .from(appointmentParticipants)
+        .innerJoin(clientContacts, eq(clientContacts.id, appointmentParticipants.clientContactId))
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
+        .where(eq(appointmentParticipants.appointmentId, appt.id));
+      const requests = await db
+        .select()
+        .from(appointmentRescheduleRequests)
+        .where(
+          and(
+            eq(appointmentRescheduleRequests.appointmentId, appt.id),
+            eq(appointmentRescheduleRequests.status, 'pending'),
+          ),
+        );
+      res.json({ appointment: appt, staff, participants, rescheduleRequests: requests });
+    },
+  );
+
+  // ---- reschedule (staff) --------------------------------------------
+  router.post(
+    '/:id/reschedule',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = RescheduleSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const out = await rescheduleAppointment(
+        deps,
+        queue,
+        providerFor,
+        nowFn,
+        session.firmId,
+        session.appUserId,
+        req.params['id']!,
+        new Date(parsed.data.startsAt),
+        new Date(parsed.data.endsAt),
+      );
+      res.status(out.status).json(out.body);
+    },
+  );
+
+  // ---- cancel (staff; multi-aware, supersedes legacy) ----------------
+  router.post(
+    '/:id/cancel',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
+      const [appt] = await db
+        .select()
+        .from(appointments)
+        .where(and(eq(appointments.id, req.params['id']!), eq(appointments.firmId, session.firmId)))
+        .limit(1);
+      if (!appt) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const staffRows = await db
+        .select({ staffId: appointmentStaff.staffId })
+        .from(appointmentStaff)
+        .where(eq(appointmentStaff.appointmentId, appt.id));
+      // Legacy single-lead appts (no appointment_staff rows) fall through to
+      // the legacy router's inline-delete cancel.
+      if (staffRows.length === 0) {
+        next();
+        return;
+      }
+      if (appt.status !== 'SCHEDULED') {
+        res.status(409).json({ error: 'not_cancellable', currentStatus: appt.status });
+        return;
+      }
+      const now = nowFn();
+      await db
+        .update(appointments)
+        .set({
+          status: 'CANCELLED',
+          cancelledAt: now,
+          cancelledReason: reason,
+          cancelledById: session.appUserId,
+          cancelledByActor: 'staff',
+          updatedAt: now,
+        })
+        .where(eq(appointments.id, appt.id));
+      for (const r of staffRows) {
+        await queue
+          .providerDelete({ appointmentId: appt.id, staffId: r.staffId })
+          .catch((err: unknown) => logger.warn({ err }, 'enqueue providerDelete failed'));
+      }
+      await queue
+        .cancellationSend({ appointmentId: appt.id, cancelledBy: 'staff' })
+        .catch((err: unknown) => logger.warn({ err }, 'enqueue cancellation failed'));
+      await emitAudit(db, {
+        action: 'UPDATE',
+        entityType: 'appointment',
+        entityId: appt.id,
+        actorAppUserId: session.appUserId,
+        before: { status: 'SCHEDULED' },
+        after: { status: 'CANCELLED', cancelledBy: 'staff' },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // ---- reschedule requests (inbox) -----------------------------------
+  router.get(
+    '/reschedule-requests/count',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ count: 0 });
+        return;
+      }
+      const [row] = await deps.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(appointmentRescheduleRequests)
+        .innerJoin(appointments, eq(appointments.id, appointmentRescheduleRequests.appointmentId))
+        .where(
+          and(
+            eq(appointments.firmId, session.firmId),
+            eq(appointmentRescheduleRequests.status, 'pending'),
+          ),
+        );
+      res.json({ count: row?.n ?? 0 });
+    },
+  );
+
+  router.get(
+    '/reschedule-requests',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select({
+          id: appointmentRescheduleRequests.id,
+          appointmentId: appointmentRescheduleRequests.appointmentId,
+          subject: appointments.title,
+          startsAt: appointments.startsAt,
+          message: appointmentRescheduleRequests.message,
+          requestedAt: appointmentRescheduleRequests.requestedAt,
+          contactName: persons.fullName,
+        })
+        .from(appointmentRescheduleRequests)
+        .innerJoin(appointments, eq(appointments.id, appointmentRescheduleRequests.appointmentId))
+        .leftJoin(
+          clientContacts,
+          eq(clientContacts.id, appointmentRescheduleRequests.requestedByContactId),
+        )
+        .leftJoin(persons, eq(persons.id, clientContacts.personId))
+        .where(
+          and(
+            eq(appointments.firmId, session.firmId),
+            eq(appointmentRescheduleRequests.status, 'pending'),
+          ),
+        )
+        .orderBy(desc(appointmentRescheduleRequests.requestedAt));
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/reschedule-requests/:requestId/accept',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = RescheduleSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const [reqRow] = await db
+        .select({
+          id: appointmentRescheduleRequests.id,
+          appointmentId: appointmentRescheduleRequests.appointmentId,
+          status: appointmentRescheduleRequests.status,
+        })
+        .from(appointmentRescheduleRequests)
+        .innerJoin(appointments, eq(appointments.id, appointmentRescheduleRequests.appointmentId))
+        .where(
+          and(
+            eq(appointmentRescheduleRequests.id, req.params['requestId']!),
+            eq(appointments.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!reqRow) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const out = await rescheduleAppointment(
+        deps,
+        queue,
+        providerFor,
+        nowFn,
+        session.firmId,
+        session.appUserId,
+        reqRow.appointmentId,
+        new Date(parsed.data.startsAt),
+        new Date(parsed.data.endsAt),
+      );
+      if (out.status >= 400) {
+        res.status(out.status).json(out.body);
+        return;
+      }
+      await db
+        .update(appointmentRescheduleRequests)
+        .set({ status: 'accepted', resolvedAt: nowFn(), resolvedByStaffId: session.appUserId })
+        .where(eq(appointmentRescheduleRequests.id, reqRow.id));
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/reschedule-requests/:requestId/decline',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const [reqRow] = await db
+        .select({ id: appointmentRescheduleRequests.id })
+        .from(appointmentRescheduleRequests)
+        .innerJoin(appointments, eq(appointments.id, appointmentRescheduleRequests.appointmentId))
+        .where(
+          and(
+            eq(appointmentRescheduleRequests.id, req.params['requestId']!),
+            eq(appointments.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!reqRow) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await db
+        .update(appointmentRescheduleRequests)
+        .set({ status: 'declined', resolvedAt: nowFn(), resolvedByStaffId: session.appUserId })
+        .where(eq(appointmentRescheduleRequests.id, reqRow.id));
+      // Decline email to the requesting contact is sent in BK-6.
+      res.json({ ok: true });
+    },
+  );
+
+  return router;
+}
+
+/** Shared reschedule flow used by the staff endpoint + request-accept. */
+async function rescheduleAppointment(
+  deps: BookingRoutesDeps,
+  queue: BookingQueue,
+  providerFor: (firmId: string) => StaffBusyProvider,
+  nowFn: () => Date,
+  firmId: string,
+  actorId: string,
+  appointmentId: string,
+  startsAt: Date,
+  endsAt: Date,
+): Promise<{ status: number; body: unknown }> {
+  const db = deps.db!;
+  if (endsAt.getTime() <= startsAt.getTime())
+    return { status: 400, body: { error: 'ends_before_starts' } };
+  const [appt] = await db
+    .select()
+    .from(appointments)
+    .where(and(eq(appointments.id, appointmentId), eq(appointments.firmId, firmId)))
+    .limit(1);
+  if (!appt) return { status: 404, body: { error: 'not_found' } };
+  if (appt.status !== 'SCHEDULED') {
+    return { status: 409, body: { error: 'not_reschedulable', currentStatus: appt.status } };
+  }
+  const staffRows = await db
+    .select({ staffId: appointmentStaff.staffId })
+    .from(appointmentStaff)
+    .where(eq(appointmentStaff.appointmentId, appt.id));
+  const staffIds = staffRows.map((r) => r.staffId);
+  if (staffIds.length === 0) return { status: 409, body: { error: 'no_staff_on_appointment' } };
+
+  const durationMinutes = Math.round((endsAt.getTime() - startsAt.getTime()) / 60000);
+  const tz = await firmTimezone(db, firmId);
+  const avail = await getAvailableSlots({
+    db,
+    staffIds,
+    date: dateInTz(startsAt, tz),
+    durationMinutes,
+    timezone: tz,
+    now: nowFn(),
+    busyProvider: providerFor(firmId),
+    excludeAppointmentId: appt.id,
+  });
+  const match = avail.slots.find((s) => s.start === startsAt.toISOString());
+  if (!match || !match.available) {
+    const blocking = match?.staffAvailability.find((p) => !p.free)?.staffId ?? null;
+    return { status: 409, body: { code: 'slot_taken', staffId: blocking } };
+  }
+  const now = nowFn();
+  await db
+    .update(appointments)
+    .set({ startsAt, endsAt, durationMinutes, lastRescheduledAt: now, updatedAt: now })
+    .where(eq(appointments.id, appt.id));
+  for (const staffId of staffIds) {
+    await queue
+      .providerUpdate({ appointmentId: appt.id, staffId })
+      .catch((err: unknown) => logger.warn({ err }, 'enqueue providerUpdate failed'));
+  }
+  await queue
+    .rescheduleConfirmationSend({ appointmentId: appt.id })
+    .catch((err: unknown) => logger.warn({ err }, 'enqueue reschedule confirmation failed'));
+  await emitAudit(db, {
+    action: 'UPDATE',
+    entityType: 'appointment',
+    entityId: appt.id,
+    actorAppUserId: actorId,
+    before: { startsAt: appt.startsAt, endsAt: appt.endsAt },
+    after: { startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString() },
+  }).catch(() => undefined);
+  return { status: 200, body: { ok: true } };
+}

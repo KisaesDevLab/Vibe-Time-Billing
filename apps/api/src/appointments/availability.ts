@@ -67,6 +67,8 @@ export interface GetAvailableSlotsArgs {
   now?: Date;
   /** Defaults to the real provider; tests inject a fake. */
   busyProvider: StaffBusyProvider;
+  /** Exclude this appointment from the booking-busy set (reschedule). */
+  excludeAppointmentId?: string;
 }
 
 interface ResolvedSettings {
@@ -219,7 +221,13 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
   const windowStart = new Date(gridMin - maxBefore * MIN);
   const windowEnd = new Date(gridMax + maxAfter * MIN);
   const busyByStaff = new Map<string, BusyInterval[]>();
-  const bookingBusy = await loadBookingBusy(db, staffIds, windowStart, windowEnd);
+  const bookingBusy = await loadBookingBusy(
+    db,
+    staffIds,
+    windowStart,
+    windowEnd,
+    args.excludeAppointmentId,
+  );
   for (const id of staffIds) {
     let busy: BusyInterval[] = [];
     try {
@@ -277,7 +285,15 @@ async function loadBookingBusy(
   staffIds: string[],
   windowStart: Date,
   windowEnd: Date,
+  excludeAppointmentId?: string,
 ): Promise<Map<string, BusyInterval[]>> {
+  const conds = [
+    inArray(appointmentStaff.staffId, staffIds),
+    ne(appointments.status, 'CANCELLED'),
+    lt(appointments.startsAt, windowEnd),
+    gte(appointments.endsAt, windowStart),
+  ];
+  if (excludeAppointmentId) conds.push(ne(appointments.id, excludeAppointmentId));
   const rows = await db
     .select({
       staffId: appointmentStaff.staffId,
@@ -286,14 +302,7 @@ async function loadBookingBusy(
     })
     .from(appointmentStaff)
     .innerJoin(appointments, eq(appointments.id, appointmentStaff.appointmentId))
-    .where(
-      and(
-        inArray(appointmentStaff.staffId, staffIds),
-        ne(appointments.status, 'CANCELLED'),
-        lt(appointments.startsAt, windowEnd),
-        gte(appointments.endsAt, windowStart),
-      ),
-    );
+    .where(and(...conds));
   const out = new Map<string, BusyInterval[]>();
   for (const r of rows) {
     const list = out.get(r.staffId) ?? [];
