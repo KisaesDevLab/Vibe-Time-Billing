@@ -13,12 +13,12 @@
     <script>
       (function () {
         try {
+          // Public document-intake is a light-by-default surface; a saved
+          // preference (if the visitor ever set one) still wins.
           var stored = localStorage.getItem('vibe-theme');
-          var prefersLight =
-            window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-          document.documentElement.dataset.theme = stored || (prefersLight ? 'light' : 'dark');
+          document.documentElement.dataset.theme = stored || 'light';
         } catch (e) {
-          document.documentElement.dataset.theme = 'dark';
+          document.documentElement.dataset.theme = 'light';
         }
       })();
     </script>

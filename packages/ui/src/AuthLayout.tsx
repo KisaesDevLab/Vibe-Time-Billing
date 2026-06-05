@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 
-import { tokens } from './tokens';
+import { tokens, THEME_STORAGE_KEY } from './tokens';
 
 export interface AuthLayoutProps {
   brand: string;
@@ -11,6 +11,40 @@ export interface AuthLayoutProps {
   footer?: ReactNode;
 }
 
+/**
+ * Sign-in / auth screens default to light. While an AuthLayout is mounted
+ * the theme is forced light (this also covers the app-root → /auth
+ * redirect, which doesn't re-run the index.html boot script); on leaving,
+ * the authenticated app's default (system preference, dark fallback) is
+ * restored. A user's explicit saved choice always wins — we no-op then.
+ */
+function useLightAuthTheme(): void {
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const read = (): string | null => {
+      try {
+        return localStorage.getItem(THEME_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    };
+    if (read()) return undefined;
+    document.documentElement.dataset.theme = 'light';
+    return () => {
+      const now = read();
+      if (now) {
+        document.documentElement.dataset.theme = now;
+        return;
+      }
+      const prefersLight =
+        typeof window !== 'undefined' &&
+        window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.dataset.theme = prefersLight ? 'light' : 'dark';
+    };
+  }, []);
+}
+
 export function AuthLayout({
   brand,
   title,
@@ -18,6 +52,7 @@ export function AuthLayout({
   children,
   footer,
 }: AuthLayoutProps): JSX.Element {
+  useLightAuthTheme();
   return (
     <div
       style={{
