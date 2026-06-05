@@ -28,6 +28,14 @@ export interface AppShellProps {
   /** localStorage key used to persist the collapsed/expanded state.
    *  Set per-realm so staff vs portal don't share preferences. */
   collapseStorageKey?: string;
+  /** When true, non-empty `section` groups become collapsible accordions:
+   *  the section header gets a chevron and toggles its items. Groups start
+   *  collapsed; the section that contains the active item auto-opens until
+   *  the user explicitly toggles it. Headerless groups (`section` === ''
+   *  or undefined) are always shown. Per-section state is persisted under
+   *  `${collapseStorageKey}__sections`. Ignored while the sidebar is in
+   *  icon-rail mode (everything shows so the rail stays navigable). */
+  collapsibleSections?: boolean;
 }
 
 const SIDEBAR_WIDTH_EXPANDED = 220;
@@ -50,6 +58,27 @@ function writeCollapsed(key: string, value: boolean): void {
   }
 }
 
+const SECTION_KEY_SUFFIX = '__sections';
+
+function readSections(key: string): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSections(key: string, value: Record<string, boolean>): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage may be disabled (incognito, etc.) — non-fatal.
+  }
+}
+
 export function AppShell({
   brand,
   realmBadge,
@@ -57,8 +86,11 @@ export function AppShell({
   trailing,
   children,
   collapseStorageKey = DEFAULT_COLLAPSE_KEY,
+  collapsibleSections = false,
 }: AppShellProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(false);
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+  const sectionStorageKey = collapseStorageKey + SECTION_KEY_SUFFIX;
 
   // Hydrate from localStorage on mount. SSR-safe — only touches storage
   // after the first render so the server-rendered HTML never depends on
@@ -66,6 +98,10 @@ export function AppShell({
   useEffect(() => {
     setCollapsed(readCollapsed(collapseStorageKey));
   }, [collapseStorageKey]);
+
+  useEffect(() => {
+    setExpandedSections(readSections(sectionStorageKey));
+  }, [sectionStorageKey]);
 
   // Auto-collapse to the icon rail on phones/narrow viewports so the
   // sidebar doesn't eat the screen. The user can still expand it; this only
@@ -91,6 +127,25 @@ export function AppShell({
   };
 
   const sidebarWidth = collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED;
+
+  // Accordion sections only apply when enabled AND the sidebar is expanded
+  // (the icon rail has no room for headers, so it shows every item).
+  const accordion = collapsibleSections && !collapsed;
+  // The section holding the active route auto-opens until the user toggles
+  // it, so you can always see where you are without hunting.
+  const activeSection = nav.find((n) => n.active)?.section;
+  const isSectionExpanded = (section: string): boolean => {
+    const explicit = expandedSections[section];
+    return explicit !== undefined ? explicit : section === activeSection;
+  };
+  const toggleSection = (section: string): void => {
+    setExpandedSections((prev) => {
+      const current = prev[section] !== undefined ? prev[section]! : section === activeSection;
+      const next = { ...prev, [section]: !current };
+      writeSections(sectionStorageKey, next);
+      return next;
+    });
+  };
 
   return (
     <div
@@ -239,72 +294,125 @@ export function AppShell({
             // string shows just a rule. Undefined continues the group.
             const prevSection = i > 0 ? nav[i - 1]!.section : undefined;
             const showSeparator = n.section !== undefined && n.section !== prevSection;
-            const separator = showSeparator ? (
-              collapsed || n.section === '' ? (
-                <div
-                  aria-hidden
-                  style={{
-                    height: 1,
-                    background: tokens.color.border,
-                    margin: `${i === 0 ? 0 : 8}px ${collapsed ? 4 : 8}px 6px`,
-                  }}
-                />
-              ) : (
-                <div
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: 0.6,
-                    textTransform: 'uppercase',
-                    color: tokens.color.textMuted,
-                    padding: '12px 12px 4px',
-                  }}
-                >
-                  {n.section}
-                </div>
-              )
-            ) : null;
+            const isNamedSection = typeof n.section === 'string' && n.section !== '';
+            const expanded = isNamedSection ? isSectionExpanded(n.section!) : true;
+            // In accordion mode, items under a collapsed named section are
+            // hidden; the header still renders so the group can be reopened.
+            const hidden = accordion && isNamedSection && !expanded;
+            let separator: ReactNode = null;
+            if (showSeparator) {
+              if (accordion && isNamedSection) {
+                separator = (
+                  <button
+                    type="button"
+                    onClick={() => toggleSection(n.section!)}
+                    aria-expanded={expanded}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      width: '100%',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      color: tokens.color.textMuted,
+                      padding: `${i === 0 ? 4 : 12}px 12px 4px`,
+                      borderRadius: tokens.radius.sm,
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      style={{
+                        display: 'inline-flex',
+                        width: 10,
+                        fontSize: 9,
+                        transition: 'transform 120ms ease',
+                        transform: expanded ? 'rotate(90deg)' : 'none',
+                      }}
+                    >
+                      ▶
+                    </span>
+                    {n.section}
+                  </button>
+                );
+              } else if (collapsed || n.section === '') {
+                separator = (
+                  <div
+                    aria-hidden
+                    style={{
+                      height: 1,
+                      background: tokens.color.border,
+                      margin: `${i === 0 ? 0 : 8}px ${collapsed ? 4 : 8}px 6px`,
+                    }}
+                  />
+                );
+              } else {
+                separator = (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      color: tokens.color.textMuted,
+                      padding: '12px 12px 4px',
+                    }}
+                  >
+                    {n.section}
+                  </div>
+                );
+              }
+            }
             return (
               <Fragment key={n.href}>
                 {separator}
-                <a
-                  href={n.href}
-                  aria-current={n.active ? 'page' : undefined}
-                  title={collapsed ? n.label : undefined}
-                  style={{
-                    color: n.active ? tokens.color.accent : tokens.color.text,
-                    textDecoration: 'none',
-                    fontSize: 13,
-                    padding: collapsed ? '8px 0' : '8px 12px',
-                    borderRadius: tokens.radius.sm,
-                    background: n.active ? tokens.color.accentMuted : 'transparent',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    justifyContent: collapsed ? 'center' : 'flex-start',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <span
-                    aria-hidden
+                {!hidden && (
+                  <a
+                    href={n.href}
+                    aria-current={n.active ? 'page' : undefined}
+                    title={collapsed ? n.label : undefined}
                     style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 24,
-                      minWidth: 24,
+                      color: n.active ? tokens.color.accent : tokens.color.text,
+                      textDecoration: 'none',
                       fontSize: 13,
-                      fontWeight: n.active ? 600 : 500,
-                      color: n.active ? tokens.color.accent : tokens.color.textMuted,
+                      padding: collapsed ? '8px 0' : '8px 12px',
+                      borderRadius: tokens.radius.sm,
+                      background: n.active ? tokens.color.accentMuted : 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      justifyContent: collapsed ? 'center' : 'flex-start',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
                     }}
                   >
-                    {glyph}
-                  </span>
-                  {!collapsed && (
-                    <span style={{ textOverflow: 'ellipsis', overflow: 'hidden' }}>{n.label}</span>
-                  )}
-                </a>
+                    <span
+                      aria-hidden
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 24,
+                        minWidth: 24,
+                        fontSize: 13,
+                        fontWeight: n.active ? 600 : 500,
+                        color: n.active ? tokens.color.accent : tokens.color.textMuted,
+                      }}
+                    >
+                      {glyph}
+                    </span>
+                    {!collapsed && (
+                      <span style={{ textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                        {n.label}
+                      </span>
+                    )}
+                  </a>
+                )}
               </Fragment>
             );
           })}

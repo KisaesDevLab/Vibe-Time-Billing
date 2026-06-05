@@ -218,6 +218,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     <AppShell
       brand={BRAND}
       collapseStorageKey="__vibe_staff_sidebar_collapsed"
+      collapsibleSections
       realmBadge={<Pill tone="accent">staff</Pill>}
       nav={[
         { label: 'Dashboard', href: '/', icon: '⌂', active: location.pathname === '/', show: true },
@@ -249,14 +250,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
         {
           section: 'Work',
-          label: 'Tax returns',
-          href: '/tax/returns',
-          icon: '⎚',
-          active: location.pathname.startsWith('/tax/returns'),
-          show: can.tax,
-        },
-        {
-          section: 'Work',
           label: 'Appointments',
           href: '/appointments',
           icon: '📅',
@@ -270,6 +263,15 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '📆',
           active: location.pathname.startsWith('/calendar'),
           show: can.appointments,
+        },
+        {
+          section: 'Work',
+          label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
+          href: '/messages',
+          icon: '💬',
+          active:
+            location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
+          show: can.messages,
         },
 
         // ---- Documents: outbound (proposals/e-sign) + inbound ----
@@ -304,6 +306,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '📥',
           active: location.pathname.startsWith('/intake'),
           show: can.intake,
+        },
+        {
+          section: 'Documents',
+          label: 'Tax returns',
+          href: '/tax/returns',
+          icon: '⎚',
+          active: location.pathname.startsWith('/tax/returns'),
+          show: can.tax,
         },
 
         // ---- Billing: WIP → pre-bills → invoices → retainers → A/R ----
@@ -383,15 +393,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
 
         // ---- Utility footer (divider, no header) ----
-        {
-          section: '',
-          label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
-          href: '/messages',
-          icon: '💬',
-          active:
-            location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
-          show: can.messages,
-        },
         {
           section: '',
           label: 'Admin',
