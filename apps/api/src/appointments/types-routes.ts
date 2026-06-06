@@ -22,7 +22,7 @@ import { seedAppointmentTypes } from '@vibe/db/seed-helpers';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
-import { ReminderScheduleSchema } from './reminders';
+import { ReminderScheduleSchema } from './reminders-validation';
 
 export interface AppointmentTypeRoutesDeps extends RbacDeps {
   db: Database | null;

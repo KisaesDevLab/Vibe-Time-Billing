@@ -51,7 +51,7 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { getAvailableSlots, type StaffBusyProvider } from './availability';
 import { bullBookingQueue, type BookingQueue } from './queue';
-import { ReminderScheduleSchema } from './reminders';
+import { ReminderScheduleSchema } from './reminders-validation';
 
 export interface BookingRoutesDeps extends RbacDeps {
   db: Database | null;

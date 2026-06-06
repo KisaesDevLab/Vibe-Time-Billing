@@ -9,7 +9,6 @@ import { and, eq } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { calendarProviderConfig, staffCalendarConnections } from '@vibe/db/schema';
 
-import { loadConfig } from '../config';
 import { decField, unwrapCalendarRecordKey } from './crypto';
 import type { CalendarProvider } from './oauth';
 
@@ -25,24 +24,28 @@ export interface ProviderCreds {
  * staff member connects their OWN calendar by signing in — no per-firm app
  * registration and no org-wide admin consent. Returns null when the operator
  * hasn't configured an appliance app for this provider.
+ *
+ * Reads process.env directly (not the zod config) so this module stays free of
+ * the config import — the worker imports this file transitively and must not
+ * pull the full config schema (+ zod) into its bundle.
  */
 export function applianceProviderCreds(provider: CalendarProvider): ProviderCreds | null {
-  const cfg = loadConfig();
+  const env = process.env;
   if (provider === 'microsoft') {
-    if (cfg.CALENDAR_MS_CLIENT_ID && cfg.CALENDAR_MS_CLIENT_SECRET) {
+    if (env['CALENDAR_MS_CLIENT_ID'] && env['CALENDAR_MS_CLIENT_SECRET']) {
       return {
-        clientId: cfg.CALENDAR_MS_CLIENT_ID,
-        clientSecret: cfg.CALENDAR_MS_CLIENT_SECRET,
-        tenantId: cfg.CALENDAR_MS_TENANT_ID,
+        clientId: env['CALENDAR_MS_CLIENT_ID'],
+        clientSecret: env['CALENDAR_MS_CLIENT_SECRET'],
+        tenantId: env['CALENDAR_MS_TENANT_ID'] || 'common',
         enabled: true,
       };
     }
     return null;
   }
-  if (cfg.CALENDAR_GOOGLE_CLIENT_ID && cfg.CALENDAR_GOOGLE_CLIENT_SECRET) {
+  if (env['CALENDAR_GOOGLE_CLIENT_ID'] && env['CALENDAR_GOOGLE_CLIENT_SECRET']) {
     return {
-      clientId: cfg.CALENDAR_GOOGLE_CLIENT_ID,
-      clientSecret: cfg.CALENDAR_GOOGLE_CLIENT_SECRET,
+      clientId: env['CALENDAR_GOOGLE_CLIENT_ID'],
+      clientSecret: env['CALENDAR_GOOGLE_CLIENT_SECRET'],
       tenantId: null,
       enabled: true,
     };

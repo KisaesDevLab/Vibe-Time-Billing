@@ -6,8 +6,6 @@
 // the shared type, validation, UI presets, and the resolution precedence so
 // the routes, the reminder tick, and the UIs all agree.
 
-import { z } from 'zod';
-
 import type { ReminderStep } from '@vibe/db/schema';
 
 export type { ReminderStep };
@@ -15,14 +13,9 @@ export type ReminderChannel = ReminderStep['channel'];
 
 export const REMINDER_CHANNELS = ['EMAIL', 'SMS', 'CALL'] as const;
 
-/** Max offset = 14 days before start; min = 5 minutes. */
-export const ReminderStepSchema = z.object({
-  offsetMinutes: z.number().int().min(5).max(20160),
-  channel: z.enum(REMINDER_CHANNELS),
-});
-
-/** A whole schedule (max 10 steps). Used by both the type + booking routes. */
-export const ReminderScheduleSchema = z.array(ReminderStepSchema).max(10);
+// NOTE: zod validation lives in ./reminders-validation (routes only). This
+// module stays zod-free so the worker — which imports it via the reminder
+// tick — doesn't pull zod/config into its bundle.
 
 /** Friendly offset presets for the editor UIs. */
 export const OFFSET_PRESETS: { label: string; minutes: number }[] = [
