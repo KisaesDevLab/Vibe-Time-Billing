@@ -11,7 +11,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type express from 'express';
 
-import { firms, mcpTokens } from '@vibe/db/schema';
+import { firms, mcpTokens, officeSettings, offices } from '@vibe/db/schema';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -52,7 +52,7 @@ function makeRes(): FakeRes {
 
 async function invoke(
   router: express.Router,
-  method: 'get' | 'post' | 'patch' | 'delete',
+  method: 'get' | 'post' | 'patch' | 'put' | 'delete',
   path: string,
   req: Record<string, unknown>,
 ): Promise<FakeRes> {
@@ -142,6 +142,30 @@ describe('PATCH /firm-settings (mixed body)', () => {
       ...req({ body: { billableTargetHoursPerMonth: 150 } }),
     });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('PUT /offices/:id/settings (per-field merge)', () => {
+  it('saving one override field does not wipe sibling overrides', async () => {
+    const r = adminRouter();
+    const [office] = await harness.db
+      .select({ id: offices.id })
+      .from(offices)
+      .where(eq(offices.firmId, seed.firmId))
+      .limit(1);
+    const oid = office!.id;
+    const put = (body: unknown) =>
+      invoke(r, 'put', '/offices/:id/settings', { ...req({ params: { id: oid }, body }) });
+
+    expect((await put({ lateEntryAlertDays: 5 })).statusCode).toBe(200);
+    expect((await put({ lateEntryLockoutDays: 30 })).statusCode).toBe(200);
+
+    const [ov] = await harness.db
+      .select()
+      .from(officeSettings)
+      .where(eq(officeSettings.officeId, oid));
+    expect(ov!.lateEntryAlertDays).toBe(5); // preserved across the second save
+    expect(ov!.lateEntryLockoutDays).toBe(30);
   });
 });
 

@@ -1200,19 +1200,23 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       const strOrNull = (k: string): string | null =>
         body[k] === null ? null : typeof body[k] === 'string' ? (body[k] as string) : null;
 
-      const values = {
-        officeId: office.id,
-        adjustmentApprovalThresholdCents: numOrNull('adjustmentApprovalThresholdCents'),
-        timeEntryRoundingHours: strOrNull('timeEntryRoundingHours'),
-        lateEntryAlertDays: numOrNull('lateEntryAlertDays'),
-        lateEntryLockoutDays: numOrNull('lateEntryLockoutDays'),
-        invoiceNumberingPrefix: strOrNull('invoiceNumberingPrefix'),
-        updatedAt: new Date(),
-      };
+      // MERGE only the fields present in the body — the UI saves one override
+      // field at a time, so a full upsert would wipe the sibling overrides.
+      const set: Record<string, unknown> = { updatedAt: new Date() };
+      if ('adjustmentApprovalThresholdCents' in body)
+        set['adjustmentApprovalThresholdCents'] = numOrNull('adjustmentApprovalThresholdCents');
+      if ('timeEntryRoundingHours' in body)
+        set['timeEntryRoundingHours'] = strOrNull('timeEntryRoundingHours');
+      if ('lateEntryAlertDays' in body) set['lateEntryAlertDays'] = numOrNull('lateEntryAlertDays');
+      if ('lateEntryLockoutDays' in body)
+        set['lateEntryLockoutDays'] = numOrNull('lateEntryLockoutDays');
+      if ('invoiceNumberingPrefix' in body)
+        set['invoiceNumberingPrefix'] = strOrNull('invoiceNumberingPrefix');
+      const values = { officeId: office.id, ...set };
       await deps.db
         .insert(officeSettings)
         .values(values)
-        .onConflictDoUpdate({ target: officeSettings.officeId, set: values });
+        .onConflictDoUpdate({ target: officeSettings.officeId, set });
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'office_settings',
