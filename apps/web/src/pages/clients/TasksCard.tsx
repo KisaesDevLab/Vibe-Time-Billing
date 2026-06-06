@@ -13,9 +13,12 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
-
-type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
-type Status = 'OPEN' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' | 'CANCELED';
+import {
+  PRIORITY_TONE,
+  STATUS_TONE,
+  type TaskPriority as Priority,
+  type TaskStatus as Status,
+} from './task-tones';
 
 interface Task {
   id: string;
@@ -47,21 +50,6 @@ const fieldStyle: React.CSSProperties = {
   border: `1px solid ${tokens.color.border}`,
   borderRadius: tokens.radius.md,
   fontSize: 13,
-};
-
-const PRIORITY_TONE: Record<Priority, 'neutral' | 'accent' | 'warning' | 'danger'> = {
-  LOW: 'neutral',
-  MEDIUM: 'accent',
-  HIGH: 'warning',
-  URGENT: 'danger',
-};
-
-const STATUS_TONE: Record<Status, 'neutral' | 'accent' | 'success' | 'warning'> = {
-  OPEN: 'neutral',
-  IN_PROGRESS: 'accent',
-  BLOCKED: 'warning',
-  DONE: 'success',
-  CANCELED: 'neutral',
 };
 
 export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX.Element {

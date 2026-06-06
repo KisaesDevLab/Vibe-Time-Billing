@@ -53,6 +53,7 @@ import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
 import { TaxReturnsStaffPage } from './pages/TaxReturns';
 import { AppointmentsPage } from './pages/Appointments';
 import { NotificationsPage as StaffNotificationsPage } from './pages/Notifications';
+import { TasksPage } from './pages/Tasks';
 import { TimeEntryPage } from './pages/TimeEntry';
 import { TotpEnrollPage } from './pages/TotpEnroll';
 import { WipDashboardPage } from './pages/Wip';
@@ -91,6 +92,7 @@ export function App(): JSX.Element {
                   <Route path="/calendar/mine" element={<MyCalendarPage />} />
                   <Route path="/calendar/unmatched" element={<CalendarUnmatchedPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
+                  <Route path="/tasks" element={<TasksPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
                   <Route path="/wip" element={<WipDashboardPage />} />
                   <Route path="/invoices" element={<InvoicesPage />} />
@@ -167,6 +169,8 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   // staff user lacks the relevant permission (no role → nothing shows).
   const can = {
     clients: usePermission('client:read'),
+    // Tasks are client:read-gated server-side; keep nav + route in agreement.
+    tasks: usePermission('client:read'),
     time: usePermission('time_entry:read:own'),
     engagements: usePermission('engagement:read'),
     proposals: usePermission('proposal:read'),
@@ -257,6 +261,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '◷',
           active: location.pathname.startsWith('/time'),
           show: can.time,
+        },
+        {
+          section: 'Work',
+          label: 'Tasks',
+          href: '/tasks',
+          icon: '☐',
+          active: location.pathname.startsWith('/tasks'),
+          show: can.tasks,
         },
         {
           section: 'Work',

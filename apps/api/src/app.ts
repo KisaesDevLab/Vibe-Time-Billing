@@ -36,6 +36,7 @@ import { createRequestTemplateRouter } from './requests/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
+import { createTaskRouter } from './tasks/routes';
 // internal-files + folder-templates routers removed in Phase 0 of the
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
@@ -535,6 +536,11 @@ export function createApp(deps: AppDeps): Express {
     sendStaffMail: deps.sendStaffMail,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
+
+  // Top-level firm-wide task list (My tasks / All tasks + create). The
+  // per-client task CRUD stays on the clients router above.
+  const taskRouter = createTaskRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/tasks', auth.requireAuth, auth.requireCsrf, taskRouter);
 
   // 0103 — Document Intake staff inbox + disposition + send-a-link.
   const intakeStaffRouter = createIntakeStaffRouter({
