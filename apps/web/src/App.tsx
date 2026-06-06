@@ -31,6 +31,7 @@ import { ProposalEditorPage } from './pages/ProposalEditor';
 import { SignaturesPage } from './pages/Signatures';
 import { SignatureDetailPage } from './pages/SignatureDetail';
 import { CalendarUnmatchedPage } from './pages/CalendarUnmatched';
+import { MyCalendarPage } from './pages/MyCalendar';
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
@@ -87,6 +88,7 @@ export function App(): JSX.Element {
                   <Route path="/proposals/:id/edit" element={<ProposalEditorPage />} />
                   <Route path="/signatures" element={<SignaturesPage />} />
                   <Route path="/signatures/:id" element={<SignatureDetailPage />} />
+                  <Route path="/calendar/mine" element={<MyCalendarPage />} />
                   <Route path="/calendar/unmatched" element={<CalendarUnmatchedPage />} />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
@@ -266,10 +268,18 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
         {
           section: 'Work',
-          label: calUnmatched > 0 ? `Calendar (${calUnmatched})` : 'Calendar',
-          href: '/calendar/unmatched',
+          label: 'My calendar',
+          href: '/calendar/mine',
           icon: '📆',
-          active: location.pathname.startsWith('/calendar'),
+          active: location.pathname.startsWith('/calendar/mine'),
+          show: can.appointments,
+        },
+        {
+          section: 'Work',
+          label: calUnmatched > 0 ? `Calendar review (${calUnmatched})` : 'Calendar review',
+          href: '/calendar/unmatched',
+          icon: '🗓',
+          active: location.pathname.startsWith('/calendar/unmatched'),
           show: can.appointments,
         },
         {
