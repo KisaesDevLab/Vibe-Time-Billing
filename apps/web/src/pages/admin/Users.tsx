@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useEffect, useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
@@ -16,6 +17,7 @@ interface User {
 }
 
 export function UsersPage(): JSX.Element {
+  const navigate = useNavigate();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,12 +92,37 @@ export function UsersPage(): JSX.Element {
       </Card>
 
       <Card title="Staff">
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '0 0 12px' }}>
+          Click a staff member&apos;s name to open their profile, where you can set{' '}
+          <strong>billing rates</strong> (Rates tab), targets, skills, and contact info.
+        </p>
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
           <Table<User>
             columns={[
-              { key: 'name', header: 'Name', render: (u) => u.fullName },
+              {
+                key: 'name',
+                header: 'Name',
+                render: (u) => (
+                  <button
+                    onClick={() => navigate(`/admin/users/${u.id}`)}
+                    title="Open profile, rates & targets"
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: tokens.color.accent,
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      padding: 0,
+                      textAlign: 'left',
+                    }}
+                  >
+                    {u.fullName}
+                  </button>
+                ),
+              },
               { key: 'email', header: 'Email', render: (u) => u.email },
               {
                 key: 'totp',
