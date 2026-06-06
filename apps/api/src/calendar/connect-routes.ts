@@ -31,7 +31,7 @@ import {
   upsertCalendarList,
   type OAuthStateStore,
 } from './connect-shared';
-import { getProviderCreds, loadConnection } from './store';
+import { applianceProviderAvailable, getProviderCreds, loadConnection } from './store';
 import { ensureFreshAccessToken } from './token-manager';
 import { getCalendarSettings } from './settings';
 import { syncConnection } from './sync';
@@ -95,7 +95,9 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
         const conn = connByProvider.get(p);
         return {
           provider: p,
-          available: Boolean(cfg?.enabled),
+          // Available if the firm enabled its own app OR the appliance has an
+          // env-level OAuth app (CAL-2) — staff just sign in either way.
+          available: Boolean(cfg?.enabled) || applianceProviderAvailable(p),
           connected: Boolean(conn),
           providerEmail: conn?.providerEmail ?? null,
           syncError: conn?.syncError ?? null,

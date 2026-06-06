@@ -16,6 +16,7 @@ interface ProviderStatus {
   enabled: boolean;
   hasTenant: boolean;
   updatedAt: string | null;
+  applianceConfigured: boolean;
 }
 
 const REDIRECT_HINT = (provider: string): string =>
@@ -38,8 +39,32 @@ export function CalendarSettingsPage(): JSX.Element {
     void load();
   }, []);
 
+  const applianceProviders = providers.filter((p) => p.applianceConfigured);
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 760 }}>
+      {applianceProviders.length > 0 && (
+        <div
+          style={{
+            fontSize: 13,
+            color: tokens.color.success,
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.success}`,
+            borderRadius: tokens.radius.md,
+            padding: '10px 14px',
+          }}
+        >
+          ✓ A built-in calendar app is active for{' '}
+          <strong>
+            {applianceProviders
+              .map((p) => (p.provider === 'microsoft' ? 'Microsoft 365' : 'Google'))
+              .join(' & ')}
+          </strong>
+          . Staff can connect their own calendars from <strong>Account → My Calendars</strong> by
+          signing in — you do <strong>not</strong> need to register a firm app below. The fields
+          below are only for firms that prefer to use their own OAuth app instead.
+        </div>
+      )}
       <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
         Register your firm&apos;s OAuth apps so staff can connect their calendars. Secrets are
         encrypted at rest and never shown again. See the setup guides for{' '}

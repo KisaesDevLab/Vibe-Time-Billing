@@ -26,6 +26,7 @@ import { decField, encField, newCalendarRecordKey, unwrapCalendarRecordKey } fro
 import { testProvider } from './provider-test';
 import { hasWriteScope, type CalendarProvider } from './oauth';
 import { getCalendarSettings, upsertCalendarSettings } from './settings';
+import { applianceProviderAvailable } from './store';
 
 export interface CalendarAdminDeps extends RbacDeps {
   db: Database | null;
@@ -117,6 +118,9 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
             enabled: r?.enabled ?? false,
             hasTenant: Boolean(r?.tenantIdEnc),
             updatedAt: r?.updatedAt ?? null,
+            // CAL-2 — an env-level OAuth app means staff can already connect
+            // without the firm pasting its own credentials.
+            applianceConfigured: applianceProviderAvailable(p),
           };
         }),
       });

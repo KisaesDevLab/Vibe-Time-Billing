@@ -109,6 +109,18 @@ const Schema = z.object({
   // (Settings → Webhook). HMAC-SHA256 secret for the x-webhook-signature
   // header on inbound webhooks.
   OPENSIGN_WEBHOOK_SECRET: z.string().optional(),
+  // CAL-2 — Appliance-level calendar OAuth app. When set, staff connect
+  // their OWN Microsoft 365 / Google calendar by signing in (each user
+  // consents only for their own mailbox) — no per-firm app registration and
+  // no org-wide admin consent. Used as the fallback when a firm hasn't
+  // pasted its own credentials. Register ONE app and point its redirect URI
+  // at {APP_BASE_URL}/api/calendar/oauth/callback/{microsoft|google}.
+  // Microsoft tenant 'common' = work + personal accounts (multi-tenant).
+  CALENDAR_MS_CLIENT_ID: z.string().optional(),
+  CALENDAR_MS_CLIENT_SECRET: z.string().optional(),
+  CALENDAR_MS_TENANT_ID: z.string().default('common'),
+  CALENDAR_GOOGLE_CLIENT_ID: z.string().optional(),
+  CALENDAR_GOOGLE_CLIENT_SECRET: z.string().optional(),
   // Mail provider secrets — only the matching one is read per MAIL_PROVIDER.
   MAIL_FROM: z.string().default('Vibe Practice Management <[email protected]>'),
   MAIL_SMTP_HOST: z.string().default('localhost'),
