@@ -24,6 +24,13 @@ interface BookableStaff {
   name: string;
   bookingEnabled: boolean;
   hasConnection: boolean;
+  provider?: string | null;
+}
+
+function providerLabel(provider: string | null | undefined): string {
+  if (provider === 'microsoft') return 'M365';
+  if (provider === 'google') return 'Google';
+  return 'Calendar';
 }
 interface ApptType {
   id: string;
@@ -376,8 +383,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-              // a JSX header is safe at runtime.
-            ) as unknown as string,
+            ) as // a JSX header is safe at runtime.
+            unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -880,7 +887,13 @@ function MonthCalendar({
           const open = availability[c] === true;
           const isPast = c < today;
           const isSel = c === selected;
+          const isToday = c === today;
           const clickable = open && !isPast;
+          const border = isSel
+            ? `1.5px solid ${tokens.color.accent}`
+            : isToday
+              ? `1px solid ${tokens.color.accent}`
+              : '1px solid transparent';
           return (
             <button
               key={c}
@@ -892,9 +905,15 @@ function MonthCalendar({
                 borderRadius: tokens.radius.sm,
                 fontSize: 13,
                 cursor: clickable ? 'pointer' : 'default',
-                border: isSel ? `1.5px solid ${tokens.color.accent}` : '1px solid transparent',
+                border,
                 background: isSel ? tokens.color.accent : 'transparent',
-                color: isSel ? '#fff' : clickable ? tokens.color.text : tokens.color.textMuted,
+                color: isSel
+                  ? '#fff'
+                  : isToday
+                    ? tokens.color.accent
+                    : clickable
+                      ? tokens.color.text
+                      : tokens.color.textMuted,
                 fontWeight: clickable && !isSel ? 600 : 400,
                 opacity: isPast ? 0.35 : 1,
               }}
@@ -1590,7 +1609,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                             color: tokens.color.accent,
                           }}
                         >
-                          Calendar connected
+                          {providerLabel(s.provider)} calendar
                         </span>
                       ) : (
                         'No calendar (read-only)'
@@ -1722,16 +1741,32 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           <div
             style={{ display: 'grid', gridTemplateColumns: 'minmax(230px, 290px) 1fr', gap: 20 }}
           >
-            <MonthCalendar
-              year={viewYear}
-              month={viewMonth}
-              availability={monthAvail}
-              selected={date}
-              loading={monthLoading}
-              canPrev={canPrev}
-              onSelect={setDate}
-              onNav={navMonth}
-            />
+            <div>
+              <MonthCalendar
+                year={viewYear}
+                month={viewMonth}
+                availability={monthAvail}
+                selected={date}
+                loading={monthLoading}
+                canPrev={canPrev}
+                onSelect={setDate}
+                onNav={navMonth}
+              />
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 12,
+                  marginTop: 10,
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                }}
+              >
+                <span>
+                  <strong style={{ color: tokens.color.text }}>Bold</strong> = slots available
+                </span>
+                <span>Faded = no availability</span>
+              </div>
+            </div>
             <div>
               {!date ? (
                 <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
@@ -1955,6 +1990,15 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                           textAlign: 'left',
                         }}
                       >
+                        <span
+                          aria-hidden
+                          style={{
+                            fontSize: 15,
+                            color: sel ? tokens.color.accent : tokens.color.textMuted,
+                          }}
+                        >
+                          🗎
+                        </span>
                         <span style={{ flex: 1 }}>
                           <span
                             style={{
@@ -1966,6 +2010,11 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                           >
                             {e.name}
                           </span>
+                          {selectedClient && (
+                            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                              {selectedClient.name}
+                            </span>
+                          )}
                         </span>
                         {sel && <span style={{ color: tokens.color.accent, fontSize: 14 }}>✓</span>}
                       </button>
@@ -2044,18 +2093,21 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                 {fmtRange(slot)}
               </div>
             </div>
-            <ReviewRow label="Staff" value={selStaff.map(staffName).join(', ')} />
+            <ReviewRow icon="👤" label="Staff" value={selStaff.map(staffName).join(', ')} />
             <ReviewRow
+              icon="🕐"
               label="Duration & type"
               value={`${duration} min${selectedType ? ` · ${selectedType.name}` : ''}`}
             />
             <ReviewRow
+              icon={location === 'VIDEO' ? '📹' : location === 'PHONE' ? '📞' : '📍'}
               label="Location"
               value={LOC_LABEL[location]}
               sub={locationDetail || undefined}
             />
             {selectedClient && (
               <ReviewRow
+                icon="🏢"
                 label="Client"
                 value={selectedClient.name}
                 sub={selectedEngagement ? `Engagement: ${selectedEngagement.name}` : undefined}
@@ -2063,13 +2115,14 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
             )}
             {selectedContacts.length > 0 && (
               <ReviewRow
+                icon="👥"
                 label={`Participants (${selectedContacts.length})`}
-                value={selectedContacts.map((c) => c.fullName).join(', ')}
+                chips={selectedContacts.map((c) => c.fullName)}
                 sub="Confirmation + cancel/reschedule links sent via email"
               />
             )}
             {internalNotes.trim() && (
-              <ReviewRow label="Internal notes (staff only)" value={internalNotes} />
+              <ReviewRow icon="🗒" label="Internal notes (staff only)" value={internalNotes} />
             )}
           </div>
 
@@ -2104,13 +2157,17 @@ const wizardFooter: React.CSSProperties = {
 };
 
 function ReviewRow({
+  icon,
   label,
   value,
   sub,
+  chips,
 }: {
+  icon: string;
   label: string;
-  value: string;
+  value?: string;
   sub?: string;
+  chips?: string[];
 }): JSX.Element {
   return (
     <div
@@ -2122,11 +2179,47 @@ function ReviewRow({
         alignItems: 'flex-start',
       }}
     >
+      <span
+        aria-hidden
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: tokens.radius.md,
+          background: tokens.color.surface,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 14,
+          flexShrink: 0,
+        }}
+      >
+        {icon}
+      </span>
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 2 }}>{label}</div>
-        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'pre-wrap' }}>{value}</div>
+        {chips ? (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+            {chips.map((c) => (
+              <span
+                key={c}
+                style={{
+                  fontSize: 11,
+                  fontWeight: 500,
+                  padding: '3px 8px',
+                  borderRadius: 10,
+                  background: tokens.color.accentMuted,
+                  color: tokens.color.accent,
+                }}
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'pre-wrap' }}>{value}</div>
+        )}
         {sub && (
-          <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 1 }}>{sub}</div>
+          <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>{sub}</div>
         )}
       </div>
     </div>

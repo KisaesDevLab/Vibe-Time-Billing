@@ -163,7 +163,10 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         .leftJoin(staffBookingSettings, eq(staffBookingSettings.staffId, appUsers.id))
         .where(and(eq(appUsers.firmId, session.firmId), eq(appUsers.status, 'ACTIVE')));
       const conns = await deps.db
-        .select({ staffId: staffCalendarConnections.staffId })
+        .select({
+          staffId: staffCalendarConnections.staffId,
+          provider: staffCalendarConnections.provider,
+        })
         .from(staffCalendarConnections)
         .where(
           and(
@@ -171,13 +174,15 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
             eq(staffCalendarConnections.enabled, true),
           ),
         );
-      const connected = new Set(conns.map((c) => c.staffId));
+      const providerByStaff = new Map<string, string>();
+      for (const c of conns) if (c.staffId) providerByStaff.set(c.staffId, c.provider);
       const items = rows
         .map((r) => ({
           id: r.id,
           name: r.name,
           bookingEnabled: r.bookingEnabled ?? true,
-          hasConnection: connected.has(r.id),
+          hasConnection: providerByStaff.has(r.id),
+          provider: providerByStaff.get(r.id) ?? null,
         }))
         .filter((r) => r.bookingEnabled);
       res.json({ items });
