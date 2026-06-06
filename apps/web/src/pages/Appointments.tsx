@@ -376,8 +376,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-            ) as // a JSX header is safe at runtime.
-            unknown as string,
+              // a JSX header is safe at runtime.
+            ) as unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -804,58 +804,6 @@ function reasonMsg(reason?: string): string {
       : 'No open times on this day.';
 }
 
-function StaffChip({ name, onRemove }: { name: string; onRemove?: () => void }): JSX.Element {
-  return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '3px 8px 3px 4px',
-        borderRadius: 999,
-        background: tokens.color.accentMuted,
-        fontSize: 12,
-      }}
-    >
-      <span
-        aria-hidden
-        style={{
-          width: 20,
-          height: 20,
-          borderRadius: 999,
-          background: tokens.color.accent,
-          color: '#fff',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 10,
-          fontWeight: 600,
-        }}
-      >
-        {initials(name)}
-      </span>
-      {name}
-      {onRemove && (
-        <button
-          type="button"
-          aria-label={`Remove ${name}`}
-          onClick={onRemove}
-          style={{
-            border: 'none',
-            background: 'transparent',
-            cursor: 'pointer',
-            color: tokens.color.textMuted,
-            fontSize: 13,
-            lineHeight: 1,
-          }}
-        >
-          ✕
-        </button>
-      )}
-    </span>
-  );
-}
-
 function MonthCalendar({
   year,
   month,
@@ -1188,7 +1136,6 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   const [duration, setDuration] = useState(30);
   const [location, setLocation] = useState<LocationType>('VIDEO');
   const [locationDetail, setLocationDetail] = useState('');
-  const [showOpts, setShowOpts] = useState(false);
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth() + 1);
@@ -1211,6 +1158,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   useEffect(() => {
     const qs = new URLSearchParams(window.location.search);
@@ -1407,11 +1355,11 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
 
   function resetAll(): void {
     setDone(false);
+    setStep(1);
     setTypeId('');
     setDuration(30);
     setLocation('VIDEO');
     setLocationDetail('');
-    setShowOpts(false);
     setDate(null);
     setSlots([]);
     setSlot(null);
@@ -1425,168 +1373,352 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setErr(null);
   }
 
+  const fmtRange = (s: Slot): string =>
+    `${fmtDayHeading(date!)} · ${fmtTime(s.start)}–${fmtTime(s.end)}`;
+  const selectedType = types.find((t) => t.id === typeId) ?? null;
+  const selectedClient = clients.find((c) => c.id === clientId) ?? null;
+  const selectedEngagement = engagements.find((e) => e.id === engagementId) ?? null;
+  const selectedContacts = contacts.filter((c) => participantIds.includes(c.id));
+
   if (done) {
     return (
-      <Card title="Appointment booked">
-        <p style={{ fontSize: 14 }}>
-          ✓ {subject || 'Appointment'} —{' '}
-          {slot ? `${fmtDayHeading(date!)} at ${fmtTime(slot.start)}` : ''} with{' '}
-          {selStaff.map(staffName).join(', ')}.
-        </p>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button onClick={onBooked}>View appointments</Button>
-          <Button variant="secondary" onClick={resetAll}>
-            Book another
-          </Button>
+      <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: '50%',
+            background: tokens.color.accentMuted,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            margin: '0 auto 16px',
+            fontSize: 26,
+            color: tokens.color.accent,
+          }}
+        >
+          ✓
         </div>
-      </Card>
+        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Appointment booked</div>
+        <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
+          {subject || 'Appointment'}
+        </div>
+        <div style={{ fontSize: 13, color: tokens.color.textMuted, marginBottom: 24 }}>
+          {slot ? fmtRange(slot) : ''} · {selStaff.map(staffName).join(', ')}
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: tokens.color.textMuted,
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            padding: '10px 16px',
+            margin: '0 auto 24px',
+            maxWidth: 380,
+            textAlign: 'left',
+            lineHeight: 1.7,
+          }}
+        >
+          {selectedContacts.length > 0 ? (
+            <div>✉ Confirmation sent to {selectedContacts.map((c) => c.fullName).join(' & ')}</div>
+          ) : (
+            <div>✉ No client contacts — no confirmation email sent</div>
+          )}
+          <div>📅 Added to {selStaff.map(staffName).join(', ')}&apos;s calendar</div>
+          {selectedEngagement && <div>🗎 Note added to {selectedEngagement.name}</div>}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
+          <Button variant="secondary" onClick={onBooked}>
+            View appointments
+          </Button>
+          <Button onClick={resetAll}>Book another</Button>
+        </div>
+      </div>
     );
   }
 
-  const addOpts = staff.filter((s) => !selStaff.includes(s.id));
+  const STEP_LABELS = ['Staff & type', 'Date & time', 'Client & details', 'Review'] as const;
+  const locBtn = (loc: LocationType, label: string): JSX.Element => (
+    <button
+      type="button"
+      onClick={() => setLocation(loc)}
+      style={{
+        flex: 1,
+        padding: '7px 10px',
+        borderRadius: tokens.radius.md,
+        fontSize: 12,
+        textAlign: 'center',
+        cursor: 'pointer',
+        border: `1.5px solid ${location === loc ? tokens.color.accent : tokens.color.border}`,
+        background: location === loc ? tokens.color.accentMuted : tokens.color.surface,
+        color: location === loc ? tokens.color.accent : tokens.color.textMuted,
+        fontWeight: location === loc ? 600 : 400,
+      }}
+    >
+      {label}
+    </button>
+  );
 
   return (
-    <Card title="Book appointment">
-      {err && <p style={{ color: tokens.color.danger, fontSize: 13, marginTop: 0 }}>{err}</p>}
-      <div style={{ display: 'grid', gap: 16 }}>
-        {/* Type */}
-        {types.length > 0 && (
-          <div>
-            <div style={fieldLabel}>Type</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {types.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => pickType(t)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '8px 12px',
-                    borderRadius: tokens.radius.sm,
-                    cursor: 'pointer',
-                    border: `1.5px solid ${typeId === t.id ? tokens.color.accent : tokens.color.border}`,
-                    background: typeId === t.id ? tokens.color.accentMuted : tokens.color.surface,
-                    color: tokens.color.text,
-                    fontSize: 13,
-                  }}
-                >
-                  {t.color && (
-                    <span
-                      aria-hidden
-                      style={{ width: 10, height: 10, borderRadius: 999, background: t.color }}
-                    />
-                  )}
-                  {t.name}
-                  <span style={{ color: tokens.color.textMuted }}>{t.defaultDurationMinutes}m</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* With (staff) + inline duration/location */}
-        <div>
-          <div style={fieldLabel}>With</div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {selStaff.map((id) => (
-              <StaffChip
-                key={id}
-                name={staffName(id)}
-                onRemove={() => setSelStaff((p) => p.filter((x) => x !== id))}
-              />
-            ))}
-            {addOpts.length > 0 && (
-              <div style={{ width: 170 }}>
-                <Combobox
-                  ariaLabel="Add staff"
-                  value=""
-                  onChange={(v) => {
-                    if (v) setSelStaff((p) => (p.includes(v) ? p : [...p, v]));
-                  }}
-                  options={addOpts.map((s) => ({
-                    value: s.id,
-                    label: s.hasConnection ? s.name : `${s.name} (read-only cal)`,
-                  }))}
-                  placeholder="+ add staff"
-                  size="sm"
-                />
-              </div>
-            )}
-            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-              {duration} min · {LOC_LABEL[location]}
-            </span>
+    <div style={{ display: 'grid', gap: 20 }}>
+      {/* Stepper */}
+      <div
+        style={{
+          display: 'flex',
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.md,
+          overflow: 'hidden',
+        }}
+      >
+        {STEP_LABELS.map((label, i) => {
+          const n = (i + 1) as 1 | 2 | 3 | 4;
+          const active = n === step;
+          const doneStep = n < step;
+          return (
             <button
+              key={label}
               type="button"
-              onClick={() => setShowOpts((v) => !v)}
-              aria-label="Edit duration & location"
+              onClick={() => doneStep && setStep(n)}
               style={{
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                color: tokens.color.textMuted,
-                fontSize: 16,
-              }}
-            >
-              ⋯
-            </button>
-          </div>
-          {showOpts && (
-            <div
-              style={{
+                flex: 1,
                 display: 'flex',
-                gap: 12,
-                flexWrap: 'wrap',
-                marginTop: 8,
-                alignItems: 'flex-end',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 12px',
+                fontSize: 12,
+                textAlign: 'left',
+                cursor: doneStep ? 'pointer' : 'default',
+                border: 'none',
+                borderRight: i < 3 ? `1px solid ${tokens.color.border}` : 'none',
+                background: active ? tokens.color.bg : tokens.color.surface,
+                color: active ? tokens.color.text : tokens.color.textMuted,
               }}
             >
-              <Input
-                label="Duration (min)"
-                type="number"
-                value={String(duration)}
-                onChange={(e) => setDuration(Number(e.target.value) || 30)}
-                style={{ width: 110 }}
-              />
-              <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                Location
-                <select
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value as LocationType)}
-                  style={selectStyle}
+              <span
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '50%',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  flexShrink: 0,
+                  background: active
+                    ? tokens.color.accent
+                    : doneStep
+                      ? tokens.color.success
+                      : tokens.color.bg,
+                  color: active || doneStep ? '#fff' : tokens.color.textMuted,
+                  border: active || doneStep ? 'none' : `1px solid ${tokens.color.border}`,
+                }}
+              >
+                {doneStep ? '✓' : n}
+              </span>
+              <span style={{ fontWeight: active ? 600 : 400 }}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {err && <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0 }}>{err}</p>}
+
+      {/* STEP 1 — staff & type */}
+      {step === 1 && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div>
+            <div style={fieldLabel}>Select staff member</div>
+            {staff.length === 0 && (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                No bookable staff. Enable booking under Availability.
+              </p>
+            )}
+            {staff.map((s) => {
+              const sel = selStaff.includes(s.id);
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() =>
+                    setSelStaff((p) => (sel ? p.filter((x) => x !== s.id) : [...p, s.id]))
+                  }
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '10px 12px',
+                    border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                    borderRadius: tokens.radius.md,
+                    marginBottom: 6,
+                    background: sel ? tokens.color.accentMuted : tokens.color.surface,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
                 >
-                  <option value="IN_PERSON">In-person</option>
-                  <option value="PHONE">Phone</option>
-                  <option value="VIDEO">Video</option>
-                </select>
-              </label>
-              <Input
-                label={
-                  location === 'VIDEO'
-                    ? 'Meeting link'
-                    : location === 'PHONE'
-                      ? 'Call notes'
-                      : 'Address'
-                }
-                value={locationDetail}
-                onChange={(e) => setLocationDetail(e.target.value)}
-              />
+                  <span
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: '50%',
+                      background: avatarColor(s.id),
+                      color: '#fff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {initials(s.name)}
+                  </span>
+                  <span style={{ flex: 1 }}>
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+                      {s.name}
+                    </span>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      {s.hasConnection ? (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            padding: '2px 6px',
+                            borderRadius: 10,
+                            background: tokens.color.accentMuted,
+                            color: tokens.color.accent,
+                          }}
+                        >
+                          Calendar connected
+                        </span>
+                      ) : (
+                        'No calendar (read-only)'
+                      )}
+                    </span>
+                  </span>
+                  {sel && <span style={{ color: tokens.color.accent, fontSize: 16 }}>✓</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          {types.length > 0 && (
+            <div>
+              <div style={fieldLabel}>Appointment type</div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: 8,
+                }}
+              >
+                {types.map((t) => {
+                  const sel = typeId === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => pickType(t)}
+                      style={{
+                        textAlign: 'left',
+                        padding: '10px 12px',
+                        borderRadius: tokens.radius.md,
+                        cursor: 'pointer',
+                        border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                        background: sel ? tokens.color.accentMuted : tokens.color.surface,
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'block',
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          marginBottom: 6,
+                          background: t.color ?? tokens.color.accent,
+                        }}
+                      />
+                      <span
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: sel ? tokens.color.accent : tokens.color.text,
+                        }}
+                      >
+                        {t.name}
+                      </span>
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {t.defaultDurationMinutes} min default
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={fieldLabel}>
+                Duration <span style={{ textTransform: 'none' }}>(override)</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Input
+                  type="number"
+                  value={String(duration)}
+                  onChange={(e) => setDuration(Number(e.target.value) || 30)}
+                  style={{ width: 90 }}
+                />
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>minutes</span>
+              </div>
+            </div>
+            <div>
+              <div style={fieldLabel}>Location</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {locBtn('IN_PERSON', 'In-person')}
+                {locBtn('PHONE', 'Phone')}
+                {locBtn('VIDEO', 'Video')}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div style={fieldLabel}>
+              {location === 'VIDEO'
+                ? 'Video link'
+                : location === 'PHONE'
+                  ? 'Phone number / call notes'
+                  : 'Address'}{' '}
+              <span style={{ textTransform: 'none' }}>(optional)</span>
+            </div>
+            <Input
+              value={locationDetail}
+              onChange={(e) => setLocationDetail(e.target.value)}
+              placeholder={location === 'VIDEO' ? 'Paste Zoom, Teams, or Meet link…' : undefined}
+            />
+          </div>
+
+          <div style={wizardFooter}>
+            <Button variant="secondary" onClick={onBooked}>
+              Cancel
+            </Button>
+            <Button onClick={() => setStep(2)} disabled={selStaff.length === 0}>
+              Next: Date &amp; time →
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 2 — date & time */}
+      {step === 2 && (
+        <div style={{ display: 'grid', gap: 16 }}>
           {selStaff.length > 1 && (
-            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '6px 0 0' }}>
-              Showing times when all {selStaff.length} are free.
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+              Showing times when all {selStaff.length} selected staff are free.
             </p>
           )}
-        </div>
-
-        {/* When — two-pane calendar + slots */}
-        {selStaff.length === 0 ? (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
-            Add a staff member to see open times.
-          </p>
-        ) : (
           <div
             style={{ display: 'grid', gridTemplateColumns: 'minmax(230px, 290px) 1fr', gap: 20 }}
           >
@@ -1636,8 +1768,8 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                       <div
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
-                          gap: 8,
+                          gridTemplateColumns: 'repeat(4, 1fr)',
+                          gap: 6,
                         }}
                       >
                         {slots.map((s) => {
@@ -1665,11 +1797,11 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                                 flexDirection: 'column',
                                 alignItems: 'center',
                                 gap: 4,
-                                padding: '9px 6px',
-                                borderRadius: tokens.radius.sm,
-                                fontSize: 13,
+                                padding: '7px 4px',
+                                borderRadius: tokens.radius.md,
+                                fontSize: 12,
                                 cursor: s.available ? 'pointer' : 'not-allowed',
-                                border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                                border: `1px solid ${sel ? tokens.color.accent : tokens.color.border}`,
                                 background: sel
                                   ? tokens.color.accent
                                   : s.available
@@ -1678,7 +1810,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                                 color: sel
                                   ? '#fff'
                                   : s.available
-                                    ? tokens.color.text
+                                    ? tokens.color.textMuted
                                     : tokens.color.textMuted,
                                 textDecoration: s.available ? 'none' : 'line-through',
                               }}
@@ -1695,95 +1827,263 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                           );
                         })}
                       </div>
+                      <div style={{ marginTop: 12, fontSize: 11, color: tokens.color.textMuted }}>
+                        ⓘ Buffers + minimum notice applied · {selStaff.map(staffName).join(', ')}
+                      </div>
                     </>
                   )}
                 </>
               )}
             </div>
           </div>
-        )}
+          <div style={wizardFooter}>
+            <Button variant="secondary" onClick={() => setStep(1)}>
+              ← Back
+            </Button>
+            <Button onClick={() => setStep(3)} disabled={!slot}>
+              Next: Client &amp; details →
+            </Button>
+          </div>
+        </div>
+      )}
 
-        {/* Details — slide in once a time is chosen */}
-        {slot && (
-          <div
-            style={{
-              borderTop: `1px solid ${tokens.color.border}`,
-              paddingTop: 14,
-              display: 'grid',
-              gap: 12,
-              maxWidth: 560,
-            }}
-          >
-            <div style={{ fontSize: 13 }}>
-              <strong>{fmtDayHeading(date!)}</strong> at <strong>{fmtTime(slot.start)}</strong> ·{' '}
-              {duration} min · {selStaff.map(staffName).join(', ')}
-            </div>
-            <Input label="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
-            <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-              Client (optional)
-              <Combobox
-                ariaLabel="Client"
-                value={clientId}
-                onChange={setClientId}
-                options={clients.map((c) => ({ value: c.id, label: c.name }))}
-                placeholder="No client"
-                clearable
-              />
-            </div>
-            {clientId && engagements.length > 0 && (
-              <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                Engagement (optional — adds a note to the engagement)
+      {/* STEP 3 — client & details */}
+      {step === 3 && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div style={{ display: 'grid', gap: 16 }}>
+              <div>
+                <div style={fieldLabel}>
+                  Client <span style={{ textTransform: 'none' }}>(optional)</span>
+                </div>
                 <Combobox
-                  ariaLabel="Engagement"
-                  value={engagementId}
-                  onChange={setEngagementId}
-                  options={engagements.map((e) => ({ value: e.id, label: e.name }))}
-                  placeholder="No engagement"
+                  ariaLabel="Client"
+                  value={clientId}
+                  onChange={setClientId}
+                  options={clients.map((c) => ({ value: c.id, label: c.name }))}
+                  placeholder="No client"
                   clearable
                 />
               </div>
-            )}
-            {clientId && contacts.length > 0 && (
-              <div>
-                <div style={fieldLabel}>Participants (emailed a confirmation)</div>
-                {contacts.map((c) => (
-                  <label
-                    key={c.id}
-                    style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+              {clientId && contacts.length > 0 && (
+                <div>
+                  <div style={fieldLabel}>
+                    Participants {selectedClient ? `— ${selectedClient.name}` : ''}
+                  </div>
+                  <div
+                    style={{
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                      overflow: 'hidden',
+                    }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={participantIds.includes(c.id)}
-                      onChange={(e) =>
-                        setParticipantIds((prev) =>
-                          e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
-                        )
-                      }
-                    />
-                    {c.fullName}
-                    {c.email ? ` · ${c.email}` : ''}
-                  </label>
-                ))}
+                    <div
+                      style={{
+                        padding: '8px 12px',
+                        background: tokens.color.surface,
+                        borderBottom: `1px solid ${tokens.color.border}`,
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                      }}
+                    >
+                      Select contacts to include (emailed a confirmation)
+                    </div>
+                    <div style={{ padding: '0 12px' }}>
+                      {contacts.map((c) => (
+                        <label
+                          key={c.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            padding: '8px 0',
+                            borderBottom: `1px solid ${tokens.color.border}`,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={participantIds.includes(c.id)}
+                            onChange={(e) =>
+                              setParticipantIds((prev) =>
+                                e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
+                              )
+                            }
+                          />
+                          <span style={{ flex: 1 }}>
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+                              {c.fullName}
+                            </span>
+                            {c.email && (
+                              <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                                {c.email}
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gap: 16 }}>
+              {clientId && engagements.length > 0 && (
+                <div>
+                  <div style={fieldLabel}>
+                    Engagement <span style={{ textTransform: 'none' }}>(optional)</span>
+                  </div>
+                  {engagements.map((e) => {
+                    const sel = engagementId === e.id;
+                    return (
+                      <button
+                        key={e.id}
+                        type="button"
+                        onClick={() => setEngagementId(sel ? '' : e.id)}
+                        style={{
+                          width: '100%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '9px 12px',
+                          border: `1px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                          borderRadius: tokens.radius.md,
+                          background: sel ? tokens.color.accentMuted : tokens.color.surface,
+                          marginBottom: 6,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <span style={{ flex: 1 }}>
+                          <span
+                            style={{
+                              display: 'block',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: sel ? tokens.color.accent : tokens.color.text,
+                            }}
+                          >
+                            {e.name}
+                          </span>
+                        </span>
+                        {sel && <span style={{ color: tokens.color.accent, fontSize: 14 }}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div>
+                <div style={fieldLabel}>Subject</div>
+                <Input value={subject} onChange={(e) => setSubject(e.target.value)} />
               </div>
-            )}
-            <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
-              Internal notes (staff only)
-              <textarea
-                value={internalNotes}
-                onChange={(e) => setInternalNotes(e.target.value)}
-                rows={2}
-                style={{ ...selectStyle, width: '100%', resize: 'vertical' }}
-              />
-            </label>
-            <div>
-              <Button onClick={() => void confirm()} disabled={submitting}>
-                {submitting ? 'Booking…' : 'Confirm booking'}
-              </Button>
+              <div>
+                <div style={fieldLabel}>
+                  Internal notes{' '}
+                  <span style={{ textTransform: 'none' }}>(staff only, not sent to client)</span>
+                </div>
+                <textarea
+                  value={internalNotes}
+                  onChange={(e) => setInternalNotes(e.target.value)}
+                  rows={3}
+                  placeholder="Preparation notes, agenda items, reminders…"
+                  style={{ ...selectStyle, width: '100%', resize: 'vertical' }}
+                />
+              </div>
             </div>
           </div>
-        )}
-      </div>
-    </Card>
+          <div style={wizardFooter}>
+            <Button variant="secondary" onClick={() => setStep(2)}>
+              ← Back
+            </Button>
+            <Button onClick={() => setStep(4)}>Review booking →</Button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 4 — review */}
+      {step === 4 && slot && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              background: tokens.color.accentMuted,
+              border: `1px solid ${tokens.color.accent}`,
+              borderRadius: tokens.radius.md,
+              padding: '10px 14px',
+              fontSize: 12,
+              color: tokens.color.accent,
+            }}
+          >
+            ✓ Booking will be added to {selStaff.map(staffName).join(', ')}&apos;s calendar.
+            {selectedContacts.length > 0
+              ? ` Confirmation email sent to ${selectedContacts.length} contact${selectedContacts.length === 1 ? '' : 's'}.`
+              : ' No client contacts selected.'}
+          </div>
+
+          <div
+            style={{
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.lg,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                padding: '12px 16px',
+                background: tokens.color.accentMuted,
+                borderBottom: `1px solid ${tokens.color.accent}`,
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: tokens.color.accent }}>
+                {subject || 'Appointment'}
+              </div>
+              <div style={{ fontSize: 12, color: tokens.color.accent, marginTop: 2 }}>
+                {fmtRange(slot)}
+              </div>
+            </div>
+            <ReviewRow label="Staff" value={selStaff.map(staffName).join(', ')} />
+            <ReviewRow
+              label="Duration & type"
+              value={`${duration} min${selectedType ? ` · ${selectedType.name}` : ''}`}
+            />
+            <ReviewRow
+              label="Location"
+              value={LOC_LABEL[location]}
+              sub={locationDetail || undefined}
+            />
+            {selectedClient && (
+              <ReviewRow
+                label="Client"
+                value={selectedClient.name}
+                sub={selectedEngagement ? `Engagement: ${selectedEngagement.name}` : undefined}
+              />
+            )}
+            {selectedContacts.length > 0 && (
+              <ReviewRow
+                label={`Participants (${selectedContacts.length})`}
+                value={selectedContacts.map((c) => c.fullName).join(', ')}
+                sub="Confirmation + cancel/reschedule links sent via email"
+              />
+            )}
+            {internalNotes.trim() && (
+              <ReviewRow label="Internal notes (staff only)" value={internalNotes} />
+            )}
+          </div>
+
+          <div style={wizardFooter}>
+            <Button variant="secondary" onClick={() => setStep(3)}>
+              ← Back
+            </Button>
+            <Button onClick={() => void confirm()} disabled={submitting}>
+              {submitting ? 'Booking…' : 'Confirm booking'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1794,6 +2094,44 @@ const fieldLabel: React.CSSProperties = {
   color: tokens.color.textMuted,
   marginBottom: 6,
 };
+
+const wizardFooter: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  paddingTop: 16,
+  borderTop: `1px solid ${tokens.color.border}`,
+};
+
+function ReviewRow({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+}): JSX.Element {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 12,
+        padding: '10px 16px',
+        borderBottom: `1px solid ${tokens.color.border}`,
+        alignItems: 'flex-start',
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'pre-wrap' }}>{value}</div>
+        {sub && (
+          <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 1 }}>{sub}</div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // --------------------------------------------------------------- Inbox
 function InboxTab({ onResolved }: { onResolved: () => void }): JSX.Element {
