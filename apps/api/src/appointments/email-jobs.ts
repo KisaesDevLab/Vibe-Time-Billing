@@ -136,8 +136,13 @@ export interface AppointmentMail {
   icsFilename?: string;
 }
 export type SendAppointmentEmail = (mail: AppointmentMail) => Promise<void>;
-/** 0121 — optional reminder channels (worker injects real dispatchers). */
-export type SendAppointmentSms = (msg: { to: string; body: string }) => Promise<void>;
+/** 0121 — optional reminder channels (worker injects real dispatchers).
+ *  firmId lets the worker resolve the firm's DB-backed SMS provider. */
+export type SendAppointmentSms = (msg: {
+  to: string;
+  body: string;
+  firmId: string;
+}) => Promise<void>;
 export type PlaceAppointmentCall = (msg: {
   to: string;
   script: string;
@@ -654,7 +659,7 @@ export async function runAppointmentReminderTick(
             });
           } else if (channel === 'SMS') {
             if (!deps.sendSms || !phone || !canSendQuiet) continue;
-            await deps.sendSms({ to: phone, body });
+            await deps.sendSms({ to: phone, body, firmId: appt.firmId });
           } else {
             if (!deps.placeCall || !phone || !canSendQuiet) continue;
             const confirmUrl = deps.appBaseUrl

@@ -94,6 +94,8 @@ import { runIntakeProcess } from './jobs/intake-process';
 import { runInternalMessageNotify } from './jobs/internal-message-notify';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch, buildVoiceDispatch } from './dispatchers';
+import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
+import type { SmsProvider } from '../../api/src/sms/provider';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 const logger = pino({
@@ -562,6 +564,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'appointment-reminders: no DB configured');
       return;
     }
+    const liveDb = db;
     const sendEmail: SendAppointmentEmail = async (mail) => {
       if (!dunningSendEmail) return;
       await dunningSendEmail({
@@ -571,12 +574,27 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
         ics: mail.ics,
       });
     };
+    // 0121 — SMS resolves the firm's DB-backed provider (Admin → Messaging)
+    // first, falling back to the env dispatcher. Providers cached per firm.
+    const smsByFirm = new Map<string, SmsProvider | null>();
+    const sendSms = async (m: { to: string; body: string; firmId: string }): Promise<void> => {
+      let provider = smsByFirm.get(m.firmId);
+      if (provider === undefined) {
+        provider = await loadFirmSmsProvider(liveDb, m.firmId, logger);
+        smsByFirm.set(m.firmId, provider);
+      }
+      if (provider) {
+        const r = await provider.send({ to: m.to, body: m.body });
+        if (!r.ok) throw new Error(r.error ?? 'sms_failed');
+        return;
+      }
+      if (dunningSendSms) await dunningSendSms({ to: m.to, body: m.body });
+    };
     const result = await runAppointmentReminderTick({
       db,
       sendEmail,
-      // 0121 — SMS + voice channels (undefined when the provider isn't
-      // configured → the tick gracefully skips that channel).
-      sendSms: dunningSendSms ? (m) => dunningSendSms(m) : undefined,
+      sendSms,
+      // Voice is env-configured (no admin UI yet); undefined → tick skips CALL.
       placeCall: voiceDispatch ? (m) => voiceDispatch(m) : undefined,
       appBaseUrl: process.env['APP_BASE_URL'],
     });

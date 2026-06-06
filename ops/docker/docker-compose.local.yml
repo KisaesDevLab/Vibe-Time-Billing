@@ -156,6 +156,19 @@ services:
       MAIL_SMTP_PORT: '1025'
       MAIL_SMTP_SECURE: 'false'
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      # 0121 — KMS key so the reminder worker can decrypt the firm's DB-backed
+      # SMS provider config (Admin → Messaging). Without it, SMS reminders fall
+      # back to env creds. Same value as the api service.
+      KMS_KEY: ${KMS_KEY:?KMS_KEY required (export from .env, 32 bytes base64)}
+      # Env-creds fallback for SMS + the (UI-less) voice channel.
+      SMS_TWILIO_ACCOUNT_SID: ${SMS_TWILIO_ACCOUNT_SID:-}
+      SMS_TWILIO_AUTH_TOKEN: ${SMS_TWILIO_AUTH_TOKEN:-}
+      SMS_TWILIO_FROM: ${SMS_TWILIO_FROM:-}
+      SMS_TEXTLINK_API_KEY: ${SMS_TEXTLINK_API_KEY:-}
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-console}
+      VOICE_TWILIO_ACCOUNT_SID: ${VOICE_TWILIO_ACCOUNT_SID:-}
+      VOICE_TWILIO_AUTH_TOKEN: ${VOICE_TWILIO_AUTH_TOKEN:-}
+      VOICE_TWILIO_FROM: ${VOICE_TWILIO_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5195}
       # BK-5 — appointment booking calendar write-back jobs.
       FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
