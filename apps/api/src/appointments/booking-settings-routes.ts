@@ -42,6 +42,7 @@ const SettingsSchema = z.object({
 });
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const LOCATION_TYPES = ['VIDEO', 'PHONE', 'IN_PERSON'] as const;
 const AvailabilitySchema = z.object({
   rows: z
     .array(
@@ -49,6 +50,8 @@ const AvailabilitySchema = z.object({
         dayOfWeek: z.number().int().min(0).max(6),
         startTime: z.string().regex(TIME_RE),
         endTime: z.string().regex(TIME_RE),
+        // Allowed meeting locations for this window; null/empty = all.
+        locationTypes: z.array(z.enum(LOCATION_TYPES)).max(3).nullable().optional(),
         isActive: z.boolean().optional(),
       }),
     )
@@ -197,6 +200,7 @@ export function createBookingSettingsRouter(deps: BookingSettingsRoutesDeps): Ro
             dayOfWeek: r.dayOfWeek,
             startTime: r.startTime,
             endTime: r.endTime,
+            locationTypes: r.locationTypes && r.locationTypes.length > 0 ? r.locationTypes : null,
             isActive: r.isActive ?? true,
           })),
         );

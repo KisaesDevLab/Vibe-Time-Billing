@@ -69,6 +69,20 @@ export interface GetAvailableSlotsArgs {
   busyProvider: StaffBusyProvider;
   /** Exclude this appointment from the booking-busy set (reschedule). */
   excludeAppointmentId?: string;
+  /** When set, only availability windows that allow this meeting location
+   *  (VIDEO | PHONE | IN_PERSON) are considered. */
+  location?: string;
+}
+
+/** A window allows a location when it has no restriction (null/empty) or its
+ *  list includes the requested location. No requested location → allow all. */
+function windowAllowsLocation(
+  locationTypes: string[] | null | undefined,
+  location: string | undefined,
+): boolean {
+  if (!location) return true;
+  if (!locationTypes || locationTypes.length === 0) return true;
+  return locationTypes.includes(location);
 }
 
 interface ResolvedSettings {
@@ -184,7 +198,9 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     if (!settingsByStaff.get(id)!.bookingEnabled) {
       return empty({ reason: 'staff_unavailable', staffId: id });
     }
-    const rows = availRows.filter((r) => r.staffId === id && r.isActive);
+    const rows = availRows.filter(
+      (r) => r.staffId === id && r.isActive && windowAllowsLocation(r.locationTypes, args.location),
+    );
     if (rows.length === 0) return empty({ reason: 'staff_unavailable', staffId: id });
     windowsByStaff.set(
       id,
@@ -370,6 +386,7 @@ export async function getMonthAvailability(args: {
   now?: Date;
   busyProvider: StaffBusyProvider;
   excludeAppointmentId?: string;
+  location?: string;
 }): Promise<{ days: Record<string, boolean>; timezone: string }> {
   const { db, staffIds, year, month, durationMinutes, timezone, busyProvider } = args;
   const now = args.now ?? new Date();
@@ -386,6 +403,7 @@ export async function getMonthAvailability(args: {
       now,
       busyProvider,
       excludeAppointmentId: args.excludeAppointmentId,
+      location: args.location,
     });
     days[date] = res.slots.some((s) => s.available);
   }

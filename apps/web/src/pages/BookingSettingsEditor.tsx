@@ -22,11 +22,21 @@ interface BookingSettings {
   bookingEnabled: boolean;
 }
 
-interface DayRow {
-  active: boolean;
+type LocationType = 'IN_PERSON' | 'PHONE' | 'VIDEO';
+const LOCATION_OPTS: { key: LocationType; label: string }[] = [
+  { key: 'IN_PERSON', label: 'In-person' },
+  { key: 'PHONE', label: 'Phone' },
+  { key: 'VIDEO', label: 'Video' },
+];
+
+interface Win {
   startTime: string;
   endTime: string;
+  /** Empty = all locations allowed for this window. */
+  locationTypes: LocationType[];
 }
+
+const newWin = (): Win => ({ startTime: '09:00', endTime: '17:00', locationTypes: [] });
 
 export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Element {
   const [settings, setSettings] = useState<BookingSettings>({
@@ -36,12 +46,9 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
     slotIncrementMinutes: 30,
     bookingEnabled: true,
   });
-  const [days, setDays] = useState<DayRow[]>(
-    DOW.map((_, i) => ({
-      active: i >= 1 && i <= 5,
-      startTime: '09:00',
-      endTime: '17:00',
-    })),
+  // One array of windows per day-of-week (index 0=Sun … 6=Sat).
+  const [windows, setWindows] = useState<Win[][]>(() =>
+    DOW.map((_, i) => (i >= 1 && i <= 5 ? [newWin()] : [])),
   );
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -59,24 +66,26 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
         bookingEnabled: s.settings.bookingEnabled,
       });
       const a = await api<{
-        rows: { dayOfWeek: number; startTime: string; endTime: string; isActive: boolean }[];
+        rows: {
+          dayOfWeek: number;
+          startTime: string;
+          endTime: string;
+          locationTypes: LocationType[] | null;
+          isActive: boolean;
+        }[];
       }>(`/api/staff/booking/${userId}/availability`);
       if (a.rows.length > 0) {
-        const next: DayRow[] = DOW.map(() => ({
-          active: false,
-          startTime: '09:00',
-          endTime: '17:00',
-        }));
+        const next: Win[][] = DOW.map(() => []);
         for (const r of a.rows) {
-          if (r.dayOfWeek >= 0 && r.dayOfWeek <= 6) {
-            next[r.dayOfWeek] = {
-              active: r.isActive,
+          if (r.dayOfWeek >= 0 && r.dayOfWeek <= 6 && r.isActive) {
+            next[r.dayOfWeek]!.push({
               startTime: r.startTime.slice(0, 5),
               endTime: r.endTime.slice(0, 5),
-            };
+              locationTypes: r.locationTypes ?? [],
+            });
           }
         }
-        setDays(next);
+        setWindows(next);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
@@ -87,8 +96,38 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  function setDay(i: number, change: Partial<DayRow>): void {
-    setDays((prev) => prev.map((d, idx) => (idx === i ? { ...d, ...change } : d)));
+  function addWindow(dow: number): void {
+    setWindows((prev) => prev.map((wins, i) => (i === dow ? [...wins, newWin()] : wins)));
+  }
+  function removeWindow(dow: number, idx: number): void {
+    setWindows((prev) =>
+      prev.map((wins, i) => (i === dow ? wins.filter((_, j) => j !== idx) : wins)),
+    );
+  }
+  function updateWindow(dow: number, idx: number, change: Partial<Win>): void {
+    setWindows((prev) =>
+      prev.map((wins, i) =>
+        i === dow ? wins.map((w, j) => (j === idx ? { ...w, ...change } : w)) : wins,
+      ),
+    );
+  }
+  function toggleLoc(dow: number, idx: number, loc: LocationType): void {
+    setWindows((prev) =>
+      prev.map((wins, i) =>
+        i === dow
+          ? wins.map((w, j) =>
+              j === idx
+                ? {
+                    ...w,
+                    locationTypes: w.locationTypes.includes(loc)
+                      ? w.locationTypes.filter((l) => l !== loc)
+                      : [...w.locationTypes, loc],
+                  }
+                : w,
+            )
+          : wins,
+      ),
+    );
   }
 
   async function saveAll(): Promise<void> {
@@ -100,19 +139,18 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
         method: 'PATCH',
         body: JSON.stringify(settings),
       });
+      const rows = windows.flatMap((wins, dow) =>
+        wins.map((w) => ({
+          dayOfWeek: dow,
+          startTime: w.startTime,
+          endTime: w.endTime,
+          locationTypes: w.locationTypes.length > 0 ? w.locationTypes : null,
+          isActive: true,
+        })),
+      );
       await api(`/api/staff/booking/${userId}/availability`, {
         method: 'PUT',
-        body: JSON.stringify({
-          rows: days
-            .map((d, i) => ({ dayOfWeek: i, ...d }))
-            .filter((d) => d.active)
-            .map((d) => ({
-              dayOfWeek: d.dayOfWeek,
-              startTime: d.startTime,
-              endTime: d.endTime,
-              isActive: true,
-            })),
-        }),
+        body: JSON.stringify({ rows }),
       });
       setStatus('Saved.');
       await load();
@@ -127,47 +165,105 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 720 }}>
       <Card title="Booking availability">
         <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
-          Hours this staff member can be booked. Off days are skipped entirely. Bookable slots are
-          the intersection of these hours with the staff member&apos;s connected-calendar free/busy.
+          Hours this staff member can be booked. Add multiple windows per day for split shifts (e.g.
+          a lunch break). For each window you can limit which meeting types it accepts — leave all
+          unchecked to allow any. Bookable slots are the intersection of these hours with the staff
+          member&apos;s connected-calendar free/busy.
         </p>
-        <div style={{ display: 'grid', gap: 6 }}>
-          {DOW.map((label, i) => (
+        <div style={{ display: 'grid', gap: 10 }}>
+          {DOW.map((label, dow) => (
             <div
               key={label}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '120px 80px 1fr 1fr',
-                gap: 8,
-                alignItems: 'center',
+                gridTemplateColumns: '110px 1fr',
+                gap: 10,
+                alignItems: 'start',
+                paddingBottom: 10,
+                borderBottom: `1px solid ${tokens.color.border}`,
               }}
             >
-              <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={days[i]!.active}
-                  onChange={(e) => setDay(i, { active: e.target.checked })}
-                />
-                {label}
-              </label>
-              {days[i]!.active ? (
-                <>
-                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>from</span>
-                  <Input
-                    type="time"
-                    value={days[i]!.startTime}
-                    onChange={(e) => setDay(i, { startTime: e.target.value })}
-                  />
-                  <Input
-                    type="time"
-                    value={days[i]!.endTime}
-                    onChange={(e) => setDay(i, { endTime: e.target.value })}
-                  />
-                </>
-              ) : (
-                <span style={{ gridColumn: '2 / 5', fontSize: 12, color: tokens.color.textMuted }}>
-                  Unavailable
-                </span>
-              )}
+              <div style={{ fontSize: 13, fontWeight: 500, paddingTop: 6 }}>{label}</div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {windows[dow]!.length === 0 && (
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted, paddingTop: 6 }}>
+                    Unavailable
+                  </span>
+                )}
+                {windows[dow]!.map((w, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Input
+                      type="time"
+                      value={w.startTime}
+                      onChange={(e) => updateWindow(dow, idx, { startTime: e.target.value })}
+                      style={{ width: 110 }}
+                    />
+                    <span style={{ fontSize: 12, color: tokens.color.textMuted }}>to</span>
+                    <Input
+                      type="time"
+                      value={w.endTime}
+                      onChange={(e) => updateWindow(dow, idx, { endTime: e.target.value })}
+                      style={{ width: 110 }}
+                    />
+                    <div style={{ display: 'inline-flex', gap: 6 }}>
+                      {LOCATION_OPTS.map((opt) => {
+                        const on = w.locationTypes.includes(opt.key);
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => toggleLoc(dow, idx, opt.key)}
+                            title={
+                              w.locationTypes.length === 0
+                                ? 'All meeting types allowed'
+                                : `${opt.label} ${on ? 'allowed' : 'not allowed'}`
+                            }
+                            style={{
+                              padding: '5px 9px',
+                              borderRadius: tokens.radius.sm,
+                              fontSize: 12,
+                              cursor: 'pointer',
+                              border: `1px solid ${on ? tokens.color.accent : tokens.color.border}`,
+                              background: on ? tokens.color.accentMuted : tokens.color.surface,
+                              color: on ? tokens.color.accent : tokens.color.textMuted,
+                              fontWeight: on ? 600 : 400,
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Remove window"
+                      onClick={() => removeWindow(dow, idx)}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        color: tokens.color.textMuted,
+                        fontSize: 14,
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <div>
+                  <Button size="sm" variant="secondary" onClick={() => addWindow(dow)}>
+                    + Add hours
+                  </Button>
+                </div>
+              </div>
             </div>
           ))}
         </div>

@@ -33,6 +33,11 @@ export interface SlotsRoutesDeps extends RbacDeps {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CACHE_TTL_SECONDS = 120;
+const LOCATIONS = new Set(['VIDEO', 'PHONE', 'IN_PERSON']);
+
+function parseLocation(raw: unknown): string | undefined {
+  return typeof raw === 'string' && LOCATIONS.has(raw) ? raw : undefined;
+}
 
 function parseStaffIds(raw: unknown): string[] {
   if (typeof raw !== 'string' || !raw.trim()) return [];
@@ -102,7 +107,8 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         return;
       }
 
-      const cacheKey = `slots:${[...staffIds].sort().join(',')}:${date}:${durationMinutes}`;
+      const location = parseLocation(req.query['location']);
+      const cacheKey = `slots:${[...staffIds].sort().join(',')}:${date}:${durationMinutes}:${location ?? 'any'}`;
       if (deps.redis && !deps.busyProvider) {
         try {
           const hit = await deps.redis.get(cacheKey);
@@ -128,6 +134,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         timezone,
         busyProvider: providerFor(session.firmId),
         excludeAppointmentId,
+        location,
       });
       if (deps.redis && !deps.busyProvider) {
         try {
@@ -173,6 +180,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         typeof req.query['excludeAppointmentId'] === 'string'
           ? req.query['excludeAppointmentId']
           : undefined;
+      const location = parseLocation(req.query['location']);
       const timezone = await firmTimezone(deps.db, session.firmId);
       const result = await getMonthAvailability({
         db: deps.db,
@@ -183,6 +191,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         timezone,
         busyProvider: providerFor(session.firmId),
         excludeAppointmentId,
+        location,
       });
       res.json(result);
     },

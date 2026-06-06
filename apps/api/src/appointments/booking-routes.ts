@@ -430,6 +430,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         timezone: tz,
         now: nowFn(),
         busyProvider: providerFor(session.firmId),
+        location: data.location ?? 'VIDEO',
       });
       const match = avail.slots.find(
         (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),
@@ -966,6 +967,7 @@ async function rescheduleAppointment(
     now: nowFn(),
     busyProvider: providerFor(firmId),
     excludeAppointmentId: appt.id,
+    location: appt.location,
   });
   const match = avail.slots.find(
     (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),

@@ -522,3 +522,118 @@ describe('getAvailableSlots — QA hardening', () => {
     expect(nine.available).toBe(true); // own booking + matching provider block excluded
   });
 });
+
+describe('getAvailableSlots — multiple windows + location types', () => {
+  async function setWin(
+    staffId: string,
+    date: string,
+    start: string,
+    end: string,
+    locationTypes: string[] | null,
+  ): Promise<void> {
+    await harness.db.insert(staffAvailability).values({
+      staffId,
+      dayOfWeek: dow(date),
+      startTime: start,
+      endTime: end,
+      locationTypes,
+      isActive: true,
+    });
+  }
+
+  it('honors split shifts (two windows with a gap)', async () => {
+    const a = seed.appUserId;
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWin(a, MONDAY, '09:00', '11:00', null);
+    await setWin(a, MONDAY, '13:00', '15:00', null);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+    });
+    const starts = res.slots.filter((s) => s.available).map((s) => s.start);
+    expect(starts).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+      `${MONDAY}T13:00:00.000Z`,
+      `${MONDAY}T14:00:00.000Z`,
+    ]); // nothing in the 11:00–13:00 gap
+  });
+
+  it('filters windows by requested location', async () => {
+    const a = seed.appUserId;
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWin(a, MONDAY, '09:00', '11:00', ['IN_PERSON']);
+    await setWin(a, MONDAY, '13:00', '15:00', ['VIDEO']);
+    const inPerson = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'IN_PERSON',
+    });
+    expect(inPerson.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+    const video = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'VIDEO',
+    });
+    expect(video.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T13:00:00.000Z`,
+      `${MONDAY}T14:00:00.000Z`,
+    ]);
+  });
+
+  it('a window with no location restriction allows any location', async () => {
+    const a = seed.appUserId;
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWin(a, MONDAY, '09:00', '11:00', null);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'PHONE',
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+  });
+
+  it('no window allows the requested location → staff_unavailable', async () => {
+    const a = seed.appUserId;
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWin(a, MONDAY, '09:00', '11:00', ['IN_PERSON']);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'VIDEO',
+    });
+    expect(res.slots).toHaveLength(0);
+    expect(res.reason).toBe('staff_unavailable');
+  });
+});

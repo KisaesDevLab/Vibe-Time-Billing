@@ -383,8 +383,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-            ) as // a JSX header is safe at runtime.
-            unknown as string,
+              // a JSX header is safe at runtime.
+            ) as unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -1232,13 +1232,13 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       .catch(() => setEngagements([]));
   }, [clientId]);
 
-  // Changing staff/duration invalidates a picked day/slot.
+  // Changing staff/duration/location invalidates a picked day/slot.
   useEffect(() => {
     setDate(null);
     setSlot(null);
     setSlots([]);
     setSlotMsg(null);
-  }, [selStaff, duration]);
+  }, [selStaff, duration, location]);
 
   // Month availability (which days have any open slot) auto-loads.
   useEffect(() => {
@@ -1253,6 +1253,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       year: String(viewYear),
       month: String(viewMonth),
       durationMinutes: String(duration),
+      location,
     });
     void api<{ days: Record<string, boolean> }>(`/api/staff/booking/slots/month?${params}`)
       .then((r) => {
@@ -1267,7 +1268,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [selStaff, duration, viewYear, viewMonth]);
+  }, [selStaff, duration, viewYear, viewMonth, location]);
 
   const loadSlots = useCallback(
     (d: string) => {
@@ -1279,6 +1280,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
         staffIds: selStaff.join(','),
         date: d,
         durationMinutes: String(duration),
+        location,
       });
       void api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${params}`)
         .then((r) => {
@@ -1296,7 +1298,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
         alive = false;
       };
     },
-    [selStaff, duration],
+    [selStaff, duration, location],
   );
 
   // Slots auto-load when a day is selected.

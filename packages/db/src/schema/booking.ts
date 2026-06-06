@@ -150,6 +150,9 @@ export const staffAvailability = pgTable(
     dayOfWeek: integer('day_of_week').notNull(),
     startTime: time('start_time').notNull(),
     endTime: time('end_time').notNull(),
+    // 0120 — allowed meeting location types for this window (e.g.
+    // ['IN_PERSON']). NULL/empty = all locations allowed.
+    locationTypes: text('location_types').array(),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
