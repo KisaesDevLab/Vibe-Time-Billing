@@ -338,6 +338,15 @@ export function UserDetailPage(): JSX.Element {
     }
   }
 
+  // Switching tabs cancels any in-progress profile edit so the Edit/draft
+  // state (shared by Main/Contact/Notes) doesn't bleed into another tab.
+  function changeTab(next: Tab): void {
+    if (next === tab) return;
+    setEditingProfile(false);
+    setDraft({});
+    setTab(next);
+  }
+
   if (!user) {
     return (
       <Card title="User">
@@ -347,51 +356,59 @@ export function UserDetailPage(): JSX.Element {
   }
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1000 }}>
+    <div style={{ display: 'grid', gap: tokens.space.md, maxWidth: 1000, alignContent: 'start' }}>
       {status && (
-        <p style={{ color: tokens.color.success, fontSize: 12 }} role="status">
+        <p style={{ color: tokens.color.success, fontSize: 12, margin: 0 }} role="status">
           {status}
         </p>
       )}
       {error && (
-        <p style={{ color: tokens.color.danger, fontSize: 12 }} role="alert">
+        <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
           {error}
         </p>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ margin: 0, fontSize: 22, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span>{user.fullName}</span>
-          <Pill tone={user.status === 'ACTIVE' ? 'success' : 'warning'}>{user.status}</Pill>
-        </h1>
-      </div>
+      {/* Header: title + tabs grouped tightly so the first card sits near the top. */}
+      <div style={{ display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h1 style={{ margin: 0, fontSize: 20, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span>{user.fullName}</span>
+            <Pill tone={user.status === 'ACTIVE' ? 'success' : 'warning'}>{user.status}</Pill>
+          </h1>
+        </div>
 
-      <div
-        role="tablist"
-        aria-label="User tabs"
-        style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${tokens.color.border}` }}
-      >
-        <TabButton current={tab} value="main" onSelect={setTab}>
-          Main
-        </TabButton>
-        <TabButton current={tab} value="contact" onSelect={setTab}>
-          Contact Info
-        </TabButton>
-        <TabButton current={tab} value="rates" onSelect={setTab}>
-          Rates
-        </TabButton>
-        <TabButton current={tab} value="skills" onSelect={setTab}>
-          Skill Set
-        </TabButton>
-        <TabButton current={tab} value="targets" onSelect={setTab}>
-          Targets
-        </TabButton>
-        <TabButton current={tab} value="notes" onSelect={setTab}>
-          Notes
-        </TabButton>
-        <TabButton current={tab} value="booking" onSelect={setTab}>
-          Booking
-        </TabButton>
+        <div
+          role="tablist"
+          aria-label="User tabs"
+          style={{
+            display: 'flex',
+            gap: 4,
+            flexWrap: 'wrap',
+            borderBottom: `1px solid ${tokens.color.border}`,
+          }}
+        >
+          <TabButton current={tab} value="main" onSelect={changeTab}>
+            Main
+          </TabButton>
+          <TabButton current={tab} value="contact" onSelect={changeTab}>
+            Contact Info
+          </TabButton>
+          <TabButton current={tab} value="rates" onSelect={changeTab}>
+            Rates
+          </TabButton>
+          <TabButton current={tab} value="skills" onSelect={changeTab}>
+            Skill Set
+          </TabButton>
+          <TabButton current={tab} value="targets" onSelect={changeTab}>
+            Targets
+          </TabButton>
+          <TabButton current={tab} value="notes" onSelect={changeTab}>
+            Notes
+          </TabButton>
+          <TabButton current={tab} value="booking" onSelect={changeTab}>
+            Booking
+          </TabButton>
+        </div>
       </div>
 
       {tab === 'main' && (
@@ -1058,7 +1075,7 @@ function RatesTab({
           below. Snapshots are append-only; to change the cost rate, add a new effective period.
         </p>
         <div style={{ fontSize: 22, fontWeight: 600 }}>
-          {latestSnap ? dollars(latestSnap.costRateCents) : <Plain>—</Plain>}
+          {latestSnap ? dollars(latestSnap.costRateCents) : '—'}
         </div>
         {latestSnap && (
           <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 4 }}>
@@ -1117,7 +1134,7 @@ function RatesTab({
                   key: 'code',
                   header: 'Code',
                   render: (c) => (
-                    <span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <code>{c.code}</code>
                       {c.code === 'StandardRate' && <Pill tone="neutral">required</Pill>}
                     </span>
