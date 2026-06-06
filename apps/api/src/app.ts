@@ -124,6 +124,7 @@ import { createBookingSettingsRouter } from './appointments/booking-settings-rou
 import { createSlotsRouter } from './appointments/slots-routes';
 import { createBookingRouter } from './appointments/booking-routes';
 import { createAppointmentPublicRouter } from './appointments/public-routes';
+import { createAppointmentTwilioRouter } from './appointments/twilio-routes';
 import { createNotificationCenterRouter } from './notifications/center-routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
@@ -900,6 +901,18 @@ export function createApp(deps: AppDeps): Express {
   );
   // 0109 — PUBLIC one-click RSVP (no login; token-authenticated).
   app.use('/api/calendar/rsvp', createRsvpRouter({ db: deps.db, redis: deps.redis }));
+
+  // 0121 — PUBLIC Twilio inbound webhooks for two-way reminder confirmation
+  // (signature-verified). Mounted on the more-specific prefix FIRST so it wins
+  // over the token router below.
+  app.use(
+    '/api/public/appointments/twilio',
+    createAppointmentTwilioRouter({
+      db: deps.db,
+      redis: deps.redis,
+      baseUrl: config.APP_BASE_URL,
+    }),
+  );
 
   // BK-4 — PUBLIC appointment cancel / reschedule-request (token, no login).
   app.use(

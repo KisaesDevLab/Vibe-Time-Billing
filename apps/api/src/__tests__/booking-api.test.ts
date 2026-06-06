@@ -496,6 +496,33 @@ describe('QA hardening', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('persists a per-booking reminder schedule override', async () => {
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId],
+        subject: 'Reminders',
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 60,
+        reminderSchedule: [
+          { offsetMinutes: 1440, channel: 'EMAIL' },
+          { offsetMinutes: 120, channel: 'SMS' },
+        ],
+      });
+    expect(res.status).toBe(201);
+    const [row] = await harness.db
+      .select({ schedule: appointments.reminderSchedule })
+      .from(appointments)
+      .where(eq(appointments.id, res.body.id as string));
+    expect(row!.schedule).toEqual([
+      { offsetMinutes: 1440, channel: 'EMAIL' },
+      { offsetMinutes: 120, channel: 'SMS' },
+    ]);
+  });
+
   it('engagementId without clientId is rejected (400)', async () => {
     const { queue } = recorder();
     const app = buildApp({ queue, busyProvider: fakeBusy({}) });

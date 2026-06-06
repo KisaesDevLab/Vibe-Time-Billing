@@ -49,6 +49,9 @@ export const calendarSettings = pgTable(
     lookaheadDays: integer('lookahead_days').notNull().default(90),
     // CAL-7 — reminder offsets in minutes before start (default 1d + 2h).
     reminderOffsetsMinutes: jsonb('reminder_offsets_minutes').notNull().default([1440, 120]),
+    // 0121 — quiet hours for SMS/voice reminders (HH:MM wall-clock, firm/office tz).
+    reminderQuietStart: text('reminder_quiet_start').notNull().default('08:00'),
+    reminderQuietEnd: text('reminder_quiet_end').notNull().default('20:00'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

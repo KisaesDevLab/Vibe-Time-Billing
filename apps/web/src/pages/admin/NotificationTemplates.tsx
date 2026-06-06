@@ -8,7 +8,7 @@ import { api } from '../../api-client';
 interface Template {
   id: string;
   kind: string;
-  channel: 'EMAIL' | 'SMS';
+  channel: 'EMAIL' | 'SMS' | 'CALL';
   subject: string | null;
   body: string;
   variablesJson: string[] | null;
@@ -16,7 +16,11 @@ interface Template {
   updatedAt: string;
 }
 
-const KINDS: ReadonlyArray<{ key: string; label: string; channels: Array<'EMAIL' | 'SMS'> }> = [
+const KINDS: ReadonlyArray<{
+  key: string;
+  label: string;
+  channels: Array<'EMAIL' | 'SMS' | 'CALL'>;
+}> = [
   { key: 'invoice_sent', label: 'Invoice sent', channels: ['EMAIL'] },
   { key: 'invoice_overdue', label: 'Invoice overdue', channels: ['EMAIL', 'SMS'] },
   { key: 'dunning_first', label: 'First dunning', channels: ['EMAIL', 'SMS'] },
@@ -32,7 +36,11 @@ const KINDS: ReadonlyArray<{ key: string; label: string; channels: Array<'EMAIL'
     channels: ['EMAIL'],
   },
   { key: 'appointment_cancellation', label: 'Appointment cancelled', channels: ['EMAIL'] },
-  { key: 'appointment_reminder', label: 'Appointment reminder', channels: ['EMAIL'] },
+  {
+    key: 'appointment_reminder',
+    label: 'Appointment reminder',
+    channels: ['EMAIL', 'SMS', 'CALL'],
+  },
   {
     key: 'appointment_reschedule_request_declined',
     label: 'Reschedule request declined',
@@ -73,7 +81,7 @@ export function NotificationTemplatesPage(): JSX.Element {
   const [items, setItems] = useState<Template[]>([]);
   const [active, setActive] = useState<{
     kind: string;
-    channel: 'EMAIL' | 'SMS';
+    channel: 'EMAIL' | 'SMS' | 'CALL';
     subject: string;
     body: string;
   } | null>(null);
@@ -92,7 +100,7 @@ export function NotificationTemplatesPage(): JSX.Element {
     void load();
   }, []);
 
-  function open(kind: string, channel: 'EMAIL' | 'SMS'): void {
+  function open(kind: string, channel: 'EMAIL' | 'SMS' | 'CALL'): void {
     const existing = items.find((i) => i.kind === kind && i.channel === channel);
     setActive({
       kind,
@@ -199,7 +207,7 @@ export function NotificationTemplatesPage(): JSX.Element {
               }}
             >
               <span>{k.label}</span>
-              {(['EMAIL', 'SMS'] as const).map((ch) => {
+              {(['EMAIL', 'SMS', 'CALL'] as const).map((ch) => {
                 const has = items.some((i) => i.kind === k.key && i.channel === ch);
                 if (!k.channels.includes(ch)) return <span key={ch} />;
                 return (

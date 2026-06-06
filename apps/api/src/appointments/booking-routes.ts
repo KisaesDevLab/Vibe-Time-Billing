@@ -51,6 +51,7 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { getAvailableSlots, type StaffBusyProvider } from './availability';
 import { bullBookingQueue, type BookingQueue } from './queue';
+import { ReminderScheduleSchema } from './reminders';
 
 export interface BookingRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -103,6 +104,7 @@ const BookSchema = z.object({
   engagementId: z.string().uuid().nullable().optional(),
   participantContactIds: z.array(z.string().uuid()).max(50).optional(),
   internalNotes: z.string().max(4000).nullable().optional(),
+  reminderSchedule: ReminderScheduleSchema.nullable().optional(),
 });
 
 const RescheduleSchema = z.object({
@@ -484,6 +486,10 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
             location: data.location ?? 'VIDEO',
             locationDetail: data.locationDetail ?? null,
             internalNotes: data.internalNotes ?? null,
+            reminderSchedule:
+              data.reminderSchedule && data.reminderSchedule.length > 0
+                ? data.reminderSchedule
+                : null,
             leadAppUserId: staffIds[0]!,
             status: 'SCHEDULED',
             cancelToken,

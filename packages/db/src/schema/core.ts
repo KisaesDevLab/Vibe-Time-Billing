@@ -534,7 +534,7 @@ export const notificationTemplates = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
-    channel: text('channel', { enum: ['EMAIL', 'SMS'] }).notNull(),
+    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL'] }).notNull(),
     subject: text('subject'),
     body: text('body').notNull(),
     variablesJson: jsonb('variables_json'),
@@ -3978,6 +3978,8 @@ export const appointments = pgTable(
     tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
     cancelledByActor: appointmentCancelledBy('cancelled_by_actor'),
     lastRescheduledAt: timestamp('last_rescheduled_at', { withTimezone: true }),
+    // 0121 — per-booking reminder schedule override (null = inherit type/firm).
+    reminderSchedule: jsonb('reminder_schedule').$type<ReminderStep[]>(),
   },
   (t) => ({
     firmStartsIdx: index('appointment_firm_starts_idx').on(t.firmId, t.startsAt),
@@ -4002,6 +4004,11 @@ export type Appointment = typeof appointments.$inferSelect;
 export type NewAppointment = typeof appointments.$inferInsert;
 
 // BK-1 — the firm-managed appointment type library (enums above).
+/** 0121 — one reminder step in a schedule: how long before start, on which
+ *  channel. Stored as a jsonb array on appointment_type (default) and
+ *  appointment (per-booking override). */
+export type ReminderStep = { offsetMinutes: number; channel: 'EMAIL' | 'SMS' | 'CALL' };
+
 export const appointmentTypes = pgTable(
   'appointment_type',
   {
@@ -4016,6 +4023,8 @@ export const appointmentTypes = pgTable(
     color: text('color'),
     isActive: boolean('is_active').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
+    // 0121 — default reminder schedule for bookings of this type (null = firm default).
+    reminderSchedule: jsonb('reminder_schedule').$type<ReminderStep[]>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

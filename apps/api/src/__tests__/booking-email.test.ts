@@ -28,6 +28,7 @@ import {
   runAppointmentReminderTick,
   type AppointmentMail,
 } from '../appointments/email-jobs';
+import { resolveSchedule, type ReminderStep } from '../appointments/reminders';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
@@ -254,5 +255,167 @@ describe('appointment reminder tick', () => {
     const rec = recorder();
     const r = await runAppointmentReminderTick({ db: harness.db, sendEmail: rec.send });
     expect(r.sent).toBe(0);
+  });
+});
+
+// --- multi-channel + quiet hours -------------------------------------
+// 15:00 UTC sits inside the default quiet window (08:00–20:00) so SMS/voice
+// are allowed; 03:00 UTC sits outside it.
+const NOW_OPEN = new Date('2030-01-07T15:00:00Z');
+const NOW_QUIET = new Date('2030-01-07T03:00:00Z');
+
+async function setOfficeUtc(): Promise<void> {
+  await harness.db.execute(sql`UPDATE office SET timezone = 'UTC' WHERE firm_id = ${seed.firmId}`);
+}
+
+async function seedScheduledAppt(opts: {
+  at: Date;
+  schedule: ReminderStep[];
+  mobile?: string | null;
+}): Promise<string> {
+  const [appt] = await harness.db
+    .insert(appointments)
+    .values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      title: 'Multi reminder',
+      startsAt: opts.at,
+      endsAt: new Date(opts.at.getTime() + 30 * 60000),
+      durationMinutes: 30,
+      location: 'VIDEO',
+      status: 'SCHEDULED',
+      leadAppUserId: seed.appUserId,
+      createdById: seed.appUserId,
+      reminderSchedule: opts.schedule,
+      cancelToken: sql`gen_random_uuid()` as never,
+      rescheduleToken: sql`gen_random_uuid()` as never,
+    })
+    .returning({ id: appointments.id });
+  const c = await seedContact(harness.db, {
+    firmId: seed.firmId,
+    clientId: seed.clientId,
+    fullName: 'Multi Contact',
+    email: 'multi@client.example',
+    mobile: opts.mobile ?? null,
+    receiveAppointmentReminders: true,
+  });
+  await harness.db
+    .insert(appointmentParticipants)
+    .values({ appointmentId: appt!.id, clientContactId: c.contactId });
+  return appt!.id;
+}
+
+function chanRecorders() {
+  const sms: { to: string; body: string }[] = [];
+  const calls: { to: string; script: string; confirmUrl?: string }[] = [];
+  return {
+    sms,
+    calls,
+    sendSms: async (m: { to: string; body: string }) => void sms.push(m),
+    placeCall: async (m: { to: string; script: string; confirmUrl?: string }) => void calls.push(m),
+  };
+}
+
+describe('multi-channel reminders', () => {
+  it('sends one reminder per channel and is idempotent per channel', async () => {
+    await setOfficeUtc();
+    await seedScheduledAppt({
+      at: new Date(NOW_OPEN.getTime() + 90 * 60000), // 120-min offset elapsed
+      schedule: [
+        { offsetMinutes: 120, channel: 'EMAIL' },
+        { offsetMinutes: 120, channel: 'SMS' },
+        { offsetMinutes: 120, channel: 'CALL' },
+      ],
+      mobile: '+15551234567',
+    });
+    const rec = recorder();
+    const ch = chanRecorders();
+    const r1 = await runAppointmentReminderTick(
+      {
+        db: harness.db,
+        sendEmail: rec.send,
+        sendSms: ch.sendSms,
+        placeCall: ch.placeCall,
+        appBaseUrl: 'https://practice.example',
+      },
+      NOW_OPEN,
+    );
+    expect(r1.sent).toBe(3);
+    expect(rec.mails).toHaveLength(1);
+    expect(ch.sms).toHaveLength(1);
+    expect(ch.sms[0]!.to).toBe('+15551234567');
+    expect(ch.calls).toHaveLength(1);
+    expect(ch.calls[0]!.confirmUrl).toContain('/api/public/appointments/twilio/voice-gather');
+    // Second tick: nothing new.
+    const r2 = await runAppointmentReminderTick(
+      { db: harness.db, sendEmail: recorder().send, ...chanRecorders() },
+      NOW_OPEN,
+    );
+    expect(r2.sent).toBe(0);
+  });
+
+  it('skips SMS/voice when the contact has no phone (email still sends)', async () => {
+    await setOfficeUtc();
+    await seedScheduledAppt({
+      at: new Date(NOW_OPEN.getTime() + 90 * 60000),
+      schedule: [
+        { offsetMinutes: 120, channel: 'EMAIL' },
+        { offsetMinutes: 120, channel: 'SMS' },
+        { offsetMinutes: 120, channel: 'CALL' },
+      ],
+      mobile: null,
+    });
+    const rec = recorder();
+    const ch = chanRecorders();
+    const r = await runAppointmentReminderTick(
+      { db: harness.db, sendEmail: rec.send, sendSms: ch.sendSms, placeCall: ch.placeCall },
+      NOW_OPEN,
+    );
+    expect(r.sent).toBe(1);
+    expect(rec.mails).toHaveLength(1);
+    expect(ch.sms).toHaveLength(0);
+    expect(ch.calls).toHaveLength(0);
+  });
+
+  it('quiet hours defer SMS/voice but not email', async () => {
+    await setOfficeUtc();
+    await seedScheduledAppt({
+      at: new Date(NOW_QUIET.getTime() + 90 * 60000),
+      schedule: [
+        { offsetMinutes: 120, channel: 'EMAIL' },
+        { offsetMinutes: 120, channel: 'SMS' },
+      ],
+      mobile: '+15551234567',
+    });
+    const rec = recorder();
+    const ch = chanRecorders();
+    const r = await runAppointmentReminderTick(
+      { db: harness.db, sendEmail: rec.send, sendSms: ch.sendSms, placeCall: ch.placeCall },
+      NOW_QUIET, // 03:00 UTC → outside 08:00–20:00
+    );
+    expect(rec.mails).toHaveLength(1); // email ignores quiet hours
+    expect(ch.sms).toHaveLength(0); // SMS deferred
+    expect(r.sent).toBe(1);
+  });
+});
+
+describe('resolveSchedule precedence', () => {
+  const firm = [1440, 120];
+  it('uses the appointment override first', () => {
+    const out = resolveSchedule(
+      [{ offsetMinutes: 60, channel: 'SMS' }],
+      [{ offsetMinutes: 1440, channel: 'EMAIL' }],
+      firm,
+    );
+    expect(out).toEqual([{ offsetMinutes: 60, channel: 'SMS' }]);
+  });
+  it('falls back to the type schedule, then firm offsets (as EMAIL)', () => {
+    expect(resolveSchedule(null, [{ offsetMinutes: 30, channel: 'CALL' }], firm)).toEqual([
+      { offsetMinutes: 30, channel: 'CALL' },
+    ]);
+    expect(resolveSchedule(null, null, firm)).toEqual([
+      { offsetMinutes: 1440, channel: 'EMAIL' },
+      { offsetMinutes: 120, channel: 'EMAIL' },
+    ]);
   });
 });

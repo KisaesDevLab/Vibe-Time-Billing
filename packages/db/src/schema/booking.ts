@@ -227,6 +227,8 @@ export const appointmentRemindersSent = pgTable(
       onDelete: 'cascade',
     }),
     reminderOffsetMinutes: integer('reminder_offset_minutes').notNull(),
+    // 0121 — EMAIL | SMS | CALL; part of the idempotency key.
+    channel: text('channel').notNull().default('EMAIL'),
     sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
     deliveryStatus: text('delivery_status').notNull().default('sent'),
   },
@@ -235,6 +237,7 @@ export const appointmentRemindersSent = pgTable(
       t.appointmentId,
       t.clientContactId,
       t.reminderOffsetMinutes,
+      t.channel,
     ),
     apptIdx: index('appointment_reminders_sent_appt_idx').on(t.appointmentId),
   }),

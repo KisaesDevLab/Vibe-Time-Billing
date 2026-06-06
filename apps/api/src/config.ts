@@ -138,6 +138,12 @@ const Schema = z.object({
   SMS_TWILIO_AUTH_TOKEN: z.string().optional(),
   SMS_TWILIO_FROM: z.string().optional(),
   SMS_TEXTLINK_API_KEY: z.string().optional(),
+  // 0121 — automated voice (phone-call) appointment reminders via Twilio Voice.
+  // May reuse the SMS Twilio account; FROM must be a voice-capable number.
+  VOICE_PROVIDER: z.enum(['console', 'twilio']).default('console'),
+  VOICE_TWILIO_ACCOUNT_SID: z.string().optional(),
+  VOICE_TWILIO_AUTH_TOKEN: z.string().optional(),
+  VOICE_TWILIO_FROM: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof Schema>;

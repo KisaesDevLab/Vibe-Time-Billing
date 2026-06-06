@@ -19,6 +19,11 @@ export interface MailArgs {
 }
 export type MailDispatch = (args: MailArgs) => Promise<void>;
 export type SmsDispatch = (args: { to: string; body: string }) => Promise<void>;
+export type VoiceDispatch = (args: {
+  to: string;
+  script: string;
+  confirmUrl?: string;
+}) => Promise<void>;
 
 const ICS_FILENAME = 'appointment.ics';
 const ICS_CONTENT_TYPE = 'text/calendar; charset=utf-8; method=REQUEST';
@@ -151,5 +156,59 @@ export function buildSmsDispatch(log: Logger): SmsDispatch | undefined {
     };
   }
   log.info({ provider }, 'worker sms dispatcher disabled (no provider configured)');
+  return undefined;
+}
+
+/** XML-escape for inline TwiML <Say> content. */
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * 0121 — automated voice reminder via Twilio. Places a call with inline TwiML
+ * (no public callback URL needed for the prompt). When `confirmUrl` is set, a
+ * <Gather> collects a press-1 confirmation and POSTs the digit to our webhook.
+ * Reuses VOICE_TWILIO_* (may equal SMS creds; FROM must be voice-capable).
+ */
+export function buildVoiceDispatch(log: Logger): VoiceDispatch | undefined {
+  const provider = process.env['VOICE_PROVIDER'] ?? 'console';
+  if (
+    provider === 'twilio' &&
+    process.env['VOICE_TWILIO_ACCOUNT_SID'] &&
+    process.env['VOICE_TWILIO_AUTH_TOKEN'] &&
+    process.env['VOICE_TWILIO_FROM']
+  ) {
+    const sid = process.env['VOICE_TWILIO_ACCOUNT_SID']!;
+    const token = process.env['VOICE_TWILIO_AUTH_TOKEN']!;
+    const from = process.env['VOICE_TWILIO_FROM']!;
+    return async (args) => {
+      const say = xmlEscape(args.script);
+      const twiml = args.confirmUrl
+        ? `<Response><Gather numDigits="1" action="${xmlEscape(args.confirmUrl)}" method="POST"><Say>${say} Press 1 to confirm.</Say></Gather><Say>Goodbye.</Say></Response>`
+        : `<Response><Say>${say}</Say></Response>`;
+      const auth = Buffer.from(`${sid}:${token}`).toString('base64');
+      const body = new URLSearchParams({ From: from, To: args.to, Twiml: twiml });
+      const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      });
+      if (!r.ok) throw new Error(`twilio_voice_${r.status}`);
+    };
+  }
+  if (provider === 'console') {
+    return async (args) => {
+      log.info({ to: args.to, script: args.script }, 'voice (console) reminder');
+    };
+  }
+  log.info({ provider }, 'worker voice dispatcher disabled (no provider configured)');
   return undefined;
 }

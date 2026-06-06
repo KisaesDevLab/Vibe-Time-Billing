@@ -10,6 +10,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { ReminderScheduleEditor, type ReminderStep } from '../../components/ReminderScheduleEditor';
 
 type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
 
@@ -22,6 +23,7 @@ interface AppointmentType {
   color: string | null;
   isActive: boolean;
   sortOrder: number;
+  reminderSchedule: ReminderStep[] | null;
 }
 
 const LOCATION_LABELS: Record<LocationType, string> = {
@@ -51,6 +53,7 @@ export function AppointmentTypesPage(): JSX.Element {
   const [newColor, setNewColor] = useState('#2563eb');
   const [editing, setEditing] = useState<Record<string, Partial<AppointmentType>>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -394,6 +397,22 @@ export function AppointmentTypesPage(): JSX.Element {
               },
             },
             {
+              key: 'reminders',
+              header: 'Reminders',
+              render: (r) => {
+                const n = (effective(r).reminderSchedule ?? []).length;
+                return (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setExpandedId((id) => (id === r.id ? null : r.id))}
+                  >
+                    {n > 0 ? `Reminders (${n})` : 'Set reminders'}
+                  </Button>
+                );
+              },
+            },
+            {
               key: 'actions',
               header: '',
               render: (r) => (
@@ -416,6 +435,44 @@ export function AppointmentTypesPage(): JSX.Element {
           rowKey={(r) => r.id}
           empty="No appointment types yet."
         />
+        {expandedId &&
+          (() => {
+            const row = items.find((r) => r.id === expandedId);
+            if (!row) return null;
+            const eff = effective(row);
+            return (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: 12,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  background: tokens.color.bg,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                  Default reminders — {eff.name}
+                </div>
+                <ReminderScheduleEditor
+                  value={eff.reminderSchedule ?? []}
+                  onChange={(next) => patch(row.id, { reminderSchedule: next })}
+                  helpText="bookings of this type fall back to the firm default"
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <Button
+                    size="sm"
+                    onClick={() => void save(row.id)}
+                    disabled={!dirty(row.id) || savingId === row.id}
+                  >
+                    {savingId === row.id ? 'Saving…' : 'Save reminders'}
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => setExpandedId(null)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
       </Card>
     </div>
   );

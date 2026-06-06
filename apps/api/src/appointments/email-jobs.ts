@@ -15,6 +15,7 @@ import {
   appointmentParticipants,
   appointmentRemindersSent,
   appointmentStaff,
+  appointmentTypes,
   appointments,
   clientContacts,
   clients,
@@ -28,6 +29,7 @@ import {
 import { buildIcs, type IcsAttendee } from '../calendar/ics';
 import { getCalendarSettings } from '../calendar/settings';
 import { logger } from '../logger';
+import { resolveSchedule } from './reminders';
 
 export type AppointmentEmailEvent =
   | 'appointment_confirmation'
@@ -134,10 +136,21 @@ export interface AppointmentMail {
   icsFilename?: string;
 }
 export type SendAppointmentEmail = (mail: AppointmentMail) => Promise<void>;
+/** 0121 — optional reminder channels (worker injects real dispatchers). */
+export type SendAppointmentSms = (msg: { to: string; body: string }) => Promise<void>;
+export type PlaceAppointmentCall = (msg: {
+  to: string;
+  script: string;
+  confirmUrl?: string;
+}) => Promise<void>;
 
 export interface EmailJobDeps {
   db: Database;
   sendEmail: SendAppointmentEmail;
+  /** 0121 — present only when an SMS provider is configured. */
+  sendSms?: SendAppointmentSms;
+  /** 0121 — present only when a voice provider is configured. */
+  placeCall?: PlaceAppointmentCall;
   appBaseUrl?: string;
   now?: Date;
 }
@@ -175,11 +188,33 @@ function fmtTime(at: Date, tz: string): string {
   }).format(at);
 }
 
+type ReminderChannel = 'EMAIL' | 'SMS' | 'CALL';
+
+// 0121 — per-channel defaults for the reminder. SMS is concise + asks for a
+// reply to confirm; CALL is a plain TTS script (the dialer appends "Press 1 to
+// confirm"). EMAIL keeps the rich DEFAULTS body above.
+const REMINDER_SMS_DEFAULT: Template = {
+  subject: '',
+  body: `Reminder: {{ appointment.subject }} on {{ appointment.date }} at {{ appointment.time }} with {{ staff.names }}. Reply YES to confirm.`,
+};
+const REMINDER_CALL_DEFAULT: Template = {
+  subject: '',
+  body: `Hello {{ client.name }}. This is a reminder from {{ firm.name }} about your appointment, {{ appointment.subject }}, on {{ appointment.date }} at {{ appointment.time }}.`,
+};
+
+function channelDefault(event: AppointmentEmailEvent, channel: ReminderChannel): Template {
+  if (channel === 'SMS' && event === 'appointment_reminder') return REMINDER_SMS_DEFAULT;
+  if (channel === 'CALL' && event === 'appointment_reminder') return REMINDER_CALL_DEFAULT;
+  return DEFAULTS[event];
+}
+
 async function loadTemplate(
   db: Database,
   firmId: string,
   event: AppointmentEmailEvent,
+  channel: ReminderChannel = 'EMAIL',
 ): Promise<Template> {
+  const fallback = channelDefault(event, channel);
   const [override] = await db
     .select({
       subject: notificationTemplates.subject,
@@ -191,14 +226,14 @@ async function loadTemplate(
       and(
         eq(notificationTemplates.firmId, firmId),
         eq(notificationTemplates.kind, event),
-        eq(notificationTemplates.channel, 'EMAIL'),
+        eq(notificationTemplates.channel, channel),
       ),
     )
     .limit(1);
   if (override && override.enabled && override.body) {
-    return { subject: override.subject ?? DEFAULTS[event].subject, body: override.body };
+    return { subject: override.subject ?? fallback.subject, body: override.body };
   }
-  return DEFAULTS[event];
+  return fallback;
 }
 
 export function renderTemplate(
@@ -471,11 +506,40 @@ export async function runAppointmentRescheduleRequestedStaffSend(
   return { sent: 1 };
 }
 
+/** Wall-clock HH:MM of `at` in `tz` (24h). */
+function hhmmInTz(at: Date, tz: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  let h = parts.find((p) => p.type === 'hour')?.value ?? '00';
+  if (h === '24') h = '00'; // some envs render midnight as 24
+  const m = parts.find((p) => p.type === 'minute')?.value ?? '00';
+  return `${h}:${m}`;
+}
+
+/** True when `at` (in `tz`) is inside the allowed send window [start, end).
+ *  Handles overnight windows (start > end). */
+function withinSendWindow(at: Date, tz: string, start: string, end: string): boolean {
+  const cur = hhmmInTz(at, tz);
+  return start <= end ? cur >= start && cur < end : cur >= start || cur < end;
+}
+
+interface FirmReminderCfg {
+  offsets: number[];
+  quietStart: string;
+  quietEnd: string;
+  tz: string;
+}
+
 /**
- * Reminder heartbeat — sends pre-meeting reminders for SCHEDULED
- * appointments at the firm's reminder offsets (calendar_settings.
- * reminder_offsets_minutes), honoring per-contact opt-out, idempotent via
- * appointment_reminders_sent. Run on a 5-minute cron from the worker.
+ * Reminder heartbeat — sends pre-meeting reminders for SCHEDULED appointments
+ * on each step of the effective schedule (per-appointment override →
+ * appointment-type default → firm offsets), across EMAIL / SMS / CALL. Honors
+ * per-contact opt-out, per-channel quiet hours (SMS/voice only), and is
+ * idempotent per (appointment, contact, offset, channel). 5-minute worker cron.
  */
 export async function runAppointmentReminderTick(
   deps: EmailJobDeps,
@@ -483,12 +547,19 @@ export async function runAppointmentReminderTick(
 ): Promise<{ sent: number }> {
   const db = deps.db;
   const now = nowArg ?? deps.now ?? new Date();
-  const MAX_LOOKAHEAD_MIN = 8 * 24 * 60;
+  const MAX_LOOKAHEAD_MIN = 15 * 24 * 60; // covers the 14-day max offset
   const windowEnd = new Date(now.getTime() + MAX_LOOKAHEAD_MIN * 60_000);
 
   const due = await db
-    .select({ id: appointments.id, firmId: appointments.firmId, startsAt: appointments.startsAt })
+    .select({
+      id: appointments.id,
+      firmId: appointments.firmId,
+      startsAt: appointments.startsAt,
+      reminderSchedule: appointments.reminderSchedule,
+      typeSchedule: appointmentTypes.reminderSchedule,
+    })
     .from(appointments)
+    .leftJoin(appointmentTypes, eq(appointmentTypes.id, appointments.appointmentTypeId))
     .where(
       and(
         eq(appointments.status, 'SCHEDULED'),
@@ -497,24 +568,36 @@ export async function runAppointmentReminderTick(
       ),
     );
 
-  const offsetsByFirm = new Map<string, number[]>();
+  const firmCfg = new Map<string, FirmReminderCfg>();
+  const tplCache = new Map<string, Template>(); // `${firmId}:${channel}`
   let sent = 0;
 
   for (const appt of due) {
-    let offsets = offsetsByFirm.get(appt.firmId);
-    if (!offsets) {
+    let cfg = firmCfg.get(appt.firmId);
+    if (!cfg) {
       const s = await getCalendarSettings(db, appt.firmId);
       const raw = s.reminderOffsetsMinutes as unknown;
-      offsets = Array.isArray(raw) ? (raw as number[]) : [1440, 120];
-      offsetsByFirm.set(appt.firmId, offsets);
+      cfg = {
+        offsets: Array.isArray(raw) ? (raw as number[]) : [1440, 120],
+        quietStart: s.reminderQuietStart,
+        quietEnd: s.reminderQuietEnd,
+        tz: await firmTimezone(db, appt.firmId),
+      };
+      firmCfg.set(appt.firmId, cfg);
     }
-    const elapsed = offsets.filter((o) => appt.startsAt.getTime() - o * 60_000 <= now.getTime());
+
+    const schedule = resolveSchedule(appt.reminderSchedule, appt.typeSchedule, cfg.offsets);
+    const elapsed = schedule.filter(
+      (step) => appt.startsAt.getTime() - step.offsetMinutes * 60_000 <= now.getTime(),
+    );
     if (elapsed.length === 0) continue;
 
     const parts = await db
       .select({
         contactId: appointmentParticipants.clientContactId,
         email: persons.email,
+        mobile: persons.mobile,
+        phone: persons.phone,
         name: persons.fullName,
         optIn: clientContacts.receiveAppointmentReminders,
       })
@@ -522,40 +605,80 @@ export async function runAppointmentReminderTick(
       .innerJoin(clientContacts, eq(clientContacts.id, appointmentParticipants.clientContactId))
       .innerJoin(persons, eq(persons.id, clientContacts.personId))
       .where(eq(appointmentParticipants.appointmentId, appt.id));
-    const recipients = parts.filter((p) => p.email && p.optIn !== false);
+    const recipients = parts.filter((p) => p.optIn !== false);
     if (recipients.length === 0) continue;
 
     const already = await db
       .select({
         c: appointmentRemindersSent.clientContactId,
         o: appointmentRemindersSent.reminderOffsetMinutes,
+        ch: appointmentRemindersSent.channel,
       })
       .from(appointmentRemindersSent)
       .where(eq(appointmentRemindersSent.appointmentId, appt.id));
-    const sentSet = new Set(already.map((a) => `${a.c}:${a.o}`));
+    const sentSet = new Set(already.map((a) => `${a.c}:${a.o}:${a.ch}`));
 
     const loaded = await load(db, appt.id);
     if (!loaded) continue;
-    const tpl = await loadTemplate(db, appt.firmId, 'appointment_reminder');
-    const ics = icsFor(loaded);
     const ctx = buildCtx(loaded, deps.appBaseUrl ?? '');
+    const ics = icsFor(loaded);
+    // SMS/voice only fire inside the firm's allowed hours; out-of-window steps
+    // are skipped (not recorded) so they fire on a later tick.
+    const canSendQuiet = withinSendWindow(now, cfg.tz, cfg.quietStart, cfg.quietEnd);
 
-    for (const o of elapsed) {
+    for (const step of elapsed) {
+      const channel = step.channel as ReminderChannel;
+      const tkey = `${appt.firmId}:${channel}`;
+      let tpl = tplCache.get(tkey);
+      if (!tpl) {
+        tpl = await loadTemplate(db, appt.firmId, 'appointment_reminder', channel);
+        tplCache.set(tkey, tpl);
+      }
       for (const p of recipients) {
-        if (sentSet.has(`${p.contactId}:${o}`)) continue;
+        const key = `${p.contactId}:${step.offsetMinutes}:${channel}`;
+        if (sentSet.has(key)) continue;
+        const phone = p.mobile || p.phone || null;
         const { subject, body } = renderTemplate(tpl, {
           ...ctx,
           client: { name: p.name ?? loaded.clientName ?? 'there' },
         });
-        await deps.sendEmail({ to: p.email!, subject, body, ics, icsFilename: 'appointment.ics' });
+        try {
+          if (channel === 'EMAIL') {
+            if (!p.email) continue;
+            await deps.sendEmail({
+              to: p.email,
+              subject,
+              body,
+              ics,
+              icsFilename: 'appointment.ics',
+            });
+          } else if (channel === 'SMS') {
+            if (!deps.sendSms || !phone || !canSendQuiet) continue;
+            await deps.sendSms({ to: phone, body });
+          } else {
+            if (!deps.placeCall || !phone || !canSendQuiet) continue;
+            const confirmUrl = deps.appBaseUrl
+              ? `${deps.appBaseUrl}/api/public/appointments/twilio/voice-gather?a=${appt.id}&c=${p.contactId}`
+              : undefined;
+            await deps.placeCall({ to: phone, script: body, confirmUrl });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, appointmentId: appt.id, channel },
+            'appointment reminder send failed; will retry',
+          );
+          continue; // don't record → retried next tick
+        }
         await db
           .insert(appointmentRemindersSent)
           .values({
             appointmentId: appt.id,
             clientContactId: p.contactId,
-            reminderOffsetMinutes: o,
+            reminderOffsetMinutes: step.offsetMinutes,
+            channel,
           })
           .onConflictDoNothing();
+        sentSet.add(key);
         sent++;
       }
     }

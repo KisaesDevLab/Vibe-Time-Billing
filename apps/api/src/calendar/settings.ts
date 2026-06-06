@@ -14,6 +14,9 @@ export interface CalendarSettings {
   lookaheadDays: number;
   /** Minutes-before-start reminder offsets (e.g. [1440, 120]). */
   reminderOffsetsMinutes: number[];
+  /** 0121 — quiet hours for SMS/voice reminders (HH:MM, firm/office tz). */
+  reminderQuietStart: string;
+  reminderQuietEnd: string;
 }
 
 export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
@@ -21,13 +24,20 @@ export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
   lookbackDays: 7,
   lookaheadDays: 90,
   reminderOffsetsMinutes: [1440, 120],
+  reminderQuietStart: '08:00',
+  reminderQuietEnd: '20:00',
 };
 
 const ALLOWED_OFFSETS = new Set([10080, 4320, 1440, 120]); // 7d, 3d, 1d, 2h
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function clampInt(v: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(v)) return fallback;
   return Math.max(min, Math.min(max, Math.round(v)));
+}
+
+function validHHMM(v: string | undefined, fallback: string): string {
+  return v && HHMM_RE.test(v) ? v : fallback;
 }
 
 export async function getCalendarSettings(db: Database, firmId: string): Promise<CalendarSettings> {
@@ -45,6 +55,8 @@ export async function getCalendarSettings(db: Database, firmId: string): Promise
     lookbackDays: row.lookbackDays,
     lookaheadDays: row.lookaheadDays,
     reminderOffsetsMinutes: offsets,
+    reminderQuietStart: validHHMM(row.reminderQuietStart, '08:00'),
+    reminderQuietEnd: validHHMM(row.reminderQuietEnd, '20:00'),
   };
 }
 
@@ -67,6 +79,14 @@ export async function upsertCalendarSettings(
     lookbackDays: clampInt(patch.lookbackDays ?? current.lookbackDays, 1, 60, 7),
     lookaheadDays: clampInt(patch.lookaheadDays ?? current.lookaheadDays, 7, 365, 90),
     reminderOffsetsMinutes: offsets.length ? offsets : current.reminderOffsetsMinutes,
+    reminderQuietStart: validHHMM(
+      patch.reminderQuietStart ?? current.reminderQuietStart,
+      current.reminderQuietStart,
+    ),
+    reminderQuietEnd: validHHMM(
+      patch.reminderQuietEnd ?? current.reminderQuietEnd,
+      current.reminderQuietEnd,
+    ),
   };
   await db
     .insert(calendarSettings)

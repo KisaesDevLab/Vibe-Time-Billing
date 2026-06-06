@@ -105,6 +105,8 @@ function SyncSettingsCard(): JSX.Element {
   const [lookback, setLookback] = useState(7);
   const [lookahead, setLookahead] = useState(90);
   const [offsets, setOffsets] = useState<number[]>([1440, 120]);
+  const [quietStart, setQuietStart] = useState('08:00');
+  const [quietEnd, setQuietEnd] = useState('20:00');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -114,11 +116,15 @@ function SyncSettingsCard(): JSX.Element {
       lookbackDays: number;
       lookaheadDays: number;
       reminderOffsetsMinutes: number[];
+      reminderQuietStart?: string;
+      reminderQuietEnd?: string;
     }>('/api/staff/admin/calendar/settings').then((s) => {
       setInterval(s.syncIntervalMinutes);
       setLookback(s.lookbackDays);
       setLookahead(s.lookaheadDays);
       setOffsets(s.reminderOffsetsMinutes ?? [1440, 120]);
+      if (s.reminderQuietStart) setQuietStart(s.reminderQuietStart);
+      if (s.reminderQuietEnd) setQuietEnd(s.reminderQuietEnd);
     });
   }, []);
 
@@ -137,6 +143,8 @@ function SyncSettingsCard(): JSX.Element {
           lookbackDays: lookback,
           lookaheadDays: lookahead,
           reminderOffsetsMinutes: offsets,
+          reminderQuietStart: quietStart,
+          reminderQuietEnd: quietEnd,
         }),
       });
       setMsg('Saved.');
@@ -184,6 +192,30 @@ function SyncSettingsCard(): JSX.Element {
               {o.label}
             </label>
           ))}
+        </div>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '6px 0 0' }}>
+          The firm default (email) — appointment types and individual bookings can override with
+          their own multi-channel schedule.
+        </p>
+      </div>
+      <div style={{ marginTop: tokens.space.md }}>
+        <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 6 }}>
+          Quiet hours — SMS &amp; voice reminders only fire inside this window (firm timezone).
+          Email is always sent.
+        </div>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'end' }}>
+          <Input
+            label="From"
+            type="time"
+            value={quietStart}
+            onChange={(e) => setQuietStart(e.target.value)}
+          />
+          <Input
+            label="To"
+            type="time"
+            value={quietEnd}
+            onChange={(e) => setQuietEnd(e.target.value)}
+          />
         </div>
       </div>
       <div

@@ -93,7 +93,7 @@ import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename'
 import { runIntakeProcess } from './jobs/intake-process';
 import { runInternalMessageNotify } from './jobs/internal-message-notify';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
-import { buildMailDispatch, buildSmsDispatch } from './dispatchers';
+import { buildMailDispatch, buildSmsDispatch, buildVoiceDispatch } from './dispatchers';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 const logger = pino({
@@ -150,6 +150,7 @@ const chargeInvoice = stripe
 
 const dunningSendEmail = await buildMailDispatch(logger);
 const dunningSendSms = buildSmsDispatch(logger);
+const voiceDispatch = buildVoiceDispatch(logger);
 
 // Storage client (B2 in prod, MockStorageClient in dev) — used by the
 // storage-sync queue handler. Built lazily so a missing optional dep
@@ -573,6 +574,10 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runAppointmentReminderTick({
       db,
       sendEmail,
+      // 0121 — SMS + voice channels (undefined when the provider isn't
+      // configured → the tick gracefully skips that channel).
+      sendSms: dunningSendSms ? (m) => dunningSendSms(m) : undefined,
+      placeCall: voiceDispatch ? (m) => voiceDispatch(m) : undefined,
       appBaseUrl: process.env['APP_BASE_URL'],
     });
     logger.info({ jobId: job.id, ...result }, 'appointment-reminders complete');

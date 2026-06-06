@@ -10,6 +10,11 @@ import { Button, Card, Combobox, Input, Pill, Table, Tabs, tokens } from '@vibe/
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
+import {
+  ReminderScheduleEditor,
+  humanizeOffset,
+  type ReminderStep,
+} from '../components/ReminderScheduleEditor';
 import { BookingSettingsEditor } from './BookingSettingsEditor';
 
 type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
@@ -17,6 +22,11 @@ const LOC_LABEL: Record<LocationType, string> = {
   IN_PERSON: 'In-person',
   PHONE: 'Phone',
   VIDEO: 'Video',
+};
+const REMINDER_CH_LABEL: Record<ReminderStep['channel'], string> = {
+  EMAIL: 'Email',
+  SMS: 'SMS',
+  CALL: 'Phone call',
 };
 
 interface BookableStaff {
@@ -38,6 +48,7 @@ interface ApptType {
   defaultDurationMinutes: number;
   defaultLocationType: LocationType;
   color: string | null;
+  reminderSchedule?: ReminderStep[] | null;
 }
 interface Slot {
   start: string;
@@ -383,8 +394,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-              // a JSX header is safe at runtime.
-            ) as unknown as string,
+            ) as // a JSX header is safe at runtime.
+            unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -1174,6 +1185,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   const [engagementId, setEngagementId] = useState('');
   const [subject, setSubject] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
+  const [reminderSchedule, setReminderSchedule] = useState<ReminderStep[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
@@ -1319,6 +1331,8 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setDuration(t.defaultDurationMinutes);
     setLocation(t.defaultLocationType);
     if (!subject || types.some((x) => x.name === subject)) setSubject(t.name);
+    // Prefill reminders from the type's default schedule (editable in step 3).
+    setReminderSchedule(t.reminderSchedule ?? []);
   }
   function navMonth(delta: number): void {
     let y = viewYear;
@@ -1358,6 +1372,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           engagementId: clientId && engagementId ? engagementId : null,
           participantContactIds: participantIds,
           internalNotes: internalNotes || null,
+          reminderSchedule: reminderSchedule.length > 0 ? reminderSchedule : null,
         }),
       });
       setDone(true);
@@ -1391,6 +1406,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setEngagementId('');
     setSubject('');
     setInternalNotes('');
+    setReminderSchedule([]);
     setErr(null);
   }
 
@@ -2043,6 +2059,24 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
               </div>
             </div>
           </div>
+          <div
+            style={{
+              borderTop: `1px solid ${tokens.color.border}`,
+              paddingTop: 14,
+            }}
+          >
+            <div style={fieldLabel}>
+              Reminders{' '}
+              <span style={{ textTransform: 'none' }}>
+                (prefilled from the appointment type — edit or add for this booking)
+              </span>
+            </div>
+            <ReminderScheduleEditor
+              value={reminderSchedule}
+              onChange={setReminderSchedule}
+              helpText="this booking uses the firm default"
+            />
+          </div>
           <div style={wizardFooter}>
             <Button variant="secondary" onClick={() => setStep(2)}>
               ← Back
@@ -2126,6 +2160,20 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
             {internalNotes.trim() && (
               <ReviewRow icon="🗒" label="Internal notes (staff only)" value={internalNotes} />
             )}
+            <ReviewRow
+              icon="🔔"
+              label="Reminders"
+              value={
+                reminderSchedule.length > 0
+                  ? reminderSchedule
+                      .map(
+                        (s) =>
+                          `${humanizeOffset(s.offsetMinutes)} · ${REMINDER_CH_LABEL[s.channel]}`,
+                      )
+                      .join('\n')
+                  : 'Firm default'
+              }
+            />
           </div>
 
           <div style={wizardFooter}>

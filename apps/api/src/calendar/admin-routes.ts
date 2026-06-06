@@ -55,11 +55,15 @@ const TestSchema = z.object({
   tenantId: z.string().trim().max(200).optional(),
 });
 
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const SettingsSchema = z.object({
   syncIntervalMinutes: z.number().int().min(5).max(60).optional(),
   lookbackDays: z.number().int().min(1).max(60).optional(),
   lookaheadDays: z.number().int().min(7).max(365).optional(),
   reminderOffsetsMinutes: z.array(z.number().int()).max(4).optional(),
+  // 0121 — quiet hours for SMS/voice reminders.
+  reminderQuietStart: z.string().regex(HHMM_RE).optional(),
+  reminderQuietEnd: z.string().regex(HHMM_RE).optional(),
 });
 
 export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {

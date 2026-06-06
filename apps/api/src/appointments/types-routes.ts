@@ -22,6 +22,7 @@ import { seedAppointmentTypes } from '@vibe/db/seed-helpers';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { ReminderScheduleSchema } from './reminders';
 
 export interface AppointmentTypeRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -41,6 +42,7 @@ const CreateSchema = z.object({
     .optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
+  reminderSchedule: ReminderScheduleSchema.nullable().optional(),
 });
 
 const PatchSchema = z.object({
@@ -55,6 +57,7 @@ const PatchSchema = z.object({
     .optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
+  reminderSchedule: ReminderScheduleSchema.nullable().optional(),
 });
 
 const ReorderSchema = z.object({
@@ -108,6 +111,7 @@ export function createAppointmentTypeRouter(deps: AppointmentTypeRoutesDeps): Ro
           color: parsed.data.color ?? null,
           isActive: parsed.data.isActive ?? true,
           sortOrder: parsed.data.sortOrder ?? 0,
+          reminderSchedule: parsed.data.reminderSchedule ?? null,
         })
         .returning({ id: appointmentTypes.id });
       await emitAudit(deps.db, {
@@ -156,6 +160,9 @@ export function createAppointmentTypeRouter(deps: AppointmentTypeRoutesDeps): Ro
       if (parsed.data.color !== undefined) patch['color'] = parsed.data.color;
       if (parsed.data.isActive != null) patch['isActive'] = parsed.data.isActive;
       if (parsed.data.sortOrder != null) patch['sortOrder'] = parsed.data.sortOrder;
+      if (parsed.data.reminderSchedule !== undefined) {
+        patch['reminderSchedule'] = parsed.data.reminderSchedule;
+      }
       await deps.db.update(appointmentTypes).set(patch).where(eq(appointmentTypes.id, existing.id));
       await emitAudit(deps.db, {
         action: 'UPDATE',
