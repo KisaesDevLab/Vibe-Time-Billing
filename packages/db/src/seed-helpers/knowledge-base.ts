@@ -187,6 +187,12 @@ export const KB_CATEGORIES: ReadonlyArray<CategoryDef> = [
     description: 'Fixes for common issues.',
     sortOrder: 230,
   },
+  {
+    slug: 'scheduling',
+    title: 'Scheduling & Appointments',
+    description: 'Connect calendars, book appointments, manage appointment types.',
+    sortOrder: 145,
+  },
 ];
 
 // Small helper to keep bodies readable in source.
@@ -3041,6 +3047,144 @@ The **Help** section also has short how-to articles you can read any time.
 
 ## Contact your firm
 For anything about your specific account, returns, or charges, message your firm directly from **Messages** — they're the best source for account-specific answers. The assistant won't have access to your private records and will point you to your firm for those.
+`),
+  },
+
+  // =================================================================== Scheduling & Appointments
+  {
+    slug: 'connect-your-calendar',
+    category: 'scheduling',
+    title: 'Connect your calendar (Microsoft 365 or Google)',
+    summary: 'Link your own calendar so your free/busy drives booking and appointments sync.',
+    tags: ['calendar', 'microsoft', 'm365', 'outlook', 'google', 'connect', 'oauth', 'sync'],
+    sortOrder: 10,
+    body: md(`
+# Connect your calendar
+
+Linking your calendar lets the app read your free/busy so booking only offers times you're actually open, and (when write-back is on) it adds the appointments you book straight to your calendar — with updates and cancellations kept in sync.
+
+You connect **your own** calendar by signing in with your own Microsoft or Google account. You only ever grant access to your own mailbox; there's nothing to install and no firm-wide setup on your part.
+
+## Connect it
+1. Open **Account → My Calendars**.
+2. Click **Connect Microsoft 365** or **Connect Google**.
+3. Sign in to your provider and approve the access request.
+4. You'll land back on **My Calendars** marked **Connected**.
+
+> Don't see a Connect button? Your firm hasn't enabled a calendar provider yet. Ask an admin to set one up (see *Set up the calendar connection (admin)*).
+
+## Choose which calendars sync
+After connecting, pick which of your calendars should be used. Use:
+- **Sync now** to pull the latest events immediately.
+- **Refresh calendars** if you just created a new calendar and don't see it.
+- **Disconnect** to unlink — appointments already booked are kept.
+
+## What connecting unlocks
+- You appear in the **Book** wizard with a provider badge (M365 / Google), and your real availability shapes the open time slots.
+- New bookings are written to your calendar; reschedules and cancellations update the event.
+- Connection health (including any "read-only — reconnect to grant write access" warnings) shows under **Settings → Calendar overview**.
+
+## Keeping it healthy
+If your connection shows an error or "needs reconnect," open **Account → My Calendars** and connect again — that refreshes the access the provider granted.
+`),
+  },
+  {
+    slug: 'booking-appointments',
+    category: 'scheduling',
+    title: 'Book an appointment',
+    summary: 'Use the four-step wizard to schedule a meeting with one or more staff.',
+    tags: ['appointments', 'booking', 'schedule', 'meeting', 'calendar', 'wizard'],
+    sortOrder: 20,
+    body: md(`
+# Book an appointment
+
+Open **Appointments → Book** (or click **Book appointment**). The booker walks through four steps.
+
+## Step 1 — Staff & type
+- Pick one or more **staff members**. With more than one selected, the app only offers times when **everyone** is free.
+- Choose an **appointment type** (e.g. Tax Preparation, Tax Planning). The type pre-fills the default duration and location — you can override either.
+- Set the **duration**, **location** (In-person / Phone / Video), and an optional detail (video link, phone number, or address).
+
+## Step 2 — Date & time
+- Days with openings show in **bold**; faded days have no availability. Today is outlined.
+- Pick a day, then choose a time. Taken times are struck through. For multi-staff bookings, the dots under each time show each person's free/busy.
+
+## Step 3 — Client & details
+- Optionally attach a **client**, then check the **participants** to invite (each gets a confirmation email).
+- Optionally link an **engagement** (a note is added to it), set the **subject**, and add **internal notes** (staff-only — never sent to the client).
+
+## Step 4 — Review & confirm
+Check the summary, then **Confirm booking**. The app then:
+- Adds the event to each selected staff member's connected calendar.
+- Emails participants a confirmation with cancel / reschedule links and a calendar invite.
+- Adds a note to the linked engagement, if any.
+
+## After booking
+Manage everything under **Appointments**:
+- The **list** supports filters (status, staff, type, client, date) and shows the staff on each appointment.
+- Open an appointment to **reschedule**, **cancel**, retry a failed calendar write, or review participant RSVPs.
+- Client reschedule requests arrive in the **Reschedule inbox** (and as a notification) where you can propose a new time or decline.
+`),
+  },
+  {
+    slug: 'appointment-types',
+    category: 'scheduling',
+    title: 'Set up appointment types (admin)',
+    summary: 'Define the bookable meeting types that appear in the booking wizard.',
+    tags: ['appointment types', 'admin', 'settings', 'booking', 'duration'],
+    sortOrder: 30,
+    body: md(`
+# Set up appointment types
+
+Appointment types are the cards staff pick in the **Book** wizard — they set a default duration, location, and color. Manage them under **Settings → Appointment types**.
+
+## Add the starter set
+On a new firm, click **Add default types** to seed a CPA-oriented set: Initial Consultation, Tax Preparation, Tax Planning, Tax Return Review, Advisory / Planning Meeting, Document Drop-off, and Phone Call. Then tailor them to your firm.
+
+## Create or edit a type
+For each type you can set:
+- **Name** and an optional **description** (shown to staff on the booking form).
+- **Default duration** and **default location** (the booker can override per appointment).
+- A **color** (used as the dot in the wizard and the list).
+- **Active** toggle — inactive types are hidden from the booker but kept for history.
+- **Order** — use the up/down arrows to control how they appear.
+
+## Deleting vs deactivating
+A type that has appointment history **cannot be deleted** — deactivate it instead so past appointments keep their type. Types with no history can be deleted outright.
+`),
+  },
+  {
+    slug: 'calendar-oauth-setup',
+    category: 'admin',
+    title: 'Set up the calendar connection (admin)',
+    summary: 'Enable Microsoft 365 / Google so staff can link their calendars.',
+    tags: ['calendar', 'admin', 'oauth', 'microsoft', 'google', 'setup', 'integration'],
+    sortOrder: 120,
+    body: md(`
+# Set up the calendar connection
+
+Before staff can link calendars, a calendar provider must be enabled. There are two ways to supply the OAuth app the connection needs.
+
+## Option A — Built-in (appliance) app (recommended)
+The operator registers **one** OAuth app per provider and sets its credentials in the appliance environment. After that, **every staff member just signs in** to link their own calendar — there's no per-firm setup and no organization-wide admin consent.
+
+Environment variables:
+- \`CALENDAR_MS_CLIENT_ID\`, \`CALENDAR_MS_CLIENT_SECRET\`, \`CALENDAR_MS_TENANT_ID\` (use \`common\` for work + personal accounts)
+- \`CALENDAR_GOOGLE_CLIENT_ID\`, \`CALENDAR_GOOGLE_CLIENT_SECRET\`
+
+Register these redirect URIs on the app (replace the host with your app's base URL):
+- \`https://<your-app-host>/api/calendar/oauth/callback/microsoft\`
+- \`https://<your-app-host>/api/calendar/oauth/callback/google\`
+
+Microsoft: register a **multi-tenant** app and request the delegated scopes \`Calendars.ReadWrite\` and \`offline_access\` — these are user-consentable, so each staff member approves access for their own mailbox.
+
+When this is configured, **Settings → Calendar integrations** shows a "built-in app active" banner and the per-firm fields below are optional.
+
+## Option B — Your firm's own app
+A firm can instead paste its own OAuth app credentials under **Settings → Calendar integrations**: enter the Client ID / Secret (and Tenant ID for Microsoft), use **Test Connection**, then enable the provider. Secrets are encrypted at rest and never shown again.
+
+## After enabling
+Staff connect from **Account → My Calendars** (see *Connect your calendar*). Monitor connection health under **Settings → Calendar overview**; appointment write-back additionally requires the \`FEATURE_CALENDAR_WRITE\` flag to be on.
 `),
   },
 ];
