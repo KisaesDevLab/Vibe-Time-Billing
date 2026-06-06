@@ -305,6 +305,7 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
           subject: calendarEvents.subject,
           startAt: calendarEvents.startAt,
           endAt: calendarEvents.endAt,
+          staffId: calendarEvents.staffId,
           staffName: appUsers.fullName,
           clientName: clients.name,
           matchTier: calendarEventMatches.matchTier,

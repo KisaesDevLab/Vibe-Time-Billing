@@ -42,14 +42,19 @@ import {
   APPOINTMENT_CONFIRMATION_QUEUE,
   APPOINTMENT_RESCHEDULE_CONFIRMATION_QUEUE,
   APPOINTMENT_CANCELLATION_QUEUE,
+  APPOINTMENT_DECLINE_QUEUE,
+  APPOINTMENT_RESCHEDULE_REQUESTED_STAFF_QUEUE,
   type ProviderJob,
   type AppointmentJob,
   type CancellationJob,
+  type RescheduleRequestedStaffJob,
 } from '../../api/src/appointments/queue';
 import {
   runAppointmentConfirmationSend,
   runAppointmentRescheduleConfirmationSend,
   runAppointmentCancellationSend,
+  runAppointmentDeclineSend,
+  runAppointmentRescheduleRequestedStaffSend,
   runAppointmentReminderTick,
   type SendAppointmentEmail,
 } from '../../api/src/appointments/email-jobs';
@@ -934,6 +939,12 @@ function setupAppointmentEmailQueues(): void {
   );
   register<CancellationJob>(APPOINTMENT_CANCELLATION_QUEUE, (job) =>
     runAppointmentCancellationSend({ db: db!, sendEmail, appBaseUrl }, job.data),
+  );
+  register<AppointmentJob>(APPOINTMENT_DECLINE_QUEUE, (job) =>
+    runAppointmentDeclineSend({ db: db!, sendEmail, appBaseUrl }, job.data),
+  );
+  register<RescheduleRequestedStaffJob>(APPOINTMENT_RESCHEDULE_REQUESTED_STAFF_QUEUE, (job) =>
+    runAppointmentRescheduleRequestedStaffSend({ db: db!, sendEmail, appBaseUrl }, job.data),
   );
   logger.info('appointment email queues registered');
 }

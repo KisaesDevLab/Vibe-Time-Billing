@@ -34,7 +34,8 @@ export type AppointmentEmailEvent =
   | 'appointment_reschedule_confirmation'
   | 'appointment_cancellation'
   | 'appointment_reminder'
-  | 'appointment_reschedule_request_declined';
+  | 'appointment_reschedule_request_declined'
+  | 'appointment_reschedule_requested_staff';
 
 interface Template {
   subject: string;
@@ -106,6 +107,20 @@ Need a different time? {{ appointment.reschedule_request_url }}
 We weren't able to move your appointment on {{ appointment.date }}. The
 original time still stands. If it no longer works, you can cancel here:
 {{ appointment.cancel_url }}
+
+— {{ firm.name }}`,
+  },
+  appointment_reschedule_requested_staff: {
+    subject: 'Reschedule requested: {{ appointment.subject }} ({{ appointment.date }})',
+    body: `{{ client.name }} asked to reschedule:
+
+{{ appointment.subject }}
+Currently {{ appointment.date }} at {{ appointment.time }}
+With: {{ staff.names }}
+
+Their note: {{ request.message }}
+
+Review and propose a new time in the reschedule inbox.
 
 — {{ firm.name }}`,
   },
@@ -406,6 +421,54 @@ export async function runAppointmentCancellationSend(
       .catch(() => undefined);
   }
   return { sent };
+}
+
+/**
+ * Decline notice — sent to the appointment's participants when staff decline
+ * a client's reschedule request. The original time stands.
+ */
+export async function runAppointmentDeclineSend(
+  deps: EmailJobDeps,
+  job: { appointmentId: string },
+): Promise<{ sent: number }> {
+  const l = await load(deps.db, job.appointmentId);
+  if (!l) return { sent: 0 };
+  const ctx = buildCtx(l, deps.appBaseUrl ?? '');
+  const ics = icsFor(l);
+  const { sent } = await sendToParticipants(
+    deps,
+    l,
+    'appointment_reschedule_request_declined',
+    ctx,
+    ics,
+  );
+  return { sent };
+}
+
+/**
+ * Staff alert — emails the booking staff when a client requests a reschedule
+ * via the public link, so they don't rely solely on the in-app inbox.
+ */
+export async function runAppointmentRescheduleRequestedStaffSend(
+  deps: EmailJobDeps,
+  job: { appointmentId: string; message?: string | null },
+): Promise<{ sent: number }> {
+  const l = await load(deps.db, job.appointmentId);
+  if (!l || !l.appt.createdById) return { sent: 0 };
+  const [staff] = await deps.db
+    .select({ email: appUsers.email, name: appUsers.fullName })
+    .from(appUsers)
+    .where(eq(appUsers.id, l.appt.createdById))
+    .limit(1);
+  if (!staff?.email) return { sent: 0 };
+  const tpl = await loadTemplate(deps.db, l.appt.firmId, 'appointment_reschedule_requested_staff');
+  const ctx: MergeContext = {
+    ...buildCtx(l, deps.appBaseUrl ?? ''),
+    request: { message: job.message?.trim() || '(no message)' },
+  };
+  const { subject, body } = renderTemplate(tpl, ctx);
+  await deps.sendEmail({ to: staff.email, subject, body });
+  return { sent: 1 };
 }
 
 /**

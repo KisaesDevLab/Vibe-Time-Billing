@@ -45,6 +45,8 @@ import {
 import {
   runAppointmentConfirmationSend,
   runAppointmentCancellationSend,
+  runAppointmentDeclineSend,
+  runAppointmentRescheduleRequestedStaffSend,
   type AppointmentMail,
 } from '../appointments/email-jobs';
 
@@ -100,6 +102,12 @@ function inlineQueue(): BookingQueue {
     },
     async cancellationSend(j) {
       await runAppointmentCancellationSend(email, j);
+    },
+    async declineSend(j) {
+      await runAppointmentDeclineSend(email, j);
+    },
+    async rescheduleRequestedStaffSend(j) {
+      await runAppointmentRescheduleRequestedStaffSend(email, j);
     },
   };
 }

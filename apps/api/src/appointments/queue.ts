@@ -15,6 +15,9 @@ export const APPOINTMENT_PROVIDER_DELETE_QUEUE = 'appointment-provider-delete';
 export const APPOINTMENT_CONFIRMATION_QUEUE = 'appointment-confirmation-send';
 export const APPOINTMENT_RESCHEDULE_CONFIRMATION_QUEUE = 'appointment-reschedule-confirmation-send';
 export const APPOINTMENT_CANCELLATION_QUEUE = 'appointment-cancellation-send';
+export const APPOINTMENT_DECLINE_QUEUE = 'appointment-decline-send';
+export const APPOINTMENT_RESCHEDULE_REQUESTED_STAFF_QUEUE =
+  'appointment-reschedule-requested-staff';
 
 export interface ProviderJob {
   appointmentId: string;
@@ -28,6 +31,10 @@ export interface CancellationJob {
   cancelledBy: 'staff' | 'client';
   excludeContactId?: string | null;
 }
+export interface RescheduleRequestedStaffJob {
+  appointmentId: string;
+  message?: string | null;
+}
 
 /** The producer surface the booking API depends on (injectable for tests). */
 export interface BookingQueue {
@@ -37,6 +44,8 @@ export interface BookingQueue {
   confirmationSend(job: AppointmentJob): Promise<void>;
   rescheduleConfirmationSend(job: AppointmentJob): Promise<void>;
   cancellationSend(job: CancellationJob): Promise<void>;
+  declineSend(job: AppointmentJob): Promise<void>;
+  rescheduleRequestedStaffSend(job: RescheduleRequestedStaffJob): Promise<void>;
 }
 
 const PROVIDER_OPTS = {
@@ -66,6 +75,8 @@ function q(name: string): Queue {
       APPOINTMENT_CONFIRMATION_QUEUE,
       APPOINTMENT_RESCHEDULE_CONFIRMATION_QUEUE,
       APPOINTMENT_CANCELLATION_QUEUE,
+      APPOINTMENT_DECLINE_QUEUE,
+      APPOINTMENT_RESCHEDULE_REQUESTED_STAFF_QUEUE,
     ]) {
       queues.set(n, new Queue(n, { connection }));
     }
@@ -93,6 +104,12 @@ export const bullBookingQueue: BookingQueue = {
   async cancellationSend(job) {
     await q(APPOINTMENT_CANCELLATION_QUEUE).add('send', job, EMAIL_OPTS);
   },
+  async declineSend(job) {
+    await q(APPOINTMENT_DECLINE_QUEUE).add('send', job, EMAIL_OPTS);
+  },
+  async rescheduleRequestedStaffSend(job) {
+    await q(APPOINTMENT_RESCHEDULE_REQUESTED_STAFF_QUEUE).add('send', job, EMAIL_OPTS);
+  },
 };
 
 /** A no-op queue (used when the API runs without a worker, e.g. tests that
@@ -104,4 +121,6 @@ export const noopBookingQueue: BookingQueue = {
   async confirmationSend() {},
   async rescheduleConfirmationSend() {},
   async cancellationSend() {},
+  async declineSend() {},
+  async rescheduleRequestedStaffSend() {},
 };

@@ -49,6 +49,8 @@ function recorder(): { queue: BookingQueue; calls: Record<string, unknown[]> } {
     confirmationSend: [],
     rescheduleConfirmationSend: [],
     cancellationSend: [],
+    declineSend: [],
+    rescheduleRequestedStaffSend: [],
   };
   const queue: BookingQueue = {
     async providerWrite(j) {
@@ -68,6 +70,12 @@ function recorder(): { queue: BookingQueue; calls: Record<string, unknown[]> } {
     },
     async cancellationSend(j) {
       calls.cancellationSend!.push(j);
+    },
+    async declineSend(j) {
+      calls.declineSend!.push(j);
+    },
+    async rescheduleRequestedStaffSend(j) {
+      calls.rescheduleRequestedStaffSend!.push(j);
     },
   };
   return { queue, calls };
@@ -501,5 +509,55 @@ describe('QA hardening', () => {
       });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('engagement_requires_client');
+  });
+});
+
+describe('GET /list', () => {
+  async function book(subject: string, staffIds: string[]): Promise<string> {
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds,
+        subject,
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 60,
+        location: 'VIDEO',
+        clientId: seed.clientId,
+      });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  it('returns enriched rows with staff stack + client name + total', async () => {
+    const b = await addStaff('b@test.example');
+    await avail(b);
+    await book('Planning', [seed.appUserId, b]);
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const res = await request(app).get('/api/staff/appointments/list');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].staff).toHaveLength(2);
+    expect(res.body.items[0].clientName).toBe('Test Client Co');
+    expect(res.body.items[0].hasPendingReschedule).toBe(false);
+  });
+
+  it('filters by staffId and search query', async () => {
+    const b = await addStaff('b@test.example');
+    await avail(b);
+    await book('Alpha', [seed.appUserId]);
+    await book('Beta', [b]);
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}) });
+    const byStaff = await request(app).get(`/api/staff/appointments/list?staffId=${b}`);
+    expect(byStaff.body.total).toBe(1);
+    expect(byStaff.body.items[0].title).toBe('Beta');
+    const byQuery = await request(app).get('/api/staff/appointments/list?q=Alph');
+    expect(byQuery.body.total).toBe(1);
+    expect(byQuery.body.items[0].title).toBe('Alpha');
   });
 });

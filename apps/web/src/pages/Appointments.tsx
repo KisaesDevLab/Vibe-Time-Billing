@@ -48,6 +48,112 @@ interface ApptRow {
   location: LocationType;
   locationDetail: string | null;
 }
+interface ApptListRow {
+  id: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  location: LocationType;
+  clientId: string | null;
+  clientName: string | null;
+  engagementId: string | null;
+  engagementName: string | null;
+  typeName: string | null;
+  typeColor: string | null;
+  staff: { id: string; name: string }[];
+  hasPendingReschedule: boolean;
+}
+
+const AVATAR_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#16a34a', '#ca8a04', '#db2777', '#475569'];
+function avatarColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length]!;
+}
+
+/** Overlapping circular avatars; +N reveals the rest on click. */
+function StaffAvatarStack({ staff }: { staff: { id: string; name: string }[] }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  if (staff.length === 0)
+    return <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>—</span>;
+  const MAX = 3;
+  const shown = staff.slice(0, MAX);
+  const extra = staff.length - shown.length;
+  const dot = (s: { id: string; name: string }, i: number): JSX.Element => (
+    <span
+      key={s.id}
+      title={s.name}
+      style={{
+        width: 26,
+        height: 26,
+        borderRadius: '50%',
+        background: avatarColor(s.id),
+        color: '#fff',
+        fontSize: 11,
+        fontWeight: 600,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        border: `2px solid ${tokens.color.surface}`,
+        marginLeft: i === 0 ? 0 : -8,
+      }}
+    >
+      {initials(s.name)}
+    </span>
+  );
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+      {shown.map(dot)}
+      {extra > 0 && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: '50%',
+            background: tokens.color.border,
+            color: tokens.color.text,
+            fontSize: 11,
+            fontWeight: 600,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: `2px solid ${tokens.color.surface}`,
+            marginLeft: -8,
+            cursor: 'pointer',
+          }}
+          aria-label={`${extra} more staff`}
+        >
+          +{extra}
+        </button>
+      )}
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 30,
+            left: 0,
+            zIndex: 20,
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            padding: 8,
+            minWidth: 160,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.12)',
+          }}
+        >
+          {staff.map((s) => (
+            <div key={s.id} style={{ fontSize: 12, padding: '2px 0' }}>
+              {s.name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const TABS = ['list', 'book', 'inbox', 'availability'] as const;
 type TabKey = (typeof TABS)[number];
@@ -115,31 +221,149 @@ export function AppointmentsPage(): JSX.Element {
 }
 
 // ---------------------------------------------------------------- List
+const PAGE_SIZE = 25;
 function ListTab(): JSX.Element {
-  const [rows, setRows] = useState<ApptRow[]>([]);
+  const [rows, setRows] = useState<ApptListRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // filters
+  const [status, setStatus] = useState('');
+  const [staffId, setStaffId] = useState('');
+  const [typeId, setTypeId] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [q, setQ] = useState('');
+  const [sort, setSort] = useState<'asc' | 'desc'>('desc');
+  // filter option sources
+  const [staffOpts, setStaffOpts] = useState<BookableStaff[]>([]);
+  const [typeOpts, setTypeOpts] = useState<ApptType[]>([]);
 
-  async function load(): Promise<void> {
+  useEffect(() => {
+    void api<{ items: BookableStaff[] }>('/api/staff/appointments/bookable-staff')
+      .then((r) => setStaffOpts(r.items ?? []))
+      .catch(() => undefined);
+    void api<{ items: ApptType[] }>('/api/staff/appointments/appointment-types')
+      .then((r) => setTypeOpts(r.items ?? []))
+      .catch(() => undefined);
+  }, []);
+
+  const load = useCallback(async (): Promise<void> => {
     try {
-      const r = await api<{ items: ApptRow[] }>('/api/staff/appointments');
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (staffId) params.set('staffId', staffId);
+      if (typeId) params.set('typeId', typeId);
+      if (from) params.set('from', new Date(from).toISOString());
+      if (to) params.set('to', new Date(to + 'T23:59:59').toISOString());
+      if (q.trim()) params.set('q', q.trim());
+      params.set('sort', sort);
+      params.set('page', String(page));
+      params.set('pageSize', String(PAGE_SIZE));
+      const r = await api<{ items: ApptListRow[]; total: number }>(
+        `/api/staff/appointments/list?${params.toString()}`,
+      );
       setRows(r.items ?? []);
+      setTotal(r.total ?? 0);
+      setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed');
     }
-  }
+  }, [status, staffId, typeId, from, to, q, sort, page]);
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
+  // Reset to page 1 whenever a filter changes.
+  useEffect(() => {
+    setPage(1);
+  }, [status, staffId, typeId, from, to, q, sort]);
+
+  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <Card title={`Appointments (${rows.length})`}>
+    <Card title={`Appointments (${total})`}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          alignItems: 'end',
+          marginBottom: 12,
+        }}
+      >
+        <Input
+          label="Search subject"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Subject…"
+          style={{ minWidth: 160 }}
+        />
+        <FilterSelect label="Status" value={status} onChange={setStatus}>
+          <option value="">All</option>
+          <option value="SCHEDULED">Scheduled</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="CANCELLED">Cancelled</option>
+        </FilterSelect>
+        <FilterSelect label="Staff" value={staffId} onChange={setStaffId}>
+          <option value="">All staff</option>
+          {staffOpts.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </FilterSelect>
+        <FilterSelect label="Type" value={typeId} onChange={setTypeId}>
+          <option value="">All types</option>
+          {typeOpts.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </FilterSelect>
+        <Input label="From" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        <Input label="To" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        {(status || staffId || typeId || from || to || q) && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setStatus('');
+              setStaffId('');
+              setTypeId('');
+              setFrom('');
+              setTo('');
+              setQ('');
+            }}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
-      <Table<ApptRow>
+      <Table<ApptListRow>
         columns={[
           {
             key: 'when',
-            header: 'Date & time',
+            header: (
+              <button
+                type="button"
+                onClick={() => setSort((s) => (s === 'desc' ? 'asc' : 'desc'))}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  font: 'inherit',
+                  fontWeight: 600,
+                  color: tokens.color.text,
+                  padding: 0,
+                }}
+              >
+                Date &amp; time {sort === 'desc' ? '↓' : '↑'}
+              </button>
+            ) as // reason: Table types header as string but renders it as a node;
+            // a JSX header is safe at runtime.
+            unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -152,27 +376,67 @@ function ListTab(): JSX.Element {
               </div>
             ),
           },
-          { key: 'title', header: 'Subject', render: (r) => r.title },
           {
-            key: 'location',
-            header: 'Location',
-            render: (r) => LOC_LABEL[r.location],
+            key: 'title',
+            header: 'Subject',
+            render: (r) => (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {r.typeColor && (
+                  <span
+                    title={r.typeName ?? undefined}
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: r.typeColor,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+                <span>{r.title}</span>
+              </div>
+            ),
+          },
+          { key: 'staff', header: 'Staff', render: (r) => <StaffAvatarStack staff={r.staff} /> },
+          {
+            key: 'client',
+            header: 'Client',
+            render: (r) => r.clientName ?? <span style={{ color: tokens.color.textMuted }}>—</span>,
+          },
+          {
+            key: 'engagement',
+            header: 'Engagement',
+            render: (r) =>
+              r.engagementName ?? <span style={{ color: tokens.color.textMuted }}>—</span>,
           },
           {
             key: 'status',
             header: 'Status',
             render: (r) => (
-              <Pill
-                tone={
-                  r.status === 'SCHEDULED'
-                    ? 'accent'
-                    : r.status === 'COMPLETED'
-                      ? 'success'
-                      : 'neutral'
-                }
-              >
-                {r.status.toLowerCase()}
-              </Pill>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Pill
+                  tone={
+                    r.status === 'SCHEDULED'
+                      ? 'accent'
+                      : r.status === 'COMPLETED'
+                        ? 'success'
+                        : 'neutral'
+                  }
+                >
+                  {r.status.toLowerCase()}
+                </Pill>
+                {r.hasPendingReschedule && (
+                  <span
+                    title="Pending reschedule request"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: tokens.color.warning,
+                    }}
+                  />
+                )}
+              </div>
             ),
           },
           {
@@ -187,8 +451,42 @@ function ListTab(): JSX.Element {
         ]}
         rows={rows}
         rowKey={(r) => r.id}
-        empty="No appointments yet."
+        empty="No appointments match these filters."
       />
+      {total > PAGE_SIZE && (
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginTop: 12,
+            fontSize: 13,
+            color: tokens.color.textMuted,
+          }}
+        >
+          <span>
+            Page {page} of {lastPage} · {total} total
+          </span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page >= lastPage}
+              onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
       {detailId && (
         <DetailDrawer
           id={detailId}
@@ -197,6 +495,38 @@ function ListTab(): JSX.Element {
         />
       )}
     </Card>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <div style={{ display: 'grid', gap: 4, fontSize: 12, color: tokens.color.textMuted }}>
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          padding: '8px 10px',
+          borderRadius: tokens.radius.sm,
+          border: `1px solid ${tokens.color.border}`,
+          background: tokens.color.surface,
+          color: tokens.color.text,
+          fontSize: 13,
+        }}
+      >
+        {children}
+      </select>
+    </div>
   );
 }
 

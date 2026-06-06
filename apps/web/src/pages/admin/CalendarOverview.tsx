@@ -12,6 +12,7 @@ interface OverviewRow {
   id: string;
   subject: string | null;
   startAt: string | null;
+  staffId: string | null;
   staffName: string | null;
   clientName: string | null;
   matchTier: string | null;
@@ -32,20 +33,50 @@ export function CalendarOverviewPage(): JSX.Element {
   const [rows, setRows] = useState<OverviewRow[]>([]);
   const [health, setHealth] = useState<HealthRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [staffFilter, setStaffFilter] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  // Distinct staff for the filter dropdown, sourced from the loaded rows.
+  const [staffOpts, setStaffOpts] = useState<{ id: string; name: string }[]>([]);
+
+  const overviewUrl = useCallback(
+    (format?: 'csv') => {
+      const p = new URLSearchParams();
+      if (staffFilter) p.set('staffId', staffFilter);
+      if (from) p.set('from', new Date(from).toISOString());
+      if (to) p.set('to', new Date(to + 'T23:59:59').toISOString());
+      if (format) p.set('format', format);
+      const qs = p.toString();
+      return `/api/staff/admin/calendar/overview${qs ? `?${qs}` : ''}`;
+    },
+    [staffFilter, from, to],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [o, h] = await Promise.all([
-        api<{ items: OverviewRow[] }>('/api/staff/admin/calendar/overview'),
+        api<{ items: OverviewRow[] }>(overviewUrl()),
         api<{ connections: HealthRow[] }>('/api/staff/admin/calendar/health'),
       ]);
-      setRows(o.items ?? []);
+      const items = o.items ?? [];
+      setRows(items);
       setHealth(h.connections ?? []);
+      // Build the staff dropdown from the unfiltered result set only, so
+      // selecting a staff member doesn't collapse the options to just them.
+      if (!staffFilter) {
+        const seen = new Map<string, string>();
+        for (const r of items) if (r.staffId && r.staffName) seen.set(r.staffId, r.staffName);
+        setStaffOpts(
+          [...seen.entries()]
+            .map(([id, name]) => ({ id, name }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [overviewUrl, staffFilter]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -59,6 +90,16 @@ export function CalendarOverviewPage(): JSX.Element {
     { key: 'staff', header: 'Staff', render: (r) => r.staffName ?? '—' },
     { key: 'subject', header: 'Event', render: (r) => r.subject ?? '—' },
     { key: 'client', header: 'Client', render: (r) => r.clientName ?? '—' },
+    {
+      key: 'tier',
+      header: 'Match tier',
+      render: (r) =>
+        r.matchTier ? (
+          <Pill tone="neutral">{r.matchTier}</Pill>
+        ) : (
+          <span style={{ color: tokens.color.textMuted }}>—</span>
+        ),
+    },
     {
       key: 'match',
       header: 'Match',
@@ -110,14 +151,61 @@ export function CalendarOverviewPage(): JSX.Element {
       <Card
         title="All-staff appointments"
         action={
-          <Button
-            variant="secondary"
-            onClick={() => window.open('/api/staff/admin/calendar/overview?format=csv', '_blank')}
-          >
+          <Button variant="secondary" onClick={() => window.open(overviewUrl('csv'), '_blank')}>
             Export CSV
           </Button>
         }
       >
+        <div
+          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'end', marginBottom: 12 }}
+        >
+          <label style={labelStyle}>
+            Staff
+            <select
+              value={staffFilter}
+              onChange={(e) => setStaffFilter(e.target.value)}
+              style={inputStyle}
+            >
+              <option value="">All staff</option>
+              {staffOpts.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={labelStyle}>
+            From
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={labelStyle}>
+            To
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          {(staffFilter || from || to) && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setStaffFilter('');
+                setFrom('');
+                setTo('');
+              }}
+            >
+              Clear
+            </Button>
+          )}
+        </div>
         {loading ? (
           <div style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</div>
         ) : (
@@ -153,3 +241,18 @@ export function CalendarOverviewPage(): JSX.Element {
     </div>
   );
 }
+
+const labelStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 4,
+  fontSize: 12,
+  color: tokens.color.textMuted,
+};
+const inputStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  borderRadius: tokens.radius.sm,
+  border: `1px solid ${tokens.color.border}`,
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  fontSize: 13,
+};

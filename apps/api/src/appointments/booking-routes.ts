@@ -20,7 +20,7 @@
 import crypto from 'node:crypto';
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -174,6 +174,120 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         )
         .orderBy(appointmentTypes.sortOrder);
       res.json({ items });
+    },
+  );
+
+  // ---- enriched list (filters + staff stack + pagination) ------------
+  router.get(
+    '/list',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], total: 0, page: 1, pageSize: 25 });
+        return;
+      }
+      const db = deps.db;
+      const conds = [eq(appointments.firmId, session.firmId)];
+
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      if (status === 'SCHEDULED' || status === 'COMPLETED' || status === 'CANCELLED') {
+        conds.push(eq(appointments.status, status));
+      }
+      const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+      if (clientId && /^[0-9a-fA-F-]{36}$/.test(clientId)) {
+        conds.push(eq(appointments.clientId, clientId));
+      }
+      const typeId = typeof req.query['typeId'] === 'string' ? req.query['typeId'] : null;
+      if (typeId && /^[0-9a-fA-F-]{36}$/.test(typeId)) {
+        conds.push(eq(appointments.appointmentTypeId, typeId));
+      }
+      const from = typeof req.query['from'] === 'string' ? new Date(req.query['from']) : null;
+      if (from && !Number.isNaN(from.getTime())) conds.push(gte(appointments.startsAt, from));
+      const to = typeof req.query['to'] === 'string' ? new Date(req.query['to']) : null;
+      if (to && !Number.isNaN(to.getTime())) conds.push(lte(appointments.startsAt, to));
+      const q = typeof req.query['q'] === 'string' ? req.query['q'].trim() : '';
+      if (q) conds.push(ilike(appointments.title, `%${q}%`));
+
+      // Staff filter: restrict to appointments that include this staff member.
+      const staffId = typeof req.query['staffId'] === 'string' ? req.query['staffId'] : null;
+      if (staffId && /^[0-9a-fA-F-]{36}$/.test(staffId)) {
+        const withStaff = db
+          .select({ id: appointmentStaff.appointmentId })
+          .from(appointmentStaff)
+          .where(eq(appointmentStaff.staffId, staffId));
+        conds.push(inArray(appointments.id, withStaff));
+      }
+
+      const sortDir = req.query['sort'] === 'asc' ? asc : desc;
+      const page = Math.max(1, Number(req.query['page']) || 1);
+      const pageSize = Math.min(100, Math.max(1, Number(req.query['pageSize']) || 25));
+
+      const [{ n: total } = { n: 0 }] = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(appointments)
+        .where(and(...conds));
+
+      const rows = await db
+        .select({
+          id: appointments.id,
+          title: appointments.title,
+          startsAt: appointments.startsAt,
+          endsAt: appointments.endsAt,
+          status: appointments.status,
+          location: appointments.location,
+          clientId: appointments.clientId,
+          clientName: clients.name,
+          engagementId: appointments.engagementId,
+          engagementName: engagements.name,
+          typeName: appointmentTypes.name,
+          typeColor: appointmentTypes.color,
+        })
+        .from(appointments)
+        .leftJoin(clients, eq(clients.id, appointments.clientId))
+        .leftJoin(engagements, eq(engagements.id, appointments.engagementId))
+        .leftJoin(appointmentTypes, eq(appointmentTypes.id, appointments.appointmentTypeId))
+        .where(and(...conds))
+        .orderBy(sortDir(appointments.startsAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+
+      const ids = rows.map((r) => r.id);
+      const staffByAppt = new Map<string, { id: string; name: string }[]>();
+      const pending = new Set<string>();
+      if (ids.length > 0) {
+        const staffRows = await db
+          .select({
+            appointmentId: appointmentStaff.appointmentId,
+            id: appointmentStaff.staffId,
+            name: appUsers.fullName,
+          })
+          .from(appointmentStaff)
+          .innerJoin(appUsers, eq(appUsers.id, appointmentStaff.staffId))
+          .where(inArray(appointmentStaff.appointmentId, ids));
+        for (const s of staffRows) {
+          const list = staffByAppt.get(s.appointmentId) ?? [];
+          list.push({ id: s.id, name: s.name });
+          staffByAppt.set(s.appointmentId, list);
+        }
+        const pendingRows = await db
+          .select({ appointmentId: appointmentRescheduleRequests.appointmentId })
+          .from(appointmentRescheduleRequests)
+          .where(
+            and(
+              inArray(appointmentRescheduleRequests.appointmentId, ids),
+              eq(appointmentRescheduleRequests.status, 'pending'),
+            ),
+          );
+        for (const p of pendingRows) pending.add(p.appointmentId);
+      }
+
+      const items = rows.map((r) => ({
+        ...r,
+        staff: staffByAppt.get(r.id) ?? [],
+        hasPendingReschedule: pending.has(r.id),
+      }));
+      res.json({ items, total, page, pageSize });
     },
   );
 
@@ -746,7 +860,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         res.status(409).json({ error: 'already_resolved', status: reqRow.status });
         return;
       }
-      await db
+      const declined = await db
         .update(appointmentRescheduleRequests)
         .set({ status: 'declined', resolvedAt: nowFn(), resolvedByStaffId: session.appUserId })
         .where(
@@ -754,8 +868,13 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
             eq(appointmentRescheduleRequests.id, reqRow.id),
             eq(appointmentRescheduleRequests.status, 'pending'),
           ),
-        );
-      // Decline email to the requesting contact is sent in BK-6.
+        )
+        .returning({ appointmentId: appointmentRescheduleRequests.appointmentId });
+      if (declined[0]) {
+        await queue
+          .declineSend({ appointmentId: declined[0].appointmentId })
+          .catch((err: unknown) => logger.warn({ err }, 'enqueue decline email failed'));
+      }
       res.json({ ok: true });
     },
   );

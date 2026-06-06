@@ -131,6 +131,26 @@ export function AppointmentTypesPage(): JSX.Element {
     }
   }
 
+  async function move(index: number, dir: -1 | 1): Promise<void> {
+    const target = index + dir;
+    if (target < 0 || target >= items.length) return;
+    const next = [...items];
+    const [moved] = next.splice(index, 1);
+    next.splice(target, 0, moved!);
+    setItems(next); // optimistic
+    setErr(null);
+    try {
+      await api('/api/staff/admin/appointment-types/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ order: next.map((r) => r.id) }),
+      });
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'reorder_failed');
+      await load(); // revert to server truth
+    }
+  }
+
   async function remove(row: AppointmentType): Promise<void> {
     if (
       !confirm(
@@ -241,6 +261,35 @@ export function AppointmentTypesPage(): JSX.Element {
         <Table<AppointmentType>
           columns={[
             {
+              key: 'reorder',
+              header: '',
+              render: (r) => {
+                const idx = items.findIndex((x) => x.id === r.id);
+                return (
+                  <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                    <button
+                      type="button"
+                      aria-label="Move up"
+                      disabled={idx <= 0}
+                      onClick={() => void move(idx, -1)}
+                      style={reorderBtnStyle}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Move down"
+                      disabled={idx >= items.length - 1}
+                      onClick={() => void move(idx, 1)}
+                      style={reorderBtnStyle}
+                    >
+                      ↓
+                    </button>
+                  </div>
+                );
+              },
+            },
+            {
               key: 'color',
               header: '',
               render: (r) => {
@@ -313,6 +362,21 @@ export function AppointmentTypesPage(): JSX.Element {
               },
             },
             {
+              key: 'description',
+              header: 'Description',
+              render: (r) => {
+                const e = effective(r);
+                return (
+                  <Input
+                    value={e.description ?? ''}
+                    placeholder="Shown to staff on the booking form"
+                    onChange={(ev) => patch(r.id, { description: ev.target.value })}
+                    style={{ minWidth: 180 }}
+                  />
+                );
+              },
+            },
+            {
               key: 'active',
               header: 'Active',
               render: (r) => {
@@ -356,6 +420,19 @@ export function AppointmentTypesPage(): JSX.Element {
     </div>
   );
 }
+
+const reorderBtnStyle: React.CSSProperties = {
+  width: 22,
+  height: 18,
+  lineHeight: '14px',
+  padding: 0,
+  fontSize: 11,
+  borderRadius: tokens.radius.sm,
+  border: `1px solid ${tokens.color.border}`,
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  cursor: 'pointer',
+};
 
 const selectStyle: React.CSSProperties = {
   padding: '8px 10px',

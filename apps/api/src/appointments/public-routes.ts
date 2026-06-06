@@ -272,6 +272,9 @@ export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Rout
           })
           .catch((err: unknown) => logger.warn({ err }, 'staff_notification insert failed'));
       }
+      await queue
+        .rescheduleRequestedStaffSend({ appointmentId: appt.id, message })
+        .catch((err: unknown) => logger.warn({ err }, 'enqueue reschedule-requested staff failed'));
     }
     if (wantsHtml(req)) {
       res.send(

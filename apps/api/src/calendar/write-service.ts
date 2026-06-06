@@ -27,6 +27,8 @@ export interface WriteEventInput {
   start: Date;
   end: Date;
   location?: string | null;
+  /** Free-text event body (appointment type, other staff, engagement). */
+  description?: string | null;
   attendees?: string[];
 }
 
@@ -111,6 +113,9 @@ export class GraphEventWriter implements ProviderEventWriter {
     if (input.end !== undefined) b['end'] = graphDateTime(input.end);
     if (input.location !== undefined) {
       b['location'] = { displayName: input.location ?? '' };
+    }
+    if (input.description !== undefined) {
+      b['body'] = { contentType: 'text', content: input.description ?? '' };
     }
     if (input.attendees !== undefined) {
       b['attendees'] = input.attendees.map((address) => ({
@@ -211,6 +216,7 @@ export class GoogleEventWriter implements ProviderEventWriter {
     if (input.start !== undefined) b['start'] = { dateTime: input.start.toISOString() };
     if (input.end !== undefined) b['end'] = { dateTime: input.end.toISOString() };
     if (input.location !== undefined) b['location'] = input.location ?? '';
+    if (input.description !== undefined) b['description'] = input.description ?? '';
     if (input.attendees !== undefined) {
       b['attendees'] = input.attendees.map((email) => ({ email }));
     }

@@ -32,9 +32,15 @@ const KINDS: ReadonlyArray<{ key: string; label: string; channels: Array<'EMAIL'
     channels: ['EMAIL'],
   },
   { key: 'appointment_cancellation', label: 'Appointment cancelled', channels: ['EMAIL'] },
+  { key: 'appointment_reminder', label: 'Appointment reminder', channels: ['EMAIL'] },
   {
     key: 'appointment_reschedule_request_declined',
     label: 'Reschedule request declined',
+    channels: ['EMAIL'],
+  },
+  {
+    key: 'appointment_reschedule_requested_staff',
+    label: 'Reschedule requested (staff alert)',
     channels: ['EMAIL'],
   },
 ];
@@ -58,7 +64,9 @@ const SAMPLE_VARIABLES = [
   'appointment.location_detail',
   'appointment.cancel_url',
   'appointment.reschedule_request_url',
+  'appointment.cancelled_by',
   'staff.names',
+  'request.message',
 ];
 
 export function NotificationTemplatesPage(): JSX.Element {

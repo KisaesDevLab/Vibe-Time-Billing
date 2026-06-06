@@ -23,6 +23,8 @@ import {
 import {
   runAppointmentConfirmationSend,
   runAppointmentCancellationSend,
+  runAppointmentDeclineSend,
+  runAppointmentRescheduleRequestedStaffSend,
   runAppointmentReminderTick,
   type AppointmentMail,
 } from '../appointments/email-jobs';
@@ -155,6 +157,35 @@ describe('appointment cancellation email', () => {
       .from(appointmentParticipants)
       .where(eq(appointmentParticipants.appointmentId, apptId));
     expect(p!.cancellationSentAt).not.toBeNull();
+  });
+});
+
+describe('appointment reschedule decline email', () => {
+  it('sends the decline notice to participants', async () => {
+    const { apptId } = await seedAppt();
+    const rec = recorder();
+    const r = await runAppointmentDeclineSend(
+      { db: harness.db, sendEmail: rec.send, appBaseUrl: 'https://practice.example' },
+      { appointmentId: apptId },
+    );
+    expect(r.sent).toBe(1);
+    expect(rec.mails[0]!.to).toBe('jane@client.example');
+    expect(rec.mails[0]!.subject).toContain('reschedule');
+    expect(rec.mails[0]!.body).toContain('original time still stands');
+  });
+});
+
+describe('appointment reschedule-requested staff alert', () => {
+  it('emails the booking staff with the client message', async () => {
+    const { apptId } = await seedAppt();
+    const rec = recorder();
+    const r = await runAppointmentRescheduleRequestedStaffSend(
+      { db: harness.db, sendEmail: rec.send },
+      { appointmentId: apptId, message: 'Mornings are better' },
+    );
+    expect(r.sent).toBe(1);
+    expect(rec.mails[0]!.to).toBe('sarah@test.example'); // the createdBy staff
+    expect(rec.mails[0]!.body).toContain('Mornings are better');
   });
 });
 

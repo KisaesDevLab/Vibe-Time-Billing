@@ -14,8 +14,10 @@ import {
   appUsers,
   appointmentParticipants,
   appointmentStaff,
+  appointmentTypes,
   appointments,
   clientContacts,
+  engagements,
   persons,
   staffNotifications,
 } from '@vibe/db/schema';
@@ -40,6 +42,46 @@ export type ProviderJobResult = {
 
 function locationText(location: string, detail: string | null | undefined): string {
   return detail && detail.trim() ? detail : location;
+}
+
+/**
+ * Build the provider event body: appointment type, the other staff on the
+ * appointment, the linked engagement, and any internal notes — so the staff
+ * member's own calendar event carries the booking context.
+ */
+async function buildDescription(
+  db: Database,
+  appt: typeof appointments.$inferSelect,
+  staffId: string,
+): Promise<string> {
+  const lines: string[] = [];
+  if (appt.appointmentTypeId) {
+    const [t] = await db
+      .select({ name: appointmentTypes.name })
+      .from(appointmentTypes)
+      .where(eq(appointmentTypes.id, appt.appointmentTypeId))
+      .limit(1);
+    if (t?.name) lines.push(`Type: ${t.name}`);
+  }
+  const others = await db
+    .select({ name: appUsers.fullName })
+    .from(appointmentStaff)
+    .innerJoin(appUsers, eq(appUsers.id, appointmentStaff.staffId))
+    .where(and(eq(appointmentStaff.appointmentId, appt.id), ne(appointmentStaff.staffId, staffId)));
+  const otherNames = others.map((o) => o.name).filter(Boolean);
+  if (otherNames.length) lines.push(`With: ${otherNames.join(', ')}`);
+  if (appt.engagementId) {
+    const [e] = await db
+      .select({ name: engagements.name })
+      .from(engagements)
+      .where(eq(engagements.id, appt.engagementId))
+      .limit(1);
+    if (e?.name) lines.push(`Engagement: ${e.name}`);
+  }
+  if (appt.internalNotes && appt.internalNotes.trim()) {
+    lines.push('', appt.internalNotes.trim());
+  }
+  return lines.join('\n');
 }
 
 async function attendeeEmails(
@@ -142,6 +184,7 @@ export async function runAppointmentProviderWrite(
   }
   try {
     const attendees = await attendeeEmails(db, job.appointmentId, job.staffId);
+    const description = await buildDescription(db, appt, job.staffId);
     const { eventId, providerEventId } = await svc.createEvent(
       { db, fetchImpl },
       {
@@ -154,6 +197,7 @@ export async function runAppointmentProviderWrite(
           start: appt.startsAt,
           end: appt.endsAt,
           location: locationText(appt.location, appt.locationDetail),
+          description,
           attendees,
         },
         actorAppUserId: appt.createdById ?? undefined,
@@ -196,6 +240,7 @@ export async function runAppointmentProviderUpdate(
 
   const svc = new CalendarWriteService();
   try {
+    const description = await buildDescription(db, appt, job.staffId);
     await svc.updateEvent(
       { db, fetchImpl },
       {
@@ -207,6 +252,7 @@ export async function runAppointmentProviderUpdate(
           start: appt.startsAt,
           end: appt.endsAt,
           location: locationText(appt.location, appt.locationDetail),
+          description,
         },
         actorAppUserId: appt.createdById ?? undefined,
       },
