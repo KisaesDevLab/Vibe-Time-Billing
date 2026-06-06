@@ -2706,6 +2706,39 @@ export const savedReports = pgTable(
 );
 
 // =====================================================================
+// TABLE: saved_kanban_view (0122)
+// Per-user named "column views" for the engagements kanban board.
+// visible_columns is an ordered array of workflow_state keys. Private to
+// the owner (no shared flag, unlike saved_report).
+// =====================================================================
+
+export const savedKanbanViews = pgTable(
+  'saved_kanban_view',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    boardType: text('board_type').notNull().default('engagement'),
+    visibleColumns: jsonb('visible_columns').notNull().default([]).$type<string[]>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    ownerIdx: index('saved_kanban_view_owner_idx').on(t.ownerId, t.boardType),
+    ownerBoardNameUk: uniqueIndex('saved_kanban_view_owner_board_name_uk').on(
+      t.ownerId,
+      t.boardType,
+      t.name,
+    ),
+  }),
+);
+
+// =====================================================================
 // TABLE: holiday_calendar
 // Firm holidays + per-user PTO. app_user_id NULL means firm-wide.
 // =====================================================================

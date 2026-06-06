@@ -13,6 +13,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Tabs, tokens, type SortDir 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { EngagementsKanban, type StatusColumn } from './EngagementsKanban';
+import { KanbanViewsMenu } from './engagements/KanbanViewsMenu';
 
 type WorkflowState =
   | 'NO_STATUS'
@@ -160,19 +161,29 @@ export function EngagementsPage(): JSX.Element {
   });
   const [kanbanGearOpen, setKanbanGearOpen] = useState(false);
 
+  function persistHidden(next: Set<string>): void {
+    try {
+      localStorage.setItem('__vibe_eng_kanban_hidden', JSON.stringify(Array.from(next)));
+    } catch {
+      // Storage may be disabled — in-memory state still drives the
+      // current session.
+    }
+  }
+
   function toggleKanbanCol(state: string): void {
     setHiddenKanbanCols((prev) => {
       const next = new Set(prev);
       if (next.has(state)) next.delete(state);
       else next.add(state);
-      try {
-        localStorage.setItem('__vibe_eng_kanban_hidden', JSON.stringify(Array.from(next)));
-      } catch {
-        // Storage may be disabled — in-memory state still drives the
-        // current session.
-      }
+      persistHidden(next);
       return next;
     });
+  }
+
+  // Apply a saved view's hidden-column set (from the Views menu).
+  function applyHidden(next: Set<string>): void {
+    setHiddenKanbanCols(next);
+    persistHidden(next);
   }
 
   const [sortBy, setSortBy] = useState<{ col: string; dir: SortDir }>({ col: '', dir: null });
@@ -496,6 +507,13 @@ export function EngagementsPage(): JSX.Element {
                 ▦ Board
               </Button>
             </span>
+            {view === 'kanban' && (
+              <KanbanViewsMenu
+                columns={statusCols}
+                hidden={hiddenKanbanCols}
+                onApply={applyHidden}
+              />
+            )}
             {view === 'kanban' && (
               <div style={{ position: 'relative' }}>
                 <Button

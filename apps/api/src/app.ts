@@ -37,6 +37,7 @@ import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
 import { createTaskRouter } from './tasks/routes';
+import { createKanbanViewRouter } from './kanban-views/routes';
 // internal-files + folder-templates routers removed in Phase 0 of the
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
@@ -729,6 +730,12 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/saved-reports', auth.requireAuth, auth.requireCsrf, savedReportsRouter);
+
+  const kanbanViewRouter = createKanbanViewRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/saved-kanban-views', auth.requireAuth, auth.requireCsrf, kanbanViewRouter);
 
   const searchRouter = createSearchRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/search', auth.requireAuth, auth.requireCsrf, searchRouter);
