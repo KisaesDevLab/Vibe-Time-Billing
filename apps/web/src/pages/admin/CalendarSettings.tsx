@@ -276,7 +276,44 @@ function ProviderCard({
     return b;
   }
 
+  // Friendly text for the backend's validation error codes.
+  function friendlyError(code: string): string {
+    switch (code) {
+      case 'tenant_id_required':
+        return 'Tenant ID is required for Microsoft. Use "common" to allow work + personal accounts.';
+      case 'client_secret_required':
+        return 'Client Secret is required when first configuring this provider.';
+      case 'invalid_body':
+        return 'Client ID is required (and must be valid).';
+      case 'appliance_locked':
+        return 'The appliance is locked — an admin must unlock encryption before saving provider credentials.';
+      case 'unknown_provider':
+        return 'Unknown provider.';
+      default:
+        return code;
+    }
+  }
+
   async function save(): Promise<void> {
+    // Client-side guards so the user gets a clear message instead of a raw code.
+    if (!clientId.trim()) {
+      setMsg({ ok: false, text: 'Client ID is required.' });
+      return;
+    }
+    if (provider === 'microsoft' && !tenantId.trim()) {
+      setMsg({
+        ok: false,
+        text: 'Tenant ID is required. Use "common" for work + personal accounts.',
+      });
+      return;
+    }
+    if (!status?.configured && !clientSecret.trim()) {
+      setMsg({
+        ok: false,
+        text: 'Client Secret is required when first configuring this provider.',
+      });
+      return;
+    }
     setBusy(true);
     setMsg(null);
     try {
@@ -288,7 +325,10 @@ function ProviderCard({
       setMsg({ ok: true, text: 'Saved.' });
       onSaved();
     } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : 'save_failed' });
+      setMsg({
+        ok: false,
+        text: friendlyError(err instanceof Error ? err.message : 'save_failed'),
+      });
     } finally {
       setBusy(false);
     }
@@ -349,12 +389,18 @@ function ProviderCard({
           placeholder={status?.configured ? '•••• (configured — re-enter to change)' : ''}
         />
         {provider === 'microsoft' && (
-          <Input
-            label="Tenant ID"
-            value={tenantId}
-            onChange={(e) => setTenantId(e.target.value)}
-            placeholder={status?.hasTenant ? '•••• (configured)' : ''}
-          />
+          <div>
+            <Input
+              label="Tenant ID"
+              value={tenantId}
+              onChange={(e) => setTenantId(e.target.value)}
+              placeholder={status?.hasTenant ? '•••• (configured — re-enter to change)' : 'common'}
+            />
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '4px 0 0' }}>
+              Use <code>common</code> to allow both work/school and personal Microsoft accounts, or
+              paste your directory (tenant) ID to restrict sign-in to your organization.
+            </p>
+          </div>
         )}
         <Input
           label="Client Secret"
