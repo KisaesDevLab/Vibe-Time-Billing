@@ -14,10 +14,35 @@ import type { Redis } from 'ioredis';
 
 import { checkAndIncrement } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
-import { appointmentParticipants, appointments, clientContacts, persons } from '@vibe/db/schema';
+import {
+  appointmentParticipants,
+  appointments,
+  clientContacts,
+  firmSettings,
+  persons,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
+import { decryptSmsConfig } from '../messaging/config';
+
+/** Decrypt every firm's stored SMS config and collect Twilio auth tokens, for
+ *  inbound-webhook signature verification (SMS is configured in the DB, not
+ *  env). Single-firm appliance → usually one. Best-effort; skips undecryptable. */
+async function loadFirmTwilioAuthTokens(db: Database): Promise<string[]> {
+  const rows = await db.select({ enc: firmSettings.smsConfigEncrypted }).from(firmSettings);
+  const out: string[] = [];
+  for (const r of rows) {
+    if (!r.enc) continue;
+    try {
+      const cfg = decryptSmsConfig(r.enc);
+      if (cfg.provider === 'twilio' && cfg.authToken) out.push(cfg.authToken);
+    } catch {
+      /* skip rows we can't decrypt */
+    }
+  }
+  return out;
+}
 
 export interface AppointmentTwilioDeps {
   db: Database | null;
@@ -75,11 +100,23 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
   const router = express.Router();
   router.use(express.urlencoded({ extended: false }));
   const nowFn = deps.now ?? ((): Date => new Date());
-  const tokens =
-    deps.authTokens ??
-    [process.env['SMS_TWILIO_AUTH_TOKEN'], process.env['VOICE_TWILIO_AUTH_TOKEN']].filter(
-      (t): t is string => Boolean(t),
-    );
+  const envTokens = [
+    process.env['SMS_TWILIO_AUTH_TOKEN'],
+    process.env['VOICE_TWILIO_AUTH_TOKEN'],
+  ].filter((t): t is string => Boolean(t));
+
+  // Verification tokens = env creds + the firm's DB-configured Twilio auth
+  // token(s) (Admin → Messaging). The latter matters because SMS is configured
+  // in the DB, not env. Cached briefly to avoid decrypting on every webhook.
+  let dbTokenCache: { at: number; tokens: string[] } | null = null;
+  async function resolveTokens(): Promise<string[]> {
+    if (deps.authTokens) return deps.authTokens; // test seam
+    const now = nowFn().getTime();
+    if (!dbTokenCache || now - dbTokenCache.at > 30_000) {
+      dbTokenCache = { at: now, tokens: deps.db ? await loadFirmTwilioAuthTokens(deps.db) : [] };
+    }
+    return [...envTokens, ...dbTokenCache.tokens];
+  }
 
   // Per-IP rate limit.
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -108,11 +145,19 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
     for (const [k, v] of Object.entries(req.body ?? {})) {
       if (typeof v === 'string') params[k] = v;
     }
-    if (!twilioSignatureValid(tokens, fullUrl, params, req.get('X-Twilio-Signature'))) {
-      res.status(403).send('invalid_signature');
-      return;
-    }
-    next();
+    const header = req.get('X-Twilio-Signature');
+    void resolveTokens()
+      .then((toks) => {
+        if (!twilioSignatureValid(toks, fullUrl, params, header)) {
+          res.status(403).send('invalid_signature');
+          return;
+        }
+        next();
+      })
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'twilio signature token resolution failed');
+        res.status(403).send('invalid_signature');
+      });
   });
 
   /** Flip a participant's RSVP to confirmed. Returns true when a row changed. */

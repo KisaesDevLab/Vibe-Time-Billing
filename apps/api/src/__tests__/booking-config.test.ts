@@ -107,10 +107,10 @@ describe('appointment types CRUD', () => {
     expect(create.status).toBe(403);
   });
 
-  it('seed-defaults inserts 5 then is idempotent', async () => {
+  it('seed-defaults inserts the CPA default set then is idempotent', async () => {
     const app = buildApp();
     const first = await request(app).post('/api/staff/admin/appointment-types/seed-defaults');
-    expect(first.body.inserted).toBe(5);
+    expect(first.body.inserted).toBe(7);
     const second = await request(app).post('/api/staff/admin/appointment-types/seed-defaults');
     expect(second.body.inserted).toBe(0);
   });
