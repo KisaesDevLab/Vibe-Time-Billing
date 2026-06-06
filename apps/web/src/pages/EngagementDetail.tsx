@@ -903,8 +903,88 @@ export function EngagementDetailPage(): JSX.Element {
 
       <EngagementNotes engagementId={id ?? ''} />
 
+      {id && <EngagementAppointmentsCard engagementId={id} clientId={engagement.clientId} />}
+
       {id && <EngagementStatusHistoryCard engagementId={id} />}
     </div>
+  );
+}
+
+interface EngagementApptRow {
+  id: string;
+  title: string;
+  startsAt: string;
+  status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  staff: { id: string; name: string }[];
+}
+
+function EngagementAppointmentsCard({
+  engagementId,
+  clientId,
+}: {
+  engagementId: string;
+  clientId: string;
+}): JSX.Element {
+  const [rows, setRows] = useState<EngagementApptRow[]>([]);
+  useEffect(() => {
+    void api<{ items: EngagementApptRow[] }>(
+      `/api/staff/appointments/list?engagementId=${engagementId}&pageSize=50`,
+    )
+      .then((r) => setRows(r.items ?? []))
+      .catch(() => undefined);
+  }, [engagementId]);
+
+  return (
+    <Card
+      title={`Appointments (${rows.length})`}
+      action={
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() =>
+            (window.location.href = `/appointments#book?clientId=${clientId}&engagementId=${engagementId}`)
+          }
+        >
+          Book appointment
+        </Button>
+      }
+    >
+      <Table<EngagementApptRow>
+        columns={[
+          {
+            key: 'when',
+            header: 'When',
+            render: (r) => new Date(r.startsAt).toLocaleString(),
+          },
+          { key: 'title', header: 'Subject', render: (r) => r.title },
+          {
+            key: 'staff',
+            header: 'Staff',
+            render: (r) => r.staff.map((s) => s.name).join(', ') || '—',
+          },
+          {
+            key: 'status',
+            header: 'Status',
+            render: (r) => (
+              <Pill
+                tone={
+                  r.status === 'SCHEDULED'
+                    ? 'accent'
+                    : r.status === 'COMPLETED'
+                      ? 'success'
+                      : 'neutral'
+                }
+              >
+                {r.status.toLowerCase()}
+              </Pill>
+            ),
+          },
+        ]}
+        rows={rows}
+        rowKey={(r) => r.id}
+        empty="No appointments for this engagement."
+      />
+    </Card>
   );
 }
 

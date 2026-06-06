@@ -65,6 +65,21 @@ interface ApptListRow {
   hasPendingReschedule: boolean;
 }
 
+/** A small green (free) / red (busy) availability dot. */
+function Pip({ free }: { free: boolean }): JSX.Element {
+  return (
+    <span
+      style={{
+        width: 7,
+        height: 7,
+        borderRadius: '50%',
+        background: free ? tokens.color.success : tokens.color.danger,
+        display: 'inline-block',
+      }}
+    />
+  );
+}
+
 const AVATAR_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#16a34a', '#ca8a04', '#db2777', '#475569'];
 function avatarColor(id: string): string {
   let h = 0;
@@ -360,9 +375,8 @@ function ListTab(): JSX.Element {
                 }}
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
-              </button>
-            ) as // reason: Table types header as string but renders it as a node;
-            // a JSX header is safe at runtime.
+              </button> // reason: Table types header as string but renders it as a node;
+            ) as // a JSX header is safe at runtime.
             unknown as string,
             render: (r) => (
               <div>
@@ -1599,46 +1613,89 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                   ) : slots.length === 0 ? (
                     <p style={{ fontSize: 13, color: tokens.color.textMuted }}>{slotMsg}</p>
                   ) : (
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
-                        gap: 8,
-                      }}
-                    >
-                      {slots.map((s) => {
-                        const sel = slot?.start === s.start;
-                        return (
-                          <button
-                            key={s.start}
-                            type="button"
-                            disabled={!s.available}
-                            onClick={() => setSlot(s)}
-                            title={s.available ? 'Available' : 'Unavailable'}
-                            style={{
-                              padding: '9px 6px',
-                              borderRadius: tokens.radius.sm,
-                              fontSize: 13,
-                              cursor: s.available ? 'pointer' : 'not-allowed',
-                              border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
-                              background: sel
-                                ? tokens.color.accent
-                                : s.available
-                                  ? tokens.color.surface
-                                  : tokens.color.bg,
-                              color: sel
-                                ? '#fff'
-                                : s.available
-                                  ? tokens.color.text
-                                  : tokens.color.textMuted,
-                              textDecoration: s.available ? 'none' : 'line-through',
-                            }}
-                          >
-                            {fmtTime(s.start)}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <>
+                      {selStaff.length > 1 && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            gap: 14,
+                            fontSize: 11,
+                            color: tokens.color.textMuted,
+                            marginBottom: 8,
+                          }}
+                        >
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <Pip free /> available
+                          </span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <Pip free={false} /> busy
+                          </span>
+                          <span>(one dot per staff)</span>
+                        </div>
+                      )}
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
+                          gap: 8,
+                        }}
+                      >
+                        {slots.map((s) => {
+                          const sel = slot?.start === s.start;
+                          return (
+                            <button
+                              key={s.start}
+                              type="button"
+                              disabled={!s.available}
+                              onClick={() => setSlot(s)}
+                              title={
+                                selStaff.length > 1
+                                  ? s.staffAvailability
+                                      .map(
+                                        (p) =>
+                                          `${staffName(p.staffId)}: ${p.free ? 'free' : 'busy'}`,
+                                      )
+                                      .join(', ')
+                                  : s.available
+                                    ? 'Available'
+                                    : 'Unavailable'
+                              }
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                gap: 4,
+                                padding: '9px 6px',
+                                borderRadius: tokens.radius.sm,
+                                fontSize: 13,
+                                cursor: s.available ? 'pointer' : 'not-allowed',
+                                border: `1.5px solid ${sel ? tokens.color.accent : tokens.color.border}`,
+                                background: sel
+                                  ? tokens.color.accent
+                                  : s.available
+                                    ? tokens.color.surface
+                                    : tokens.color.bg,
+                                color: sel
+                                  ? '#fff'
+                                  : s.available
+                                    ? tokens.color.text
+                                    : tokens.color.textMuted,
+                                textDecoration: s.available ? 'none' : 'line-through',
+                              }}
+                            >
+                              {fmtTime(s.start)}
+                              {selStaff.length > 1 && (
+                                <span style={{ display: 'inline-flex', gap: 3 }}>
+                                  {s.staffAvailability.map((p) => (
+                                    <Pip key={p.staffId} free={p.free} />
+                                  ))}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
                   )}
                 </>
               )}

@@ -7,9 +7,11 @@
 // Redis at connect time. On success we store the (encrypted) tokens, fetch
 // the calendar list, and bounce back to the staff Account page.
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { eq } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 
+import { checkAndIncrement } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
 import { staffCalendarConnections } from '@vibe/db/schema';
 
@@ -28,6 +30,7 @@ import { getProviderCreds } from './store';
 
 export interface CalendarPublicDeps {
   db: Database | null;
+  redis?: Redis | null;
   stateStore: OAuthStateStore;
   redirectBase: string;
   /** Where to send the browser after the callback (the staff Account page). */
@@ -40,9 +43,43 @@ function isProvider(v: string): v is CalendarProvider {
   return (PROVIDERS as readonly string[]).includes(v);
 }
 
+const IP_WINDOW_SECONDS = 60;
+const IP_MAX_PER_WINDOW = 30;
+
+function clientIp(req: Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0];
+  return (first ?? req.ip ?? '0.0.0.0').trim();
+}
+
 export function createCalendarPublicRouter(deps: CalendarPublicDeps): Router {
   const router = express.Router();
   const doFetch = deps.fetchImpl ?? fetch;
+
+  // Per-IP rate limit on the public callback. The one-time `state` already
+  // bounds replay; this caps brute-force attempts against state/code params.
+  const redis = deps.redis;
+  if (redis) {
+    router.use((req: Request, res: Response, next: NextFunction) => {
+      void checkAndIncrement(redis, {
+        key: `rl:caloauth:ip:${clientIp(req)}`,
+        windowSeconds: IP_WINDOW_SECONDS,
+        max: IP_MAX_PER_WINDOW,
+      })
+        .then((limit) => {
+          if (!limit.allowed) {
+            res.setHeader('Retry-After', String(limit.retryAfterSeconds));
+            res.status(429).send('rate_limited');
+            return;
+          }
+          next();
+        })
+        .catch((err: unknown) => {
+          logger.warn({ err }, 'calendar oauth rate limiter error; allowing');
+          next();
+        });
+    });
+  }
   const accountUrl = (status: 'success' | 'error'): string =>
     `${deps.appBaseUrl.replace(/\/$/, '')}/account?cal_connect=${status}`;
 

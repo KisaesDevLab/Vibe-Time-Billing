@@ -4,9 +4,11 @@
 // a signed token URL; this router renders a tiny branded confirm/decline
 // page and records the response. Mounted at /api/calendar/rsvp (public).
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { eq } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 
+import { checkAndIncrement } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
 import { calendarEvents, calendarRsvpTokens, clientContacts, persons } from '@vibe/db/schema';
 
@@ -15,8 +17,19 @@ import { CalendarWriteService } from './write-service';
 
 export interface RsvpDeps {
   db: Database | null;
+  /** Redis for per-IP rate limiting (optional — skipped when absent). */
+  redis?: Redis | null;
   /** Injectable for tests; defaults to global fetch (calendar write-back). */
   fetchImpl?: typeof fetch;
+}
+
+const IP_WINDOW_SECONDS = 60;
+const IP_MAX_PER_WINDOW = 20;
+
+function clientIp(req: Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0];
+  return (first ?? req.ip ?? '0.0.0.0').trim();
 }
 
 interface Attendee {
@@ -40,6 +53,31 @@ export function createRsvpRouter(deps: RsvpDeps): Router {
   const router = express.Router();
   const writeService = new CalendarWriteService();
   const doFetch = deps.fetchImpl ?? fetch;
+
+  // Per-IP rate limit (20/min) — RSVP links are low-frequency; the token
+  // itself is the auth, this just blunts brute-force token guessing.
+  const redis = deps.redis;
+  if (redis) {
+    router.use((req: Request, res: Response, next: NextFunction) => {
+      void checkAndIncrement(redis, {
+        key: `rl:rsvp:ip:${clientIp(req)}`,
+        windowSeconds: IP_WINDOW_SECONDS,
+        max: IP_MAX_PER_WINDOW,
+      })
+        .then((limit) => {
+          if (!limit.allowed) {
+            res.setHeader('Retry-After', String(limit.retryAfterSeconds));
+            res.status(429).send(page('Too many requests', '<p>Please try again shortly.</p>'));
+            return;
+          }
+          next();
+        })
+        .catch((err: unknown) => {
+          logger.warn({ err }, 'rsvp rate limiter error; allowing');
+          next();
+        });
+    });
+  }
 
   async function resolve(token: string) {
     if (!deps.db) return null;

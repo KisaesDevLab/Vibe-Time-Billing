@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { and, asc, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -54,10 +55,36 @@ import { bullBookingQueue, type BookingQueue } from './queue';
 export interface BookingRoutesDeps extends RbacDeps {
   db: Database | null;
   queue?: BookingQueue;
+  redis?: Redis | null;
   /** Test seam — free/busy source for slot re-validation. */
   busyProvider?: StaffBusyProvider;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+}
+
+/**
+ * Best-effort invalidation of the BK-2 slot cache (`slots:{sortedIds}:…`)
+ * for any cached combination that includes one of the affected staff. The
+ * 2-minute TTL bounds staleness; this just makes a freshly-booked slot
+ * disappear immediately. Never throws.
+ */
+async function bustSlotCache(redis: Redis | null | undefined, staffIds: string[]): Promise<void> {
+  if (!redis || staffIds.length === 0) return;
+  try {
+    const affected = new Set(staffIds);
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', 'slots:*', 'COUNT', 200);
+      cursor = next;
+      const toDelete = keys.filter((k) => {
+        const ids = k.split(':')[1]?.split(',') ?? [];
+        return ids.some((id) => affected.has(id));
+      });
+      if (toDelete.length) await redis.del(...toDelete);
+    } while (cursor !== '0');
+  } catch (err) {
+    logger.warn({ err }, 'slot cache bust failed');
+  }
 }
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?/;
@@ -201,6 +228,11 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       const typeId = typeof req.query['typeId'] === 'string' ? req.query['typeId'] : null;
       if (typeId && /^[0-9a-fA-F-]{36}$/.test(typeId)) {
         conds.push(eq(appointments.appointmentTypeId, typeId));
+      }
+      const engagementId =
+        typeof req.query['engagementId'] === 'string' ? req.query['engagementId'] : null;
+      if (engagementId && /^[0-9a-fA-F-]{36}$/.test(engagementId)) {
+        conds.push(eq(appointments.engagementId, engagementId));
       }
       const from = typeof req.query['from'] === 'string' ? new Date(req.query['from']) : null;
       if (from && !Number.isNaN(from.getTime())) conds.push(gte(appointments.startsAt, from));
@@ -497,6 +529,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
             logger.warn({ err, appointmentId }, 'enqueue confirmation failed'),
           );
       }
+      await bustSlotCache(deps.redis, staffIds);
 
       await emitAudit(db, {
         action: 'CREATE',
@@ -687,6 +720,10 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       await queue
         .cancellationSend({ appointmentId: appt.id, cancelledBy: 'staff' })
         .catch((err: unknown) => logger.warn({ err }, 'enqueue cancellation failed'));
+      await bustSlotCache(
+        deps.redis,
+        staffRows.map((r) => r.staffId),
+      );
       await emitAudit(db, {
         action: 'UPDATE',
         entityType: 'appointment',
@@ -950,6 +987,7 @@ async function rescheduleAppointment(
   await queue
     .rescheduleConfirmationSend({ appointmentId: appt.id })
     .catch((err: unknown) => logger.warn({ err }, 'enqueue reschedule confirmation failed'));
+  await bustSlotCache(deps.redis, staffIds);
   await emitAudit(db, {
     action: 'UPDATE',
     entityType: 'appointment',

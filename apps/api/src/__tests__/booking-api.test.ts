@@ -123,6 +123,7 @@ function buildApp(opts: {
   queue: BookingQueue;
   busyProvider: StaffBusyProvider;
   roles?: RoleSlug[];
+  redis?: unknown;
 }): express.Express {
   const app = express();
   app.use(express.json());
@@ -139,6 +140,7 @@ function buildApp(opts: {
     fakeUserRoles,
     queue: opts.queue,
     busyProvider: opts.busyProvider,
+    redis: opts.redis as never,
     now: NOW,
   };
   app.use('/api/staff/appointments', createBookingRouter(deps));
@@ -559,5 +561,41 @@ describe('GET /list', () => {
     const byQuery = await request(app).get('/api/staff/appointments/list?q=Alph');
     expect(byQuery.body.total).toBe(1);
     expect(byQuery.body.items[0].title).toBe('Alpha');
+  });
+});
+
+describe('slot cache busting on book', () => {
+  it('evicts cached slot keys that include a booked staff member', async () => {
+    const scanned: string[] = [];
+    const deleted: string[] = [];
+    // Minimal Redis stub: one SCAN page, then DEL records the keys removed.
+    const fakeRedisStub = {
+      scan: async (cursor: string) => {
+        scanned.push(cursor);
+        return [
+          '0',
+          [`slots:${seed.appUserId}:2030-01-07:60`, 'slots:someoneelse:2030-01-07:60'],
+        ] as [string, string[]];
+      },
+      del: async (...keys: string[]) => {
+        deleted.push(...keys);
+        return keys.length;
+      },
+    };
+    const { queue } = recorder();
+    const app = buildApp({ queue, busyProvider: fakeBusy({}), redis: fakeRedisStub });
+    const res = await request(app)
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId],
+        subject: 'Cache test',
+        startsAt: `${MONDAY}T09:00:00.000Z`,
+        endsAt: `${MONDAY}T10:00:00.000Z`,
+        durationMinutes: 60,
+        location: 'VIDEO',
+      });
+    expect(res.status).toBe(201);
+    expect(deleted).toContain(`slots:${seed.appUserId}:2030-01-07:60`);
+    expect(deleted).not.toContain('slots:someoneelse:2030-01-07:60');
   });
 });

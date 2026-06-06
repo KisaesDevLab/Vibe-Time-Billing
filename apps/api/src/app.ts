@@ -892,13 +892,14 @@ export function createApp(deps: AppDeps): Express {
     '/api/calendar',
     createCalendarPublicRouter({
       db: deps.db,
+      redis: deps.redis,
       stateStore: calendarStateStore,
       redirectBase: config.APP_BASE_URL,
       appBaseUrl: config.APP_BASE_URL,
     }),
   );
   // 0109 — PUBLIC one-click RSVP (no login; token-authenticated).
-  app.use('/api/calendar/rsvp', createRsvpRouter({ db: deps.db }));
+  app.use('/api/calendar/rsvp', createRsvpRouter({ db: deps.db, redis: deps.redis }));
 
   // BK-4 — PUBLIC appointment cancel / reschedule-request (token, no login).
   app.use(
@@ -1215,6 +1216,7 @@ export function createApp(deps: AppDeps): Express {
   // (POST /) + single-lead cancel still serve old callers + tests.
   const bookingRouter = createBookingRouter({
     db: deps.db,
+    redis: deps.redis,
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, bookingRouter);
