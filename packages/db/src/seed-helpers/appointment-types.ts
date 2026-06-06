@@ -14,6 +14,7 @@ export interface AppointmentTypeDefault {
   defaultDurationMinutes: number;
   defaultLocationType: 'VIDEO' | 'PHONE' | 'IN_PERSON';
   color: string;
+  description: string;
 }
 
 export const DEFAULT_APPOINTMENT_TYPES: ReadonlyArray<AppointmentTypeDefault> = [
@@ -22,30 +23,49 @@ export const DEFAULT_APPOINTMENT_TYPES: ReadonlyArray<AppointmentTypeDefault> = 
     defaultDurationMinutes: 60,
     defaultLocationType: 'IN_PERSON',
     color: '#2563eb',
+    description: 'First meeting with a prospective or new client.',
   },
   {
-    name: 'Tax Review',
+    name: 'Tax Preparation',
+    defaultDurationMinutes: 60,
+    defaultLocationType: 'IN_PERSON',
+    color: '#7c3aed',
+    description: 'Gather documents and prepare the return.',
+  },
+  {
+    name: 'Tax Planning',
     defaultDurationMinutes: 45,
     defaultLocationType: 'VIDEO',
-    color: '#7c3aed',
+    color: '#0891b2',
+    description: 'Proactive year-round tax strategy session.',
   },
   {
-    name: 'Planning Meeting',
+    name: 'Tax Return Review',
+    defaultDurationMinutes: 45,
+    defaultLocationType: 'VIDEO',
+    color: '#db2777',
+    description: 'Walk through the completed return before filing.',
+  },
+  {
+    name: 'Advisory / Planning Meeting',
     defaultDurationMinutes: 30,
     defaultLocationType: 'PHONE',
-    color: '#0891b2',
+    color: '#16a34a',
+    description: 'General advisory or financial-planning discussion.',
   },
   {
     name: 'Document Drop-off',
     defaultDurationMinutes: 15,
     defaultLocationType: 'IN_PERSON',
-    color: '#16a34a',
+    color: '#ca8a04',
+    description: 'Quick stop to hand off paperwork.',
   },
   {
     name: 'Phone Call',
     defaultDurationMinutes: 30,
     defaultLocationType: 'PHONE',
-    color: '#ca8a04',
+    color: '#475569',
+    description: 'Scheduled phone call.',
   },
 ];
 
@@ -56,7 +76,7 @@ export const DEFAULT_APPOINTMENT_TYPES: ReadonlyArray<AppointmentTypeDefault> = 
 type Tx = PgDatabase<QueryResultHKT, any, any>;
 
 /**
- * Seed the 5 default appointment types for a firm — only when it has
+ * Seed the default appointment types for a firm — only when it has
  * none yet. Returns the number inserted (0 if the firm already had any).
  */
 export async function seedAppointmentTypes(tx: Tx, firmId: string): Promise<number> {
@@ -73,6 +93,7 @@ export async function seedAppointmentTypes(tx: Tx, firmId: string): Promise<numb
       defaultDurationMinutes: d.defaultDurationMinutes,
       defaultLocationType: d.defaultLocationType,
       color: d.color,
+      description: d.description,
       sortOrder: i,
     })),
   );

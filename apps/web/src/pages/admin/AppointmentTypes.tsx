@@ -254,7 +254,7 @@ export function AppointmentTypesPage(): JSX.Element {
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
             No types yet.{' '}
             <Button size="sm" variant="secondary" onClick={() => void seedDefaults()}>
-              Add 5 defaults
+              Add default types
             </Button>
           </p>
         )}
