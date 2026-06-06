@@ -73,71 +73,71 @@ const ALLOCATION_METHODS = [
   'CUSTOM_WEIGHTED',
 ] as const;
 
-const FirmSettingsPatchSchema = z
-  .object({
-    adjustmentApprovalThresholdCents: z.number().int().nonnegative().optional(),
-    aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
-    timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
-    stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
-    lateEntryAlertDays: z.number().int().min(1).max(90).optional(),
-    lateEntryLockoutDays: z.number().int().min(1).max(365).optional(),
-    invoiceNumberingPrefix: z.string().max(12).optional(),
-    portalEnabled: z.boolean().optional(),
-    portalSubdomain: z
-      .string()
-      .regex(/^[a-z0-9-]+$/)
-      .max(63)
-      .nullable()
-      .optional(),
-    brandDisplayName: z.string().max(120).nullable().optional(),
-    brandLogoUrl: z.string().url().max(500).nullable().optional(),
-    brandAccentColor: z
-      .string()
-      .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
-      .nullable()
-      .optional(),
-    brandSupportEmail: z.string().email().max(254).nullable().optional(),
-    brandSupportPhone: z.string().max(40).nullable().optional(),
-    brandSupportFax: z.string().max(40).nullable().optional(),
-    brandSupportWeb: z.string().max(254).nullable().optional(),
-    brandFooterHtml: z.string().max(4000).nullable().optional(),
-    // 0053 — Billing + A/R block.
-    arTermsText: z.string().max(4000).nullable().optional(),
-    statementEmailMessage: z.string().max(4000).nullable().optional(),
-    defaultStatementFormat: z.string().max(80).optional(),
-    achProcessingEnabled: z.boolean().optional(),
-    creditCardProcessingEnabled: z.boolean().optional(),
-    assessServiceChargesEnabled: z.boolean().optional(),
-    serviceChargeRateBps: z.number().int().min(0).max(10_000).optional(),
-    dunningMessage1: z.string().max(2000).nullable().optional(),
-    dunningMessage2: z.string().max(2000).nullable().optional(),
-    dunningMessage3: z.string().max(2000).nullable().optional(),
-    dunningMessage4: z.string().max(2000).nullable().optional(),
-    dunningMessage5: z.string().max(2000).nullable().optional(),
-    // Phase 20 #4 — fee structures the firm wants to expose.
-    enabledFeeStructures: z.array(z.enum(FEE_STRUCTURES)).min(1).max(5).optional(),
-    // Phase 20 #8 — firm-wide billable target.
-    billableTargetHoursPerMonth: z.number().int().min(40).max(220).optional(),
-    // Phase 23 #6 — firm AI provider override.
-    aiProvider: z.enum(['local', 'cloud']).nullable().optional(),
-    // Phase 13 #6 — invoice template picker.
-    invoiceTemplateStyle: z.enum(['modern', 'classic', 'minimal']).optional(),
-    // v2 — firm-default surcharge label inherited by engagements
-    // whose surcharge_label is null. Engagement can still override.
-    defaultSurchargeLabel: z.string().min(1).max(80).optional(),
-  })
-  .strict();
+const FirmSettingsPatchSchema = z.object({
+  adjustmentApprovalThresholdCents: z.number().int().nonnegative().optional(),
+  aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
+  timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
+  stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
+  lateEntryAlertDays: z.number().int().min(1).max(90).optional(),
+  lateEntryLockoutDays: z.number().int().min(1).max(365).optional(),
+  invoiceNumberingPrefix: z.string().max(12).optional(),
+  portalEnabled: z.boolean().optional(),
+  portalSubdomain: z
+    .string()
+    .regex(/^[a-z0-9-]+$/)
+    .max(63)
+    .nullable()
+    .optional(),
+  brandDisplayName: z.string().max(120).nullable().optional(),
+  brandLogoUrl: z.string().url().max(500).nullable().optional(),
+  brandAccentColor: z
+    .string()
+    .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
+    .nullable()
+    .optional(),
+  brandSupportEmail: z.string().email().max(254).nullable().optional(),
+  brandSupportPhone: z.string().max(40).nullable().optional(),
+  brandSupportFax: z.string().max(40).nullable().optional(),
+  brandSupportWeb: z.string().max(254).nullable().optional(),
+  brandFooterHtml: z.string().max(4000).nullable().optional(),
+  // 0053 — Billing + A/R block.
+  arTermsText: z.string().max(4000).nullable().optional(),
+  statementEmailMessage: z.string().max(4000).nullable().optional(),
+  defaultStatementFormat: z.string().max(80).optional(),
+  achProcessingEnabled: z.boolean().optional(),
+  creditCardProcessingEnabled: z.boolean().optional(),
+  assessServiceChargesEnabled: z.boolean().optional(),
+  serviceChargeRateBps: z.number().int().min(0).max(10_000).optional(),
+  dunningMessage1: z.string().max(2000).nullable().optional(),
+  dunningMessage2: z.string().max(2000).nullable().optional(),
+  dunningMessage3: z.string().max(2000).nullable().optional(),
+  dunningMessage4: z.string().max(2000).nullable().optional(),
+  dunningMessage5: z.string().max(2000).nullable().optional(),
+  // Phase 20 #4 — fee structures the firm wants to expose.
+  enabledFeeStructures: z.array(z.enum(FEE_STRUCTURES)).min(1).max(5).optional(),
+  // Phase 20 #8 — firm-wide billable target.
+  billableTargetHoursPerMonth: z.number().int().min(40).max(220).optional(),
+  // Phase 23 #6 — firm AI provider override.
+  aiProvider: z.enum(['local', 'cloud']).nullable().optional(),
+  // Phase 13 #6 — invoice template picker.
+  invoiceTemplateStyle: z.enum(['modern', 'classic', 'minimal']).optional(),
+  // v2 — firm-default surcharge label inherited by engagements
+  // whose surcharge_label is null. Engagement can still override.
+  defaultSurchargeLabel: z.string().min(1).max(80).optional(),
+});
+// NOT .strict(): the PATCH handler validates the SAME combined body against
+// both this schema and FirmPatchSchema. Zod's default STRIP behavior drops the
+// other table's fields so each parse keeps only its own — strict would reject
+// the foreign keys and 400 every mixed save.
 
-const FirmPatchSchema = z
-  .object({
-    // Phase 20 #5 — default allocation method.
-    defaultAllocationMethod: z.enum(ALLOCATION_METHODS).optional(),
-    // Phase 20 #6 — fiscal year start month (1..12).
-    fiscalYearStartMonth: z.number().int().min(1).max(12).optional(),
-    name: z.string().min(1).max(200).optional(),
-    defaultTermsDays: z.number().int().min(0).max(365).optional(),
-  })
-  .strict();
+const FirmPatchSchema = z.object({
+  // Phase 20 #5 — default allocation method.
+  defaultAllocationMethod: z.enum(ALLOCATION_METHODS).optional(),
+  // Phase 20 #6 — fiscal year start month (1..12).
+  fiscalYearStartMonth: z.number().int().min(1).max(12).optional(),
+  name: z.string().min(1).max(200).optional(),
+  defaultTermsDays: z.number().int().min(0).max(365).optional(),
+});
 
 export function createAdminRouter(deps: AdminRoutesDeps): Router {
   const router = express.Router();

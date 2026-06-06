@@ -7,7 +7,7 @@ import { api } from '../../api-client';
 
 interface Token {
   id: string;
-  label: string;
+  name: string;
   status: 'ACTIVE' | 'REVOKED';
   allowedTools: string[];
   lastUsedAt: string | null;
@@ -57,7 +57,7 @@ export function ApiTokensPage(): JSX.Element {
     try {
       const r = await api<{ token: string }>('/api/staff/admin/api-tokens', {
         method: 'POST',
-        body: JSON.stringify({ label, allowedTools: Array.from(selected) }),
+        body: JSON.stringify({ name: label, allowedTools: Array.from(selected) }),
       });
       setCreatedToken(r.token);
       setLabel('');
@@ -157,7 +157,7 @@ export function ApiTokensPage(): JSX.Element {
       <Card title={`Tokens (${items.length})`}>
         <Table<Token>
           columns={[
-            { key: 'label', header: 'Label', render: (t) => t.label },
+            { key: 'name', header: 'Label', render: (t) => t.name },
             {
               key: 'tools',
               header: 'Tools',
