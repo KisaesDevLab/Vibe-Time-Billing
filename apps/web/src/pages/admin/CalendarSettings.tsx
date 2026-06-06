@@ -22,6 +22,18 @@ interface ProviderStatus {
 const REDIRECT_HINT = (provider: string): string =>
   `${window.location.origin}/api/calendar/oauth/callback/${provider}`;
 
+// Where the admin obtains the OAuth client id/secret for each provider.
+const OAUTH_CONSOLE: Record<'microsoft' | 'google', { url: string; label: string }> = {
+  microsoft: {
+    url: 'https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+    label: 'Microsoft Entra → App registrations',
+  },
+  google: {
+    url: 'https://console.cloud.google.com/apis/credentials',
+    label: 'Google Cloud Console → Credentials',
+  },
+};
+
 export function CalendarSettingsPage(): JSX.Element {
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,8 +79,13 @@ export function CalendarSettingsPage(): JSX.Element {
       )}
       <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
         Register your firm&apos;s OAuth apps so staff can connect their calendars. Secrets are
-        encrypted at rest and never shown again. See the setup guides for{' '}
-        <strong>Microsoft 365</strong> and <strong>Google Calendar</strong> in the docs.
+        encrypted at rest and never shown again. Need the steps?{' '}
+        <a
+          href="/help?article=calendar-oauth-app-registration"
+          style={{ color: tokens.color.accent }}
+        >
+          Read the step-by-step setup guide →
+        </a>
       </div>
       {loading ? (
         <div style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</div>
@@ -312,7 +329,18 @@ function ProviderCard({
     >
       <div style={{ display: 'grid', gap: tokens.space.md }}>
         <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-          Redirect URI: <code>{REDIRECT_HINT(provider)}</code>
+          Get the Client ID &amp; Secret here:{' '}
+          <a
+            href={OAUTH_CONSOLE[provider].url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: tokens.color.accent }}
+          >
+            {OAUTH_CONSOLE[provider].label} ↗
+          </a>
+        </div>
+        <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+          Redirect URI (register this on the app): <code>{REDIRECT_HINT(provider)}</code>
         </div>
         <Input
           label="Client ID"

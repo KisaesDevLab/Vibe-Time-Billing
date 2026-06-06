@@ -91,6 +91,13 @@ function KnowledgeBaseTab(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Deep link: /help?article=<slug> opens that article directly.
+  useEffect(() => {
+    const slug = new URLSearchParams(window.location.search).get('article');
+    if (slug) void openArticle(slug).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function loadCategory(slug: string): Promise<void> {
     setArticle(null);
     setActiveCat(slug);
