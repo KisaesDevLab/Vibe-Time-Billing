@@ -9,6 +9,7 @@ import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { usePermission } from '../../auth-context';
+import { RichTextEditor } from '../../proposal-editor/RichTextEditor';
 
 interface Category {
   id: string;
@@ -261,13 +262,13 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
             />
             <div>
               <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
-                Body (Markdown)
+                Body
               </div>
-              <textarea
+              <RichTextEditor
+                key={draft.id ?? 'new'}
                 value={draft.bodyMarkdown}
-                onChange={(e) => setDraft({ ...draft, bodyMarkdown: e.target.value })}
-                rows={16}
-                style={{ ...inputStyle, fontFamily: tokens.font.mono, lineHeight: 1.5 }}
+                onChange={(md) => setDraft({ ...draft, bodyMarkdown: md })}
+                placeholder="Article body — use the toolbar to format."
               />
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
