@@ -9,7 +9,7 @@
 // remounts with fresh content (avoids markdown round-trip/setContent edge cases
 // and feedback loops).
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -22,20 +22,35 @@ export interface RichTextApi {
   insertText: (text: string) => void;
 }
 
+/** A merge variable offered in the toolbar's "Insert variable" dropdown. */
+export interface RichTextVariable {
+  /** Bare token path, e.g. `client.name` (wrapped as `{{ … }}` on insert). */
+  token: string;
+  /** Friendly label shown in the dropdown (defaults to the token). */
+  label?: string;
+  /** Optional one-line description. */
+  description?: string;
+}
+
 export function RichTextEditor({
   value,
   onChange,
   placeholder,
   onReady,
+  variables,
 }: {
   value: string;
   onChange: (markdown: string) => void;
   placeholder?: string;
   /** Called when the editor is ready, exposing an imperative insert API. */
   onReady?: (api: RichTextApi) => void;
+  /** When provided, the toolbar shows an "Insert variable" dropdown of these. */
+  variables?: RichTextVariable[];
 }): JSX.Element {
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const [varOpen, setVarOpen] = useState(false);
+  const varMenuRef = useRef<HTMLDivElement | null>(null);
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -59,6 +74,16 @@ export function RichTextEditor({
       });
     }
   }, [editor]);
+
+  // Close the variable dropdown on an outside click.
+  useEffect(() => {
+    if (!varOpen) return;
+    function onDocMouseDown(e: MouseEvent): void {
+      if (varMenuRef.current && !varMenuRef.current.contains(e.target as Node)) setVarOpen(false);
+    }
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [varOpen]);
 
   if (!editor) {
     return <div style={{ fontSize: 12, color: tokens.color.textMuted }}>Loading editor…</div>;
@@ -172,6 +197,81 @@ export function RichTextEditor({
         >
           Clear
         </button>
+        {variables && variables.length > 0 && (
+          <div style={{ position: 'relative' }} ref={varMenuRef}>
+            <button
+              type="button"
+              style={btn(varOpen)}
+              onClick={() => setVarOpen((o) => !o)}
+              title="Insert a merge variable that fills in automatically"
+              aria-haspopup="menu"
+              aria-expanded={varOpen}
+            >
+              {'{ }'} Variable ▾
+            </button>
+            {varOpen && (
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  zIndex: 30,
+                  top: '100%',
+                  left: 0,
+                  marginTop: 4,
+                  minWidth: 250,
+                  maxHeight: 280,
+                  overflowY: 'auto',
+                  background: tokens.color.surface,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.14)',
+                  padding: 4,
+                }}
+              >
+                {variables.map((v) => (
+                  <button
+                    key={v.token}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      editor.chain().focus().insertContent(`{{ ${v.token} }}`).run();
+                      setVarOpen(false);
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = tokens.color.accentMuted;
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                    }}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '6px 8px',
+                      border: 0,
+                      background: 'transparent',
+                      cursor: 'pointer',
+                      borderRadius: tokens.radius.sm,
+                      color: tokens.color.text,
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 500 }}>{v.label ?? v.token}</div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                        fontFamily: 'ui-monospace, monospace',
+                      }}
+                    >
+                      {`{{ ${v.token} }}`}
+                      {v.description ? ` — ${v.description}` : ''}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div style={{ padding: 10, fontSize: 14 }}>
         <EditorContent editor={editor} />

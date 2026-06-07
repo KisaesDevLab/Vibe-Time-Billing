@@ -28,8 +28,16 @@ import { parseVideoUrl, resolveMergeTokens } from '@vibe/core/proposals';
 import type { ProposalBlock } from '@vibe/core/proposals';
 
 import { api } from '../api-client';
-import { RichTextEditor } from './RichTextEditor';
+import { RichTextEditor, type RichTextVariable } from './RichTextEditor';
 import { sampleMergeContext } from './sample-context';
+
+// Merge variables that actually resolve in a proposal's portal render: the
+// proposal merge context binds client.name, firm.name, and today.
+const PROPOSAL_VARIABLES: RichTextVariable[] = [
+  { token: 'client.name', label: 'Client name', description: "The recipient client's name" },
+  { token: 'firm.name', label: 'Firm name', description: 'Your firm name' },
+  { token: 'today', label: "Today's date", description: 'The date the client opens it' },
+];
 
 // =====================================================================
 // shared types
@@ -64,7 +72,8 @@ const MARKDOWN: BlockTypeDef = {
         key={block.id}
         value={String(block.props['md'] ?? '')}
         onChange={(md) => onChange({ props: { ...block.props, md } })}
-        placeholder="Write the proposal text… Use the toolbar to format. You can also type {{ client.name }}, {{ firm.name }}, {{ today }} to insert merge fields."
+        variables={PROPOSAL_VARIABLES}
+        placeholder="Write the proposal text… Use the toolbar to format, or the Variable ▾ menu to insert merge fields."
       />
       <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
         Merge tokens like <code>{'{{ client.name }}'}</code> resolve at send time; the preview uses
@@ -617,6 +626,7 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
                   key={`${block.id}:${value}:${t.tierLabel}`}
                   value={descOverrides[t.tierLabel] ?? t.description ?? ''}
                   onChange={(md) => setTierDescription(t.tierLabel, md, t.description ?? '')}
+                  variables={PROPOSAL_VARIABLES}
                   placeholder="Description shown to the client for this tier"
                 />
               </div>
@@ -787,7 +797,8 @@ const TERMS: BlockTypeDef = {
           key={`${block.id}:${value}`}
           value={contentMd}
           onChange={(md) => onChange({ props: { ...block.props, contentMd: md } })}
-          placeholder="Engagement terms — pick a template above to load its text, then edit freely. Merge tokens like {{ client.name }} resolve at send."
+          variables={PROPOSAL_VARIABLES}
+          placeholder="Engagement terms — pick a template above to load its text, then edit freely. Use the Variable ▾ menu for merge fields."
         />
         <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
           Edits here apply to this proposal only; the master template is unchanged.

@@ -7,13 +7,13 @@
 // templates if they aren't already present. Disclaimer banner kept
 // visible above the list.
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
-import { RichTextEditor, type RichTextApi } from '../../proposal-editor/RichTextEditor';
+import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
 
 const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -29,16 +29,19 @@ interface TermsRow {
   updatedAt: string;
 }
 
-const TOKEN_PALETTE = [
-  '{{client.name}}',
-  '{{client.primary_email}}',
-  '{{firm.name}}',
-  '{{firm.address}}',
-  '{{firm.phone}}',
-  '{{engagement.name}}',
-  '{{engagement.start_date}}',
-  '{{engagement.end_date}}',
-  '{{today}}',
+// Merge variables offered in the editor's "Insert variable" dropdown. Terms
+// templates are applied in both proposal and engagement-letter contexts, so the
+// engagement.* tokens are offered here too.
+const TERMS_VARIABLES: RichTextVariable[] = [
+  { token: 'client.name', label: 'Client name' },
+  { token: 'client.primary_email', label: 'Client email' },
+  { token: 'firm.name', label: 'Firm name' },
+  { token: 'firm.address', label: 'Firm address' },
+  { token: 'firm.phone', label: 'Firm phone' },
+  { token: 'engagement.name', label: 'Engagement name' },
+  { token: 'engagement.start_date', label: 'Engagement start date' },
+  { token: 'engagement.end_date', label: 'Engagement end date' },
+  { token: 'today', label: "Today's date" },
 ];
 
 export function TermsTemplatesPage(): JSX.Element {
@@ -47,7 +50,6 @@ export function TermsTemplatesPage(): JSX.Element {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TermsRow | null>(null);
-  const richApi = useRef<RichTextApi | null>(null);
   const [previewOutput, setPreviewOutput] = useState<string | null>(null);
   const [previewUnresolved, setPreviewUnresolved] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -194,12 +196,6 @@ export function TermsTemplatesPage(): JSX.Element {
     }
     return groups;
   }, [items]);
-
-  function insertToken(token: string): void {
-    if (!draft) return;
-    if (richApi.current) richApi.current.insertText(token);
-    else setDraft({ ...draft, contentMd: `${draft.contentMd}${token}` });
-  }
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1300 }}>
@@ -382,54 +378,22 @@ export function TermsTemplatesPage(): JSX.Element {
             </Button>
           }
         >
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: '1fr 220px' }}>
-            <div style={{ display: 'grid', gap: 8 }}>
-              <Input
-                value={draft.name}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder="Template name"
-              />
-              <RichTextEditor
-                key={draft.id}
-                value={draft.contentMd}
-                onChange={(md) => setDraft((d) => (d ? { ...d, contentMd: md } : d))}
-                onReady={(apiObj) => {
-                  richApi.current = apiObj;
-                }}
-                placeholder="Engagement-letter terms. Use the toolbar to format; the Insert token buttons add merge fields."
-              />
-            </div>
-            <div style={{ display: 'grid', gap: 8 }}>
-              <div
-                style={{ fontSize: 11, color: tokens.color.textMuted, textTransform: 'uppercase' }}
-              >
-                Insert token
-              </div>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {TOKEN_PALETTE.map((tok) => (
-                  <button
-                    key={tok}
-                    type="button"
-                    onClick={() => insertToken(tok)}
-                    style={{
-                      fontSize: 11,
-                      padding: '2px 6px',
-                      borderRadius: tokens.radius.sm,
-                      border: `1px solid ${tokens.color.border}`,
-                      background: tokens.color.surface,
-                      color: tokens.color.text,
-                      cursor: 'pointer',
-                      fontFamily: 'ui-monospace, monospace',
-                    }}
-                  >
-                    {tok}
-                  </button>
-                ))}
-              </div>
-              <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
-                Use <code>{'{{ scope.path }}'}</code> for merge tokens. Empty if a value isn&apos;t
-                bound yet.
-              </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <Input
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              placeholder="Template name"
+            />
+            <RichTextEditor
+              key={draft.id}
+              value={draft.contentMd}
+              onChange={(md) => setDraft((d) => (d ? { ...d, contentMd: md } : d))}
+              variables={TERMS_VARIABLES}
+              placeholder="Engagement-letter terms. Use the toolbar to format and the Variable ▾ menu to insert merge fields."
+            />
+            <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+              Use the <strong>Variable ▾</strong> menu in the toolbar to insert merge fields like{' '}
+              <code>{'{{ client.name }}'}</code>. Unbound values resolve to empty at send time.
             </div>
           </div>
           <div
