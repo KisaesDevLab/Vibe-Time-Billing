@@ -4562,3 +4562,38 @@ export const intakeActions = pgTable(
     ),
   }),
 );
+
+// =====================================================================
+// ach_returns (Phase 22) — ACH return / late-failure dispute ledger.
+// One row per ACH return Stripe reports; drives mandate invalidation,
+// payment-method blocking, and dunning halt decisions.
+// =====================================================================
+
+export const achReturns = pgTable(
+  'ach_returns',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    paymentId: uuid('payment_id').references(() => payments.id, { onDelete: 'set null' }),
+    invoiceId: uuid('invoice_id').references(() => invoices.id, { onDelete: 'set null' }),
+    stripePaymentIntentId: text('stripe_payment_intent_id'),
+    stripeChargeId: text('stripe_charge_id'),
+    stripePaymentMethodId: text('stripe_payment_method_id'),
+    returnCode: text('return_code').notNull(),
+    category: text('category').notNull(), // INSUFFICIENT_FUNDS | NO_AUTHORIZATION | ACCOUNT_ERROR | OTHER
+    retriable: boolean('retriable').notNull().default(false),
+    invalidatedMandate: boolean('invalidated_mandate').notNull().default(false),
+    blockedPaymentMethod: boolean('blocked_payment_method').notNull().default(false),
+    amountCents: bigint('amount_cents', { mode: 'number' }).notNull().default(0),
+    feeCents: bigint('fee_cents', { mode: 'number' }).notNull().default(0),
+    // 'failure' (return during processing) | 'dispute' (late failure).
+    source: text('source').notNull().default('failure'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('ach_returns_firm_idx').on(t.firmId, t.createdAt),
+    piIdx: index('ach_returns_pi_idx').on(t.stripePaymentIntentId),
+  }),
+);

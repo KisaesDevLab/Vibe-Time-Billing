@@ -14,6 +14,7 @@ import {
   creditMemos,
   dunningHistory,
   invoices,
+  paymentMethod,
   paymentReceipts,
   payments,
 } from '@vibe/db/schema';
@@ -49,7 +50,49 @@ interface StripeEvent {
       amount?: number;
       payment_intent?: string;
       metadata?: Record<string, string>;
+      // ACH lifecycle (best-effort extraction; shapes vary by event type).
+      failure_code?: string;
+      payment_method?: string;
+      payment_method_details?: { type?: string };
+      reason?: string;
+      last_payment_error?: {
+        code?: string;
+        payment_method?: { id?: string; type?: string };
+      };
     };
+  };
+}
+
+// ACH dispute reasons (late returns arrive as charge.dispute.created on an
+// already-succeeded ACH charge). Used to distinguish ACH disputes from card
+// chargebacks so we only react to the former.
+const ACH_DISPUTE_REASONS = new Set([
+  'insufficient_funds',
+  'debit_not_authorized',
+  'incorrect_account_details',
+  'bank_cannot_process',
+  'no_account',
+  'account_closed',
+  'payment_method_not_available',
+]);
+
+/**
+ * Best-effort: pull an ACH return signal (method id + failure code) out of a
+ * failed/disputed event. Returns null when the event isn't ACH so card flows
+ * are untouched.
+ */
+function extractAchReturn(
+  obj: StripeEvent['data']['object'],
+): { stripePaymentMethodId: string | null; code: string } | null {
+  const isAch =
+    obj.payment_method_details?.type === 'us_bank_account' ||
+    obj.last_payment_error?.payment_method?.type === 'us_bank_account';
+  const code = obj.failure_code ?? obj.last_payment_error?.code ?? null;
+  if (!isAch && !code) return null;
+  if (!isAch) return null;
+  return {
+    stripePaymentMethodId: obj.last_payment_error?.payment_method?.id ?? obj.payment_method ?? null,
+    code: code ?? 'OTHER',
   };
 }
 
@@ -353,6 +396,23 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           invoiceId: pay.invoiceId,
           paymentId: pay.id,
         }).catch((err: unknown) => logger.error({ err }, 'webhook publish failed'));
+        // Phase 22 — ACH return: record + invalidate mandate / block PM / pause
+        // schedules per the NACHA classification. No-op for card failures.
+        const ach = extractAchReturn(event.data.object);
+        if (ach) {
+          const { recordAchReturnAndReact } = await import('../payments/ach-lifecycle');
+          await recordAchReturnAndReact(deps.db, {
+            firmId: inv.firmId,
+            returnCode: ach.code,
+            paymentId: pay.id,
+            invoiceId: pay.invoiceId,
+            stripePaymentIntentId: intentId,
+            stripeChargeId: chargeId,
+            stripePaymentMethodId: ach.stripePaymentMethodId,
+            amountCents: Number(pay.amountCents),
+            source: 'failure',
+          }).catch((err: unknown) => logger.error({ err }, 'ach return handling failed'));
+        }
       }
       return;
     }
@@ -438,6 +498,38 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
             logger.warn({ err, payId: pay.id }, 'refund-excess credit creation failed');
           }
         }
+      }
+
+      // Phase 22 — late ACH return (final, uncontestable). Only on dispute
+      // creation, and only for ACH dispute reasons (skip card chargebacks).
+      const reason = event.data.object.reason;
+      if (
+        event.type === 'charge.dispute.created' &&
+        inv &&
+        reason &&
+        ACH_DISPUTE_REASONS.has(reason)
+      ) {
+        let stripePm: string | null = null;
+        if (pay.paymentMethodId) {
+          const [pm] = await deps.db
+            .select({ token: paymentMethod.providerToken })
+            .from(paymentMethod)
+            .where(eq(paymentMethod.id, pay.paymentMethodId))
+            .limit(1);
+          stripePm = pm?.token ?? null;
+        }
+        const { recordAchReturnAndReact } = await import('../payments/ach-lifecycle');
+        await recordAchReturnAndReact(deps.db, {
+          firmId: inv.firmId,
+          returnCode: reason,
+          paymentId: pay.id,
+          invoiceId: pay.invoiceId,
+          stripeChargeId: chargeId,
+          stripePaymentIntentId: intentId,
+          stripePaymentMethodId: stripePm,
+          amountCents: Number(refundedAmount),
+          source: 'dispute',
+        }).catch((err: unknown) => logger.error({ err }, 'ach dispute handling failed'));
       }
       return;
     }
