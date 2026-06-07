@@ -9,12 +9,14 @@ import { type ReactNode } from 'react';
 
 import { tokens } from '@vibe/ui';
 
-// Inline formatting: **bold**, `code`, [text](url). Splits the line into
-// React nodes without injecting HTML.
+// Inline formatting: **bold**, *italic*, `code`, [text](url). Splits the line
+// into React nodes without injecting HTML. Bold is matched before italic so
+// `**x**` isn't mis-read as italic; italic uses `*` only (not `_`) so it doesn't
+// trip on snake_case merge tokens like {{ client.legal_name }}.
 function inline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  // Tokenize on the three inline constructs.
-  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+  const re =
+    /(\*\*([^*]+)\*\*)|(\*([^*\n]+)\*)|(`([^`]+)`)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
@@ -24,6 +26,8 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
     if (m[2] != null) {
       nodes.push(<strong key={key}>{m[2]}</strong>);
     } else if (m[4] != null) {
+      nodes.push(<em key={key}>{m[4]}</em>);
+    } else if (m[6] != null) {
       nodes.push(
         <code
           key={key}
@@ -36,19 +40,19 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
             padding: '1px 4px',
           }}
         >
-          {m[4]}
+          {m[6]}
         </code>,
       );
-    } else if (m[6] != null && m[7] != null) {
+    } else if (m[8] != null && m[9] != null) {
       nodes.push(
         <a
           key={key}
-          href={m[7]}
+          href={m[9]}
           target="_blank"
           rel="noreferrer"
           style={{ color: tokens.color.accent }}
         >
-          {m[6]}
+          {m[8]}
         </a>,
       );
     }
