@@ -152,6 +152,7 @@ import { createTaxReturnRouter } from './tax-returns/routes';
 import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
+import { createTerminalRouter } from './terminal/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
@@ -1514,6 +1515,14 @@ export function createApp(deps: AppDeps): Express {
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payments', auth.requireAuth, auth.requireCsrf, paymentRouter);
+
+  // Phases 15–17 — Stripe Terminal (in-person card readers).
+  const terminalRouter = createTerminalRouter({
+    db: deps.db,
+    secretKey: config.STRIPE_SECRET_KEY ?? null,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/terminal', auth.requireAuth, auth.requireCsrf, terminalRouter);
 
   const creditRouter = createCreditRouter({
     db: deps.db,

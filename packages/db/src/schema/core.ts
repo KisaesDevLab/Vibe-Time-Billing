@@ -4597,3 +4597,54 @@ export const achReturns = pgTable(
     piIdx: index('ach_returns_pi_idx').on(t.stripePaymentIntentId),
   }),
 );
+
+// =====================================================================
+// Stripe Terminal (Phase 15) — in-person card readers per firm. Location
+// + Reader live on the firm's connected account; we store the pointers.
+// =====================================================================
+
+export const terminalLocations = pgTable(
+  'terminal_locations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    stripeLocationId: text('stripe_location_id').notNull(),
+    displayName: text('display_name').notNull(),
+    addressLine1: text('address_line1'),
+    addressCity: text('address_city'),
+    addressState: text('address_state'),
+    addressPostal: text('address_postal'),
+    addressCountry: text('address_country').notNull().default('US'),
+    cellularEnabled: boolean('cellular_enabled').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('terminal_locations_firm_idx').on(t.firmId),
+  }),
+);
+
+export const terminalReaders = pgTable(
+  'terminal_readers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    locationId: uuid('location_id')
+      .notNull()
+      .references(() => terminalLocations.id, { onDelete: 'cascade' }),
+    stripeReaderId: text('stripe_reader_id').notNull(),
+    label: text('label').notNull(),
+    deviceType: text('device_type'),
+    serialNumber: text('serial_number'),
+    status: text('status').notNull().default('offline'), // online | offline
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('terminal_readers_firm_idx').on(t.firmId),
+    stripeIdx: index('terminal_readers_stripe_idx').on(t.stripeReaderId),
+  }),
+);
