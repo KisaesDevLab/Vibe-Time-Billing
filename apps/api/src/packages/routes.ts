@@ -53,6 +53,7 @@ const PatchSchema = z.object({
   tierLabel: z.string().min(1).max(80).optional(),
   position: z.number().int().min(0).max(99).optional(),
   description: z.string().max(8000).optional(),
+  priceOverrideCents: z.number().int().min(0).max(999_999_999).nullable().optional(),
 });
 
 const ServiceEntrySchema = z.object({
@@ -243,6 +244,8 @@ export function createPackageRouter(deps: PackageRoutesDeps): Router {
       if (parsed.data.tierLabel != null) patch['tierLabel'] = parsed.data.tierLabel;
       if (parsed.data.position != null) patch['position'] = parsed.data.position;
       if (parsed.data.description != null) patch['description'] = parsed.data.description;
+      if (parsed.data.priceOverrideCents !== undefined)
+        patch['priceOverrideCents'] = parsed.data.priceOverrideCents;
       await deps.db.update(packages).set(patch).where(eq(packages.id, prior.id));
       await emitAudit(deps.db, {
         action: 'UPDATE',

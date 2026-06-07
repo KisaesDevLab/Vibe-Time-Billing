@@ -521,15 +521,21 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
     const value = String(block.props['packageName'] ?? '');
     const overrides =
       (block.props['tierOverridesCents'] as Record<string, number> | undefined) ?? {};
-    const [groups, setGroups] = useState<
-      Record<string, { tierLabel: string; totalIncludedCents: number }[]>
-    >({});
+    const descOverrides =
+      (block.props['tierDescriptions'] as Record<string, string> | undefined) ?? {};
+    type TierInfo = {
+      tierLabel: string;
+      totalIncludedCents: number;
+      priceOverrideCents: number | null;
+      description: string;
+    };
+    const [groups, setGroups] = useState<Record<string, TierInfo[]>>({});
     useEffect(() => {
       void (async () => {
         try {
-          const r = await api<{
-            groups: Record<string, { tierLabel: string; totalIncludedCents: number }[]>;
-          }>('/api/staff/packages?groupByName=true');
+          const r = await api<{ groups: Record<string, TierInfo[]> }>(
+            '/api/staff/packages?groupByName=true',
+          );
           setGroups(r.groups ?? {});
         } catch {
           setGroups({});
@@ -538,6 +544,7 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
     }, []);
     const names = Object.keys(groups);
     const tiers = value ? (groups[value] ?? []) : [];
+    const masterPrice = (t: TierInfo): number => t.priceOverrideCents ?? t.totalIncludedCents;
 
     function setTierOverride(tierLabel: string, dollarStr: string): void {
       const next = { ...overrides };
@@ -548,6 +555,12 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
         if (Number.isFinite(n) && n >= 0) next[tierLabel] = Math.round(n * 100);
       }
       onChange({ props: { ...block.props, tierOverridesCents: next } });
+    }
+    function setTierDescription(tierLabel: string, text: string, master: string): void {
+      const next = { ...descOverrides };
+      if (text === master || text.trim() === '') delete next[tierLabel];
+      else next[tierLabel] = text;
+      onChange({ props: { ...block.props, tierDescriptions: next } });
     }
 
     return (
@@ -573,33 +586,50 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
           </div>
         )}
         {tiers.length > 0 && (
-          <div style={{ display: 'grid', gap: 4, marginTop: 4 }}>
+          <div style={{ display: 'grid', gap: 10, marginTop: 4 }}>
             <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-              Tier amounts (edit to override the catalog price for this proposal)
+              Per-tier amount + description (overrides the catalog for this proposal)
             </div>
             {tiers.map((t) => (
-              <div
-                key={t.tierLabel}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-              >
-                <span style={{ flex: 1 }}>{t.tierLabel}</span>
-                <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>$</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  aria-label={`${t.tierLabel} amount`}
-                  value={String((overrides[t.tierLabel] ?? t.totalIncludedCents) / 100)}
-                  onChange={(e) => setTierOverride(t.tierLabel, e.target.value)}
+              <div key={t.tierLabel} style={{ display: 'grid', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                  <span style={{ flex: 1, fontWeight: 600 }}>{t.tierLabel}</span>
+                  <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    aria-label={`${t.tierLabel} amount`}
+                    value={String((overrides[t.tierLabel] ?? masterPrice(t)) / 100)}
+                    onChange={(e) => setTierOverride(t.tierLabel, e.target.value)}
+                    style={{
+                      width: 90,
+                      padding: '2px 6px',
+                      textAlign: 'right',
+                      fontSize: 12,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      background: tokens.color.surface,
+                      color: tokens.color.text,
+                    }}
+                  />
+                </div>
+                <textarea
+                  aria-label={`${t.tierLabel} description`}
+                  rows={2}
+                  placeholder="Description shown to the client for this tier"
+                  value={descOverrides[t.tierLabel] ?? t.description ?? ''}
+                  onChange={(e) =>
+                    setTierDescription(t.tierLabel, e.target.value, t.description ?? '')
+                  }
                   style={{
-                    width: 90,
-                    padding: '2px 6px',
-                    textAlign: 'right',
                     fontSize: 12,
+                    padding: '4px 6px',
                     border: `1px solid ${tokens.color.border}`,
                     borderRadius: tokens.radius.sm,
                     background: tokens.color.surface,
                     color: tokens.color.text,
+                    resize: 'vertical',
                   }}
                 />
               </div>
@@ -613,9 +643,16 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
     const name = String(block.props['packageName'] ?? '');
     const overrides =
       (block.props['tierOverridesCents'] as Record<string, number> | undefined) ?? {};
-    const [tiers, setTiers] = useState<
-      { tierLabel: string; totalIncludedCents: number; includedServiceCount: number }[] | null
-    >(null);
+    const descOverrides =
+      (block.props['tierDescriptions'] as Record<string, string> | undefined) ?? {};
+    type TierInfo = {
+      tierLabel: string;
+      totalIncludedCents: number;
+      includedServiceCount: number;
+      priceOverrideCents: number | null;
+      description: string;
+    };
+    const [tiers, setTiers] = useState<TierInfo[] | null>(null);
     useEffect(() => {
       if (!name) {
         setTiers([]);
@@ -623,12 +660,9 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
       }
       void (async () => {
         try {
-          const r = await api<{
-            groups: Record<
-              string,
-              { tierLabel: string; totalIncludedCents: number; includedServiceCount: number }[]
-            >;
-          }>('/api/staff/packages?groupByName=true');
+          const r = await api<{ groups: Record<string, TierInfo[]> }>(
+            '/api/staff/packages?groupByName=true',
+          );
           setTiers(r.groups[name] ?? []);
         } catch {
           setTiers([]);
@@ -674,8 +708,17 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
             >
               <div style={{ fontWeight: 600 }}>{t.tierLabel}</div>
               <div style={{ fontSize: 22, fontWeight: 700, margin: '4px 0' }}>
-                ${(Number(overrides[t.tierLabel] ?? t.totalIncludedCents) / 100).toFixed(0)}
+                $
+                {(
+                  Number(overrides[t.tierLabel] ?? t.priceOverrideCents ?? t.totalIncludedCents) /
+                  100
+                ).toFixed(0)}
               </div>
+              {(descOverrides[t.tierLabel] ?? t.description) && (
+                <div style={{ fontSize: 12, margin: '2px 0 4px', whiteSpace: 'pre-wrap' }}>
+                  {descOverrides[t.tierLabel] ?? t.description}
+                </div>
+              )}
               <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                 {t.includedServiceCount} included
               </div>

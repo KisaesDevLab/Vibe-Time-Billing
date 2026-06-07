@@ -243,6 +243,9 @@ export const packages = pgTable(
     tierLabel: text('tier_label').notNull().default('Standard'),
     position: integer('position').notNull().default(0),
     description: text('description').notNull().default(''),
+    // 0125 — optional flat price for the tier. When set, it overrides the
+    // computed sum-of-included-services price in the catalog + proposal block.
+    priceOverrideCents: bigint('price_override_cents', { mode: 'number' }),
     clonedFromSlug: text('cloned_from_slug'),
     clonedFromPackVersion: text('cloned_from_pack_version'),
     archivedAt: timestamp('archived_at', { withTimezone: true }),

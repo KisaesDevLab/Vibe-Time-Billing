@@ -26,6 +26,7 @@ interface PackageRow {
   tierLabel: string;
   position: number;
   description: string;
+  priceOverrideCents: number | null;
   archivedAt: string | null;
   totalIncludedCents: number;
   includedServiceCount: number;
@@ -192,6 +193,20 @@ export function PackagesPage(): JSX.Element {
       if (selectedId && tiers.some((t) => t.id === selectedId)) await loadDetail(selectedId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'rename_failed');
+    }
+  }
+
+  // Patch a single tier (price override / description) and refresh the list.
+  async function patchPackage(
+    id: string,
+    body: { priceOverrideCents?: number | null; description?: string },
+  ): Promise<void> {
+    setErr(null);
+    try {
+      await api(`/api/staff/packages/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      await loadGroups();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'save_failed');
     }
   }
 
@@ -388,11 +403,87 @@ export function PackagesPage(): JSX.Element {
                     {t.archivedAt && <Pill tone="warning">Archived</Pill>}
                   </div>
                   <div style={{ fontSize: 22, fontWeight: 600 }}>
-                    {dollars(Number(t.totalIncludedCents))}
+                    {dollars(Number(t.priceOverrideCents ?? t.totalIncludedCents))}
+                    {t.priceOverrideCents != null && (
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted, marginLeft: 6 }}>
+                        (set price)
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                     {t.includedServiceCount} included service
                     {t.includedServiceCount === 1 ? '' : 's'}
+                    {t.priceOverrideCents != null && (
+                      <> · {dollars(Number(t.totalIncludedCents))} from services</>
+                    )}
+                  </div>
+                  {/* Master price override + description (click-safe inside the card). */}
+                  <div style={{ display: 'grid', gap: 4, marginTop: 4 }}>
+                    <label
+                      style={{
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                        display: 'grid',
+                        gap: 2,
+                      }}
+                    >
+                      Price ($) — blank = sum of services
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        defaultValue={
+                          t.priceOverrideCents != null ? String(t.priceOverrideCents / 100) : ''
+                        }
+                        placeholder={(Number(t.totalIncludedCents) / 100).toFixed(0)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          const next = v === '' ? null : Math.round(Number(v) * 100);
+                          const cur = t.priceOverrideCents ?? null;
+                          if (next !== cur && (v === '' || Number.isFinite(Number(v))))
+                            void patchPackage(t.id, { priceOverrideCents: next });
+                        }}
+                        style={{
+                          padding: '4px 6px',
+                          fontSize: 12,
+                          border: `1px solid ${tokens.color.border}`,
+                          borderRadius: tokens.radius.sm,
+                          background: tokens.color.bg,
+                          color: tokens.color.text,
+                        }}
+                      />
+                    </label>
+                    <label
+                      style={{
+                        fontSize: 11,
+                        color: tokens.color.textMuted,
+                        display: 'grid',
+                        gap: 2,
+                      }}
+                    >
+                      Description
+                      <textarea
+                        defaultValue={t.description}
+                        rows={2}
+                        placeholder="Shown to the client for this tier"
+                        onClick={(e) => e.stopPropagation()}
+                        onFocus={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          if (e.target.value !== t.description)
+                            void patchPackage(t.id, { description: e.target.value });
+                        }}
+                        style={{
+                          padding: '4px 6px',
+                          fontSize: 12,
+                          border: `1px solid ${tokens.color.border}`,
+                          borderRadius: tokens.radius.sm,
+                          background: tokens.color.bg,
+                          color: tokens.color.text,
+                          resize: 'vertical',
+                        }}
+                      />
+                    </label>
                   </div>
                   <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                     <Button
