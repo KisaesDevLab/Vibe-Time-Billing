@@ -5,10 +5,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { Button, Card, Input, Tabs, tokens } from '@vibe/ui';
+import { Button, Card, Input, Markdown, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
-import { Markdown } from '../components/Markdown';
 import { useAiStatus, aiUsable } from '../hooks/useAiStatus';
 
 interface Category {

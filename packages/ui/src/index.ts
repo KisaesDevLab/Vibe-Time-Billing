@@ -18,6 +18,7 @@ export { ErrorBoundary } from './ErrorBoundary';
 export { Button, type ButtonProps } from './Button';
 export { Input, type InputProps } from './Input';
 export { Card, type CardProps } from './Card';
+export { Markdown } from './Markdown';
 export { Stat, type StatProps, type StatTone } from './Stat';
 export { SectionHeading, type SectionHeadingProps } from './SectionHeading';
 export { EmptyState, type EmptyStateProps } from './EmptyState';

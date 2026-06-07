@@ -18,7 +18,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Markdown, Pill, tokens } from '@vibe/ui';
+import { parseVideoUrl } from '@vibe/core/proposals';
 
 import { api, type ApiError } from '../api-client';
 
@@ -139,13 +140,13 @@ function renderBlock(block: BrochureBlock, key: string): JSX.Element {
       );
     }
     case 'heading': {
-      const level = Math.min(6, Math.max(2, Number(props['level'] ?? 2)));
+      const level = Math.min(6, Math.max(1, Number(props['level'] ?? 2)));
       const text = String(props['text'] ?? '');
-      const sizes = [22, 20, 18, 16, 14, 13];
+      const sizes = [26, 22, 18, 16, 14, 13];
       return (
         <div
           key={key}
-          style={{ marginTop: 20, marginBottom: 8, fontSize: sizes[level - 2], fontWeight: 600 }}
+          style={{ marginTop: 18, marginBottom: 8, fontSize: sizes[level - 1], fontWeight: 600 }}
         >
           {text}
         </div>
@@ -208,6 +209,171 @@ function renderBlock(block: BrochureBlock, key: string): JSX.Element {
         </div>
       );
     }
+    // ---- Editor block types (hydrated server-side by the redeem endpoint) ----
+    case 'cover': {
+      const title = String(props['title'] ?? '');
+      const subtitle = String(props['subtitle'] ?? '');
+      const hero = String(props['heroImageUrl'] ?? '');
+      return (
+        <div key={key} style={{ marginBottom: 24 }}>
+          {hero && (
+            <img
+              src={hero}
+              alt=""
+              style={{
+                width: '100%',
+                maxHeight: 280,
+                objectFit: 'cover',
+                borderRadius: tokens.radius.md,
+                marginBottom: 12,
+              }}
+            />
+          )}
+          {title && <h1 style={{ fontSize: 30, margin: '0 0 8px' }}>{title}</h1>}
+          {subtitle && (
+            <p style={{ fontSize: 16, color: tokens.color.textMuted, margin: 0 }}>{subtitle}</p>
+          )}
+        </div>
+      );
+    }
+    case 'markdown': {
+      const md = String(props['md'] ?? '');
+      if (!md.trim()) return <div key={key} />;
+      return (
+        <div key={key} style={{ marginBottom: 12 }}>
+          <Markdown source={md} />
+        </div>
+      );
+    }
+    case 'divider':
+      return (
+        <hr
+          key={key}
+          style={{ border: 0, borderTop: `1px solid ${tokens.color.border}`, margin: '16px 0' }}
+        />
+      );
+    case 'video': {
+      const parsed = parseVideoUrl(String(props['url'] ?? ''));
+      if (!parsed) return <div key={key} />;
+      return (
+        <div
+          key={key}
+          style={{
+            position: 'relative',
+            paddingBottom: '56.25%',
+            height: 0,
+            margin: '12px 0',
+            borderRadius: tokens.radius.sm,
+            overflow: 'hidden',
+          }}
+        >
+          <iframe
+            src={parsed.embedUrl}
+            title="Video"
+            allow="fullscreen"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0 }}
+          />
+        </div>
+      );
+    }
+    case 'services_list': {
+      const showPrices = props['showPrices'] !== false;
+      const items = (props['items'] as { name: string; priceCents: number }[] | undefined) ?? [];
+      if (items.length === 0) return <div key={key} />;
+      return (
+        <ul key={key} style={{ paddingLeft: 20, marginBottom: 12 }}>
+          {items.map((s, i) => (
+            <li key={i} style={{ fontSize: 14, lineHeight: 1.6 }}>
+              {s.name}
+              {showPrices && (
+                <span style={{ color: tokens.color.textMuted, marginLeft: 6, fontSize: 13 }}>
+                  {' '}
+                  — {money(Number(s.priceCents))}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+    case 'package_selector': {
+      const name = String(props['packageName'] ?? '');
+      const tiers =
+        (props['tiers'] as
+          | {
+              tierLabel: string;
+              priceCents: number;
+              description: string;
+              includedServiceCount: number;
+            }[]
+          | undefined) ?? [];
+      if (tiers.length === 0) return <div key={key} />;
+      return (
+        <div key={key} style={{ marginBottom: 16 }}>
+          {name && <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>{name}</div>}
+          <div
+            style={{
+              display: 'grid',
+              gap: 12,
+              gridTemplateColumns: `repeat(${Math.min(tiers.length, 3)}, 1fr)`,
+            }}
+          >
+            {tiers.map((t) => (
+              <div
+                key={t.tierLabel}
+                style={{
+                  padding: 16,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  background: tokens.color.surface,
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>{t.tierLabel}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, margin: '4px 0' }}>
+                  {money(Number(t.priceCents))}
+                </div>
+                {t.description?.trim() && (
+                  <div style={{ fontSize: 13, margin: '4px 0' }}>
+                    <Markdown source={t.description} />
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {t.includedServiceCount} included
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    case 'terms': {
+      const md = String(props['contentMd'] ?? '');
+      if (!md.trim()) return <div key={key} />;
+      return (
+        <div key={key} style={{ marginBottom: 12 }}>
+          <Markdown source={md} />
+        </div>
+      );
+    }
+    case 'signature':
+      // The actual typed-name/accept UI renders at the bottom of the page; this
+      // block just marks where signing sits in the document.
+      return (
+        <div
+          key={key}
+          style={{
+            margin: '12px 0',
+            padding: 12,
+            border: `1px dashed ${tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            color: tokens.color.textMuted,
+            fontSize: 13,
+          }}
+        >
+          Signature &amp; acceptance — complete below.
+        </div>
+      );
+
     default:
       return (
         <div key={key} style={{ fontSize: 11, color: tokens.color.textMuted, margin: '4px 0' }}>

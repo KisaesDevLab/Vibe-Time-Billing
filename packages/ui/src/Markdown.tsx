@@ -7,7 +7,7 @@
 
 import { type ReactNode } from 'react';
 
-import { tokens } from '@vibe/ui';
+import { tokens } from './tokens';
 
 // Inline formatting: **bold**, *italic*, `code`, [text](url). Splits the line
 // into React nodes without injecting HTML. Bold is matched before italic so

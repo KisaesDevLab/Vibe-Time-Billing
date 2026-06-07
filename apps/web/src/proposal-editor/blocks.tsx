@@ -23,12 +23,11 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Input, Markdown, Pill, tokens } from '@vibe/ui';
 import { parseVideoUrl, resolveMergeTokens } from '@vibe/core/proposals';
 import type { ProposalBlock } from '@vibe/core/proposals';
 
 import { api } from '../api-client';
-import { Markdown } from '../components/Markdown';
 import { RichTextEditor } from './RichTextEditor';
 import { sampleMergeContext } from './sample-context';
 

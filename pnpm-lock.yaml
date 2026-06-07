@@ -193,6 +193,9 @@ importers:
 
   apps/portal:
     dependencies:
+      '@vibe/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@vibe/types':
         specifier: workspace:*
         version: link:../../packages/types

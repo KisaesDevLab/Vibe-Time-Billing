@@ -35,6 +35,7 @@ import { magicLinks, proposalActivity, proposals, signatures } from '@vibe/db/sc
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { hydrateBrochureForPortal } from './portal-hydrate';
 import { logger } from '../logger';
 
 const DEFAULT_TTL_DAYS = 30;
@@ -627,12 +628,18 @@ export function createPortalMagicLinkRouter(deps: PortalRedeemDeps): Router {
         .where(eq(proposals.id, proposal.id));
     }
 
+    // Hydrate the brochure server-side so the portal renders the full block
+    // set (service names/prices, package tiers, terms) without staff-API calls.
+    const hydratedBrochure = await hydrateBrochureForPortal(deps.db, proposal).catch(
+      () => proposal.brochureJsonb,
+    );
+
     res.json({
       proposal: {
         id: proposal.id,
         title: proposal.title,
         status: proposal.status === 'SENT' ? 'VIEWED' : proposal.status,
-        brochureJsonb: proposal.brochureJsonb,
+        brochureJsonb: hydratedBrochure,
         totalOneTimeCents: Number(proposal.totalOneTimeCents),
         totalRecurringCents: Number(proposal.totalRecurringCents),
         recurringInterval: proposal.recurringInterval,
