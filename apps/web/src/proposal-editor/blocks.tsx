@@ -614,23 +614,11 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
                     }}
                   />
                 </div>
-                <textarea
-                  aria-label={`${t.tierLabel} description`}
-                  rows={2}
-                  placeholder="Description shown to the client for this tier"
+                <RichTextEditor
+                  key={`${block.id}:${value}:${t.tierLabel}`}
                   value={descOverrides[t.tierLabel] ?? t.description ?? ''}
-                  onChange={(e) =>
-                    setTierDescription(t.tierLabel, e.target.value, t.description ?? '')
-                  }
-                  style={{
-                    fontSize: 12,
-                    padding: '4px 6px',
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    background: tokens.color.surface,
-                    color: tokens.color.text,
-                    resize: 'vertical',
-                  }}
+                  onChange={(md) => setTierDescription(t.tierLabel, md, t.description ?? '')}
+                  placeholder="Description shown to the client for this tier"
                 />
               </div>
             ))}
@@ -714,9 +702,9 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
                   100
                 ).toFixed(0)}
               </div>
-              {(descOverrides[t.tierLabel] ?? t.description) && (
-                <div style={{ fontSize: 12, margin: '2px 0 4px', whiteSpace: 'pre-wrap' }}>
-                  {descOverrides[t.tierLabel] ?? t.description}
+              {(descOverrides[t.tierLabel] ?? t.description)?.trim() && (
+                <div style={{ fontSize: 12, margin: '2px 0 4px' }}>
+                  <Markdown source={descOverrides[t.tierLabel] ?? t.description} />
                 </div>
               )}
               <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
@@ -738,16 +726,22 @@ const TERMS: BlockTypeDef = {
   type: 'terms',
   label: 'Terms',
   icon: '§',
-  defaultProps: () => ({ termsTemplateId: '' }),
+  defaultProps: () => ({ termsTemplateId: '', contentMd: '' }),
   EditorFields: ({ block, onChange }) => {
     const [items, setItems] = useState<
-      { id: string; name: string; category: string; version: number }[]
+      { id: string; name: string; category: string; version: number; contentMd: string }[]
     >([]);
     useEffect(() => {
       void (async () => {
         try {
           const r = await api<{
-            items: { id: string; name: string; category: string; version: number }[];
+            items: {
+              id: string;
+              name: string;
+              category: string;
+              version: number;
+              contentMd: string;
+            }[];
           }>('/api/staff/terms-templates');
           setItems(r.items ?? []);
         } catch {
@@ -756,19 +750,23 @@ const TERMS: BlockTypeDef = {
       })();
     }, []);
     const value = String(block.props['termsTemplateId'] ?? '');
+    const contentMd = String(block.props['contentMd'] ?? '');
     return (
       <div style={{ display: 'grid', gap: 8 }}>
-        {items.length === 0 ? (
-          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-            No terms templates yet. Create one in Admin → Catalog → Terms templates (or click
-            &quot;Seed 6 starters&quot;).
-          </p>
-        ) : (
+        {items.length > 0 && (
           <select
             value={value}
-            onChange={(e) =>
-              onChange({ props: { ...block.props, termsTemplateId: e.target.value } })
-            }
+            onChange={(e) => {
+              const tid = e.target.value;
+              const chosen = items.find((i) => i.id === tid);
+              onChange({
+                props: {
+                  ...block.props,
+                  termsTemplateId: tid,
+                  ...(chosen ? { contentMd: chosen.contentMd } : {}),
+                },
+              });
+            }}
             style={{
               padding: 6,
               fontSize: 13,
@@ -778,7 +776,7 @@ const TERMS: BlockTypeDef = {
               color: tokens.color.text,
             }}
           >
-            <option value="">— pick a terms template —</option>
+            <option value="">— load text from a template (optional) —</option>
             {items.map((i) => (
               <option key={i.id} value={i.id}>
                 [{i.category}] {i.name} (v{i.version})
@@ -786,14 +784,26 @@ const TERMS: BlockTypeDef = {
             ))}
           </select>
         )}
+        <RichTextEditor
+          key={`${block.id}:${value}`}
+          value={contentMd}
+          onChange={(md) => onChange({ props: { ...block.props, contentMd: md } })}
+          placeholder="Engagement terms — pick a template above to load its text, then edit freely. Merge tokens like {{ client.name }} resolve at send."
+        />
+        <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+          Edits here apply to this proposal only; the master template is unchanged.
+        </div>
       </div>
     );
   },
   Renderer: ({ block }) => {
+    const contentMd = String(block.props['contentMd'] ?? '');
     const id = String(block.props['termsTemplateId'] ?? '');
+    // Legacy fallback: proposals authored before inline editing stored only a
+    // template id; render its server-resolved preview.
     const [body, setBody] = useState<string | null>(null);
     useEffect(() => {
-      if (!id) {
+      if (contentMd.trim() || !id) {
         setBody(null);
         return;
       }
@@ -808,33 +818,21 @@ const TERMS: BlockTypeDef = {
           setBody('(failed to load terms)');
         }
       })();
-    }, [id]);
+    }, [id, contentMd]);
+
+    if (contentMd.trim()) {
+      const { output } = resolveMergeTokens(contentMd, sampleMergeContext());
+      return <Markdown source={output} />;
+    }
     if (!id) {
       return (
-        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-          (No terms template selected.)
-        </p>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>(No terms yet.)</p>
       );
     }
     if (body === null) {
       return <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>;
     }
-    return (
-      <pre
-        style={{
-          fontFamily: 'inherit',
-          fontSize: 13,
-          whiteSpace: 'pre-wrap',
-          background: tokens.color.bg,
-          padding: tokens.space.md,
-          borderRadius: tokens.radius.sm,
-          border: `1px solid ${tokens.color.border}`,
-          margin: 0,
-        }}
-      >
-        {body}
-      </pre>
-    );
+    return <Markdown source={body} />;
   },
 };
 
