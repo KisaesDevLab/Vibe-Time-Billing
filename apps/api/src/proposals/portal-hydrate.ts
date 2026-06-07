@@ -101,6 +101,7 @@ async function hydratePackageSelector(
   db: Database,
   firmId: string,
   props: Record<string, unknown>,
+  ctx: MergeCtx,
 ): Promise<Record<string, unknown>> {
   const name = String(props['packageName'] ?? '');
   const tierOverrides = (props['tierOverridesCents'] as Record<string, number> | undefined) ?? {};
@@ -153,7 +154,8 @@ async function hydratePackageSelector(
         packageId: p.id,
         tierLabel: p.tierLabel,
         priceCents: num(priceCents),
-        description: tierDescriptions[p.tierLabel] ?? p.description ?? '',
+        // Resolve merge tokens so {{ client.name }} etc. fill in for the client.
+        description: resolve(tierDescriptions[p.tierLabel] ?? p.description ?? '', ctx),
         includedServiceCount: countByPkg.get(p.id) ?? 0,
       };
     });
@@ -205,7 +207,7 @@ export async function hydrateBrochureForPortal(
           case 'services_list':
             return { ...b, props: await hydrateServicesList(db, proposal.firmId, props) };
           case 'package_selector':
-            return { ...b, props: await hydratePackageSelector(db, proposal.firmId, props) };
+            return { ...b, props: await hydratePackageSelector(db, proposal.firmId, props, ctx) };
           case 'cover':
             return {
               ...b,

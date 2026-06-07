@@ -15,10 +15,19 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
-import { Button, Card, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
+import { Button, Card, Input, Markdown, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
+import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
+
+// Merge variables that resolve in a package tier description at portal view
+// time (the proposal merge context binds client.name, firm.name, today).
+const PACKAGE_VARIABLES: RichTextVariable[] = [
+  { token: 'client.name', label: 'Client name', description: "The recipient client's name" },
+  { token: 'firm.name', label: 'Firm name', description: 'Your firm name' },
+  { token: 'today', label: "Today's date", description: 'The date the client opens it' },
+];
 
 interface PackageRow {
   id: string;
@@ -70,6 +79,8 @@ export function PackagesPage(): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<PackageDetail | null>(null);
   const [draftEntries, setDraftEntries] = useState<PackageEntry[]>([]);
+  const [draftDescription, setDraftDescription] = useState('');
+  const [savingDescription, setSavingDescription] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savingEntries, setSavingEntries] = useState(false);
 
@@ -96,6 +107,7 @@ export function PackagesPage(): JSX.Element {
     const r = await api<PackageDetail>(`/api/staff/packages/${id}`);
     setDetail(r);
     setDraftEntries(r.entries);
+    setDraftDescription(r.package.description ?? '');
   }
 
   useEffect(() => {
@@ -115,6 +127,7 @@ export function PackagesPage(): JSX.Element {
     } else {
       setDetail(null);
       setDraftEntries([]);
+      setDraftDescription('');
     }
   }, [selectedId]);
 
@@ -207,6 +220,24 @@ export function PackagesPage(): JSX.Element {
       await loadGroups();
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'save_failed');
+    }
+  }
+
+  async function saveDescription(): Promise<void> {
+    if (!selectedId) return;
+    setSavingDescription(true);
+    setErr(null);
+    try {
+      await api(`/api/staff/packages/${selectedId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ description: draftDescription }),
+      });
+      await loadDetail(selectedId);
+      await loadGroups();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'save_failed');
+    } finally {
+      setSavingDescription(false);
     }
   }
 
@@ -395,6 +426,9 @@ export function PackagesPage(): JSX.Element {
                 display: 'grid',
                 gap: 12,
                 gridTemplateColumns: `repeat(${Math.min(tiers.length, 3)}, 1fr)`,
+                // Each tier card sits at its natural height with tops aligned,
+                // instead of stretching to match the tallest sibling.
+                alignItems: 'start',
               }}
             >
               {tiers.map((t) => (
@@ -478,7 +512,7 @@ export function PackagesPage(): JSX.Element {
                         }}
                       />
                     </label>
-                    <label
+                    <div
                       style={{
                         fontSize: 11,
                         color: tokens.color.textMuted,
@@ -487,27 +521,26 @@ export function PackagesPage(): JSX.Element {
                       }}
                     >
                       Description
-                      <textarea
-                        defaultValue={t.description}
-                        rows={2}
-                        placeholder="Shown to the client for this tier"
-                        onClick={(e) => e.stopPropagation()}
-                        onFocus={(e) => e.stopPropagation()}
-                        onBlur={(e) => {
-                          if (e.target.value !== t.description)
-                            void patchPackage(t.id, { description: e.target.value });
-                        }}
+                      <div
                         style={{
-                          padding: '4px 6px',
                           fontSize: 12,
-                          border: `1px solid ${tokens.color.border}`,
+                          color: tokens.color.text,
+                          padding: '4px 6px',
+                          border: `1px dashed ${tokens.color.border}`,
                           borderRadius: tokens.radius.sm,
                           background: tokens.color.bg,
-                          color: tokens.color.text,
-                          resize: 'vertical',
+                          minHeight: 20,
                         }}
-                      />
-                    </label>
+                      >
+                        {t.description.trim() ? (
+                          <Markdown source={t.description} />
+                        ) : (
+                          <span style={{ color: tokens.color.textMuted }}>
+                            No description — click the tier to edit.
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                     <Button
@@ -560,6 +593,49 @@ export function PackagesPage(): JSX.Element {
             </Button>
           }
         >
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+              Tier description (shown to the client)
+            </div>
+            <RichTextEditor
+              key={selectedId ?? 'none'}
+              value={draftDescription}
+              onChange={setDraftDescription}
+              variables={PACKAGE_VARIABLES}
+              placeholder="Describe this tier… Use the toolbar to format and Variable ▾ for merge fields."
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <Button
+                size="sm"
+                disabled={
+                  savingDescription || draftDescription === (detail.package.description ?? '')
+                }
+                onClick={() => void saveDescription()}
+              >
+                {savingDescription ? 'Saving…' : 'Save description'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={draftDescription === (detail.package.description ?? '')}
+                onClick={() => setDraftDescription(detail.package.description ?? '')}
+              >
+                Revert
+              </Button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              marginBottom: 6,
+              borderTop: `1px solid ${tokens.color.border}`,
+              paddingTop: 12,
+            }}
+          >
+            Included services
+          </div>
           <PackageEntryEditor
             entries={draftEntries}
             services={services}
