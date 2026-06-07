@@ -11,10 +11,11 @@
 // retry_count + next_retry_at atomically so a second worker run
 // inside the same minute won't double-retry the same payment.
 
-import { and, eq, isNotNull, lte } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { invoices, payments, recurringBillingPlans } from '@vibe/db/schema';
+import { achReturns, invoices, payments, recurringBillingPlans } from '@vibe/db/schema';
+import { planAchRetry } from '@vibe/core/payments';
 
 import type { Logger } from 'pino';
 
@@ -82,6 +83,27 @@ export async function runPaymentRetry(
       await db.update(payments).set({ nextRetryAt: null }).where(eq(payments.id, p.id));
       gaveUp++;
       continue;
+    }
+    // Phase 21 — ACH returns honor NACHA: never retry no-auth/account codes;
+    // cap at 2 retries within 40 days. Card payments have no ach_returns rows
+    // and fall through to the card retry schedule unchanged.
+    const achRets = await db
+      .select({ code: achReturns.returnCode, createdAt: achReturns.createdAt })
+      .from(achReturns)
+      .where(eq(achReturns.paymentId, p.id))
+      .orderBy(asc(achReturns.createdAt));
+    if (achRets.length > 0) {
+      const decision = planAchRetry({
+        code: achRets[achRets.length - 1]!.code,
+        retriesSoFar: p.retryCount,
+        firstFailureAt: new Date(achRets[0]!.createdAt as unknown as string),
+        now: new Date(),
+      });
+      if (!decision.retry) {
+        await db.update(payments).set({ nextRetryAt: null }).where(eq(payments.id, p.id));
+        gaveUp++;
+        continue;
+      }
     }
     try {
       const result = await deps.chargeInvoice({
