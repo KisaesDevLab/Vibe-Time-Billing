@@ -50,6 +50,8 @@ import { PaymentMethodsPage } from './PaymentMethods';
 import { TaxPaymentCatalogPage } from './TaxPaymentCatalog';
 import { TermsTemplatesPage } from './TermsTemplates';
 import { StripeConnectPage } from './StripeConnect';
+import { TerminalPage } from './Terminal';
+import { AchReturnsPage } from './AchReturns';
 import { StorageOnboardingPage } from './StorageOnboarding';
 import { StorageSettingsPage } from './StorageSettings';
 import { StorageConflictsListPage } from './StorageConflictsList';
@@ -131,6 +133,8 @@ const GROUPS: Group[] = [
       { key: 'rules', label: 'Approval rules', href: '/admin/approval-rules' },
       { key: 'rfr', label: 'Required fields', href: '/admin/required-fields' },
       { key: 'stripe-connect', label: 'Stripe Connect', href: '/admin/stripe-connect' },
+      { key: 'terminal', label: 'In-person terminal', href: '/admin/terminal' },
+      { key: 'ach-returns', label: 'ACH returns', href: '/admin/ach-returns' },
     ],
   },
   {
@@ -322,6 +326,8 @@ export function AdminLayout(): JSX.Element {
         <Route path="packages" element={<PackagesPage />} />
         <Route path="terms-templates" element={<TermsTemplatesPage />} />
         <Route path="stripe-connect" element={<StripeConnectPage />} />
+        <Route path="terminal" element={<TerminalPage />} />
+        <Route path="ach-returns" element={<AchReturnsPage />} />
         <Route path="holidays" element={<HolidaysPage />} />
         <Route path="letters" element={<EngagementLettersPage />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />

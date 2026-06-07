@@ -22,6 +22,7 @@ import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  achReturns,
   clientPortalAccess,
   clients,
   creditApplications,
@@ -1132,6 +1133,44 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           refundsCents: Number(agg?.refunds ?? 0),
         },
       });
+    },
+  );
+
+  // Phase 22/26 — ACH returns dashboard. Lists ACH returns/disputes with the
+  // NACHA classification + side-effect flags, newest first.
+  router.get(
+    '/ach-returns',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], summary: { count: 0, amountCents: 0 } });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: achReturns.id,
+          returnCode: achReturns.returnCode,
+          category: achReturns.category,
+          retriable: achReturns.retriable,
+          invalidatedMandate: achReturns.invalidatedMandate,
+          blockedPaymentMethod: achReturns.blockedPaymentMethod,
+          amountCents: achReturns.amountCents,
+          feeCents: achReturns.feeCents,
+          source: achReturns.source,
+          createdAt: achReturns.createdAt,
+          invoiceId: achReturns.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+          clientName: clients.name,
+        })
+        .from(achReturns)
+        .leftJoin(invoices, eq(invoices.id, achReturns.invoiceId))
+        .leftJoin(clients, eq(clients.id, invoices.clientId))
+        .where(eq(achReturns.firmId, session.firmId))
+        .orderBy(desc(achReturns.createdAt))
+        .limit(1000);
+      const amountCents = rows.reduce((s, r) => s + Number(r.amountCents), 0);
+      res.json({ items: rows, summary: { count: rows.length, amountCents } });
     },
   );
 
