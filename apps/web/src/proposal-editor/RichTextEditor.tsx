@@ -9,6 +9,7 @@
 // remounts with fresh content (avoids markdown round-trip/setContent edge cases
 // and feedback loops).
 
+import { useEffect, useRef } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -16,15 +17,25 @@ import { Markdown } from 'tiptap-markdown';
 
 import { tokens } from '@vibe/ui';
 
+export interface RichTextApi {
+  /** Insert plain text (e.g. a merge token) at the cursor. */
+  insertText: (text: string) => void;
+}
+
 export function RichTextEditor({
   value,
   onChange,
   placeholder,
+  onReady,
 }: {
   value: string;
   onChange: (markdown: string) => void;
   placeholder?: string;
+  /** Called when the editor is ready, exposing an imperative insert API. */
+  onReady?: (api: RichTextApi) => void;
 }): JSX.Element {
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -40,6 +51,14 @@ export function RichTextEditor({
       onChange(md ?? ed.getText());
     },
   });
+
+  useEffect(() => {
+    if (editor && onReadyRef.current) {
+      onReadyRef.current({
+        insertText: (t) => editor.chain().focus().insertContent(t).run(),
+      });
+    }
+  }, [editor]);
 
   if (!editor) {
     return <div style={{ fontSize: 12, color: tokens.color.textMuted }}>Loading editor…</div>;

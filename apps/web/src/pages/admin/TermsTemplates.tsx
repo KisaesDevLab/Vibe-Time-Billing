@@ -7,12 +7,13 @@
 // templates if they aren't already present. Disclaimer banner kept
 // visible above the list.
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
+import { RichTextEditor, type RichTextApi } from '../../proposal-editor/RichTextEditor';
 
 const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -46,6 +47,7 @@ export function TermsTemplatesPage(): JSX.Element {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TermsRow | null>(null);
+  const richApi = useRef<RichTextApi | null>(null);
   const [previewOutput, setPreviewOutput] = useState<string | null>(null);
   const [previewUnresolved, setPreviewUnresolved] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -195,7 +197,8 @@ export function TermsTemplatesPage(): JSX.Element {
 
   function insertToken(token: string): void {
     if (!draft) return;
-    setDraft({ ...draft, contentMd: `${draft.contentMd}${token}` });
+    if (richApi.current) richApi.current.insertText(token);
+    else setDraft({ ...draft, contentMd: `${draft.contentMd}${token}` });
   }
 
   return (
@@ -386,21 +389,14 @@ export function TermsTemplatesPage(): JSX.Element {
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder="Template name"
               />
-              <textarea
+              <RichTextEditor
+                key={draft.id}
                 value={draft.contentMd}
-                onChange={(e) => setDraft({ ...draft, contentMd: e.target.value })}
-                rows={20}
-                style={{
-                  fontFamily: 'ui-monospace, monospace',
-                  fontSize: 12,
-                  padding: 10,
-                  border: `1px solid ${tokens.color.border}`,
-                  borderRadius: tokens.radius.sm,
-                  background: tokens.color.surface,
-                  color: tokens.color.text,
-                  resize: 'vertical',
-                  minHeight: 360,
+                onChange={(md) => setDraft((d) => (d ? { ...d, contentMd: md } : d))}
+                onReady={(apiObj) => {
+                  richApi.current = apiObj;
                 }}
+                placeholder="Engagement-letter terms. Use the toolbar to format; the Insert token buttons add merge fields."
               />
             </div>
             <div style={{ display: 'grid', gap: 8 }}>
