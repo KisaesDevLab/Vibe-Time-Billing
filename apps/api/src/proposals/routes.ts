@@ -23,11 +23,19 @@
 // Every mutation emits an audit_log row.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, asc, desc, eq, ilike, or } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { appUsers, clients, proposalVersions, proposals, signatures } from '@vibe/db/schema';
+import {
+  appUsers,
+  clients,
+  packages,
+  proposalPackages,
+  proposalVersions,
+  proposals,
+  signatures,
+} from '@vibe/db/schema';
 import { isBlockTree, type ProposalBlockTree } from '@vibe/core/proposals';
 import { contentHash } from '@vibe/core/proposals/server';
 
@@ -67,6 +75,61 @@ const PatchSchema = z.object({
 const BrochureSchema = z.object({
   brochureJsonb: z.unknown(),
 });
+
+/**
+ * Collect the package names referenced by `package_selector` blocks in a
+ * brochure block tree, in document order, de-duplicated.
+ */
+function packageNamesFromBrochure(brochure: unknown): string[] {
+  const tree = brochure as { blocks?: { type?: string; props?: Record<string, unknown> }[] };
+  const blocks = Array.isArray(tree?.blocks) ? tree.blocks : [];
+  const names: string[] = [];
+  for (const b of blocks) {
+    if (b?.type !== 'package_selector') continue;
+    const name = String(b.props?.['packageName'] ?? '').trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Snapshot the packages a proposal offers into proposal_packages, so the
+ * client's tier choice (selected=true) and the scope freeze have concrete
+ * rows to bind to. Each `package_selector` block names a package whose tiers
+ * are individual packages rows; we insert one proposal_packages row per tier.
+ *
+ * Idempotent per send: clears the proposal's existing offer rows first (a send
+ * only happens from DRAFT, so none can be selected yet) and re-inserts from the
+ * current brochure.
+ */
+async function syncProposalPackages(
+  db: Database,
+  proposalId: string,
+  firmId: string,
+  brochure: unknown,
+): Promise<void> {
+  const names = packageNamesFromBrochure(brochure);
+  await db.delete(proposalPackages).where(eq(proposalPackages.proposalId, proposalId));
+  if (names.length === 0) return;
+  const rows = await db
+    .select({ id: packages.id, name: packages.name, position: packages.position })
+    .from(packages)
+    .where(and(eq(packages.firmId, firmId), inArray(packages.name, names)));
+  if (rows.length === 0) return;
+  // Order by the brochure's block order, then by tier position within a name.
+  const ordered = rows.sort((a, b) => {
+    const ai = names.indexOf(a.name);
+    const bi = names.indexOf(b.name);
+    return ai !== bi ? ai - bi : a.position - b.position;
+  });
+  await db.insert(proposalPackages).values(
+    ordered.map((p, i) => ({
+      proposalId,
+      packageId: p.id,
+      sequence: i,
+    })),
+  );
+}
 
 export function createProposalRouter(deps: ProposalRoutesDeps): Router {
   const router = express.Router();
@@ -144,7 +207,28 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      res.json({ proposal: row });
+      // Offered package tiers + which one the client selected, so staff can
+      // see the chosen tier on an accepted proposal.
+      const offeredPackages = await deps.db
+        .select({
+          packageId: proposalPackages.packageId,
+          name: packages.name,
+          tierLabel: packages.tierLabel,
+          priceOverrideCents: packages.priceOverrideCents,
+          sequence: proposalPackages.sequence,
+          selected: proposalPackages.selected,
+          selectedAt: proposalPackages.selectedAt,
+        })
+        .from(proposalPackages)
+        .innerJoin(packages, eq(packages.id, proposalPackages.packageId))
+        .where(eq(proposalPackages.proposalId, row.id))
+        .orderBy(asc(proposalPackages.sequence));
+      const selectedPackage =
+        offeredPackages.find((o) => o.selected) ??
+        (row.selectedPackageId
+          ? (offeredPackages.find((o) => o.packageId === row.selectedPackageId) ?? null)
+          : null);
+      res.json({ proposal: row, offeredPackages, selectedPackage });
     },
   );
 
@@ -494,6 +578,14 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
           updatedAt: sentAt,
         })
         .where(eq(proposals.id, prior.id));
+
+      // Snapshot the offered packages (one row per tier) so the client's
+      // selection has concrete rows to bind to and scope-freeze can resolve
+      // the chosen tier's services.
+      await syncProposalPackages(deps.db, prior.id, session.firmId, prior.brochureJsonb).catch(
+        (err: unknown) =>
+          logger.error({ err, proposalId: prior.id }, 'proposal package sync failed'),
+      );
 
       // Q34 — insert one PENDING roster row per signer. First signer
       // defaults to PRIMARY, the rest COSIGNER; sequence follows the

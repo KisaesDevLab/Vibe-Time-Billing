@@ -210,23 +210,47 @@ export async function advanceSignatureToSigned(args: AdvanceArgs): Promise<Advan
     });
   }
 
-  // Mark selected package (if any).
+  // Mark the selected package (if any). Validate it belongs to this firm
+  // before it freezes a binding engagement scope; record it as the
+  // authoritative selection on the proposal, mirror the per-proposal offer
+  // flag, and log a TIER_SELECTED activity event.
+  let selectedPkgId: string | null = null;
   if (args.selectedPackageId) {
-    const { proposalPackages } = await import('@vibe/db/schema');
-    await tx
-      .update(proposalPackages)
-      .set({ selected: true, selectedAt: now })
-      .where(
-        and(
-          eq(proposalPackages.proposalId, proposal.id),
-          eq(proposalPackages.packageId, args.selectedPackageId),
-        ),
-      );
+    const { packages, proposalActivity, proposalPackages } = await import('@vibe/db/schema');
+    const [pkg] = await tx
+      .select({
+        id: packages.id,
+        firmId: packages.firmId,
+        name: packages.name,
+        tierLabel: packages.tierLabel,
+      })
+      .from(packages)
+      .where(eq(packages.id, args.selectedPackageId))
+      .limit(1);
+    if (pkg && pkg.firmId === proposal.firmId) {
+      selectedPkgId = pkg.id;
+      await tx
+        .update(proposalPackages)
+        .set({ selected: true, selectedAt: now })
+        .where(
+          and(eq(proposalPackages.proposalId, proposal.id), eq(proposalPackages.packageId, pkg.id)),
+        );
+      await tx.insert(proposalActivity).values({
+        proposalId: proposal.id,
+        kind: 'TIER_SELECTED',
+        payload: { packageId: pkg.id, name: pkg.name, tierLabel: pkg.tierLabel },
+      });
+    }
   }
 
   await tx
     .update(proposals)
-    .set({ status: 'ACCEPTED', acceptedAt: now, updatedAt: now })
+    .set({
+      status: 'ACCEPTED',
+      acceptedAt: now,
+      updatedAt: now,
+      ...(selectedPkgId ? { selectedPackageId: selectedPkgId } : {}),
+    })
     .where(eq(proposals.id, proposal.id));
 
   // All signed signature ids feed the ACCEPTED snapshot.

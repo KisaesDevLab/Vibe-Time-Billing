@@ -59,6 +59,16 @@ import { useUndoHistory, useUndoKeyboard } from '../proposal-editor/use-undo-his
 import { VALIDATORS } from '../proposal-editor/block-validators';
 import { PALETTE_ORDER, REGISTRY, type BlockTypeDef } from '../proposal-editor/blocks';
 
+interface OfferedPackage {
+  packageId: string;
+  name: string;
+  tierLabel: string;
+  priceOverrideCents: number | null;
+  sequence: number;
+  selected: boolean;
+  selectedAt: string | null;
+}
+
 interface ProposalDetail {
   proposal: {
     id: string;
@@ -71,6 +81,8 @@ interface ProposalDetail {
     createEngagementOnAccept: boolean;
     requestTemplateIdOnAccept: string | null;
   };
+  offeredPackages?: OfferedPackage[];
+  selectedPackage?: OfferedPackage | null;
 }
 
 interface RequestTemplateOption {
@@ -118,6 +130,9 @@ const labelStyle = {
   color: tokens.color.textMuted,
   marginBottom: 4,
 } as const;
+
+const formatCents = (c: number): string =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(c / 100);
 
 function newSigner(role: SignerRole): SignerDraft {
   return { key: generateId(), name: '', email: '', phone: '', role, required: true };
@@ -189,11 +204,15 @@ export function ProposalEditorPage(): JSX.Element {
   const [createEng, setCreateEng] = useState(true);
   const [reqTemplateId, setReqTemplateId] = useState<string>('');
   const [reqTemplates, setReqTemplates] = useState<RequestTemplateOption[]>([]);
+  const [offeredPackages, setOfferedPackages] = useState<OfferedPackage[]>([]);
+  const [selectedPackage, setSelectedPackage] = useState<OfferedPackage | null>(null);
 
   async function load(): Promise<void> {
     try {
       const r = await api<ProposalDetail>(`/api/staff/proposals/${id}`);
       setDetail(r.proposal);
+      setOfferedPackages(r.offeredPackages ?? []);
+      setSelectedPackage(r.selectedPackage ?? null);
       setCreateEng(r.proposal.createEngagementOnAccept !== false);
       setReqTemplateId(r.proposal.requestTemplateIdOnAccept ?? '');
       const tree = coerceTree(r.proposal.brochureJsonb);
@@ -492,6 +511,49 @@ export function ProposalEditorPage(): JSX.Element {
         <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>
           {loadErr ?? autosave.lastError?.message}
         </p>
+      )}
+
+      {detail.status !== 'DRAFT' && offeredPackages.length > 0 && (
+        <Card title="Package selection">
+          {selectedPackage ? (
+            <p style={{ fontSize: 13, margin: '0 0 8px' }}>
+              The client selected{' '}
+              <strong>
+                {selectedPackage.name} — {selectedPackage.tierLabel}
+              </strong>
+              {selectedPackage.priceOverrideCents != null &&
+                ` (${formatCents(selectedPackage.priceOverrideCents)})`}
+              {selectedPackage.selectedAt &&
+                ` on ${new Date(selectedPackage.selectedAt).toLocaleDateString()}`}
+              .
+            </p>
+          ) : (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: '0 0 8px' }}>
+              {detail.status === 'ACCEPTED'
+                ? 'Accepted without a package selection.'
+                : 'No tier selected yet — the client picks one when they accept.'}
+            </p>
+          )}
+          <Table<OfferedPackage>
+            columns={[
+              { key: 'name', header: 'Package', render: (r) => r.name },
+              { key: 'tier', header: 'Tier', render: (r) => r.tierLabel },
+              {
+                key: 'price',
+                header: 'List price',
+                render: (r) =>
+                  r.priceOverrideCents != null ? formatCents(r.priceOverrideCents) : '—',
+              },
+              {
+                key: 'selected',
+                header: '',
+                render: (r) => (r.selected ? <Pill tone="success">Selected</Pill> : null),
+              },
+            ]}
+            rows={offeredPackages}
+            rowKey={(r) => r.packageId}
+          />
+        </Card>
       )}
 
       <Card>

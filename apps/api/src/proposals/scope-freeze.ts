@@ -141,16 +141,21 @@ export async function freezeProposalIntoEngagement(input: FreezeInput): Promise<
     .where(eq(proposalLineItems.proposalId, proposal.id))
     .orderBy(asc(proposalLineItems.sequence));
 
-  // 3. Materialize the selected package's services. The package
-  // selector block writes selected=true on exactly one row in
-  // proposal_packages (or zero if the proposal doesn't offer
-  // packages).
-  const [selectedPkg] = await db
-    .select()
-    .from(proposalPackages)
-    .where(and(eq(proposalPackages.proposalId, proposal.id), eq(proposalPackages.selected, true)))
-    .limit(1);
-  const packageEntries = selectedPkg
+  // 3. Materialize the selected package's services. The acceptance flow
+  // records the client's choice authoritatively on proposals.selected_package_id
+  // and mirrors it onto proposal_packages.selected; we read the column first and
+  // fall back to the offer flag for resilience (or zero if the proposal doesn't
+  // offer packages).
+  let selectedPackageId = proposal.selectedPackageId ?? null;
+  if (!selectedPackageId) {
+    const [flagged] = await db
+      .select({ packageId: proposalPackages.packageId })
+      .from(proposalPackages)
+      .where(and(eq(proposalPackages.proposalId, proposal.id), eq(proposalPackages.selected, true)))
+      .limit(1);
+    selectedPackageId = flagged?.packageId ?? null;
+  }
+  const packageEntries = selectedPackageId
     ? await db
         .select({
           serviceId: packageServices.serviceId,
@@ -165,10 +170,7 @@ export async function freezeProposalIntoEngagement(input: FreezeInput): Promise<
         .from(packageServices)
         .innerJoin(servicesCatalog, eq(servicesCatalog.id, packageServices.serviceId))
         .where(
-          and(
-            eq(packageServices.packageId, selectedPkg.packageId),
-            eq(packageServices.included, true),
-          ),
+          and(eq(packageServices.packageId, selectedPackageId), eq(packageServices.included, true)),
         )
         .orderBy(asc(packageServices.sequence))
     : [];

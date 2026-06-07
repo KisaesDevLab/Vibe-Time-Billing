@@ -452,6 +452,12 @@ export const proposals = pgTable(
     // engagement creation is on) spawns a request list on the new engagement.
     createEngagementOnAccept: boolean('create_engagement_on_accept').notNull().default(true),
     requestTemplateIdOnAccept: uuid('request_template_id_on_accept'),
+    // 0126 — the package tier the client selected on acceptance (one
+    // packages row). Authoritative for scope-freeze; proposal_packages.selected
+    // mirrors it as the per-proposal offer record.
+    selectedPackageId: uuid('selected_package_id').references(() => packages.id, {
+      onDelete: 'set null',
+    }),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

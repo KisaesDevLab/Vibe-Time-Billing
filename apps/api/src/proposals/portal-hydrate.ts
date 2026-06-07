@@ -148,6 +148,9 @@ async function hydratePackageSelector(
       const sum = sumByPkg.get(p.id) ?? 0;
       const priceCents = tierOverrides[p.tierLabel] ?? p.priceOverrideCents ?? sum;
       return {
+        // packageId lets the portal render the tier as a selectable choice and
+        // post it back as selectedPackageId on acceptance.
+        packageId: p.id,
         tierLabel: p.tierLabel,
         priceCents: num(priceCents),
         description: tierDescriptions[p.tierLabel] ?? p.description ?? '',

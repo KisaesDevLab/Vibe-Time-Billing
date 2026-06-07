@@ -114,7 +114,12 @@ function intervalLabel(i: string | null | undefined): string {
 // block-registry renderer ships with the proposal-editor app; this
 // is a read-only subset that handles the most common brochure
 // blocks. Unknown block types render as a fallback label.
-function renderBlock(block: BrochureBlock, key: string): JSX.Element {
+interface SelectContext {
+  selectedPkg: string | null;
+  onSelectPkg: (packageId: string) => void;
+}
+
+function renderBlock(block: BrochureBlock, key: string, sel?: SelectContext): JSX.Element {
   const props = (block.props ?? {}) as Record<string, unknown>;
   switch (block.type) {
     case 'hero':
@@ -301,6 +306,7 @@ function renderBlock(block: BrochureBlock, key: string): JSX.Element {
       const tiers =
         (props['tiers'] as
           | {
+              packageId?: string;
               tierLabel: string;
               priceCents: number;
               description: string;
@@ -308,6 +314,9 @@ function renderBlock(block: BrochureBlock, key: string): JSX.Element {
             }[]
           | undefined) ?? [];
       if (tiers.length === 0) return <div key={key} />;
+      // Selectable when the tiers carry a packageId (hydrated) and the page
+      // passed a selection context. Otherwise fall back to display-only cards.
+      const selectable = !!sel && tiers.some((t) => !!t.packageId);
       return (
         <div key={key} style={{ marginBottom: 16 }}>
           {name && <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>{name}</div>}
@@ -318,30 +327,68 @@ function renderBlock(block: BrochureBlock, key: string): JSX.Element {
               gridTemplateColumns: `repeat(${Math.min(tiers.length, 3)}, 1fr)`,
             }}
           >
-            {tiers.map((t) => (
-              <div
-                key={t.tierLabel}
-                style={{
-                  padding: 16,
-                  border: `1px solid ${tokens.color.border}`,
-                  borderRadius: tokens.radius.md,
-                  background: tokens.color.surface,
-                }}
-              >
-                <div style={{ fontWeight: 600 }}>{t.tierLabel}</div>
-                <div style={{ fontSize: 22, fontWeight: 700, margin: '4px 0' }}>
-                  {money(Number(t.priceCents))}
-                </div>
-                {t.description?.trim() && (
-                  <div style={{ fontSize: 13, margin: '4px 0' }}>
-                    <Markdown source={t.description} />
+            {tiers.map((t) => {
+              const isSelected = selectable && !!t.packageId && sel!.selectedPkg === t.packageId;
+              const inner = (
+                <>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>{t.tierLabel}</div>
+                    {isSelected && <Pill tone="accent">Selected</Pill>}
                   </div>
-                )}
-                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                  {t.includedServiceCount} included
+                  <div style={{ fontSize: 22, fontWeight: 700, margin: '4px 0' }}>
+                    {money(Number(t.priceCents))}
+                  </div>
+                  {t.description?.trim() && (
+                    <div style={{ fontSize: 13, margin: '4px 0' }}>
+                      <Markdown source={t.description} />
+                    </div>
+                  )}
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    {t.includedServiceCount} included
+                  </div>
+                </>
+              );
+              const cardStyle: React.CSSProperties = {
+                textAlign: 'left',
+                padding: 16,
+                border: `${isSelected ? 2 : 1}px solid ${
+                  isSelected ? tokens.color.accent : tokens.color.border
+                }`,
+                borderRadius: tokens.radius.md,
+                background: isSelected ? 'rgba(67, 56, 202, 0.04)' : tokens.color.surface,
+              };
+              if (selectable && t.packageId) {
+                const pkgId = t.packageId;
+                return (
+                  <button
+                    key={pkgId}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => sel!.onSelectPkg(pkgId)}
+                    style={{
+                      ...cardStyle,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      width: '100%',
+                    }}
+                  >
+                    {inner}
+                  </button>
+                );
+              }
+              return (
+                <div key={t.packageId ?? t.tierLabel} style={cardStyle}>
+                  {inner}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       );
@@ -485,15 +532,37 @@ export function ProposalPage(): JSX.Element {
     void redeem();
   }, [redeem]);
 
+  // Legacy top-level packages (older brochures). New proposals offer tiers via
+  // hydrated package_selector blocks instead.
   const packages = useMemo(() => data?.proposal.brochureJsonb.packages ?? [], [data]);
 
-  // Auto-select the highlighted package on first render so the
-  // Accept button isn't blocked when the proposal has packages.
+  // Selectable package tiers offered by package_selector blocks. The redeem
+  // endpoint hydrates each tier with its packageId.
+  const blockTierIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const b of data?.proposal.brochureJsonb.blocks ?? []) {
+      if (b.type !== 'package_selector') continue;
+      const tiers = (b.props?.['tiers'] as { packageId?: string }[] | undefined) ?? [];
+      for (const t of tiers) {
+        if (t.packageId && !ids.includes(t.packageId)) ids.push(t.packageId);
+      }
+    }
+    return ids;
+  }, [data]);
+
+  const hasSelectablePackages = blockTierIds.length > 0 || packages.length > 0;
+
+  // Auto-select a default so the Accept button isn't blocked: the first offered
+  // tier, or the highlighted/first legacy package.
   useEffect(() => {
-    if (!packages.length || selectedPkg) return;
+    if (selectedPkg || !hasSelectablePackages) return;
+    if (blockTierIds.length > 0) {
+      setSelectedPkg(blockTierIds[0]!);
+      return;
+    }
     const highlighted = packages.find((p) => p.highlighted);
     setSelectedPkg(highlighted?.id ?? packages[0]!.id);
-  }, [packages, selectedPkg]);
+  }, [packages, blockTierIds, hasSelectablePackages, selectedPkg]);
 
   // Section-view ping when blocks come into view. v1 sends one ping
   // per block on first render — no IntersectionObserver scaffolding
@@ -617,7 +686,7 @@ export function ProposalPage(): JSX.Element {
     signerName.trim().length === 0 ||
     !signerEmail.includes('@') ||
     typedName.trim().length === 0 ||
-    (packages.length > 0 && !selectedPkg);
+    (hasSelectablePackages && !selectedPkg);
 
   return (
     <div style={{ maxWidth: 760, margin: '0 auto', padding: 24 }}>
@@ -681,10 +750,12 @@ export function ProposalPage(): JSX.Element {
           marginTop: 16,
         }}
       >
-        {data.proposal.brochureJsonb.blocks.map((b, i) => renderBlock(b, b.id ?? String(i)))}
+        {data.proposal.brochureJsonb.blocks.map((b, i) =>
+          renderBlock(b, b.id ?? String(i), { selectedPkg, onSelectPkg: setSelectedPkg }),
+        )}
       </div>
 
-      {packages.length > 0 && (
+      {packages.length > 0 && blockTierIds.length === 0 && (
         <Card title="Choose a package">
           <div style={{ display: 'grid', gap: 12 }}>
             {packages.map((p) => (
@@ -700,6 +771,7 @@ export function ProposalPage(): JSX.Element {
       )}
 
       {packages.length === 0 &&
+        blockTierIds.length === 0 &&
         (data.proposal.totalOneTimeCents > 0 || data.proposal.totalRecurringCents > 0) && (
           <Card title="Total">
             <div style={{ display: 'flex', gap: 16, alignItems: 'baseline' }}>
