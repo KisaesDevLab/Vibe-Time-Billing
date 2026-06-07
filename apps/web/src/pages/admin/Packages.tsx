@@ -288,6 +288,18 @@ export function PackagesPage(): JSX.Element {
     });
   }, [detail, draftEntries]);
 
+  // While editing a tier, focus the view: show only the package that contains
+  // the selected tier (hide the other packages + the create/import panels) so
+  // the editor sits right below the package instead of far down the page.
+  const editing = selectedId != null;
+  const visibleGroups = useMemo(() => {
+    if (!editing) return groups;
+    const match = Object.entries(groups).find(([, tiers]) =>
+      tiers.some((t) => t.id === selectedId),
+    );
+    return match ? { [match[0]]: match[1] } : groups;
+  }, [groups, editing, selectedId]);
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1300 }}>
       <SectionHeading
@@ -295,68 +307,80 @@ export function PackagesPage(): JSX.Element {
         description="Bundle services into reusable 3-tier offerings (e.g. Bronze / Silver / Gold). Proposals offer packages and the client picks one."
       />
 
-      <TemplateLibraryPanel
-        area="packages"
-        onImported={() => {
-          void loadGroups();
-          void loadServices();
-        }}
-      />
-
-      <Card title="Add tier">
-        <form
-          onSubmit={createPackage}
-          style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
-        >
-          <Input
-            placeholder="Package name (e.g. Small Business Tax)"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            required
-            style={{ minWidth: 260 }}
-          />
-          <Input
-            placeholder="Tier label"
-            value={newTierLabel}
-            onChange={(e) => setNewTierLabel(e.target.value)}
-            required
-            style={{ width: 140 }}
-          />
-          <Input
-            type="number"
-            min="0"
-            placeholder="Position"
-            value={String(newPosition)}
-            onChange={(e) => setNewPosition(Number(e.target.value) || 0)}
-            style={{ width: 100 }}
-          />
-          <Button type="submit" size="sm">
-            Add tier
+      {editing && (
+        <div>
+          <Button variant="ghost" size="sm" onClick={() => setSelectedId(null)}>
+            ← Back to all packages
           </Button>
-          <label style={{ fontSize: 12, color: tokens.color.textMuted, marginLeft: 'auto' }}>
-            <input
-              type="checkbox"
-              checked={includeArchived}
-              onChange={(e) => setIncludeArchived(e.target.checked)}
-              style={{ marginRight: 6 }}
+        </div>
+      )}
+
+      {!editing && (
+        <TemplateLibraryPanel
+          area="packages"
+          onImported={() => {
+            void loadGroups();
+            void loadServices();
+          }}
+        />
+      )}
+
+      {!editing && (
+        <Card title="Add tier">
+          <form
+            onSubmit={createPackage}
+            style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
+          >
+            <Input
+              placeholder="Package name (e.g. Small Business Tax)"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              required
+              style={{ minWidth: 260 }}
             />
-            Include archived
-          </label>
-        </form>
-        <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
-          To build a three-tier offering, create three rows with the same name and different tier
-          labels — they group together in the preview below.
-        </p>
-      </Card>
+            <Input
+              placeholder="Tier label"
+              value={newTierLabel}
+              onChange={(e) => setNewTierLabel(e.target.value)}
+              required
+              style={{ width: 140 }}
+            />
+            <Input
+              type="number"
+              min="0"
+              placeholder="Position"
+              value={String(newPosition)}
+              onChange={(e) => setNewPosition(Number(e.target.value) || 0)}
+              style={{ width: 100 }}
+            />
+            <Button type="submit" size="sm">
+              Add tier
+            </Button>
+            <label style={{ fontSize: 12, color: tokens.color.textMuted, marginLeft: 'auto' }}>
+              <input
+                type="checkbox"
+                checked={includeArchived}
+                onChange={(e) => setIncludeArchived(e.target.checked)}
+                style={{ marginRight: 6 }}
+              />
+              Include archived
+            </label>
+          </form>
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
+            To build a three-tier offering, create three rows with the same name and different tier
+            labels — they group together in the preview below.
+          </p>
+        </Card>
+      )}
 
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
 
-      {Object.keys(groups).length === 0 ? (
+      {Object.keys(visibleGroups).length === 0 ? (
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
           No packages yet. Add your first tier above.
         </p>
       ) : (
-        Object.entries(groups).map(([name, tiers]) => (
+        Object.entries(visibleGroups).map(([name, tiers]) => (
           <Card
             key={name}
             title={name}
