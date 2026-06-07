@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
 interface PackageRow {
   id: string;
@@ -257,6 +258,14 @@ export function PackagesPage(): JSX.Element {
       <SectionHeading
         title="Packages"
         description="Bundle services into reusable 3-tier offerings (e.g. Bronze / Silver / Gold). Proposals offer packages and the client picks one."
+      />
+
+      <TemplateLibraryPanel
+        area="packages"
+        onImported={() => {
+          void loadGroups();
+          void loadServices();
+        }}
       />
 
       <Card title="Add tier">

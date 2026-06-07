@@ -132,6 +132,7 @@ import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
 import { createTermsTemplateRouter } from './terms-templates/routes';
+import { createTemplateLibraryRouter } from './template-library/routes';
 import { createProposalRouter } from './proposals/routes';
 import { createProposalDashboardRouter } from './proposals/dashboard';
 import { createPortalMagicLinkRouter, createStaffMagicLinkRouter } from './proposals/magic-links';
@@ -1309,6 +1310,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/terms-templates', auth.requireAuth, auth.requireCsrf, termsTemplateRouter);
+
+  // Template library — import shipped CPA defaults into the firm catalog.
+  const templateLibraryRouter = createTemplateLibraryRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/template-library', auth.requireAuth, auth.requireCsrf, templateLibraryRouter);
 
   // PP4a — Proposal CRUD. partner = author; manager = read.
   const proposalRouter = createProposalRouter({

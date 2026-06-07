@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button, Card, Combobox, Input, Pill, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
 const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -203,6 +204,8 @@ export function TermsTemplatesPage(): JSX.Element {
         title="Terms templates"
         description="Reusable engagement-letter language. Proposals snapshot the rendered terms at send + acceptance time."
       />
+
+      <TemplateLibraryPanel area="terms" onImported={() => void load()} />
 
       <Card>
         <div

@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button, Card, Combobox, Input, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
 const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -233,6 +234,8 @@ export function ServicesCatalogPage(): JSX.Element {
       />
 
       <TagsPanel tags={tags} onChange={loadTags} />
+
+      <TemplateLibraryPanel area="services" onImported={() => void loadServices()} />
 
       <Card title="Services">
         <div

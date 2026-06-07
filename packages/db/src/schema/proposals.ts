@@ -172,6 +172,10 @@ export const servicesCatalog = pgTable(
     isAddon: boolean('is_addon').notNull().default(false),
     parentServiceId: uuid('parent_service_id'),
     coaCode: text('coa_code'),
+    // 0123 — when imported from the system template library, the source slug
+    // + pack version (else null for hand-created rows).
+    clonedFromSlug: text('cloned_from_slug'),
+    clonedFromPackVersion: text('cloned_from_pack_version'),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -239,6 +243,8 @@ export const packages = pgTable(
     tierLabel: text('tier_label').notNull().default('Standard'),
     position: integer('position').notNull().default(0),
     description: text('description').notNull().default(''),
+    clonedFromSlug: text('cloned_from_slug'),
+    clonedFromPackVersion: text('cloned_from_pack_version'),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -290,6 +296,8 @@ export const termsTemplates = pgTable(
     contentMd: text('content_md').notNull().default(''),
     version: integer('version').notNull().default(1),
     isDefault: boolean('is_default').notNull().default(false),
+    clonedFromSlug: text('cloned_from_slug'),
+    clonedFromPackVersion: text('cloned_from_pack_version'),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

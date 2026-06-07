@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
 interface Template {
   id: string;
@@ -155,6 +156,7 @@ export function NotificationTemplatesPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      <TemplateLibraryPanel area="emails" onImported={() => void load()} />
       <Card title="Notification templates">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 12 }}>
           Variable insertion only (per Q28). Use <code>{'{{variable.name}}'}</code> markers; the
