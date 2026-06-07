@@ -29,6 +29,11 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import {
+  buildRetainerOfferPresentation,
+  createRetainerPurchaseInvoice,
+} from './offer-presentation';
+import { renderRetainerOfferHtml } from '../pdf-templates/retainer-offer';
 
 export interface RetainerRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -91,8 +96,115 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      res.json({ offer: row });
+      const presentation = await buildRetainerOfferPresentation(deps.db, row);
+      res.json({ offer: row, presentation });
     },
+  );
+
+  // Staff "in-office" select: pick a tier on the client's behalf so the
+  // retainer purchase invoice exists for immediate counter payment. Same code
+  // path as the portal select; paying the invoice (online or office) activates.
+  const StaffSelectSchema = z.object({ tier: z.enum(['TIER_1', 'TIER_2']) });
+  router.post(
+    '/offers/:id/select',
+    requirePermission(deps, 'retainer:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = StaffSelectSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [offer] = await deps.db
+        .select()
+        .from(retainerOffers)
+        .where(
+          and(eq(retainerOffers.id, req.params['id']!), eq(retainerOffers.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!offer) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (offer.status === 'expired' || offer.offerExpiresAt < new Date()) {
+        res.status(410).json({ error: 'offer_expired' });
+        return;
+      }
+      if (offer.status !== 'pending') {
+        res.status(409).json({ error: 'offer_not_pending', currentStatus: offer.status });
+        return;
+      }
+      const { invoiceId, invoiceNumber, priceCents } = await createRetainerPurchaseInvoice(
+        deps.db,
+        offer,
+        parsed.data.tier,
+      );
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'retainer_offer',
+        entityId: offer.id,
+        actorAppUserId: session.appUserId,
+        after: { selected: parsed.data.tier, invoiceId, priceCents, via: 'staff_in_office' },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.status(201).json({ invoiceId, invoiceNumber, priceCents });
+    },
+  );
+
+  // Printable / PDF handout (staff). html = browser print; pdf = Puppeteer
+  // with HTML fallback when Chrome/sidecar is unavailable.
+  async function renderStaffOfferDoc(
+    req: Request,
+    res: Response,
+    format: 'html' | 'pdf',
+  ): Promise<void> {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.status(503).send('db_unavailable');
+      return;
+    }
+    const [offer] = await deps.db
+      .select()
+      .from(retainerOffers)
+      .where(
+        and(eq(retainerOffers.id, req.params['id']!), eq(retainerOffers.firmId, session.firmId)),
+      )
+      .limit(1);
+    if (!offer) {
+      res.status(404).send('not_found');
+      return;
+    }
+    const html = renderRetainerOfferHtml(await buildRetainerOfferPresentation(deps.db, offer));
+    if (format === 'html') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+    try {
+      const { renderHtmlToPdf } = await import('../pdf/render');
+      const pdf = await renderHtmlToPdf(html);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="retainer-offer-${offer.id}.pdf"`);
+      res.send(pdf);
+    } catch (err) {
+      logger.warn(
+        { err, offerId: offer.id },
+        'staff retainer offer PDF render failed; serving HTML',
+      );
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    }
+  }
+  router.get('/offers/:id/print.html', requirePermission(deps, 'retainer:read'), (req, res) =>
+    renderStaffOfferDoc(req, res, 'html'),
+  );
+  router.get('/offers/:id/print.pdf', requirePermission(deps, 'retainer:read'), (req, res) =>
+    renderStaffOfferDoc(req, res, 'pdf'),
   );
 
   // ----- retainers (read-only for R2; full CRUD in R5) --------------

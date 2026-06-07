@@ -14,6 +14,14 @@ import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
+import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
+
+// Merge variables that resolve in the retainer offer copy at view time.
+const OFFER_VARIABLES: RichTextVariable[] = [
+  { token: 'client.name', label: 'Client name' },
+  { token: 'firm.name', label: 'Firm name' },
+  { token: 'today', label: "Today's date" },
+];
 
 const RETURN_TYPES = ['1040', '1065', '1120', '1120S', '1041', '990'] as const;
 type ReturnType = (typeof RETURN_TYPES)[number];
@@ -50,6 +58,8 @@ interface FirmSettings {
   notifyDay55: boolean;
   revenueGlAccount: string | null;
   offsetGlAccount: string | null;
+  offerIntroMd: string | null;
+  offerTermsMd: string | null;
 }
 
 interface WorkCode {
@@ -179,6 +189,8 @@ export function RetainerTierSettingsPage(): JSX.Element {
           notifyDay55: settings.notifyDay55,
           revenueGlAccount: settings.revenueGlAccount || null,
           offsetGlAccount: settings.offsetGlAccount || null,
+          offerIntroMd: settings.offerIntroMd || null,
+          offerTermsMd: settings.offerTermsMd || null,
         }),
       });
       setSavedSettingsAt(Date.now());
@@ -369,6 +381,30 @@ export function RetainerTierSettingsPage(): JSX.Element {
                 setSettings({ ...settings, offsetGlAccount: e.target.value || null })
               }
             />
+            <div>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Offer intro (shown atop the client offer + printable handout)
+              </div>
+              <RichTextEditor
+                key="offer-intro"
+                value={settings.offerIntroMd ?? ''}
+                onChange={(md) => setSettings({ ...settings, offerIntroMd: md || null })}
+                variables={OFFER_VARIABLES}
+                placeholder="A short intro for the tax-representation offer…"
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Representation terms (shown below the tiers + on the handout)
+              </div>
+              <RichTextEditor
+                key="offer-terms"
+                value={settings.offerTermsMd ?? ''}
+                onChange={(md) => setSettings({ ...settings, offerTermsMd: md || null })}
+                variables={OFFER_VARIABLES}
+                placeholder="Standard representation engagement terms…"
+              />
+            </div>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <Button type="button" onClick={saveSettings} disabled={savingSettings}>
                 {savingSettings ? 'Saving…' : 'Save settings'}

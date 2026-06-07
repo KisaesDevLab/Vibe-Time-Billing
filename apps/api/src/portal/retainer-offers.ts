@@ -16,16 +16,21 @@
 // to select after that returns 410.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, sql as drz } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clientPortalAccess, invoiceLineItems, invoices, retainerOffers } from '@vibe/db/schema';
+import { clientPortalAccess, retainerOffers } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { isRetainerFeatureEnabled } from '../retainers/feature-flag';
+import {
+  buildRetainerOfferPresentation,
+  createRetainerPurchaseInvoice,
+} from '../retainers/offer-presentation';
+import { renderRetainerOfferHtml } from '../pdf-templates/retainer-offer';
 
 export interface PortalRetainerOfferDeps {
   db: Database | null;
@@ -79,9 +84,19 @@ export function createPortalRetainerOfferRouter(deps: PortalRetainerOfferDeps): 
       }
       return;
     }
-    // Stamp first-view if not already
-    res.json({ offer });
+    // Proposal-style presentation: return fee + paid status, tier configs,
+    // branding, and firm-authored intro/terms.
+    const presentation = await buildRetainerOfferPresentation(deps.db, offer);
+    res.json({ offer, presentation });
   });
+
+  // Printable / PDF handout of the proposal-style offer (client download).
+  router.get('/:id/print.html', deps.requireAuth, (req, res) =>
+    renderOfferDocument(deps, req, res, 'html'),
+  );
+  router.get('/:id/print.pdf', deps.requireAuth, (req, res) =>
+    renderOfferDocument(deps, req, res, 'pdf'),
+  );
 
   router.post('/:id/select', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;
@@ -116,52 +131,11 @@ export function createPortalRetainerOfferRouter(deps: PortalRetainerOfferDeps): 
       return;
     }
 
-    const priceCents =
-      parsed.data.tier === 'TIER_1' ? offer.tier1PriceCents : offer.tier2PriceCents;
-    const invoiceNumber = await nextInvoiceNumber(deps.db, offer.firmId, 'RET');
-    const issueDate = new Date().toISOString().slice(0, 10);
-    // Due in 14 days for retainer purchases; firm default invoice
-    // terms could override but keep simple for v1.
-    const dueDate = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
-
-    const invoiceId = await deps.db.transaction(async (tx) => {
-      const [inv] = await tx
-        .insert(invoices)
-        .values({
-          firmId: offer.firmId,
-          clientId: offer.clientId,
-          primaryEngagementId: offer.engagementId,
-          invoiceNumber,
-          issueDate,
-          dueDate,
-          subtotalCents: priceCents,
-          totalCents: priceCents,
-          status: 'SENT',
-          retainerOfferId: offer.id,
-        })
-        .returning({ id: invoices.id });
-      if (!inv) throw new Error('invoice_insert_failed');
-      await tx.insert(invoiceLineItems).values({
-        invoiceId: inv.id,
-        kind: 'RETAINER',
-        description: `Retainer purchase — ${parsed.data.tier === 'TIER_1' ? 'Standard' : 'Premium'} coverage for TY${offer.taxYear} ${offer.returnType}`,
-        amountCents: priceCents,
-        engagementId: offer.engagementId,
-        sourceRefType: 'retainer_offer',
-        sourceRefId: offer.id,
-        sortOrder: 0,
-      });
-      await tx
-        .update(retainerOffers)
-        .set({
-          status: 'pending_payment',
-          purchasedTier: parsed.data.tier,
-          purchasedInvoiceId: inv.id,
-          updatedAt: new Date(),
-        })
-        .where(eq(retainerOffers.id, offer.id));
-      return inv.id;
-    });
+    const { invoiceId, invoiceNumber, priceCents } = await createRetainerPurchaseInvoice(
+      deps.db,
+      offer,
+      parsed.data.tier,
+    );
 
     await emitAudit(deps.db, {
       action: 'UPDATE',
@@ -224,14 +198,48 @@ export function createPortalRetainerOfferRouter(deps: PortalRetainerOfferDeps): 
   return router;
 }
 
-async function nextInvoiceNumber(db: Database, firmId: string, prefix: string): Promise<string> {
-  const [row] = await db
-    .select({
-      n: drz<number>`COALESCE(MAX(CAST(SUBSTRING(${invoices.invoiceNumber} FROM '[0-9]+$') AS INTEGER)), 0)`,
-    })
-    .from(invoices)
-    .where(eq(invoices.firmId, firmId));
-  const next = Number(row?.n ?? 0) + 1;
-  const year = new Date().getFullYear();
-  return `${prefix}-${year}-${String(next).padStart(4, '0')}`;
+/**
+ * Render the proposal-style offer as a printable handout. `html` serves the
+ * document directly (browser print-to-PDF); `pdf` runs it through the Puppeteer
+ * renderer, falling back to HTML when Chrome/sidecar isn't available.
+ */
+async function renderOfferDocument(
+  deps: PortalRetainerOfferDeps,
+  req: Request,
+  res: Response,
+  format: 'html' | 'pdf',
+): Promise<void> {
+  const session = req.portalSession!;
+  if (!deps.db) {
+    res.status(503).send('db_unavailable');
+    return;
+  }
+  const [offer] = await deps.db
+    .select()
+    .from(retainerOffers)
+    .where(eq(retainerOffers.id, req.params['id']!))
+    .limit(1);
+  if (!offer || offer.clientId !== session.activeClientId) {
+    res.status(404).send('not_found');
+    return;
+  }
+  const presentation = await buildRetainerOfferPresentation(deps.db, offer);
+  const html = renderRetainerOfferHtml(presentation);
+  if (format === 'html') {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+    return;
+  }
+  try {
+    const { renderHtmlToPdf } = await import('../pdf/render');
+    const pdf = await renderHtmlToPdf(html);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="retainer-offer-${offer.id}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    // Dev fallback (no Chrome/sidecar): serve the HTML so the browser can print.
+    logger.warn({ err, offerId: offer.id }, 'retainer offer PDF render failed; serving HTML');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  }
 }

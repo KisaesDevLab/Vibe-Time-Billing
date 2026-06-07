@@ -160,6 +160,10 @@ export const firmRetainerSettings = pgTable(
     // R6 — GL account mapping. NULL until configured.
     revenueGlAccount: text('revenue_gl_account'),
     offsetGlAccount: text('offset_gl_account'),
+    // 0127 — proposal-style offer copy (Markdown). Firm-controlled intro +
+    // representation terms rendered on the portal offer + printable handout.
+    offerIntroMd: text('offer_intro_md'),
+    offerTermsMd: text('offer_terms_md'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

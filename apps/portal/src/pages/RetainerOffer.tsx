@@ -1,112 +1,214 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// R3 — Client portal retainer offer page. The biller-generated offer
-// link drops the user here. Renders Tier 1 (default) + Tier 2
-// (upgrade) cards, a "how it works" section, and three CTAs. Expired
-// or already-purchased offers render a short read-only view.
+// R3 / hybrid — Client portal retainer offer, presented as a proposal-style
+// document. Three options: tax return only / + Standard / + Premium. Once the
+// return invoice is paid, the "return only" option drops and the retainer cards
+// show the add-on price. Client can pay online or choose to pay at the office;
+// a printable handout (PDF) is available. Engine underneath is the retainer
+// module (select → retainer invoice → pay online or office → activation).
 
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens, useIsNarrow } from '@vibe/ui';
+import { Button, Card, Markdown, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
 
-interface OfferRow {
-  id: string;
-  status: 'pending' | 'pending_payment' | 'purchased' | 'declined' | 'expired';
-  returnType: string;
-  taxYear: number;
-  prepFeeBasisCents: number;
-  tier1PriceCents: number;
-  tier2PriceCents: number;
-  offerExpiresAt: string;
-  purchasedTier: 'TIER_1' | 'TIER_2' | null;
-  purchasedInvoiceId: string | null;
+type Tier = 'TIER_1' | 'TIER_2';
+
+interface TierView {
+  tier: Tier;
+  name: string;
+  description: string | null;
+  hours: number;
+  retainerPriceCents: number;
+  bundledPriceCents: number;
+}
+interface Presentation {
+  offer: {
+    id: string;
+    status: 'pending' | 'pending_payment' | 'purchased' | 'declined' | 'expired';
+    returnType: string;
+    taxYear: number;
+    offerExpiresAt: string;
+    purchasedTier: Tier | null;
+    purchasedInvoiceId: string | null;
+  };
+  returnInvoice: {
+    id: string;
+    totalCents: number;
+    paidCents: number;
+    status: string;
+    returnPaid: boolean;
+  };
+  tiers: TierView[];
+  branding: { firmName: string; logoUrl: string | null; accentColor: string | null };
+  client: { name: string };
+  introMd: string | null;
+  termsMd: string | null;
+}
+
+type Choice = 'RETURN_ONLY' | Tier;
+
+function money(cents: number): string {
+  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
 export function RetainerOfferPage(): JSX.Element {
   const narrow = useIsNarrow();
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [offer, setOffer] = useState<OfferRow | null>(null);
+  const [p, setP] = useState<Presentation | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState<'TIER_1' | 'TIER_2' | 'DECLINE' | null>(null);
+  const [choice, setChoice] = useState<Choice | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [officeDone, setOfficeDone] = useState<{ tier: Tier; invoiceNumber: string } | null>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ offer: OfferRow }>(`/api/portal/retainer-offers/${params.id}`);
-        setOffer(r.offer);
+        const r = await api<{ presentation: Presentation }>(
+          `/api/portal/retainer-offers/${params.id}`,
+        );
+        setP(r.presentation);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'load failed');
       }
     })();
   }, [params.id]);
 
-  async function select(tier: 'TIER_1' | 'TIER_2'): Promise<void> {
-    if (!offer) return;
-    setSubmitting(tier);
+  async function selectTier(tier: Tier): Promise<{ invoiceId: string; invoiceNumber: string }> {
+    return api<{ invoiceId: string; invoiceNumber: string }>(
+      `/api/portal/retainer-offers/${p!.offer.id}/select`,
+      { method: 'POST', body: JSON.stringify({ tier }) },
+    );
+  }
+
+  async function payOnline(): Promise<void> {
+    if (!p || !choice) return;
+    setSubmitting(true);
     setError(null);
     try {
-      const r = await api<{ invoiceId: string }>(`/api/portal/retainer-offers/${offer.id}/select`, {
-        method: 'POST',
-        body: JSON.stringify({ tier }),
-      });
+      if (choice === 'RETURN_ONLY') {
+        navigate(`/invoices/${p.returnInvoice.id}`);
+        return;
+      }
+      const r = await selectTier(choice);
       navigate(`/invoices/${r.invoiceId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'select failed');
-      setSubmitting(null);
+      setSubmitting(false);
+    }
+  }
+
+  async function payAtOffice(): Promise<void> {
+    if (!p || !choice) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      if (choice === 'RETURN_ONLY') {
+        // Nothing to reserve — the return invoice already exists; just confirm.
+        setOfficeDone({ tier: 'TIER_1', invoiceNumber: '' });
+        return;
+      }
+      const r = await selectTier(choice);
+      setOfficeDone({ tier: choice, invoiceNumber: r.invoiceNumber });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'select failed');
+    } finally {
+      setSubmitting(false);
     }
   }
 
   async function decline(): Promise<void> {
-    if (!offer) return;
-    setSubmitting('DECLINE');
+    if (!p) return;
+    setSubmitting(true);
     setError(null);
     try {
-      await api(`/api/portal/retainer-offers/${offer.id}/decline`, { method: 'POST' });
+      await api(`/api/portal/retainer-offers/${p.offer.id}/decline`, { method: 'POST' });
       navigate('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'decline failed');
-      setSubmitting(null);
+      setSubmitting(false);
     }
   }
 
-  if (!offer && !error) {
+  if (!p && !error) {
     return <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>;
   }
-  if (error || !offer) {
+  if (error || !p) {
     return (
-      <Card title="Retainer offer">
+      <Card title="Tax representation offer">
         <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>
       </Card>
     );
   }
 
-  const expiresAt = new Date(offer.offerExpiresAt);
+  const expiresAt = new Date(p.offer.offerExpiresAt);
   const now = new Date();
-  const daysLeft = Math.max(
-    0,
-    Math.ceil((expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
-  );
-  const isExpired = offer.status === 'expired' || expiresAt < now;
-  const isPurchased = offer.status === 'purchased' || offer.status === 'pending_payment';
-  const isDeclined = offer.status === 'declined';
+  const daysLeft = Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / 86_400_000));
+  const isExpired = p.offer.status === 'expired' || expiresAt < now;
+  const isPurchased = p.offer.status === 'purchased' || p.offer.status === 'pending_payment';
+  const isDeclined = p.offer.status === 'declined';
+  const open = !isExpired && !isPurchased && !isDeclined;
+  const returnPaid = p.returnInvoice.returnPaid;
+  const printUrl = `/api/portal/retainer-offers/${p.offer.id}/print.html`;
+
+  // Build the cards: return-only (unless paid) + the retainer tiers.
+  const cards: {
+    key: Choice;
+    title: string;
+    priceCents: number;
+    sub?: string;
+    body?: JSX.Element;
+  }[] = [];
+  if (!returnPaid) {
+    cards.push({
+      key: 'RETURN_ONLY',
+      title: 'Tax return only',
+      priceCents: p.returnInvoice.totalCents,
+      sub: `Preparation & filing of your TY${p.offer.taxYear} ${p.offer.returnType} return.`,
+    });
+  }
+  for (const t of p.tiers) {
+    cards.push({
+      key: t.tier,
+      title: returnPaid ? `${t.name} representation` : `Tax return + ${t.name}`,
+      priceCents: returnPaid ? t.retainerPriceCents : t.bundledPriceCents,
+      sub: `${t.hours} prepaid representation hour${t.hours === 1 ? '' : 's'} for IRS/state notices & audits.${returnPaid ? ' Add-on to your paid return.' : ''}`,
+      body: t.description ? <Markdown source={t.description} /> : undefined,
+    });
+  }
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 880 }}>
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 920 }}>
       <Card>
-        <h1 style={{ fontSize: 24, margin: '0 0 8px 0' }}>
-          Protect your TY{offer.taxYear} {offer.returnType} return
-        </h1>
-        <p style={{ fontSize: 14, color: tokens.color.textMuted, margin: 0 }}>
-          A retainer prepays a set number of hours your accountant can apply to questions,
-          revisions, and follow-up work after your return is filed. Unused hours expire 3 years
-          after the original due date.
-        </p>
-        {!isExpired && !isPurchased && !isDeclined && (
-          <p style={{ fontSize: 13, marginTop: 12 }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <div>
+            <h1 style={{ fontSize: 24, margin: '0 0 4px' }}>Tax Representation Retainer</h1>
+            <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
+              {p.branding.firmName} · TY{p.offer.taxYear} {p.offer.returnType} · Prepared for{' '}
+              {p.client.name}
+            </div>
+          </div>
+          <Button type="button" variant="ghost" onClick={() => window.open(printUrl, '_blank')}>
+            Print / Download PDF
+          </Button>
+        </div>
+        {p.introMd && (
+          <div style={{ fontSize: 14, marginTop: 12 }}>
+            <Markdown source={p.introMd} />
+          </div>
+        )}
+        {open && (
+          <p style={{ fontSize: 13, marginTop: 12, marginBottom: 0 }}>
             <strong>
               Offer expires in {daysLeft} day{daysLeft === 1 ? '' : 's'}
             </strong>{' '}
@@ -118,75 +220,129 @@ export function RetainerOfferPage(): JSX.Element {
         )}
         {isPurchased && (
           <Pill tone="success">
-            You selected {offer.purchasedTier === 'TIER_1' ? 'Standard' : 'Premium'} —{' '}
-            {offer.status === 'pending_payment' ? 'pending payment' : 'active'}
+            You selected {p.offer.purchasedTier === 'TIER_2' ? 'Premium' : 'Standard'} —{' '}
+            {p.offer.status === 'pending_payment' ? 'pending payment' : 'active'}
           </Pill>
         )}
         {isDeclined && <Pill tone="neutral">You declined this offer</Pill>}
       </Card>
 
-      {!isExpired && !isPurchased && !isDeclined && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: narrow ? '1fr' : '1fr 1fr',
-            gap: 16,
-          }}
-        >
-          <TierCard
-            label="Standard"
-            badge="DEFAULT"
-            priceCents={offer.tier1PriceCents}
-            tier="TIER_1"
-            onSelect={() => void select('TIER_1')}
-            submitting={submitting === 'TIER_1'}
-            disabled={submitting !== null}
-          />
-          <TierCard
-            label="Premium"
-            badge="UPGRADE"
-            priceCents={offer.tier2PriceCents}
-            tier="TIER_2"
-            onSelect={() => void select('TIER_2')}
-            submitting={submitting === 'TIER_2'}
-            disabled={submitting !== null}
-          />
-        </div>
+      {open && (
+        <>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: narrow ? '1fr' : `repeat(${cards.length}, 1fr)`,
+              gap: 14,
+              alignItems: 'start',
+            }}
+          >
+            {cards.map((c) => {
+              const selected = choice === c.key;
+              return (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => setChoice(c.key)}
+                  aria-pressed={selected}
+                  style={{
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    border: `${selected ? 2 : 1}px solid ${selected ? tokens.color.accent : tokens.color.border}`,
+                    borderRadius: tokens.radius.md,
+                    padding: 18,
+                    background: selected ? 'rgba(67,56,202,0.04)' : tokens.color.surface,
+                    display: 'grid',
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <strong style={{ fontSize: 16 }}>{c.title}</strong>
+                    {selected && <Pill tone="accent">Selected</Pill>}
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 700 }}>{money(c.priceCents)}</div>
+                  {c.sub && (
+                    <div style={{ fontSize: 12, color: tokens.color.textMuted }}>{c.sub}</div>
+                  )}
+                  {c.body && <div style={{ fontSize: 13 }}>{c.body}</div>}
+                </button>
+              );
+            })}
+          </div>
+
+          {officeDone ? (
+            <Card title="Bring this to our office">
+              <p style={{ fontSize: 14, margin: 0 }}>
+                {officeDone.invoiceNumber
+                  ? `Your selection is reserved (invoice ${officeDone.invoiceNumber}). `
+                  : ''}
+                Stop by the office to pay by cash or check, or pay online anytime from your
+                invoices. Your representation coverage activates as soon as payment is received.
+              </p>
+            </Card>
+          ) : (
+            <Card>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <Button
+                  type="button"
+                  onClick={() => void payOnline()}
+                  disabled={!choice || submitting}
+                >
+                  {submitting ? 'Working…' : 'Pay online now'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void payAtOffice()}
+                  disabled={!choice || submitting}
+                >
+                  I&apos;ll pay at the office
+                </Button>
+                <span style={{ flex: 1 }} />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => void decline()}
+                  disabled={submitting}
+                >
+                  No thanks
+                </Button>
+              </div>
+              {!choice && (
+                <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
+                  Select an option above to continue.
+                </p>
+              )}
+              {error && (
+                <p style={{ fontSize: 12, color: tokens.color.danger, margin: '8px 0 0' }}>
+                  {error}
+                </p>
+              )}
+            </Card>
+          )}
+        </>
       )}
 
-      {!isExpired && !isPurchased && !isDeclined && (
-        <Card title="How it works">
-          <ol style={{ fontSize: 13, paddingLeft: 18, marginTop: 0, lineHeight: 1.6 }}>
-            <li>
-              Pick a tier — Standard covers common follow-up work; Premium adds time for amendments
-              or audit support.
-            </li>
-            <li>Pay the retainer invoice we issue when you select.</li>
-            <li>
-              Hours debit automatically as your accountant does work for you. We&apos;ll let you
-              know when you&apos;re running low.
-            </li>
-            <li>Unused hours expire 3 years from the original return due date.</li>
-          </ol>
-          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => void decline()}
-              disabled={submitting !== null}
-            >
-              {submitting === 'DECLINE' ? 'Declining…' : 'No thanks'}
-            </Button>
+      {p.termsMd && (
+        <Card title="Representation terms">
+          <div style={{ fontSize: 13 }}>
+            <Markdown source={p.termsMd} />
           </div>
         </Card>
       )}
 
-      {isPurchased && offer.purchasedInvoiceId && (
+      {isPurchased && p.offer.purchasedInvoiceId && (
         <Card title="Next steps">
           <p style={{ fontSize: 13, margin: 0 }}>
             Your retainer purchase invoice has been issued.{' '}
             <a
-              href={`/invoices/${offer.purchasedInvoiceId}`}
+              href={`/invoices/${p.offer.purchasedInvoiceId}`}
               style={{ color: tokens.color.accent }}
             >
               View invoice →
@@ -194,50 +350,6 @@ export function RetainerOfferPage(): JSX.Element {
           </p>
         </Card>
       )}
-    </div>
-  );
-}
-
-function TierCard({
-  label,
-  badge,
-  priceCents,
-  tier,
-  onSelect,
-  submitting,
-  disabled,
-}: {
-  label: string;
-  badge: string;
-  priceCents: number;
-  tier: 'TIER_1' | 'TIER_2';
-  onSelect: () => void;
-  submitting: boolean;
-  disabled: boolean;
-}): JSX.Element {
-  return (
-    <div
-      style={{
-        border: `1px solid ${tier === 'TIER_2' ? tokens.color.accent : tokens.color.border}`,
-        borderRadius: tokens.radius.md,
-        padding: 20,
-        display: 'grid',
-        gap: 12,
-        background: tokens.color.surface,
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <strong style={{ fontSize: 18 }}>{label}</strong>
-        <Pill tone={tier === 'TIER_2' ? 'accent' : 'neutral'}>{badge}</Pill>
-      </div>
-      <div style={{ fontSize: 28, fontWeight: 600 }}>${(priceCents / 100).toFixed(2)}</div>
-      <Button type="button" onClick={onSelect} disabled={disabled}>
-        {submitting
-          ? 'Loading…'
-          : tier === 'TIER_1'
-            ? 'Add Standard Coverage'
-            : 'Upgrade to Premium'}
-      </Button>
     </div>
   );
 }

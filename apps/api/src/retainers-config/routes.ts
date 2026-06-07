@@ -61,6 +61,8 @@ const FirmSettingsSchema = z.object({
   notifyDay55: z.boolean().optional(),
   revenueGlAccount: z.string().max(80).nullable().optional(),
   offsetGlAccount: z.string().max(80).nullable().optional(),
+  offerIntroMd: z.string().max(8000).nullable().optional(),
+  offerTermsMd: z.string().max(20000).nullable().optional(),
 });
 
 export function createRetainerConfigRouter(deps: RetainerConfigRoutesDeps): Router {
@@ -274,6 +276,8 @@ export function createRetainerConfigRouter(deps: RetainerConfigRoutesDeps): Rout
       if (d.notifyDay55 !== undefined) update['notifyDay55'] = d.notifyDay55;
       if (d.revenueGlAccount !== undefined) update['revenueGlAccount'] = d.revenueGlAccount;
       if (d.offsetGlAccount !== undefined) update['offsetGlAccount'] = d.offsetGlAccount;
+      if (d.offerIntroMd !== undefined) update['offerIntroMd'] = d.offerIntroMd;
+      if (d.offerTermsMd !== undefined) update['offerTermsMd'] = d.offerTermsMd;
 
       // Upsert: insert if missing, else update.
       const [existing] = await deps.db
