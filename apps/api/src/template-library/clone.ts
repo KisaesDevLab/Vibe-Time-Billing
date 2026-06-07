@@ -279,7 +279,9 @@ export async function importPackages(
         .insert(packages)
         .values({
           firmId: args.firmId,
-          name: `${p.name} — ${tier.name}`,
+          // All tiers of a package share the package name; tier_label
+          // distinguishes them. The package_selector block groups by name.
+          name: p.name,
           tierLabel: tier.name,
           position: tier.position,
           description,

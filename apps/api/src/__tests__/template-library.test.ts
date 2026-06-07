@@ -179,6 +179,13 @@ describe('template library import', () => {
     const slugs = pkgs.map((p) => p.clonedFromSlug).sort();
     expect(slugs).toEqual(['individual-tax-duo:core', 'individual-tax-duo:plus']);
 
+    // Both tiers are rows of ONE package: same name, distinct tier_label
+    // (so the package_selector groups them as selectable tiers).
+    expect(new Set(pkgs.map((p) => p.name))).toEqual(
+      new Set(['Individual Tax — Two-Tier Starter']),
+    );
+    expect(pkgs.map((p) => p.tierLabel).sort()).toEqual(['Core', 'Plus']);
+
     // Referenced services were auto-imported.
     const [svc] = await harness.db
       .select()
