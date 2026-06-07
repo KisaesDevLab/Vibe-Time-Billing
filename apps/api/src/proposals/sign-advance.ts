@@ -28,11 +28,22 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { magicLinks, proposalVersions, proposals, signatures } from '@vibe/db/schema';
+import {
+  clientRequestItems,
+  clientRequests,
+  clients,
+  magicLinks,
+  proposalVersions,
+  proposals,
+  requestTemplateItems,
+  requestTemplates,
+  signatures,
+} from '@vibe/db/schema';
 import { contentHash } from '@vibe/core/proposals/server';
 
 import { logger } from '../logger';
 import { freezeProposalIntoEngagement } from './scope-freeze';
+import { spawnFromTemplate, type ItemKind, type Priority } from '../requests/template-spawn';
 
 // Structural mail callback (kept local to avoid importing magic-links.ts,
 // whose router uses the Express `req.staffSession` augmentation that the
@@ -252,18 +263,118 @@ export async function advanceSignatureToSigned(args: AdvanceArgs): Promise<Advan
     reason: 'ACCEPTED',
   });
 
-  const freezeResult = await freezeProposalIntoEngagement({
-    db: tx as unknown as Database,
-    proposalId: proposal.id,
-  });
+  // Engagement creation on accept is now opt-out per proposal (default on).
+  let engagementId: string | null = null;
+  if (proposal.createEngagementOnAccept !== false) {
+    const freezeResult = await freezeProposalIntoEngagement({
+      db: tx as unknown as Database,
+      proposalId: proposal.id,
+    });
+    engagementId = freezeResult.engagementId;
+
+    // Optionally spawn a request list from a template onto the new engagement.
+    if (engagementId && proposal.requestTemplateIdOnAccept) {
+      try {
+        await spawnRequestListOnAccept(tx, proposal, engagementId, now);
+      } catch (err) {
+        logger.error({ err, proposalId: proposal.id }, 'request-list spawn on accept failed');
+      }
+    }
+  }
 
   return {
     kind: 'final' as const,
     signatureId,
     signatureIds,
-    engagementId: freezeResult.engagementId,
+    engagementId,
     mandateId,
     version: nextVersion,
     contentHash: acceptanceHash,
   };
+}
+
+/**
+ * Spawn a request list from the proposal's configured request template onto
+ * the freshly-created engagement. Best-effort; the caller logs failures.
+ */
+async function spawnRequestListOnAccept(
+  tx: Tx,
+  proposal: ProposalRow,
+  engagementId: string,
+  now: Date,
+): Promise<void> {
+  const templateId = proposal.requestTemplateIdOnAccept;
+  if (!templateId) return;
+  const [tpl] = await tx
+    .select()
+    .from(requestTemplates)
+    .where(and(eq(requestTemplates.id, templateId), eq(requestTemplates.firmId, proposal.firmId)))
+    .limit(1);
+  if (!tpl) return;
+  const tplItems = await tx
+    .select()
+    .from(requestTemplateItems)
+    .where(eq(requestTemplateItems.templateId, tpl.id))
+    .orderBy(asc(requestTemplateItems.ordinal));
+  const [client] = await tx
+    .select({ name: clients.name })
+    .from(clients)
+    .where(eq(clients.id, proposal.clientId))
+    .limit(1);
+
+  const spawned = spawnFromTemplate(
+    {
+      id: tpl.id,
+      titlePattern: tpl.titlePattern,
+      bodyPattern: tpl.bodyPattern,
+      defaultPriority: tpl.defaultPriority as Priority,
+      defaultDueOffsetDays: tpl.defaultDueOffsetDays,
+      defaultReminderDaysBefore: tpl.defaultReminderDaysBefore,
+      defaultAssignedAppUserId: tpl.defaultAssignedAppUserId,
+      items: tplItems.map((it) => ({
+        ordinal: it.ordinal,
+        label: it.label,
+        body: it.body,
+        itemKind: it.itemKind as ItemKind,
+        required: it.required,
+        defaultDueOffsetDays: it.defaultDueOffsetDays,
+      })),
+    },
+    {
+      clientName: client?.name ?? null,
+      engagementName: proposal.title,
+      today: now.toISOString().slice(0, 10),
+    },
+    {},
+  );
+
+  const [reqRow] = await tx
+    .insert(clientRequests)
+    .values({
+      firmId: proposal.firmId,
+      engagementId,
+      assignedAppUserId: spawned.assignedAppUserId,
+      title: spawned.title,
+      body: spawned.body,
+      dueDate: spawned.dueDate,
+      createdByAppUserId: null,
+      priority: spawned.priority,
+      tags: spawned.tags,
+      templateId: tpl.id,
+      reminderDaysBefore: spawned.reminderDaysBefore,
+    })
+    .returning({ id: clientRequests.id });
+  if (reqRow && spawned.items.length > 0) {
+    await tx.insert(clientRequestItems).values(
+      spawned.items.map((it) => ({
+        clientRequestId: reqRow.id,
+        ordinal: it.ordinal,
+        label: it.label,
+        body: it.body,
+        itemKind: it.itemKind,
+        required: it.required,
+        dueDate: it.dueDate,
+      })),
+    );
+  }
 }

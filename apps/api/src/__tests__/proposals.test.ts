@@ -412,3 +412,57 @@ describe('PP4a — archive', () => {
     expect(r.statusCode).toBe(409);
   });
 });
+
+describe('delete', () => {
+  it('hard-deletes a non-accepted proposal', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'Trash me' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    // SENT is still deletable (only ACCEPTED is protected).
+    await harness.db
+      .update(proposals)
+      .set({ status: 'SENT', sentAt: new Date() })
+      .where(eq(proposals.id, id));
+    const r = await invoke(f.router, 'delete', '/:id', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+    });
+    expect(r.statusCode).toBe(200);
+    const rows = await harness.db.select().from(proposals).where(eq(proposals.id, id));
+    expect(rows.length).toBe(0);
+  });
+
+  it('refuses to delete an ACCEPTED proposal (409)', async () => {
+    const f = await setup();
+    const c = await invoke(f.router, 'post', '/', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId }),
+      body: { clientId: f.clientId, title: 'Keep me' },
+    });
+    const id = (c.jsonBody as { id: string }).id;
+    await harness.db
+      .update(proposals)
+      .set({ status: 'ACCEPTED', acceptedAt: new Date() })
+      .where(eq(proposals.id, id));
+    const r = await invoke(f.router, 'delete', '/:id', {
+      ...makeReq({ firmId: f.firmId, appUserId: f.appUserId, params: { id } }),
+    });
+    expect(r.statusCode).toBe(409);
+    expect((r.jsonBody as { error: string }).error).toBe('not_deletable');
+    const rows = await harness.db.select().from(proposals).where(eq(proposals.id, id));
+    expect(rows.length).toBe(1);
+  });
+
+  it('404s for a proposal in another firm', async () => {
+    const f = await setup();
+    const r = await invoke(f.router, 'delete', '/:id', {
+      ...makeReq({
+        firmId: f.firmId,
+        appUserId: f.appUserId,
+        params: { id: '11111111-1111-1111-1111-111111111111' },
+      }),
+    });
+    expect(r.statusCode).toBe(404);
+  });
+});

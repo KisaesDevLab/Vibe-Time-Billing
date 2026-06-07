@@ -225,7 +225,19 @@ export function AdminLayout(): JSX.Element {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: tokens.space.xl }}>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '220px 1fr',
+        gap: tokens.space.xl,
+        // Top-align both columns. Without this the content column stretches to
+        // the (tall) nav's height, and each page's root grid then distributes
+        // the extra vertical space into its row gaps — which reads as a large
+        // empty gap above the first card. Pinning to start keeps every admin
+        // view packed at the top.
+        alignItems: 'start',
+      }}
+    >
       <nav aria-label="Admin" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {GROUPS.map((g) => {
           const isCollapsed = collapsed.has(g.key);

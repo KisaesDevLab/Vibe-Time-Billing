@@ -62,12 +62,30 @@ import { PALETTE_ORDER, REGISTRY, type BlockTypeDef } from '../proposal-editor/b
 interface ProposalDetail {
   proposal: {
     id: string;
+    clientId: string;
     title: string;
     status: string;
     brochureJsonb: ProposalBlockTree | Record<string, unknown>;
     draftRevision: number;
     updatedAt: string;
+    createEngagementOnAccept: boolean;
+    requestTemplateIdOnAccept: string | null;
   };
+}
+
+interface RequestTemplateOption {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface ClientContact {
+  id: string;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  isPrimary: boolean;
 }
 
 function generateId(): string {
@@ -166,17 +184,48 @@ export function ProposalEditorPage(): JSX.Element {
   const [signingOrderMode, setSigningOrderMode] = useState<'PARALLEL' | 'SEQUENTIAL'>('PARALLEL');
   const [signerStatus, setSignerStatus] = useState<SignerStatusRow[]>([]);
   const [signerMsg, setSignerMsg] = useState<string | null>(null);
+  const [contacts, setContacts] = useState<ClientContact[]>([]);
+  // On-acceptance actions.
+  const [createEng, setCreateEng] = useState(true);
+  const [reqTemplateId, setReqTemplateId] = useState<string>('');
+  const [reqTemplates, setReqTemplates] = useState<RequestTemplateOption[]>([]);
 
   async function load(): Promise<void> {
     try {
       const r = await api<ProposalDetail>(`/api/staff/proposals/${id}`);
       setDetail(r.proposal);
+      setCreateEng(r.proposal.createEngagementOnAccept !== false);
+      setReqTemplateId(r.proposal.requestTemplateIdOnAccept ?? '');
       const tree = coerceTree(r.proposal.brochureJsonb);
       undo.reset(tree);
       setBaseline(tree);
       setLoadErr(null);
+      // Load the proposal's client contacts so signers can be pulled in.
+      if (r.proposal.clientId) {
+        void api<{ items: ClientContact[] }>(`/api/staff/clients/${r.proposal.clientId}/contacts`)
+          .then((c) => setContacts(c.items ?? []))
+          .catch(() => setContacts([]));
+      }
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+
+  // Request-list templates for the "On acceptance" picker (best-effort).
+  useEffect(() => {
+    void api<{ items: RequestTemplateOption[] }>('/api/staff/admin/templates/request')
+      .then((r) => setReqTemplates((r.items ?? []).filter((t) => t.status === 'ACTIVE')))
+      .catch(() => setReqTemplates([]));
+  }, []);
+
+  async function saveAcceptance(next: {
+    createEngagementOnAccept?: boolean;
+    requestTemplateIdOnAccept?: string | null;
+  }): Promise<void> {
+    try {
+      await api(`/api/staff/proposals/${id}`, { method: 'PATCH', body: JSON.stringify(next) });
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : 'save_failed');
     }
   }
 
@@ -405,6 +454,23 @@ export function ProposalEditorPage(): JSX.Element {
             >
               Save now
             </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              title="Open a client's-eye preview in a new window"
+              onClick={() => {
+                // Flush any pending edits first so the preview reflects the
+                // latest blocks, then pop out the chrome-less preview route.
+                void autosave.flush();
+                window.open(
+                  `/proposals/${id}/preview`,
+                  `proposal-preview-${id}`,
+                  'width=900,height=1100,scrollbars=yes,resizable=yes',
+                );
+              }}
+            >
+              Preview as client
+            </Button>
             {detail.status === 'DRAFT' && (
               <Button
                 size="sm"
@@ -516,6 +582,55 @@ export function ProposalEditorPage(): JSX.Element {
           )}
         </Card>
       </div>
+
+      {detail.status === 'DRAFT' && (
+        <Card title="On acceptance">
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            What happens automatically when the client accepts &amp; signs.
+          </p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={createEng}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setCreateEng(v);
+                if (!v) {
+                  setReqTemplateId('');
+                  void saveAcceptance({
+                    createEngagementOnAccept: false,
+                    requestTemplateIdOnAccept: null,
+                  });
+                } else {
+                  void saveAcceptance({ createEngagementOnAccept: true });
+                }
+              }}
+            />
+            Create an engagement when the client accepts
+          </label>
+          <div style={{ marginTop: 12, maxWidth: 380 }}>
+            <span style={labelStyle}>Send a request list on acceptance</span>
+            <Combobox
+              ariaLabel="Request list template"
+              clearable
+              disabled={!createEng}
+              value={reqTemplateId}
+              onChange={(v) => {
+                const next = v || '';
+                setReqTemplateId(next);
+                void saveAcceptance({ requestTemplateIdOnAccept: next || null });
+              }}
+              options={reqTemplates.map((t) => ({ value: t.id, label: t.name }))}
+              placeholder={reqTemplates.length === 0 ? 'No request templates yet' : 'None'}
+            />
+            <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>
+              {createEng
+                ? 'The list is created on the new engagement when the client accepts.'
+                : 'Requires "Create an engagement" — a request list must attach to an engagement.'}
+            </div>
+          </div>
+        </Card>
+      )}
 
       <Card title="Signers">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
@@ -634,7 +749,7 @@ export function ProposalEditorPage(): JSX.Element {
                 </Button>
               </div>
             ))}
-            <div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <Button
                 size="sm"
                 variant="ghost"
@@ -647,6 +762,47 @@ export function ProposalEditorPage(): JSX.Element {
               >
                 + Add signer
               </Button>
+              {contacts.length > 0 && (
+                <div style={{ minWidth: 280 }}>
+                  <Combobox
+                    ariaLabel="Add signer from client contact"
+                    placeholder="+ Add from client contacts…"
+                    clearable
+                    value=""
+                    onChange={(contactId) => {
+                      if (!contactId) return;
+                      const c = contacts.find((x) => x.id === contactId);
+                      if (!c) return;
+                      setSigners((prev) => {
+                        // Skip if this contact's email is already a signer.
+                        if (
+                          c.email &&
+                          prev.some((s) => s.email.toLowerCase() === c.email!.toLowerCase())
+                        ) {
+                          return prev;
+                        }
+                        return [
+                          ...prev,
+                          {
+                            key: generateId(),
+                            name: c.fullName,
+                            email: c.email ?? '',
+                            phone: c.mobile ?? c.phone ?? '',
+                            role: prev.length === 0 ? 'PRIMARY' : 'COSIGNER',
+                            required: true,
+                          },
+                        ];
+                      });
+                    }}
+                    options={contacts.map((c) => ({
+                      value: c.id,
+                      label: `${c.fullName}${c.isPrimary ? ' (primary)' : ''}${
+                        c.email ? ` · ${c.email}` : ' · no email'
+                      }`,
+                    }))}
+                  />
+                </div>
+              )}
             </div>
           </div>
         )}

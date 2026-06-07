@@ -5,7 +5,8 @@ import { tokens } from './tokens';
 
 export interface TableColumn<T> {
   key: string;
-  header: string;
+  /** Header content — plain text, or a node (e.g. a clickable sort button). */
+  header: ReactNode;
   render: (row: T) => ReactNode;
   align?: 'left' | 'right' | 'center';
 }

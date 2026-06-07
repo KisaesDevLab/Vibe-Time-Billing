@@ -28,6 +28,8 @@ import { parseVideoUrl, resolveMergeTokens } from '@vibe/core/proposals';
 import type { ProposalBlock } from '@vibe/core/proposals';
 
 import { api } from '../api-client';
+import { Markdown } from '../components/Markdown';
+import { RichTextEditor } from './RichTextEditor';
 import { sampleMergeContext } from './sample-context';
 
 // =====================================================================
@@ -54,30 +56,20 @@ export interface BlockTypeDef {
 
 const MARKDOWN: BlockTypeDef = {
   type: 'markdown',
-  label: 'Markdown text',
+  label: 'Text',
   icon: '¶',
   defaultProps: () => ({ md: '' }),
   EditorFields: ({ block, onChange }) => (
     <div style={{ display: 'grid', gap: 6 }}>
-      <textarea
+      <RichTextEditor
+        key={block.id}
         value={String(block.props['md'] ?? '')}
-        onChange={(e) => onChange({ props: { ...block.props, md: e.target.value } })}
-        rows={8}
-        style={{
-          fontFamily: 'ui-monospace, monospace',
-          fontSize: 12,
-          padding: 10,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.sm,
-          background: tokens.color.surface,
-          color: tokens.color.text,
-          width: '100%',
-          resize: 'vertical',
-        }}
-        placeholder="Markdown body. Use {{ client.name }}, {{ firm.name }}, {{ today }} etc."
+        onChange={(md) => onChange({ props: { ...block.props, md } })}
+        placeholder="Write the proposal text… Use the toolbar to format. You can also type {{ client.name }}, {{ firm.name }}, {{ today }} to insert merge fields."
       />
       <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-        Merge tokens resolve at send time. Preview uses sample data.
+        Merge tokens like <code>{'{{ client.name }}'}</code> resolve at send time; the preview uses
+        sample data.
       </div>
     </div>
   ),
@@ -85,7 +77,10 @@ const MARKDOWN: BlockTypeDef = {
     const ctx = sampleMergeContext();
     const md = String(block.props['md'] ?? '');
     const { output } = resolveMergeTokens(md, ctx);
-    return <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{output}</p>;
+    if (!output.trim()) {
+      return <p style={{ color: tokens.color.textMuted, margin: 0 }}>(empty text block)</p>;
+    }
+    return <Markdown source={output} />;
   },
 };
 
@@ -349,6 +344,8 @@ const SERVICES_LIST: BlockTypeDef = {
   EditorFields: ({ block, onChange }) => {
     const selected = (block.props['serviceIds'] as string[] | undefined) ?? [];
     const showPrices = Boolean(block.props['showPrices'] ?? true);
+    const overrides =
+      (block.props['priceOverridesCents'] as Record<string, number> | undefined) ?? {};
     const [services, setServices] = useState<
       { id: string; name: string; category: string; defaultPriceCents: number }[]
     >([]);
@@ -368,6 +365,18 @@ const SERVICES_LIST: BlockTypeDef = {
     function toggle(id: string): void {
       const next = selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id];
       onChange({ props: { ...block.props, serviceIds: next } });
+    }
+    // Per-proposal price override (cents). Empty input clears the override and
+    // falls back to the catalog default.
+    function setOverride(id: string, dollarStr: string): void {
+      const next = { ...overrides };
+      const trimmed = dollarStr.trim();
+      if (trimmed === '') delete next[id];
+      else {
+        const n = Number(trimmed);
+        if (Number.isFinite(n) && n >= 0) next[id] = Math.round(n * 100);
+      }
+      onChange({ props: { ...block.props, priceOverridesCents: next } });
     }
 
     return (
@@ -397,20 +406,46 @@ const SERVICES_LIST: BlockTypeDef = {
               borderRadius: tokens.radius.sm,
             }}
           >
-            {services.map((s) => (
-              <label key={s.id} style={{ fontSize: 13, display: 'flex', gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={selected.includes(s.id)}
-                  onChange={() => toggle(s.id)}
-                />
-                <span style={{ flex: 1 }}>{s.name}</span>
-                <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>{s.category}</span>
-                <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
-                  ${(Number(s.defaultPriceCents) / 100).toFixed(0)}
-                </span>
-              </label>
-            ))}
+            {services.map((s) => {
+              const isSel = selected.includes(s.id);
+              return (
+                <label
+                  key={s.id}
+                  style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}
+                >
+                  <input type="checkbox" checked={isSel} onChange={() => toggle(s.id)} />
+                  <span style={{ flex: 1 }}>{s.name}</span>
+                  <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>{s.category}</span>
+                  {isSel ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                      <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        aria-label={`${s.name} price`}
+                        value={String((overrides[s.id] ?? s.defaultPriceCents) / 100)}
+                        onChange={(e) => setOverride(s.id, e.target.value)}
+                        style={{
+                          width: 80,
+                          padding: '2px 6px',
+                          textAlign: 'right',
+                          fontSize: 12,
+                          border: `1px solid ${tokens.color.border}`,
+                          borderRadius: tokens.radius.sm,
+                          background: tokens.color.surface,
+                          color: tokens.color.text,
+                        }}
+                      />
+                    </span>
+                  ) : (
+                    <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+                      ${(Number(s.defaultPriceCents) / 100).toFixed(0)}
+                    </span>
+                  )}
+                </label>
+              );
+            })}
           </div>
         )}
       </div>
@@ -419,6 +454,8 @@ const SERVICES_LIST: BlockTypeDef = {
   Renderer: ({ block }) => {
     const ids = (block.props['serviceIds'] as string[] | undefined) ?? [];
     const showPrices = Boolean(block.props['showPrices'] ?? true);
+    const overrides =
+      (block.props['priceOverridesCents'] as Record<string, number> | undefined) ?? {};
     const [services, setServices] = useState<
       { id: string; name: string; defaultPriceCents: number }[] | null
     >(null);
@@ -456,7 +493,7 @@ const SERVICES_LIST: BlockTypeDef = {
             {s.name}
             {showPrices && (
               <span style={{ color: tokens.color.textMuted, marginLeft: 6, fontSize: 12 }}>
-                — ${(Number(s.defaultPriceCents) / 100).toFixed(0)}
+                — ${(Number(overrides[s.id] ?? s.defaultPriceCents) / 100).toFixed(0)}
               </span>
             )}
           </li>
@@ -481,20 +518,38 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
   icon: '⬓',
   defaultProps: () => ({ packageName: '' }),
   EditorFields: ({ block, onChange }) => {
-    const [names, setNames] = useState<string[]>([]);
+    const value = String(block.props['packageName'] ?? '');
+    const overrides =
+      (block.props['tierOverridesCents'] as Record<string, number> | undefined) ?? {};
+    const [groups, setGroups] = useState<
+      Record<string, { tierLabel: string; totalIncludedCents: number }[]>
+    >({});
     useEffect(() => {
       void (async () => {
         try {
-          const r = await api<{ groups: Record<string, unknown> }>(
-            '/api/staff/packages?groupByName=true',
-          );
-          setNames(Object.keys(r.groups ?? {}));
+          const r = await api<{
+            groups: Record<string, { tierLabel: string; totalIncludedCents: number }[]>;
+          }>('/api/staff/packages?groupByName=true');
+          setGroups(r.groups ?? {});
         } catch {
-          setNames([]);
+          setGroups({});
         }
       })();
     }, []);
-    const value = String(block.props['packageName'] ?? '');
+    const names = Object.keys(groups);
+    const tiers = value ? (groups[value] ?? []) : [];
+
+    function setTierOverride(tierLabel: string, dollarStr: string): void {
+      const next = { ...overrides };
+      const trimmed = dollarStr.trim();
+      if (trimmed === '') delete next[tierLabel];
+      else {
+        const n = Number(trimmed);
+        if (Number.isFinite(n) && n >= 0) next[tierLabel] = Math.round(n * 100);
+      }
+      onChange({ props: { ...block.props, tierOverridesCents: next } });
+    }
+
     return (
       <div style={{ display: 'grid', gap: 8 }}>
         {names.length === 0 ? (
@@ -517,11 +572,47 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
             ))}
           </div>
         )}
+        {tiers.length > 0 && (
+          <div style={{ display: 'grid', gap: 4, marginTop: 4 }}>
+            <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+              Tier amounts (edit to override the catalog price for this proposal)
+            </div>
+            {tiers.map((t) => (
+              <div
+                key={t.tierLabel}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+              >
+                <span style={{ flex: 1 }}>{t.tierLabel}</span>
+                <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>$</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  aria-label={`${t.tierLabel} amount`}
+                  value={String((overrides[t.tierLabel] ?? t.totalIncludedCents) / 100)}
+                  onChange={(e) => setTierOverride(t.tierLabel, e.target.value)}
+                  style={{
+                    width: 90,
+                    padding: '2px 6px',
+                    textAlign: 'right',
+                    fontSize: 12,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.surface,
+                    color: tokens.color.text,
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   },
   Renderer: ({ block }) => {
     const name = String(block.props['packageName'] ?? '');
+    const overrides =
+      (block.props['tierOverridesCents'] as Record<string, number> | undefined) ?? {};
     const [tiers, setTiers] = useState<
       { tierLabel: string; totalIncludedCents: number; includedServiceCount: number }[] | null
     >(null);
@@ -583,7 +674,7 @@ const PACKAGE_SELECTOR: BlockTypeDef = {
             >
               <div style={{ fontWeight: 600 }}>{t.tierLabel}</div>
               <div style={{ fontSize: 22, fontWeight: 700, margin: '4px 0' }}>
-                ${(Number(t.totalIncludedCents) / 100).toFixed(0)}
+                ${(Number(overrides[t.tierLabel] ?? t.totalIncludedCents) / 100).toFixed(0)}
               </div>
               <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                 {t.includedServiceCount} included

@@ -28,6 +28,7 @@ import { EngagementsPage } from './pages/Engagements';
 import { ProposalsListPage } from './pages/Proposals';
 import { ProposalCreatePage } from './pages/ProposalCreate';
 import { ProposalEditorPage } from './pages/ProposalEditor';
+import { ProposalPreviewPage } from './pages/ProposalPreview';
 import { SignaturesPage } from './pages/Signatures';
 import { SignatureDetailPage } from './pages/SignatureDetail';
 import { CalendarUnmatchedPage } from './pages/CalendarUnmatched';
@@ -69,6 +70,15 @@ export function App(): JSX.Element {
           element={
             <RequireAuth>
               <TotpEnrollPage />
+            </RequireAuth>
+          }
+        />
+        {/* Chrome-less client preview (popout) — authed staff, no AppShell nav. */}
+        <Route
+          path="/proposals/:id/preview"
+          element={
+            <RequireAuth>
+              <ProposalPreviewPage />
             </RequireAuth>
           }
         />

@@ -444,6 +444,11 @@ export const proposals = pgTable(
     // skipped here — migration is authoritative.
     renewedFromEngagementId: uuid('renewed_from_engagement_id'),
     draftRevision: integer('draft_revision').notNull().default(0),
+    // 0124 — on-acceptance actions. createEngagementOnAccept gates the
+    // always-on engagement freeze; requestTemplateIdOnAccept (when set, and
+    // engagement creation is on) spawns a request list on the new engagement.
+    createEngagementOnAccept: boolean('create_engagement_on_accept').notNull().default(true),
+    requestTemplateIdOnAccept: uuid('request_template_id_on_accept'),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -23,11 +23,11 @@
 // Every mutation emits an audit_log row.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clients, proposalVersions, proposals, signatures } from '@vibe/db/schema';
+import { appUsers, clients, proposalVersions, proposals, signatures } from '@vibe/db/schema';
 import { isBlockTree, type ProposalBlockTree } from '@vibe/core/proposals';
 import { contentHash } from '@vibe/core/proposals/server';
 
@@ -60,6 +60,8 @@ const CreateSchema = z.object({
 
 const PatchSchema = z.object({
   title: z.string().min(1).max(240).optional(),
+  createEngagementOnAccept: z.boolean().optional(),
+  requestTemplateIdOnAccept: z.string().uuid().nullable().optional(),
 });
 
 const BrochureSchema = z.object({
@@ -85,6 +87,13 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
     if (clientId && /^[0-9a-f-]{36}$/i.test(clientId)) {
       conds.push(eq(proposals.clientId, clientId));
     }
+    // Free-text search across proposal title + client name.
+    const q = (req.query['q'] ?? '').toString().trim();
+    if (q) {
+      const like = `%${q}%`;
+      const expr = or(ilike(proposals.title, like), ilike(clients.name, like));
+      if (expr) conds.push(expr);
+    }
     const items = await deps.db
       .select({
         id: proposals.id,
@@ -105,9 +114,12 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
         createdAt: proposals.createdAt,
         updatedAt: proposals.updatedAt,
         clientName: clients.name,
+        createdById: proposals.createdById,
+        createdByName: appUsers.fullName,
       })
       .from(proposals)
       .leftJoin(clients, eq(clients.id, proposals.clientId))
+      .leftJoin(appUsers, eq(appUsers.id, proposals.createdById))
       .where(and(...conds))
       .orderBy(desc(proposals.updatedAt))
       .limit(500);
@@ -213,6 +225,10 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
       }
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (parsed.data.title != null) patch['title'] = parsed.data.title;
+      if (parsed.data.createEngagementOnAccept != null)
+        patch['createEngagementOnAccept'] = parsed.data.createEngagementOnAccept;
+      if (parsed.data.requestTemplateIdOnAccept !== undefined)
+        patch['requestTemplateIdOnAccept'] = parsed.data.requestTemplateIdOnAccept;
       await deps.db.update(proposals).set(patch).where(eq(proposals.id, prior.id));
       await emitAudit(deps.db, {
         action: 'UPDATE',
@@ -279,6 +295,49 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true, draftRevision: nextRevision });
+    },
+  );
+
+  // Hard-delete a proposal (and its cascade: versions, signatures, line items,
+  // packages, terms snapshot, activity, magic links). Allowed for any status
+  // EXCEPT ACCEPTED — an accepted proposal is a signed record and must be kept.
+  router.delete(
+    '/:id',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .select()
+        .from(proposals)
+        .where(and(eq(proposals.id, req.params['id']!), eq(proposals.firmId, session.firmId)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (row.status === 'ACCEPTED') {
+        res.status(409).json({ error: 'not_deletable', currentStatus: row.status });
+        return;
+      }
+      // Audit before the row (and its cascade) is gone.
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'proposal',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        before: { status: row.status, title: row.title, clientId: row.clientId },
+        after: null,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      await deps.db
+        .delete(proposals)
+        .where(and(eq(proposals.id, row.id), eq(proposals.firmId, session.firmId)));
+      res.json({ ok: true });
     },
   );
 

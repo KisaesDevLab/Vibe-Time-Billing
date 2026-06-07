@@ -175,6 +175,26 @@ export function PackagesPage(): JSX.Element {
     }
   }
 
+  async function renameGroup(currentName: string, tiers: PackageRow[]): Promise<void> {
+    const next = prompt(`Rename package "${currentName}"`, currentName)?.trim();
+    if (!next || next === currentName) return;
+    setErr(null);
+    try {
+      // The package name is shared across a group's tiers; rename them all so
+      // they stay grouped together.
+      for (const t of tiers) {
+        await api(`/api/staff/packages/${t.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name: next }),
+        });
+      }
+      await loadGroups();
+      if (selectedId && tiers.some((t) => t.id === selectedId)) await loadDetail(selectedId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'rename_failed');
+    }
+  }
+
   async function saveEntries(): Promise<void> {
     if (!selectedId) return;
     setSavingEntries(true);
@@ -322,7 +342,15 @@ export function PackagesPage(): JSX.Element {
         </p>
       ) : (
         Object.entries(groups).map(([name, tiers]) => (
-          <Card key={name} title={name}>
+          <Card
+            key={name}
+            title={name}
+            action={
+              <Button size="sm" variant="ghost" onClick={() => void renameGroup(name, tiers)}>
+                Rename
+              </Button>
+            }
+          >
             <div
               style={{
                 display: 'grid',

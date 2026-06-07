@@ -508,4 +508,110 @@ describe('Q34 — multi-signer proposals', () => {
     expect(signed[0]!.role).toBe('PRIMARY');
     expect(signed[0]!.state).toBe('SIGNED');
   });
+
+  it('createEngagementOnAccept=false → accepts but creates NO engagement', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = staffRouters(seed.appUserId);
+    const portal = portalRouters();
+    const pid = await createDraft(seed.firmId, seed.clientId, seed.appUserId);
+    await harness.db.execute(
+      sql`UPDATE proposals SET create_engagement_on_accept = false WHERE id = ${pid}`,
+    );
+
+    await invoke(
+      r.proposal,
+      'post',
+      '/:id/send',
+      staffReq(seed.firmId, seed.appUserId, {}, { id: pid }),
+    );
+    const mint = await invoke(
+      r.staffLinks,
+      'post',
+      '/:id/mint-magic-link',
+      staffReq(seed.firmId, seed.appUserId, {}, { id: pid }),
+    );
+    const token = (mint.jsonBody as { token: string }).token;
+    const redeem = await invoke(portal.redeem, 'post', '/redeem', portalReq({ token }));
+    const magicLinkId = (redeem.jsonBody as { magicLinkId: string }).magicLinkId;
+    const accept = await invoke(
+      portal.accept,
+      'post',
+      '/:id/accept',
+      portalReq(
+        { magicLinkId, signerName: 'Solo', signerEmail: 'solo@co.example', typedName: 'Solo' },
+        { id: pid },
+      ),
+    );
+    expect(accept.statusCode).toBe(200);
+    expect((accept.jsonBody as { engagementId: string | null }).engagementId).toBeNull();
+
+    const prop = (await harness.db.select().from(proposals).where(eq(proposals.id, pid)))[0]!;
+    expect(prop.status).toBe('ACCEPTED');
+    const engs = await harness.db
+      .select()
+      .from(engagements)
+      .where(eq(engagements.fromProposalId, pid));
+    expect(engs).toHaveLength(0);
+  });
+
+  it('requestTemplateIdOnAccept spawns a request list on the new engagement', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = staffRouters(seed.appUserId);
+    const portal = portalRouters();
+    const pid = await createDraft(seed.firmId, seed.clientId, seed.appUserId);
+
+    // A request template + one item, then point the proposal at it.
+    const tplRow = await harness.db.execute(
+      sql`INSERT INTO request_template (firm_id, key, name, title_pattern, body_pattern)
+          VALUES (${seed.firmId}, 'onboarding', 'Onboarding', 'Document checklist', 'Please upload:')
+          RETURNING id`,
+    );
+    const tplId = (tplRow as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`INSERT INTO request_template_item (template_id, ordinal, label, item_kind, required)
+          VALUES (${tplId}, 1, 'Prior-year return', 'DOCUMENT', true)`,
+    );
+    await harness.db.execute(
+      sql`UPDATE proposals SET request_template_id_on_accept = ${tplId} WHERE id = ${pid}`,
+    );
+
+    await invoke(
+      r.proposal,
+      'post',
+      '/:id/send',
+      staffReq(seed.firmId, seed.appUserId, {}, { id: pid }),
+    );
+    const mint = await invoke(
+      r.staffLinks,
+      'post',
+      '/:id/mint-magic-link',
+      staffReq(seed.firmId, seed.appUserId, {}, { id: pid }),
+    );
+    const token = (mint.jsonBody as { token: string }).token;
+    const redeem = await invoke(portal.redeem, 'post', '/redeem', portalReq({ token }));
+    const magicLinkId = (redeem.jsonBody as { magicLinkId: string }).magicLinkId;
+    const accept = await invoke(
+      portal.accept,
+      'post',
+      '/:id/accept',
+      portalReq(
+        { magicLinkId, signerName: 'Solo', signerEmail: 'solo@co.example', typedName: 'Solo' },
+        { id: pid },
+      ),
+    );
+    expect(accept.statusCode).toBe(200);
+    const engagementId = (accept.jsonBody as { engagementId: string | null }).engagementId;
+    expect(engagementId).toBeTruthy();
+
+    const reqs = await harness.db.execute(
+      sql`SELECT id, title FROM client_request WHERE engagement_id = ${engagementId}`,
+    );
+    const reqRows = (reqs as unknown as { rows: { id: string; title: string }[] }).rows;
+    expect(reqRows).toHaveLength(1);
+    expect(reqRows[0]!.title).toBe('Document checklist');
+    const items = await harness.db.execute(
+      sql`SELECT label FROM client_request_item WHERE client_request_id = ${reqRows[0]!.id}`,
+    );
+    expect((items as unknown as { rows: unknown[] }).rows).toHaveLength(1);
+  });
 });
