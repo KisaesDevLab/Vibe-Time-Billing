@@ -8,13 +8,24 @@ import { and, eq } from 'drizzle-orm';
 import type express from 'express';
 
 import {
+  clientTemplates,
+  engagementLetterTemplates,
+  engagementTemplates,
   notificationTemplates,
   packages,
   packageServices,
+  requestTemplateItems,
+  requestTemplates,
   servicesCatalog,
   termsTemplates,
 } from '@vibe/db/schema';
-import { SYSTEM_EMAIL_TEMPLATES, SYSTEM_SERVICE_TEMPLATES } from '@vibe/db/seed-helpers';
+import {
+  SYSTEM_EMAIL_TEMPLATES,
+  SYSTEM_ENGAGEMENT_TEMPLATES,
+  SYSTEM_LETTER_TEMPLATES,
+  SYSTEM_REQUEST_TEMPLATES,
+  SYSTEM_SERVICE_TEMPLATES,
+} from '@vibe/db/seed-helpers';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -230,5 +241,91 @@ describe('template library import', () => {
     };
     expect(again.imported).toBe(0);
     expect(again.skipped).toBe(SYSTEM_EMAIL_TEMPLATES.length);
+  });
+
+  it('imports engagement templates idempotently with mapped fee structure', async () => {
+    const r = router();
+    const res = await invoke(r, 'post', '/engagements/import', {});
+    expect((res.jsonBody as { imported: number }).imported).toBe(
+      SYSTEM_ENGAGEMENT_TEMPLATES.length,
+    );
+    const [row] = await harness.db
+      .select()
+      .from(engagementTemplates)
+      .where(
+        and(
+          eq(engagementTemplates.firmId, seed.firmId),
+          eq(engagementTemplates.clonedFromSlug, 'individual-1040'),
+        ),
+      );
+    expect(row!.defaultFeeStructure).toBe('FIXED_FEE');
+    expect(row!.key).toBe('individual-1040');
+    expect(row!.namePattern).toContain('{{client.name}}');
+
+    const again = (await invoke(r, 'post', '/engagements/import', {})).jsonBody as {
+      imported: number;
+      skipped: number;
+    };
+    expect(again.imported).toBe(0);
+    expect(again.skipped).toBe(SYSTEM_ENGAGEMENT_TEMPLATES.length);
+  });
+
+  it('imports engagement letter templates', async () => {
+    const r = router();
+    const res = await invoke(r, 'post', '/letters/import', {});
+    expect((res.jsonBody as { imported: number }).imported).toBe(SYSTEM_LETTER_TEMPLATES.length);
+    const rows = await harness.db
+      .select()
+      .from(engagementLetterTemplates)
+      .where(eq(engagementLetterTemplates.firmId, seed.firmId));
+    expect(rows.length).toBe(SYSTEM_LETTER_TEMPLATES.length);
+    expect(rows.every((x) => x.bodyHtml.length > 0)).toBe(true);
+  });
+
+  it('imports request templates with their checklist items', async () => {
+    const r = router();
+    const res = await invoke(r, 'post', '/requests/import', { slugs: ['individual-1040-docs'] });
+    expect((res.jsonBody as { imported: number }).imported).toBe(1);
+    const [tpl] = await harness.db
+      .select()
+      .from(requestTemplates)
+      .where(
+        and(
+          eq(requestTemplates.firmId, seed.firmId),
+          eq(requestTemplates.clonedFromSlug, 'individual-1040-docs'),
+        ),
+      );
+    expect(tpl!.defaultPriority).toBe('HIGH');
+    const itemRows = await harness.db
+      .select()
+      .from(requestTemplateItems)
+      .where(eq(requestTemplateItems.templateId, tpl!.id));
+    const expectedItems = SYSTEM_REQUEST_TEMPLATES.find((t) => t.slug === 'individual-1040-docs')!
+      .items.length;
+    expect(itemRows.length).toBe(expectedItems);
+  });
+
+  it('imports client templates and resolves their engagement slugs to ids', async () => {
+    const r = router();
+    const res = await invoke(r, 'post', '/clients/import', { slugs: ['scorp-client'] });
+    expect((res.jsonBody as { imported: number }).imported).toBe(1);
+    const [row] = await harness.db
+      .select()
+      .from(clientTemplates)
+      .where(
+        and(
+          eq(clientTemplates.firmId, seed.firmId),
+          eq(clientTemplates.clonedFromSlug, 'scorp-client'),
+        ),
+      );
+    expect(row!.clientType).toBe('BUSINESS');
+    // The two suggested engagement slugs were auto-imported and resolved.
+    expect(row!.defaultEngagementTemplateIds.length).toBe(2);
+    const engs = await harness.db
+      .select()
+      .from(engagementTemplates)
+      .where(eq(engagementTemplates.firmId, seed.firmId));
+    const engIds = new Set(engs.map((e) => e.id));
+    expect(row!.defaultEngagementTemplateIds.every((id) => engIds.has(id))).toBe(true);
   });
 });

@@ -12,16 +12,25 @@ import { and, eq, inArray, like } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  clientTemplates,
+  engagementLetterTemplates,
+  engagementTemplates,
   notificationTemplates,
   packages,
   packageServices,
+  requestTemplateItems,
+  requestTemplates,
   servicesCatalog,
   termsTemplates,
 } from '@vibe/db/schema';
 import {
   SERVICE_CATEGORY_DEFS,
+  SYSTEM_CLIENT_TEMPLATES,
   SYSTEM_EMAIL_TEMPLATES,
+  SYSTEM_ENGAGEMENT_TEMPLATES,
+  SYSTEM_LETTER_TEMPLATES,
   SYSTEM_PACKAGE_TEMPLATES,
+  SYSTEM_REQUEST_TEMPLATES,
   SYSTEM_SERVICE_TEMPLATES,
   SYSTEM_TERMS_TEMPLATES,
   TEMPLATES_PACK_VERSION,
@@ -30,7 +39,15 @@ import {
   type ServiceTemplate,
 } from '@vibe/db/seed-helpers';
 
-export type Area = 'services' | 'packages' | 'terms' | 'emails';
+export type Area =
+  | 'services'
+  | 'packages'
+  | 'terms'
+  | 'emails'
+  | 'engagements'
+  | 'letters'
+  | 'requests'
+  | 'clients';
 
 export interface ImportCounts {
   imported: number;
@@ -363,6 +380,254 @@ export async function importEmails(
 }
 
 // ---------------------------------------------------------------------------
+// Engagement templates → engagement_template. Fee structure maps 1:1.
+// Returns slug → firm id so client-template import can resolve its
+// suggested engagement slugs to real ids.
+// ---------------------------------------------------------------------------
+
+interface EngagementImportResult extends ImportCounts {
+  idBySlug: Map<string, string>;
+}
+
+export async function importEngagements(
+  db: Database,
+  args: { firmId: string; appUserId: string; slugs?: string[] },
+): Promise<EngagementImportResult> {
+  const wanted = args.slugs?.length
+    ? SYSTEM_ENGAGEMENT_TEMPLATES.filter((e) => args.slugs!.includes(e.slug))
+    : SYSTEM_ENGAGEMENT_TEMPLATES;
+  const idBySlug = new Map<string, string>();
+  let imported = 0;
+  let skipped = 0;
+  if (wanted.length === 0) return { imported, skipped, total: 0, idBySlug };
+
+  const existing = await db
+    .select({ id: engagementTemplates.id, slug: engagementTemplates.clonedFromSlug })
+    .from(engagementTemplates)
+    .where(
+      and(
+        eq(engagementTemplates.firmId, args.firmId),
+        inArray(
+          engagementTemplates.clonedFromSlug,
+          wanted.map((e) => e.slug),
+        ),
+      ),
+    );
+  for (const row of existing) if (row.slug) idBySlug.set(row.slug, row.id);
+
+  for (const e of wanted) {
+    if (idBySlug.has(e.slug)) {
+      skipped++;
+      continue;
+    }
+    const [row] = await db
+      .insert(engagementTemplates)
+      .values({
+        firmId: args.firmId,
+        key: e.slug,
+        name: e.name,
+        defaultFeeStructure: e.defaultFeeStructure,
+        defaultFeeAmountCents: e.defaultFeeAmountCents ?? null,
+        defaultBudgetHours: e.defaultBudgetHours != null ? String(e.defaultBudgetHours) : null,
+        namePattern: e.namePattern ?? null,
+        clonedFromSlug: e.slug,
+        clonedFromPackVersion: TEMPLATES_PACK_VERSION,
+      })
+      .returning({ id: engagementTemplates.id });
+    idBySlug.set(e.slug, row!.id);
+    imported++;
+  }
+  return { imported, skipped, total: wanted.length, idBySlug };
+}
+
+// ---------------------------------------------------------------------------
+// Engagement letter templates → engagement_letter_template.
+// ---------------------------------------------------------------------------
+
+export async function importLetters(
+  db: Database,
+  args: { firmId: string; appUserId: string; slugs?: string[] },
+): Promise<ImportCounts> {
+  const wanted = args.slugs?.length
+    ? SYSTEM_LETTER_TEMPLATES.filter((l) => args.slugs!.includes(l.slug))
+    : SYSTEM_LETTER_TEMPLATES;
+  let imported = 0;
+  let skipped = 0;
+  if (wanted.length === 0) return { imported, skipped, total: 0 };
+
+  const existing = new Set(
+    (
+      await db
+        .select({ slug: engagementLetterTemplates.clonedFromSlug })
+        .from(engagementLetterTemplates)
+        .where(
+          and(
+            eq(engagementLetterTemplates.firmId, args.firmId),
+            inArray(
+              engagementLetterTemplates.clonedFromSlug,
+              wanted.map((l) => l.slug),
+            ),
+          ),
+        )
+    )
+      .map((r) => r.slug)
+      .filter((s): s is string => Boolean(s)),
+  );
+
+  for (const l of wanted) {
+    if (existing.has(l.slug)) {
+      skipped++;
+      continue;
+    }
+    await db.insert(engagementLetterTemplates).values({
+      firmId: args.firmId,
+      key: l.slug,
+      name: l.name,
+      bodyHtml: l.bodyHtml,
+      clonedFromSlug: l.slug,
+      clonedFromPackVersion: TEMPLATES_PACK_VERSION,
+    });
+    imported++;
+  }
+  return { imported, skipped, total: wanted.length };
+}
+
+// ---------------------------------------------------------------------------
+// Request templates → request_template (+ request_template_item).
+// ---------------------------------------------------------------------------
+
+export async function importRequests(
+  db: Database,
+  args: { firmId: string; appUserId: string; slugs?: string[] },
+): Promise<ImportCounts> {
+  const wanted = args.slugs?.length
+    ? SYSTEM_REQUEST_TEMPLATES.filter((r) => args.slugs!.includes(r.slug))
+    : SYSTEM_REQUEST_TEMPLATES;
+  let imported = 0;
+  let skipped = 0;
+  if (wanted.length === 0) return { imported, skipped, total: 0 };
+
+  const existing = new Set(
+    (
+      await db
+        .select({ slug: requestTemplates.clonedFromSlug })
+        .from(requestTemplates)
+        .where(
+          and(
+            eq(requestTemplates.firmId, args.firmId),
+            inArray(
+              requestTemplates.clonedFromSlug,
+              wanted.map((r) => r.slug),
+            ),
+          ),
+        )
+    )
+      .map((r) => r.slug)
+      .filter((s): s is string => Boolean(s)),
+  );
+
+  for (const r of wanted) {
+    if (existing.has(r.slug)) {
+      skipped++;
+      continue;
+    }
+    const [tpl] = await db
+      .insert(requestTemplates)
+      .values({
+        firmId: args.firmId,
+        key: r.slug,
+        name: r.name,
+        titlePattern: r.titlePattern,
+        bodyPattern: r.bodyPattern,
+        defaultPriority: r.defaultPriority,
+        defaultDueOffsetDays: r.defaultDueOffsetDays ?? null,
+        clonedFromSlug: r.slug,
+        clonedFromPackVersion: TEMPLATES_PACK_VERSION,
+        createdById: args.appUserId,
+      })
+      .returning({ id: requestTemplates.id });
+    let ordinal = 0;
+    for (const item of r.items) {
+      await db.insert(requestTemplateItems).values({
+        templateId: tpl!.id,
+        ordinal: ordinal++,
+        label: item.label,
+        body: item.body ?? '',
+        itemKind: item.itemKind,
+        required: item.required,
+      });
+    }
+    imported++;
+  }
+  return { imported, skipped, total: wanted.length };
+}
+
+// ---------------------------------------------------------------------------
+// Client templates → client_template. Resolves suggested engagement slugs to
+// firm engagement-template ids (importing those engagements as needed).
+// ---------------------------------------------------------------------------
+
+export async function importClients(
+  db: Database,
+  args: { firmId: string; appUserId: string; slugs?: string[] },
+): Promise<ImportCounts> {
+  const wanted = args.slugs?.length
+    ? SYSTEM_CLIENT_TEMPLATES.filter((c) => args.slugs!.includes(c.slug))
+    : SYSTEM_CLIENT_TEMPLATES;
+  let imported = 0;
+  let skipped = 0;
+  if (wanted.length === 0) return { imported, skipped, total: 0 };
+
+  // Ensure referenced engagement templates exist, and map slug → firm id.
+  const engagementSlugs = Array.from(
+    new Set(wanted.flatMap((c) => c.defaultEngagementSlugs ?? [])),
+  );
+  const eng = await importEngagements(db, { ...args, slugs: engagementSlugs });
+  const engIdBySlug = eng.idBySlug;
+
+  const existing = new Set(
+    (
+      await db
+        .select({ slug: clientTemplates.clonedFromSlug })
+        .from(clientTemplates)
+        .where(
+          and(
+            eq(clientTemplates.firmId, args.firmId),
+            inArray(
+              clientTemplates.clonedFromSlug,
+              wanted.map((c) => c.slug),
+            ),
+          ),
+        )
+    )
+      .map((r) => r.slug)
+      .filter((s): s is string => Boolean(s)),
+  );
+
+  for (const c of wanted) {
+    if (existing.has(c.slug)) {
+      skipped++;
+      continue;
+    }
+    const engagementIds = (c.defaultEngagementSlugs ?? [])
+      .map((s) => engIdBySlug.get(s))
+      .filter((id): id is string => Boolean(id));
+    await db.insert(clientTemplates).values({
+      firmId: args.firmId,
+      key: c.slug,
+      name: c.name,
+      clientType: c.clientType,
+      defaultsJson: c.defaultsJson ?? {},
+      defaultEngagementTemplateIds: engagementIds,
+      clonedFromSlug: c.slug,
+      clonedFromPackVersion: TEMPLATES_PACK_VERSION,
+    });
+    imported++;
+  }
+  return { imported, skipped, total: wanted.length };
+}
+
+// ---------------------------------------------------------------------------
 // Listing — shipped items annotated with whether they're already imported.
 // ---------------------------------------------------------------------------
 
@@ -429,6 +694,77 @@ export async function listLibrary(
       name: p.name,
       category: p.primaryCategory,
       imported: havePrefix.has(p.slug),
+    }));
+  }
+  if (area === 'engagements') {
+    const have = new Set(
+      (
+        await db
+          .select({ slug: engagementTemplates.clonedFromSlug })
+          .from(engagementTemplates)
+          .where(eq(engagementTemplates.firmId, firmId))
+      )
+        .map((r) => r.slug)
+        .filter((s): s is string => Boolean(s)),
+    );
+    return SYSTEM_ENGAGEMENT_TEMPLATES.map((e) => ({
+      slug: e.slug,
+      name: e.name,
+      category: e.defaultFeeStructure,
+      imported: have.has(e.slug),
+    }));
+  }
+  if (area === 'letters') {
+    const have = new Set(
+      (
+        await db
+          .select({ slug: engagementLetterTemplates.clonedFromSlug })
+          .from(engagementLetterTemplates)
+          .where(eq(engagementLetterTemplates.firmId, firmId))
+      )
+        .map((r) => r.slug)
+        .filter((s): s is string => Boolean(s)),
+    );
+    return SYSTEM_LETTER_TEMPLATES.map((l) => ({
+      slug: l.slug,
+      name: l.name,
+      imported: have.has(l.slug),
+    }));
+  }
+  if (area === 'requests') {
+    const have = new Set(
+      (
+        await db
+          .select({ slug: requestTemplates.clonedFromSlug })
+          .from(requestTemplates)
+          .where(eq(requestTemplates.firmId, firmId))
+      )
+        .map((r) => r.slug)
+        .filter((s): s is string => Boolean(s)),
+    );
+    return SYSTEM_REQUEST_TEMPLATES.map((r) => ({
+      slug: r.slug,
+      name: r.name,
+      category: r.defaultPriority,
+      imported: have.has(r.slug),
+    }));
+  }
+  if (area === 'clients') {
+    const have = new Set(
+      (
+        await db
+          .select({ slug: clientTemplates.clonedFromSlug })
+          .from(clientTemplates)
+          .where(eq(clientTemplates.firmId, firmId))
+      )
+        .map((r) => r.slug)
+        .filter((s): s is string => Boolean(s)),
+    );
+    return SYSTEM_CLIENT_TEMPLATES.map((c) => ({
+      slug: c.slug,
+      name: c.name,
+      category: c.clientType,
+      imported: have.has(c.slug),
     }));
   }
   // emails

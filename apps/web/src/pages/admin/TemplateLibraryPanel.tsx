@@ -12,7 +12,15 @@ import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
-export type LibraryArea = 'services' | 'packages' | 'terms' | 'emails';
+export type LibraryArea =
+  | 'services'
+  | 'packages'
+  | 'terms'
+  | 'emails'
+  | 'engagements'
+  | 'letters'
+  | 'requests'
+  | 'clients';
 
 interface LibraryItem {
   slug: string;
@@ -27,6 +35,10 @@ const AREA_LABEL: Record<LibraryArea, string> = {
   packages: 'package',
   terms: 'engagement-letter',
   emails: 'email',
+  engagements: 'engagement-template',
+  letters: 'engagement-letter',
+  requests: 'request',
+  clients: 'client-template',
 };
 
 export function TemplateLibraryPanel({

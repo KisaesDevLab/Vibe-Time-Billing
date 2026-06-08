@@ -4,8 +4,9 @@
 // own catalog with the shipped system defaults:
 //   GET  /api/staff/template-library/:area          — list shipped items + imported flag
 //   POST /api/staff/template-library/:area/import   — clone selected (or all) into the firm
-// area ∈ services | packages | terms | emails. Services/packages/terms are
-// gated service:read/write; emails (→ notification_template) taxonomy:read/write.
+// area ∈ services | packages | terms | emails | engagements | letters |
+// requests | clients. Services/packages/terms are gated service:read/write;
+// emails + engagement/letter/request/client templates are taxonomy:read/write.
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
@@ -15,8 +16,12 @@ import type { Database } from '@vibe/db';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import {
+  importClients,
   importEmails,
+  importEngagements,
+  importLetters,
   importPackages,
+  importRequests,
   importServices,
   importTerms,
   listLibrary,
@@ -72,6 +77,14 @@ export function createTemplateLibraryRouter(deps: TemplateLibraryRoutesDeps): Ro
             return importPackages(t, { firmId, appUserId, slugs });
           case 'emails':
             return importEmails(t, { firmId, slugs });
+          case 'engagements':
+            return importEngagements(t, { firmId, appUserId, slugs });
+          case 'letters':
+            return importLetters(t, { firmId, appUserId, slugs });
+          case 'requests':
+            return importRequests(t, { firmId, appUserId, slugs });
+          case 'clients':
+            return importClients(t, { firmId, appUserId, slugs });
         }
       });
       await emitAudit(deps.db, {
@@ -93,6 +106,12 @@ export function createTemplateLibraryRouter(deps: TemplateLibraryRoutesDeps): Ro
   // emails live in notification_template → taxonomy permission
   router.get('/emails', requirePermission(deps, 'taxonomy:read'), list('emails'));
   router.post('/emails/import', requirePermission(deps, 'taxonomy:write'), runImport('emails'));
+
+  // engagement / letter / request / client templates → taxonomy permission
+  for (const area of ['engagements', 'letters', 'requests', 'clients'] as const) {
+    router.get(`/${area}`, requirePermission(deps, 'taxonomy:read'), list(area));
+    router.post(`/${area}/import`, requirePermission(deps, 'taxonomy:write'), runImport(area));
+  }
 
   return router;
 }
