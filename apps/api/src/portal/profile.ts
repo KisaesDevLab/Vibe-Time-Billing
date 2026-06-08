@@ -191,7 +191,15 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         status: invoices.status,
       })
       .from(invoices)
-      .where(eq(invoices.clientId, session.activeClientId))
+      // Only finalized invoices are visible to clients — never DRAFT (or
+      // VOIDED), which would also wrongly inflate the billed/outstanding
+      // totals below. Mirrors the invoice-list and letters filters.
+      .where(
+        and(
+          eq(invoices.clientId, session.activeClientId),
+          drz`${invoices.status} IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID', 'PAID')`,
+        ),
+      )
       .orderBy(invoices.issueDate);
     const totalBilled = rows.reduce((a, r) => a + Number(r.totalCents), 0);
     const totalPaid = rows.reduce((a, r) => a + Number(r.paidCents), 0);

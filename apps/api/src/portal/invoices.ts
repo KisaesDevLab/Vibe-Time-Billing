@@ -87,7 +87,9 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .from(invoices)
       .where(and(eq(invoices.id, req.params['id']!), eq(invoices.clientId, session.activeClientId)))
       .limit(1);
-    if (!inv) {
+    // Drafts are not finalized and must never be visible to a client, even by
+    // direct URL — treat them as not found.
+    if (!inv || inv.status === 'DRAFT') {
       res.status(404).json({ error: 'not_found' });
       return;
     }
@@ -147,7 +149,8 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .from(invoices)
       .where(and(eq(invoices.id, id), eq(invoices.clientId, clientId)))
       .limit(1);
-    if (!inv) return null;
+    // Never render a draft for a client (page preview or PDF), even by URL.
+    if (!inv || inv.status === 'DRAFT') return null;
     const [firm] = await deps.db
       .select({ name: firms.name })
       .from(firms)
@@ -378,7 +381,7 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    if (inv.status === 'PAID' || inv.status === 'VOIDED') {
+    if (inv.status === 'DRAFT' || inv.status === 'PAID' || inv.status === 'VOIDED') {
       res.status(409).json({ error: 'invoice_not_payable', status: inv.status });
       return;
     }
