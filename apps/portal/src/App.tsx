@@ -7,7 +7,7 @@ import { api } from './api-client';
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 
 import { AuthProvider, useAuth } from './auth-context';
-import { ScopeProvider } from './scope-context';
+import { ScopeProvider, useScope } from './scope-context';
 import { StepUpModal } from './components/StepUpModal';
 import { ActivityPage } from './pages/Activity';
 import { AltContactsPage } from './pages/AltContacts';
@@ -158,8 +158,14 @@ interface Branding {
 
 function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { me, logout } = useAuth();
+  const { clientNames } = useScope();
   const location = useLocation();
   const [branding, setBranding] = useState<Branding | null>(null);
+
+  // Name of the account currently in view, so clients with access to more
+  // than one entity always know which they're looking at. Falls back to a
+  // neutral label until the accessible-clients list resolves.
+  const activeClientName = me ? (clientNames[me.activeClientId] ?? 'Your account') : null;
 
   useEffect(() => {
     void (async () => {
@@ -316,9 +322,10 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       trailing={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {me?.isImpersonation && <Pill tone="warning">view-as · read-only</Pill>}
-          {me && (
-            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-              Client: <code>{me.activeClientId.slice(0, 8)}…</code>
+          {activeClientName && (
+            <span style={{ fontSize: 13, color: tokens.color.text }}>
+              <span style={{ color: tokens.color.textMuted }}>Account: </span>
+              <strong>{activeClientName}</strong>
             </span>
           )}
           <FontSizeControl />
