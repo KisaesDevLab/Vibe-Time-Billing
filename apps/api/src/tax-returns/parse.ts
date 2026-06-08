@@ -49,53 +49,6 @@ export interface ParsedSections {
 }
 
 /**
- * Repair section page ranges using PAGE order rather than outline order.
- *
- * walkOutline derives each section's end page from the next node in
- * pre-order traversal — correct only when the bookmark outline is in
- * page order. Tax-software exports (UltraTax/Lacerte) often group
- * bookmarks logically (Reports / Federal / State) whose physical pages
- * interleave, so the outline order ≠ page order and walkOutline produces
- * oversized, overlapping ranges (e.g. a 1-page "Return Summary" reported
- * as pp1–17). Bookmark START pages resolve correctly; only the ranges
- * are wrong.
- *
- * This treats every bookmark as the start of a page block that runs
- * until the next bookmark's page (sorted by page). It also drops pure
- * grouping headers — a parent whose start page equals its first child's
- * (no unique lead pages of its own), e.g. the "Federal"/"Reports"
- * labels — since they carry no content and would otherwise duplicate a
- * child's single-page range. Sections with unique lead pages (a real
- * form that has sub-schedules after it) are kept.
- */
-export function normalizeSectionRanges(sections: FlatSection[], totalPages: number): FlatSection[] {
-  // Min child start page per parent ordinal.
-  const minChildStart = new Map<number, number>();
-  for (const s of sections) {
-    if (s.parentOrdinal == null) continue;
-    const cur = minChildStart.get(s.parentOrdinal);
-    if (cur == null || s.startPage < cur) minChildStart.set(s.parentOrdinal, s.startPage);
-  }
-  const kept = sections.filter((s) => {
-    const firstChild = minChildStart.get(s.ordinal);
-    if (firstChild == null) return true; // leaf — always keep
-    return s.startPage < firstChild; // keep parents that have unique lead pages
-  });
-  const starts = [...new Set(kept.map((s) => s.startPage))].sort((a, b) => a - b);
-  return kept.map((s, i) => {
-    const nextStart = starts.find((p) => p > s.startPage);
-    const end = (nextStart ?? totalPages + 1) - 1;
-    return {
-      ...s,
-      ordinal: i, // contiguous renumber in outline order
-      depth: 0, // grouping headers dropped → flat list
-      parentOrdinal: null,
-      endPage: Math.max(s.startPage, Math.min(end, totalPages)),
-    };
-  });
-}
-
-/**
  * Pure fallback heuristic: given the concatenated text of each page (in
  * order, index 0 = page 1), start a new section wherever a page's top
  * text matches a known form header. Continuation pages fold into the
@@ -176,8 +129,7 @@ export async function parseSectionsFromPdf(bytes: Uint8Array): Promise<ParsedSec
       }
     }
     if (nodes.length > 0) {
-      const sections = normalizeSectionRanges(walkOutline(nodes, { totalPages }), totalPages);
-      return { totalPages, sections, strategy: 'outline' };
+      return { totalPages, sections: walkOutline(nodes, { totalPages }), strategy: 'outline' };
     }
 
     // Strategy 2 — header detection over page text.
@@ -189,11 +141,11 @@ export async function parseSectionsFromPdf(bytes: Uint8Array): Promise<ParsedSec
     }
     nodes = detectSectionsFromHeaders(pageTexts);
     if (nodes.length > 0) {
-      const sections = normalizeSectionRanges(
-        walkOutline(nodes, { totalPages, fallbackConfidence: true }),
+      return {
         totalPages,
-      );
-      return { totalPages, sections, strategy: 'headers' };
+        sections: walkOutline(nodes, { totalPages, fallbackConfidence: true }),
+        strategy: 'headers',
+      };
     }
 
     // Nothing detected — one catch-all section.
