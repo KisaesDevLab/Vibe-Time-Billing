@@ -48,6 +48,7 @@ const SECTION_KINDS = [
 interface ReleaseRow {
   id: string;
   releasedToClientId: string;
+  clientName: string | null;
   scope: 'FULL' | 'SELECTED';
   sectionIds: string[];
   clientCanDownload: boolean;
@@ -106,6 +107,19 @@ export function TaxReturnDetailPage(): JSX.Element {
     try {
       await api(`/api/staff/tax/returns/${returnId}/releases/${releaseId}`, {
         method: 'DELETE',
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  async function setReleaseDownload(releaseId: string, clientCanDownload: boolean): Promise<void> {
+    if (!returnId) return;
+    try {
+      await api(`/api/staff/tax/returns/${returnId}/releases/${releaseId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ clientCanDownload }),
       });
       await load();
     } catch (err) {
@@ -288,20 +302,32 @@ export function TaxReturnDetailPage(): JSX.Element {
               >
                 <div>
                   <div style={{ fontWeight: 500 }}>
-                    Released to <code>{r.releasedToClientId.slice(0, 8)}…</code>
+                    Released to {r.clientName ?? `client ${r.releasedToClientId.slice(0, 8)}…`}
                   </div>
                   <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                     {r.scope === 'FULL'
                       ? 'Full return'
                       : `${r.sectionIds.length} section${r.sectionIds.length === 1 ? '' : 's'}`}
-                    {r.clientCanDownload ? ' · download enabled' : ' · view only'}
                     {' · '}
                     {new Date(r.releasedAt).toLocaleDateString()}
                   </div>
                 </div>
-                <Button size="sm" variant="ghost" onClick={() => void revoke(r.id)}>
-                  Revoke
-                </Button>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <Pill tone={r.clientCanDownload ? 'success' : 'neutral'}>
+                    {r.clientCanDownload ? '⬇ download on' : '🔒 view only'}
+                  </Pill>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Toggle whether the client can download this release's PDF."
+                    onClick={() => void setReleaseDownload(r.id, !r.clientCanDownload)}
+                  >
+                    {r.clientCanDownload ? 'Disable download' : 'Enable download'}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void revoke(r.id)}>
+                    Revoke
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>
@@ -1064,6 +1090,7 @@ interface AccessLogRow {
   event: string;
   actorKind: string;
   actorRef: string | null;
+  actorName: string | null;
   at: string;
   metadata: Record<string, unknown> | null;
 }
@@ -1158,6 +1185,7 @@ function AccessHistoryCard({ returnId }: { returnId: string }): JSX.Element {
                 </Pill>
                 <span style={{ flex: 1 }}>
                   {eventLabel(r.event)}
+                  {r.actorName && <span style={{ fontWeight: 500 }}> · {r.actorName}</span>}
                   {pages != null && (
                     <span style={{ color: tokens.color.textMuted }}> · {pages}pp</span>
                   )}

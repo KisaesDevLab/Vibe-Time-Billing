@@ -27,6 +27,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   files,
+  portalIdentity,
   taxReturnReleases,
   taxReturnSections,
   taxReturns,
@@ -319,6 +320,16 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
       startPage: s.startPage,
       endPage: s.endPage,
     }));
+    // Watermark the client by their email (or phone) rather than the
+    // raw client UUID.
+    let watermarkPrimary = session.activeClientId;
+    const [ident] = await deps.db
+      .select({ email: portalIdentity.primaryEmail, phone: portalIdentity.primaryPhone })
+      .from(portalIdentity)
+      .where(eq(portalIdentity.id, session.portalIdentityId))
+      .limit(1);
+    if (ident) watermarkPrimary = ident.email || ident.phone || session.activeClientId;
+
     let plan;
     try {
       plan = planExtraction({
@@ -331,7 +342,7 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
         watermark: {
           audience: 'CLIENT',
           timestamp: new Date().toISOString(),
-          primary: session.activeClientId, // UI side substitutes real name
+          primary: watermarkPrimary,
         },
       });
     } catch (err) {
@@ -345,11 +356,16 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
       returnId: releaseRow.returnId,
       event: 'VIEW',
       actorKind: 'CLIENT',
-      actorRef:
-        (session as unknown as { activeClientAccessId?: string }).activeClientAccessId ?? null,
+      // The portal identity (resolvable to email/name) — the access-log
+      // viewer shows the persona who viewed, not a raw id.
+      actorRef: session.portalIdentityId,
       actorIp: req.ip ?? null,
       actorUserAgent: req.get('user-agent') ?? null,
-      metadata: { pages: plan.pageIndices1Based.length, scope: releaseRow.scope },
+      metadata: {
+        pages: plan.pageIndices1Based.length,
+        scope: releaseRow.scope,
+        clientId: session.activeClientId,
+      },
     }).catch(() => undefined);
 
     // Fall closed: with no storage client or a deleted source file we

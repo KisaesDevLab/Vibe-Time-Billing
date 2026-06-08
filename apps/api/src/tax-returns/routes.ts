@@ -20,8 +20,18 @@ import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clients, files, taxReturnReleases, taxReturnSections, taxReturns } from '@vibe/db/schema';
-import { and, isNull } from 'drizzle-orm';
+import {
+  appUsers,
+  clientPortalAccess,
+  clients,
+  files,
+  portalIdentity,
+  taxReturnReleases,
+  taxReturnSections,
+  taxReturns,
+  taxReturnShares,
+} from '@vibe/db/schema';
+import { and, inArray, isNull } from 'drizzle-orm';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
@@ -459,6 +469,61 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
     },
   );
 
+  // Toggle whether the client can download a release's PDF (vs view-only).
+  router.patch(
+    '/:returnId/releases/:releaseId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = z.object({ clientCanDownload: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      // Scope-guard via the parent return.
+      const [ret] = await deps.db
+        .select({ id: taxReturns.id })
+        .from(taxReturns)
+        .where(
+          and(eq(taxReturns.id, req.params['returnId']!), eq(taxReturns.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'return_not_found' });
+        return;
+      }
+      const updated = await deps.db
+        .update(taxReturnReleases)
+        .set({ clientCanDownload: parsed.data.clientCanDownload })
+        .where(
+          and(
+            eq(taxReturnReleases.id, req.params['releaseId']!),
+            eq(taxReturnReleases.returnId, ret.id),
+            isNull(taxReturnReleases.revokedAt),
+          ),
+        )
+        .returning({ id: taxReturnReleases.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'release_not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'tax_return_release',
+        entityId: req.params['releaseId']!,
+        actorAppUserId: session.appUserId,
+        after: { clientCanDownload: parsed.data.clientCanDownload },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true, clientCanDownload: parsed.data.clientCanDownload });
+    },
+  );
+
   // TR-10 — amendment chain.
   //
   // POST   /:returnId/amend                — clone original into a new
@@ -594,7 +659,87 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         result.nextCursor === null
           ? null
           : Buffer.from(JSON.stringify(result.nextCursor)).toString('base64url');
-      res.json({ items: result.items, nextCursor });
+
+      // Resolve each event's actor to a human name: STAFF → app user,
+      // CLIENT → portal identity (+ which client they were acting for),
+      // RECIPIENT → 3rd-party share recipient.
+      const staffIds = new Set<string>();
+      const accessIds = new Set<string>();
+      const shareIds = new Set<string>();
+      for (const it of result.items) {
+        if (!it.actorRef) continue;
+        if (it.actorKind === 'STAFF') staffIds.add(it.actorRef);
+        else if (it.actorKind === 'CLIENT') accessIds.add(it.actorRef);
+        else if (it.actorKind === 'RECIPIENT') shareIds.add(it.actorRef);
+      }
+      const staffNames = new Map<string, string>();
+      if (staffIds.size > 0) {
+        const rows = await deps.db
+          .select({ id: appUsers.id, name: appUsers.fullName })
+          .from(appUsers)
+          .where(inArray(appUsers.id, [...staffIds]));
+        for (const r of rows) staffNames.set(r.id, r.name);
+      }
+      // A CLIENT actor_ref is either a portal_identity id (VIEW events)
+      // or a client_portal_access id (share events) — resolve both.
+      const clientActorNames = new Map<string, string>();
+      if (accessIds.size > 0) {
+        const refs = [...accessIds];
+        const identRows = await deps.db
+          .select({
+            id: portalIdentity.id,
+            name: portalIdentity.fullName,
+            email: portalIdentity.primaryEmail,
+          })
+          .from(portalIdentity)
+          .where(inArray(portalIdentity.id, refs));
+        for (const r of identRows) clientActorNames.set(r.id, r.name || r.email || 'Client user');
+        const accessRows = await deps.db
+          .select({
+            accessId: clientPortalAccess.id,
+            identityName: portalIdentity.fullName,
+            identityEmail: portalIdentity.primaryEmail,
+            clientName: clients.name,
+          })
+          .from(clientPortalAccess)
+          .leftJoin(portalIdentity, eq(portalIdentity.id, clientPortalAccess.portalIdentityId))
+          .leftJoin(clients, eq(clients.id, clientPortalAccess.clientId))
+          .where(inArray(clientPortalAccess.id, refs));
+        for (const r of accessRows) {
+          const who = r.identityName || r.identityEmail || 'Client user';
+          clientActorNames.set(r.accessId, r.clientName ? `${who} — ${r.clientName}` : who);
+        }
+      }
+      const recipientNames = new Map<string, string>();
+      if (shareIds.size > 0) {
+        const rows = await deps.db
+          .select({
+            id: taxReturnShares.id,
+            name: taxReturnShares.recipientName,
+            email: taxReturnShares.recipientEmail,
+            org: taxReturnShares.organization,
+          })
+          .from(taxReturnShares)
+          .where(inArray(taxReturnShares.id, [...shareIds]));
+        for (const r of rows)
+          recipientNames.set(r.id, r.org ? `${r.name} (${r.org})` : `${r.name} · ${r.email}`);
+      }
+      const items = result.items.map((it) => {
+        let actorName: string | null = null;
+        if (it.actorKind === 'SYSTEM') actorName = 'System';
+        else if (it.actorRef) {
+          actorName =
+            it.actorKind === 'STAFF'
+              ? (staffNames.get(it.actorRef) ?? null)
+              : it.actorKind === 'CLIENT'
+                ? (clientActorNames.get(it.actorRef) ?? null)
+                : it.actorKind === 'RECIPIENT'
+                  ? (recipientNames.get(it.actorRef) ?? null)
+                  : null;
+        }
+        return { ...it, actorName };
+      });
+      res.json({ items, nextCursor });
     },
   );
 
@@ -976,6 +1121,7 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         .select({
           id: taxReturnReleases.id,
           releasedToClientId: taxReturnReleases.releasedToClientId,
+          clientName: clients.name,
           scope: taxReturnReleases.scope,
           sectionIds: taxReturnReleases.sectionIds,
           clientCanDownload: taxReturnReleases.clientCanDownload,
@@ -984,6 +1130,7 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
           revokedAt: taxReturnReleases.revokedAt,
         })
         .from(taxReturnReleases)
+        .leftJoin(clients, eq(clients.id, taxReturnReleases.releasedToClientId))
         .where(and(eq(taxReturnReleases.returnId, returnId), isNull(taxReturnReleases.revokedAt)));
       res.json({
         return: ret,
