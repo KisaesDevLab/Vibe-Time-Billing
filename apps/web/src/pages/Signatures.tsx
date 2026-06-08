@@ -420,7 +420,7 @@ function CreateSignatureDialog({
         padding: tokens.space.xl,
       }}
     >
-      <div style={{ maxWidth: 640, width: '100%', maxHeight: '90vh', overflow: 'auto' }}>
+      <div style={{ maxWidth: 820, width: '100%', maxHeight: '90vh', overflow: 'auto' }}>
         <Card title="New signature request">
           <div style={{ display: 'grid', gap: tokens.space.md }}>
             <Input
