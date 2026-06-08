@@ -2451,6 +2451,11 @@ export const payments = pgTable(
     // NULL for legacy /auto-apply rows and any payment created before
     // the receipt parent table existed.
     receiptId: uuid('receipt_id').references(() => paymentReceipts.id, { onDelete: 'set null' }),
+    // 0131 — void of a manually-recorded payment (keeps the row for audit;
+    // excluded from paid recompute + listing totals).
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    voidedById: uuid('voided_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    voidReason: text('void_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

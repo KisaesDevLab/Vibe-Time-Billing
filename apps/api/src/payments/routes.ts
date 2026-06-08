@@ -1233,6 +1233,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           status: payments.status,
           refundedAmountCents: payments.refundedAmountCents,
           storedChannel: payments.channel,
+          voidedAt: payments.voidedAt,
           pmKind: paymentMethod.kind,
           receiptMethod: paymentReceipts.paymentMethod,
         })
@@ -1259,17 +1260,22 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         status: r.status,
         refundedAmountCents: Number(r.refundedAmountCents ?? 0),
         channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod, r.storedChannel),
+        voided: r.voidedAt != null,
+        // Only manually-recorded payments are editable/voidable from the UI;
+        // Stripe-processed rows reverse via refunds.
+        canEdit: r.provider === 'MANUAL' && r.voidedAt == null,
+        canVoid: (r.provider === 'MANUAL' || r.provider === 'CREDIT') && r.voidedAt == null,
       }));
       const filtered = channel ? withChannel.filter((r) => r.channel === channel) : withChannel;
 
       const summary = filtered.reduce(
         (s, r) => {
-          if (r.status === 'SUCCEEDED') {
+          if (r.status === 'SUCCEEDED' && !r.voided) {
             s.grossCents += r.amountCents;
             s.feesCents += r.feeCents;
           }
           s.refundsCents += r.refundedAmountCents;
-          if (r.status === 'PENDING') s.pendingCount += 1;
+          if (r.status === 'PENDING' && !r.voided) s.pendingCount += 1;
           return s;
         },
         { count: filtered.length, grossCents: 0, feesCents: 0, refundsCents: 0, pendingCount: 0 },
@@ -1281,6 +1287,127 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           netCents: summary.grossCents - summary.feesCents - summary.refundsCents,
         },
       });
+    },
+  );
+
+  // Edit a manually-recorded payment (amount / received date). Manual-only:
+  // Stripe-processed rows are read-only (reverse via refund). Recomputes the
+  // invoice's paid total + audits.
+  const PaymentEditSchema = z.object({
+    amountCents: z.number().int().positive().optional(),
+    receivedAt: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}/)
+      .optional(),
+  });
+  router.patch(
+    '/:id',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = PaymentEditSchema.safeParse(req.body);
+      if (!parsed.success) return void res.status(400).json({ error: 'invalid_payload' });
+      if (!deps.db) return void res.status(503).json({ error: 'db_unavailable' });
+      const [row] = await deps.db
+        .select({
+          id: payments.id,
+          provider: payments.provider,
+          voidedAt: payments.voidedAt,
+          invoiceId: payments.invoiceId,
+          firmId: invoices.firmId,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(and(eq(payments.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!row) return void res.status(404).json({ error: 'not_found' });
+      if (row.provider !== 'MANUAL')
+        return void res.status(409).json({ error: 'not_editable_provider' });
+      if (row.voidedAt) return void res.status(409).json({ error: 'payment_voided' });
+      const patch: Record<string, unknown> = {};
+      if (parsed.data.amountCents != null) patch['amountCents'] = parsed.data.amountCents;
+      if (parsed.data.receivedAt) patch['receivedAt'] = new Date(parsed.data.receivedAt);
+      if (Object.keys(patch).length === 0) return void res.json({ ok: true });
+      await deps.db.transaction(async (tx) => {
+        await tx.update(payments).set(patch).where(eq(payments.id, row.id));
+        await recomputeInvoicePaid(tx as unknown as Database, row.invoiceId);
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'payment',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: { ...patch, invoiceId: row.invoiceId },
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed (payment edit)'));
+      res.json({ ok: true });
+    },
+  );
+
+  // Void a manually-recorded payment (or a credit application). Keeps the row,
+  // reverses its effect on the invoice, and for credit applications restores
+  // the credit memo balance. Audited.
+  const VoidSchema = z.object({ reason: z.string().max(500).optional().nullable() });
+  router.post(
+    '/:id/void',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = VoidSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return void res.status(400).json({ error: 'invalid_payload' });
+      if (!deps.db) return void res.status(503).json({ error: 'db_unavailable' });
+      const [row] = await deps.db
+        .select({
+          id: payments.id,
+          provider: payments.provider,
+          voidedAt: payments.voidedAt,
+          invoiceId: payments.invoiceId,
+          firmId: invoices.firmId,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(and(eq(payments.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!row) return void res.status(404).json({ error: 'not_found' });
+      if (row.voidedAt) return void res.status(409).json({ error: 'already_voided' });
+      if (row.provider !== 'MANUAL' && row.provider !== 'CREDIT') {
+        return void res.status(409).json({ error: 'not_voidable_provider' });
+      }
+      const now = new Date();
+      const touchedMemoIds: string[] = [];
+      await deps.db.transaction(async (tx) => {
+        await tx
+          .update(payments)
+          .set({
+            voidedAt: now,
+            voidedById: session.appUserId,
+            voidReason: parsed.data.reason ?? null,
+          })
+          .where(eq(payments.id, row.id));
+        // Credit application reversal — restore the memo.
+        if (row.provider === 'CREDIT') {
+          const apps = await tx
+            .update(creditApplications)
+            .set({ voidedAt: now, voidedById: session.appUserId })
+            .where(
+              and(
+                eq(creditApplications.paymentId, row.id),
+                sql`${creditApplications.voidedAt} IS NULL`,
+              ),
+            )
+            .returning({ creditMemoId: creditApplications.creditMemoId });
+          for (const a of apps) touchedMemoIds.push(a.creditMemoId);
+        }
+        await recomputeInvoicePaid(tx as unknown as Database, row.invoiceId);
+        for (const memoId of touchedMemoIds) await recomputeMemoStatusInline(tx, memoId);
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'payment',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: { voided: true, reason: parsed.data.reason ?? null, invoiceId: row.invoiceId },
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed (payment void)'));
+      res.json({ ok: true });
     },
   );
 
@@ -1389,7 +1516,13 @@ export async function recomputeInvoicePaidReturnsFullyPaid(
       paidCents: sql<number>`COALESCE(SUM(${payments.amountCents}), 0)::bigint`,
     })
     .from(payments)
-    .where(and(eq(payments.invoiceId, invoiceId), eq(payments.status, 'SUCCEEDED')));
+    .where(
+      and(
+        eq(payments.invoiceId, invoiceId),
+        eq(payments.status, 'SUCCEEDED'),
+        sql`${payments.voidedAt} IS NULL`,
+      ),
+    );
   const [inv] = await tx
     .select({ total: invoices.totalCents, currentStatus: invoices.status })
     .from(invoices)
