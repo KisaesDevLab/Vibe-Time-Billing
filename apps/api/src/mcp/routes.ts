@@ -16,6 +16,7 @@ import { and, between, desc, eq, inArray, isNull, lte, sql as drz } from 'drizzl
 import type { Database } from '@vibe/db';
 import {
   adjustmentAllocations,
+  adjustments,
   billingBatchEntries,
   billingBatches,
   clientRequests,
@@ -367,13 +368,17 @@ async function dispatch(
               appUserId: adjustmentAllocations.appUserId,
               originalValueCents: adjustmentAllocations.originalValueCents,
               adjustedValueCents: adjustmentAllocations.adjustedValueCents,
-              adjustmentId: adjustmentAllocations.adjustmentId,
+              // The batch id lives on the adjustment, not the allocation —
+              // adjustment_allocations.adjustment_id is an adjustments.id, so
+              // join through adjustments to recover the billing_batch id.
+              billingBatchId: adjustments.billingBatchId,
             })
             .from(adjustmentAllocations)
+            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
         : [];
       const scoped: AllocationRow[] = rows
         .map((r) => {
-          const engId = batchById.get(r.adjustmentId);
+          const engId = batchById.get(r.billingBatchId);
           const cid = engId ? engById.get(engId) : undefined;
           if (!engId || !cid) return null;
           return {
