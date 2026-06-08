@@ -142,15 +142,20 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
         .orderBy(desc(intakeSessions.createdAt))
         .limit(200);
 
-      const fileCounts = await deps.db
-        .select({ sessionId: intakeFiles.sessionId, id: intakeFiles.id })
-        .from(intakeFiles)
-        .where(
-          inArray(
-            intakeFiles.sessionId,
-            rows.map((r) => r.id),
-          ),
-        );
+      // Guard: inArray throws on an empty list, so skip the query when there
+      // are no sessions in this status.
+      const fileCounts =
+        rows.length === 0
+          ? []
+          : await deps.db
+              .select({ sessionId: intakeFiles.sessionId, id: intakeFiles.id })
+              .from(intakeFiles)
+              .where(
+                inArray(
+                  intakeFiles.sessionId,
+                  rows.map((r) => r.id),
+                ),
+              );
       const countBySession = new Map<string, number>();
       for (const f of fileCounts)
         countBySession.set(f.sessionId, (countBySession.get(f.sessionId) ?? 0) + 1);
