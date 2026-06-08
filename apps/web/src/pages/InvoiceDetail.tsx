@@ -89,6 +89,7 @@ export function InvoiceDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showPage, setShowPage] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     if (!id) return;
@@ -211,6 +212,34 @@ export function InvoiceDetailPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 960 }}>
+      {showPage && (
+        // 8.5×11 page preview — the same letter-size HTML the PDF is rendered
+        // from, shown on a gray backdrop like a print preview. Editing controls
+        // remain in the card below.
+        <div
+          style={{
+            background: '#525659',
+            padding: 24,
+            borderRadius: tokens.radius.md,
+            display: 'flex',
+            justifyContent: 'center',
+            overflow: 'auto',
+          }}
+        >
+          <iframe
+            title={`Invoice ${invoice.invoiceNumber} — page view`}
+            src={`/api/staff/invoices/${invoice.id}/pdf?format=html`}
+            style={{
+              width: 816,
+              height: 1056,
+              maxWidth: '100%',
+              border: 'none',
+              background: '#fff',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+            }}
+          />
+        </div>
+      )}
       <Card
         title={
           <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -223,6 +252,13 @@ export function InvoiceDetailPage(): JSX.Element {
         }
         action={
           <span style={{ display: 'flex', gap: 6 }}>
+            <Button
+              size="sm"
+              variant={showPage ? 'primary' : 'secondary'}
+              onClick={() => setShowPage((v) => !v)}
+            >
+              {showPage ? 'Hide page' : 'View as page'}
+            </Button>
             <a
               href={`/api/staff/invoices/${invoice.id}/pdf`}
               target="_blank"

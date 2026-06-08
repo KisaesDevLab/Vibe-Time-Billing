@@ -134,21 +134,20 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
     res.json({ invoice: inv, lineItems: lines, payments: paymentRows });
   });
 
-  router.get('/:id/pdf.html', deps.requireAuth, async (req: Request, res: Response) => {
-    const session = req.portalSession!;
-    if (!deps.db) {
-      res.status(503).send('db_unavailable');
-      return;
-    }
+  // Build the letter-size invoice HTML for a client-scoped invoice. Shared by
+  // the HTML page preview and the binary PDF download below. Returns null when
+  // the invoice doesn't exist for this client (or the DB is unavailable).
+  async function assembleInvoiceHtml(
+    id: string,
+    clientId: string,
+  ): Promise<{ html: string; invoiceNumber: string } | null> {
+    if (!deps.db) return null;
     const [inv] = await deps.db
       .select()
       .from(invoices)
-      .where(and(eq(invoices.id, req.params['id']!), eq(invoices.clientId, session.activeClientId)))
+      .where(and(eq(invoices.id, id), eq(invoices.clientId, clientId)))
       .limit(1);
-    if (!inv) {
-      res.status(404).send('not found');
-      return;
-    }
+    if (!inv) return null;
     const [firm] = await deps.db
       .select({ name: firms.name })
       .from(firms)
@@ -242,8 +241,47 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       totalCents: Number(inv.totalCents),
       notes: inv.notes ?? null,
     });
+    return { html, invoiceNumber: inv.invoiceNumber };
+  }
+
+  // HTML page preview (used by the in-app 8.5×11 page view iframe).
+  router.get('/:id/pdf.html', deps.requireAuth, async (req: Request, res: Response) => {
+    if (!deps.db) {
+      res.status(503).send('db_unavailable');
+      return;
+    }
+    const built = await assembleInvoiceHtml(req.params['id']!, req.portalSession!.activeClientId);
+    if (!built) {
+      res.status(404).send('not found');
+      return;
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
+    res.send(built.html);
+  });
+
+  // Proper binary PDF download of the invoice. Falls back to serving the HTML
+  // if the renderer is unavailable (same behavior as the staff endpoint).
+  router.get('/:id/pdf', deps.requireAuth, async (req: Request, res: Response) => {
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const built = await assembleInvoiceHtml(req.params['id']!, req.portalSession!.activeClientId);
+    if (!built) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    try {
+      const { renderHtmlToPdf } = await import('../pdf/render');
+      const pdf = await renderHtmlToPdf(built.html);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${built.invoiceNumber}.pdf"`);
+      res.send(pdf);
+    } catch (err) {
+      logger.error({ err }, 'invoice pdf render failed');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(built.html);
+    }
   });
 
   router.get(

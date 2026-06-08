@@ -228,6 +228,7 @@ function InvoiceDetailPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
+  const [showPage, setShowPage] = useState(false);
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -267,6 +268,33 @@ function InvoiceDetailPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 760, margin: '0 auto' }}>
+      {showPage && (
+        // 8.5×11 page preview — the same letter-size render available as the PDF,
+        // shown on a gray backdrop like a print preview.
+        <div
+          style={{
+            background: '#525659',
+            padding: 20,
+            borderRadius: tokens.radius.md,
+            display: 'flex',
+            justifyContent: 'center',
+            overflow: 'auto',
+          }}
+        >
+          <iframe
+            title={`Invoice ${inv.invoiceNumber} — page view`}
+            src={`/api/portal/invoices/${inv.id}/pdf.html`}
+            style={{
+              width: 816,
+              height: 1056,
+              maxWidth: '100%',
+              border: 'none',
+              background: '#fff',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+            }}
+          />
+        </div>
+      )}
       <Card
         title={`Invoice ${inv.invoiceNumber}`}
         action={<Pill tone={statusTone(inv.status)}>{inv.status}</Pill>}
@@ -379,8 +407,11 @@ function InvoiceDetailPage(): JSX.Element {
         <Button variant="secondary" onClick={() => navigate('/invoices')}>
           Back
         </Button>
+        <Button variant={showPage ? 'primary' : 'secondary'} onClick={() => setShowPage((v) => !v)}>
+          {showPage ? 'Hide page' : 'View as page'}
+        </Button>
         <a
-          href={`/api/portal/invoices/${inv.id}/pdf.html`}
+          href={`/api/portal/invoices/${inv.id}/pdf`}
           target="_blank"
           rel="noreferrer"
           style={{
@@ -394,7 +425,7 @@ function InvoiceDetailPage(): JSX.Element {
             fontFamily: tokens.font.body,
           }}
         >
-          View as PDF
+          Download PDF
         </a>
         {balance > 0 && (
           <Button onClick={() => void pay()} disabled={paying}>
