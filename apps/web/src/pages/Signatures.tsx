@@ -278,10 +278,8 @@ function CreateSignatureDialog({
   const [error, setError] = useState<string | null>(null);
 
   // Client + its associated people + engagements.
+  const [clients, setClients] = useState<ClientHit[]>([]);
   const [clientId, setClientId] = useState('');
-  const [clientLabel, setClientLabel] = useState('');
-  const [clientQuery, setClientQuery] = useState('');
-  const [clientHits, setClientHits] = useState<ClientHit[]>([]);
   const [people, setPeople] = useState<PersonEntry[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [engagements, setEngagements] = useState<EngagementHit[]>([]);
@@ -296,44 +294,34 @@ function CreateSignatureDialog({
     setSigners((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   }
 
-  // Debounced client typeahead.
+  // Load the full client list once for the searchable dropdown. The list is
+  // bounded for a single firm, so we fetch all (the Combobox filters locally)
+  // rather than a server typeahead — matches the Requests/Invoices pickers.
   useEffect(() => {
-    if (clientId) return;
-    const term = clientQuery.trim();
-    if (!term) {
-      setClientHits([]);
-      return;
-    }
-    let alive = true;
-    const t = setTimeout(() => {
-      void api<{ items: ClientHit[] }>(
-        `/api/staff/clients?q=${encodeURIComponent(term)}&pageSize=10`,
-      )
-        .then((r) => {
-          if (alive) setClientHits(r.items ?? []);
-        })
-        .catch(() => undefined);
-    }, 200);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-    };
-  }, [clientQuery, clientId]);
+    void api<{ rows?: ClientHit[]; items?: ClientHit[] }>('/api/staff/clients?limit=500')
+      .then((r) => setClients(r.rows ?? r.items ?? []))
+      .catch(() => undefined);
+  }, []);
 
-  // When a client is chosen, load its people + engagements.
-  function pickClient(c: ClientHit): void {
-    setClientId(c.id);
-    setClientLabel(c.name);
-    setClientHits([]);
+  // When the selected client changes, reset client-scoped state and (if a
+  // client was picked) load its people + engagements.
+  function onClientChange(id: string): void {
+    setClientId(id);
     setEngagementId('');
     setEngagements([]);
     setPeople([]);
+    // Drop people-derived signers; keep manual ones.
+    setSigners((prev) => {
+      const manual = prev.filter((s) => !s.peopleKey);
+      return manual.length ? manual : [{ name: '', email: '', role: '' }];
+    });
+    if (!id) return;
     setPeopleLoading(true);
     void Promise.all([
       api<{ items?: PeopleApiEntry[]; people?: PeopleApiEntry[] }>(
-        `/api/staff/clients/${c.id}/people`,
+        `/api/staff/clients/${id}/people`,
       ).catch(() => ({}) as { items?: PeopleApiEntry[]; people?: PeopleApiEntry[] }),
-      api<{ items: EngagementHit[] }>(`/api/staff/engagements?clientId=${c.id}&pageSize=100`).catch(
+      api<{ items: EngagementHit[] }>(`/api/staff/engagements?clientId=${id}&pageSize=100`).catch(
         () => ({ items: [] }),
       ),
     ])
@@ -346,20 +334,6 @@ function CreateSignatureDialog({
         setEngagements(er.items ?? []);
       })
       .finally(() => setPeopleLoading(false));
-  }
-
-  function clearClient(): void {
-    setClientId('');
-    setClientLabel('');
-    setClientQuery('');
-    setPeople([]);
-    setEngagements([]);
-    setEngagementId('');
-    // Drop people-derived signers; keep manual ones.
-    setSigners((prev) => {
-      const manual = prev.filter((s) => !s.peopleKey);
-      return manual.length ? manual : [{ name: '', email: '', role: '' }];
-    });
   }
 
   function togglePerson(p: PersonEntry, checked: boolean): void {
@@ -423,15 +397,10 @@ function CreateSignatureDialog({
     }
   }
 
-  const inputStyle: React.CSSProperties = {
-    padding: '6px 10px',
-    background: tokens.color.surface,
-    color: tokens.color.text,
-    border: `1px solid ${tokens.color.border}`,
-    borderRadius: tokens.radius.md,
-    fontSize: 13,
-    width: '100%',
-  };
+  const clientOptions = [
+    { value: '', label: '— No client —' },
+    ...clients.map((c) => ({ value: c.id, label: c.name })),
+  ];
 
   const engagementOptions = [
     { value: '', label: '— No engagement —' },
@@ -477,54 +446,14 @@ function CreateSignatureDialog({
               <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
                 Client (optional — pull signers from the client&apos;s people)
               </div>
-              {clientId ? (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <Pill tone="accent">{clientLabel}</Pill>
-                  <Button size="sm" variant="ghost" onClick={clearClient}>
-                    Change
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <input
-                    value={clientQuery}
-                    onChange={(e) => setClientQuery(e.target.value)}
-                    placeholder="Search clients…"
-                    style={inputStyle}
-                  />
-                  {clientHits.length > 0 && (
-                    <div
-                      style={{
-                        border: `1px solid ${tokens.color.border}`,
-                        borderRadius: tokens.radius.md,
-                        marginTop: 4,
-                        maxHeight: 180,
-                        overflowY: 'auto',
-                      }}
-                    >
-                      {clientHits.map((c) => (
-                        <button
-                          key={c.id}
-                          onClick={() => pickClient(c)}
-                          style={{
-                            display: 'block',
-                            width: '100%',
-                            textAlign: 'left',
-                            border: 'none',
-                            background: 'transparent',
-                            padding: '6px 10px',
-                            cursor: 'pointer',
-                            fontSize: 13,
-                            color: tokens.color.text,
-                          }}
-                        >
-                          {c.name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
+              <Combobox
+                options={clientOptions}
+                value={clientId}
+                onChange={onClientChange}
+                placeholder="Select a client…"
+                ariaLabel="Client"
+                clearable
+              />
             </div>
 
             {/* People → signers */}
