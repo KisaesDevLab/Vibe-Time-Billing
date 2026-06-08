@@ -514,6 +514,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runRequestReminderTick(db, logger, {
       sendEmail: dunningSendEmail,
+      sendSms: dunningSendSms,
       portalBaseUrl: process.env['PORTAL_BASE_URL'],
     });
     logger.info({ jobId: job.id, ...result }, 'request-reminder complete');

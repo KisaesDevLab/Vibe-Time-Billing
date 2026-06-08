@@ -64,6 +64,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         engagementId: clientRequests.engagementId,
         title: clientRequests.title,
         body: clientRequests.body,
+        kind: clientRequests.kind,
         status: clientRequests.status,
         dueDate: clientRequests.dueDate,
         fulfilledAt: clientRequests.fulfilledAt,

@@ -14,6 +14,7 @@ import {
 import { EngagementMessagesCard } from './messaging/EngagementMessagesCard';
 import { EngagementStatusHistoryCard } from './EngagementStatusHistoryCard';
 import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlansCard';
+import { DropOffCard } from './engagements/DropOffCard';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -823,6 +824,8 @@ export function EngagementDetailPage(): JSX.Element {
       {id && engagement && (
         <EngagementRecurringPlansCard engagementId={id} engagementName={engagement.name} />
       )}
+
+      {id && <DropOffCard engagementId={id} />}
 
       {milestones.length > 0 && (
         <Card title={`Milestones (${milestones.length})`}>

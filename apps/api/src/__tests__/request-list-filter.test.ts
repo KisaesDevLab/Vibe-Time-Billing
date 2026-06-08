@@ -330,6 +330,57 @@ describe('request list filter / sort / pagination', () => {
     expect((page3.jsonBody as { items: unknown[] }).items).toHaveLength(1);
   });
 
+  it('creates a DROP_OFF request and filters the list by kind + engagementId', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const router = createRequestRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+
+    // A general request (default kind) + a drop-off on the same engagement.
+    await seedRequest(harness.db, {
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      title: 'General ask',
+    });
+    const created = await invoke(router, 'post', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          engagementId: seed.engagementId,
+          title: 'Document drop-off',
+          kind: 'DROP_OFF',
+          dueDate: '2026-07-01',
+          reminderDaysBefore: 3,
+        },
+      }),
+    });
+    expect(created.statusCode).toBe(201);
+
+    // kind=DROP_OFF narrows to the one drop-off.
+    const dropOffs = await invoke(router, 'get', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        query: { kind: 'DROP_OFF', engagementId: seed.engagementId },
+      }),
+    });
+    const body = dropOffs.jsonBody as { total: number; items: Array<{ kind: string }> };
+    expect(body.total).toBe(1);
+    expect(body.items[0]!.kind).toBe('DROP_OFF');
+
+    // No kind filter returns both.
+    const all = await invoke(router, 'get', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        query: { engagementId: seed.engagementId },
+      }),
+    });
+    expect((all.jsonBody as { total: number }).total).toBe(2);
+  });
+
   it('filters by clientId via engagement join (cross-firm hidden)', async () => {
     const seed = await seedMinimalFirm(harness.db);
     const router = createRequestRouter({

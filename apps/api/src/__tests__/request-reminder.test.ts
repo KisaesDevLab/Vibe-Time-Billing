@@ -56,16 +56,17 @@ async function insertRequest(args: {
   firmId: string;
   engagementId: string;
   status?: string;
+  kind?: string;
   dueDate: string | null;
   reminderDaysBefore: number | null;
   lastReminderSentAt?: string | null;
 }): Promise<string> {
   const r = await harness.db.execute(
     sql`INSERT INTO client_request
-          (firm_id, engagement_id, title, status, due_date,
+          (firm_id, engagement_id, title, status, kind, due_date,
            reminder_days_before, last_reminder_sent_at)
         VALUES (${args.firmId}, ${args.engagementId}, 'Send W-2',
-                ${args.status ?? 'OPEN'}, ${args.dueDate},
+                ${args.status ?? 'OPEN'}, ${args.kind ?? 'GENERAL'}, ${args.dueDate},
                 ${args.reminderDaysBefore}, ${args.lastReminderSentAt ?? null})
         RETURNING id`,
   );
@@ -248,6 +249,132 @@ describe('runRequestReminderTick', () => {
     );
     expect(r.sent).toBe(1);
     expect(sent[0]).toBe('primary@example.com');
+  });
+
+  it('DROP_OFF sends both email and SMS to the billing contact', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing User',
+      email: 'bill@example.com',
+      mobile: '+15555550123',
+      isPrimary: true,
+      isBilling: true,
+    });
+    await insertRequest({
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      kind: 'DROP_OFF',
+      dueDate: '2026-06-03',
+      reminderDaysBefore: 3,
+    });
+    const emails: string[] = [];
+    const texts: Array<{ to: string; body: string }> = [];
+    const r = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      {
+        sendEmail: async (msg) => {
+          emails.push(msg.to);
+        },
+        sendSms: async (msg) => {
+          texts.push({ to: msg.to, body: msg.body });
+        },
+      },
+      new Date('2026-06-01T08:00:00Z'),
+    );
+    expect(r.sent).toBe(1);
+    expect(r.smsSent).toBe(1);
+    expect(emails).toEqual(['bill@example.com']);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.to).toBe('+15555550123');
+    expect(texts[0]!.body).toContain('drop off');
+  });
+
+  it('DROP_OFF fires exactly once and does not re-fire the next day', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing User',
+      email: 'bill@example.com',
+      mobile: '+15555550123',
+      isPrimary: true,
+      isBilling: true,
+    });
+    await insertRequest({
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      kind: 'DROP_OFF',
+      dueDate: '2026-06-05',
+      reminderDaysBefore: 5,
+    });
+    let emailCount = 0;
+    let smsCount = 0;
+    const dispatch = {
+      sendEmail: async (): Promise<void> => {
+        emailCount += 1;
+      },
+      sendSms: async (): Promise<void> => {
+        smsCount += 1;
+      },
+    };
+    const first = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      dispatch,
+      new Date('2026-06-01T08:00:00Z'),
+    );
+    expect(first.sent).toBe(1);
+    // Next day, still inside the window — GENERAL would re-fire, DROP_OFF must not.
+    const second = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      dispatch,
+      new Date('2026-06-02T08:00:00Z'),
+    );
+    expect(second.scanned).toBe(0);
+    expect(emailCount).toBe(1);
+    expect(smsCount).toBe(1);
+  });
+
+  it('DROP_OFF still sends email when no phone is on file', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing User',
+      email: 'bill@example.com',
+      isPrimary: true,
+      isBilling: true,
+    });
+    await insertRequest({
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      kind: 'DROP_OFF',
+      dueDate: '2026-06-03',
+      reminderDaysBefore: 3,
+    });
+    let emailCount = 0;
+    let smsCount = 0;
+    const r = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      {
+        sendEmail: async () => {
+          emailCount += 1;
+        },
+        sendSms: async () => {
+          smsCount += 1;
+        },
+      },
+      new Date('2026-06-01T08:00:00Z'),
+    );
+    expect(r.sent).toBe(1);
+    expect(r.smsSent).toBe(0);
+    expect(emailCount).toBe(1);
+    expect(smsCount).toBe(0);
   });
 
   it('skips when no email is resolvable for the client', async () => {

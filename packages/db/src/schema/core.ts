@@ -3493,6 +3493,9 @@ export const clientRequests = pgTable(
     title: text('title').notNull(),
     body: text('body').notNull().default(''),
     status: text('status').notNull().default('OPEN'),
+    // 0135 — 'GENERAL' | 'DROP_OFF'. Drop-offs are dated client info
+    // hand-offs with once-only email+SMS reminders; see request-reminder.
+    kind: text('kind').notNull().default('GENERAL'),
     dueDate: date('due_date'),
     fulfilledByMessageId: uuid('fulfilled_by_message_id'),
     fulfilledByFileId: uuid('fulfilled_by_file_id'),

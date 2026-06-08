@@ -52,6 +52,9 @@ export interface RequestRoutesDeps extends RbacDeps {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;
 const ITEM_KINDS = ['QUESTION', 'DOCUMENT', 'SIGNATURE'] as const;
+// 0135 — request kind discriminator. DROP_OFF is an engagement info
+// hand-off with once-only email+SMS reminders.
+const REQUEST_KINDS = ['GENERAL', 'DROP_OFF'] as const;
 
 const ItemInputSchema = z.object({
   ordinal: z.number().int().min(0).max(500),
@@ -67,6 +70,7 @@ const CreateSchema = z.object({
   // 0084 — title is optional when templateId resolves to a non-empty pattern.
   title: z.string().min(1).max(200).optional(),
   body: z.string().max(5000).optional().default(''),
+  kind: z.enum(REQUEST_KINDS).default('GENERAL'),
   assignedAppUserId: z.string().uuid().nullable().optional(),
   dueDate: z.string().regex(DATE_RE).nullable().optional(),
   templateId: z.string().uuid().optional(),
@@ -179,6 +183,11 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       (PRIORITIES as readonly string[]).includes(req.query['priority'])
         ? (req.query['priority'] as Priority)
         : undefined;
+    const kindParam =
+      typeof req.query['kind'] === 'string' &&
+      (REQUEST_KINDS as readonly string[]).includes(req.query['kind'])
+        ? req.query['kind']
+        : undefined;
     const dueBefore =
       typeof req.query['dueBefore'] === 'string' && DATE_RE.test(req.query['dueBefore'])
         ? req.query['dueBefore']
@@ -209,6 +218,7 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
     if (engagementIdParam) conds.push(eq(clientRequests.engagementId, engagementIdParam));
     if (assignedParam) conds.push(eq(clientRequests.assignedAppUserId, assignedParam));
     if (priorityParam) conds.push(eq(clientRequests.priority, priorityParam));
+    if (kindParam) conds.push(eq(clientRequests.kind, kindParam));
     if (dueBefore) conds.push(sql`${clientRequests.dueDate} <= ${dueBefore}`);
     if (dueAfter) conds.push(sql`${clientRequests.dueDate} >= ${dueAfter}`);
     if (search) {
@@ -493,6 +503,7 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             assignedAppUserId: resolvedAssignee,
             title: resolvedTitle,
             body: resolvedBody,
+            kind: parsed.data.kind,
             dueDate: resolvedDueDate,
             createdByAppUserId: session.appUserId,
             priority: resolvedPriority,

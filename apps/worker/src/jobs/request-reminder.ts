@@ -11,29 +11,40 @@ import type { Logger } from 'pino';
 import type { Database } from '@vibe/db';
 import { clientContacts, clientRequests, clients, engagements, persons } from '@vibe/db/schema';
 
-import type { MailDispatch } from '../dispatchers';
+import type { MailDispatch, SmsDispatch } from '../dispatchers';
 
 export interface RequestReminderResult {
   scanned: number;
   sent: number;
   skipped: number;
+  smsSent: number;
 }
 
 export async function runRequestReminderTick(
   db: Database,
   log: Logger,
-  args: { sendEmail?: MailDispatch | undefined; portalBaseUrl?: string | undefined },
+  args: {
+    sendEmail?: MailDispatch | undefined;
+    sendSms?: SmsDispatch | undefined;
+    portalBaseUrl?: string | undefined;
+  },
   now = new Date(),
 ): Promise<RequestReminderResult> {
   const today = now.toISOString().slice(0, 10);
-  const result: RequestReminderResult = { scanned: 0, sent: 0, skipped: 0 };
+  const result: RequestReminderResult = { scanned: 0, sent: 0, skipped: 0, smsSent: 0 };
 
   // Single SQL pass: due-soon, not-recently-reminded, eligible status.
+  //
+  // Re-fire policy: GENERAL requests re-remind daily across the window
+  // (last_sent IS NULL OR < today). DROP_OFF requests fire exactly once
+  // — only when last_sent IS NULL — so the client gets a single
+  // email+SMS nudge when the reminder window opens.
   const due = await db
     .select({
       id: clientRequests.id,
       firmId: clientRequests.firmId,
       title: clientRequests.title,
+      kind: clientRequests.kind,
       dueDate: clientRequests.dueDate,
       engagementId: clientRequests.engagementId,
       reminderDays: clientRequests.reminderDaysBefore,
@@ -47,7 +58,8 @@ export async function runRequestReminderTick(
         isNotNull(clientRequests.dueDate),
         sql`${clientRequests.dueDate} - ${today}::date <= ${clientRequests.reminderDaysBefore}`,
         sql`(${clientRequests.lastReminderSentAt} IS NULL
-             OR ${clientRequests.lastReminderSentAt} < ${today}::date)`,
+             OR (${clientRequests.kind} <> 'DROP_OFF'
+                 AND ${clientRequests.lastReminderSentAt} < ${today}::date))`,
       ),
     )
     .limit(500);
@@ -86,6 +98,8 @@ export async function runRequestReminderTick(
         .select({
           clientId: clientContacts.clientId,
           email: persons.email,
+          phone: persons.mobile,
+          altPhone: persons.phone,
           isBilling: clientContacts.isBilling,
           isPrimary: clientContacts.isPrimary,
         })
@@ -95,10 +109,19 @@ export async function runRequestReminderTick(
     : [];
   const billingByClient = new Map<string, string>();
   const primaryByClient = new Map<string, string>();
+  // Phone for SMS: prefer mobile, fall back to landline.
+  const billingPhoneByClient = new Map<string, string>();
+  const primaryPhoneByClient = new Map<string, string>();
   for (const c of contactRows) {
-    if (!c.email) continue;
-    if (c.isBilling) billingByClient.set(c.clientId, c.email);
-    else if (c.isPrimary) primaryByClient.set(c.clientId, c.email);
+    if (c.email) {
+      if (c.isBilling) billingByClient.set(c.clientId, c.email);
+      else if (c.isPrimary) primaryByClient.set(c.clientId, c.email);
+    }
+    const phone = c.phone ?? c.altPhone;
+    if (phone) {
+      if (c.isBilling) billingPhoneByClient.set(c.clientId, phone);
+      else if (c.isPrimary) primaryPhoneByClient.set(c.clientId, phone);
+    }
   }
 
   const portalBase =
@@ -117,15 +140,19 @@ export async function runRequestReminderTick(
       log.info({ requestId: req.id, clientId: eng.clientId }, 'request-reminder: no email');
       continue;
     }
+    const isDropOff = req.kind === 'DROP_OFF';
     const link = `${portalBase.replace(/\/$/, '')}/requests/${req.id}`;
+    const noun = isDropOff ? 'drop-off' : 'request';
     const body = [
       `Hello${client ? ` ${client.name}` : ''},`,
       '',
-      `This is a friendly reminder that the following request from your firm is due on ${req.dueDate}:`,
+      isDropOff
+        ? `This is a reminder to drop off / upload the requested information by ${req.dueDate}:`
+        : `This is a friendly reminder that the following request from your firm is due on ${req.dueDate}:`,
       '',
       `  ${req.title}`,
       '',
-      `Please review and respond here: ${link}`,
+      `Please upload here: ${link}`,
     ].join('\n');
     try {
       await args.sendEmail({
@@ -133,13 +160,34 @@ export async function runRequestReminderTick(
         subject: `Reminder: ${req.title} — due ${req.dueDate}`,
         body,
       });
+      result.sent += 1;
+
+      // DROP_OFF also nudges by SMS (email + SMS), when a phone is on
+      // file and an SMS dispatcher is configured.
+      if (isDropOff && args.sendSms) {
+        const phone =
+          billingPhoneByClient.get(eng.clientId) ?? primaryPhoneByClient.get(eng.clientId);
+        if (phone) {
+          try {
+            await args.sendSms({
+              to: phone,
+              body: `Reminder: please drop off / upload "${req.title}" by ${req.dueDate}. ${link}`,
+            });
+            result.smsSent += 1;
+          } catch (smsErr) {
+            log.warn({ err: smsErr, requestId: req.id }, 'request-reminder: sms send failed');
+          }
+        } else {
+          log.info({ requestId: req.id, clientId: eng.clientId }, 'request-reminder: no phone');
+        }
+      }
+
       await db
         .update(clientRequests)
         .set({ lastReminderSentAt: now, updatedAt: now })
         .where(eq(clientRequests.id, req.id));
-      result.sent += 1;
     } catch (err) {
-      log.warn({ err, requestId: req.id }, 'request-reminder: send failed');
+      log.warn({ err, requestId: req.id, noun }, 'request-reminder: send failed');
       result.skipped += 1;
     }
   }

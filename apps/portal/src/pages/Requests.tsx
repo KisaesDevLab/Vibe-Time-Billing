@@ -15,6 +15,7 @@ interface RequestRow {
   engagementId: string;
   title: string;
   body: string;
+  kind?: string;
   status: string;
   dueDate: string | null;
   fulfilledAt: string | null;
@@ -93,7 +94,18 @@ export function RequestsPage(): JSX.Element {
                       if (e.key === 'Enter') navigate(`/requests/${r.id}`);
                     }}
                   >
-                    <div style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</div>
+                    <div
+                      style={{
+                        fontWeight: 500,
+                        fontSize: 13,
+                        display: 'flex',
+                        gap: 6,
+                        alignItems: 'center',
+                      }}
+                    >
+                      {r.title}
+                      {r.kind === 'DROP_OFF' && <Pill tone="accent">Drop-off</Pill>}
+                    </div>
                     {r.body && (
                       <div
                         style={{
