@@ -24,6 +24,7 @@ import { pipeline } from 'node:stream/promises';
 
 import type {
   ListOpts,
+  PresignGetOpts,
   PresignPutOpts,
   PutOpts,
   StorageClient,
@@ -190,7 +191,9 @@ export class MockStorageClient implements StorageClient {
     return { etag };
   }
 
-  async presignGet(key: string, ttlSeconds: number): Promise<string> {
+  async presignGet(key: string, ttlSeconds: number, _opts?: PresignGetOpts): Promise<string> {
+    // The mock URL is an opaque internal token; response-header
+    // overrides are a no-op here (only the real B2 client honours them).
     return buildPresignUrl('get', key, ttlSeconds);
   }
 

@@ -81,6 +81,16 @@ function formatTimestamp(iso: string | null | undefined): string {
   return d.toLocaleString();
 }
 
+/** PDFs get an in-browser Preview action. Trust the filename extension
+ *  too — explorer-discovered files can carry a generic octet-stream
+ *  mime even when they're really PDFs. */
+function isPdfFile(f: { mimeType: string | null; originalFilename: string }): boolean {
+  return (
+    (f.mimeType ?? '').toLowerCase().includes('pdf') ||
+    f.originalFilename.toLowerCase().endsWith('.pdf')
+  );
+}
+
 export function ClientFilesTab({
   clientId,
   clientName,
@@ -120,6 +130,9 @@ export function ClientFilesTab({
   // the modal is open. Submit POSTs /api/staff/tax/returns/intake-from-file.
   const [flagFor, setFlagFor] = useState<FileRow | null>(null);
   const [shareFor, setShareFor] = useState<FileRow | null>(null);
+  // In-app PDF preview. Holds the file + a short-lived inline presigned
+  // URL the modal renders in an <iframe> (no download).
+  const [previewFor, setPreviewFor] = useState<{ file: FileRow; url: string } | null>(null);
 
   async function load(): Promise<void> {
     setError(null);
@@ -216,6 +229,20 @@ export function ClientFilesTab({
       setError('Mock storage download not supported in browser. Use B2 in production.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'download_failed');
+    }
+  }
+
+  async function preview(file: FileRow): Promise<void> {
+    try {
+      // inline=1 → the body renders in the browser instead of downloading.
+      const r = await api<{ url: string }>(`/api/staff/files/${file.id}/download-url?inline=1`);
+      if (r.url.startsWith('http://') || r.url.startsWith('https://')) {
+        setPreviewFor({ file, url: r.url });
+        return;
+      }
+      setError('Preview needs B2 storage (mock URLs are not browser-fetchable).');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'preview_failed');
     }
   }
 
@@ -541,6 +568,17 @@ export function ClientFilesTab({
                     >
                       Flag as tax return
                     </Button>
+                    {isPdfFile(r) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void preview(r)}
+                        disabled={r.pendingUpload}
+                        title="Preview this PDF in the browser without downloading."
+                      >
+                        Preview
+                      </Button>
+                    )}
                     <Button onClick={() => void download(r)} disabled={r.pendingUpload}>
                       Download
                     </Button>
@@ -571,6 +609,15 @@ export function ClientFilesTab({
         />
       )}
 
+      {previewFor && (
+        <PreviewDialog
+          filename={previewFor.file.originalFilename}
+          url={previewFor.url}
+          onClose={() => setPreviewFor(null)}
+          onDownload={() => void download(previewFor.file)}
+        />
+      )}
+
       {uploadOpen && (
         <UploadDialog
           clientId={clientId}
@@ -593,6 +640,96 @@ export function ClientFilesTab({
           }}
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PDF preview dialog — renders the inline presigned URL in an <iframe>
+// (browser's native PDF viewer) so staff can read a file without
+// downloading it. The presigned URL is short-lived; closing the modal
+// drops it.
+// ---------------------------------------------------------------------------
+
+interface PreviewDialogProps {
+  filename: string;
+  url: string;
+  onClose: () => void;
+  onDownload: () => void;
+}
+
+function PreviewDialog({ filename, url, onClose, onDownload }: PreviewDialogProps): JSX.Element {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${filename}`}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.7)',
+        display: 'flex',
+        flexDirection: 'column',
+        padding: 24,
+        zIndex: 300,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          flex: 1,
+          minHeight: 0,
+          background: tokens.color.surface,
+          borderRadius: 8,
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 14px',
+            borderBottom: `1px solid ${tokens.color.border}`,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: tokens.font.mono,
+              fontSize: 13,
+              flex: 1,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {filename}
+          </span>
+          <Button size="sm" variant="ghost" onClick={() => window.open(url, '_blank', 'noopener')}>
+            Open in new tab
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onDownload}>
+            Download
+          </Button>
+          <Button size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+        <iframe
+          title={`Preview of ${filename}`}
+          src={url}
+          style={{ flex: 1, width: '100%', border: 'none', minHeight: 0 }}
+        />
+      </div>
     </div>
   );
 }

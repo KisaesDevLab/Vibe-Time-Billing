@@ -160,6 +160,12 @@ services:
       # SMS provider config (Admin → Messaging). Without it, SMS reminders fall
       # back to env creds. Same value as the api service.
       KMS_KEY: ${KMS_KEY:?KMS_KEY required (export from .env, 32 bytes base64)}
+      # Storage hydrate-from-DB: the worker unseals the firm key from the
+      # SHARED sealed-on-disk seal file (same path + volume as the api) so
+      # storage-sync resolves the operator's UI-configured B2/MinIO
+      # provider instead of the mock client. Must match the api's
+      # FIRM_KEY_SEAL_PATH; the firm-key volume is mounted below.
+      FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
       # Env-creds fallback for SMS + the (UI-less) voice channel.
       SMS_TWILIO_ACCOUNT_SID: ${SMS_TWILIO_ACCOUNT_SID:-}
       SMS_TWILIO_AUTH_TOKEN: ${SMS_TWILIO_AUTH_TOKEN:-}
@@ -187,6 +193,9 @@ services:
       ]
     volumes:
       - storage-mock:/data/storage-mock
+      # Read-side share of the api's sealed firm key. The api owns
+      # bootstrap/writes; the worker only reads it to unseal at boot.
+      - firm-key:/data/firm-key
       - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
     # The image's default HEALTHCHECK probes port 3001 (the api's
     # health surface). The worker listens on 3003 — override here so

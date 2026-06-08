@@ -74,6 +74,17 @@ export interface PresignPutOpts extends PutOpts {
   expectedSizeBytes?: number;
 }
 
+export interface PresignGetOpts {
+  /** Overrides the response Content-Type (S3 response-content-type). */
+  responseContentType?: string;
+  /**
+   * Overrides the response Content-Disposition (S3
+   * response-content-disposition) — e.g. 'inline' to render in the
+   * browser, or `attachment; filename="…"` to force a download.
+   */
+  responseContentDisposition?: string;
+}
+
 /**
  * The minimum surface the sync worker + upload path require.
  * Implementations must be:
@@ -106,8 +117,11 @@ export interface StorageClient {
   copy(srcKey: string, destKey: string): Promise<{ etag: string }>;
 
   /** Returns a URL that grants temporary GET access. Used for portal
-   *  downloads. */
-  presignGet(key: string, ttlSeconds: number): Promise<string>;
+   *  downloads. Optional response overrides force how the browser
+   *  handles the body — e.g. `responseContentDisposition: 'inline'` +
+   *  `responseContentType: 'application/pdf'` for in-browser preview
+   *  instead of a download. */
+  presignGet(key: string, ttlSeconds: number, opts?: PresignGetOpts): Promise<string>;
 
   /** Returns a URL that grants temporary PUT access. Used for FE
    *  upload of large files without proxying through the API. */

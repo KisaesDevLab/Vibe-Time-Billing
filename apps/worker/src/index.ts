@@ -97,6 +97,17 @@ import { buildMailDispatch, buildSmsDispatch, buildVoiceDispatch } from './dispa
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
 import type { SmsProvider } from '../../api/src/sms/provider';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
+// Cross-app reuse (same pattern as the sms-resolver import above): the
+// worker hydrates the operator's UI-configured storage provider from the
+// DB exactly like the api does at boot. Without this the worker would
+// fall back to the env-var default (mock in local), so storage-sync
+// would never see the real B2 bucket and would mark every folder
+// `missing`. bootCrypto unseals the firm key (shared sealed-on-disk
+// seal file); applyStorageSettingsFromDb decrypts the creds into
+// process.env so the buildStorageClient(process.env) call below resolves
+// to the same B2/MinIO provider the api uses.
+import { bootCrypto } from '../../api/src/crypto/boot';
+import { applyStorageSettingsFromDb } from '../../api/src/admin/storage-settings/boot';
 
 const logger = pino({
   level: process.env['LOG_LEVEL'] ?? 'info',
@@ -153,6 +164,20 @@ const chargeInvoice = stripe
 const dunningSendEmail = await buildMailDispatch(logger);
 const dunningSendSms = buildSmsDispatch(logger);
 const voiceDispatch = buildVoiceDispatch(logger);
+
+// Hydrate UI-configured storage credentials from the DB before building
+// the storage client. Mirrors the api boot sequence (server.ts): unseal
+// the firm key, then fold the operator's storage_settings row into
+// process.env. Non-fatal — every failure mode (no firm, locked, no seal
+// file) leaves the env-var fallback intact, so the worker still boots.
+// Requires the shared firm-key seal file (FIRM_KEY_SEAL_PATH + the
+// firm-key volume must match the api's, see docker-compose).
+try {
+  await bootCrypto(db);
+  await applyStorageSettingsFromDb(db);
+} catch (err) {
+  logger.warn({ err }, 'storage settings hydrate from DB failed — using env storage config');
+}
 
 // Storage client (B2 in prod, MockStorageClient in dev) — used by the
 // storage-sync queue handler. Built lazily so a missing optional dep

@@ -345,6 +345,7 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
           id: files.id,
           storageKey: files.storageKey,
           originalFilename: files.originalFilename,
+          mimeType: files.mimeType,
           deletedAt: files.deletedAt,
           pendingUpload: files.pendingUpload,
         })
@@ -356,7 +357,21 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
         return;
       }
       const ttlSeconds = 5 * 60;
-      const url = await storage.presignGet(row.storageKey, ttlSeconds);
+      // `?inline=1` returns a URL the browser renders in place (PDF
+      // preview) instead of downloading. We force Content-Type to the
+      // stored mime (defaulting to application/pdf) so even objects B2
+      // discovered as application/octet-stream still render.
+      const inline = req.query['inline'] === '1' || req.query['inline'] === 'true';
+      const url = await storage.presignGet(
+        row.storageKey,
+        ttlSeconds,
+        inline
+          ? {
+              responseContentDisposition: 'inline',
+              responseContentType: row.mimeType ?? 'application/pdf',
+            }
+          : undefined,
+      );
       res.json({
         url,
         expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),

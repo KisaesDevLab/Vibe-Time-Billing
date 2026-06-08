@@ -507,6 +507,9 @@ export interface DecideFileSyncPlanInput {
  * the folder root. Returns null when the key isn't under the root or
  * sits inside the sentinel subtree.
  */
+/** Backblaze B2's zero-byte empty-folder marker; never a real file. */
+const BACKBLAZE_PLACEHOLDER = '.bzEmpty';
+
 export function classifyObservedKey(
   storageKey: string,
   folderRoot: string,
@@ -518,10 +521,17 @@ export function classifyObservedKey(
   // Excludes the sentinel folder and anything nested in it.
   if (rel === `${sentinelFolder}/` || rel.startsWith(`${sentinelFolder}/`)) return null;
   const lastSlash = rel.lastIndexOf('/');
-  if (lastSlash < 0) return { subfolderPath: '', filename: rel };
+  const filename = lastSlash < 0 ? rel : rel.slice(lastSlash + 1);
+  // Backblaze writes a zero-byte `.bzEmpty` placeholder for every empty
+  // "folder" created through its web UI. It's a storage artifact, not a
+  // user file — never index it. Skipping it here also means any existing
+  // `.bzEmpty` row stops being observed and gets soft-deleted by the
+  // unobserved-rows sweep, so the file view self-cleans.
+  if (filename === BACKBLAZE_PLACEHOLDER) return null;
+  if (lastSlash < 0) return { subfolderPath: '', filename };
   return {
     subfolderPath: rel.slice(0, lastSlash + 1),
-    filename: rel.slice(lastSlash + 1),
+    filename,
   };
 }
 

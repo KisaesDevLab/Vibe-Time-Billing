@@ -13,6 +13,7 @@ import type { Readable } from 'node:stream';
 
 import type {
   ListOpts,
+  PresignGetOpts,
   PresignPutOpts,
   PutOpts,
   StorageClient,
@@ -279,13 +280,24 @@ export class B2StorageClient implements StorageClient {
     return { etag: (out.CopyObjectResult?.ETag ?? '').replace(/"/g, '') };
   }
 
-  async presignGet(key: string, ttlSeconds: number): Promise<string> {
+  async presignGet(key: string, ttlSeconds: number, opts?: PresignGetOpts): Promise<string> {
     const { GetObjectCommand } = await loadS3Module();
     const { getSignedUrl } = await loadPresignerModule();
     const client = await this.client();
-    return getSignedUrl(client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
-      expiresIn: ttlSeconds,
-    });
+    // ResponseContentType / ResponseContentDisposition are signed query
+    // overrides B2 honours on the GET, letting the caller force inline
+    // rendering (preview) or a download regardless of the object's
+    // stored metadata.
+    return getSignedUrl(
+      client,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ResponseContentType: opts?.responseContentType,
+        ResponseContentDisposition: opts?.responseContentDisposition,
+      }),
+      { expiresIn: ttlSeconds },
+    );
   }
 
   async presignPut(key: string, opts: PresignPutOpts, ttlSeconds: number): Promise<string> {
