@@ -1234,6 +1234,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           refundedAmountCents: payments.refundedAmountCents,
           storedChannel: payments.channel,
           voidedAt: payments.voidedAt,
+          receiptId: payments.receiptId,
           pmKind: paymentMethod.kind,
           receiptMethod: paymentReceipts.paymentMethod,
         })
@@ -1260,6 +1261,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         status: r.status,
         refundedAmountCents: Number(r.refundedAmountCents ?? 0),
         channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod, r.storedChannel),
+        receiptId: r.receiptId,
         voided: r.voidedAt != null,
         // Only manually-recorded payments are editable/voidable from the UI;
         // Stripe-processed rows reverse via refunds.
@@ -1408,6 +1410,139 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         after: { voided: true, reason: parsed.data.reason ?? null, invoiceId: row.invoiceId },
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed (payment void)'));
       res.json({ ok: true });
+    },
+  );
+
+  // Re-apply a manually-recorded payment across one or more invoices of the
+  // same client (move or split). Pure re-application — the new allocations must
+  // sum to the payment's amount (no money created). Recomputes every affected
+  // invoice. Manual-only.
+  const ReapplySchema = z.object({
+    allocations: z
+      .array(z.object({ invoiceId: z.string().uuid(), amountCents: z.number().int().positive() }))
+      .min(1)
+      .max(50),
+  });
+  router.post(
+    '/:id/reapply',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = ReapplySchema.safeParse(req.body);
+      if (!parsed.success) return void res.status(400).json({ error: 'invalid_payload' });
+      if (!deps.db) return void res.status(503).json({ error: 'db_unavailable' });
+      const [row] = await deps.db
+        .select({
+          id: payments.id,
+          provider: payments.provider,
+          voidedAt: payments.voidedAt,
+          status: payments.status,
+          amountCents: payments.amountCents,
+          receiptId: payments.receiptId,
+          channel: payments.channel,
+          receivedAt: payments.receivedAt,
+          invoiceId: payments.invoiceId,
+          clientId: invoices.clientId,
+          firmId: invoices.firmId,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(and(eq(payments.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!row) return void res.status(404).json({ error: 'not_found' });
+      if (row.provider !== 'MANUAL')
+        return void res.status(409).json({ error: 'not_reapplicable_provider' });
+      if (row.voidedAt) return void res.status(409).json({ error: 'payment_voided' });
+      const allocs = parsed.data.allocations;
+      const sum = allocs.reduce((s, a) => s + a.amountCents, 0);
+      if (sum !== Number(row.amountCents)) {
+        return void res
+          .status(400)
+          .json({ error: 'allocation_sum_mismatch', expected: Number(row.amountCents), got: sum });
+      }
+      // All target invoices must belong to the same client + firm.
+      const ids = allocs.map((a) => a.invoiceId);
+      const targets = await deps.db
+        .select({ id: invoices.id, clientId: invoices.clientId })
+        .from(invoices)
+        .where(and(eq(invoices.firmId, session.firmId), inArray(invoices.id, ids)));
+      if (targets.length !== new Set(ids).size) {
+        return void res.status(404).json({ error: 'invoice_not_found' });
+      }
+      if (targets.some((t) => t.clientId !== row.clientId)) {
+        return void res.status(409).json({ error: 'cross_client_reallocation' });
+      }
+
+      const affected = new Set<string>([row.invoiceId, ...ids]);
+      await deps.db.transaction(async (tx) => {
+        // First allocation re-uses the original row (keeps paymentId stable);
+        // the rest are new rows under the same receipt.
+        await tx
+          .update(payments)
+          .set({ invoiceId: allocs[0]!.invoiceId, amountCents: allocs[0]!.amountCents })
+          .where(eq(payments.id, row.id));
+        if (allocs.length > 1) {
+          await tx.insert(payments).values(
+            allocs.slice(1).map((a) => ({
+              invoiceId: a.invoiceId,
+              amountCents: a.amountCents,
+              feeCents: 0,
+              provider: 'MANUAL',
+              channel: row.channel,
+              status: 'SUCCEEDED' as const,
+              receivedAt: row.receivedAt,
+              receiptId: row.receiptId,
+            })),
+          );
+        }
+        for (const invId of affected) await recomputeInvoicePaid(tx as unknown as Database, invId);
+      });
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'payment',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: { reapplied: allocs, from: row.invoiceId },
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed (payment reapply)'));
+      res.json({ ok: true });
+    },
+  );
+
+  // Drill-in: all payment rows that share a receipt (one check → many invoices).
+  router.get(
+    '/receipt/:receiptId',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) return void res.json({ items: [] });
+      const rows = await deps.db
+        .select({
+          paymentId: payments.id,
+          invoiceId: payments.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+          amountCents: payments.amountCents,
+          status: payments.status,
+          voidedAt: payments.voidedAt,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .where(
+          and(
+            eq(payments.receiptId, req.params['receiptId']!),
+            eq(invoices.firmId, session.firmId),
+          ),
+        )
+        .orderBy(asc(invoices.invoiceNumber));
+      res.json({
+        items: rows.map((r) => ({
+          paymentId: r.paymentId,
+          invoiceId: r.invoiceId,
+          invoiceNumber: r.invoiceNumber,
+          amountCents: Number(r.amountCents),
+          status: r.status,
+          voided: r.voidedAt != null,
+        })),
+      });
     },
   );
 

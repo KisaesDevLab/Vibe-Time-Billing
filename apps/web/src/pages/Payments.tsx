@@ -27,6 +27,7 @@ interface Row {
   status: string;
   refundedAmountCents: number;
   channel: string;
+  receiptId: string | null;
   voided: boolean;
   canEdit: boolean;
   canVoid: boolean;
@@ -90,24 +91,42 @@ export function PaymentsPage(): JSX.Element {
   const [sortBy, setSortBy] = useState<SortKey>('date');
   const [dir, setDir] = useState<'asc' | 'desc'>('desc');
 
-  // Drawer (create + edit)
-  const [drawer, setDrawer] = useState<'create' | 'edit' | null>(null);
+  // Drawer (create + edit + reapply + receipt drill-in)
+  const [drawer, setDrawer] = useState<'create' | 'edit' | 'reapply' | 'receipt' | null>(null);
   const [editRow, setEditRow] = useState<Row | null>(null);
+  const [reapplyRow, setReapplyRow] = useState<Row | null>(null);
   const [saving, setSaving] = useState(false);
   const [drawerErr, setDrawerErr] = useState<string | null>(null);
   // create form
   const [clients, setClients] = useState<ClientLite[]>([]);
   const [methods, setMethods] = useState<MethodOpt[]>([]);
-  const [outstanding, setOutstanding] = useState<OutstandingInvoice[]>([]);
   const [cClient, setCClient] = useState('');
-  const [cInvoice, setCInvoice] = useState('');
   const [cMethod, setCMethod] = useState('');
-  const [cAmount, setCAmount] = useState('');
+  const [cAmount, setCAmount] = useState(''); // amount received
   const [cDate, setCDate] = useState(today());
   const [cRef, setCRef] = useState('');
+  // allocation lines (shared by create + reapply): per-invoice amount strings
+  const [allocLines, setAllocLines] = useState<
+    { invoiceId: string; invoiceNumber: string; openCents: number; amount: string }[]
+  >([]);
   // edit form
   const [eAmount, setEAmount] = useState('');
   const [eDate, setEDate] = useState('');
+  // receipt drill-in
+  const [receiptItems, setReceiptItems] = useState<
+    {
+      paymentId: string;
+      invoiceNumber: string;
+      amountCents: number;
+      status: string;
+      voided: boolean;
+    }[]
+  >([]);
+
+  const allocTotalCents = useMemo(
+    () => allocLines.reduce((s, l) => s + (Math.round(Number(l.amount) * 100) || 0), 0),
+    [allocLines],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -188,12 +207,11 @@ export function PaymentsPage(): JSX.Element {
     setDrawer('create');
     setDrawerErr(null);
     setCClient('');
-    setCInvoice('');
     setCMethod('');
     setCAmount('');
     setCDate(today());
     setCRef('');
-    setOutstanding([]);
+    setAllocLines([]);
     if (clients.length === 0)
       void api<{ items: ClientLite[] }>('/api/staff/clients?pageSize=200')
         .then((r) => setClients(r.items ?? []))
@@ -204,17 +222,43 @@ export function PaymentsPage(): JSX.Element {
         .catch(() => undefined);
   }
 
+  // Load the client's open invoices into allocation lines (create mode).
   useEffect(() => {
     if (drawer !== 'create' || !cClient) {
-      setOutstanding([]);
+      if (drawer === 'create') setAllocLines([]);
       return;
     }
     void api<{ items: OutstandingInvoice[] }>(
       `/api/staff/payments/outstanding?clientIds=${encodeURIComponent(cClient)}`,
     )
-      .then((r) => setOutstanding(r.items ?? []))
-      .catch(() => setOutstanding([]));
+      .then((r) =>
+        setAllocLines(
+          (r.items ?? []).map((o) => ({
+            invoiceId: o.id,
+            invoiceNumber: o.invoiceNumber,
+            openCents: o.openCents,
+            amount: '',
+          })),
+        ),
+      )
+      .catch(() => setAllocLines([]));
   }, [drawer, cClient]);
+
+  function setLineAmount(invoiceId: string, amount: string): void {
+    setAllocLines((prev) => prev.map((l) => (l.invoiceId === invoiceId ? { ...l, amount } : l)));
+  }
+
+  // Auto-allocate the received amount across open invoices, oldest first.
+  function autoAllocate(): void {
+    let remaining = Math.round(Number(cAmount) * 100) || 0;
+    setAllocLines((prev) =>
+      prev.map((l) => {
+        const take = Math.min(remaining, l.openCents);
+        remaining -= take;
+        return { ...l, amount: take > 0 ? (take / 100).toFixed(2) : '' };
+      }),
+    );
+  }
 
   function openEdit(row: Row): void {
     setEditRow(row);
@@ -224,11 +268,56 @@ export function PaymentsPage(): JSX.Element {
     setDrawer('edit');
   }
 
+  function openReapply(row: Row): void {
+    setReapplyRow(row);
+    setDrawerErr(null);
+    setDrawer('reapply');
+    setAllocLines([]);
+    void api<{ items: OutstandingInvoice[] }>(
+      `/api/staff/payments/outstanding?clientIds=${encodeURIComponent(row.clientId)}`,
+    )
+      .then((r) => {
+        const items = r.items ?? [];
+        // Ensure the payment's current invoice is present + pre-filled.
+        if (!items.some((o) => o.id === row.invoiceId)) {
+          items.unshift({ id: row.invoiceId, invoiceNumber: row.invoiceNumber, openCents: 0 });
+        }
+        setAllocLines(
+          items.map((o) => ({
+            invoiceId: o.id,
+            invoiceNumber: o.invoiceNumber,
+            openCents: o.openCents,
+            amount: o.id === row.invoiceId ? (row.amountCents / 100).toFixed(2) : '',
+          })),
+        );
+      })
+      .catch(() => setAllocLines([]));
+  }
+
+  async function openReceipt(row: Row): Promise<void> {
+    if (!row.receiptId) return;
+    setDrawerErr(null);
+    setReceiptItems([]);
+    setDrawer('receipt');
+    try {
+      const r = await api<{ items: typeof receiptItems }>(
+        `/api/staff/payments/receipt/${row.receiptId}`,
+      );
+      setReceiptItems(r.items);
+    } catch (e) {
+      setDrawerErr(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+
   async function saveCreate(): Promise<void> {
     setSaving(true);
     setDrawerErr(null);
     try {
-      const cents = Math.round(Number(cAmount) * 100);
+      const received = Math.round(Number(cAmount) * 100);
+      const allocations = allocLines
+        .filter((l) => Math.round(Number(l.amount) * 100) > 0)
+        .map((l) => ({ invoiceId: l.invoiceId, amountCents: Math.round(Number(l.amount) * 100) }));
+      if (allocations.length === 0) throw new Error('allocate to at least one invoice');
       await api('/api/staff/payments/receive', {
         method: 'POST',
         body: JSON.stringify({
@@ -236,14 +325,36 @@ export function PaymentsPage(): JSX.Element {
           paymentDate: cDate,
           paymentMethod: cMethod,
           reference: cRef || null,
-          amountReceivedCents: cents,
-          allocations: [{ invoiceId: cInvoice, amountCents: cents }],
+          amountReceivedCents: received,
+          allocations,
         }),
       });
       setDrawer(null);
       await load();
     } catch (e) {
       setDrawerErr(e instanceof Error ? e.message : 'create_failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveReapply(): Promise<void> {
+    if (!reapplyRow) return;
+    setSaving(true);
+    setDrawerErr(null);
+    try {
+      const allocations = allocLines
+        .filter((l) => Math.round(Number(l.amount) * 100) > 0)
+        .map((l) => ({ invoiceId: l.invoiceId, amountCents: Math.round(Number(l.amount) * 100) }));
+      await api(`/api/staff/payments/${reapplyRow.paymentId}/reapply`, {
+        method: 'POST',
+        body: JSON.stringify({ allocations }),
+      });
+      setDrawer(null);
+      setReapplyRow(null);
+      await load();
+    } catch (e) {
+      setDrawerErr(e instanceof Error ? e.message : 'reapply_failed');
     } finally {
       setSaving(false);
     }
@@ -499,6 +610,21 @@ export function PaymentsPage(): JSX.Element {
                 header: '',
                 render: (r) => (
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    {r.receiptId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void openReceipt(r)}
+                        title="Show all invoices this payment was applied to"
+                      >
+                        Receipt
+                      </Button>
+                    )}
+                    {r.canEdit && (
+                      <Button size="sm" variant="ghost" onClick={() => openReapply(r)}>
+                        Re-apply
+                      </Button>
+                    )}
                     {r.canEdit && (
                       <Button size="sm" variant="ghost" onClick={() => openEdit(r)}>
                         Edit
@@ -522,14 +648,24 @@ export function PaymentsPage(): JSX.Element {
 
       {drawer && (
         <Drawer
-          title={drawer === 'create' ? 'Record a payment' : 'Edit payment'}
+          title={
+            drawer === 'create'
+              ? 'Record a payment'
+              : drawer === 'edit'
+                ? 'Edit payment'
+                : drawer === 'reapply'
+                  ? 'Re-apply payment'
+                  : 'Payment receipt'
+          }
           onClose={() => {
             setDrawer(null);
             setEditRow(null);
+            setReapplyRow(null);
           }}
         >
           {drawerErr && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{drawerErr}</p>}
-          {drawer === 'create' ? (
+
+          {drawer === 'create' && (
             <div style={{ display: 'grid', gap: 10 }}>
               <Field label="Client">
                 <select
@@ -545,59 +681,40 @@ export function PaymentsPage(): JSX.Element {
                   ))}
                 </select>
               </Field>
-              <Field label="Invoice">
-                <select
-                  value={cInvoice}
-                  onChange={(e) => {
-                    setCInvoice(e.target.value);
-                    const inv = outstanding.find((o) => o.id === e.target.value);
-                    if (inv && !cAmount) setCAmount((inv.openCents / 100).toFixed(2));
-                  }}
-                  style={inputStyle}
-                  disabled={!cClient}
-                >
-                  <option value="">
-                    {cClient ? '— pick an invoice —' : 'pick a client first'}
-                  </option>
-                  {outstanding.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      #{o.invoiceNumber} — open {dollars(o.openCents)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Method">
-                <select
-                  value={cMethod}
-                  onChange={(e) => setCMethod(e.target.value)}
-                  style={inputStyle}
-                >
-                  <option value="">— pick a method —</option>
-                  {methods.map((m) => (
-                    <option key={m.key} value={m.key}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Amount ($)">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={cAmount}
-                  onChange={(e) => setCAmount(e.target.value)}
-                  style={inputStyle}
-                />
-              </Field>
-              <Field label="Date">
-                <input
-                  type="date"
-                  value={cDate}
-                  onChange={(e) => setCDate(e.target.value)}
-                  style={inputStyle}
-                />
-              </Field>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Field label="Method">
+                  <select
+                    value={cMethod}
+                    onChange={(e) => setCMethod(e.target.value)}
+                    style={inputStyle}
+                  >
+                    <option value="">— method —</option>
+                    {methods.map((m) => (
+                      <option key={m.key} value={m.key}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Amount received ($)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cAmount}
+                    onChange={(e) => setCAmount(e.target.value)}
+                    style={inputStyle}
+                  />
+                </Field>
+                <Field label="Date">
+                  <input
+                    type="date"
+                    value={cDate}
+                    onChange={(e) => setCDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </Field>
+              </div>
               <Field label="Reference (optional)">
                 <input
                   value={cRef}
@@ -606,11 +723,33 @@ export function PaymentsPage(): JSX.Element {
                   placeholder="check # / memo"
                 />
               </Field>
+
+              <div
+                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+              >
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  Apply to invoices
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={autoAllocate}
+                  disabled={!cClient || !cAmount}
+                >
+                  Auto-allocate
+                </Button>
+              </div>
+              <AllocList lines={allocLines} onChange={setLineAmount} inputStyle={inputStyle} />
+              <AllocTotals
+                allocatedCents={allocTotalCents}
+                receivedCents={Math.round(Number(cAmount) * 100) || 0}
+                mode="create"
+              />
               <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                 <Button
                   size="sm"
                   onClick={() => void saveCreate()}
-                  disabled={saving || !cClient || !cInvoice || !cMethod || !cAmount}
+                  disabled={saving || !cClient || !cMethod || !cAmount || allocTotalCents === 0}
                 >
                   {saving ? 'Recording…' : 'Record payment'}
                 </Button>
@@ -619,11 +758,13 @@ export function PaymentsPage(): JSX.Element {
                 </Button>
               </div>
             </div>
-          ) : (
+          )}
+
+          {drawer === 'edit' && (
             <div style={{ display: 'grid', gap: 10 }}>
               <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-                Editing a manually-recorded payment. Method and reference are set on the original
-                receipt; void and re-record to change those.
+                Editing a manually-recorded payment. To change which invoices it covers, use
+                Re-apply; method/reference are set on the original receipt.
               </p>
               <Field label="Amount ($)">
                 <input
@@ -650,6 +791,80 @@ export function PaymentsPage(): JSX.Element {
                 <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
                   Cancel
                 </Button>
+              </div>
+            </div>
+          )}
+
+          {drawer === 'reapply' && reapplyRow && (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                Move or split <strong>{dollars(reapplyRow.amountCents)}</strong> from #
+                {reapplyRow.invoiceNumber} across this client&apos;s invoices. The allocations must
+                total the payment amount.
+              </p>
+              <AllocList lines={allocLines} onChange={setLineAmount} inputStyle={inputStyle} />
+              <AllocTotals
+                allocatedCents={allocTotalCents}
+                receivedCents={reapplyRow.amountCents}
+                mode="reapply"
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <Button
+                  size="sm"
+                  onClick={() => void saveReapply()}
+                  disabled={saving || allocTotalCents !== reapplyRow.amountCents}
+                >
+                  {saving ? 'Re-applying…' : 'Re-apply'}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {drawer === 'receipt' && (
+            <div style={{ display: 'grid', gap: 8 }}>
+              <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                All invoices this payment was applied to.
+              </p>
+              {receiptItems.map((it) => (
+                <div
+                  key={it.paymentId}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    padding: '6px 0',
+                    borderBottom: `1px solid ${tokens.color.border}`,
+                    fontSize: 13,
+                    opacity: it.voided ? 0.5 : 1,
+                  }}
+                >
+                  <span>
+                    #{it.invoiceNumber}
+                    {it.voided && ' (voided)'}
+                  </span>
+                  <span style={{ fontWeight: 600 }}>{dollars(it.amountCents)}</span>
+                </div>
+              ))}
+              {receiptItems.length === 0 && (
+                <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginTop: 4,
+                }}
+              >
+                <span>Total applied</span>
+                <span>
+                  {dollars(
+                    receiptItems.filter((i) => !i.voided).reduce((s, i) => s + i.amountCents, 0),
+                  )}
+                </span>
               </div>
             </div>
           )}
@@ -744,5 +959,98 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {label}
       {children}
     </label>
+  );
+}
+
+function AllocList({
+  lines,
+  onChange,
+  inputStyle,
+}: {
+  lines: { invoiceId: string; invoiceNumber: string; openCents: number; amount: string }[];
+  onChange: (invoiceId: string, amount: string) => void;
+  inputStyle: React.CSSProperties;
+}): JSX.Element {
+  if (lines.length === 0) {
+    return (
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>No open invoices.</p>
+    );
+  }
+  return (
+    <div style={{ display: 'grid', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+      {lines.map((l) => (
+        <div key={l.invoiceId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            #{l.invoiceNumber}
+            <span style={{ color: tokens.color.textMuted, fontSize: 11, marginLeft: 6 }}>
+              open {dollars(l.openCents)}
+            </span>
+          </div>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={l.amount}
+            placeholder="0.00"
+            onChange={(e) => onChange(l.invoiceId, e.target.value)}
+            style={{ ...inputStyle, width: 110, textAlign: 'right' }}
+            aria-label={`Amount for invoice ${l.invoiceNumber}`}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AllocTotals({
+  allocatedCents,
+  receivedCents,
+  mode,
+}: {
+  allocatedCents: number;
+  receivedCents: number;
+  mode: 'create' | 'reapply';
+}): JSX.Element {
+  const diff = receivedCents - allocatedCents;
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        display: 'grid',
+        gap: 2,
+        borderTop: `1px solid ${tokens.color.border}`,
+        paddingTop: 6,
+      }}
+    >
+      <Row label="Allocated" value={dollars(allocatedCents)} />
+      <Row
+        label={mode === 'create' ? 'Received' : 'Payment amount'}
+        value={dollars(receivedCents)}
+      />
+      {mode === 'create' && diff > 0 && (
+        <div style={{ color: tokens.color.warning }}>
+          {dollars(diff)} unapplied → becomes a client credit.
+        </div>
+      )}
+      {mode === 'create' && diff < 0 && (
+        <div style={{ color: tokens.color.danger }}>
+          Allocated exceeds received by {dollars(-diff)}.
+        </div>
+      )}
+      {mode === 'reapply' && diff !== 0 && (
+        <div style={{ color: tokens.color.danger }}>
+          Must total the payment amount (off by {dollars(Math.abs(diff))}).
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+      <span style={{ color: tokens.color.textMuted }}>{label}</span>
+      <span style={{ fontWeight: 600 }}>{value}</span>
+    </div>
   );
 }
