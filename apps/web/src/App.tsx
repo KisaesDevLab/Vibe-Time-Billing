@@ -36,6 +36,7 @@ import { MyCalendarPage } from './pages/MyCalendar';
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
 import { InvoicesPage } from './pages/Invoices';
+import { PaymentsPage } from './pages/Payments';
 import { LoginPage } from './pages/Login';
 import { MessagesPage } from './pages/Messages';
 import { OnboardingPage } from './pages/Onboarding';
@@ -110,6 +111,7 @@ export function App(): JSX.Element {
                   <Route path="/ar" element={<ArPage />} />
                   <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
                   <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
+                  <Route path="/payments" element={<PaymentsPage />} />
                   <Route path="/payments/new" element={<PaymentReceivePage />} />
                   <Route path="/approvals" element={<ApprovalsPage />} />
                   <Route path="/requests" element={<RequestsPage />} />
@@ -190,6 +192,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     // nav and the route agree.
     wip: usePermission('engagement:read'),
     invoices: usePermission('invoice:read'),
+    payments: usePermission('payment:read'),
     ar: usePermission('report:ar:read'),
     approvals: usePermission('approval:queue:read'),
     requests: usePermission('requests:read'),
@@ -380,6 +383,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '⎙',
           active: location.pathname.startsWith('/invoices'),
           show: can.invoices,
+        },
+        {
+          section: 'Billing',
+          label: 'Payments',
+          href: '/payments',
+          icon: '💳',
+          active: location.pathname === '/payments',
+          show: can.payments,
         },
         {
           section: 'Billing',

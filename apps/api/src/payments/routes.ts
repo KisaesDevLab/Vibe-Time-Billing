@@ -18,7 +18,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -29,6 +29,7 @@ import {
   creditMemos,
   firmSettings,
   invoices,
+  paymentMethod,
   paymentMethodTypes,
   paymentReceipts,
   payments,
@@ -116,6 +117,44 @@ const PAYMENT_METHOD_LABELS = {
   CARD_STRIPE: 'Card (Stripe)',
   CREDIT_APPLY: 'Credit application',
 } as const;
+
+/** Derive a human payment channel for the Billing → Payments listing. */
+function deriveChannel(
+  provider: string,
+  pmKind: string | null,
+  receiptMethod: string | null,
+): string {
+  if (provider === 'CREDIT') return 'Credit';
+  if (provider === 'MANUAL') {
+    switch ((receiptMethod ?? '').toUpperCase()) {
+      case 'CHECK':
+        return 'Check';
+      case 'CASH':
+        return 'Cash';
+      case 'ACH_MANUAL':
+        return 'ACH (manual)';
+      default:
+        return 'Manual';
+    }
+  }
+  // Stripe (online or Terminal). We can't always distinguish card-present from
+  // online without a stored method type, so an unlabeled Stripe card reads as
+  // "Card"; ACH PMs read as "ACH".
+  if (pmKind === 'ACH') return 'ACH';
+  if (pmKind === 'CARD') return 'Card';
+  return 'Card';
+}
+
+function emptyReceivedSummary(): {
+  count: number;
+  grossCents: number;
+  feesCents: number;
+  netCents: number;
+  refundsCents: number;
+  pendingCount: number;
+} {
+  return { count: 0, grossCents: 0, feesCents: 0, netCents: 0, refundsCents: 0, pendingCount: 0 };
+}
 
 export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
   const router = express.Router();
@@ -1131,6 +1170,110 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           totalCents,
           grossCents: Number(agg?.gross ?? 0),
           refundsCents: Number(agg?.refunds ?? 0),
+        },
+      });
+    },
+  );
+
+  // Billing → Payments. Payment-grain listing of received payments with a
+  // derived channel (Card / ACH / Terminal-as-Card / Check / Cash / Credit),
+  // status, fees, and drill-through to the invoice. Filters: date range,
+  // status, channel, and a client/invoice search. Summary covers gross, fees,
+  // net, refunds, and in-flight (processing/pending) count.
+  router.get(
+    '/received',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], summary: emptyReceivedSummary() });
+        return;
+      }
+      const start = typeof req.query['start'] === 'string' ? req.query['start'] : null;
+      const end = typeof req.query['end'] === 'string' ? req.query['end'] : null;
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+      const channel = typeof req.query['channel'] === 'string' ? req.query['channel'] : null;
+      const q = (req.query['q'] ?? '').toString().trim();
+
+      const conds = [eq(invoices.firmId, session.firmId)];
+      if (start && DATE_RE.test(start)) conds.push(gte(payments.receivedAt, new Date(start)));
+      if (end && DATE_RE.test(end))
+        conds.push(lte(payments.receivedAt, new Date(`${end}T23:59:59.999Z`)));
+      const STATUSES = [
+        'PENDING',
+        'SUCCEEDED',
+        'FAILED',
+        'REFUNDED',
+        'PARTIALLY_REFUNDED',
+      ] as const;
+      if (status && (STATUSES as readonly string[]).includes(status)) {
+        conds.push(eq(payments.status, status as (typeof STATUSES)[number]));
+      }
+      if (q) {
+        const like = `%${q}%`;
+        const expr = or(ilike(clients.name, like), ilike(invoices.invoiceNumber, like));
+        if (expr) conds.push(expr);
+      }
+
+      const rows = await deps.db
+        .select({
+          paymentId: payments.id,
+          receivedAt: payments.receivedAt,
+          clientId: invoices.clientId,
+          clientName: clients.name,
+          invoiceId: payments.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+          amountCents: payments.amountCents,
+          feeCents: payments.feeCents,
+          provider: payments.provider,
+          status: payments.status,
+          refundedAmountCents: payments.refundedAmountCents,
+          pmKind: paymentMethod.kind,
+          receiptMethod: paymentReceipts.paymentMethod,
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
+        .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+        .where(and(...conds))
+        .orderBy(desc(payments.receivedAt))
+        .limit(1000);
+
+      const withChannel = rows.map((r) => ({
+        paymentId: r.paymentId,
+        receivedAt: r.receivedAt,
+        clientId: r.clientId,
+        clientName: r.clientName,
+        invoiceId: r.invoiceId,
+        invoiceNumber: r.invoiceNumber,
+        amountCents: Number(r.amountCents),
+        feeCents: Number(r.feeCents),
+        netCents: Number(r.amountCents) - Number(r.feeCents) - Number(r.refundedAmountCents ?? 0),
+        provider: r.provider,
+        status: r.status,
+        refundedAmountCents: Number(r.refundedAmountCents ?? 0),
+        channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod),
+      }));
+      const filtered = channel ? withChannel.filter((r) => r.channel === channel) : withChannel;
+
+      const summary = filtered.reduce(
+        (s, r) => {
+          if (r.status === 'SUCCEEDED') {
+            s.grossCents += r.amountCents;
+            s.feesCents += r.feeCents;
+          }
+          s.refundsCents += r.refundedAmountCents;
+          if (r.status === 'PENDING') s.pendingCount += 1;
+          return s;
+        },
+        { count: filtered.length, grossCents: 0, feesCents: 0, refundsCents: 0, pendingCount: 0 },
+      );
+      res.json({
+        items: filtered,
+        summary: {
+          ...summary,
+          netCents: summary.grossCents - summary.feesCents - summary.refundsCents,
         },
       });
     },
