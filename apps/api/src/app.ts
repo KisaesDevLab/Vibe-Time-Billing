@@ -905,6 +905,7 @@ export function createApp(deps: AppDeps): Express {
   // the file-share router's `GET /:token` on /api/shared.
   const taxRecipientRouter = createShareRecipientRouter({
     db: deps.db,
+    redis: deps.redis,
   });
   app.use('/api/shared-tax', taxRecipientRouter);
 

@@ -5,6 +5,8 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import RedisMock from 'ioredis-mock';
+import type { Redis } from 'ioredis';
 import { sql, eq } from 'drizzle-orm';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -306,5 +308,92 @@ describe('TR-7 — GET /shared/tax/:token/pdf', () => {
     const r = await request(f.app).get(`/shared/tax/${f.token}/pdf`);
     expect(r.status).toBe(403);
     expect(r.body.error).toBe('2fa_required');
+  });
+});
+
+describe('TR-7 — per-IP rate limiting', () => {
+  // The limiter runs BEFORE any token work, and counts every request
+  // regardless of token validity — so we hammer with a malformed token
+  // (instant 404, no argon2 / DB / storage) to exercise it cheaply.
+  const BAD = 'not-a-real-token'; // no dot → resolveShareToken throws fast
+  const ipHeader = (ip: string): [string, string] => ['X-Forwarded-For', ip];
+
+  function rateLimitedApp(redis: Redis): express.Express {
+    const app = express();
+    app.use(express.json());
+    app.use('/shared/tax', createShareRecipientRouter({ db: harness.db, redis }));
+    return app;
+  }
+
+  it('caps every route at the 60 req/IP/min baseline, then 429s', async () => {
+    const app = rateLimitedApp(new RedisMock() as unknown as Redis);
+    let allowed = 0;
+    let blocked = 0;
+    for (let i = 0; i < 65; i++) {
+      const r = await request(app)
+        .get(`/shared/tax/${BAD}`)
+        .set(...ipHeader('203.0.113.10'));
+      if (r.status === 429) {
+        blocked += 1;
+      } else {
+        allowed += 1;
+        expect(r.status).toBe(404); // allowed → fast not_found (malformed token)
+      }
+    }
+    expect(allowed).toBe(60); // exactly the baseline budget
+    expect(blocked).toBe(5);
+  });
+
+  it('caps the expensive /pdf render path at a tighter 20 req/IP/min', async () => {
+    const app = rateLimitedApp(new RedisMock() as unknown as Redis);
+    let allowed = 0;
+    let blocked = 0;
+    let firstBlocked: number | null = null;
+    for (let i = 0; i < 25; i++) {
+      const r = await request(app)
+        .get(`/shared/tax/${BAD}/pdf`)
+        .set(...ipHeader('203.0.113.11'));
+      if (r.status === 429) {
+        blocked += 1;
+        if (firstBlocked === null) firstBlocked = i;
+        expect(r.body.error).toBe('rate_limited');
+        expect(r.headers['retry-after']).toBeDefined();
+      } else {
+        allowed += 1;
+      }
+    }
+    expect(allowed).toBe(20); // /pdf budget is hit before the 60 baseline
+    expect(blocked).toBe(5);
+    expect(firstBlocked).toBe(20); // 21st request (index 20) is the first 429
+  });
+
+  it('limits are per-IP — a second IP is unaffected by the first hitting the cap', async () => {
+    const app = rateLimitedApp(new RedisMock() as unknown as Redis);
+    // Exhaust IP A's /pdf budget.
+    for (let i = 0; i < 21; i++) {
+      await request(app)
+        .get(`/shared/tax/${BAD}/pdf`)
+        .set(...ipHeader('203.0.113.1'));
+    }
+    const aBlocked = await request(app)
+      .get(`/shared/tax/${BAD}/pdf`)
+      .set(...ipHeader('203.0.113.1'));
+    expect(aBlocked.status).toBe(429);
+    // A different IP still passes the limiter (404 — malformed token).
+    const bOk = await request(app)
+      .get(`/shared/tax/${BAD}/pdf`)
+      .set(...ipHeader('203.0.113.2'));
+    expect(bOk.status).toBe(404);
+  });
+
+  it('fails OPEN when no Redis is configured (limiter skipped)', async () => {
+    // A router with no redis wired — well past the baseline, never 429.
+    const app = express();
+    app.use(express.json());
+    app.use('/shared/tax', createShareRecipientRouter({ db: harness.db }));
+    for (let i = 0; i < 65; i++) {
+      const r = await request(app).get(`/shared/tax/${BAD}`);
+      expect(r.status).toBe(404); // not_found, never rate_limited
+    }
   });
 });

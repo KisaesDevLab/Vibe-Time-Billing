@@ -20,13 +20,16 @@
 // in share-helper — we never compare tokens lexically, and never log the
 // token.
 //
-// NOT YET WIRED (ops/follow-up): per-IP rate limiting on this surface,
-// and the 2FA code dispatcher/cookie. Brute-forcing a token is bounded
-// by the argon2 verify cost + the 40+ char high-entropy secret, but a
-// dedicated limiter is still wanted before this is internet-facing at
-// scale.
+// Rate limiting (Redis sliding-window, per-IP): a baseline 60 req/60s on
+// every route, plus a tighter 20 req/60s on /pdf (each hit fetches the
+// source from storage and re-renders). Both fail OPEN on a Redis error
+// and are checked before any token/argon2/storage work.
+//
+// NOT YET WIRED (ops/follow-up): the 2FA code dispatcher/cookie. A
+// require_2fa share fails closed (403 at /pdf) until that lands.
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type Request, type Response, type Router, type NextFunction } from 'express';
+import type { Redis } from 'ioredis';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 
@@ -34,6 +37,7 @@ import type { Database } from '@vibe/db';
 import { files, taxReturns, taxReturnSections } from '@vibe/db/schema';
 import { planExtraction, type SectionPageRange } from '@vibe/core/tax-returns';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
+import { checkAndIncrement } from '@vibe/core/auth';
 
 import { logger } from '../logger';
 import {
@@ -51,6 +55,10 @@ export interface ShareRecipientDeps {
   // creds land in process.env after boot). /pdf renders the scoped,
   // watermarked subset; with no storage it falls closed to 503.
   storage?: StorageClient | null;
+  // Redis client for the per-IP rate limiter. Optional: when absent (a
+  // few unit tests) the limiter is skipped — the limiter also fails OPEN
+  // on Redis errors so a hiccup can't take this public surface down.
+  redis?: Redis;
 }
 
 function resolveStorage(deps: ShareRecipientDeps): StorageClient | null {
@@ -59,6 +67,51 @@ function resolveStorage(deps: ShareRecipientDeps): StorageClient | null {
     return buildStorageClient(process.env);
   } catch {
     return null;
+  }
+}
+
+// Best-effort client IP — trust the first X-Forwarded-For hop (Caddy sets
+// it), else the socket address. Matches the intake public router.
+function clientIp(req: Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0];
+  return (first ?? req.ip ?? '0.0.0.0').trim();
+}
+
+// Per-IP limits for this public surface. The baseline covers every route
+// (~1 req/sec sustained); /pdf carries a tighter budget because each hit
+// fetches the source from object storage and re-renders the scoped PDF.
+const IP_WINDOW_SECONDS = 60;
+const IP_MAX_PER_WINDOW = 60;
+const PDF_WINDOW_SECONDS = 60;
+const PDF_MAX_PER_WINDOW = 20;
+
+// Returns false when the caller is over budget (response already sent),
+// true otherwise. Fails OPEN on a missing client or Redis error.
+async function withinIpLimit(
+  redis: Redis | undefined,
+  req: Request,
+  res: Response,
+  scope: string,
+  windowSeconds: number,
+  max: number,
+): Promise<boolean> {
+  if (!redis) return true;
+  try {
+    const limit = await checkAndIncrement(redis, {
+      key: `rl:shared-tax:${scope}:${clientIp(req)}`,
+      windowSeconds,
+      max,
+    });
+    if (!limit.allowed) {
+      res.setHeader('Retry-After', String(limit.retryAfterSeconds));
+      res.status(429).json({ error: 'rate_limited' });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.warn({ err }, 'tax-recipient rate limiter error; allowing request');
+    return true;
   }
 }
 
@@ -76,6 +129,16 @@ function notFound(res: Response): void {
 
 export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
   const router = express.Router();
+
+  // Per-IP baseline rate limit on every route of this public surface.
+  // Fails open on limiter errors so a Redis hiccup can't take it down.
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    void withinIpLimit(deps.redis, req, res, 'ip', IP_WINDOW_SECONDS, IP_MAX_PER_WINDOW).then(
+      (ok) => {
+        if (ok) next();
+      },
+    );
+  });
 
   // Resolve + return meta. No 2FA gate yet — the meta endpoint reveals
   // the bare minimum so the recipient page can render the verification
@@ -197,6 +260,14 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
   router.get('/:token/pdf', async (req: Request, res: Response) => {
     if (!deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    // Tighter per-IP budget for the expensive render path (storage fetch
+    // + pdf-lib copy/watermark). Checked before any token work so abuse
+    // can't drive argon2 verify / storage I/O.
+    if (
+      !(await withinIpLimit(deps.redis, req, res, 'pdf', PDF_WINDOW_SECONDS, PDF_MAX_PER_WINDOW))
+    ) {
       return;
     }
     const token = req.params['token']!;
