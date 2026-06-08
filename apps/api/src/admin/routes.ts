@@ -28,7 +28,7 @@ import {
 } from '@vibe/db/schema';
 import { createSnapshot } from '../rates/routes';
 import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
-import { seedNotificationTemplates } from '@vibe/db/seed-helpers';
+import { seedNotificationTemplates, NOTIFICATION_TEMPLATE_DEFAULTS } from '@vibe/db/seed-helpers';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -1247,12 +1247,19 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .from(notificationTemplates)
         .where(eq(notificationTemplates.firmId, firmId));
       // Self-heal: firms that missed the bootstrap seed (or that were
-      // upgraded across the migration window) land here with zero rows.
-      // Run the same idempotent seeder used by /seed-defaults so the
-      // admin sees a fully-populated grid on first visit. Existing rows
-      // are preserved because seedNotificationTemplates uses
-      // ON CONFLICT DO NOTHING on (firm_id, kind, channel).
-      if (items.length === 0 && deps.db) {
+      // upgraded across a migration window that added new kinds) land here
+      // missing one or more (kind, channel) pairs from the current default
+      // set. Run the same idempotent seeder used by /seed-defaults so the
+      // admin always sees a fully-populated grid — never a blank template.
+      // Existing rows are preserved because seedNotificationTemplates uses
+      // ON CONFLICT DO NOTHING on (firm_id, kind, channel), so admin
+      // overrides survive. (A firm may also carry legacy kinds no longer in
+      // the registry; those are simply left in place.)
+      const have = new Set(items.map((i) => `${i.kind}:${i.channel}`));
+      const missingDefault = NOTIFICATION_TEMPLATE_DEFAULTS.some(
+        (d) => !have.has(`${d.kind}:${d.channel}`),
+      );
+      if (missingDefault && deps.db) {
         const db = deps.db;
         await db
           .transaction(async (tx) => {

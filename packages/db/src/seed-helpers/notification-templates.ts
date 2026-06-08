@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 //
-// Default notification template content (v2 Sprint A, workstream 3.4).
+// Default notification template content.
 //
-// Seeds 15 standard kinds × 2 channels (EMAIL + SMS) = 30 rows per firm
-// on first init. Per Q28 (locked) these are variable-substitution
-// templates — Handlebars-style {{placeholder}} markers — not HTML.
+// The kinds and channels here are kept in lock-step with the admin
+// editor's KINDS registry (apps/web/src/pages/admin/NotificationTemplates.tsx)
+// so every row the grid exposes is seeded with professional, ready-to-send
+// copy — no blank templates. Variable-substitution markers use the
+// `{{ entity.field }}` convention the dispatcher resolves at send time.
 //
 // Re-running is idempotent: rows are upserted (ON CONFLICT DO NOTHING
 // via the unique (firm_id, kind, channel) constraint) so an admin who
-// has already customized a template will not have it overwritten.
+// has already customized a template will not have it overwritten. The
+// appointment_* bodies deliberately mirror the baked-in defaults in
+// apps/api/src/appointments/email-jobs.ts so seeding them changes nothing
+// about what clients receive until an admin edits them.
 
 import { sql } from 'drizzle-orm';
 import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
@@ -28,7 +33,7 @@ type Tx = PgDatabase<QueryResultHKT, any, any>;
 
 interface TemplateDef {
   kind: string;
-  channel: 'EMAIL' | 'SMS';
+  channel: 'EMAIL' | 'SMS' | 'CALL';
   subject?: string;
   body: string;
 }
@@ -36,247 +41,195 @@ interface TemplateDef {
 // All variables follow `entity.field` style. Available variables are
 // mined from the body at PUT time by the admin route (admin/routes.ts).
 const DEFAULTS: ReadonlyArray<TemplateDef> = [
-  // Invoice lifecycle ----------------------------------------------
+  // Invoice delivery -----------------------------------------------
   {
     kind: 'invoice_sent',
     channel: 'EMAIL',
-    subject: 'Invoice {{invoice.number}} from {{firm.displayName}}',
+    subject: 'Invoice {{ invoice.number }} from {{ firm.displayName }}',
     body:
-      'Hi {{client.name}},\n\n' +
-      'Your latest invoice is ready. Total: {{invoice.total}}. Due: {{invoice.due_date}}.\n\n' +
-      'View and pay online: {{invoice.portal_url}}\n\n' +
-      'Thanks,\n{{firm.displayName}}',
-  },
-  {
-    kind: 'invoice_sent',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: invoice {{invoice.number}} is ready. {{invoice.total}} due {{invoice.due_date}}. {{invoice.portal_url}}',
-  },
-  {
-    kind: 'invoice_overdue_3',
-    channel: 'EMAIL',
-    subject: 'Friendly reminder: invoice {{invoice.number}} is past due',
-    body: 'Hi {{client.name}},\n\nInvoice {{invoice.number}} ({{invoice.total}}) is 3 days past its {{invoice.due_date}} due date.\n\nPay now: {{invoice.portal_url}}\n\nIf payment has been sent, please disregard.\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'invoice_overdue_3',
-    channel: 'SMS',
-    body: 'Reminder: {{firm.displayName}} invoice {{invoice.number}} for {{invoice.total}} is past due. Pay: {{invoice.portal_url}}',
-  },
-  {
-    kind: 'invoice_overdue_7',
-    channel: 'EMAIL',
-    subject: 'Past due: invoice {{invoice.number}}',
-    body: 'Hi {{client.name}},\n\nInvoice {{invoice.number}} ({{invoice.total}}) is now 7 days past due.\n\nPlease remit at your earliest convenience: {{invoice.portal_url}}\n\nQuestions? Reach us at {{firm.supportEmail}}.\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'invoice_overdue_7',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: invoice {{invoice.number}} ({{invoice.total}}) is 7 days past due. {{invoice.portal_url}}',
-  },
-  {
-    kind: 'invoice_overdue_14',
-    channel: 'EMAIL',
-    subject: 'Action required: invoice {{invoice.number}}',
-    body: 'Hi {{client.name}},\n\nInvoice {{invoice.number}} ({{invoice.total}}) is now 14 days past due.\n\nIf payment is not received within the next 7 days, this account may be referred for collection.\n\nPay online: {{invoice.portal_url}}\nReach us: {{firm.supportEmail}} · {{firm.supportPhone}}\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'invoice_overdue_14',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: invoice {{invoice.number}} is 14 days past due. Call {{firm.supportPhone}} or pay: {{invoice.portal_url}}',
+      'Dear {{ client.name }},\n\n' +
+      'Thank you for the opportunity to work with you. Your invoice is now ready.\n\n' +
+      'Invoice: {{ invoice.number }}\n' +
+      'Amount due: {{ invoice.total }}\n' +
+      'Due date: {{ invoice.due_date }}\n\n' +
+      'You can review the details and pay securely online at any time:\n' +
+      '{{ invoice.portal_url }}\n\n' +
+      'If you have any questions about this invoice, simply reply to this email or contact us at {{ firm.supportEmail }}.\n\n' +
+      'With appreciation,\n{{ firm.displayName }}',
   },
 
-  // Payment lifecycle ----------------------------------------------
+  // Overdue / collections ------------------------------------------
+  {
+    kind: 'invoice_overdue',
+    channel: 'EMAIL',
+    subject: 'Past due: invoice {{ invoice.number }} from {{ firm.displayName }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Our records show that invoice {{ invoice.number }} for {{ invoice.total }}, due on {{ invoice.due_date }}, remains unpaid. The current outstanding balance is {{ invoice.balance }}.\n\n' +
+      'Please submit your payment at your earliest convenience:\n' +
+      '{{ invoice.portal_url }}\n\n' +
+      'If you have already sent payment, please accept our thanks and disregard this notice. If you have any questions or would like to discuss payment arrangements, contact us at {{ firm.supportEmail }} or {{ firm.supportPhone }}.\n\n' +
+      'Sincerely,\n{{ firm.displayName }}',
+  },
+  {
+    kind: 'invoice_overdue',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: invoice {{ invoice.number }} (balance {{ invoice.balance }}) is past due. Pay securely: {{ invoice.portal_url }}',
+  },
+  {
+    kind: 'dunning_first',
+    channel: 'EMAIL',
+    subject: 'A friendly reminder about invoice {{ invoice.number }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'This is a friendly reminder that invoice {{ invoice.number }} for {{ invoice.total }} is now past its due date of {{ invoice.due_date }}. The outstanding balance is {{ invoice.balance }}.\n\n' +
+      'We know these things can slip through the cracks — you can settle the balance in just a few clicks:\n' +
+      '{{ invoice.portal_url }}\n\n' +
+      'If your payment is already on its way, thank you, and please disregard this note.\n\n' +
+      'Warm regards,\n{{ firm.displayName }}',
+  },
+  {
+    kind: 'dunning_first',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: a friendly reminder that invoice {{ invoice.number }} (balance {{ invoice.balance }}) is past due. Pay here: {{ invoice.portal_url }}',
+  },
+  {
+    kind: 'dunning_second',
+    channel: 'EMAIL',
+    subject: 'Second notice: invoice {{ invoice.number }} needs your attention',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Despite our earlier reminder, invoice {{ invoice.number }} for {{ invoice.total }} (balance {{ invoice.balance }}), originally due on {{ invoice.due_date }}, remains unpaid.\n\n' +
+      'To keep your account in good standing, please remit payment as soon as possible:\n' +
+      '{{ invoice.portal_url }}\n\n' +
+      'If there is a problem with this invoice, or you would like to arrange a payment plan, please reach us right away at {{ firm.supportEmail }} or {{ firm.supportPhone }} so we can help.\n\n' +
+      'Thank you for your prompt attention,\n{{ firm.displayName }}',
+  },
+  {
+    kind: 'dunning_second',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: second notice — invoice {{ invoice.number }} (balance {{ invoice.balance }}) is overdue. Please pay or call {{ firm.supportPhone }}. {{ invoice.portal_url }}',
+  },
+
+  // Payment --------------------------------------------------------
   {
     kind: 'payment_received',
     channel: 'EMAIL',
     subject: 'Payment received — thank you',
-    body: 'Hi {{client.name}},\n\nWe received your payment of {{payment.amount}} toward invoice {{invoice.number}}. Receipt: {{payment.receipt_url}}\n\nThanks,\n{{firm.displayName}}',
-  },
-  {
-    kind: 'payment_received',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: received {{payment.amount}} for invoice {{invoice.number}}. Thanks!',
-  },
-  {
-    kind: 'payment_failed',
-    channel: 'EMAIL',
-    subject: 'Payment failed for invoice {{invoice.number}}',
-    body: 'Hi {{client.name}},\n\nYour payment for invoice {{invoice.number}} ({{invoice.total}}) did not go through.\n\nUpdate your payment method or retry: {{invoice.portal_url}}\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'payment_failed',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: payment failed for invoice {{invoice.number}}. Update: {{invoice.portal_url}}',
-  },
-  {
-    kind: 'autopay_retry_failed',
-    channel: 'EMAIL',
-    subject: 'Autopay retry failed',
-    body: 'Hi {{client.name}},\n\nThis is the last automatic retry for invoice {{invoice.number}} ({{invoice.total}}). Please update your payment method to avoid service interruption.\n\n{{invoice.portal_url}}\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'autopay_retry_failed',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: final autopay retry failed for invoice {{invoice.number}}. Update payment: {{invoice.portal_url}}',
-  },
-
-  // Recurring billing ----------------------------------------------
-  {
-    kind: 'recurring_renewal_upcoming',
-    channel: 'EMAIL',
-    subject: 'Upcoming renewal: {{recurring.plan_name}}',
-    body: 'Hi {{client.name}},\n\nYour {{recurring.plan_name}} renews on {{recurring.next_period_start}} for {{recurring.amount}}.\n\nManage your subscription: {{recurring.portal_url}}\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'recurring_renewal_upcoming',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: {{recurring.plan_name}} renews {{recurring.next_period_start}} for {{recurring.amount}}.',
-  },
-  {
-    kind: 'recurring_renewal_complete',
-    channel: 'EMAIL',
-    subject: 'Renewal complete: {{recurring.plan_name}}',
-    body: 'Hi {{client.name}},\n\nYour {{recurring.plan_name}} has renewed for {{recurring.amount}}. Invoice {{invoice.number}}.\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'recurring_renewal_complete',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: {{recurring.plan_name}} renewed. Invoice {{invoice.number}}.',
-  },
-
-  // Engagement letters ---------------------------------------------
-  {
-    kind: 'engagement_letter_sent',
-    channel: 'EMAIL',
-    subject: 'Engagement letter from {{firm.displayName}}',
-    body: 'Hi {{client.name}},\n\nPlease review and accept the engagement letter for {{engagement.name}}.\n\nReview: {{letter.portal_url}}\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'engagement_letter_sent',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: engagement letter for {{engagement.name}} is ready to review: {{letter.portal_url}}',
-  },
-  {
-    kind: 'engagement_letter_accepted',
-    channel: 'EMAIL',
-    subject: 'Engagement letter accepted',
-    body: "We've received your acceptance of the engagement letter for {{engagement.name}}. Thanks!\n\n{{firm.displayName}}",
-  },
-  {
-    kind: 'engagement_letter_accepted',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: engagement letter accepted for {{engagement.name}}. Thanks!',
-  },
-  {
-    kind: 'engagement_letter_voided',
-    channel: 'EMAIL',
-    subject: 'Engagement letter voided',
-    body: 'The engagement letter for {{engagement.name}} has been voided. If this was unexpected, please reach out to {{firm.supportEmail}}.\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'engagement_letter_voided',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: engagement letter for {{engagement.name}} was voided. Questions: {{firm.supportPhone}}',
-  },
-
-  // Auth & portal --------------------------------------------------
-  {
-    kind: 'portal_invite',
-    channel: 'EMAIL',
-    subject: 'Your client portal invitation',
-    body: "Hi {{contact.name}},\n\nYou've been invited to access {{firm.displayName}}'s client portal. Use the link below to sign in:\n\n{{portal.invite_url}}\n\nThis link expires in 24 hours.",
-  },
-  {
-    kind: 'portal_invite',
-    channel: 'SMS',
-    body: '{{firm.displayName}} portal invite: {{portal.invite_url}} (expires in 24h)',
-  },
-  {
-    kind: 'portal_otp_login',
-    channel: 'EMAIL',
-    subject: 'Your sign-in code: {{otp.code}}',
-    body: 'Your {{firm.displayName}} portal sign-in code is {{otp.code}}. Expires in 5 minutes.',
-  },
-  {
-    kind: 'portal_otp_login',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: your sign-in code is {{otp.code}}. Expires in 5 min.',
-  },
-
-  // Workflow -------------------------------------------------------
-  {
-    kind: 'approval_request',
-    channel: 'EMAIL',
-    subject: 'Approval requested: {{approval.entity_type}}',
-    body: 'Hi {{approver.name}},\n\nA {{approval.entity_type}} requires your approval ({{approval.amount}}).\n\nReview: {{approval.portal_url}}\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'approval_request',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: {{approval.entity_type}} approval requested. {{approval.portal_url}}',
-  },
-  {
-    kind: 'approval_decision',
-    channel: 'EMAIL',
-    subject: 'Approval decision: {{approval.decision}}',
-    body: 'Your {{approval.entity_type}} approval request was {{approval.decision}} by {{approver.name}}.\n\n{{firm.displayName}}',
-  },
-  {
-    kind: 'approval_decision',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: approval {{approval.decision}} by {{approver.name}}.',
-  },
-
-  // P4.1 — Connect-addendum H.2 ---------------------------------------
-  {
-    kind: 'deliverable_unlocked',
-    channel: 'EMAIL',
-    subject: 'New files available from {{firm.displayName}}',
     body:
-      'Hi {{client.name}},\n\n' +
-      '{{firm.displayName}} has released {{deliverable.file_count}} file{{deliverable.file_count_plural}} ' +
-      'tied to invoice {{invoice.number}}. Sign in to view {{deliverable.file_count_them}}:\n\n' +
-      '{{portal.files_url}}\n\n' +
-      'Thanks,\n{{firm.displayName}}',
+      'Dear {{ client.name }},\n\n' +
+      'Thank you! We have received your payment toward invoice {{ invoice.number }}.\n\n' +
+      'Remaining balance: {{ invoice.balance }}\n\n' +
+      'You can view your invoices and full payment history any time in your portal:\n' +
+      '{{ invoice.portal_url }}\n\n' +
+      'We truly appreciate your business.\n\n' +
+      'Sincerely,\n{{ firm.displayName }}',
   },
+
+  // Authentication -------------------------------------------------
   {
-    kind: 'deliverable_unlocked',
-    channel: 'SMS',
-    body: '{{firm.displayName}}: {{deliverable.file_count}} file{{deliverable.file_count_plural}} ready for invoice {{invoice.number}}. {{portal.files_url}}',
-  },
-  {
-    kind: 'wip_threshold_exceeded',
+    kind: 'magic_link',
     channel: 'EMAIL',
-    subject: 'WIP threshold exceeded on {{engagement.name}}',
+    subject: 'Your secure sign-in link for {{ firm.displayName }}',
     body:
-      'Hi {{staff.name}},\n\n' +
-      'Engagement {{engagement.name}} for {{client.name}} has crossed its WIP threshold ' +
-      '({{wip.current}} vs. {{wip.threshold}}).\n\n' +
-      'Review: {{engagement.portal_url}}\n\n' +
-      '{{firm.displayName}}',
+      'Hello,\n\n' +
+      'Use the secure link below to sign in to your {{ firm.displayName }} account:\n\n' +
+      '{{ auth.magic_url }}\n\n' +
+      'For your security, this link works only once and expires shortly. If you did not request it, you can safely ignore this email — no action is needed.\n\n' +
+      '{{ firm.displayName }}',
   },
   {
-    kind: 'wip_threshold_exceeded',
+    kind: 'sms_otp',
     channel: 'SMS',
-    body: '{{firm.displayName}}: {{engagement.name}} WIP {{wip.current}} > {{wip.threshold}}. Review: {{engagement.portal_url}}',
+    body: '{{ firm.displayName }}: your verification code is {{ auth.code }}. It expires in 10 minutes. For your security, do not share this code with anyone.',
   },
+
+  // Appointments (mirror apps/api/src/appointments/email-jobs.ts) --
   {
-    kind: 'step_up_lockout',
+    kind: 'appointment_confirmation',
     channel: 'EMAIL',
-    subject: 'Step-up lockout triggered for {{actor.label}}',
+    subject: 'Confirmed: {{ appointment.subject }} on {{ appointment.date }}',
     body:
-      'Hi {{admin.name}},\n\n' +
-      '{{actor.label}} has been locked out of step-up verification after {{lockout.failed_attempts}} ' +
-      'failed attempts.\n\n' +
-      'Lockout expires in {{lockout.retry_after_minutes}} minutes ({{lockout.expires_at}}).\n\n' +
-      'Review the audit log: {{audit.portal_url}}\n\n' +
-      '{{firm.displayName}}',
+      'Hi {{ client.name }},\n\n' +
+      'Your appointment is confirmed:\n\n' +
+      '{{ appointment.subject }}\n' +
+      '{{ appointment.date }} at {{ appointment.time }} ({{ appointment.duration }} min)\n' +
+      'With: {{ staff.names }}\n' +
+      '{{ appointment.location_type_label }}: {{ appointment.location_detail }}\n\n' +
+      'Need to cancel? {{ appointment.cancel_url }}\n' +
+      'Need a different time? {{ appointment.reschedule_request_url }}\n\n' +
+      '— {{ firm.name }}',
   },
   {
-    kind: 'step_up_lockout',
+    kind: 'appointment_reschedule_confirmation',
+    channel: 'EMAIL',
+    subject: 'Updated time: {{ appointment.subject }} on {{ appointment.date }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      'Your appointment has been rescheduled to:\n\n' +
+      '{{ appointment.date }} at {{ appointment.time }} ({{ appointment.duration }} min)\n' +
+      'With: {{ staff.names }}\n' +
+      '{{ appointment.location_type_label }}: {{ appointment.location_detail }}\n\n' +
+      'Need to cancel? {{ appointment.cancel_url }}\n\n' +
+      '— {{ firm.name }}',
+  },
+  {
+    kind: 'appointment_cancellation',
+    channel: 'EMAIL',
+    subject: 'Cancelled: {{ appointment.subject }} on {{ appointment.date }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      'Your appointment on {{ appointment.date }} at {{ appointment.time }} with {{ staff.names }} has been cancelled by {{ appointment.cancelled_by }}.\n\n' +
+      'Please contact us to find another time.\n\n' +
+      '— {{ firm.name }}',
+  },
+  {
+    kind: 'appointment_reminder',
+    channel: 'EMAIL',
+    subject: 'Reminder: {{ appointment.subject }} on {{ appointment.date }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      'A reminder of your upcoming appointment:\n\n' +
+      '{{ appointment.subject }}\n' +
+      '{{ appointment.date }} at {{ appointment.time }} ({{ appointment.duration }} min)\n' +
+      'With: {{ staff.names }}\n' +
+      '{{ appointment.location_type_label }}: {{ appointment.location_detail }}\n\n' +
+      'Need to cancel? {{ appointment.cancel_url }}\n' +
+      'Need a different time? {{ appointment.reschedule_request_url }}\n\n' +
+      '— {{ firm.name }}',
+  },
+  {
+    kind: 'appointment_reminder',
     channel: 'SMS',
-    body: '{{firm.displayName}}: step-up lockout for {{actor.label}}. Expires {{lockout.expires_at}}.',
+    body: 'Reminder: {{ appointment.subject }} on {{ appointment.date }} at {{ appointment.time }} with {{ staff.names }}. Reply YES to confirm.',
+  },
+  {
+    kind: 'appointment_reminder',
+    channel: 'CALL',
+    body: 'Hello {{ client.name }}. This is a reminder from {{ firm.name }} about your appointment, {{ appointment.subject }}, on {{ appointment.date }} at {{ appointment.time }}.',
+  },
+  {
+    kind: 'appointment_reschedule_request_declined',
+    channel: 'EMAIL',
+    subject: 'About your reschedule request — {{ appointment.subject }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      "We weren't able to move your appointment on {{ appointment.date }}. The original time still stands. If it no longer works, you can cancel here:\n" +
+      '{{ appointment.cancel_url }}\n\n' +
+      '— {{ firm.name }}',
+  },
+  {
+    kind: 'appointment_reschedule_requested_staff',
+    channel: 'EMAIL',
+    subject: 'Reschedule requested: {{ appointment.subject }} ({{ appointment.date }})',
+    body:
+      '{{ client.name }} asked to reschedule:\n\n' +
+      '{{ appointment.subject }}\n' +
+      'Currently {{ appointment.date }} at {{ appointment.time }}\n' +
+      'With: {{ staff.names }}\n\n' +
+      'Their note: {{ request.message }}\n\n' +
+      'Review and propose a new time in the reschedule inbox.\n\n' +
+      '— {{ firm.name }}',
   },
 ];
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
 interface Template {
@@ -61,9 +62,14 @@ const SAMPLE_VARIABLES = [
   'invoice.total',
   'invoice.due_date',
   'invoice.balance',
+  'invoice.portal_url',
+  'firm.name',
   'firm.displayName',
   'firm.supportEmail',
   'firm.supportPhone',
+  // Authentication tokens.
+  'auth.magic_url',
+  'auth.code',
   // BK-6 — appointment tokens.
   'appointment.subject',
   'appointment.date',
@@ -77,6 +83,9 @@ const SAMPLE_VARIABLES = [
   'staff.names',
   'request.message',
 ];
+
+// Same tokens, shaped for the rich-text editor's "Insert variable" dropdown.
+const RICH_TEXT_VARIABLES: RichTextVariable[] = SAMPLE_VARIABLES.map((token) => ({ token }));
 
 export function NotificationTemplatesPage(): JSX.Element {
   const [items, setItems] = useState<Template[]>([]);
@@ -154,20 +163,146 @@ export function NotificationTemplatesPage(): JSX.Element {
     setActive({ ...active, body: active.body + `{{${name}}}` });
   }
 
+  // Master-detail: while a template is open, the grid and library panel are
+  // hidden and only the editor is shown (mirrors the focused edit surfaces in
+  // packages/ui). "← Back" returns to the list.
+  if (active) {
+    const isEmail = active.channel === 'EMAIL';
+    const kindLabel = KINDS.find((k) => k.key === active.kind)?.label ?? active.kind;
+    return (
+      <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+        <Card title={`Edit ${kindLabel} · ${active.channel}`}>
+          <div style={{ marginBottom: 12 }}>
+            <Button variant="ghost" size="sm" onClick={() => setActive(null)}>
+              ← Back to all notifications
+            </Button>
+          </div>
+          {status && (
+            <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }} role="status">
+              {status}
+            </p>
+          )}
+          {error && (
+            <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+              {error}
+            </p>
+          )}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: isEmail ? '1fr' : '3fr 1fr',
+              gap: 16,
+            }}
+          >
+            <div style={{ display: 'grid', gap: 8 }}>
+              {isEmail && (
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Subject</span>
+                  <input
+                    value={active.subject}
+                    onChange={(e) => setActive({ ...active, subject: e.target.value })}
+                    style={{
+                      padding: '8px 10px',
+                      background: tokens.color.surface,
+                      color: tokens.color.text,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                    }}
+                  />
+                </label>
+              )}
+              <div style={{ display: 'grid', gap: 4 }}>
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Body</span>
+                {isEmail ? (
+                  // Rich-text email body. Reads/writes the same {{ token }}
+                  // text the dispatcher resolves; the toolbar's "Variable"
+                  // dropdown inserts merge fields. Keyed so switching kinds
+                  // remounts with fresh content. Functional state update keeps
+                  // any subject edits made after mount.
+                  <RichTextEditor
+                    key={`${active.kind}:${active.channel}`}
+                    value={active.body}
+                    onChange={(md) => setActive((a) => (a ? { ...a, body: md } : a))}
+                    variables={RICH_TEXT_VARIABLES}
+                    placeholder="Compose the email body — use Variable to insert merge fields."
+                  />
+                ) : (
+                  <textarea
+                    value={active.body}
+                    onChange={(e) => setActive({ ...active, body: e.target.value })}
+                    rows={6}
+                    style={{
+                      padding: '8px 10px',
+                      background: tokens.color.surface,
+                      color: tokens.color.text,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                      fontFamily: tokens.font.mono,
+                      fontSize: 13,
+                    }}
+                  />
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button onClick={() => void save()}>Save</Button>
+                <Button variant="secondary" onClick={() => void reset()}>
+                  Revert to default
+                </Button>
+                <Button variant="ghost" onClick={() => setActive(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+            {!isEmail && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 6 }}>
+                  Variables
+                </div>
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {SAMPLE_VARIABLES.map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => insertVariable(v)}
+                      style={{
+                        textAlign: 'left',
+                        fontSize: 11,
+                        padding: '4px 8px',
+                        borderRadius: tokens.radius.sm,
+                        background: 'transparent',
+                        border: `1px solid ${tokens.color.border}`,
+                        color: tokens.color.text,
+                        fontFamily: tokens.font.mono,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {`{{${v}}}`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <TemplateLibraryPanel area="emails" onImported={() => void load()} />
       <Card title="Notification templates">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 12 }}>
-          Variable insertion only (per Q28). Use <code>{'{{variable.name}}'}</code> markers; the
-          dispatcher substitutes at send time. Unset templates use the baked-in defaults.
+          Email bodies are composed in a rich-text editor; SMS and call scripts are plain text. Use{' '}
+          <code>{'{{ variable.name }}'}</code> merge fields — the dispatcher substitutes them at
+          send time. Unset templates fall back to the baked-in defaults.
         </p>
-        {!active && status && (
+        {status && (
           <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }} role="status">
             {status}
           </p>
         )}
-        {!active && error && (
+        {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
             {error}
           </p>
@@ -229,96 +364,6 @@ export function NotificationTemplatesPage(): JSX.Element {
           ))}
         </div>
       </Card>
-
-      {active && (
-        <Card title={`Edit ${active.kind} · ${active.channel}`}>
-          {status && (
-            <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }}>{status}</p>
-          )}
-          {error && (
-            <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }}>{error}</p>
-          )}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '3fr 1fr',
-              gap: 16,
-            }}
-          >
-            <div style={{ display: 'grid', gap: 8 }}>
-              {active.channel === 'EMAIL' && (
-                <label style={{ display: 'grid', gap: 4 }}>
-                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Subject</span>
-                  <input
-                    value={active.subject}
-                    onChange={(e) => setActive({ ...active, subject: e.target.value })}
-                    style={{
-                      padding: '8px 10px',
-                      background: tokens.color.surface,
-                      color: tokens.color.text,
-                      border: `1px solid ${tokens.color.border}`,
-                      borderRadius: tokens.radius.md,
-                    }}
-                  />
-                </label>
-              )}
-              <label style={{ display: 'grid', gap: 4 }}>
-                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Body</span>
-                <textarea
-                  value={active.body}
-                  onChange={(e) => setActive({ ...active, body: e.target.value })}
-                  rows={active.channel === 'EMAIL' ? 12 : 6}
-                  style={{
-                    padding: '8px 10px',
-                    background: tokens.color.surface,
-                    color: tokens.color.text,
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.md,
-                    fontFamily: tokens.font.mono,
-                    fontSize: 13,
-                  }}
-                />
-              </label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button onClick={() => void save()}>Save</Button>
-                <Button variant="secondary" onClick={() => void reset()}>
-                  Revert to default
-                </Button>
-                <Button variant="ghost" onClick={() => setActive(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 6 }}>
-                Variables
-              </div>
-              <div style={{ display: 'grid', gap: 4 }}>
-                {SAMPLE_VARIABLES.map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => insertVariable(v)}
-                    style={{
-                      textAlign: 'left',
-                      fontSize: 11,
-                      padding: '4px 8px',
-                      borderRadius: tokens.radius.sm,
-                      background: 'transparent',
-                      border: `1px solid ${tokens.color.border}`,
-                      color: tokens.color.text,
-                      fontFamily: tokens.font.mono,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {`{{${v}}}`}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
     </div>
   );
 }
