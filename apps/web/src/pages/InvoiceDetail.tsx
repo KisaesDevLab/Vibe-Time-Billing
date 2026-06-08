@@ -212,34 +212,6 @@ export function InvoiceDetailPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 960 }}>
-      {showPage && (
-        // 8.5×11 page preview — the same letter-size HTML the PDF is rendered
-        // from, shown on a gray backdrop like a print preview. Editing controls
-        // remain in the card below.
-        <div
-          style={{
-            background: '#525659',
-            padding: 24,
-            borderRadius: tokens.radius.md,
-            display: 'flex',
-            justifyContent: 'center',
-            overflow: 'auto',
-          }}
-        >
-          <iframe
-            title={`Invoice ${invoice.invoiceNumber} — page view`}
-            src={`/api/staff/invoices/${invoice.id}/pdf?format=html`}
-            style={{
-              width: 816,
-              height: 1056,
-              maxWidth: '100%',
-              border: 'none',
-              background: '#fff',
-              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
-            }}
-          />
-        </div>
-      )}
       <Card
         title={
           <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -420,6 +392,35 @@ export function InvoiceDetailPage(): JSX.Element {
             onAdded={() => void load()}
           />
         </Card>
+      )}
+
+      {showPage && (
+        // 8.5×11 page preview — the same letter-size HTML the PDF is rendered
+        // from, shown on a gray backdrop like a print preview. Sits below the
+        // editing card so the controls stay at the top.
+        <div
+          style={{
+            background: '#525659',
+            padding: 24,
+            borderRadius: tokens.radius.md,
+            display: 'flex',
+            justifyContent: 'center',
+            overflow: 'auto',
+          }}
+        >
+          <iframe
+            title={`Invoice ${invoice.invoiceNumber} — page view`}
+            src={`/api/staff/invoices/${invoice.id}/pdf?format=html`}
+            style={{
+              width: 816,
+              height: 1056,
+              maxWidth: '100%',
+              border: 'none',
+              background: '#fff',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+            }}
+          />
+        </div>
       )}
     </div>
   );

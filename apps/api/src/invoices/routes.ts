@@ -1137,11 +1137,12 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         notes: detailFooter ? `${inv.notes ?? ''}\n\n${detailFooter}` : (inv.notes ?? null),
       });
 
-      // Explicit `?format=html` (used by the in-app 8.5×11 page preview) or an
-      // HTML Accept header (e.g. an <iframe> src) returns the letter-size HTML
-      // render instead of the binary PDF — same markup the PDF is rendered from.
-      const accept = req.header('accept') ?? '';
-      if (req.query['format'] === 'html' || accept.includes('text/html')) {
+      // Only an explicit `?format=html` (the in-app 8.5×11 page-preview iframe)
+      // gets the letter-size HTML render. A plain navigation to /pdf — e.g.
+      // clicking the PDF link — must render the actual binary PDF, so we do NOT
+      // key off the Accept header (browsers always send text/html, which would
+      // otherwise serve HTML instead of a viewable/printable PDF).
+      if (req.query['format'] === 'html') {
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
         return;

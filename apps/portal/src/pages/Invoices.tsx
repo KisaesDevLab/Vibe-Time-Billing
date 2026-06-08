@@ -268,33 +268,6 @@ function InvoiceDetailPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 760, margin: '0 auto' }}>
-      {showPage && (
-        // 8.5×11 page preview — the same letter-size render available as the PDF,
-        // shown on a gray backdrop like a print preview.
-        <div
-          style={{
-            background: '#525659',
-            padding: 20,
-            borderRadius: tokens.radius.md,
-            display: 'flex',
-            justifyContent: 'center',
-            overflow: 'auto',
-          }}
-        >
-          <iframe
-            title={`Invoice ${inv.invoiceNumber} — page view`}
-            src={`/api/portal/invoices/${inv.id}/pdf.html`}
-            style={{
-              width: 816,
-              height: 1056,
-              maxWidth: '100%',
-              border: 'none',
-              background: '#fff',
-              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
-            }}
-          />
-        </div>
-      )}
       <Card
         title={`Invoice ${inv.invoiceNumber}`}
         action={<Pill tone={statusTone(inv.status)}>{inv.status}</Pill>}
@@ -434,6 +407,34 @@ function InvoiceDetailPage(): JSX.Element {
         )}
       </div>
       {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+
+      {showPage && (
+        // 8.5×11 page preview — the same letter-size render available as the PDF,
+        // shown on a gray backdrop like a print preview. Sits below the details.
+        <div
+          style={{
+            background: '#525659',
+            padding: 20,
+            borderRadius: tokens.radius.md,
+            display: 'flex',
+            justifyContent: 'center',
+            overflow: 'auto',
+          }}
+        >
+          <iframe
+            title={`Invoice ${inv.invoiceNumber} — page view`}
+            src={`/api/portal/invoices/${inv.id}/pdf.html`}
+            style={{
+              width: 816,
+              height: 1056,
+              maxWidth: '100%',
+              border: 'none',
+              background: '#fff',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
