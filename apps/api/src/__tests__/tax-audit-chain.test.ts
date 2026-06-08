@@ -128,6 +128,7 @@ describe('TR-8b — full audit chain', () => {
       createPortalTaxShareRouter({
         db: harness.db,
         requireAuth: (_req, _res, next) => next(),
+        portalBaseUrl: 'https://portal.example.test',
       }),
     );
 
@@ -148,8 +149,11 @@ describe('TR-8b — full audit chain', () => {
         personalMessage: '',
       });
     expect(shareRes.status).toBe(201);
-    const shareId = (shareRes.body as { shareId: string; token: string }).shareId;
-    const token = (shareRes.body as { token: string }).token;
+    const shareId = (shareRes.body as { shareId: string }).shareId;
+    // The recipient link carries the token: …/shared/tax/<token>.
+    const shareUrl = (shareRes.body as { shareUrl: string }).shareUrl;
+    expect(shareUrl).toContain('/shared/tax/');
+    const token = shareUrl.split('/shared/tax/')[1]!;
     expect(token).toMatch(/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{40,}$/);
 
     // --- 3. Recipient hits 2FA verify (audit: 2FA_PASSED) + view (VIEW) ---

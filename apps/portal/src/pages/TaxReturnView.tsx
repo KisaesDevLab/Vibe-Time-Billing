@@ -12,28 +12,13 @@
 //   GET /api/portal/tax/returns/:returnId/access-log
 //   GET /api/portal/tax/returns/:returnId.pdf  (best-effort; may 503)
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api, type ApiError } from '../api-client';
-
-// Lazy pdf.js loader (worker wired once). Same pattern as the staff
-// FieldEditor so the worker asset is bundled by Vite.
-const importPdfjs = () => import('pdfjs-dist');
-let pdfjsPromise: ReturnType<typeof importPdfjs> | null = null;
-function loadPdfjs(): ReturnType<typeof importPdfjs> {
-  if (!pdfjsPromise) {
-    pdfjsPromise = (async () => {
-      const pdfjs = await importPdfjs();
-      const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
-      pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
-      return pdfjs;
-    })();
-  }
-  return pdfjsPromise;
-}
+import { ProtectedPdfViewer } from '../components/ProtectedPdfViewer';
 
 interface SectionRow {
   id: string;
@@ -93,6 +78,8 @@ export function TaxReturnViewPage(): JSX.Element {
   const [meta, setMeta] = useState<ReturnMeta | null>(null);
   const [log, setLog] = useState<AccessLogItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!returnId) return;
@@ -105,7 +92,7 @@ export function TaxReturnViewPage(): JSX.Element {
         setError(apiErr.message ?? 'failed');
       }
     })();
-  }, [returnId]);
+  }, [returnId, reloadKey]);
 
   useEffect(() => {
     if (!returnId) return;
@@ -214,7 +201,27 @@ export function TaxReturnViewPage(): JSX.Element {
             {meta.release.coverNote}
           </div>
         )}
+        {meta.release.clientCanDownload && (
+          <div style={{ marginTop: tokens.space.md }}>
+            <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
+              Share with a 3rd party
+            </Button>
+          </div>
+        )}
       </Card>
+
+      {shareOpen && (
+        <ShareWithThirdPartyDialog
+          returnId={returnId ?? ''}
+          scope={meta.release.scope}
+          sectionIds={meta.release.scope === 'SELECTED' ? meta.sections.map((s) => s.id) : []}
+          onClose={() => setShareOpen(false)}
+          onShared={() => {
+            setShareOpen(false);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
 
       <div
         style={{
@@ -350,137 +357,209 @@ export function TaxReturnViewPage(): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
-// ProtectedPdfViewer — renders the PDF to <canvas> via pdf.js (never the
-// native browser viewer), so there's no download/print toolbar. We also
-// suppress the right-click menu and hide the canvases from print output.
-// Note: this stops casual save/print, not a determined screenshot.
+// ShareWithThirdPartyDialog — lets the client forward their released
+// return to an outside party (e.g. a lender). Creates a scoped share via
+// the existing API and returns a copyable recipient link.
 // ---------------------------------------------------------------------------
 
-function ProtectedPdfViewer({
-  url,
-  canDownload,
-  filename,
+function ShareWithThirdPartyDialog({
+  returnId,
+  scope,
+  sectionIds,
+  onClose,
+  onShared,
 }: {
-  url: string;
-  canDownload: boolean;
-  filename: string;
+  returnId: string;
+  scope: 'FULL' | 'SELECTED';
+  sectionIds: string[];
+  onClose: () => void;
+  onShared: () => void;
 }): JSX.Element {
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [errMsg, setErrMsg] = useState<string | null>(null);
-  const hostRef = useRef<HTMLDivElement>(null);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('');
+  const [organization, setOrganization] = useState('');
+  const [message, setMessage] = useState('');
+  const [days, setDays] = useState('30');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      setStatus('loading');
-      setErrMsg(null);
-      try {
-        const res = await fetch(url, { credentials: 'same-origin' });
-        if (cancelled) return;
-        if (!res.ok) {
-          let msg = `status ${res.status}`;
-          try {
-            const b = (await res.json()) as { error?: string };
-            if (b?.error) msg = b.error;
-          } catch {
-            /* non-JSON body */
-          }
-          setErrMsg(msg);
-          setStatus('error');
-          return;
-        }
-        const data = new Uint8Array(await res.arrayBuffer());
-        const pdfjs = await loadPdfjs();
-        const pdf = await pdfjs.getDocument({ data }).promise;
-        if (cancelled) return;
-        const host = hostRef.current;
-        if (!host) return;
-        host.innerHTML = '';
-        const RENDER_W = 1100;
-        for (let n = 1; n <= pdf.numPages; n++) {
-          const page = await pdf.getPage(n);
-          if (cancelled) return;
-          const base = page.getViewport({ scale: 1 });
-          const scale = Math.min(2, RENDER_W / base.width);
-          const viewport = page.getViewport({ scale });
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.ceil(viewport.width);
-          canvas.height = Math.ceil(viewport.height);
-          canvas.style.width = '100%';
-          canvas.style.height = 'auto';
-          canvas.style.display = 'block';
-          canvas.style.margin = '0 auto 12px';
-          canvas.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)';
-          const ctx = canvas.getContext('2d');
-          if (!ctx) continue;
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          if (cancelled) return;
-          host.appendChild(canvas);
-        }
-        if (!cancelled) setStatus('ready');
-      } catch (e) {
-        if (!cancelled) {
-          setErrMsg(e instanceof Error ? e.message : 'render_failed');
-          setStatus('error');
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
+  const dayNum = Number(days);
+  const valid =
+    name.trim().length > 0 &&
+    /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim()) &&
+    dayNum >= 1 &&
+    dayNum <= 90;
 
-  // Block Ctrl/Cmd+P while this viewer is mounted.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) e.preventDefault();
+  async function submit(): Promise<void> {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api<{ shareUrl: string }>(`/api/portal/tax/returns/${returnId}/shares`, {
+        method: 'POST',
+        body: JSON.stringify({
+          recipientName: name.trim(),
+          recipientEmail: email.trim(),
+          organization: organization.trim(),
+          role: role.trim() || 'Third party',
+          accessLevel: 'view_only',
+          scope,
+          sectionIds,
+          expiresAt: new Date(Date.now() + dayNum * 86400000).toISOString(),
+          require2fa: false,
+          verifyChannel: 'NONE',
+          watermark: true,
+          personalMessage: message.trim(),
+        }),
+      });
+      setShareUrl(r.shareUrl);
+    } catch (e) {
+      const code = e instanceof Error ? e.message : 'failed';
+      setErr(
+        code === 'download_not_enabled'
+          ? 'Sharing isn’t enabled for this return.'
+          : code === 'rate_limit_24h'
+            ? 'You’ve reached the share limit for today. Try again tomorrow.'
+            : `Couldn’t create the share: ${code}`,
+      );
+    } finally {
+      setBusy(false);
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  if (status === 'error') {
-    return (
-      <p style={{ fontSize: 13, color: tokens.color.danger }}>
-        The document couldn&apos;t be loaded{errMsg ? ` (${errMsg})` : ''}. Please try again shortly
-        or contact your firm.
-      </p>
-    );
   }
 
+  const field: CSSProperties = {
+    width: '100%',
+    padding: '8px 10px',
+    border: `1px solid ${tokens.color.border}`,
+    borderRadius: tokens.radius.sm,
+    fontSize: 13,
+  };
+
   return (
-    <div>
-      {/* Hide the rendered document from any print output. */}
-      <style>{`@media print { .vibe-pdf-protected { display: none !important; } }`}</style>
-      {status === 'loading' && (
-        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading document…</p>
-      )}
-      <div
-        ref={hostRef}
-        className="vibe-pdf-protected"
-        onContextMenu={(e) => e.preventDefault()}
-        style={{
-          maxHeight: '80vh',
-          overflowY: 'auto',
-          background: '#525659',
-          padding: 12,
-          borderRadius: tokens.radius.sm,
-          userSelect: 'none',
-        }}
-      />
-      {canDownload ? (
-        <div style={{ marginTop: tokens.space.sm }}>
-          <a href={url} download={filename}>
-            <Button variant="secondary" size="sm">
-              Download PDF
-            </Button>
-          </a>
-        </div>
-      ) : (
-        <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: tokens.space.sm }}>
-          This document is view-only — saving and printing are disabled.
-        </p>
-      )}
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        paddingTop: 56,
+        zIndex: 300,
+      }}
+    >
+      <div style={{ width: 'min(560px, 94vw)' }}>
+        <Card title="Share with a 3rd party">
+          {shareUrl ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <p style={{ fontSize: 13, margin: 0 }}>
+                Share link created. Send this secure link to {name || 'your recipient'} — it’s
+                view-only and watermarked.
+              </p>
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'center',
+                  padding: 8,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                }}
+              >
+                <code
+                  style={{
+                    flex: 1,
+                    fontSize: 11,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {shareUrl}
+                </code>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(shareUrl).then(() => setCopied(true));
+                  }}
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </Button>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <Button size="sm" variant="secondary" onClick={onShared}>
+                  Done
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <input
+                  style={field}
+                  placeholder="Recipient name *"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+                <input
+                  style={field}
+                  placeholder="Recipient email *"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+                <input
+                  style={field}
+                  placeholder="Role (e.g. Lender)"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                />
+                <input
+                  style={field}
+                  placeholder="Organization"
+                  value={organization}
+                  onChange={(e) => setOrganization(e.target.value)}
+                />
+              </div>
+              <textarea
+                style={{ ...field, minHeight: 60, resize: 'vertical' }}
+                placeholder="Personal message (optional)"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+              />
+              <label style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                Link expires in{' '}
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={days}
+                  onChange={(e) => setDays(e.target.value)}
+                  style={{ ...field, width: 70, display: 'inline-block', padding: '4px 6px' }}
+                />{' '}
+                days
+              </label>
+              <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+                The recipient gets a view-only, watermarked copy of exactly what was shared with you
+                {scope === 'SELECTED' ? ' (the selected sections only)' : ''}.
+              </p>
+              {err && <p style={{ fontSize: 12, color: tokens.color.danger, margin: 0 }}>{err}</p>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <Button size="sm" variant="ghost" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button size="sm" disabled={busy || !valid} onClick={() => void submit()}>
+                  {busy ? 'Creating…' : 'Create share link'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

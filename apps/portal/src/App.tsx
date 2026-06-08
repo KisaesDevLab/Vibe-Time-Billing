@@ -36,6 +36,7 @@ import { SwitchEntityPage } from './pages/Switch';
 import { TaxPaymentsPage } from './pages/TaxPayments';
 import { TaxReturnsPage } from './pages/TaxReturns';
 import { TaxReturnViewPage } from './pages/TaxReturnView';
+import { SharedTaxReturnPage } from './pages/SharedTaxReturn';
 
 export function App(): JSX.Element {
   // Phase 16 #27 — license + firm-toggle gate. Block all routes (login
@@ -81,6 +82,8 @@ function PortalRoutes(): JSX.Element {
         <Route path="/auth/impersonate" element={<ImpersonatePage />} />
         <Route path="/auth/accept" element={<AcceptInvitationPage />} />
         <Route path="/p/:token" element={<ProposalPage />} />
+        {/* Public 3rd-party recipient view of a shared tax return (token = cred). */}
+        <Route path="/shared/tax/:token" element={<SharedTaxReturnPage />} />
         <Route
           path="*"
           element={

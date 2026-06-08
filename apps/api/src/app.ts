@@ -868,6 +868,7 @@ export function createApp(deps: AppDeps): Express {
   const portalTaxShareRouter = createPortalTaxShareRouter({
     db: deps.db,
     requireAuth: portal.requireAuth,
+    portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/portal/tax/returns', portalTaxShareRouter);
 
@@ -897,11 +898,15 @@ export function createApp(deps: AppDeps): Express {
   const sharePublicRouter = createSharePublicRouter({ db: deps.db });
   app.use('/api/shared', sharePublicRouter);
 
-  // TR-7 — tax-return recipient page (3rd-party token surface).
+  // TR-7 — tax-return recipient API (3rd-party token surface). Mounted
+  // under /api so Caddy proxies it; the recipient *page* is the portal
+  // SPA route /shared/tax/:token (served by the SPA fallback). Distinct
+  // base (/api/shared-tax, not /api/shared/tax) so it can't collide with
+  // the file-share router's `GET /:token` on /api/shared.
   const taxRecipientRouter = createShareRecipientRouter({
     db: deps.db,
   });
-  app.use('/shared/tax', taxRecipientRouter);
+  app.use('/api/shared-tax', taxRecipientRouter);
 
   // 0103/0104 — public anonymous document-intake surface. Mounted outside
   // the staff + portal auth chains (like /api/shared); the intake Caddy

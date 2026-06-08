@@ -15,8 +15,10 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
+import { clientPortalAccess, taxReturnReleases } from '@vibe/db/schema';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { resolveScope } from './scope';
@@ -26,6 +28,8 @@ import { appendAccessLog } from '../tax-returns/access-log';
 export interface PortalTaxShareDeps {
   db: Database | null;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  // Base for building the recipient link returned to the sharer.
+  portalBaseUrl: string;
 }
 
 const BodySchema = z.object({
@@ -61,11 +65,45 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
     }
     const scope = await resolveScope(deps.db, session, req);
 
-    // The share is "shared by" the active client_access row of the
-    // session. We need its id.
-    const accessId = (session as unknown as { activeClientAccessId?: string }).activeClientAccessId;
+    // The share is "shared by" the active client_access row. Prefer an
+    // id already on the session (impersonation/tests); otherwise resolve
+    // it from the DB (the normal portal JWT doesn't carry it).
+    let accessId = (session as unknown as { activeClientAccessId?: string }).activeClientAccessId;
+    if (!accessId) {
+      const [access] = await deps.db
+        .select({ id: clientPortalAccess.id })
+        .from(clientPortalAccess)
+        .where(
+          and(
+            eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+            eq(clientPortalAccess.clientId, session.activeClientId),
+          ),
+        )
+        .limit(1);
+      accessId = access?.id;
+    }
     if (!accessId) {
       res.status(403).json({ error: 'no_active_access' });
+      return;
+    }
+
+    // Sharing requires the client's release to allow download.
+    const [release] = await deps.db
+      .select({ clientCanDownload: taxReturnReleases.clientCanDownload })
+      .from(taxReturnReleases)
+      .where(
+        and(
+          eq(taxReturnReleases.returnId, req.params['returnId']!),
+          inArray(taxReturnReleases.releasedToClientId, scope.clientIds),
+        ),
+      )
+      .limit(1);
+    if (!release) {
+      res.status(404).json({ error: 'release_not_found' });
+      return;
+    }
+    if (!release.clientCanDownload) {
+      res.status(403).json({ error: 'download_not_enabled' });
       return;
     }
 
@@ -111,20 +149,16 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
           expiresAt: result.expiresAt.toISOString(),
         },
       }).catch(() => undefined);
-      // Plaintext token MUST be forwarded to the dispatcher and
-      // immediately discarded — never reach the JSON response.
-      // Caller-side dispatch goes here in production; for v1 we
-      // expose the token only in dev/test mode for inspection.
-      const includeTokenForTesting =
-        process.env['NODE_ENV'] === 'test' || process.env['NODE_ENV'] === 'development';
-      const body: Record<string, unknown> = {
+      // Return the recipient link to the sharer so they can deliver it
+      // (there's no outbound dispatcher wired). The sharer already has
+      // full access to this return, so handing them a copy-link is no
+      // broader than what they can do; the token still never gets logged.
+      const shareUrl = `${deps.portalBaseUrl.replace(/\/+$/, '')}/shared/tax/${result.token}`;
+      res.status(201).json({
         shareId: result.shareId,
         expiresAt: result.expiresAt.toISOString(),
-      };
-      if (includeTokenForTesting) {
-        body['token'] = result.token;
-      }
-      res.status(201).json(body);
+        shareUrl,
+      });
     } catch (err) {
       if (err instanceof ShareError) {
         const status =
