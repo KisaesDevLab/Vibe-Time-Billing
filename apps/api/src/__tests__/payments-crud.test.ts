@@ -148,6 +148,36 @@ describe('payment edit + void', () => {
     expect(Number(inv!.paidCents)).toBe(40000); // only the Stripe payment remains
   });
 
+  it('returns a fully-paid invoice to the unpaid list when its only payment is voided', async () => {
+    const seedFs = await seedMinimalFirm(harness.db);
+    const invRows = await harness.db.execute(
+      sql`INSERT INTO invoice (firm_id, client_id, primary_engagement_id, invoice_number,
+                               issue_date, due_date, subtotal_cents, total_cents, paid_cents, status)
+          VALUES (${seedFs.firmId}, ${seedFs.clientId}, ${seedFs.engagementId}, 'INV-Z',
+                  '2026-06-01', '2026-06-15', 100000, 100000, 100000, 'PAID') RETURNING id`,
+    );
+    const invoiceId = (invRows as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const p = await harness.db.execute(
+      sql`INSERT INTO payment (invoice_id, amount_cents, fee_cents, provider, status, received_at)
+          VALUES (${invoiceId}, 100000, 0, 'MANUAL', 'SUCCEEDED', '2026-06-05T10:00:00Z') RETURNING id`,
+    );
+    const payId = (p as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const res = await call(
+      router(),
+      'post',
+      '/:id/void',
+      seedFs.firmId,
+      seedFs.appUserId,
+      { id: payId },
+      {},
+    );
+    expect(res.statusCode).toBe(200);
+    const [inv] = await harness.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(Number(inv!.paidCents)).toBe(0);
+    expect(inv!.status).toBe('SENT'); // back on the unpaid list (not past due → SENT)
+    expect(inv!.paidAt).toBeNull();
+  });
+
   it('refuses to edit or void a Stripe-processed payment', async () => {
     const s = await seed();
     const edit = await call(

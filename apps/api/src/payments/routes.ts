@@ -1659,15 +1659,31 @@ export async function recomputeInvoicePaidReturnsFullyPaid(
       ),
     );
   const [inv] = await tx
-    .select({ total: invoices.totalCents, currentStatus: invoices.status })
+    .select({
+      total: invoices.totalCents,
+      currentStatus: invoices.status,
+      dueDate: invoices.dueDate,
+    })
     .from(invoices)
     .where(eq(invoices.id, invoiceId))
     .limit(1);
   if (!inv) return false;
   const paidCents = Number(agg?.paidCents ?? 0);
   const total = Number(inv.total);
-  const nextStatus =
-    paidCents >= total ? 'PAID' : paidCents > 0 ? 'PARTIALLY_PAID' : inv.currentStatus;
+  let nextStatus: typeof inv.currentStatus;
+  if (paidCents >= total) {
+    nextStatus = 'PAID';
+  } else if (paidCents > 0) {
+    nextStatus = 'PARTIALLY_PAID';
+  } else if (inv.currentStatus === 'PAID' || inv.currentStatus === 'PARTIALLY_PAID') {
+    // Paid amount fell back to zero (e.g. a payment was voided) — return the
+    // invoice to the unpaid list as OVERDUE (if past due) or SENT. DRAFT /
+    // VOIDED invoices are left untouched.
+    const overdue = inv.dueDate != null && inv.dueDate < new Date().toISOString().slice(0, 10);
+    nextStatus = overdue ? 'OVERDUE' : 'SENT';
+  } else {
+    nextStatus = inv.currentStatus;
+  }
   await tx
     .update(invoices)
     .set({
