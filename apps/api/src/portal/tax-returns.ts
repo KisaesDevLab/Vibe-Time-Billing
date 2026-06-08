@@ -25,16 +25,39 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { taxReturnReleases, taxReturnSections, taxReturns, taxReturnShares } from '@vibe/db/schema';
+import {
+  files,
+  taxReturnReleases,
+  taxReturnSections,
+  taxReturns,
+  taxReturnShares,
+} from '@vibe/db/schema';
 import { planExtraction, type SectionPageRange } from '@vibe/core/tax-returns';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { logger } from '../logger';
 import { resolveScope } from './scope';
 import { appendAccessLog, listAccessLog } from '../tax-returns/access-log';
+import { renderScopedReturnPdf, RenderError } from '../tax-returns/render';
 
 export interface PortalTaxReturnDeps {
   db: Database | null;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  // Tests inject a fake; production resolves lazily per-request so it
+  // picks up the B2 creds hydrated into process.env after boot. The
+  // .pdf endpoint renders the scoped, watermarked subset; with no
+  // storage it falls closed to 503 (never serves source bytes).
+  storage?: StorageClient | null;
+}
+
+function resolveStorage(deps: PortalTaxReturnDeps): StorageClient | null {
+  if (deps.storage) return deps.storage;
+  try {
+    return buildStorageClient(process.env);
+  } catch {
+    return null;
+  }
 }
 
 interface ReleasedReturnView {
@@ -328,16 +351,37 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
       actorUserAgent: req.get('user-agent') ?? null,
       metadata: { pages: plan.pageIndices1Based.length, scope: releaseRow.scope },
     }).catch(() => undefined);
-    // Real renderer is wired by ops; this is the security-correct
-    // fall-closed default.
-    res.status(503).json({
-      error: 'pdf_renderer_unavailable',
-      // Surface the plan so an admin can hand-render for debugging
-      // without exposing source bytes.
-      pages: plan.pageIndices1Based.length,
-      cacheKey: plan.cacheKey,
-      watermark: plan.watermarkText,
-    });
+
+    // Fall closed: with no storage client or a deleted source file we
+    // never serve the original — return 503 instead.
+    const storage = resolveStorage(deps);
+    if (!storage || !releaseRow.sourceStorageKey) {
+      res.status(503).json({
+        error: 'pdf_renderer_unavailable',
+        pages: plan.pageIndices1Based.length,
+        cacheKey: plan.cacheKey,
+        watermark: plan.watermarkText,
+      });
+      return;
+    }
+    try {
+      const pdf = await renderScopedReturnPdf({
+        storage,
+        sourceStorageKey: releaseRow.sourceStorageKey,
+        pageIndices1Based: plan.pageIndices1Based,
+        watermarkText: plan.watermarkText,
+      });
+      const filename = `${releaseRow.taxYear} ${releaseRow.formCode} ${releaseRow.jurisdiction}.pdf`;
+      res.status(200);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send(pdf);
+    } catch (err) {
+      const code = err instanceof RenderError ? err.code : 'render_failed';
+      logger.warn({ err, returnId: releaseRow.returnId }, 'tax-return render failed');
+      res.status(502).json({ error: 'pdf_render_failed', detail: code });
+    }
   });
 
   return router;
@@ -357,6 +401,8 @@ interface ReleaseRowForCaller {
   sectionIds: string[];
   clientCanDownload: boolean;
   coverNote: string | null;
+  // Source PDF location — null when the file row was deleted.
+  sourceStorageKey: string | null;
 }
 
 async function loadReleaseForCaller(
@@ -380,9 +426,12 @@ async function loadReleaseForCaller(
       sectionIds: taxReturnReleases.sectionIds,
       clientCanDownload: taxReturnReleases.clientCanDownload,
       coverNote: taxReturnReleases.coverNote,
+      sourceStorageKey: files.storageKey,
+      sourceDeletedAt: files.deletedAt,
     })
     .from(taxReturnReleases)
     .innerJoin(taxReturns, eq(taxReturns.id, taxReturnReleases.returnId))
+    .leftJoin(files, eq(files.id, taxReturns.sourceFileId))
     .where(
       and(
         eq(taxReturnReleases.returnId, returnId),
@@ -406,5 +455,6 @@ async function loadReleaseForCaller(
     sectionIds: row.sectionIds as string[],
     clientCanDownload: row.clientCanDownload,
     coverNote: row.coverNote,
+    sourceStorageKey: row.sourceDeletedAt ? null : row.sourceStorageKey,
   };
 }

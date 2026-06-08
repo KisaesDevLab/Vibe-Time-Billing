@@ -2,8 +2,13 @@
 //
 // TR-4 — Portal tax-return viewer route tests.
 
+import { Readable } from 'node:stream';
+
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql } from 'drizzle-orm';
+import { PDFDocument } from 'pdf-lib';
+
+import type { StorageClient } from '@vibe/storage';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { taxReturnReleases, taxReturnSections, taxReturns } from '@vibe/db/schema';
@@ -324,5 +329,125 @@ describe('TR-4 — GET /:returnId.pdf', () => {
       makeReq({ ...f, params: { returnId: f.returnId } }),
     );
     expect(r.statusCode).toBe(404);
+  });
+});
+
+// A response double that also captures setHeader/send (the render path,
+// unlike the json-only fall-closed path).
+interface RenderRes {
+  statusCode: number;
+  jsonBody: unknown;
+  headers: Record<string, string>;
+  sentBody: Buffer | null;
+  status(c: number): RenderRes;
+  json(b: unknown): RenderRes;
+  setHeader(k: string, v: string): void;
+  send(b: unknown): RenderRes;
+}
+function makeRenderRes(): RenderRes {
+  return {
+    statusCode: 200,
+    jsonBody: undefined,
+    headers: {},
+    sentBody: null,
+    status(c) {
+      this.statusCode = c;
+      return this;
+    },
+    json(b) {
+      this.jsonBody = b;
+      return this;
+    },
+    setHeader(k, v) {
+      this.headers[k] = v;
+    },
+    send(b) {
+      this.sentBody = b as Buffer;
+      return this;
+    },
+  };
+}
+async function invokeRender(
+  router: ReturnType<typeof createPortalTaxReturnRouter>,
+  req: FakeReq,
+): Promise<RenderRes> {
+  const res = makeRenderRes();
+  const layer = router.stack.find((l) => {
+    if (!l.route) return false;
+    const r = l.route as unknown as { path: string; methods: Record<string, boolean> };
+    return r.path === '/:returnId.pdf' && r.methods['get'] === true;
+  });
+  if (!layer) throw new Error('route not registered: GET /:returnId.pdf');
+  const route = layer.route as unknown as { stack: { handle: (...a: unknown[]) => unknown }[] };
+  const handler = route.stack[route.stack.length - 1]!.handle;
+  await (handler as (req: unknown, res: unknown) => Promise<void>)(req, res);
+  return res;
+}
+
+describe('TR-2 — GET /:returnId.pdf renders the scoped subset', () => {
+  async function makeSourcePdf(pages: number): Promise<Buffer> {
+    const doc = await PDFDocument.create();
+    for (let i = 0; i < pages; i++) doc.addPage([300, 300]);
+    return Buffer.from(await doc.save());
+  }
+  function fakeStorage(key: string, bytes: Buffer): StorageClient {
+    return {
+      kind: 'mock',
+      async get(k: string) {
+        if (k !== key) throw new Error('not found');
+        return { body: Readable.from(bytes), meta: {} };
+      },
+    } as unknown as StorageClient;
+  }
+  // Attach a source file row to the seeded return and rebuild the router
+  // with a storage client that serves a 14-page source PDF.
+  async function withSource(
+    f: Awaited<ReturnType<typeof setup>>,
+    sourcePages: number,
+  ): Promise<{ router: ReturnType<typeof createPortalTaxReturnRouter> }> {
+    const key = 'Test/Tax Returns/return.pdf';
+    const folder = await harness.db.execute(
+      sql`INSERT INTO client_folders (firm_id, client_id, storage_path, status)
+          SELECT firm_id, ${f.clientId}, 'Test/', 'active' FROM client WHERE id = ${f.clientId}
+          RETURNING id`,
+    );
+    const folderId = (folder as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const file = await harness.db.execute(
+      sql`INSERT INTO files (firm_id, client_id, client_folder_id, storage_key, original_filename, size_bytes)
+          SELECT firm_id, ${f.clientId}, ${folderId}, ${key}, 'return.pdf', 1
+          FROM client WHERE id = ${f.clientId}
+          RETURNING id`,
+    );
+    const fileId = (file as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`UPDATE tax_returns SET source_file_id = ${fileId} WHERE id = ${f.returnId}`,
+    );
+    const router = createPortalTaxReturnRouter({
+      db: harness.db,
+      requireAuth: (_req, _res, next) => next(),
+      storage: fakeStorage(key, await makeSourcePdf(sourcePages)),
+    });
+    return { router };
+  }
+
+  it('SELECTED → 200 application/pdf with only the released pages', async () => {
+    const f = await setup('SELECTED');
+    const { router } = await withSource(f, 14);
+    const res = await invokeRender(router, makeReq({ ...f, params: { returnId: f.returnId } }));
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('application/pdf');
+    expect(res.sentBody).toBeInstanceOf(Buffer);
+    const out = await PDFDocument.load(res.sentBody!);
+    // s1 (pp 1-5) + s2 (pp 6-7) released; Worksheets (8-14) withheld.
+    expect(out.getPageCount()).toBe(7);
+  });
+
+  it('FULL → 200 with every source page', async () => {
+    const f = await setup('FULL');
+    const { router } = await withSource(f, 14);
+    const res = await invokeRender(router, makeReq({ ...f, params: { returnId: f.returnId } }));
+    expect(res.statusCode).toBe(200);
+    const out = await PDFDocument.load(res.sentBody!);
+    expect(out.getPageCount()).toBe(14);
   });
 });

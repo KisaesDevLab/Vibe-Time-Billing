@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Card, EmptyState, SectionHeading, Stat, tokens } from '@vibe/ui';
+import { Card, EmptyState, Pill, SectionHeading, Stat, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -31,6 +31,17 @@ interface PortalTaxPaymentSummary {
   amountCents: number;
   dueDate: string;
   status: 'SCHEDULED' | 'PAID';
+}
+
+interface ReleasedReturnSummary {
+  returnId: string;
+  taxYear: number;
+  formCode: string;
+  jurisdiction: string;
+  title: string;
+  releasedAt: string;
+  scope: 'FULL' | 'SELECTED';
+  releaseKind: 'ORIGINAL' | 'AMENDED' | 'SUPERSEDED';
 }
 
 interface AppointmentSummary {
@@ -65,6 +76,7 @@ export function HomePage(): JSX.Element {
   const { me } = useAuth();
   const [openInvoices, setOpenInvoices] = useState<InvoiceSummary[]>([]);
   const [taxPayments, setTaxPayments] = useState<PortalTaxPaymentSummary[]>([]);
+  const [taxReturns, setTaxReturns] = useState<ReleasedReturnSummary[]>([]);
   const [engagements, setEngagements] = useState<ActiveEngagementSummary[]>([]);
   const [appointments, setAppointments] = useState<AppointmentSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -72,14 +84,16 @@ export function HomePage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [inv, tax, eng, apt] = await Promise.all([
+        const [inv, tax, ret, eng, apt] = await Promise.all([
           api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
           api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
+          api<{ items: ReleasedReturnSummary[] }>('/api/portal/tax/returns'),
           api<{ items: ActiveEngagementSummary[] }>('/api/portal/engagements/active'),
           api<{ items: AppointmentSummary[] }>('/api/portal/appointments'),
         ]);
         setOpenInvoices(inv.open ?? []);
         setTaxPayments(tax.items ?? []);
+        setTaxReturns(ret.items ?? []);
         setEngagements(eng.items ?? []);
         setAppointments(apt.items ?? []);
       } catch {
@@ -289,6 +303,66 @@ export function HomePage(): JSX.Element {
                   </div>
                   <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
                     {formatCents(inv.totalCents - inv.paidCents)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </section>
+
+      <section>
+        <SectionHeading
+          title="Tax returns"
+          action={
+            taxReturns.length > 0 ? (
+              <Link to="/tax/returns" style={{ color: tokens.color.accent, fontSize: 13 }}>
+                View all →
+              </Link>
+            ) : undefined
+          }
+        />
+        <Card>
+          {!loaded ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>
+          ) : taxReturns.length === 0 ? (
+            <EmptyState
+              icon="📄"
+              title="No tax returns released yet"
+              body="When your firm releases a tax return to you, it will appear here for secure viewing."
+            />
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+              {taxReturns.slice(0, 3).map((r) => (
+                <li
+                  key={r.returnId}
+                  style={{
+                    padding: tokens.space.md,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.bg,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <Link
+                      to={`/tax/returns/${r.returnId}`}
+                      style={{ color: tokens.color.accent, fontWeight: 500, fontSize: 14 }}
+                    >
+                      {r.taxYear} {r.formCode} — {r.jurisdiction}
+                    </Link>
+                    <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 2 }}>
+                      Released {new Date(r.releasedAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {r.releaseKind === 'AMENDED' && <Pill tone="warning">Amended</Pill>}
+                    <Pill tone={r.scope === 'FULL' ? 'success' : 'neutral'}>
+                      {r.scope === 'FULL' ? 'Full return' : 'Selected'}
+                    </Pill>
                   </div>
                 </li>
               ))}

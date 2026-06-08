@@ -4112,6 +4112,11 @@ export const taxPayments = pgTable(
     }),
     jurisdiction: text('jurisdiction').notNull(),
     paymentType: text('payment_type').notNull(),
+    // 0134 — optional link to the tax return this payment was generated
+    // from (estimated vouchers / balance due). Loose column; the FK to
+    // tax_returns is added by migration 0134 to avoid a core↔tax-returns
+    // import cycle (same pattern as tax_returns.amends_return_id).
+    taxReturnId: uuid('tax_return_id'),
     // 0090 — denormalized "pay online" link snapshotted from the
     // tax_payment_type catalog at create time so the portal CTA is
     // stable even if the catalog row is later edited or removed.

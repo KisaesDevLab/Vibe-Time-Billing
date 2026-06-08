@@ -72,18 +72,12 @@ interface AccessLogItem {
   metadata: Record<string, unknown> | null;
 }
 
-interface PdfPlan {
-  pages: number;
-  cacheKey: string;
-  watermark: string;
-}
-
 export function TaxReturnViewPage(): JSX.Element {
   const { returnId } = useParams<{ returnId: string }>();
   const [meta, setMeta] = useState<ReturnMeta | null>(null);
   const [log, setLog] = useState<AccessLogItem[]>([]);
-  const [pdfPlan, setPdfPlan] = useState<PdfPlan | null>(null);
-  const [pdfErr, setPdfErr] = useState<string | null>(null);
+  const [pdfState, setPdfState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [pdfErrMsg, setPdfErrMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -113,31 +107,43 @@ export function TaxReturnViewPage(): JSX.Element {
     })();
   }, [returnId]);
 
-  // Best-effort PDF render. Server falls closed with 503 +
-  // { error: 'pdf_renderer_unavailable', pages, cacheKey, watermark }.
+  // Probe the rendered PDF so we can show a graceful message if the
+  // renderer is unavailable, without garbling the bytes through the JSON
+  // api() helper. On success the <iframe> below streams + renders it
+  // (scoped to the released pages, watermarked).
   useEffect(() => {
     if (!returnId) return;
+    let cancelled = false;
+    setPdfState('loading');
+    setPdfErrMsg(null);
     void (async () => {
       try {
-        await api(`/api/portal/tax/returns/${returnId}.pdf`);
-        // If it succeeds (renderer wired), the browser will download
-        // or render directly; nothing to do here.
-      } catch (err) {
-        const apiErr = err as ApiError;
-        if (apiErr.status === 503 && apiErr.body && typeof apiErr.body === 'object') {
-          const body = apiErr.body as Record<string, unknown>;
-          if ('pages' in body && 'cacheKey' in body && 'watermark' in body) {
-            setPdfPlan({
-              pages: Number(body['pages']),
-              cacheKey: String(body['cacheKey']),
-              watermark: String(body['watermark']),
-            });
-            return;
+        const res = await fetch(`/api/portal/tax/returns/${returnId}.pdf`, {
+          credentials: 'same-origin',
+        });
+        if (cancelled) return;
+        if (res.ok) {
+          setPdfState('ready');
+        } else {
+          let msg = `status ${res.status}`;
+          try {
+            const b = (await res.json()) as { error?: string };
+            if (b?.error) msg = b.error;
+          } catch {
+            /* non-JSON error body */
           }
+          setPdfErrMsg(msg);
+          setPdfState('error');
         }
-        setPdfErr(apiErr.message ?? 'pdf_unavailable');
+      } catch (e) {
+        if (cancelled) return;
+        setPdfErrMsg(e instanceof Error ? e.message : 'failed');
+        setPdfState('error');
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [returnId]);
 
   const sortedSections = useMemo(() => {
@@ -274,51 +280,51 @@ export function TaxReturnViewPage(): JSX.Element {
         </Card>
 
         <Card title="Document">
-          {pdfPlan ? (
+          {pdfState === 'error' ? (
+            <p style={{ fontSize: 13, color: tokens.color.danger }}>
+              The document couldn&apos;t be loaded
+              {pdfErrMsg ? ` (${pdfErrMsg})` : ''}. Please try again shortly or contact your firm.
+            </p>
+          ) : pdfState === 'loading' ? (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading document…</p>
+          ) : (
             <div>
-              <p style={{ fontSize: 14, lineHeight: 1.5, marginTop: 0 }}>
-                Your firm has released <strong>{pdfPlan.pages}</strong> page
-                {pdfPlan.pages === 1 ? '' : 's'} for your review.
-              </p>
-              <p style={{ fontSize: 13, color: tokens.color.textMuted, lineHeight: 1.5 }}>
-                Document rendering is being prepared. You&apos;ll see the watermarked PDF here as
-                soon as your firm&apos;s PDF service is configured. In the meantime, the sections
-                sidebar shows you everything that was included.
-              </p>
-              <div
+              {/* The PDF is rendered scoped to the released pages + watermarked.
+                  #toolbar=0&navpanes=0 hides the browser PDF viewer's
+                  download/print/rotate chrome so the portal stays view-only. */}
+              <iframe
+                title="Tax return document"
+                src={`/api/portal/tax/returns/${returnId}.pdf#toolbar=0&navpanes=0`}
                 style={{
-                  marginTop: tokens.space.md,
-                  padding: tokens.space.sm,
-                  background: tokens.color.surface,
-                  border: `1px dashed ${tokens.color.border}`,
+                  width: '100%',
+                  height: '80vh',
+                  border: `1px solid ${tokens.color.border}`,
                   borderRadius: tokens.radius.sm,
-                  fontSize: 12,
-                  color: tokens.color.textMuted,
                 }}
-              >
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>Watermark</div>
-                <code style={{ fontSize: 11 }}>{pdfPlan.watermark}</code>
-              </div>
-              {meta.release.clientCanDownload && (
-                <div style={{ marginTop: tokens.space.md }}>
+              />
+              {meta.release.clientCanDownload ? (
+                <div style={{ marginTop: tokens.space.sm }}>
                   <a
                     href={`/api/portal/tax/returns/${returnId}.pdf`}
-                    target="_blank"
-                    rel="noreferrer"
+                    download={`${meta.return.taxYear}-${meta.return.formCode}-${meta.return.jurisdiction}.pdf`}
                   >
                     <Button variant="secondary" size="sm">
-                      Retry download
+                      Download PDF
                     </Button>
                   </a>
                 </div>
+              ) : (
+                <p
+                  style={{
+                    fontSize: 11,
+                    color: tokens.color.textMuted,
+                    marginTop: tokens.space.sm,
+                  }}
+                >
+                  This document is view-only.
+                </p>
               )}
             </div>
-          ) : pdfErr ? (
-            <p style={{ fontSize: 13, color: tokens.color.danger }}>
-              The document could not be loaded: {pdfErr}.
-            </p>
-          ) : (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading document…</p>
           )}
         </Card>
       </div>

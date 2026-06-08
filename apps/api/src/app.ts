@@ -851,6 +851,12 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/portal/engagements', portalEngagementRouter);
 
+  // TR-2 renderer + parser resolve their storage client lazily per
+  // request (B2 creds are folded into process.env *after* the server
+  // starts, so a client built here at construction time would be the
+  // dev mock). We therefore pass no storage and let each router call
+  // buildStorageClient(process.env) at request time.
+
   // TR-4 — portal tax-return viewer endpoints.
   const portalTaxReturnRouter = createPortalTaxReturnRouter({
     db: deps.db,
@@ -892,7 +898,9 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/shared', sharePublicRouter);
 
   // TR-7 — tax-return recipient page (3rd-party token surface).
-  const taxRecipientRouter = createShareRecipientRouter({ db: deps.db });
+  const taxRecipientRouter = createShareRecipientRouter({
+    db: deps.db,
+  });
   app.use('/shared/tax', taxRecipientRouter);
 
   // 0103/0104 — public anonymous document-intake surface. Mounted outside

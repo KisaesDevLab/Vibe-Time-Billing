@@ -29,6 +29,7 @@ import {
   engagements,
   portalIdentity,
   taxPayments,
+  taxReturns,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
@@ -54,6 +55,7 @@ const URL_RE = /^https?:\/\/[^\s]+$/i;
 const CreateSchema = z.object({
   clientId: z.string().uuid(),
   engagementId: z.string().uuid().nullable().optional(),
+  taxReturnId: z.string().uuid().nullable().optional(),
   jurisdiction: z.string().min(1).max(120),
   paymentType: z.string().min(1).max(120),
   paymentUrl: z.string().regex(URL_RE).max(2048).nullable().optional(),
@@ -99,6 +101,8 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
         return;
       }
       const conds = [eq(taxPayments.firmId, session.firmId)];
+      const returnFilter = uuidQueryParam(req.query['returnId']);
+      if (returnFilter) conds.push(eq(taxPayments.taxReturnId, returnFilter));
       const clientFilter = uuidQueryParam(req.query['clientId']);
       if (clientFilter && clientFilter !== 'invalid') {
         conds.push(eq(taxPayments.clientId, clientFilter));
@@ -160,6 +164,7 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
           paidDate: taxPayments.paidDate,
           confirmationNumber: taxPayments.confirmationNumber,
           notes: taxPayments.notes,
+          taxReturnId: taxPayments.taxReturnId,
           createdAt: taxPayments.createdAt,
           updatedAt: taxPayments.updatedAt,
         })
@@ -239,12 +244,31 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
           return;
         }
       }
+      // If a tax return is supplied, it must belong to the same client.
+      if (parsed.data.taxReturnId) {
+        const [tr] = await deps.db
+          .select({ id: taxReturns.id })
+          .from(taxReturns)
+          .where(
+            and(
+              eq(taxReturns.id, parsed.data.taxReturnId),
+              eq(taxReturns.firmId, session.firmId),
+              eq(taxReturns.clientId, parsed.data.clientId),
+            ),
+          )
+          .limit(1);
+        if (!tr) {
+          res.status(400).json({ error: 'tax_return_not_in_client' });
+          return;
+        }
+      }
       const [row] = await deps.db
         .insert(taxPayments)
         .values({
           firmId: session.firmId,
           clientId: parsed.data.clientId,
           engagementId: parsed.data.engagementId ?? null,
+          taxReturnId: parsed.data.taxReturnId ?? null,
           jurisdiction: parsed.data.jurisdiction,
           paymentType: parsed.data.paymentType,
           paymentUrl: parsed.data.paymentUrl ?? null,

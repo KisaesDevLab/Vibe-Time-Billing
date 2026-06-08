@@ -27,8 +27,9 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { taxReturnSections } from '@vibe/db/schema';
+import { files, taxReturns, taxReturnSections } from '@vibe/db/schema';
 import { planExtraction, type SectionPageRange } from '@vibe/core/tax-returns';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { logger } from '../logger';
 import {
@@ -38,9 +39,23 @@ import {
   ShareError,
 } from '../tax-returns/share-helper';
 import { appendAccessLog } from '../tax-returns/access-log';
+import { renderScopedReturnPdf, RenderError } from '../tax-returns/render';
 
 export interface ShareRecipientDeps {
   db: Database | null;
+  // Tests inject a fake; production resolves lazily per-request (B2
+  // creds land in process.env after boot). /pdf renders the scoped,
+  // watermarked subset; with no storage it falls closed to 503.
+  storage?: StorageClient | null;
+}
+
+function resolveStorage(deps: ShareRecipientDeps): StorageClient | null {
+  if (deps.storage) return deps.storage;
+  try {
+    return buildStorageClient(process.env);
+  } catch {
+    return null;
+  }
 }
 
 const VerifyBody = z.object({
@@ -244,12 +259,44 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
       shareId: share.id,
       metadata: { pages: plan.pageIndices1Based.length },
     }).catch(() => undefined);
-    res.status(503).json({
-      error: 'pdf_renderer_unavailable',
-      pages: plan.pageIndices1Based.length,
-      cacheKey: plan.cacheKey,
-      watermark: plan.watermarkText,
-    });
+
+    // Resolve the source PDF for this return (skip deleted files).
+    const [src] = await deps.db
+      .select({ storageKey: files.storageKey, deletedAt: files.deletedAt })
+      .from(taxReturns)
+      .leftJoin(files, eq(files.id, taxReturns.sourceFileId))
+      .where(eq(taxReturns.id, share.returnId))
+      .limit(1);
+    const sourceStorageKey = src && !src.deletedAt ? src.storageKey : null;
+
+    // Fall closed when there's no renderer/source: never serve originals.
+    const storage = resolveStorage(deps);
+    if (!storage || !sourceStorageKey) {
+      res.status(503).json({
+        error: 'pdf_renderer_unavailable',
+        pages: plan.pageIndices1Based.length,
+        cacheKey: plan.cacheKey,
+        watermark: plan.watermarkText,
+      });
+      return;
+    }
+    try {
+      const pdf = await renderScopedReturnPdf({
+        storage,
+        sourceStorageKey,
+        pageIndices1Based: plan.pageIndices1Based,
+        watermarkText: plan.watermarkText,
+      });
+      res.status(200);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="tax-return.pdf"');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send(pdf);
+    } catch (err) {
+      const code = err instanceof RenderError ? err.code : 'render_failed';
+      logger.warn({ err, returnId: share.returnId }, 'recipient tax-return render failed');
+      res.status(502).json({ error: 'pdf_render_failed', detail: code });
+    }
   });
 
   return router;

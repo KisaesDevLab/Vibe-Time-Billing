@@ -400,6 +400,117 @@ describe('TR-3 — routes', () => {
     expect(del.statusCode).toBe(204);
   });
 
+  it('DELETE /:returnId hard-deletes an unreleased return', async () => {
+    const f = await seedReturn();
+    const router = createTaxReturnRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[f.appUserId, ['partner']]]),
+    });
+    const del = await invoke(router, 'delete', '/:returnId', {
+      body: {},
+      params: { returnId: f.returnId },
+      query: {},
+      staffSession: { firmId: f.firmId, appUserId: f.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    expect(del.statusCode).toBe(204);
+    const remaining = await harness.db
+      .select({ id: taxReturns.id })
+      .from(taxReturns)
+      .where(eq(taxReturns.id, f.returnId));
+    expect(remaining.length).toBe(0);
+    // Sections cascade away too.
+    const secs = await harness.db
+      .select({ id: taxReturnSections.id })
+      .from(taxReturnSections)
+      .where(eq(taxReturnSections.returnId, f.returnId));
+    expect(secs.length).toBe(0);
+  });
+
+  it('DELETE /:returnId 404 for another firm', async () => {
+    const f = await seedReturn();
+    const router = createTaxReturnRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[f.appUserId, ['partner']]]),
+    });
+    const del = await invoke(router, 'delete', '/:returnId', {
+      body: {},
+      params: { returnId: f.returnId },
+      query: {},
+      // Wrong firm id → must not find the return.
+      staffSession: { firmId: '00000000-0000-0000-0000-000000000000', appUserId: f.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    expect(del.statusCode).toBe(404);
+  });
+
+  it('DELETE /:returnId deletes a RELEASED return and cascades its releases', async () => {
+    const f = await seedReturn();
+    const router = createTaxReturnRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[f.appUserId, ['partner']]]),
+    });
+    await invoke(router, 'post', '/:returnId/releases', {
+      body: { releasedToClientId: f.clientId, scope: 'FULL', sectionIds: [] },
+      params: { returnId: f.returnId },
+      query: {},
+      staffSession: { firmId: f.firmId, appUserId: f.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    const del = await invoke(router, 'delete', '/:returnId', {
+      body: {},
+      params: { returnId: f.returnId },
+      query: {},
+      staffSession: { firmId: f.firmId, appUserId: f.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    expect(del.statusCode).toBe(204);
+    // The return is gone and its releases cascaded away (client loses access).
+    const ret = await harness.db
+      .select({ id: taxReturns.id })
+      .from(taxReturns)
+      .where(eq(taxReturns.id, f.returnId));
+    expect(ret.length).toBe(0);
+    const rel = await harness.db
+      .select({ id: taxReturnReleases.id })
+      .from(taxReturnReleases)
+      .where(eq(taxReturnReleases.returnId, f.returnId));
+    expect(rel.length).toBe(0);
+  });
+
+  it('DELETE /:returnId 409 when an amendment points at it', async () => {
+    const f = await seedReturn();
+    // A second return that amends the first.
+    await harness.db.insert(taxReturns).values({
+      firmId: f.firmId,
+      clientId: f.clientId,
+      taxYear: 2025,
+      formCode: '1120-S',
+      title: '2025 S-Corp (amended)',
+      status: 'DRAFT',
+      releaseKind: 'AMENDED',
+      amendsReturnId: f.returnId,
+    });
+    const router = createTaxReturnRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[f.appUserId, ['partner']]]),
+    });
+    const del = await invoke(router, 'delete', '/:returnId', {
+      body: {},
+      params: { returnId: f.returnId },
+      query: {},
+      staffSession: { firmId: f.firmId, appUserId: f.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    expect(del.statusCode).toBe(409);
+    expect((del.jsonBody as { error: string }).error).toBe('has_amendments');
+  });
+
   it('GET / lists firm returns only', async () => {
     const f = await seedReturn();
     // Seed a second firm + return that should NOT appear.

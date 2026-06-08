@@ -160,41 +160,74 @@ export const DEFAULT_LEXICON: LexiconPattern[] = [
     kind: 'SCHEDULE',
     normalized: 'Schedule {1}',
   },
-  // Generic numbered form (8949, 8606, etc.)
+  // Generic numbered form (8949, 8606, 1040ES, 8879, 2210, etc.)
   {
     re: /^Form\s+(\d{3,5}[A-Z-]*)\b/i,
     formCode: 'Form {1}',
     kind: 'SCHEDULE',
     normalized: 'Form {1}',
   },
-  // State return
+  // State forms in "XX Form …" naming (UltraTax/Lacerte), e.g.
+  // "MO Form MO-1040", "CA Form 540". Preserve the full title; capture
+  // the state + form for the code. {0} = whole matched line.
+  {
+    re: /^([A-Z]{2})\s+Form\s+([A-Za-z0-9-]+)\b.*$/,
+    formCode: '{1} {2}',
+    kind: 'STATE',
+    normalized: '{0}',
+  },
+  // State forms by abbreviation + number, e.g. "MO-1040ES", "CA-540".
+  // Only real US state/territory abbreviations to avoid false hits.
+  {
+    re: /^(A[KLRZ]|C[AOT]|D[CE]|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]|N[CDEHJMVY]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY])-([0-9][A-Za-z0-9-]*)\b.*$/,
+    formCode: '{1}-{2}',
+    kind: 'STATE',
+    normalized: '{0}',
+  },
+  // State return ("State — California").
   {
     re: /^State[\s—-]+(.+?)\s*$/i,
     formCode: 'State',
     kind: 'STATE',
     normalized: 'State — {1}',
   },
-  // Cover sheet
+  // Client-facing letters / cover / invoices (preserve full title).
   {
-    re: /^(Cover|Cover Sheet|Filing Instructions|Letter)$/i,
+    re: /^(?:Filing Instructions?|Transmittal Letter|Cover Letter|(?:Individual )?Engagement Letter|Cover Sheet|Cover|Client Mailing Slip|Mailing Slip|Invoice|Billing Invoice|Statement of Account)\b.*$/i,
     formCode: null,
     kind: 'COVER',
-    normalized: 'Cover',
+    normalized: '{0}',
   },
-  // Worksheets (default not releasable)
+  // E-file auth / consents (releasable attachments).
   {
-    re: /^Worksheets?\b/i,
+    re: /^(?:Consent to (?:Use|Disclose)|Practitioner PIN|e-?file Authorization)\b.*$/i,
+    formCode: null,
+    kind: 'ATTACHMENT',
+    normalized: '{0}',
+  },
+  // Preparer-facing reports & worksheets — internal-only. Diagnostics,
+  // summaries, reconciliations, and anything with "Worksheet"/"Wrk"/
+  // "TPW" anywhere in the title.
+  {
+    re: /^(?:Diagnostics?|Return Summary|Carryover Summary|Wages Report|Client Analysis Report|Tax (?:Return )?Reconciliation).*$/i,
     formCode: null,
     kind: 'WORKSHEET',
-    normalized: 'Worksheets',
+    normalized: '{0}',
     defaultReleasable: false,
   },
-  // Federal header (just a grouping label; usually has children)
   {
-    re: /^Federal$/i,
+    re: /^.*\b(?:Worksheets?|Wrk|TPW)\b.*$/i,
+    formCode: null,
+    kind: 'WORKSHEET',
+    normalized: '{0}',
+    defaultReleasable: false,
+  },
+  // Grouping header (usually has children): Federal / Reports.
+  {
+    re: /^(Federal|Reports?)$/i,
     formCode: null,
     kind: 'COVER',
-    normalized: 'Federal',
+    normalized: '{1}',
   },
 ];
 

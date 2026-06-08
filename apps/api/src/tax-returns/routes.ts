@@ -22,6 +22,7 @@ import { z } from 'zod';
 import type { Database } from '@vibe/db';
 import { clients, files, taxReturnReleases, taxReturnSections, taxReturns } from '@vibe/db/schema';
 import { and, isNull } from 'drizzle-orm';
+import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -30,10 +31,42 @@ import { logger } from '../logger';
 import { createRelease, revokeRelease, ReleaseError } from './release-helper';
 import { appendAccessLog, exportAccessLogCsv, listAccessLog } from './access-log';
 import { AmendError, computeAmendDiff, createAmendedReturn, markOriginalSuperseded } from './amend';
+import { applyParsedSections, parseReturnSections } from './parse';
 
 export interface TaxReturnRoutesDeps extends RbacDeps {
   db: Database | null;
+  // Object storage for the automated section parser (reads the source
+  // PDF). Tests inject a fake here; in production we resolve it lazily
+  // per request so it picks up the B2 creds folded into process.env at
+  // boot (the env hydration completes after the server starts, so a
+  // client built at construction time would be the dev mock).
+  storage?: StorageClient | null;
 }
+
+function resolveStorage(deps: TaxReturnRoutesDeps): StorageClient | null {
+  if (deps.storage) return deps.storage;
+  try {
+    return buildStorageClient(process.env);
+  } catch {
+    return null;
+  }
+}
+
+// Manual section create — staff builds/corrects a section by page range.
+const CreateSectionSchema = z
+  .object({
+    normalizedTitle: z.string().min(1).max(200),
+    kind: z
+      .enum(['COVER', 'MAIN_FORM', 'SCHEDULE', 'K1', 'STATE', 'WORKSHEET', 'ATTACHMENT', 'UNKNOWN'])
+      .default('UNKNOWN'),
+    formCode: z.string().max(40).nullable().default(null),
+    recipientName: z.string().max(120).nullable().default(null),
+    startPage: z.number().int().positive(),
+    endPage: z.number().int().positive(),
+    releasable: z.boolean().default(true),
+  })
+  .strict()
+  .refine((v) => v.endPage >= v.startPage, { message: 'end_before_start' });
 
 const CreateReleaseSchema = z.object({
   releasedToClientId: z.string().uuid(),
@@ -67,9 +100,14 @@ const PatchSectionSchema = z
     formCode: z.string().max(40).nullable().optional(),
     recipientName: z.string().max(120).nullable().optional(),
     releasable: z.boolean().optional(),
+    startPage: z.number().int().positive().optional(),
+    endPage: z.number().int().positive().optional(),
   })
   .strict()
-  .refine((v) => Object.keys(v).length > 0, { message: 'no_fields_to_update' });
+  .refine((v) => Object.keys(v).length > 0, { message: 'no_fields_to_update' })
+  .refine((v) => v.startPage === undefined || v.endPage === undefined || v.endPage >= v.startPage, {
+    message: 'end_before_start',
+  });
 
 export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
   const router = express.Router();
@@ -120,6 +158,7 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
           originalFilename: files.originalFilename,
           mimeType: files.mimeType,
           sha256: files.sha256,
+          storageKey: files.storageKey,
           deletedAt: files.deletedAt,
           pendingUpload: files.pendingUpload,
         })
@@ -222,7 +261,113 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.warn({ err }, 'intake audit emit failed'));
 
+      // Best-effort automated parse: replace the catch-all section with
+      // the detected outline. Never blocks the 201 on failure — the
+      // catch-all stays and staff can re-parse / edit by hand.
+      const intakeStorage = resolveStorage(deps);
+      if (intakeStorage && file.storageKey) {
+        try {
+          const parsedSections = await parseReturnSections({
+            storage: intakeStorage,
+            sourceStorageKey: file.storageKey,
+          });
+          if (parsedSections.strategy !== 'single') {
+            await applyParsedSections(deps.db, result, parsedSections);
+          }
+        } catch (err) {
+          logger.warn({ err, returnId: result }, 'auto-parse on intake failed; kept catch-all');
+        }
+      }
+
       res.status(201).json({ taxReturnId: result });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Delete a tax return (undo a flag / remove a mis-imported return).
+  //
+  // Hard delete. Child sections/releases/shares/access-log all cascade
+  // (FK onDelete: cascade), and the source `files` row is untouched (the
+  // tax return only *references* it), so the file stays in the client's
+  // Files folder and can be re-flagged. Deleting a RELEASED return is
+  // allowed — the cascade removes the release rows, so the client
+  // immediately loses portal access (the viewer 404s) and any active
+  // share links stop resolving; that's the intended "retract" behavior.
+  // The deletion (incl. prior status) is captured in the immutable audit
+  // log. The only block left is an open amendment that points at this
+  // return (would orphan the amends_return_id chain) — delete that first.
+  //
+  // Permission: engagement:write (same gate as intake/release/amend).
+  // -------------------------------------------------------------------
+  router.delete(
+    '/:returnId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const returnId = req.params['returnId']!;
+      const [ret] = await deps.db
+        .select({
+          id: taxReturns.id,
+          firmId: taxReturns.firmId,
+          clientId: taxReturns.clientId,
+          taxYear: taxReturns.taxYear,
+          formCode: taxReturns.formCode,
+          jurisdiction: taxReturns.jurisdiction,
+          title: taxReturns.title,
+          status: taxReturns.status,
+          releaseKind: taxReturns.releaseKind,
+          sourceFileId: taxReturns.sourceFileId,
+        })
+        .from(taxReturns)
+        .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)))
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'tax_return_not_found' });
+        return;
+      }
+      const [amendment] = await deps.db
+        .select({ id: taxReturns.id })
+        .from(taxReturns)
+        .where(and(eq(taxReturns.amendsReturnId, returnId), eq(taxReturns.firmId, session.firmId)))
+        .limit(1);
+      if (amendment) {
+        res.status(409).json({
+          error: 'has_amendments',
+          detail: 'This return has an amendment that points at it. Delete the amendment first.',
+        });
+        return;
+      }
+
+      // Cascade removes sections, releases, shares, and access-log rows.
+      await deps.db
+        .delete(taxReturns)
+        .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)));
+
+      await emitAudit(deps.db, {
+        // ARCHIVE is the audit vocabulary's removal verb (no DELETE).
+        action: 'ARCHIVE',
+        entityType: 'tax_return',
+        entityId: returnId,
+        actorAppUserId: session.appUserId,
+        before: {
+          clientId: ret.clientId,
+          taxYear: ret.taxYear,
+          formCode: ret.formCode,
+          jurisdiction: ret.jurisdiction,
+          title: ret.title,
+          status: ret.status,
+          releaseKind: ret.releaseKind,
+          sourceFileId: ret.sourceFileId,
+        },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.warn({ err }, 'tax-return delete audit emit failed'));
+
+      res.status(204).end();
     },
   );
 
@@ -564,6 +709,8 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
       if (parsed.data.recipientName !== undefined)
         patch['recipientName'] = parsed.data.recipientName;
       if (parsed.data.releasable !== undefined) patch['releasable'] = parsed.data.releasable;
+      if (parsed.data.startPage !== undefined) patch['startPage'] = parsed.data.startPage;
+      if (parsed.data.endPage !== undefined) patch['endPage'] = parsed.data.endPage;
       await deps.db.update(taxReturnSections).set(patch).where(eq(taxReturnSections.id, sectionId));
       await appendAccessLog({
         db: deps.db,
@@ -577,6 +724,195 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         metadata: { fields: Object.keys(parsed.data) },
       }).catch(() => undefined);
       res.json({ ok: true });
+    },
+  );
+
+  // Automated re-parse — re-derive sections from the source PDF's
+  // bookmark outline (falling back to header detection). Replaces all
+  // sections (manual edits included) and flips the return to PARSED.
+  // Blocked once RELEASED (releases reference section ids).
+  router.post(
+    '/:returnId/reparse',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = resolveStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const returnId = req.params['returnId']!;
+      const [ret] = await deps.db
+        .select({
+          id: taxReturns.id,
+          status: taxReturns.status,
+          sourceStorageKey: files.storageKey,
+          sourceDeletedAt: files.deletedAt,
+        })
+        .from(taxReturns)
+        .leftJoin(files, eq(files.id, taxReturns.sourceFileId))
+        .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)))
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'tax_return_not_found' });
+        return;
+      }
+      if (ret.status === 'RELEASED') {
+        res.status(409).json({ error: 'cannot_reparse_released' });
+        return;
+      }
+      if (!ret.sourceStorageKey || ret.sourceDeletedAt) {
+        res.status(409).json({ error: 'no_source_file' });
+        return;
+      }
+      try {
+        const parsedSections = await parseReturnSections({
+          storage,
+          sourceStorageKey: ret.sourceStorageKey,
+        });
+        await applyParsedSections(deps.db, returnId, parsedSections);
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'tax_return',
+          entityId: returnId,
+          actorAppUserId: session.appUserId,
+          after: {
+            kind: 'reparse',
+            strategy: parsedSections.strategy,
+            sections: parsedSections.sections.length,
+            totalPages: parsedSections.totalPages,
+          },
+          ip: req.ip ?? null,
+          userAgent: req.get('user-agent') ?? null,
+        }).catch(() => undefined);
+        res.json({
+          ok: true,
+          strategy: parsedSections.strategy,
+          sections: parsedSections.sections.length,
+          totalPages: parsedSections.totalPages,
+        });
+      } catch (err) {
+        logger.warn({ err, returnId }, 'tax-return reparse failed');
+        res.status(502).json({ error: 'parse_failed', detail: (err as Error).message });
+      }
+    },
+  );
+
+  // Manual section create — staff adds a section by page range. Flagged
+  // is_manual_override so a later reparse warning is meaningful.
+  router.post(
+    '/:returnId/sections',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = CreateSectionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
+        return;
+      }
+      const returnId = req.params['returnId']!;
+      const [ret] = await deps.db
+        .select({ id: taxReturns.id })
+        .from(taxReturns)
+        .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)))
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'tax_return_not_found' });
+        return;
+      }
+      const [maxRow] = await deps.db
+        .select({ ordinal: taxReturnSections.ordinal })
+        .from(taxReturnSections)
+        .where(eq(taxReturnSections.returnId, ret.id))
+        .orderBy(desc(taxReturnSections.ordinal))
+        .limit(1);
+      const nextOrdinal = (maxRow?.ordinal ?? -1) + 1;
+      const [row] = await deps.db
+        .insert(taxReturnSections)
+        .values({
+          returnId: ret.id,
+          ordinal: nextOrdinal,
+          depth: 0,
+          rawTitle: parsed.data.normalizedTitle,
+          normalizedTitle: parsed.data.normalizedTitle,
+          kind: parsed.data.kind,
+          formCode: parsed.data.formCode,
+          recipientName: parsed.data.recipientName,
+          startPage: parsed.data.startPage,
+          endPage: parsed.data.endPage,
+          releasable: parsed.data.releasable,
+          parseConfidence: 0,
+          isManualOverride: true,
+        })
+        .returning({ id: taxReturnSections.id });
+      await appendAccessLog({
+        db: deps.db,
+        returnId: ret.id,
+        event: 'SECTION_EDITED',
+        actorKind: 'STAFF',
+        actorRef: session.appUserId,
+        actorIp: req.ip ?? null,
+        actorUserAgent: req.get('user-agent') ?? null,
+        sectionId: row!.id,
+        metadata: { action: 'created' },
+      }).catch(() => undefined);
+      res.status(201).json({ sectionId: row!.id });
+    },
+  );
+
+  // Manual section delete.
+  router.delete(
+    '/:returnId/sections/:sectionId',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const returnId = req.params['returnId']!;
+      const [ret] = await deps.db
+        .select({ id: taxReturns.id })
+        .from(taxReturns)
+        .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)))
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'tax_return_not_found' });
+        return;
+      }
+      const deleted = await deps.db
+        .delete(taxReturnSections)
+        .where(
+          and(
+            eq(taxReturnSections.id, req.params['sectionId']!),
+            eq(taxReturnSections.returnId, ret.id),
+          ),
+        )
+        .returning({ id: taxReturnSections.id });
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'section_not_found' });
+        return;
+      }
+      await appendAccessLog({
+        db: deps.db,
+        returnId: ret.id,
+        event: 'SECTION_EDITED',
+        actorKind: 'STAFF',
+        actorRef: session.appUserId,
+        actorIp: req.ip ?? null,
+        actorUserAgent: req.get('user-agent') ?? null,
+        sectionId: req.params['sectionId']!,
+        metadata: { action: 'deleted' },
+      }).catch(() => undefined);
+      res.status(204).end();
     },
   );
 
@@ -626,9 +962,13 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
           parentSectionId: taxReturnSections.parentSectionId,
           title: taxReturnSections.normalizedTitle,
           kind: taxReturnSections.kind,
+          formCode: taxReturnSections.formCode,
           startPage: taxReturnSections.startPage,
           endPage: taxReturnSections.endPage,
           recipientName: taxReturnSections.recipientName,
+          releasable: taxReturnSections.releasable,
+          parseConfidence: taxReturnSections.parseConfidence,
+          isManualOverride: taxReturnSections.isManualOverride,
         })
         .from(taxReturnSections)
         .where(eq(taxReturnSections.returnId, returnId));

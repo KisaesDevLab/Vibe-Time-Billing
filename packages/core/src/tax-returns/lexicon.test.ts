@@ -163,3 +163,42 @@ describe('TR-1 — unmatched titles', () => {
     expect(r.normalizedTitle).toBe('Random Notes Page');
   });
 });
+
+describe('TR-1 — state forms (UltraTax naming)', () => {
+  it('"MO Form MO-1040 Page 1" → STATE, preserves title', () => {
+    const r = normalizeTitle('MO Form MO-1040 Page 1');
+    expect(r.kind).toBe('STATE');
+    expect(r.formCode).toBe('MO MO-1040');
+    expect(r.normalizedTitle).toBe('MO Form MO-1040 Page 1');
+  });
+  it('"MO-1040ES" → STATE', () => {
+    const r = normalizeTitle('MO-1040ES');
+    expect(r.kind).toBe('STATE');
+    expect(r.formCode).toBe('MO-1040ES');
+  });
+});
+
+describe('TR-1 — report / letter / worksheet labels', () => {
+  it('Transmittal Letter → COVER (client-facing)', () => {
+    expect(normalizeTitle('Transmittal Letter').kind).toBe('COVER');
+  });
+  it('Individual Engagement Letter → COVER', () => {
+    expect(normalizeTitle('Individual Engagement Letter').kind).toBe('COVER');
+  });
+  it('Diagnostics → internal WORKSHEET', () => {
+    const r = normalizeTitle('Diagnostics');
+    expect(r.kind).toBe('WORKSHEET');
+    expect(r.defaultReleasable).toBe(false);
+  });
+  it('Tax Projection Worksheet 1 → internal WORKSHEET, full title kept', () => {
+    const r = normalizeTitle('Tax Projection Worksheet 1');
+    expect(r.kind).toBe('WORKSHEET');
+    expect(r.defaultReleasable).toBe(false);
+    expect(r.normalizedTitle).toBe('Tax Projection Worksheet 1');
+  });
+  it('Practitioner PIN → releasable ATTACHMENT', () => {
+    const r = normalizeTitle('Practitioner PIN');
+    expect(r.kind).toBe('ATTACHMENT');
+    expect(r.defaultReleasable).toBe(true);
+  });
+});
