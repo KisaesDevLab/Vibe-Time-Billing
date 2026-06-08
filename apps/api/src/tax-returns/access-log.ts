@@ -30,7 +30,8 @@ export type TaxAccessEventKind =
   | '2FA_FAILED'
   | 'EXPIRED'
   | 'SUPERSEDED'
-  | 'SECTION_EDITED';
+  | 'SECTION_EDITED'
+  | 'SHARED';
 
 export interface AppendAccessLogInput {
   db: Database;

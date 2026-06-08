@@ -8,7 +8,13 @@ import request from 'supertest';
 import { sql, eq } from 'drizzle-orm';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { taxReturnReleases, taxReturnSections, taxReturns, taxReturnShares } from '@vibe/db/schema';
+import {
+  taxReturnAccessLog,
+  taxReturnReleases,
+  taxReturnSections,
+  taxReturns,
+  taxReturnShares,
+} from '@vibe/db/schema';
 import {
   createShare,
   resolveShareToken,
@@ -144,6 +150,31 @@ describe('TR-7 — resolveShareToken', () => {
     );
     await expect(resolveShareToken(harness.db, f.token)).rejects.toThrow(/revoked/);
   });
+
+  it('fails closed when the PARENT RELEASE is revoked (cascade)', async () => {
+    const f = await setupWithShare();
+    // Share row itself is still SENT/live — only the release is revoked.
+    await harness.db
+      .update(taxReturnReleases)
+      .set({ revokedAt: new Date() })
+      .where(eq(taxReturnReleases.returnId, f.returnId));
+    await expect(resolveShareToken(harness.db, f.token)).rejects.toThrow(/revoked/);
+    // And the public recipient route returns the generic 404.
+    const res = await request(f.app).get(`/shared/tax/${f.token}/pdf`);
+    expect(res.status).toBe(404);
+  });
+
+  it('surfaces the live release clientCanDownload flag on resolve', async () => {
+    const f = await setupWithShare();
+    const before = await resolveShareToken(harness.db, f.token);
+    expect(before.releaseClientCanDownload).toBe(true);
+    await harness.db
+      .update(taxReturnReleases)
+      .set({ clientCanDownload: false })
+      .where(eq(taxReturnReleases.returnId, f.returnId));
+    const after = await resolveShareToken(harness.db, f.token);
+    expect(after.releaseClientCanDownload).toBe(false);
+  });
 });
 
 describe('TR-7 — bumpFailed2fa auto-revokes at 5', async () => {
@@ -250,6 +281,24 @@ describe('TR-7 — GET /shared/tax/:token/pdf', () => {
     expect(r.body.pages).toBe(5);
     expect(r.body.watermark).toContain('banker@chase.example');
     expect(r.body.watermark).toContain('Chase Bank');
+  });
+
+  it('does NOT log a VIEW (or mark viewed) when the render falls closed to 503', async () => {
+    const f = await setupWithShare();
+    await request(f.app).get(`/shared/tax/${f.token}/pdf`);
+    const views = await harness.db
+      .select()
+      .from(taxReturnAccessLog)
+      .where(
+        sql`${taxReturnAccessLog.returnId} = ${f.returnId} AND ${taxReturnAccessLog.event} = 'VIEW'`,
+      );
+    expect(views).toHaveLength(0);
+    const [share] = await harness.db
+      .select()
+      .from(taxReturnShares)
+      .where(eq(taxReturnShares.id, f.shareId));
+    // Nothing was delivered → status stays SENT, view_count untouched.
+    expect(share!.status).toBe('SENT');
   });
 
   it('returns 403 when 2FA required (cookie verification not wired yet)', async () => {

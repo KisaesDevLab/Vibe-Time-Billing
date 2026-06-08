@@ -117,14 +117,18 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
           itemKind: 'DOCUMENT' as const,
           required: true,
         }));
+      // A drop-off's reminder is required server-side; default to 3 days
+      // if the field was cleared or non-numeric rather than silently
+      // creating an un-remindable drop-off.
+      const parsedDays = Number(reminderDays);
+      const days = Number.isFinite(parsedDays) && parsedDays >= 0 ? Math.floor(parsedDays) : 3;
       const body: Record<string, unknown> = {
         engagementId,
         kind: 'DROP_OFF',
         title: title.trim() || 'Document drop-off',
         dueDate,
+        reminderDaysBefore: days,
       };
-      const days = Number(reminderDays);
-      if (Number.isFinite(days) && days >= 0) body['reminderDaysBefore'] = days;
       if (items.length > 0) body['items'] = items;
       await api('/api/staff/requests', { method: 'POST', body: JSON.stringify(body) });
       resetComposer();

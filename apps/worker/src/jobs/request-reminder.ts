@@ -57,6 +57,11 @@ export async function runRequestReminderTick(
         isNotNull(clientRequests.reminderDaysBefore),
         isNotNull(clientRequests.dueDate),
         sql`${clientRequests.dueDate} - ${today}::date <= ${clientRequests.reminderDaysBefore}`,
+        // DROP_OFF reminders are bounded to the window [due - N, due]:
+        // never nudge "drop off by {past date}". GENERAL keeps its prior
+        // behavior (re-fires daily while OPEN, even once overdue).
+        sql`(${clientRequests.kind} <> 'DROP_OFF'
+             OR ${clientRequests.dueDate} - ${today}::date >= 0)`,
         sql`(${clientRequests.lastReminderSentAt} IS NULL
              OR (${clientRequests.kind} <> 'DROP_OFF'
                  AND ${clientRequests.lastReminderSentAt} < ${today}::date))`,

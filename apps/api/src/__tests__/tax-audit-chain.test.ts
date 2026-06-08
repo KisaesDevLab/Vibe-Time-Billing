@@ -7,13 +7,20 @@
 // tax_return_access_log captures each event with the right actor
 // kind + share id linkage.
 
+import { Readable } from 'node:stream';
+
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { sql } from 'drizzle-orm';
+import { PDFDocument } from 'pdf-lib';
+
+import type { StorageClient } from '@vibe/storage';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import {
+  clientFolders,
+  files,
   taxReturnAccessLog,
   taxReturnReleases,
   taxReturnSections,
@@ -22,6 +29,25 @@ import {
 import { createTaxReturnRouter } from '../tax-returns/routes';
 import { createPortalTaxShareRouter } from '../portal/tax-shares';
 import { createShareRecipientRouter } from '../share-public/tax-recipient';
+
+const SOURCE_KEY = 'Test Client Co/Tax Returns/2025-1040.pdf';
+
+async function makeSourcePdf(pages: number): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  for (let i = 0; i < pages; i++) doc.addPage([300, 300]);
+  return Buffer.from(await doc.save());
+}
+
+function storageWith(entries: Record<string, Buffer>): StorageClient {
+  return {
+    kind: 'mock',
+    async get(key: string) {
+      const bytes = entries[key];
+      if (!bytes) throw new Error(`object not found: ${key}`);
+      return { body: Readable.from(bytes), meta: {} };
+    },
+  } as unknown as StorageClient;
+}
 
 let harness: PgliteHarness;
 
@@ -42,11 +68,34 @@ async function setup(): Promise<{
   releaseId: string;
 }> {
   const seed = await seedMinimalFirm(harness.db);
+  // Seed a source PDF file so the recipient /pdf render path can deliver
+  // bytes (and thus log a real VIEW on delivery).
+  const [folder] = await harness.db
+    .insert(clientFolders)
+    .values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      storagePath: 'Test Client Co',
+    })
+    .returning({ id: clientFolders.id });
+  const [file] = await harness.db
+    .insert(files)
+    .values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      clientFolderId: folder!.id,
+      originalFilename: '2025-1040.pdf',
+      storageKey: SOURCE_KEY,
+      mimeType: 'application/pdf',
+      sizeBytes: 1024,
+    })
+    .returning({ id: files.id });
   const [r] = await harness.db
     .insert(taxReturns)
     .values({
       firmId: seed.firmId,
       clientId: seed.clientId,
+      sourceFileId: file!.id,
       taxYear: 2025,
       formCode: '1040',
       title: 'T',
@@ -113,7 +162,7 @@ describe('TR-8b — full audit chain', () => {
     expect(relRes.status).toBe(201);
     const releaseId = (relRes.body as { releaseId: string }).releaseId;
 
-    // --- 2. Client creates a share (audit: RELEASED actor=CLIENT) ---
+    // --- 2. Client creates a share (audit: SHARED actor=CLIENT) ---
     const portalApp = express();
     portalApp.use(express.json());
     portalApp.use((req, _res, next) => {
@@ -159,16 +208,24 @@ describe('TR-8b — full audit chain', () => {
     // --- 3. Recipient hits 2FA verify (audit: 2FA_PASSED) + view (VIEW) ---
     const recipientApp = express();
     recipientApp.use(express.json());
-    recipientApp.use('/shared/tax', createShareRecipientRouter({ db: harness.db }));
+    recipientApp.use(
+      '/shared/tax',
+      createShareRecipientRouter({
+        db: harness.db,
+        storage: storageWith({ [SOURCE_KEY]: await makeSourcePdf(5) }),
+      }),
+    );
 
     const verifyRes = await request(recipientApp)
       .post(`/shared/tax/${token}/2fa/verify`)
       .send({ code: '000000' });
     expect(verifyRes.status).toBe(200);
 
+    // Storage is wired, so the scoped PDF renders and a VIEW is logged
+    // on delivery.
     const pdfRes = await request(recipientApp).get(`/shared/tax/${token}/pdf`);
-    expect(pdfRes.status).toBe(503); // renderer not wired, plan returned
-    expect(pdfRes.body.error).toBe('pdf_renderer_unavailable');
+    expect(pdfRes.status).toBe(200);
+    expect(pdfRes.headers['content-type']).toContain('application/pdf');
 
     // --- 4. Client revokes (audit: REVOKED actor=CLIENT) ---
     const revokeRes = await request(portalApp).post(`/${f.returnId}/shares/${shareId}/revoke`);
@@ -193,9 +250,9 @@ describe('TR-8b — full audit chain', () => {
     expect(events).toContainEqual(
       expect.objectContaining({ event: 'RELEASED', actorKind: 'STAFF', shareId: null }),
     );
-    // Client RELEASED (share created — has share id)
+    // Client SHARED (3rd-party share created — has share id)
     expect(events).toContainEqual(
-      expect.objectContaining({ event: 'RELEASED', actorKind: 'CLIENT', shareId }),
+      expect.objectContaining({ event: 'SHARED', actorKind: 'CLIENT', shareId }),
     );
     // 2FA pass + VIEW from recipient
     expect(events).toContainEqual(

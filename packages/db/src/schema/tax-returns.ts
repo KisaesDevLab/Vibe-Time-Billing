@@ -83,6 +83,8 @@ export const taxAccessEvent = pgEnum('tax_access_event', [
   'EXPIRED',
   'SUPERSEDED',
   'SECTION_EDITED',
+  // 0136 — client-initiated 3rd-party share (distinct from staff RELEASED).
+  'SHARED',
 ]);
 
 // =====================================================================

@@ -42,11 +42,39 @@ const BodySchema = z.object({
   scope: z.enum(['FULL', 'SELECTED']),
   sectionIds: z.array(z.string().uuid()).default([]),
   expiresAt: z.string().datetime(),
-  require2fa: z.boolean().default(true),
-  verifyChannel: z.enum(['SMS', 'EMAIL', 'NONE']).default('EMAIL'),
+  // 2FA dispatch (code send + verify cookie) is not wired yet — a share
+  // with require2fa=true can be created but never viewed (the recipient
+  // /pdf route fails closed at 403). Default to false so shares are
+  // usable; flip back to true once the dispatcher lands.
+  require2fa: z.boolean().default(false),
+  verifyChannel: z.enum(['SMS', 'EMAIL', 'NONE']).default('NONE'),
   watermark: z.boolean().default(true),
   personalMessage: z.string().max(4000).default(''),
 });
+
+// Resolve the active client_access id that "owns" this portal action.
+// Prefer an id already on the session (impersonation/tests); otherwise
+// resolve it from the DB — the normal portal JWT doesn't carry it. Used
+// for both share creation and revocation so the audit trail attributes
+// the real access id rather than a placeholder.
+async function resolveActiveAccessId(
+  db: Database,
+  session: { portalIdentityId: string; activeClientId: string },
+): Promise<string | undefined> {
+  const onSession = (session as unknown as { activeClientAccessId?: string }).activeClientAccessId;
+  if (onSession) return onSession;
+  const [access] = await db
+    .select({ id: clientPortalAccess.id })
+    .from(clientPortalAccess)
+    .where(
+      and(
+        eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+        eq(clientPortalAccess.clientId, session.activeClientId),
+      ),
+    )
+    .limit(1);
+  return access?.id;
+}
 
 export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
   const router = express.Router();
@@ -65,23 +93,8 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
     }
     const scope = await resolveScope(deps.db, session, req);
 
-    // The share is "shared by" the active client_access row. Prefer an
-    // id already on the session (impersonation/tests); otherwise resolve
-    // it from the DB (the normal portal JWT doesn't carry it).
-    let accessId = (session as unknown as { activeClientAccessId?: string }).activeClientAccessId;
-    if (!accessId) {
-      const [access] = await deps.db
-        .select({ id: clientPortalAccess.id })
-        .from(clientPortalAccess)
-        .where(
-          and(
-            eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
-            eq(clientPortalAccess.clientId, session.activeClientId),
-          ),
-        )
-        .limit(1);
-      accessId = access?.id;
-    }
+    // The share is "shared by" the active client_access row.
+    const accessId = await resolveActiveAccessId(deps.db, session);
     if (!accessId) {
       res.status(403).json({ error: 'no_active_access' });
       return;
@@ -133,7 +146,7 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
       await appendAccessLog({
         db: deps.db,
         returnId: req.params['returnId']!,
-        event: 'RELEASED',
+        event: 'SHARED',
         actorKind: 'CLIENT',
         actorRef: accessId,
         actorIp: req.ip ?? null,
@@ -186,8 +199,7 @@ export function createPortalTaxShareRouter(deps: PortalTaxShareDeps): Router {
         return;
       }
       const scope = await resolveScope(deps.db, session, req);
-      const accessId = (session as unknown as { activeClientAccessId?: string })
-        .activeClientAccessId;
+      const accessId = await resolveActiveAccessId(deps.db, session);
       try {
         await revokeShare(deps.db, req.params['shareId']!, accessId ?? 'unknown', scope.clientIds);
         await appendAccessLog({

@@ -320,15 +320,16 @@ export function createPortalTaxReturnRouter(deps: PortalTaxReturnDeps): Router {
       startPage: s.startPage,
       endPage: s.endPage,
     }));
-    // Watermark the client by their email (or phone) rather than the
-    // raw client UUID.
-    let watermarkPrimary = session.activeClientId;
+    // Watermark the client by their email (or phone) — never the raw
+    // client UUID. If the identity row is somehow missing, fall back to a
+    // generic non-identifying label rather than stamping a UUID.
+    let watermarkPrimary = 'Client copy';
     const [ident] = await deps.db
       .select({ email: portalIdentity.primaryEmail, phone: portalIdentity.primaryPhone })
       .from(portalIdentity)
       .where(eq(portalIdentity.id, session.portalIdentityId))
       .limit(1);
-    if (ident) watermarkPrimary = ident.email || ident.phone || session.activeClientId;
+    if (ident) watermarkPrimary = ident.email || ident.phone || 'Client copy';
 
     let plan;
     try {

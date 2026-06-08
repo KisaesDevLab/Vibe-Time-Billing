@@ -339,6 +339,92 @@ describe('runRequestReminderTick', () => {
     expect(smsCount).toBe(1);
   });
 
+  it('DROP_OFF does not fire once overdue (window lower bound)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing User',
+      email: 'bill@example.com',
+      isPrimary: true,
+      isBilling: true,
+    });
+    await insertRequest({
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      kind: 'DROP_OFF',
+      dueDate: '2026-05-30', // already past relative to the tick below
+      reminderDaysBefore: 3,
+    });
+    let emailCount = 0;
+    const r = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      {
+        sendEmail: async () => {
+          emailCount += 1;
+        },
+        sendSms: async () => undefined,
+      },
+      new Date('2026-06-08T08:00:00Z'),
+    );
+    expect(r.scanned).toBe(0);
+    expect(emailCount).toBe(0);
+  });
+
+  it('DROP_OFF preserves its once-only budget when the email send fails', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing User',
+      email: 'bill@example.com',
+      mobile: '+15555550123',
+      isPrimary: true,
+      isBilling: true,
+    });
+    await insertRequest({
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      kind: 'DROP_OFF',
+      dueDate: '2026-06-05',
+      reminderDaysBefore: 5,
+    });
+    // First tick: email throws → not stamped, not counted, SMS not sent.
+    const fail = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      {
+        sendEmail: async () => {
+          throw new Error('smtp down');
+        },
+        sendSms: async () => undefined,
+      },
+      new Date('2026-06-01T08:00:00Z'),
+    );
+    expect(fail.sent).toBe(0);
+    expect(fail.skipped).toBe(1);
+    // Second tick next day: email recovers → the once-only nudge still fires.
+    let emailCount = 0;
+    let smsCount = 0;
+    const ok = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      {
+        sendEmail: async () => {
+          emailCount += 1;
+        },
+        sendSms: async () => {
+          smsCount += 1;
+        },
+      },
+      new Date('2026-06-02T08:00:00Z'),
+    );
+    expect(ok.sent).toBe(1);
+    expect(emailCount).toBe(1);
+    expect(smsCount).toBe(1);
+  });
+
   it('DROP_OFF still sends email when no phone is on file', async () => {
     const seed = await seedMinimalFirm(harness.db);
     await seedContact(harness.db, {

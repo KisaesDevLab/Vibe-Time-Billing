@@ -3530,6 +3530,8 @@ export const clientRequests = pgTable(
       'client_request_reminder_days_ck',
       sql`${t.reminderDaysBefore} IS NULL OR ${t.reminderDaysBefore} BETWEEN 0 AND 365`,
     ),
+    // 0135 — kind discriminator; mirrors the migration's CHECK.
+    kindCk: check('client_request_kind_ck', sql`${t.kind} IN ('GENERAL', 'DROP_OFF')`),
   }),
 );
 

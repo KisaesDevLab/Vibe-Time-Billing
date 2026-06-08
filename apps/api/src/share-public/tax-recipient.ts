@@ -5,22 +5,26 @@
 // Routes (all unauthenticated; the share token IS the credential):
 //   GET  /shared/tax/:token            — resolve + return meta
 //                                        (sections + display info)
-//   POST /shared/tax/:token/2fa/send   — issue a 6-digit OTP via the
-//                                        share's verify_channel
-//   POST /shared/tax/:token/2fa/verify — submit the OTP; on success
-//                                        issue a short-lived session
-//                                        cookie path-locked to this
-//                                        share's route
-//   GET  /shared/tax/:token/pdf        — derived PDF bytes (after
-//                                        2FA pass for shares with
-//                                        require_2fa=true)
+//   POST /shared/tax/:token/2fa/verify — submit a 6-digit OTP. For
+//                                        verify_channel='NONE' (2FA
+//                                        opted out) any code passes; the
+//                                        SMS/EMAIL dispatcher is not yet
+//                                        wired, so those channels 503.
+//   GET  /shared/tax/:token/pdf        — derived, watermarked PDF bytes
+//                                        (blocked for require_2fa shares
+//                                        until the dispatcher is wired)
 //
-// Rate-limit on /shared/tax/:token is per-IP (1 RPS). Stricter than
-// portal routes — this is the most-exposed surface. The 2FA storage
-// itself uses Redis sliding window keyed on the share id.
+// Authorization is re-derived on every request: resolveShareToken joins
+// the parent release, so revoking the release (or the share) immediately
+// kills the link. The token comparison is argon2 verify (constant-time)
+// in share-helper — we never compare tokens lexically, and never log the
+// token.
 //
-// CRITICAL: token comparison via argon2 verify in share-helper is
-// constant-time. We never compare tokens lexically.
+// NOT YET WIRED (ops/follow-up): per-IP rate limiting on this surface,
+// and the 2FA code dispatcher/cookie. Brute-forcing a token is bounded
+// by the argon2 verify cost + the 40+ char high-entropy secret, but a
+// dedicated limiter is still wanted before this is internet-facing at
+// scale.
 
 import express, { type Request, type Response, type Router } from 'express';
 import { eq } from 'drizzle-orm';
@@ -247,6 +251,44 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
       notFound(res);
       return;
     }
+    // Resolve the source PDF for this return (skip deleted files).
+    const [src] = await deps.db
+      .select({ storageKey: files.storageKey, deletedAt: files.deletedAt })
+      .from(taxReturns)
+      .leftJoin(files, eq(files.id, taxReturns.sourceFileId))
+      .where(eq(taxReturns.id, share.returnId))
+      .limit(1);
+    const sourceStorageKey = src && !src.deletedAt ? src.storageKey : null;
+
+    // Fall closed when there's no renderer/source: never serve originals.
+    // We deliberately do NOT mark-viewed or audit a VIEW here — nothing
+    // was delivered, so a 503 must not inflate the view count the client
+    // sees or the access history.
+    const storage = resolveStorage(deps);
+    if (!storage || !sourceStorageKey) {
+      res.status(503).json({
+        error: 'pdf_renderer_unavailable',
+        pages: plan.pageIndices1Based.length,
+        cacheKey: plan.cacheKey,
+        watermark: plan.watermarkText,
+      });
+      return;
+    }
+    let pdf: Buffer;
+    try {
+      pdf = await renderScopedReturnPdf({
+        storage,
+        sourceStorageKey,
+        pageIndices1Based: plan.pageIndices1Based,
+        watermarkText: plan.watermarkText,
+      });
+    } catch (err) {
+      const code = err instanceof RenderError ? err.code : 'render_failed';
+      logger.warn({ err, returnId: share.returnId }, 'recipient tax-return render failed');
+      res.status(502).json({ error: 'pdf_render_failed', detail: code });
+      return;
+    }
+    // Record the view only once bytes are actually being delivered.
     await markShareViewed(deps.db, share.id);
     await appendAccessLog({
       db: deps.db,
@@ -259,44 +301,11 @@ export function createShareRecipientRouter(deps: ShareRecipientDeps): Router {
       shareId: share.id,
       metadata: { pages: plan.pageIndices1Based.length },
     }).catch(() => undefined);
-
-    // Resolve the source PDF for this return (skip deleted files).
-    const [src] = await deps.db
-      .select({ storageKey: files.storageKey, deletedAt: files.deletedAt })
-      .from(taxReturns)
-      .leftJoin(files, eq(files.id, taxReturns.sourceFileId))
-      .where(eq(taxReturns.id, share.returnId))
-      .limit(1);
-    const sourceStorageKey = src && !src.deletedAt ? src.storageKey : null;
-
-    // Fall closed when there's no renderer/source: never serve originals.
-    const storage = resolveStorage(deps);
-    if (!storage || !sourceStorageKey) {
-      res.status(503).json({
-        error: 'pdf_renderer_unavailable',
-        pages: plan.pageIndices1Based.length,
-        cacheKey: plan.cacheKey,
-        watermark: plan.watermarkText,
-      });
-      return;
-    }
-    try {
-      const pdf = await renderScopedReturnPdf({
-        storage,
-        sourceStorageKey,
-        pageIndices1Based: plan.pageIndices1Based,
-        watermarkText: plan.watermarkText,
-      });
-      res.status(200);
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'inline; filename="tax-return.pdf"');
-      res.setHeader('Cache-Control', 'private, no-store');
-      res.send(pdf);
-    } catch (err) {
-      const code = err instanceof RenderError ? err.code : 'render_failed';
-      logger.warn({ err, returnId: share.returnId }, 'recipient tax-return render failed');
-      res.status(502).json({ error: 'pdf_render_failed', detail: code });
-    }
+    res.status(200);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="tax-return.pdf"');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(pdf);
   });
 
   return router;

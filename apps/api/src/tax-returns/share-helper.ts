@@ -248,6 +248,9 @@ export interface ResolvedShare {
   organization: string;
   failed2faCount: number;
   status: 'SENT' | 'VIEWED' | 'EXPIRED' | 'REVOKED';
+  // Live state of the parent release, re-derived at resolve time so a
+  // staff revoke / download-toggle propagates to already-issued links.
+  releaseClientCanDownload: boolean;
 }
 
 export async function resolveShareToken(db: Database, token: string): Promise<ResolvedShare> {
@@ -258,37 +261,53 @@ export async function resolveShareToken(db: Database, token: string): Promise<Re
   if (!UUID_RE.test(idPart) || secret.length === 0) {
     throw new ShareError('not_found', 'malformed token');
   }
+  // Join the parent release so revocation / download-toggle on the
+  // release re-derives at resolve time — a share is only as live as the
+  // release it hangs off. Without this, revoking a client's release (or
+  // turning download off) would leave already-issued recipient links
+  // serving pages indefinitely.
   const [row] = await db
-    .select()
+    .select({
+      share: taxReturnShares,
+      releaseRevokedAt: taxReturnReleases.revokedAt,
+      releaseClientCanDownload: taxReturnReleases.clientCanDownload,
+    })
     .from(taxReturnShares)
+    .innerJoin(taxReturnReleases, eq(taxReturnReleases.id, taxReturnShares.releaseId))
     .where(eq(taxReturnShares.id, idPart))
     .limit(1);
   if (!row) throw new ShareError('not_found', 'share not found');
+  const share = row.share;
   // Argon2 verify is constant-time; if it returns false treat as
   // generic not_found (no disclosure that the ID was correct).
-  const ok = await verifyPassword(row.tokenHash, secret);
+  const ok = await verifyPassword(share.tokenHash, secret);
   if (!ok) throw new ShareError('not_found', 'token secret mismatch');
-  if (row.status === 'REVOKED' || row.revokedAt) {
+  if (share.status === 'REVOKED' || share.revokedAt) {
     throw new ShareError('revoked', 'share has been revoked');
   }
-  if (row.status === 'EXPIRED' || row.expiresAt.getTime() <= Date.now()) {
+  // A revoked parent release kills all of its shares (fall closed).
+  if (row.releaseRevokedAt) {
+    throw new ShareError('revoked', 'parent release has been revoked');
+  }
+  if (share.status === 'EXPIRED' || share.expiresAt.getTime() <= Date.now()) {
     throw new ShareError('expired', 'share has expired');
   }
   return {
-    id: row.id,
-    returnId: row.returnId,
-    releaseId: row.releaseId,
-    scope: row.scope as 'FULL' | 'SELECTED',
-    sectionIds: row.sectionIds as string[],
-    accessLevel: row.accessLevel as 'view_only' | 'view_download',
-    watermark: row.watermark,
-    require2fa: row.require2fa,
-    verifyChannel: row.verifyChannel as 'SMS' | 'EMAIL' | 'NONE',
-    recipientEmail: row.recipientEmail,
-    recipientPhone: row.recipientPhone,
-    organization: row.organization,
-    failed2faCount: row.failed2faCount,
-    status: row.status as 'SENT' | 'VIEWED' | 'EXPIRED' | 'REVOKED',
+    id: share.id,
+    returnId: share.returnId,
+    releaseId: share.releaseId,
+    scope: share.scope as 'FULL' | 'SELECTED',
+    sectionIds: share.sectionIds as string[],
+    accessLevel: share.accessLevel as 'view_only' | 'view_download',
+    watermark: share.watermark,
+    require2fa: share.require2fa,
+    verifyChannel: share.verifyChannel as 'SMS' | 'EMAIL' | 'NONE',
+    recipientEmail: share.recipientEmail,
+    recipientPhone: share.recipientPhone,
+    organization: share.organization,
+    failed2faCount: share.failed2faCount,
+    status: share.status as 'SENT' | 'VIEWED' | 'EXPIRED' | 'REVOKED',
+    releaseClientCanDownload: row.releaseClientCanDownload,
   };
 }
 

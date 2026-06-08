@@ -493,6 +493,20 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         res.status(400).json({ error: 'title_required' });
         return;
       }
+      // A drop-off is defined by its dated reminder — without a due date
+      // (and a reminder lead) the worker sweep can never fire it, so the
+      // request would be silently inert. Enforce server-side (the UI also
+      // requires it, but MCP/bulk callers bypass the UI).
+      if (parsed.data.kind === 'DROP_OFF') {
+        if (!resolvedDueDate) {
+          res.status(400).json({ error: 'due_date_required_for_drop_off' });
+          return;
+        }
+        if (resolvedReminder === null) {
+          res.status(400).json({ error: 'reminder_required_for_drop_off' });
+          return;
+        }
+      }
 
       const newId = await deps.db.transaction(async (tx) => {
         const [row] = await tx

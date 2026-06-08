@@ -381,6 +381,51 @@ describe('request list filter / sort / pagination', () => {
     expect((all.jsonBody as { total: number }).total).toBe(2);
   });
 
+  it('rejects a DROP_OFF created without a due date or reminder (would be inert)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const router = createRequestRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+
+    // No dueDate → 400.
+    const noDue = await invoke(router, 'post', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: { engagementId: seed.engagementId, title: 'Drop-off', kind: 'DROP_OFF' },
+      }),
+    });
+    expect(noDue.statusCode).toBe(400);
+    expect((noDue.jsonBody as { error: string }).error).toBe('due_date_required_for_drop_off');
+
+    // dueDate but no reminder → 400.
+    const noReminder = await invoke(router, 'post', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          engagementId: seed.engagementId,
+          title: 'Drop-off',
+          kind: 'DROP_OFF',
+          dueDate: '2026-07-01',
+        },
+      }),
+    });
+    expect(noReminder.statusCode).toBe(400);
+    expect((noReminder.jsonBody as { error: string }).error).toBe('reminder_required_for_drop_off');
+
+    // A GENERAL request without a due date is still fine.
+    const general = await invoke(router, 'post', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: { engagementId: seed.engagementId, title: 'General ask' },
+      }),
+    });
+    expect(general.statusCode).toBe(201);
+  });
+
   it('filters by clientId via engagement join (cross-firm hidden)', async () => {
     const seed = await seedMinimalFirm(harness.db);
     const router = createRequestRouter({

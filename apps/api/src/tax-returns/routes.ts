@@ -352,30 +352,36 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         return;
       }
 
-      // Cascade removes sections, releases, shares, and access-log rows.
-      await deps.db
-        .delete(taxReturns)
-        .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)));
-
-      await emitAudit(deps.db, {
-        // ARCHIVE is the audit vocabulary's removal verb (no DELETE).
-        action: 'ARCHIVE',
-        entityType: 'tax_return',
-        entityId: returnId,
-        actorAppUserId: session.appUserId,
-        before: {
-          clientId: ret.clientId,
-          taxYear: ret.taxYear,
-          formCode: ret.formCode,
-          jurisdiction: ret.jurisdiction,
-          title: ret.title,
-          status: ret.status,
-          releaseKind: ret.releaseKind,
-          sourceFileId: ret.sourceFileId,
-        },
-        ip: req.ip ?? null,
-        userAgent: req.get('user-agent') ?? null,
-      }).catch((err: unknown) => logger.warn({ err }, 'tax-return delete audit emit failed'));
+      // Destructive op that can retract a RELEASED return from clients —
+      // the audit row is non-negotiable (CLAUDE.md invariant #1). Emit
+      // the audit and the cascade delete in ONE transaction so an audit
+      // failure rolls the delete back rather than leaving a deleted
+      // return with no trail. Audit first (entity still present), then
+      // the cascade removes sections, releases, shares, access-log rows.
+      await deps.db.transaction(async (tx) => {
+        await emitAudit(tx as Database, {
+          // ARCHIVE is the audit vocabulary's removal verb (no DELETE).
+          action: 'ARCHIVE',
+          entityType: 'tax_return',
+          entityId: returnId,
+          actorAppUserId: session.appUserId,
+          before: {
+            clientId: ret.clientId,
+            taxYear: ret.taxYear,
+            formCode: ret.formCode,
+            jurisdiction: ret.jurisdiction,
+            title: ret.title,
+            status: ret.status,
+            releaseKind: ret.releaseKind,
+            sourceFileId: ret.sourceFileId,
+          },
+          ip: req.ip ?? null,
+          userAgent: req.get('user-agent') ?? null,
+        });
+        await tx
+          .delete(taxReturns)
+          .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)));
+      });
 
       res.status(204).end();
     },
