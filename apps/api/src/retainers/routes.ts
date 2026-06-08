@@ -7,7 +7,7 @@
 // minimum needed for partner visibility into auto-created offers.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -37,6 +37,8 @@ import { renderRetainerOfferHtml } from '../pdf-templates/retainer-offer';
 
 export interface RetainerRoutesDeps extends RbacDeps {
   db: Database | null;
+  /** Portal origin used to build the client-facing offer link (Copy link). */
+  portalBaseUrl?: string;
 }
 
 export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
@@ -66,12 +68,30 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
           ),
         );
       }
-      const items = await deps.db
+      const rows = await deps.db
         .select()
         .from(retainerOffers)
         .where(and(...conds))
         .orderBy(desc(retainerOffers.createdAt))
         .limit(200);
+      // Enrich with client name (for the staff offers table) and the
+      // client-facing portal link (Copy link). Additive — bare offer fields
+      // are preserved.
+      const clientIds = Array.from(new Set(rows.map((r) => r.clientId)));
+      const nameById = new Map<string, string>();
+      if (clientIds.length > 0) {
+        const names = await deps.db
+          .select({ id: clients.id, name: clients.name })
+          .from(clients)
+          .where(inArray(clients.id, clientIds));
+        for (const n of names) nameById.set(n.id, n.name);
+      }
+      const base = deps.portalBaseUrl ?? process.env['PORTAL_BASE_URL'] ?? '';
+      const items = rows.map((r) => ({
+        ...r,
+        clientName: nameById.get(r.clientId) ?? null,
+        portalUrl: base ? `${base}/retainer-offers/${r.id}` : null,
+      }));
       res.json({ items });
     },
   );

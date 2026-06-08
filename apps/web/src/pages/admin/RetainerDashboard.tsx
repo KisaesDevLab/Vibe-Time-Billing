@@ -6,11 +6,16 @@
 // is the operational view.
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { Button, Card, Pill, Stat, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+
+function fmtCents(c: number | null | undefined): string {
+  if (c == null) return '—';
+  return `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
 
 interface Kpis {
   activeCount: number;
@@ -40,6 +45,21 @@ interface RetainerRow {
   priceCents: number;
 }
 
+interface OfferRow {
+  id: string;
+  clientId: string;
+  clientName: string | null;
+  returnType: string;
+  taxYear: number;
+  status: 'pending' | 'pending_payment' | 'purchased' | 'declined' | 'expired';
+  tier1PriceCents: number;
+  tier2PriceCents: number;
+  purchasedTier: 'TIER_1' | 'TIER_2' | null;
+  purchasedInvoiceId: string | null;
+  offerExpiresAt: string;
+  portalUrl: string | null;
+}
+
 interface TierConfigOption {
   id: string;
   returnType: string;
@@ -57,8 +77,12 @@ interface EngagementOption {
 }
 
 export function RetainerDashboardPage(): JSX.Element {
+  const navigate = useNavigate();
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [items, setItems] = useState<RetainerRow[]>([]);
+  const [offers, setOffers] = useState<OfferRow[]>([]);
+  const [offerMsg, setOfferMsg] = useState<string | null>(null);
+  const [sellingId, setSellingId] = useState<string | null>(null);
   const [voidId, setVoidId] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -79,14 +103,54 @@ export function RetainerDashboardPage(): JSX.Element {
 
   async function load(): Promise<void> {
     try {
-      const [k, list] = await Promise.all([
+      const [k, list, offerList] = await Promise.all([
         api<{ kpis: Kpis | null }>('/api/staff/retainers/admin/kpis'),
         api<{ items: RetainerRow[] }>('/api/staff/retainers'),
+        api<{ items: OfferRow[] }>('/api/staff/retainers/offers'),
       ]);
       setKpis(k.kpis);
       setItems(list.items ?? []);
+      setOffers(offerList.items ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'load failed');
+    }
+  }
+
+  // Staff "in-office" select: sell a tier on the client's behalf so the
+  // retainer purchase invoice exists for immediate counter payment.
+  async function sellTier(offer: OfferRow, tier: 'TIER_1' | 'TIER_2'): Promise<void> {
+    const price = tier === 'TIER_1' ? offer.tier1PriceCents : offer.tier2PriceCents;
+    if (
+      !confirm(
+        `Sell ${tier === 'TIER_1' ? 'Tier 1' : 'Tier 2'} (${fmtCents(price)}) to ${offer.clientName ?? 'this client'}? This creates the retainer invoice for counter payment.`,
+      )
+    )
+      return;
+    setError(null);
+    setOfferMsg(null);
+    setSellingId(offer.id);
+    try {
+      const r = await api<{ invoiceId: string; invoiceNumber: string; priceCents: number }>(
+        `/api/staff/retainers/offers/${offer.id}/select`,
+        { method: 'POST', body: JSON.stringify({ tier }) },
+      );
+      setOfferMsg(`Created retainer invoice ${r.invoiceNumber} — opening it for payment…`);
+      await load();
+      navigate(`/invoices/${r.invoiceId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'select failed');
+    } finally {
+      setSellingId(null);
+    }
+  }
+
+  async function copyLink(offer: OfferRow): Promise<void> {
+    if (!offer.portalUrl) return;
+    try {
+      await navigator.clipboard.writeText(offer.portalUrl);
+      setOfferMsg('Client offer link copied to clipboard.');
+    } catch {
+      setOfferMsg(offer.portalUrl);
     }
   }
 
@@ -329,6 +393,125 @@ export function RetainerDashboardPage(): JSX.Element {
             ]}
             rows={items}
             rowKey={(r) => r.id}
+          />
+        )}
+      </Card>
+
+      <Card title="Retainer offers">
+        {offerMsg && (
+          <p style={{ fontSize: 12, color: tokens.color.success, marginTop: 0 }}>{offerMsg}</p>
+        )}
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+          Proposal-style offers auto-created when a tax-prep invoice is billed. Hand the client a
+          printable PDF or the portal link; or sell a tier in-office to generate the retainer
+          invoice for counter payment.
+        </p>
+        {offers.length === 0 ? (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No offers yet.</p>
+        ) : (
+          <Table<OfferRow>
+            columns={[
+              { key: 'client', header: 'Client', render: (o) => o.clientName ?? '—' },
+              { key: 'rt', header: 'Return', render: (o) => `${o.returnType} ${o.taxYear}` },
+              {
+                key: 'tiers',
+                header: 'Tier add-on',
+                render: (o) => `${fmtCents(o.tier1PriceCents)} / ${fmtCents(o.tier2PriceCents)}`,
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (o) => (
+                  <Pill
+                    tone={
+                      o.status === 'purchased'
+                        ? 'success'
+                        : o.status === 'pending'
+                          ? 'accent'
+                          : o.status === 'pending_payment'
+                            ? 'warning'
+                            : 'neutral'
+                    }
+                  >
+                    {o.status === 'pending_payment'
+                      ? 'awaiting payment'
+                      : o.purchasedTier && o.status === 'purchased'
+                        ? `purchased (${o.purchasedTier === 'TIER_1' ? 'T1' : 'T2'})`
+                        : o.status}
+                  </Pill>
+                ),
+              },
+              {
+                key: 'actions',
+                header: '',
+                render: (o) => (
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        window.open(`/api/staff/retainers/offers/${o.id}/print.html`, '_blank')
+                      }
+                    >
+                      Proposal
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        window.open(`/api/staff/retainers/offers/${o.id}/print.pdf`, '_blank')
+                      }
+                    >
+                      PDF
+                    </Button>
+                    {o.portalUrl && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void copyLink(o)}
+                      >
+                        Copy link
+                      </Button>
+                    )}
+                    {o.status === 'pending' && (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={sellingId === o.id}
+                          onClick={() => void sellTier(o, 'TIER_1')}
+                        >
+                          Sell T1
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={sellingId === o.id}
+                          onClick={() => void sellTier(o, 'TIER_2')}
+                        >
+                          Sell T2
+                        </Button>
+                      </>
+                    )}
+                    {o.status === 'pending_payment' && o.purchasedInvoiceId && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => navigate(`/invoices/${o.purchasedInvoiceId}`)}
+                      >
+                        Invoice
+                      </Button>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+            rows={offers}
+            rowKey={(o) => o.id}
           />
         )}
       </Card>

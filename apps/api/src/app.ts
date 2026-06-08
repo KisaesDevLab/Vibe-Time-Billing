@@ -1225,6 +1225,7 @@ export function createApp(deps: AppDeps): Express {
   const retainerRouter = createRetainerRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/retainers', auth.requireAuth, auth.requireCsrf, retainerRouter);
 
