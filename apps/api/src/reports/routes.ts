@@ -12,6 +12,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   adjustmentAllocations,
+  adjustments,
   appUsers,
   approvalRequests,
   billingBatches,
@@ -158,7 +159,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           entryDate: timeEntries.entryDate,
         })
         .from(adjustmentAllocations)
-        .innerJoin(billingBatches, eq(adjustmentAllocations.adjustmentId, billingBatches.id))
+        // allocation → adjustment → billing_batch. adjustment_allocations.adjustment_id
+        // is an adjustments.id (NOT a billing_batch id), so we must hop through the
+        // adjustments table to reach the batch and its engagement.
+        .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+        .innerJoin(billingBatches, eq(billingBatches.id, adjustments.billingBatchId))
         .innerJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId));
       const rows = await (conds.length > 0 ? baseQuery.where(and(...conds)) : baseQuery);
 
@@ -352,15 +357,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const rows = batches.length
         ? await deps.db
             .select({
-              adjustmentId: adjustmentAllocations.adjustmentId,
+              // The batch id lives on the adjustment, not the allocation — join
+              // through adjustments to recover it (adjustment_id ≠ billing_batch id).
+              batchId: adjustments.billingBatchId,
               original: adjustmentAllocations.originalValueCents,
               adjusted: adjustmentAllocations.adjustedValueCents,
             })
             .from(adjustmentAllocations)
+            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
         : [];
       const byPartner = new Map<string, { originalCents: number; adjustedCents: number }>();
       for (const r of rows) {
-        const engId = engByBatch.get(r.adjustmentId);
+        const engId = engByBatch.get(r.batchId);
         if (!engId) continue;
         const partnerId = partnerByEng.get(engId);
         if (!partnerId) continue;
@@ -676,9 +684,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
               appUserId: adjustmentAllocations.appUserId,
               originalValueCents: adjustmentAllocations.originalValueCents,
               adjustedValueCents: adjustmentAllocations.adjustedValueCents,
-              billingBatchId: adjustmentAllocations.adjustmentId,
+              // Recover the batch id from the adjustment (adjustment_id ≠ batch id).
+              billingBatchId: adjustments.billingBatchId,
             })
             .from(adjustmentAllocations)
+            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
         : [];
       const header = [
         'appUserId',
