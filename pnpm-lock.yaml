@@ -205,6 +205,9 @@ importers:
       '@vibe/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      pdfjs-dist:
+        specifier: ^4.10.38
+        version: 4.10.38
       react:
         specifier: ^18.2.0
         version: 18.3.1
