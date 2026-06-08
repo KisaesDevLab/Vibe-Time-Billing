@@ -61,8 +61,10 @@ export function createPortalAppointmentRouter(deps: PortalAppointmentDeps): Rout
       .where(
         and(
           inArray(appointments.clientId, scope.clientIds),
-          // SCHEDULED rows (all of them) + recent terminal rows.
-          sql`(${appointments.status} = 'SCHEDULED' OR ${appointments.startsAt} >= ${cutoff})`,
+          // SCHEDULED rows (all of them) + recent terminal rows. Pass the
+          // cutoff as an ISO string — the postgres driver can't bind a raw
+          // Date object as a query parameter in this sql fragment.
+          sql`(${appointments.status} = 'SCHEDULED' OR ${appointments.startsAt} >= ${cutoff.toISOString()})`,
         ),
       )
       .orderBy(appointments.startsAt);

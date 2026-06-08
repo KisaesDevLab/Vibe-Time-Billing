@@ -83,24 +83,22 @@ export function HomePage(): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      try {
-        const [inv, tax, ret, eng, apt] = await Promise.all([
-          api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
-          api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
-          api<{ items: ReleasedReturnSummary[] }>('/api/portal/tax/returns'),
-          api<{ items: ActiveEngagementSummary[] }>('/api/portal/engagements/active'),
-          api<{ items: AppointmentSummary[] }>('/api/portal/appointments'),
-        ]);
-        setOpenInvoices(inv.open ?? []);
-        setTaxPayments(tax.items ?? []);
-        setTaxReturns(ret.items ?? []);
-        setEngagements(eng.items ?? []);
-        setAppointments(apt.items ?? []);
-      } catch {
-        // best-effort — empty state handles failure gracefully
-      } finally {
-        setLoaded(true);
-      }
+      // allSettled, not all: each section loads independently so one
+      // failing endpoint (e.g. a 500 from appointments) can't blank every
+      // other card on the overview.
+      const [inv, tax, ret, eng, apt] = await Promise.allSettled([
+        api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
+        api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
+        api<{ items: ReleasedReturnSummary[] }>('/api/portal/tax/returns'),
+        api<{ items: ActiveEngagementSummary[] }>('/api/portal/engagements/active'),
+        api<{ items: AppointmentSummary[] }>('/api/portal/appointments'),
+      ]);
+      if (inv.status === 'fulfilled') setOpenInvoices(inv.value.open ?? []);
+      if (tax.status === 'fulfilled') setTaxPayments(tax.value.items ?? []);
+      if (ret.status === 'fulfilled') setTaxReturns(ret.value.items ?? []);
+      if (eng.status === 'fulfilled') setEngagements(eng.value.items ?? []);
+      if (apt.status === 'fulfilled') setAppointments(apt.value.items ?? []);
+      setLoaded(true);
     })();
   }, [me?.activeClientId]);
 
