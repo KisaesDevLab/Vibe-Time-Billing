@@ -20,6 +20,10 @@ import { and, desc, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  clientContacts,
+  clientPortalAccess,
+  clients,
+  engagements,
   signatureEvents,
   signatureFieldPlacements,
   signaturePlacementProfiles,
@@ -71,11 +75,18 @@ const SignerInputSchema = z.object({
   email: z.string().trim().email().max(320),
   role: z.string().trim().max(80).optional(),
   order: z.number().int().min(1).max(99).optional(),
+  // 0133 — provenance when the signer was picked from the client's people
+  // list. Validated server-side against that client; cleared if it doesn't
+  // belong (name+email remain canonical regardless).
+  personId: z.string().uuid().optional(),
+  clientContactId: z.string().uuid().optional(),
+  portalIdentityId: z.string().uuid().optional(),
 });
 
 const CreateSchema = z.object({
   title: z.string().trim().min(1).max(300),
   clientId: z.string().uuid().optional(),
+  engagementId: z.string().uuid().optional(),
   formType: z.string().trim().max(40).optional(),
   sendInOrder: z.boolean().optional(),
   pageGeometry: GeometrySchema.optional(),
@@ -85,6 +96,7 @@ const CreateSchema = z.object({
 const PatchSchema = z.object({
   title: z.string().trim().min(1).max(300).optional(),
   clientId: z.string().uuid().nullable().optional(),
+  engagementId: z.string().uuid().nullable().optional(),
   formType: z.string().trim().max(40).nullable().optional(),
   sendInOrder: z.boolean().optional(),
   pageGeometry: GeometrySchema.optional(),
@@ -167,6 +179,59 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
     await db.insert(signatureEvents).values({ requestId, actor, event, detail: detail ?? null });
   }
 
+  // 0133 — an engagement may be associated only if it belongs to BOTH the
+  // given client and the firm (engagement is client-scoped; client is
+  // firm-scoped). No engagement → always valid.
+  async function validateEngagement(
+    db: Database,
+    firmId: string,
+    clientId: string | null | undefined,
+    engagementId: string | null | undefined,
+  ): Promise<boolean> {
+    if (!engagementId) return true;
+    if (!clientId) return false; // an engagement can't be linked without its client
+    const [row] = await db
+      .select({ id: engagements.id })
+      .from(engagements)
+      .innerJoin(clients, eq(engagements.clientId, clients.id))
+      .where(
+        and(
+          eq(engagements.id, engagementId),
+          eq(engagements.clientId, clientId),
+          eq(clients.firmId, firmId),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
+  // 0133 — the provenance ids that legitimately belong to a client, so signer
+  // links pointing elsewhere can be cleared (defense against a stale client
+  // switch in the UI). Returns empty sets if clientId is absent.
+  async function clientPeopleLinkSets(
+    db: Database,
+    clientId: string | null | undefined,
+  ): Promise<{ personIds: Set<string>; contactIds: Set<string>; portalIdentityIds: Set<string> }> {
+    if (!clientId) {
+      return { personIds: new Set(), contactIds: new Set(), portalIdentityIds: new Set() };
+    }
+    const contacts = await db
+      .select({ id: clientContacts.id, personId: clientContacts.personId })
+      .from(clientContacts)
+      .where(eq(clientContacts.clientId, clientId));
+    const access = await db
+      .select({ portalIdentityId: clientPortalAccess.portalIdentityId })
+      .from(clientPortalAccess)
+      .where(eq(clientPortalAccess.clientId, clientId));
+    return {
+      personIds: new Set(contacts.map((c) => c.personId).filter((x): x is string => Boolean(x))),
+      contactIds: new Set(contacts.map((c) => c.id)),
+      portalIdentityIds: new Set(
+        access.map((a) => a.portalIdentityId).filter((x): x is string => Boolean(x)),
+      ),
+    };
+  }
+
   // GET / — firm request list (optional ?status=).
   router.get('/', requirePermission(deps, 'proposal:read'), async (req: Request, res: Response) => {
     const firmId = req.staffSession!.firmId;
@@ -217,12 +282,20 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
       }
       const body = parsed.data;
 
+      if (!(await validateEngagement(deps.db, firmId, body.clientId, body.engagementId))) {
+        res.status(400).json({ error: 'invalid_engagement' });
+        return;
+      }
+      // Clear any signer provenance ids that don't belong to the client.
+      const linkSets = await clientPeopleLinkSets(deps.db, body.clientId);
+
       const created = await deps.db.transaction(async (tx) => {
         const [reqRow] = await tx
           .insert(signatureRequests)
           .values({
             firmId,
             clientId: body.clientId ?? null,
+            engagementId: body.engagementId ?? null,
             title: body.title,
             formType: body.formType ?? null,
             sendInOrder: body.sendInOrder ?? false,
@@ -239,6 +312,15 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             email: s.email,
             role: s.role ?? null,
             order: s.order ?? i + 1,
+            personId: s.personId && linkSets.personIds.has(s.personId) ? s.personId : null,
+            clientContactId:
+              s.clientContactId && linkSets.contactIds.has(s.clientContactId)
+                ? s.clientContactId
+                : null,
+            portalIdentityId:
+              s.portalIdentityId && linkSets.portalIdentityIds.has(s.portalIdentityId)
+                ? s.portalIdentityId
+                : null,
           })),
         );
         await recordEvent(tx as unknown as Database, requestId, actor, 'created', {
@@ -472,7 +554,17 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
           .orderBy(desc(signatureEvents.createdAt))
           .limit(200),
       ]);
-      res.json({ request, signers, placements, events });
+      // Resolve the linked engagement name (if any) for display.
+      let engagement: { id: string; name: string } | null = null;
+      if (request.engagementId) {
+        const [eng] = await deps.db
+          .select({ id: engagements.id, name: engagements.name })
+          .from(engagements)
+          .where(eq(engagements.id, request.engagementId))
+          .limit(1);
+        engagement = eng ?? null;
+      }
+      res.json({ request, signers, placements, events, engagement });
     },
   );
 
@@ -502,9 +594,18 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         return;
       }
       const b = parsed.data;
+      // Effective client after this patch (engagement is validated against it).
+      const effectiveClientId = b.clientId !== undefined ? b.clientId : request.clientId;
+      if (b.engagementId !== undefined && b.engagementId !== null) {
+        if (!(await validateEngagement(deps.db, firmId, effectiveClientId, b.engagementId))) {
+          res.status(400).json({ error: 'invalid_engagement' });
+          return;
+        }
+      }
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (b.title !== undefined) patch['title'] = b.title;
       if (b.clientId !== undefined) patch['clientId'] = b.clientId;
+      if (b.engagementId !== undefined) patch['engagementId'] = b.engagementId;
       if (b.formType !== undefined) patch['formType'] = b.formType;
       if (b.sendInOrder !== undefined) patch['sendInOrder'] = b.sendInOrder;
       if (b.pageGeometry !== undefined) patch['pageGeometry'] = b.pageGeometry;

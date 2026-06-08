@@ -175,6 +175,85 @@ interface SignerDraft {
   name: string;
   email: string;
   role: string;
+  // Set when the row was added from the client's people list (provenance,
+  // sent to the API). `peopleKey` maps the row back to its people entry so the
+  // checkbox can toggle it; manual rows leave all of these undefined.
+  peopleKey?: string;
+  personId?: string;
+  clientContactId?: string;
+  portalIdentityId?: string;
+}
+
+interface ClientHit {
+  id: string;
+  name: string;
+}
+
+interface EngagementHit {
+  id: string;
+  name: string;
+  status: string;
+}
+
+// One reconciled person associated with a client (subset of the
+// /clients/:id/people response we need to build a signer).
+interface PersonEntry {
+  key: string;
+  name: string;
+  email: string | null;
+  hint: string;
+  personId?: string;
+  clientContactId?: string;
+  portalIdentityId?: string;
+}
+
+interface PeopleApiEntry {
+  key: string;
+  kind: string;
+  contact: {
+    id: string;
+    personId: string;
+    fullName: string;
+    email?: string | null;
+    roleId?: string | null;
+    isPrimary?: boolean;
+  } | null;
+  access: {
+    id: string;
+    portalIdentityId: string;
+    fullName: string;
+    primaryEmail?: string | null;
+    role?: string | null;
+  } | null;
+  pendingInvitation: {
+    proposedFullName: string;
+    invitedEmail?: string | null;
+  } | null;
+}
+
+const KIND_HINT: Record<string, string> = {
+  linked: 'Contact + portal',
+  contact_only: 'Contact',
+  portal_only: 'Portal user',
+  invited: 'Invited',
+};
+
+function toPersonEntry(e: PeopleApiEntry): PersonEntry | null {
+  const name =
+    e.contact?.fullName ?? e.access?.fullName ?? e.pendingInvitation?.proposedFullName ?? '';
+  if (!name) return null;
+  const email =
+    e.contact?.email ?? e.access?.primaryEmail ?? e.pendingInvitation?.invitedEmail ?? null;
+  const hint = e.contact?.isPrimary ? 'Primary contact' : (KIND_HINT[e.kind] ?? e.kind);
+  return {
+    key: e.key,
+    name,
+    email,
+    hint,
+    personId: e.contact?.personId,
+    clientContactId: e.contact?.id,
+    portalIdentityId: e.access?.portalIdentityId,
+  };
 }
 
 const FORM_OPTIONS = [
@@ -198,6 +277,16 @@ function CreateSignatureDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Client + its associated people + engagements.
+  const [clientId, setClientId] = useState('');
+  const [clientLabel, setClientLabel] = useState('');
+  const [clientQuery, setClientQuery] = useState('');
+  const [clientHits, setClientHits] = useState<ClientHit[]>([]);
+  const [people, setPeople] = useState<PersonEntry[]>([]);
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [engagements, setEngagements] = useState<EngagementHit[]>([]);
+  const [engagementId, setEngagementId] = useState('');
+
   const valid =
     title.trim().length > 0 &&
     signers.length > 0 &&
@@ -206,6 +295,100 @@ function CreateSignatureDialog({
   function updateSigner(i: number, patch: Partial<SignerDraft>): void {
     setSigners((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   }
+
+  // Debounced client typeahead.
+  useEffect(() => {
+    if (clientId) return;
+    const term = clientQuery.trim();
+    if (!term) {
+      setClientHits([]);
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(() => {
+      void api<{ items: ClientHit[] }>(
+        `/api/staff/clients?q=${encodeURIComponent(term)}&pageSize=10`,
+      )
+        .then((r) => {
+          if (alive) setClientHits(r.items ?? []);
+        })
+        .catch(() => undefined);
+    }, 200);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [clientQuery, clientId]);
+
+  // When a client is chosen, load its people + engagements.
+  function pickClient(c: ClientHit): void {
+    setClientId(c.id);
+    setClientLabel(c.name);
+    setClientHits([]);
+    setEngagementId('');
+    setEngagements([]);
+    setPeople([]);
+    setPeopleLoading(true);
+    void Promise.all([
+      api<{ items?: PeopleApiEntry[]; people?: PeopleApiEntry[] }>(
+        `/api/staff/clients/${c.id}/people`,
+      ).catch(() => ({}) as { items?: PeopleApiEntry[]; people?: PeopleApiEntry[] }),
+      api<{ items: EngagementHit[] }>(`/api/staff/engagements?clientId=${c.id}&pageSize=100`).catch(
+        () => ({ items: [] }),
+      ),
+    ])
+      .then(([pr, er]) => {
+        const raw = pr.items ?? pr.people ?? [];
+        const entries = raw.map(toPersonEntry).filter((x): x is PersonEntry => x !== null);
+        // De-dupe by display key.
+        const seen = new Set<string>();
+        setPeople(entries.filter((e) => (seen.has(e.key) ? false : (seen.add(e.key), true))));
+        setEngagements(er.items ?? []);
+      })
+      .finally(() => setPeopleLoading(false));
+  }
+
+  function clearClient(): void {
+    setClientId('');
+    setClientLabel('');
+    setClientQuery('');
+    setPeople([]);
+    setEngagements([]);
+    setEngagementId('');
+    // Drop people-derived signers; keep manual ones.
+    setSigners((prev) => {
+      const manual = prev.filter((s) => !s.peopleKey);
+      return manual.length ? manual : [{ name: '', email: '', role: '' }];
+    });
+  }
+
+  function togglePerson(p: PersonEntry, checked: boolean): void {
+    setSigners((prev) => {
+      if (checked) {
+        if (prev.some((s) => s.peopleKey === p.key)) return prev;
+        const next = prev.filter(
+          // Drop a leading blank manual row so the first pick isn't paired with an empty one.
+          (s, idx) => !(idx === 0 && !s.peopleKey && !s.name && !s.email && prev.length === 1),
+        );
+        return [
+          ...next,
+          {
+            name: p.name,
+            email: p.email ?? '',
+            role: '',
+            peopleKey: p.key,
+            personId: p.personId,
+            clientContactId: p.clientContactId,
+            portalIdentityId: p.portalIdentityId,
+          },
+        ];
+      }
+      const after = prev.filter((s) => s.peopleKey !== p.key);
+      return after.length ? after : [{ name: '', email: '', role: '' }];
+    });
+  }
+
+  const selectedKeys = new Set(signers.map((s) => s.peopleKey).filter(Boolean) as string[]);
 
   async function submit(): Promise<void> {
     if (!valid) {
@@ -220,10 +403,15 @@ function CreateSignatureDialog({
         body: JSON.stringify({
           title: title.trim(),
           formType: formType || undefined,
+          clientId: clientId || undefined,
+          engagementId: engagementId || undefined,
           signers: signers.map((s) => ({
             name: s.name.trim(),
             email: s.email.trim(),
             role: s.role.trim() || undefined,
+            personId: s.personId,
+            clientContactId: s.clientContactId,
+            portalIdentityId: s.portalIdentityId,
           })),
         }),
       });
@@ -234,6 +422,21 @@ function CreateSignatureDialog({
       setBusy(false);
     }
   }
+
+  const inputStyle: React.CSSProperties = {
+    padding: '6px 10px',
+    background: tokens.color.surface,
+    color: tokens.color.text,
+    border: `1px solid ${tokens.color.border}`,
+    borderRadius: tokens.radius.md,
+    fontSize: 13,
+    width: '100%',
+  };
+
+  const engagementOptions = [
+    { value: '', label: '— No engagement —' },
+    ...engagements.map((e) => ({ value: e.id, label: `${e.name} (${statusLabel(e.status)})` })),
+  ];
 
   return (
     <div
@@ -269,10 +472,142 @@ function CreateSignatureDialog({
               />
             </div>
 
+            {/* Client picker */}
+            <div>
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                Client (optional — pull signers from the client&apos;s people)
+              </div>
+              {clientId ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Pill tone="accent">{clientLabel}</Pill>
+                  <Button size="sm" variant="ghost" onClick={clearClient}>
+                    Change
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    value={clientQuery}
+                    onChange={(e) => setClientQuery(e.target.value)}
+                    placeholder="Search clients…"
+                    style={inputStyle}
+                  />
+                  {clientHits.length > 0 && (
+                    <div
+                      style={{
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius: tokens.radius.md,
+                        marginTop: 4,
+                        maxHeight: 180,
+                        overflowY: 'auto',
+                      }}
+                    >
+                      {clientHits.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => pickClient(c)}
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            textAlign: 'left',
+                            border: 'none',
+                            background: 'transparent',
+                            padding: '6px 10px',
+                            cursor: 'pointer',
+                            fontSize: 13,
+                            color: tokens.color.text,
+                          }}
+                        >
+                          {c.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* People → signers */}
+            {clientId && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  People on this client
+                </div>
+                {peopleLoading ? (
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted }}>Loading…</div>
+                ) : people.length === 0 ? (
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    No associated people found — add signers manually below.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                      maxHeight: 180,
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {people.map((p) => {
+                      const noEmail = !p.email;
+                      return (
+                        <label
+                          key={p.key}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '6px 10px',
+                            fontSize: 13,
+                            opacity: noEmail ? 0.5 : 1,
+                            cursor: noEmail ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={noEmail}
+                            checked={selectedKeys.has(p.key)}
+                            onChange={(e) => togglePerson(p, e.target.checked)}
+                          />
+                          <span style={{ flex: 1 }}>
+                            {p.name}
+                            {p.email ? (
+                              <span style={{ color: tokens.color.textMuted }}> · {p.email}</span>
+                            ) : (
+                              <span style={{ color: tokens.color.danger }}>
+                                {' '}
+                                · no email on file
+                              </span>
+                            )}
+                          </span>
+                          <Pill>{p.hint}</Pill>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Engagement picker */}
+            {clientId && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Engagement (optional)
+                </div>
+                <Combobox
+                  options={engagementOptions}
+                  value={engagementId}
+                  onChange={setEngagementId}
+                  ariaLabel="Engagement"
+                />
+              </div>
+            )}
+
             <div style={{ fontSize: 13, fontWeight: 600, color: tokens.color.text }}>Signers</div>
             {signers.map((s, i) => (
               <div
-                key={i}
+                key={s.peopleKey ?? `manual-${i}`}
                 style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.8fr auto', gap: 8 }}
               >
                 <Input

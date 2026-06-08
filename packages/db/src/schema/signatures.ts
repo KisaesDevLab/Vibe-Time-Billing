@@ -25,7 +25,8 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
-import { appUsers, clients, firms } from './core';
+import { appUsers, clientContacts, clients, engagements, firms, persons } from './core';
+import { portalIdentity } from './portal';
 
 export const signatureRequests = pgTable(
   'signature_requests',
@@ -35,6 +36,10 @@ export const signatureRequests = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     clientId: uuid('client_id').references(() => clients.id, { onDelete: 'set null' }),
+    // 0133 — optional association with one of the client's engagements.
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'set null',
+    }),
     opensignDocumentId: text('opensign_document_id'),
     title: text('title').notNull(),
     status: text('status').notNull().default('draft'),
@@ -55,6 +60,7 @@ export const signatureRequests = pgTable(
   },
   (t) => ({
     firmStatusIdx: index('signature_requests_firm_status_idx').on(t.firmId, t.status),
+    firmEngagementIdx: index('signature_requests_firm_engagement_idx').on(t.firmId, t.engagementId),
     opensignIdx: index('signature_requests_opensign_idx').on(t.opensignDocumentId),
     statusCk: check(
       'signature_requests_status_ck',
@@ -77,6 +83,15 @@ export const signatureSigners = pgTable(
     status: text('status').notNull().default('pending'),
     signedAt: timestamp('signed_at', { withTimezone: true }),
     opensignSignerId: text('opensign_signer_id'),
+    // 0133 — provenance when a signer was pulled from the client's people
+    // list (vs. typed by hand). All nullable; name+email stay canonical.
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
+    clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
+      onDelete: 'set null',
+    }),
+    portalIdentityId: uuid('portal_identity_id').references(() => portalIdentity.id, {
+      onDelete: 'set null',
+    }),
   },
   (t) => ({
     requestIdx: index('signature_signers_request_idx').on(t.requestId),
