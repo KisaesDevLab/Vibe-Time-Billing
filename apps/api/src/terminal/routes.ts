@@ -200,6 +200,7 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
       amountCents: parsed.data.amountCents,
       feeCents: 0,
       provider: 'STRIPE',
+      channel: 'TERMINAL',
       providerChargeId: pi.id,
       status: 'PENDING',
       receivedAt: new Date(),

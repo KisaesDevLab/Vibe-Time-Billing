@@ -116,6 +116,12 @@ async function seed(): Promise<{ firmId: string; appUserId: string }> {
                              payment_method_id)
         VALUES (${invoiceId}, 300000, 500, 'STRIPE', 'PENDING', '2026-06-06T11:00:00Z', ${achPmId})`,
   );
+  // In-person card_present payment — STRIPE provider but stamped channel.
+  await harness.db.execute(
+    sql`INSERT INTO payment (invoice_id, amount_cents, fee_cents, provider, channel, status,
+                             received_at)
+        VALUES (${invoiceId}, 80000, 2200, 'STRIPE', 'TERMINAL', 'SUCCEEDED', '2026-06-07T12:00:00Z')`,
+  );
   return { firmId, appUserId };
 }
 
@@ -140,20 +146,20 @@ describe('GET /payments/received', () => {
     const { firmId, appUserId } = await seed();
     const res = await get(router(), firmId, appUserId, {});
     const body = res.jsonBody as Body;
-    expect(body.summary.count).toBe(3);
-    expect(body.summary.grossCents).toBe(165000); // 120000 + 45000 (PENDING ACH excluded)
-    expect(body.summary.feesCents).toBe(3500);
-    expect(body.summary.netCents).toBe(161500);
+    expect(body.summary.count).toBe(4);
+    expect(body.summary.grossCents).toBe(245000); // 120000 + 45000 + 80000 (PENDING ACH excluded)
+    expect(body.summary.feesCents).toBe(5700); // 3500 + 0 + 2200
+    expect(body.summary.netCents).toBe(239300);
     expect(body.summary.pendingCount).toBe(1);
     const channels = body.items.map((i) => i.channel).sort();
-    expect(channels).toEqual(['ACH', 'Card', 'Check']);
+    expect(channels).toEqual(['ACH', 'Card', 'Check', 'Terminal']);
   });
 
-  it('filters by channel', async () => {
+  it('filters by channel (Terminal shows separately)', async () => {
     const { firmId, appUserId } = await seed();
-    const res = await get(router(), firmId, appUserId, { channel: 'Check' });
+    const res = await get(router(), firmId, appUserId, { channel: 'Terminal' });
     const body = res.jsonBody as Body;
     expect(body.summary.count).toBe(1);
-    expect(body.items[0]!.channel).toBe('Check');
+    expect(body.items[0]!.channel).toBe('Terminal');
   });
 });

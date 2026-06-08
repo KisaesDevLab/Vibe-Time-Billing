@@ -2434,6 +2434,9 @@ export const payments = pgTable(
     feeCents: bigint('fee_cents', { mode: 'number' }).notNull().default(0),
     paymentMethodId: uuid('payment_method_id'), // FK to payment_method in portal.ts
     provider: text('provider').notNull(), // 'STRIPE' | 'CPACHARGE' | 'MANUAL'
+    // 0130 — explicit collection channel when known (e.g. 'TERMINAL' for an
+    // in-person card_present charge). NULL → derive from provider/method.
+    channel: text('channel'),
     providerChargeId: text('provider_charge_id'),
     status: paymentStatus('status').notNull(),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),

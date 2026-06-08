@@ -123,7 +123,11 @@ function deriveChannel(
   provider: string,
   pmKind: string | null,
   receiptMethod: string | null,
+  storedChannel?: string | null,
 ): string {
+  // An explicit channel stamped at collect time wins (e.g. in-person Terminal).
+  if (storedChannel === 'TERMINAL') return 'Terminal';
+  if (storedChannel) return storedChannel;
   if (provider === 'CREDIT') return 'Credit';
   if (provider === 'MANUAL') {
     switch ((receiptMethod ?? '').toUpperCase()) {
@@ -1228,6 +1232,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           provider: payments.provider,
           status: payments.status,
           refundedAmountCents: payments.refundedAmountCents,
+          storedChannel: payments.channel,
           pmKind: paymentMethod.kind,
           receiptMethod: paymentReceipts.paymentMethod,
         })
@@ -1253,7 +1258,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         provider: r.provider,
         status: r.status,
         refundedAmountCents: Number(r.refundedAmountCents ?? 0),
-        channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod),
+        channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod, r.storedChannel),
       }));
       const filtered = channel ? withChannel.filter((r) => r.channel === channel) : withChannel;
 

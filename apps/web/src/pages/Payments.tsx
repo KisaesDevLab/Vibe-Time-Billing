@@ -259,6 +259,7 @@ export function PaymentsPage(): JSX.Element {
             <select value={channel} onChange={(e) => setChannel(e.target.value)} style={inputStyle}>
               <option value="">All</option>
               <option value="Card">Card</option>
+              <option value="Terminal">Terminal (in person)</option>
               <option value="ACH">ACH</option>
               <option value="ACH (manual)">ACH (manual)</option>
               <option value="Check">Check</option>
