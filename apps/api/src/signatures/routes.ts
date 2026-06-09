@@ -977,6 +977,43 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
     },
   );
 
+  // GET /:id/certificate — stream the OpenSign completion/audit certificate
+  // (signer IP, signed date/time, document hash, event trail). Stored at
+  // completion by reconcile; only present once completed.
+  router.get(
+    '/:id/certificate',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = getStorage();
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request || !request.certificateFileUrl) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      try {
+        const obj = await storage.get(request.certificateFileUrl);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${request.title.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'signature'}-certificate.pdf"`,
+        );
+        res.setHeader('Cache-Control', 'private, no-store');
+        obj.body.pipe(res);
+      } catch {
+        res.status(404).json({ error: 'certificate_unavailable' });
+      }
+    },
+  );
+
   // POST /:id/void — cancel a request that's been sent (or a draft). Marks
   // it terminal so the poll/webhook stop reconciling it. OpenSign has no
   // exposed cancel cloud function, so the upstream document is simply

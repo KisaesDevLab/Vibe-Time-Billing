@@ -47,6 +47,9 @@ export const signatureRequests = pgTable(
     signedCount: integer('signed_count').notNull().default(0),
     sourceFileKey: text('source_file_key'),
     signedFileUrl: text('signed_file_url'),
+    // OpenSign completion/audit certificate (IP, signed date/time, signer
+    // trail) — stored separately from the signed PDF. See migration 0138.
+    certificateFileUrl: text('certificate_file_url'),
     // [{ pageNumber, widthPt, heightPt }] read from each page's MediaBox.
     pageGeometry: jsonb('page_geometry'),
     formType: text('form_type'),

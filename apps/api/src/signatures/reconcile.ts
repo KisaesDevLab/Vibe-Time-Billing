@@ -46,6 +46,10 @@ function signedFileKey(firmId: string, requestId: string): string {
   return `signatures/${firmId}/${requestId}/signed.pdf`;
 }
 
+function certFileKey(firmId: string, requestId: string): string {
+  return `signatures/${firmId}/${requestId}/certificate.pdf`;
+}
+
 // Collect the lower-cased emails that have a 'Signed' audit-trail entry.
 function signedEmailsFromDoc(doc: ParseDoc): Set<string> {
   const emails = new Set<string>();
@@ -99,12 +103,31 @@ export async function reconcileSignatureRequestByDocument(
   // OpenSign never gets our storage creds — we pull the bytes and write
   // them to our own bucket.
   let signedKey: string | null = null;
+  let certKey: string | null = null;
   if (completed) {
     const url = doc.SignedUrl ?? doc.CertificateUrl;
     if (url) {
       const pdf = await deps.client.fetchPdfUrl(url);
       signedKey = signedFileKey(request.firmId, request.id);
       await deps.storage.put(signedKey, pdf.body, { contentType: pdf.contentType });
+    }
+    // Audit certificate (signer IP, signed date/time, document hash, event
+    // trail). Prefer OpenSign's CertificateUrl; generate it on demand if the
+    // document didn't surface one. Best-effort — never block completion; the
+    // poll re-fetches next tick if this fails.
+    try {
+      let certUrl = doc.CertificateUrl;
+      if (!certUrl) {
+        const gen = await deps.client.generateCertificate(opensignDocumentId);
+        certUrl = gen?.CertificateUrl;
+      }
+      if (certUrl) {
+        const certPdf = await deps.client.fetchPdfUrl(certUrl);
+        certKey = certFileKey(request.firmId, request.id);
+        await deps.storage.put(certKey, certPdf.body, { contentType: certPdf.contentType });
+      }
+    } catch {
+      // leave certKey null; a later reconcile tick will retry.
     }
   }
 
@@ -147,6 +170,7 @@ export async function reconcileSignatureRequestByDocument(
         status: nextStatus,
         signedCount,
         signedFileUrl: signedKey ?? locked.signedFileUrl,
+        certificateFileUrl: certKey ?? locked.certificateFileUrl,
         completedAt: nextStatus === 'completed' ? now : locked.completedAt,
         updatedAt: now,
       })

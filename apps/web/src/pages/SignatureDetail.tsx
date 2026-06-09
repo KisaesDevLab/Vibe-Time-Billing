@@ -58,6 +58,7 @@ interface RequestDetail {
   signedCount: number;
   sentAt: string | null;
   expiresAt: string | null;
+  certificateFileUrl: string | null;
 }
 interface DetailResponse {
   request: RequestDetail;
@@ -248,6 +249,14 @@ export function SignatureDetailPage(): JSX.Element {
                 onClick={() => window.open(`/api/staff/signatures/${id}/signed`, '_blank')}
               >
                 Download signed PDF
+              </Button>
+            )}
+            {request.status === 'completed' && request.certificateFileUrl && (
+              <Button
+                variant="secondary"
+                onClick={() => window.open(`/api/staff/signatures/${id}/certificate`, '_blank')}
+              >
+                Download certificate
               </Button>
             )}
             {canVoid && canWrite && (
