@@ -249,6 +249,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         title: signatureRequests.title,
         status: signatureRequests.status,
         clientId: signatureRequests.clientId,
+        clientName: clients.name,
         formType: signatureRequests.formType,
         signerCount: signatureRequests.signerCount,
         signedCount: signatureRequests.signedCount,
@@ -258,6 +259,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         createdAt: signatureRequests.createdAt,
       })
       .from(signatureRequests)
+      .leftJoin(clients, eq(signatureRequests.clientId, clients.id))
       .where(where)
       .orderBy(desc(signatureRequests.createdAt))
       .limit(500);

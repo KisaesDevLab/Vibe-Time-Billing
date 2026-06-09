@@ -6,18 +6,21 @@
 // (title + form type + signers → a draft), then routes to the detail page
 // where the PDF is uploaded, fields placed, and the request sent.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Card, Combobox, Input, Pill, Table, tokens, type TableColumn } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
+import { TableSearch } from '../components/TableSearch';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface RequestRow {
   id: string;
   title: string;
   status: string;
   clientId: string | null;
+  clientName: string | null;
   formType: string | null;
   signerCount: number;
   signedCount: number;
@@ -27,15 +30,16 @@ interface RequestRow {
   createdAt: string;
 }
 
-const STATUS_OPTIONS = [
-  { value: '', label: 'All statuses' },
-  { value: 'draft', label: 'Draft' },
-  { value: 'sent', label: 'Sent' },
-  { value: 'partially_signed', label: 'Partially signed' },
-  { value: 'completed', label: 'Completed' },
-  { value: 'declined', label: 'Declined' },
-  { value: 'expired', label: 'Expired' },
-  { value: 'voided', label: 'Voided' },
+// Status values for the Status column filter (excludes the proposals-only
+// states the Signatures module never emits).
+const STATUS_VALUES = [
+  'draft',
+  'sent',
+  'partially_signed',
+  'completed',
+  'declined',
+  'expired',
+  'voided',
 ];
 
 export function statusTone(s: string): 'neutral' | 'accent' | 'success' | 'warning' | 'danger' {
@@ -61,19 +65,48 @@ export function statusLabel(s: string): string {
     .join(' ');
 }
 
+// Header cell: label + the shared ColumnFilter popover (sort + optional
+// value filter), matching the other staff tables (Invoices, Filer, …).
+function FilterHeader({
+  label,
+  col,
+  view,
+  values,
+  searchable,
+}: {
+  label: string;
+  col: string;
+  view: ReturnType<typeof useColumnView>;
+  values?: { value: string; label: string }[];
+  searchable?: boolean;
+}): JSX.Element {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      {label}{' '}
+      <ColumnFilter
+        ariaLabel={values ? `Filter / sort ${label}` : `Sort by ${label}`}
+        values={values ?? []}
+        selected={values ? view.filterFor(col) : new Set()}
+        searchable={searchable ?? Boolean(values)}
+        sort={view.sortFor(col)}
+        onApply={(sel, dir) => view.apply(col, values ? sel : new Set(), dir)}
+      />
+    </span>
+  );
+}
+
 export function SignaturesPage(): JSX.Element {
   const navigate = useNavigate();
   const canWrite = usePermission('proposal:write');
   const [rows, setRows] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
+  const view = useColumnView('vibe.signatures.view', { sortCol: '', sortDir: null });
 
   async function load(): Promise<void> {
     setLoading(true);
     try {
-      const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-      const r = await api<{ requests: RequestRow[] }>(`/api/staff/signatures${qs}`);
+      const r = await api<{ requests: RequestRow[] }>('/api/staff/signatures');
       setRows(r.requests ?? []);
     } finally {
       setLoading(false);
@@ -82,76 +115,164 @@ export function SignaturesPage(): JSX.Element {
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, []);
 
-  const columns: TableColumn<RequestRow>[] = [
-    {
-      key: 'title',
-      header: 'Title',
-      render: (r) => (
-        <a
-          href={`/signatures/${r.id}`}
-          onClick={(e) => {
-            e.preventDefault();
-            navigate(`/signatures/${r.id}`);
-          }}
-          style={{ color: tokens.color.accent, textDecoration: 'none' }}
-        >
-          {r.title}
-        </a>
-      ),
-    },
-    { key: 'formType', header: 'Form', render: (r) => r.formType ?? '—' },
-    {
-      key: 'status',
-      header: 'Status',
-      render: (r) => <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>,
-    },
-    {
-      key: 'signers',
-      header: 'Signed',
-      align: 'center',
-      render: (r) => `${r.signedCount}/${r.signerCount}`,
-    },
-    {
-      key: 'sentAt',
-      header: 'Sent',
-      render: (r) => (r.sentAt ? new Date(r.sentAt).toLocaleDateString() : '—'),
-    },
-    {
-      key: 'expiresAt',
-      header: 'Expires',
-      render: (r) => (r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : '—'),
-    },
-  ];
+  // Distinct client / form values for those columns' filter dropdowns.
+  const clientValues = useMemo(() => {
+    const names = Array.from(new Set(rows.map((r) => r.clientName ?? '(no client)')));
+    return names.sort((a, b) => a.localeCompare(b)).map((n) => ({ value: n, label: n }));
+  }, [rows]);
+
+  const formValues = useMemo(() => {
+    const forms = Array.from(new Set(rows.map((r) => r.formType ?? 'Generic')));
+    return forms.sort((a, b) => a.localeCompare(b)).map((f) => ({ value: f, label: f }));
+  }, [rows]);
+
+  const visible = useMemo(
+    () =>
+      selectRows(rows, view, {
+        filters: {
+          client: (r) => r.clientName ?? '(no client)',
+          formType: (r) => r.formType ?? 'Generic',
+          status: (r) => r.status,
+        },
+        sortValues: {
+          title: (r) => r.title,
+          client: (r) => r.clientName ?? '',
+          formType: (r) => r.formType ?? '',
+          status: (r) => r.status,
+          signers: (r) => r.signedCount,
+          sentAt: (r) => r.sentAt ?? '',
+          expiresAt: (r) => r.expiresAt ?? '',
+        },
+        searchText: (r) => `${r.title} ${r.clientName ?? ''} ${r.formType ?? ''}`,
+        tieBreak: (a, b) => b.createdAt.localeCompare(a.createdAt),
+      }),
+    [rows, view],
+  );
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <Card
-        title="Signatures"
+        title={
+          <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8 }}>
+            <span>Signatures</span>
+            {rows.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === rows.length
+                  ? `${rows.length} request${rows.length === 1 ? '' : 's'}`
+                  : `${visible.length} of ${rows.length}`}
+              </span>
+            )}
+          </span>
+        }
         action={
-          canWrite ? <Button onClick={() => setCreateOpen(true)}>+ New request</Button> : undefined
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {view.anyFilterActive && (
+              <button
+                type="button"
+                onClick={view.clearFilters}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: tokens.color.accent,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+            {canWrite && <Button onClick={() => setCreateOpen(true)}>+ New request</Button>}
+          </div>
         }
       >
-        <div style={{ display: 'flex', gap: 12, marginBottom: tokens.space.md, maxWidth: 280 }}>
-          <Combobox
-            options={STATUS_OPTIONS}
-            value={status}
-            onChange={setStatus}
-            ariaLabel="Filter by status"
-          />
+        <div style={{ marginBottom: tokens.space.md, maxWidth: 360 }}>
+          <TableSearch view={view} placeholder="Search title, client, form…" />
         </div>
         {loading ? (
           <div style={{ color: tokens.color.textMuted, fontSize: 13, padding: tokens.space.md }}>
             Loading…
           </div>
         ) : (
-          <Table
-            columns={columns}
-            rows={rows}
+          <Table<RequestRow>
+            columns={[
+              {
+                key: 'title',
+                header: (
+                  <FilterHeader label="Title" col="title" view={view} />
+                ) as unknown as string,
+                render: (r) => (
+                  <a
+                    href={`/signatures/${r.id}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      navigate(`/signatures/${r.id}`);
+                    }}
+                    style={{ color: tokens.color.accent, textDecoration: 'none' }}
+                  >
+                    {r.title}
+                  </a>
+                ),
+              },
+              {
+                key: 'client',
+                header: (
+                  <FilterHeader label="Client" col="client" view={view} values={clientValues} />
+                ) as unknown as string,
+                render: (r) =>
+                  r.clientName ?? <span style={{ color: tokens.color.textMuted }}>—</span>,
+              },
+              {
+                key: 'formType',
+                header: (
+                  <FilterHeader label="Form" col="formType" view={view} values={formValues} />
+                ) as unknown as string,
+                render: (r) => r.formType ?? 'Generic',
+              },
+              {
+                key: 'status',
+                header: (
+                  <FilterHeader
+                    label="Status"
+                    col="status"
+                    view={view}
+                    values={STATUS_VALUES.map((s) => ({ value: s, label: statusLabel(s) }))}
+                    searchable={false}
+                  />
+                ) as unknown as string,
+                render: (r) => <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>,
+              },
+              {
+                key: 'signers',
+                header: (
+                  <FilterHeader label="Signed" col="signers" view={view} />
+                ) as unknown as string,
+                align: 'center',
+                render: (r) => `${r.signedCount}/${r.signerCount}`,
+              },
+              {
+                key: 'sentAt',
+                header: (
+                  <FilterHeader label="Sent" col="sentAt" view={view} />
+                ) as unknown as string,
+                render: (r) => (r.sentAt ? new Date(r.sentAt).toLocaleDateString() : '—'),
+              },
+              {
+                key: 'expiresAt',
+                header: (
+                  <FilterHeader label="Expires" col="expiresAt" view={view} />
+                ) as unknown as string,
+                render: (r) => (r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : '—'),
+              },
+            ]}
+            rows={visible}
             rowKey={(r) => r.id}
-            empty="No signature requests yet."
+            empty={
+              rows.length === 0
+                ? 'No signature requests yet.'
+                : 'No requests match the current filters.'
+            }
           />
         )}
       </Card>
