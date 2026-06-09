@@ -27,7 +27,8 @@
     "./proposals": "./src/proposals/index.ts",
     "./proposals/server": "./src/proposals/server.ts",
     "./tax-returns": "./src/tax-returns/index.ts",
-    "./engagements": "./src/engagements/index.ts"
+    "./engagements": "./src/engagements/index.ts",
+    "./filer": "./src/filer/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

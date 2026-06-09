@@ -149,6 +149,7 @@ import { createWipRouter } from './wip/routes';
 import { createMrrDashboardRouter } from './dashboards/mrr-routes';
 import { createCaddyRouter } from './caddy/routes';
 import { createTaxReturnRouter } from './tax-returns/routes';
+import { createFilerRouter } from './filer/router';
 import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
@@ -1491,6 +1492,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/tax/returns', auth.requireAuth, auth.requireCsrf, taxReturnRouter);
+
+  // Vibe Filer — staff document inbox & routing.
+  const filerRouter = createFilerRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/filer', auth.requireAuth, auth.requireCsrf, filerRouter);
 
   // FMv2 §4.6-4.8 — admin folder-conflict resolution.
   const conflictsRouter = createConflictsRouter({

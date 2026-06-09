@@ -25,6 +25,7 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { EngagementsPage } from './pages/Engagements';
+import { FilerPage } from './pages/Filer';
 import { ProposalsListPage } from './pages/Proposals';
 import { ProposalCreatePage } from './pages/ProposalCreate';
 import { ProposalEditorPage } from './pages/ProposalEditor';
@@ -133,6 +134,7 @@ export function App(): JSX.Element {
                   <Route path="/appointments" element={<AppointmentsPage />} />
                   <Route path="/notifications" element={<StaffNotificationsPage />} />
                   <Route path="/intake" element={<IntakeInboxPage />} />
+                  <Route path="/filer" element={<FilerPage />} />
                   {/* Team chat is now the "Team" tab of /messages; keep the
                       old path (and notification email links) working. */}
                   <Route path="/team" element={<Navigate to="/messages?tab=team" replace />} />
@@ -199,6 +201,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     messages: usePermission('messaging:read'),
     appointments: usePermission('appointment:read'),
     intake: usePermission('storage:folder:view'),
+    filer: usePermission('storage:folder:view'),
     reports: usePermission('report:realization:read'),
     tax: usePermission('engagement:read'),
     audit: usePermission('admin:audit:read'),
@@ -349,6 +352,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: '📥',
           active: location.pathname.startsWith('/intake'),
           show: can.intake,
+        },
+        {
+          section: 'Documents',
+          label: 'Document Inbox',
+          href: '/filer',
+          icon: '🗂',
+          active: location.pathname.startsWith('/filer'),
+          show: can.filer,
         },
         {
           section: 'Documents',

@@ -91,6 +91,7 @@ import { runHashFileTick } from './jobs/hash-file';
 import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
 import { runIntakeProcess } from './jobs/intake-process';
+import { runFilerRoute, type FilerRouteJob } from './jobs/filer-route';
 import { runInternalMessageNotify } from './jobs/internal-message-notify';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch, buildVoiceDispatch } from './dispatchers';
@@ -814,6 +815,11 @@ async function setup(): Promise<void> {
   // notifies. Same parallel-registration pattern as storage-mutation.
   setupIntakeProcessQueue();
 
+  // Vibe Filer route/undo pipeline. Enqueued on demand by the API at
+  // /filer/commit and /filer/.../undo; relocates inbox objects into client
+  // folders (copy → log → delete) and reverses it on undo.
+  setupFilerRouteQueue();
+
   // Staff-to-staff message notifications (debounced email/SMS fan-out).
   setupInternalMessageNotifyQueue();
 
@@ -868,6 +874,38 @@ function setupIntakeProcessQueue(): void {
 let intakeWorkerRef: Worker<IntakeJobPayload> | null = null;
 let intakeQueueRef: Queue<IntakeJobPayload> | null = null;
 let intakeEventsRef: QueueEvents | null = null;
+
+const FILER_ROUTE_QUEUE = 'filer-route';
+let filerWorkerRef: Worker<FilerRouteJob> | null = null;
+let filerQueueRef: Queue<FilerRouteJob> | null = null;
+let filerEventsRef: QueueEvents | null = null;
+
+function setupFilerRouteQueue(): void {
+  if (!db || !storage) {
+    logger.warn(
+      { dbConfigured: Boolean(db), storageConfigured: Boolean(storage) },
+      'filer-route queue not registered — db or storage missing',
+    );
+    return;
+  }
+  const q = new Queue<FilerRouteJob>(FILER_ROUTE_QUEUE, { connection });
+  const events = new QueueEvents(FILER_ROUTE_QUEUE, { connection });
+  events.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: FILER_ROUTE_QUEUE, failedReason }, 'filer-route job failed');
+  });
+  const w = new Worker<FilerRouteJob>(
+    FILER_ROUTE_QUEUE,
+    async (job) => {
+      await runFilerRoute(db!, storage!, logger, job.data);
+      logger.info({ jobId: job.id, kind: job.data.kind }, 'filer-route complete');
+    },
+    { connection, concurrency: 2 },
+  );
+  filerWorkerRef = w;
+  filerQueueRef = q;
+  filerEventsRef = events;
+  logger.info({ queueName: FILER_ROUTE_QUEUE }, 'filer-route queue registered');
+}
 
 const INTERNAL_MESSAGE_NOTIFY_QUEUE = 'internal-message-notify';
 interface InternalMessageNotifyPayload {
@@ -1198,6 +1236,9 @@ async function shutdown(): Promise<void> {
   if (intakeWorkerRef) await intakeWorkerRef.close();
   if (intakeQueueRef) await intakeQueueRef.close();
   if (intakeEventsRef) await intakeEventsRef.close();
+  if (filerWorkerRef) await filerWorkerRef.close();
+  if (filerQueueRef) await filerQueueRef.close();
+  if (filerEventsRef) await filerEventsRef.close();
   if (imNotifyWorkerRef) await imNotifyWorkerRef.close();
   if (imNotifyQueueRef) await imNotifyQueueRef.close();
   if (imNotifyEventsRef) await imNotifyEventsRef.close();

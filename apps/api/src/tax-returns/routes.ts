@@ -42,6 +42,7 @@ import { createRelease, revokeRelease, ReleaseError } from './release-helper';
 import { appendAccessLog, exportAccessLogCsv, listAccessLog } from './access-log';
 import { AmendError, computeAmendDiff, createAmendedReturn, markOriginalSuperseded } from './amend';
 import { applyParsedSections, parseReturnSections } from './parse';
+import { intakeTaxReturnFromFile } from './intake';
 
 export interface TaxReturnRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -159,137 +160,30 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
         return;
       }
-      // Load file + scope-check via the firm column on files itself.
-      const [file] = await deps.db
-        .select({
-          id: files.id,
-          firmId: files.firmId,
-          clientId: files.clientId,
-          originalFilename: files.originalFilename,
-          mimeType: files.mimeType,
-          sha256: files.sha256,
-          storageKey: files.storageKey,
-          deletedAt: files.deletedAt,
-          pendingUpload: files.pendingUpload,
-        })
-        .from(files)
-        .where(eq(files.id, parsed.data.fileId))
-        .limit(1);
-      if (!file || file.firmId !== session.firmId || file.deletedAt) {
-        res.status(404).json({ error: 'file_not_found' });
-        return;
-      }
-      if (file.pendingUpload) {
-        res.status(409).json({ error: 'file_pending_upload' });
-        return;
-      }
-      if (file.mimeType && !file.mimeType.includes('pdf')) {
-        // Non-PDF intake is allowed but we warn — release/extraction
-        // assumes a paged source. Surface a soft hint via response.
-        logger.warn(
-          { fileId: file.id, mimeType: file.mimeType },
-          'tax-return intake on non-pdf file',
-        );
-      }
-
-      // Refuse double-flagging the same file.
-      const [existing] = await deps.db
-        .select({ id: taxReturns.id })
-        .from(taxReturns)
-        .where(
-          and(
-            eq(taxReturns.firmId, session.firmId),
-            eq(taxReturns.sourceFileId, file.id),
-            isNull(taxReturns.amendsReturnId),
-          ),
-        )
-        .limit(1);
-      if (existing) {
-        res.status(409).json({ error: 'file_already_flagged', taxReturnId: existing.id });
-        return;
-      }
-
-      const title =
-        parsed.data.title?.trim() ||
-        `${parsed.data.formCode} · ${parsed.data.taxYear} · ${file.originalFilename}`;
-
-      const result = await deps.db.transaction(async (tx) => {
-        const [row] = await tx
-          .insert(taxReturns)
-          .values({
-            firmId: session.firmId,
-            clientId: file.clientId,
-            engagementId: parsed.data.engagementId ?? null,
-            taxYear: parsed.data.taxYear,
-            formCode: parsed.data.formCode,
-            jurisdiction: parsed.data.jurisdiction,
-            title,
-            status: 'DRAFT',
-            releaseKind: 'ORIGINAL',
-            sourceFileId: file.id,
-            sourceFileSha256: file.sha256,
-            totalPages: parsed.data.totalPages ?? null,
-          })
-          .returning({ id: taxReturns.id });
-        if (!row) throw new Error('tax_return_insert_failed');
-
-        // Seed one catch-all section covering pages 1..totalPages so the
-        // release flow has at least one selectable scope. When totalPages
-        // is unknown, default to 1..1 — partner can extend later via the
-        // sections PATCH endpoint.
-        const endPage = parsed.data.totalPages ?? 1;
-        await tx.insert(taxReturnSections).values({
-          returnId: row.id,
-          ordinal: 0,
-          depth: 0,
-          rawTitle: 'Full return',
-          normalizedTitle: 'Full return',
-          kind: 'UNKNOWN',
-          startPage: 1,
-          endPage,
-          releasable: true,
-          parseConfidence: 0,
-          isManualOverride: true,
-        });
-        return row.id;
-      });
-
-      await emitAudit(deps.db, {
-        action: 'CREATE',
-        entityType: 'tax_return',
-        entityId: result,
-        actorAppUserId: session.appUserId,
-        after: {
-          kind: 'intake_from_file',
-          fileId: file.id,
-          clientId: file.clientId,
-          taxYear: parsed.data.taxYear,
-          formCode: parsed.data.formCode,
-          jurisdiction: parsed.data.jurisdiction,
-        },
+      const result = await intakeTaxReturnFromFile(deps.db, resolveStorage(deps), {
+        firmId: session.firmId,
+        fileId: parsed.data.fileId,
+        taxYear: parsed.data.taxYear,
+        formCode: parsed.data.formCode,
+        jurisdiction: parsed.data.jurisdiction,
+        title: parsed.data.title,
+        engagementId: parsed.data.engagementId ?? null,
+        totalPages: parsed.data.totalPages ?? null,
+        actorId: session.appUserId,
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
-      }).catch((err: unknown) => logger.warn({ err }, 'intake audit emit failed'));
-
-      // Best-effort automated parse: replace the catch-all section with
-      // the detected outline. Never blocks the 201 on failure — the
-      // catch-all stays and staff can re-parse / edit by hand.
-      const intakeStorage = resolveStorage(deps);
-      if (intakeStorage && file.storageKey) {
-        try {
-          const parsedSections = await parseReturnSections({
-            storage: intakeStorage,
-            sourceStorageKey: file.storageKey,
-          });
-          if (parsedSections.strategy !== 'single') {
-            await applyParsedSections(deps.db, result, parsedSections);
-          }
-        } catch (err) {
-          logger.warn({ err, returnId: result }, 'auto-parse on intake failed; kept catch-all');
+      });
+      if (!result.ok) {
+        if (result.code === 'already_flagged') {
+          res.status(409).json({ error: 'file_already_flagged', taxReturnId: result.taxReturnId });
+        } else if (result.code === 'file_pending_upload') {
+          res.status(409).json({ error: 'file_pending_upload' });
+        } else {
+          res.status(404).json({ error: 'file_not_found' });
         }
+        return;
       }
-
-      res.status(201).json({ taxReturnId: result });
+      res.status(201).json({ taxReturnId: result.taxReturnId });
     },
   );
 

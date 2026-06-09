@@ -657,11 +657,15 @@ export async function runStorageSyncTick(
   }
 
   // ----- List top-level folders ----------------------------------------
+  // The Vibe Filer inbox prefix is a staging area, not a client folder —
+  // never reconcile it as one.
+  const filerInboxPrefix = process.env['FILER_INBOX_PREFIX'] ?? 'Inbox/';
   const observed: ObservedFolder[] = [];
   for await (const entry of storage.list(topPrefix, { delimiter: '/' })) {
     if (entry.kind !== 'prefix') continue;
     if (systemPrefix && entry.key === systemPrefix) continue;
     if (systemPrefix && entry.key.startsWith(systemPrefix)) continue;
+    if (entry.key === filerInboxPrefix || entry.key === `${topPrefix}${filerInboxPrefix}`) continue;
     const sentinel = await readSentinel(storage, entry.key, {
       folder: sentinelFolder,
       file: sentinelFile,
