@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 
 import { capturePageGeometry } from '../signatures/geometry';
-import { toOpenSignPlaceholder, PDF_NEW_WIDTH, type AdapterPlacement } from '../signatures/adapter';
+import { toOpenSignPlaceholder, type AdapterPlacement } from '../signatures/adapter';
 
 const LETTER = [{ pageNumber: 1, widthPt: 612, heightPt: 792 }];
 
@@ -27,7 +27,7 @@ describe('capturePageGeometry (phase 3)', () => {
 });
 
 describe('toOpenSignPlaceholder (phase 5)', () => {
-  it('maps a single signature on Letter to top-left editor pixels', () => {
+  it('maps a single signature on Letter to top-left PDF points', () => {
     const out = toOpenSignPlaceholder(
       [{ signerId: 's1', opensignContactId: 'C1', role: 'officer', color: '#0a0' }],
       [
@@ -51,11 +51,11 @@ describe('toOpenSignPlaceholder (phase 5)', () => {
       className: 'contracts_Contactbook',
       objectId: 'C1',
     });
-    const editorH = PDF_NEW_WIDTH * (792 / 612);
     const pos = ph.placeHolder[0]!.pos[0]!;
-    expect(pos.xPosition).toBeCloseTo(0.1 * PDF_NEW_WIDTH, 1);
-    expect(pos.yPosition).toBeCloseTo(0.8 * editorH, 1);
-    expect(pos.Width).toBeCloseTo(0.25 * PDF_NEW_WIDTH, 1);
+    expect(pos.xPosition).toBeCloseTo(0.1 * 612, 1);
+    expect(pos.yPosition).toBeCloseTo(0.8 * 792, 1);
+    expect(pos.Width).toBeCloseTo(0.25 * 612, 1);
+    expect(pos.Height).toBeCloseTo(0.06 * 792, 1);
     expect(pos.type).toBe('signature');
     expect(pos.options.status).toBe('required');
   });
@@ -129,11 +129,10 @@ describe('toOpenSignPlaceholder (phase 5)', () => {
       ],
       [{ pageNumber: 1, widthPt: 595.28, heightPt: 841.89 }],
     );
-    const editorH = PDF_NEW_WIDTH * (841.89 / 595.28);
     const pos = out[0]!.placeHolder[0]!.pos[0]!;
-    expect(pos.yPosition).toBeCloseTo(0.5 * editorH, 1);
-    // A4 is taller than Letter → larger editor height
-    expect(editorH).toBeGreaterThan(PDF_NEW_WIDTH * (792 / 612));
+    expect(pos.xPosition).toBeCloseTo(0.5 * 595.28, 1);
+    expect(pos.yPosition).toBeCloseTo(0.5 * 841.89, 1);
+    expect(pos.Width).toBeCloseTo(0.2 * 595.28, 1);
   });
 
   it('produces byte-stable output (golden)', () => {
@@ -165,10 +164,10 @@ describe('toOpenSignPlaceholder (phase 5)', () => {
               pageNumber: 1,
               pos: [
                 {
-                  xPosition: 81.8,
-                  yPosition: 846.87,
-                  Width: 204.5,
-                  Height: 63.52,
+                  xPosition: 61.2,
+                  yPosition: 633.6,
+                  Width: 153,
+                  Height: 47.52,
                   key: 1,
                   scale: 1,
                   type: 'signature',

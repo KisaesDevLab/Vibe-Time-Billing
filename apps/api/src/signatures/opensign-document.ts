@@ -6,13 +6,13 @@
 // module's envelopes are arbitrary PDFs with MULTIPLE signers and
 // drag-placed FIELDS (Placeholders). It reuses the SAME low-level
 // OpenSign client (no duplicate Parse plumbing) and the one coordinate
-// adapter (toOpenSignPlaceholder) — so the editor-pixel math lives in
-// exactly one place.
+// adapter (toOpenSignPlaceholder) — so the PDF-point coordinate math lives
+// in exactly one place.
 //
 // Flow (all under the operator session):
 //   1. savefile(pdf)                      → source URL
 //   2. savecontact(per signer)            → contracts_Contactbook ids
-//   3. toOpenSignPlaceholder(...)         → Placeholders (editor px)
+//   3. toOpenSignPlaceholder(...)         → Placeholders (PDF points)
 //   4. createdocumentfromapp({Signers, Placeholders, ...}) → document id
 //
 // Returns the document id + a per-signer signing URL so the request row

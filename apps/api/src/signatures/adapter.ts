@@ -3,28 +3,33 @@
 // Phase 5 — the coordinate adapter. THE ONLY place the normalized→OpenSign
 // coordinate math lives, so it is fixture-tested in one spot.
 //
-// Confirmed against the deployed OpenSign server (createDocumentFromApp):
-// placeholders are TOP-LEFT EDITOR PIXELS, not PDF points and not a
-// bottom-left flip. OpenSign renders each page at a fixed width
-// (`pdfNewWidth`, default 818) and a proportional height, then scales the
-// placeholder pixels to the real PDF at sign time. So:
+// Re-confirmed 2026-06-09 against the deployed OpenSign CLIENT (the server's
+// createDocumentFromApp just stores Placeholders verbatim; the server's
+// signing path receives a base64 PDF the client already stamped — it never
+// consumes the coordinates). The client positions a widget at
 //
-//   editorPageW = PDF_NEW_WIDTH
-//   editorPageH = PDF_NEW_WIDTH * (heightPt / widthPt)
-//   xPosition   = nx * editorPageW          (origin top-left)
-//   yPosition   = ny * editorPageH
-//   Width       = nw * editorPageW
-//   Height      = nh * editorPageH
+//   displayed_px = pos.value * containerScale
+//   containerScale = renderedContainerWidth / pdfOriginalWH[page].width
+//
+// where `pdfOriginalWH[page].width` is the PDF page's width in POINTS
+// (pdf.js getViewport({scale:1}); Letter = 612, A4 ≈ 595.28). For a widget
+// to land at fraction `nx` of the page width, pos.value / widthPt must equal
+// nx — i.e. coordinates are PDF POINTS, top-left origin, NOT editor pixels
+// at a fixed 818 and NOT a bottom-left flip. So:
+//
+//   xPosition = nx * widthPt          (origin top-left)
+//   yPosition = ny * heightPt
+//   Width     = nw * widthPt
+//   Height    = nh * heightPt
+//
+// (The earlier 818-px scaling over-scaled every coordinate by 818/widthPt
+// ≈ 1.34×, drifting fields right/down proportional to their distance from
+// the top-left origin — the "signature in the wrong place" bug.)
 //
 // Output groups by signer → page → pos[], matching the shape
 // createDocumentFromApp stores verbatim into `Placeholders`.
 
 import type { PageGeometry } from './geometry';
-
-/** OpenSign's default editor render width in px. Verify against the
- *  deployed client's `pdfNewWidth` constant; the math is otherwise scale-
- *  invariant (it only sets the absolute pixel magnitude OpenSign rescales). */
-export const PDF_NEW_WIDTH = 818;
 
 export type FieldType = 'signature' | 'initials' | 'date' | 'text' | 'checkbox';
 
@@ -92,9 +97,7 @@ export function toOpenSignPlaceholder(
   signers: AdapterSigner[],
   placements: AdapterPlacement[],
   geometry: PageGeometry[],
-  opts: { pdfNewWidth?: number } = {},
 ): OpenSignPlaceholder[] {
-  const W = opts.pdfNewWidth ?? PDF_NEW_WIDTH;
   const geoByPage = new Map(geometry.map((g) => [g.pageNumber, g]));
   let keyCounter = 1;
 
@@ -105,8 +108,10 @@ export function toOpenSignPlaceholder(
     for (const p of mine) {
       const geo = geoByPage.get(p.pageNumber);
       if (!geo) throw new Error(`no geometry for page ${p.pageNumber}`);
-      const editorPageW = W;
-      const editorPageH = W * (geo.heightPt / geo.widthPt);
+      // OpenSign coordinates are PDF points (top-left origin); the client
+      // scales them by renderedWidth/widthPt at render + sign time.
+      const editorPageW = geo.widthPt;
+      const editorPageH = geo.heightPt;
       const pos: OpenSignPos = {
         xPosition: round(p.nx * editorPageW),
         yPosition: round(p.ny * editorPageH),
