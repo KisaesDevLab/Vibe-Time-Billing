@@ -520,7 +520,7 @@ export function RequestsPage(): JSX.Element {
                 setDueAfter(e.target.value);
                 setOffset(0);
               }}
-              style={{ width: '100%', padding: tokens.space.sm }}
+              style={fieldStyle()}
             />
           </div>
           <div>
@@ -532,7 +532,7 @@ export function RequestsPage(): JSX.Element {
                 setDueBefore(e.target.value);
                 setOffset(0);
               }}
-              style={{ width: '100%', padding: tokens.space.sm }}
+              style={fieldStyle()}
             />
           </div>
           <div>
@@ -545,7 +545,7 @@ export function RequestsPage(): JSX.Element {
                 setOffset(0);
               }}
               placeholder="e.g. urgent"
-              style={{ width: '100%', padding: tokens.space.sm }}
+              style={fieldStyle()}
             />
           </div>
           <div>
@@ -556,7 +556,7 @@ export function RequestsPage(): JSX.Element {
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={onSearchKey}
               placeholder="title / body (Enter)"
-              style={{ width: '100%', padding: tokens.space.sm }}
+              style={fieldStyle()}
             />
           </div>
         </div>
@@ -599,8 +599,10 @@ export function RequestsPage(): JSX.Element {
               </Button>
             </div>
 
-            <label style={{ fontSize: 12 }}>
-              Template {bulkMode && <span style={{ color: tokens.color.danger }}>*</span>}
+            <label style={fieldLabel()}>
+              <span>
+                Template {bulkMode && <span style={{ color: tokens.color.danger }}>*</span>}
+              </span>
               <Combobox
                 options={[{ value: '', label: '— none —' }, ...templateOptions]}
                 value={createTemplateId}
@@ -647,8 +649,11 @@ export function RequestsPage(): JSX.Element {
                     />
                   </div>
                 </div>
-                <label style={{ fontSize: 12 }}>
-                  Title {!createTemplateId && <span style={{ color: tokens.color.danger }}>*</span>}
+                <label style={fieldLabel()}>
+                  <span>
+                    Title{' '}
+                    {!createTemplateId && <span style={{ color: tokens.color.danger }}>*</span>}
+                  </span>
                   <input
                     type="text"
                     value={createTitle}
@@ -656,23 +661,23 @@ export function RequestsPage(): JSX.Element {
                     placeholder={
                       createTemplateId ? '(template title used if blank)' : 'Send 2026 W-2s'
                     }
-                    style={{ width: '100%', padding: tokens.space.sm }}
+                    style={fieldStyle()}
                   />
                 </label>
-                <label style={{ fontSize: 12 }}>
-                  Body
+                <label style={fieldLabel()}>
+                  <span>Body</span>
                   <textarea
                     value={createBody}
                     onChange={(e) => setCreateBody(e.target.value)}
                     rows={3}
                     placeholder={createTemplateId ? '(template body used if blank)' : ''}
-                    style={{ width: '100%', padding: tokens.space.sm }}
+                    style={{ ...fieldStyle(), resize: 'vertical', minHeight: 72 }}
                   />
                 </label>
               </>
             ) : (
-              <label style={{ fontSize: 12 }}>
-                Clients to send to
+              <label style={fieldLabel()}>
+                <span>Clients to send to</span>
                 <div
                   style={{
                     maxHeight: 200,
@@ -725,17 +730,17 @@ export function RequestsPage(): JSX.Element {
                   onChange={(v) => setCreatePriority(v as Priority)}
                 />
               </div>
-              <label style={{ fontSize: 12 }}>
-                Due date
+              <label style={fieldLabel()}>
+                <span>Due date</span>
                 <input
                   type="date"
                   value={createDue}
                   onChange={(e) => setCreateDue(e.target.value)}
-                  style={{ width: '100%', padding: tokens.space.sm }}
+                  style={fieldStyle()}
                 />
               </label>
-              <label style={{ fontSize: 12 }}>
-                Reminder days before due
+              <label style={fieldLabel()}>
+                <span>Reminder days before due</span>
                 <input
                   type="number"
                   min={0}
@@ -743,7 +748,7 @@ export function RequestsPage(): JSX.Element {
                   value={createReminder}
                   onChange={(e) => setCreateReminder(e.target.value)}
                   placeholder="e.g. 3"
-                  style={{ width: '100%', padding: tokens.space.sm }}
+                  style={fieldStyle()}
                 />
               </label>
               <div style={{ fontSize: 12 }}>
@@ -757,14 +762,14 @@ export function RequestsPage(): JSX.Element {
                   clearable
                 />
               </div>
-              <label style={{ fontSize: 12 }}>
-                Tags (comma-separated)
+              <label style={fieldLabel()}>
+                <span>Tags (comma-separated)</span>
                 <input
                   type="text"
                   value={createTags}
                   onChange={(e) => setCreateTags(e.target.value)}
                   placeholder="urgent, audit"
-                  style={{ width: '100%', padding: tokens.space.sm }}
+                  style={fieldStyle()}
                 />
               </label>
             </div>
@@ -800,8 +805,8 @@ export function RequestsPage(): JSX.Element {
                         key={idx}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: '1fr 130px 100px 60px 40px',
-                          gap: 4,
+                          gridTemplateColumns: 'minmax(0, 1fr) 140px auto auto auto',
+                          gap: 6,
                           alignItems: 'center',
                         }}
                       >
@@ -814,7 +819,7 @@ export function RequestsPage(): JSX.Element {
                             )
                           }
                           placeholder={`Item ${idx + 1}`}
-                          style={{ padding: tokens.space.sm }}
+                          style={fieldStyle()}
                         />
                         <select
                           value={it.itemKind}
@@ -825,7 +830,7 @@ export function RequestsPage(): JSX.Element {
                               ),
                             )
                           }
-                          style={{ padding: tokens.space.sm }}
+                          style={fieldStyle()}
                         >
                           <option value="QUESTION">Question</option>
                           <option value="DOCUMENT">Document</option>
@@ -994,4 +999,28 @@ export function RequestsPage(): JSX.Element {
       </Card>
     </div>
   );
+}
+
+// Shared form-control styling. The raw inputs/selects/textarea on this
+// page previously had no box-sizing (width:100% + padding overflowed
+// their grid cells and overlapped neighbours) and no border/background.
+// `fieldStyle` fixes the box model + matches the design tokens;
+// `fieldLabel` stacks a caption above its control with spacing (the
+// inline <label> wrappers used to glue the caption to the input).
+function fieldStyle(): React.CSSProperties {
+  return {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '8px 10px',
+    fontSize: 13,
+    border: `1px solid ${tokens.color.border}`,
+    borderRadius: tokens.radius.sm,
+    background: tokens.color.surface,
+    color: tokens.color.text,
+    fontFamily: tokens.font.body,
+  };
+}
+
+function fieldLabel(): React.CSSProperties {
+  return { display: 'grid', gap: 4, fontSize: 12 };
 }
