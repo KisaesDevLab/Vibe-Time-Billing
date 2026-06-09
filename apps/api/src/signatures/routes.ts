@@ -564,7 +564,17 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
           .limit(1);
         engagement = eng ?? null;
       }
-      res.json({ request, signers, placements, events, engagement });
+      // Resolve the linked client name (if a client was attached).
+      let client: { id: string; name: string } | null = null;
+      if (request.clientId) {
+        const [c] = await deps.db
+          .select({ id: clients.id, name: clients.name })
+          .from(clients)
+          .where(and(eq(clients.id, request.clientId), eq(clients.firmId, firmId)))
+          .limit(1);
+        client = c ?? null;
+      }
+      res.json({ request, signers, placements, events, engagement, client });
     },
   );
 
@@ -962,12 +972,14 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      const inline = req.query['inline'] === '1' || req.query['inline'] === 'true';
       try {
         const obj = await storage.get(request.signedFileUrl);
+        const safeName = request.title.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'signed';
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader(
           'Content-Disposition',
-          `attachment; filename="${request.title.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'signed'}.pdf"`,
+          `${inline ? 'inline' : 'attachment'}; filename="${safeName}.pdf"`,
         );
         res.setHeader('Cache-Control', 'private, no-store');
         obj.body.pipe(res);

@@ -60,11 +60,17 @@ interface RequestDetail {
   expiresAt: string | null;
   certificateFileUrl: string | null;
 }
+interface NamedRef {
+  id: string;
+  name: string;
+}
 interface DetailResponse {
   request: RequestDetail;
   signers: Signer[];
   placements: Placement[];
   events: SigEvent[];
+  client: NamedRef | null;
+  engagement: NamedRef | null;
 }
 interface Profile {
   id: string;
@@ -102,6 +108,7 @@ export function SignatureDetailPage(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profileId, setProfileId] = useState('');
+  const [previewOpen, setPreviewOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -132,7 +139,7 @@ export function SignatureDetailPage(): JSX.Element {
     );
   }
 
-  const { request, signers, placements, events } = data;
+  const { request, signers, placements, events, client, engagement } = data;
   const isDraft = request.status === 'draft';
   const hasSource = Boolean(request.sourceFileKey);
 
@@ -244,6 +251,11 @@ export function SignatureDetailPage(): JSX.Element {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Pill tone={statusTone(request.status)}>{statusLabel(request.status)}</Pill>
             {request.status === 'completed' && (
+              <Button variant="secondary" onClick={() => setPreviewOpen(true)}>
+                Preview signed
+              </Button>
+            )}
+            {request.status === 'completed' && (
               <Button
                 variant="secondary"
                 onClick={() => window.open(`/api/staff/signatures/${id}/signed`, '_blank')}
@@ -271,6 +283,8 @@ export function SignatureDetailPage(): JSX.Element {
         }
       >
         <div style={{ display: 'flex', gap: tokens.space.xl, fontSize: 13, flexWrap: 'wrap' }}>
+          {client && <Meta label="Client" value={client.name} />}
+          {engagement && <Meta label="Engagement" value={engagement.name} />}
           <Meta label="Form" value={request.formType ?? 'Generic'} />
           <Meta label="Signed" value={`${request.signedCount}/${request.signerCount}`} />
           <Meta label="Pages" value={String(request.pageGeometry?.length ?? 0)} />
@@ -397,6 +411,67 @@ export function SignatureDetailPage(): JSX.Element {
           ))}
         </div>
       </Card>
+
+      {previewOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Signed document preview"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: tokens.space.lg,
+          }}
+        >
+          <div
+            style={{
+              background: tokens.color.surface,
+              borderRadius: 8,
+              width: 'min(960px, 95vw)',
+              height: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.4)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: `${tokens.space.sm}px ${tokens.space.md}px`,
+                borderBottom: `1px solid ${tokens.color.border}`,
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 600, color: tokens.color.text }}>
+                {request.title} — signed
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button
+                  variant="secondary"
+                  onClick={() => window.open(`/api/staff/signatures/${id}/signed`, '_blank')}
+                >
+                  Open in new tab
+                </Button>
+                <Button variant="ghost" onClick={() => setPreviewOpen(false)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+            <iframe
+              title="Signed document"
+              src={`/api/staff/signatures/${id}/signed?inline=1`}
+              style={{ flex: 1, border: 'none', width: '100%' }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
