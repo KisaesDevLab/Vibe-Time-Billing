@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Pill, Table, tokens, type SortDir } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface AlertRow {
   id: string;
@@ -12,6 +13,13 @@ interface AlertRow {
   entityId: string | null;
   afterJson: Record<string, unknown> | null;
 }
+
+const KIND_VALUES = [
+  { value: 'audit_anomaly_alert', label: 'audit anomaly alert' },
+  { value: 'scope_creep_alert', label: 'scope creep alert' },
+  { value: 'wip_age_alert', label: 'wip age alert' },
+  { value: 'engagement_rollover', label: 'engagement rollover' },
+];
 
 function summarize(r: AlertRow): string {
   const j = r.afterJson ?? {};
@@ -46,6 +54,20 @@ export function AlertsPage(): JSX.Element {
   const [items, setItems] = useState<AlertRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const view = useColumnView('vibe.alerts.view', { sortCol: 'when', sortDir: 'desc' });
+
+  const visible = useMemo(
+    () =>
+      selectRows(items, view, {
+        filters: { kind: (r) => r.entityType },
+        sortValues: {
+          when: (r) => r.occurredAt,
+          kind: (r) => r.entityType,
+        },
+      }),
+    [items, view],
+  );
+
   useEffect(() => {
     void (async () => {
       try {
@@ -66,16 +88,58 @@ export function AlertsPage(): JSX.Element {
           creep, aged WIP, engagement rollovers). Read-only; alerts are immutable in the audit log.
         </p>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+        {view.anyFilterActive && (
+          <div style={{ marginBottom: 8 }}>
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
         <Table<AlertRow>
           columns={[
             {
               key: 'when',
-              header: 'When',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  When{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by when"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('when')}
+                    onApply={(_, dir) => view.apply('when', new Set(), dir as SortDir)}
+                  />
+                </span>
+              ) as unknown as string,
               render: (r) => new Date(r.occurredAt).toLocaleString(),
             },
             {
               key: 'kind',
-              header: 'Kind',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Kind{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort kind"
+                    values={KIND_VALUES}
+                    selected={view.filterFor('kind')}
+                    sort={view.sortFor('kind')}
+                    searchable={false}
+                    onApply={(sel, dir) => view.apply('kind', sel, dir)}
+                  />
+                </span>
+              ) as unknown as string,
               render: (r) => (
                 <Pill tone={toneOf(r.entityType)}>{r.entityType.replace(/_/g, ' ')}</Pill>
               ),
@@ -92,7 +156,7 @@ export function AlertsPage(): JSX.Element {
               render: (r) => summarize(r),
             },
           ]}
-          rows={items}
+          rows={visible}
           rowKey={(r) => r.id}
           empty="No alerts. Quiet day."
         />

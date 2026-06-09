@@ -9,9 +9,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Button, Card, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface Row {
   paymentId: string;
@@ -76,20 +77,15 @@ const STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> 
   PARTIALLY_REFUNDED: 'neutral',
 };
 
-type SortKey = 'date' | 'client' | 'amount' | 'status';
-
 export function PaymentsPage(): JSX.Element {
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(today());
-  const [status, setStatus] = useState('');
-  const [channel, setChannel] = useState('');
   const [q, setQ] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<SortKey>('date');
-  const [dir, setDir] = useState<'asc' | 'desc'>('desc');
+  const view = useColumnView('vibe.payments.view', { sortCol: 'date', sortDir: 'desc' });
 
   // Drawer (create + edit + reapply + receipt drill-in)
   const [drawer, setDrawer] = useState<'create' | 'edit' | 'reapply' | 'receipt' | null>(null);
@@ -133,8 +129,6 @@ export function PaymentsPage(): JSX.Element {
     setErr(null);
     try {
       const qs = new URLSearchParams({ start: from, end: to });
-      if (status) qs.set('status', status);
-      if (channel) qs.set('channel', channel);
       if (q.trim()) qs.set('q', q.trim());
       const r = await api<{ items: Row[]; summary: Summary }>(
         `/api/staff/payments/received?${qs.toString()}`,
@@ -146,62 +140,58 @@ export function PaymentsPage(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [from, to, status, channel, q]);
+  }, [from, to, q]);
 
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, status, channel]);
+  }, [from, to]);
 
-  const sorted = useMemo(() => {
-    const arr = [...rows];
-    arr.sort((a, b) => {
-      let cmp = 0;
-      switch (sortBy) {
-        case 'client':
-          cmp = a.clientName.localeCompare(b.clientName);
-          break;
-        case 'amount':
-          cmp = a.amountCents - b.amountCents;
-          break;
-        case 'status':
-          cmp = a.status.localeCompare(b.status);
-          break;
-        default:
-          cmp = a.receivedAt.localeCompare(b.receivedAt);
-      }
-      return dir === 'asc' ? cmp : -cmp;
-    });
-    return arr;
-  }, [rows, sortBy, dir]);
+  // Distinct channel values, built from the loaded rows.
+  const channelValues = useMemo(
+    () =>
+      Array.from(new Set(rows.map((r) => r.channel)))
+        .sort((a, b) => a.localeCompare(b))
+        .map((c) => ({ value: c, label: c })),
+    [rows],
+  );
 
-  function sortHeader(label: string, key: SortKey): JSX.Element {
-    const activeCol = sortBy === key;
-    return (
-      <button
-        type="button"
-        onClick={() => {
-          if (activeCol) setDir(dir === 'asc' ? 'desc' : 'asc');
-          else {
-            setSortBy(key);
-            setDir('desc');
-          }
-        }}
-        style={{
-          background: 'none',
-          border: 0,
-          cursor: 'pointer',
-          font: 'inherit',
-          color: 'inherit',
-          padding: 0,
-          fontWeight: 600,
-        }}
-      >
-        {label}
-        {activeCol ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
-      </button>
-    );
-  }
+  // Distinct displayed status values (incl. the VOIDED pseudo-status).
+  const statusValues = useMemo(
+    () =>
+      Array.from(new Set(rows.map((r) => (r.voided ? 'VOIDED' : r.status))))
+        .sort((a, b) => a.localeCompare(b))
+        .map((s) => ({ value: s, label: s === 'PENDING' ? 'PROCESSING' : s.replace(/_/g, ' ') })),
+    [rows],
+  );
+
+  // Distinct client values, built from the loaded rows.
+  const clientValues = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of rows) map.set(r.clientId, r.clientName);
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [rows]);
+
+  const visible = useMemo(
+    () =>
+      selectRows(rows, view, {
+        filters: {
+          client: (r) => r.clientId,
+          channel: (r) => r.channel,
+          status: (r) => (r.voided ? 'VOIDED' : r.status),
+        },
+        sortValues: {
+          date: (r) => r.receivedAt,
+          client: (r) => r.clientName,
+          channel: (r) => r.channel,
+          amount: (r) => r.amountCents,
+          status: (r) => (r.voided ? 'VOIDED' : r.status),
+        },
+      }),
+    [rows, view],
+  );
 
   function openCreate(): void {
     setDrawer('create');
@@ -410,7 +400,7 @@ export function PaymentsPage(): JSX.Element {
       'Refunded',
     ];
     const lines = [head.join(',')];
-    for (const r of sorted) {
+    for (const r of visible) {
       lines.push(
         [
           r.receivedAt.slice(0, 10),
@@ -498,28 +488,6 @@ export function PaymentsPage(): JSX.Element {
               style={inputStyle}
             />
           </Field>
-          <Field label="Status">
-            <select value={status} onChange={(e) => setStatus(e.target.value)} style={inputStyle}>
-              <option value="">All</option>
-              <option value="SUCCEEDED">Succeeded</option>
-              <option value="PENDING">Processing</option>
-              <option value="FAILED">Failed</option>
-              <option value="REFUNDED">Refunded</option>
-              <option value="PARTIALLY_REFUNDED">Partially refunded</option>
-            </select>
-          </Field>
-          <Field label="Channel">
-            <select value={channel} onChange={(e) => setChannel(e.target.value)} style={inputStyle}>
-              <option value="">All</option>
-              <option value="Card">Card</option>
-              <option value="Terminal">Terminal (in person)</option>
-              <option value="ACH">ACH</option>
-              <option value="ACH (manual)">ACH (manual)</option>
-              <option value="Check">Check</option>
-              <option value="Cash">Cash</option>
-              <option value="Credit">Credit</option>
-            </select>
-          </Field>
           <Field label="Search">
             <input
               value={q}
@@ -538,11 +506,10 @@ export function PaymentsPage(): JSX.Element {
             size="sm"
             variant="ghost"
             onClick={() => {
-              setStatus('');
-              setChannel('');
               setQ('');
               setFrom(monthStart());
               setTo(today());
+              view.clearFilters();
             }}
           >
             Reset
@@ -559,12 +526,35 @@ export function PaymentsPage(): JSX.Element {
             columns={[
               {
                 key: 'date',
-                header: sortHeader('Date', 'date'),
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Date{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by date"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('date')}
+                      onApply={(_, dir) => view.apply('date', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) => new Date(r.receivedAt).toLocaleDateString(),
               },
               {
                 key: 'client',
-                header: sortHeader('Client', 'client'),
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Client{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort client"
+                      values={clientValues}
+                      selected={view.filterFor('client')}
+                      sort={view.sortFor('client')}
+                      onApply={(sel, dir) => view.apply('client', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) => r.clientName,
               },
               {
@@ -576,10 +566,38 @@ export function PaymentsPage(): JSX.Element {
                   </Link>
                 ),
               },
-              { key: 'channel', header: 'Channel', render: (r) => r.channel },
+              {
+                key: 'channel',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Channel{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort channel"
+                      values={channelValues}
+                      selected={view.filterFor('channel')}
+                      sort={view.sortFor('channel')}
+                      searchable={false}
+                      onApply={(sel, dir) => view.apply('channel', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (r) => r.channel,
+              },
               {
                 key: 'amount',
-                header: sortHeader('Amount', 'amount'),
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Amount{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by amount"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('amount')}
+                      onApply={(_, dir) => view.apply('amount', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) => dollars(r.amountCents),
               },
               {
@@ -590,7 +608,19 @@ export function PaymentsPage(): JSX.Element {
               { key: 'net', header: 'Net', render: (r) => dollars(r.netCents) },
               {
                 key: 'status',
-                header: sortHeader('Status', 'status'),
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={statusValues}
+                      selected={view.filterFor('status')}
+                      sort={view.sortFor('status')}
+                      searchable={false}
+                      onApply={(sel, dir) => view.apply('status', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) =>
                   r.voided ? (
                     <Pill tone="neutral">VOIDED</Pill>
@@ -639,7 +669,7 @@ export function PaymentsPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={sorted}
+            rows={visible}
             rowKey={(r) => r.paymentId}
             empty="No payments in this range."
           />

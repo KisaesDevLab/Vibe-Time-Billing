@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens, type SortDir } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface WipRow {
   engagementId: string;
@@ -21,11 +22,6 @@ interface WipRow {
 interface AppUser {
   id: string;
   fullName: string;
-}
-
-interface ClientLite {
-  id: string;
-  name: string;
 }
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
@@ -50,22 +46,55 @@ export function WipDashboardPage(): JSX.Element {
   const [asOf, setAsOf] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  // 0050 — filters
-  const [clientId, setClientId] = useState('');
-  const [engagementId, setEngagementId] = useState('');
+  // clientOwnerId remains server-side (no column equivalent)
   const [clientOwnerId, setClientOwnerId] = useState('');
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [clientOptions, setClientOptions] = useState<ClientLite[]>([]);
 
-  // 0050 — selection for bulk Bill action
+  // selection for bulk Bill action — operates over visible rows
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [billing, setBilling] = useState(false);
+
+  const view = useColumnView('vibe.wip.view');
+
+  // Distinct client/engagement value lists built from loaded rows
+  const clientValues = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of rows) map.set(r.clientId, r.clientName);
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [rows]);
+
+  const engValues = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of rows) map.set(r.engagementId, r.engagementName);
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [rows]);
+
+  const visible = useMemo(
+    () =>
+      selectRows(rows, view, {
+        filters: {
+          client: (r) => r.clientId,
+          eng: (r) => r.engagementId,
+        },
+        sortValues: {
+          client: (r) => r.clientName,
+          eng: (r) => r.engagementName,
+          hours: (r) => r.hours,
+          value: (r) => r.amountCents,
+          entries: (r) => r.entryCount,
+          oldest: (r) => r.oldestDate ?? '',
+        },
+      }),
+    [rows, view],
+  );
 
   async function load(): Promise<void> {
     try {
       const params = new URLSearchParams();
-      if (clientId) params.set('clientId', clientId);
-      if (engagementId) params.set('engagementId', engagementId);
       if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
       const r = await api<{ asOf: string; items: WipRow[] }>(
         `/api/staff/billing-batches/wip-dashboard?${params.toString()}`,
@@ -81,17 +110,15 @@ export function WipDashboardPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, engagementId, clientOwnerId]);
+  }, [clientOwnerId]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [u, c] = await Promise.all([
-          api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
-          api<{ items: ClientLite[] }>('/api/staff/clients').catch(() => ({ items: [] })),
-        ]);
+        const u = await api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({
+          users: [],
+        }));
         setUsers(u.users ?? []);
-        setClientOptions(c.items ?? []);
       } catch {
         // Non-fatal.
       }
@@ -106,8 +133,8 @@ export function WipDashboardPage(): JSX.Element {
   }
 
   function toggleAll(): void {
-    if (selected.size === rows.length) setSelected(new Set());
-    else setSelected(new Set(rows.map((r) => r.engagementId)));
+    if (selected.size === visible.length) setSelected(new Set());
+    else setSelected(new Set(visible.map((r) => r.engagementId)));
   }
 
   function billOne(r: WipRow): void {
@@ -128,7 +155,7 @@ export function WipDashboardPage(): JSX.Element {
     if (!periodEnd) return;
     setBilling(true);
     try {
-      const list = rows
+      const list = visible
         .filter((r) => selected.has(r.engagementId))
         .map((r) => ({ engagementId: r.engagementId, periodStart, periodEnd }));
       const result = await api<{ created: number; ids: string[] }>(
@@ -177,42 +204,40 @@ export function WipDashboardPage(): JSX.Element {
       >
         <div
           style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr',
+            display: 'flex',
             gap: 8,
+            alignItems: 'center',
             marginBottom: 12,
+            flexWrap: 'wrap',
           }}
         >
-          <Combobox
-            ariaLabel="Client"
-            clearable
-            value={clientId}
-            onChange={setClientId}
-            options={clientOptions.map((c) => ({ value: c.id, label: c.name }))}
-            placeholder="Any client"
-            size="sm"
-          />
-          <Combobox
-            ariaLabel="Engagement"
-            clearable
-            value={engagementId}
-            onChange={setEngagementId}
-            options={rows.map((r) => ({
-              value: r.engagementId,
-              label: `${r.clientName} · ${r.engagementName}`,
-            }))}
-            placeholder="Any engagement"
-            size="sm"
-          />
-          <Combobox
-            ariaLabel="Client owner"
-            clearable
-            value={clientOwnerId}
-            onChange={setClientOwnerId}
-            options={users.map((u) => ({ value: u.id, label: u.fullName }))}
-            placeholder="Any owner"
-            size="sm"
-          />
+          <div style={{ width: 220 }}>
+            <Combobox
+              ariaLabel="Client owner"
+              clearable
+              value={clientOwnerId}
+              onChange={setClientOwnerId}
+              options={users.map((u) => ({ value: u.id, label: u.fullName }))}
+              placeholder="Any owner"
+              size="sm"
+            />
+          </div>
+          {view.anyFilterActive && (
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              Clear column filters
+            </button>
+          )}
         </div>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         <Table<WipRow>
@@ -223,7 +248,7 @@ export function WipDashboardPage(): JSX.Element {
                 <input
                   type="checkbox"
                   aria-label="Select all"
-                  checked={selected.size > 0 && selected.size === rows.length}
+                  checked={visible.length > 0 && selected.size === visible.length}
                   onChange={toggleAll}
                 />
               ) as unknown as string,
@@ -238,35 +263,105 @@ export function WipDashboardPage(): JSX.Element {
             },
             {
               key: 'client',
-              header: 'Client',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Client{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort client"
+                    values={clientValues}
+                    selected={view.filterFor('client')}
+                    sort={view.sortFor('client')}
+                    onApply={(sel, dir) => view.apply('client', sel, dir)}
+                  />
+                </span>
+              ) as unknown as string,
               render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
             },
             {
               key: 'eng',
-              header: 'Engagement',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Engagement{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort engagement"
+                    values={engValues}
+                    selected={view.filterFor('eng')}
+                    sort={view.sortFor('eng')}
+                    onApply={(sel, dir) => view.apply('eng', sel, dir)}
+                  />
+                </span>
+              ) as unknown as string,
               render: (r) => <a href={`/engagements/${r.engagementId}`}>{r.engagementName}</a>,
             },
             {
               key: 'hours',
-              header: 'Hours',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Hours{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by hours"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('hours')}
+                    onApply={(_, dir) => view.apply('hours', new Set(), dir as SortDir)}
+                  />
+                </span>
+              ) as unknown as string,
               align: 'right',
               render: (r) => r.hours.toFixed(2),
             },
             {
               key: 'amount',
-              header: 'Value',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Value{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by value"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('value')}
+                    onApply={(_, dir) => view.apply('value', new Set(), dir as SortDir)}
+                  />
+                </span>
+              ) as unknown as string,
               align: 'right',
               render: (r) => formatCents(r.amountCents),
             },
             {
               key: 'count',
-              header: 'Entries',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Entries{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by entries"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('entries')}
+                    onApply={(_, dir) => view.apply('entries', new Set(), dir as SortDir)}
+                  />
+                </span>
+              ) as unknown as string,
               align: 'right',
               render: (r) => String(r.entryCount),
             },
             {
               key: 'age',
-              header: 'Oldest',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Oldest{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by oldest"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('oldest')}
+                    onApply={(_, dir) => view.apply('oldest', new Set(), dir as SortDir)}
+                  />
+                </span>
+              ) as unknown as string,
               render: (r) => {
                 const d = daysSince(r.oldestDate);
                 if (d == null) return '—';
@@ -284,7 +379,7 @@ export function WipDashboardPage(): JSX.Element {
               ),
             },
           ]}
-          rows={rows}
+          rows={visible}
           rowKey={(r) => r.engagementId}
           empty="No unbilled time entries match the current filters."
         />

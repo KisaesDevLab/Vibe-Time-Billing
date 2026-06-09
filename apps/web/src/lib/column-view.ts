@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+//
+// Shared per-column filter + sort state for staff table views, with
+// session persistence. Pairs with the @vibe/ui ColumnFilter header
+// dropdown (Sort A→Z / Z→A + checkbox value filter). Filtering + sorting
+// run client-side over the already-loaded rows; selections persist for
+// the browser session (sessionStorage) so navigating away and back keeps
+// the view the user set up.
+//
+// Usage:
+//   const view = useColumnView('vibe.invoices.view', { sortCol: 'issueDate', sortDir: 'desc' });
+//   const visible = useMemo(
+//     () => selectRows(rows, view, {
+//       filters: { status: (r) => r.status, client: (r) => r.clientId },
+//       sortValues: { issueDate: (r) => r.issueDate, total: (r) => r.totalCents },
+//       tieBreak: (a, b) => b.createdAt.localeCompare(a.createdAt),
+//     }),
+//     [rows, view],
+//   );
+//   // header: <ColumnFilter selected={view.filterFor('status')} sort={view.sortFor('status')}
+//   //                       onApply={(sel, dir) => view.apply('status', sel, dir)} … />
+
+import { useEffect, useMemo, useState } from 'react';
+
+import type { SortDir } from '@vibe/ui';
+
+interface ColumnViewState {
+  sortCol: string;
+  sortDir: SortDir;
+  filters: Record<string, string[]>;
+}
+
+export interface ColumnView {
+  sortCol: string;
+  sortDir: SortDir;
+  /** Active sort direction for a column, or null when it isn't the sort. */
+  sortFor: (col: string) => SortDir;
+  /** Selected filter values for a column (empty Set = no filter). */
+  filterFor: (col: string) => Set<string>;
+  /** Wire to ColumnFilter.onApply: set the column's selection + (if dir given) the active sort. */
+  apply: (col: string, selected: Set<string>, dir: SortDir) => void;
+  /** Clear every column's value filter (leaves the active sort intact). */
+  clearFilters: () => void;
+  anyFilterActive: boolean;
+}
+
+export function useColumnView(
+  storageKey: string,
+  defaults: { sortCol?: string; sortDir?: SortDir } = {},
+): ColumnView {
+  const [state, setState] = useState<ColumnViewState>(() => {
+    const base: ColumnViewState = {
+      sortCol: defaults.sortCol ?? '',
+      sortDir: defaults.sortDir ?? null,
+      filters: {},
+    };
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      if (!raw) return base;
+      const parsed = JSON.parse(raw) as Partial<ColumnViewState>;
+      return {
+        sortCol: parsed.sortCol ?? base.sortCol,
+        sortDir: parsed.sortDir ?? base.sortDir,
+        filters: parsed.filters ?? {},
+      };
+    } catch {
+      return base;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(state));
+    } catch {
+      /* storage unavailable (private mode) — in-memory only */
+    }
+  }, [storageKey, state]);
+
+  return useMemo<ColumnView>(
+    () => ({
+      sortCol: state.sortCol,
+      sortDir: state.sortDir,
+      sortFor: (col) => (state.sortCol === col ? state.sortDir : null),
+      filterFor: (col) => new Set(state.filters[col] ?? []),
+      apply: (col, selected, dir) =>
+        setState((prev) => {
+          const filters = { ...prev.filters };
+          if (selected.size > 0) filters[col] = Array.from(selected);
+          else delete filters[col];
+          return {
+            sortCol: dir ? col : prev.sortCol,
+            sortDir: dir ?? prev.sortDir,
+            filters,
+          };
+        }),
+      clearFilters: () => setState((prev) => ({ ...prev, filters: {} })),
+      anyFilterActive: Object.values(state.filters).some((v) => v.length > 0),
+    }),
+    [state],
+  );
+}
+
+export interface SelectRowsConfig<T> {
+  /** col key → the row value matched against that column's selected filter set. */
+  filters?: Record<string, (row: T) => string>;
+  /** col key → the value used to sort when that column is the active sort. */
+  sortValues?: Record<string, (row: T) => string | number>;
+  /** Deterministic tie-break when the sort value is equal. */
+  tieBreak?: (a: T, b: T) => number;
+}
+
+/** Apply a ColumnView's filters + active sort to a row list, client-side. */
+export function selectRows<T>(rows: T[], view: ColumnView, cfg: SelectRowsConfig<T>): T[] {
+  let out = rows;
+
+  if (cfg.filters) {
+    const active = Object.entries(cfg.filters)
+      .map(([col, accessor]) => ({ sel: view.filterFor(col), accessor }))
+      .filter((f) => f.sel.size > 0);
+    if (active.length > 0) {
+      out = out.filter((row) => active.every((f) => f.sel.has(f.accessor(row))));
+    }
+  }
+
+  const accessor = view.sortCol && view.sortDir ? cfg.sortValues?.[view.sortCol] : undefined;
+  if (accessor && view.sortDir) {
+    const sign = view.sortDir === 'asc' ? 1 : -1;
+    out = [...out].sort((a, b) => {
+      const av = accessor(a);
+      const bv = accessor(b);
+      const cmp =
+        typeof av === 'number' && typeof bv === 'number'
+          ? av - bv
+          : String(av).localeCompare(String(bv));
+      if (cmp !== 0) return cmp * sign;
+      return cfg.tieBreak ? cfg.tieBreak(a, b) : 0;
+    });
+  }
+
+  return out;
+}

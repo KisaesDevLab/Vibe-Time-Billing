@@ -5,12 +5,13 @@
 // Tier-config + firm-settings live at /admin/retainer-tiers; this page
 // is the operational view.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { Button, Card, Pill, Stat, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Pill, Stat, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { selectRows, useColumnView } from '../../lib/column-view';
 
 function fmtCents(c: number | null | undefined): string {
   if (c == null) return '—';
@@ -76,8 +77,18 @@ interface EngagementOption {
   hasRetainer: boolean;
 }
 
+const RETAINER_STATUS_VALUES = [
+  { value: 'active', label: 'Active' },
+  { value: 'exhausted', label: 'Exhausted' },
+  { value: 'expired', label: 'Expired' },
+  { value: 'void', label: 'Void' },
+  { value: 'paused', label: 'Paused' },
+  { value: 'pending_payment', label: 'Awaiting payment' },
+];
+
 export function RetainerDashboardPage(): JSX.Element {
   const navigate = useNavigate();
+  const view = useColumnView('vibe.retainers.view', { sortCol: 'expires', sortDir: 'asc' });
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [items, setItems] = useState<RetainerRow[]>([]);
   const [offers, setOffers] = useState<OfferRow[]>([]);
@@ -260,6 +271,33 @@ export function RetainerDashboardPage(): JSX.Element {
     }
   }
 
+  // Per-column filter value lists for the Retainers table.
+  const typeValues = useMemo(() => {
+    const seen = new Set<string>();
+    for (const r of items) seen.add(`${r.returnType} (${r.tier})`);
+    return Array.from(seen)
+      .sort((a, b) => a.localeCompare(b))
+      .map((v) => ({ value: v, label: v }));
+  }, [items]);
+
+  const visible = useMemo(
+    () =>
+      selectRows(items, view, {
+        filters: {
+          type: (r) => `${r.returnType} (${r.tier})`,
+          status: (r) => r.status,
+        },
+        sortValues: {
+          name: (r) => r.name,
+          type: (r) => r.returnType,
+          hours: (r) => Number(r.hoursConsumed),
+          expires: (r) => r.expiryDate,
+          status: (r) => r.status,
+        },
+      }),
+    [items, view],
+  );
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <Card title="Retainer KPIs">
@@ -296,11 +334,39 @@ export function RetainerDashboardPage(): JSX.Element {
       </Card>
 
       <Card
-        title="Retainers"
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>Retainers</span>
+            {items.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === items.length
+                  ? `${items.length} retainer${items.length === 1 ? '' : 's'}`
+                  : `${visible.length} of ${items.length}`}
+              </span>
+            )}
+          </span>
+        }
         action={
-          <Button type="button" onClick={() => void openCreate()}>
-            Create retainer
-          </Button>
+          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+            {view.anyFilterActive && (
+              <button
+                type="button"
+                onClick={view.clearFilters}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: tokens.color.accent,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+            <Button type="button" onClick={() => void openCreate()}>
+              Create retainer
+            </Button>
+          </span>
         }
       >
         {items.length === 0 ? (
@@ -310,28 +376,92 @@ export function RetainerDashboardPage(): JSX.Element {
             columns={[
               {
                 key: 'name',
-                header: 'Name',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Name{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by name"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('name')}
+                      onApply={(_, dir) => view.apply('name', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) => (
                   <Link to={`/admin/retainers/${r.id}`} style={{ color: tokens.color.accent }}>
                     {r.name}
                   </Link>
                 ),
               },
-              { key: 'rt', header: 'Type', render: (r) => `${r.returnType} (${r.tier})` },
+              {
+                key: 'rt',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Type{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort type"
+                      values={typeValues}
+                      selected={view.filterFor('type')}
+                      sort={view.sortFor('type')}
+                      searchable={false}
+                      onApply={(sel, dir) => view.apply('type', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (r) => `${r.returnType} (${r.tier})`,
+              },
               {
                 key: 'hours',
-                header: 'Hours',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Hours{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by hours"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('hours')}
+                      onApply={(_, dir) => view.apply('hours', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) =>
                   `${Number(r.hoursConsumed).toFixed(2)} / ${Number(r.hoursPurchased).toFixed(2)}`,
               },
               {
                 key: 'expires',
-                header: 'Expires',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Expires{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by expiry date"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('expires')}
+                      onApply={(_, dir) => view.apply('expires', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) => new Date(r.expiryDate).toLocaleDateString(),
               },
               {
                 key: 'status',
-                header: 'Status',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={RETAINER_STATUS_VALUES}
+                      selected={view.filterFor('status')}
+                      sort={view.sortFor('status')}
+                      searchable={false}
+                      onApply={(sel, dir) => view.apply('status', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (r) => (
                   <Pill
                     tone={
@@ -391,7 +521,7 @@ export function RetainerDashboardPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={items}
+            rows={visible}
             rowKey={(r) => r.id}
           />
         )}

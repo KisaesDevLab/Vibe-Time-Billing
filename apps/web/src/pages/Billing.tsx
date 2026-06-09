@@ -2,10 +2,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { AdjustmentDialog } from './AdjustmentDialog';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface BatchRow {
   id: string;
@@ -35,6 +36,14 @@ interface ClientLite {
   id: string;
   name: string;
 }
+
+const BATCH_STATUS_VALUES = [
+  { value: 'DRAFT', label: 'Draft' },
+  { value: 'IN_REVIEW', label: 'In review' },
+  { value: 'APPROVED', label: 'Approved' },
+  { value: 'INVOICED', label: 'Invoiced' },
+  { value: 'CANCELLED', label: 'Cancelled' },
+];
 
 interface BatchEntry {
   timeEntryId: string;
@@ -81,6 +90,8 @@ function BatchListPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search] = useSearchParams();
+
+  const view = useColumnView('vibe.billing.view', { sortCol: 'period', sortDir: 'desc' });
   // 0050 — client → engagement order. URL params from WIP "Bill" buttons
   // prefill all four fields.
   const [clientId, setClientId] = useState(search.get('clientId') ?? '');
@@ -133,6 +144,42 @@ function BatchListPage(): JSX.Element {
     const allowed = new Set(filteredEngagements.map((e) => e.id));
     setSelectedEngagementIds((prev) => prev.filter((id) => allowed.has(id)));
   }, [filteredEngagements]);
+
+  // Per-column filter value lists for the Billing batches table.
+  const engValues = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const r of items) seen.set(r.engagementName, r.engagementName);
+    return Array.from(seen.keys())
+      .sort((a, b) => a.localeCompare(b))
+      .map((v) => ({ value: v, label: v }));
+  }, [items]);
+
+  const clientValues = useMemo(() => {
+    const seen = new Set<string>();
+    for (const r of items) seen.add(r.clientName ?? '—');
+    return Array.from(seen)
+      .sort((a, b) => a.localeCompare(b))
+      .map((v) => ({ value: v, label: v }));
+  }, [items]);
+
+  const visible = useMemo(
+    () =>
+      selectRows(items, view, {
+        filters: {
+          eng: (r) => r.engagementName,
+          client: (r) => r.clientName ?? '—',
+          status: (r) => r.status,
+        },
+        sortValues: {
+          eng: (r) => r.engagementName,
+          client: (r) => r.clientName ?? '',
+          period: (r) => r.periodStart,
+          status: (r) => r.status,
+        },
+        tieBreak: (a, b) => b.periodStart.localeCompare(a.periodStart),
+      }),
+    [items, view],
+  );
 
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -372,7 +419,37 @@ function BatchListPage(): JSX.Element {
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
       </Card>
 
-      <Card title="Billing batches">
+      <Card
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>Billing batches</span>
+            {items.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === items.length
+                  ? `${items.length} batch${items.length === 1 ? '' : 'es'}`
+                  : `${visible.length} of ${items.length}`}
+              </span>
+            )}
+          </span>
+        }
+        action={
+          view.anyFilterActive ? (
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          ) : undefined
+        }
+      >
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
@@ -380,7 +457,18 @@ function BatchListPage(): JSX.Element {
             columns={[
               {
                 key: 'name',
-                header: 'Engagement',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Engagement{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort engagement"
+                      values={engValues}
+                      selected={view.filterFor('eng')}
+                      sort={view.sortFor('eng')}
+                      onApply={(sel, dir) => view.apply('eng', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (b) => {
                   const engs = b.engagements ?? [{ id: b.engagementId, name: b.engagementName }];
                   return (
@@ -401,15 +489,54 @@ function BatchListPage(): JSX.Element {
                   );
                 },
               },
-              { key: 'client', header: 'Client', render: (b) => b.clientName ?? '—' },
+              {
+                key: 'client',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Client{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort client"
+                      values={clientValues}
+                      selected={view.filterFor('client')}
+                      sort={view.sortFor('client')}
+                      onApply={(sel, dir) => view.apply('client', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (b) => b.clientName ?? '—',
+              },
               {
                 key: 'period',
-                header: 'Period',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Period{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by period"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('period')}
+                      onApply={(_, dir) => view.apply('period', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (b) => `${b.periodStart} → ${b.periodEnd}`,
               },
               {
                 key: 'status',
-                header: 'Status',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={BATCH_STATUS_VALUES}
+                      selected={view.filterFor('status')}
+                      sort={view.sortFor('status')}
+                      searchable={false}
+                      onApply={(sel, dir) => view.apply('status', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (b) => (
                   <Pill
                     tone={
@@ -421,7 +548,7 @@ function BatchListPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={items}
+            rows={visible}
             rowKey={(b) => b.id}
             empty="No billing batches yet."
           />

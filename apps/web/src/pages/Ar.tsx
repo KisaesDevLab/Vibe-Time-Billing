@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 type Bucket = '0-30' | '31-60' | '61-90' | '90+';
-type SortCol = 'clientName' | 'b1' | 'b2' | 'b3' | 'b4' | 'total';
 
 interface ClientAging {
   clientId: string;
@@ -18,7 +18,8 @@ interface ClientAging {
 interface ArResponse {
   asOf: string;
   totals: Record<Bucket, number>;
-  clients: ClientAging[];
+  clients?: ClientAging[];
+  rows?: ClientAging[];
   total?: number;
   page?: number;
   pageSize?: number;
@@ -28,10 +29,6 @@ interface AppUser {
   id: string;
   fullName: string;
 }
-interface ClientLite {
-  id: string;
-  name: string;
-}
 
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
@@ -40,19 +37,16 @@ const buckets: Bucket[] = ['0-30', '31-60', '61-90', '90+'];
 
 export function ArPage(): JSX.Element {
   const [data, setData] = useState<ArResponse | null>(null);
+  const [clients, setClients] = useState<ClientAging[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [clientOpts, setClientOpts] = useState<ClientLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Server-side filter with no per-column equivalent.
   const [clientOwnerId, setClientOwnerId] = useState('');
-  const [clientId, setClientId] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({
-    col: 'total',
-    dir: 'desc',
-  });
+
+  // Per-column filter + sort (client-side over the loaded clients).
+  const view = useColumnView('vibe.ar.view', { sortCol: 'total', sortDir: 'desc' });
 
   // 0054 — selected clients for bulk statement actions.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -64,13 +58,12 @@ export function ArPage(): JSX.Element {
     try {
       const params = new URLSearchParams();
       if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
-      if (clientId) params.set('clientId', clientId);
-      params.set('page', String(page));
-      params.set('pageSize', String(pageSize));
-      params.set('sort', sort.col);
-      params.set('dir', sort.dir);
+      // No `page`/`pageSize` → all clients returned; filter + sort run
+      // client-side. The response exposes the array as both `clients`
+      // and `rows`.
       const r = await api<ArResponse>(`/api/staff/ar/aging?${params.toString()}`);
       setData(r);
+      setClients(r.clients ?? r.rows ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     } finally {
@@ -81,41 +74,26 @@ export function ArPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientOwnerId, clientId, page, pageSize, sort]);
+  }, [clientOwnerId]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [u, c] = await Promise.all([
-          api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
-          api<{ items: ClientLite[] }>('/api/staff/clients').catch(() => ({ items: [] })),
-        ]);
+        const u = await api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({
+          users: [],
+        }));
         setUsers(u.users ?? []);
-        setClientOpts(c.items ?? []);
       } catch {
         // Non-fatal.
       }
     })();
   }, []);
 
-  function toggleSort(col: SortCol): void {
-    setSort((p) =>
-      p.col === col ? { col, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' },
-    );
-    setPage(1);
-  }
-
   function toggleRow(id: string): void {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelected(next);
-  }
-
-  function toggleAll(): void {
-    if (!data) return;
-    if (selected.size === data.clients.length) setSelected(new Set());
-    else setSelected(new Set(data.clients.map((c) => c.clientId)));
   }
 
   // 0054 — Download a single client's statement PDF. Builds a session-
@@ -215,16 +193,42 @@ export function ArPage(): JSX.Element {
       setBulkBusy(false);
     }
   }
-  const sortIcon = (col: SortCol): string =>
-    sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  // Distinct client values for the Client column dropdown.
+  const clientValues = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of clients) map.set(c.clientId, c.clientName);
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [clients]);
+
+  const visible = useMemo(
+    () =>
+      selectRows(clients, view, {
+        filters: { client: (c) => c.clientId },
+        sortValues: {
+          client: (c) => c.clientName,
+          b0: (c) => c.buckets['0-30'],
+          b1: (c) => c.buckets['31-60'],
+          b2: (c) => c.buckets['61-90'],
+          b3: (c) => c.buckets['90+'],
+          total: (c) => c.total,
+        },
+      }),
+    [clients, view],
+  );
+
+  function toggleAll(): void {
+    if (selected.size === visible.length) setSelected(new Set());
+    else setSelected(new Set(visible.map((c) => c.clientId)));
+  }
 
   if (loading && !data) return <p style={{ color: tokens.color.textMuted }}>Loading…</p>;
   if (error || !data) return <p style={{ color: tokens.color.danger }}>{error}</p>;
 
   const grand =
     data.totals['0-30'] + data.totals['31-60'] + data.totals['61-90'] + data.totals['90+'];
-  const total = data.total ?? data.clients.length;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const total = clients.length;
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
@@ -263,76 +267,54 @@ export function ArPage(): JSX.Element {
         </div>
       </Card>
       <Card
-        title={`By client — ${total.toLocaleString()}`}
-        action={
-          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </Button>
-            <span style={{ color: tokens.color.textMuted }}>
-              Page {page} / {pageCount}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page >= pageCount}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            >
-              Next →
-            </Button>
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>By client</span>
+            {clients.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === clients.length
+                  ? `${total.toLocaleString()} client${total === 1 ? '' : 's'}`
+                  : `${visible.length} of ${total.toLocaleString()}`}
+              </span>
+            )}
           </span>
+        }
+        action={
+          view.anyFilterActive ? (
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          ) : undefined
         }
       >
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr 120px',
+            gridTemplateColumns: '1fr',
             gap: 8,
             marginBottom: 12,
+            maxWidth: 280,
           }}
         >
           <Combobox
             ariaLabel="Client owner"
             clearable
             value={clientOwnerId}
-            onChange={(v) => {
-              setClientOwnerId(v);
-              setPage(1);
-            }}
+            onChange={setClientOwnerId}
             options={users.map((u) => ({ value: u.id, label: u.fullName }))}
             placeholder="Any owner"
             size="sm"
           />
-          <Combobox
-            ariaLabel="Client"
-            clearable
-            value={clientId}
-            onChange={(v) => {
-              setClientId(v);
-              setPage(1);
-            }}
-            options={clientOpts.map((c) => ({ value: c.id, label: c.name }))}
-            placeholder="Any client"
-            size="sm"
-          />
-          <select
-            value={pageSize}
-            onChange={(e) => {
-              setPageSize(Number(e.target.value));
-              setPage(1);
-            }}
-            aria-label="Page size"
-            style={{ padding: '4px 6px' }}
-          >
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-            <option value={200}>200</option>
-          </select>
         </div>
         {/* 0054 — bulk action bar appears when rows are selected. */}
         {selected.size > 0 && (
@@ -379,7 +361,7 @@ export function ArPage(): JSX.Element {
                 <input
                   type="checkbox"
                   aria-label="Select all"
-                  checked={selected.size > 0 && selected.size === data.clients.length}
+                  checked={selected.size > 0 && selected.size === visible.length}
                   onChange={toggleAll}
                 />
               ) as unknown as string,
@@ -395,18 +377,33 @@ export function ArPage(): JSX.Element {
             {
               key: 'name',
               header: (
-                <button type="button" style={headerBtn} onClick={() => toggleSort('clientName')}>
-                  Client{sortIcon('clientName')}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Client{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort client"
+                    values={clientValues}
+                    selected={view.filterFor('client')}
+                    sort={view.sortFor('client')}
+                    onApply={(sel, dir) => view.apply('client', sel, dir)}
+                  />
+                </span>
               ) as unknown as string,
               render: (c) => c.clientName,
             },
             {
               key: '0-30',
               header: (
-                <button type="button" style={headerBtn} onClick={() => toggleSort('b1')}>
-                  0-30{sortIcon('b1')}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  0-30{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by 0-30 days"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('b0')}
+                    onApply={(_, dir) => view.apply('b0', new Set(), dir)}
+                  />
+                </span>
               ) as unknown as string,
               align: 'right' as const,
               render: (c) => formatCents(c.buckets['0-30']),
@@ -414,9 +411,17 @@ export function ArPage(): JSX.Element {
             {
               key: '31-60',
               header: (
-                <button type="button" style={headerBtn} onClick={() => toggleSort('b2')}>
-                  31-60{sortIcon('b2')}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  31-60{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by 31-60 days"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('b1')}
+                    onApply={(_, dir) => view.apply('b1', new Set(), dir)}
+                  />
+                </span>
               ) as unknown as string,
               align: 'right' as const,
               render: (c) => formatCents(c.buckets['31-60']),
@@ -424,9 +429,17 @@ export function ArPage(): JSX.Element {
             {
               key: '61-90',
               header: (
-                <button type="button" style={headerBtn} onClick={() => toggleSort('b3')}>
-                  61-90{sortIcon('b3')}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  61-90{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by 61-90 days"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('b2')}
+                    onApply={(_, dir) => view.apply('b2', new Set(), dir)}
+                  />
+                </span>
               ) as unknown as string,
               align: 'right' as const,
               render: (c) => formatCents(c.buckets['61-90']),
@@ -434,9 +447,17 @@ export function ArPage(): JSX.Element {
             {
               key: '90+',
               header: (
-                <button type="button" style={headerBtn} onClick={() => toggleSort('b4')}>
-                  90+{sortIcon('b4')}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  90+{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by 90+ days"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('b3')}
+                    onApply={(_, dir) => view.apply('b3', new Set(), dir)}
+                  />
+                </span>
               ) as unknown as string,
               align: 'right' as const,
               render: (c) => formatCents(c.buckets['90+']),
@@ -444,9 +465,17 @@ export function ArPage(): JSX.Element {
             {
               key: 'total',
               header: (
-                <button type="button" style={headerBtn} onClick={() => toggleSort('total')}>
-                  Total{sortIcon('total')}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Total{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by total"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('total')}
+                    onApply={(_, dir) => view.apply('total', new Set(), dir)}
+                  />
+                </span>
               ) as unknown as string,
               align: 'right',
               render: (c) => <strong>{formatCents(c.total)}</strong>,
@@ -467,7 +496,7 @@ export function ArPage(): JSX.Element {
               ),
             },
           ]}
-          rows={data.clients}
+          rows={visible}
           rowKey={(c) => c.clientId}
           empty="No outstanding AR matches the current filters."
         />
@@ -475,14 +504,3 @@ export function ArPage(): JSX.Element {
     </div>
   );
 }
-
-const headerBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  fontFamily: 'inherit',
-  fontWeight: 'inherit',
-  fontSize: 'inherit',
-  color: 'inherit',
-  cursor: 'pointer',
-};

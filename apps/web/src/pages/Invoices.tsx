@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface Invoice {
   id: string;
@@ -25,19 +26,14 @@ interface AppUser {
   fullName: string;
 }
 
-interface ClientLite {
-  id: string;
-  name: string;
-}
-
-type SortCol =
-  | 'invoiceNumber'
-  | 'clientName'
-  | 'issueDate'
-  | 'dueDate'
-  | 'total'
-  | 'paid'
-  | 'status';
+const STATUS_VALUES = [
+  { value: 'DRAFT', label: 'Draft' },
+  { value: 'SENT', label: 'Sent' },
+  { value: 'PARTIALLY_PAID', label: 'Partially paid' },
+  { value: 'PAID', label: 'Paid' },
+  { value: 'OVERDUE', label: 'Overdue' },
+  { value: 'VOIDED', label: 'Voided' },
+];
 
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
@@ -58,45 +54,29 @@ function hoursSince(iso: string | null): number | null {
 
 export function InvoicesPage(): JSX.Element {
   const [items, setItems] = useState<Invoice[]>([]);
-  const [total, setTotal] = useState(0);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [clients, setClients] = useState<ClientLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters
-  const [statusFilter, setStatusFilter] = useState('');
-  const [clientId, setClientId] = useState('');
+  // Server-side filters with no per-column equivalent.
   const [clientOwnerId, setClientOwnerId] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
-  // Pagination + sort
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({
-    col: 'issueDate',
-    dir: 'desc',
-  });
+  // Per-column filter + sort (client-side over the loaded rows).
+  const view = useColumnView('vibe.invoices.view', { sortCol: 'issued', sortDir: 'desc' });
 
   async function load(): Promise<void> {
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (statusFilter) params.set('status', statusFilter);
-      if (clientId) params.set('clientId', clientId);
       if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
       if (startDate) params.set('startDate', startDate);
       if (endDate) params.set('endDate', endDate);
-      params.set('page', String(page));
-      params.set('pageSize', String(pageSize));
-      params.set('sort', sort.col);
-      params.set('dir', sort.dir);
-      const r = await api<{ rows: Invoice[]; total: number }>(
-        `/api/staff/invoices?${params.toString()}`,
-      );
-      setItems(r.rows ?? []);
-      setTotal(r.total ?? 0);
+      // No `page`/`pageSize` → legacy non-paginated mode (returns up to
+      // 500 rows under `items`); filter + sort run client-side.
+      const r = await api<{ items: Invoice[] }>(`/api/staff/invoices?${params.toString()}`);
+      setItems(r.items ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     } finally {
@@ -107,17 +87,15 @@ export function InvoicesPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, clientId, clientOwnerId, startDate, endDate, page, pageSize, sort]);
+  }, [clientOwnerId, startDate, endDate]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [u, c] = await Promise.all([
-          api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
-          api<{ items: ClientLite[] }>('/api/staff/clients').catch(() => ({ items: [] })),
-        ]);
+        const u = await api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({
+          users: [],
+        }));
         setUsers(u.users ?? []);
-        setClients(c.items ?? []);
       } catch {
         // Non-fatal.
       }
@@ -138,16 +116,34 @@ export function InvoicesPage(): JSX.Element {
     }
   }
 
-  function toggleSort(col: SortCol): void {
-    setSort((p) =>
-      p.col === col ? { col, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' },
-    );
-    setPage(1);
-  }
-  const sortIcon = (col: SortCol): string =>
-    sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  // Distinct client values for the Client column dropdown.
+  const clientValues = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of items) map.set(i.clientId, i.clientName);
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [items]);
 
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const visible = useMemo(
+    () =>
+      selectRows(items, view, {
+        filters: {
+          client: (i) => i.clientId,
+          status: (i) => i.status,
+        },
+        sortValues: {
+          invoice: (i) => i.invoiceNumber,
+          client: (i) => i.clientName,
+          issued: (i) => i.issueDate,
+          due: (i) => i.dueDate ?? '',
+          total: (i) => i.totalCents,
+          paid: (i) => i.paidCents,
+          status: (i) => i.status,
+        },
+      }),
+    [items, view],
+  );
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
@@ -157,94 +153,49 @@ export function InvoicesPage(): JSX.Element {
         </a>
       </div>
       <Card
-        title={`Invoices — ${total.toLocaleString()}`}
-        action={
-          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-            <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-              Page size
-              <select
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setPage(1);
-                }}
-                aria-label="Page size"
-                style={{ padding: '4px 6px' }}
-              >
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-            </label>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </Button>
-            <span style={{ color: tokens.color.textMuted }}>
-              Page {page} / {pageCount}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page >= pageCount}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            >
-              Next →
-            </Button>
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>Invoices</span>
+            {items.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === items.length
+                  ? `${items.length} invoice${items.length === 1 ? '' : 's'}`
+                  : `${visible.length} of ${items.length}`}
+              </span>
+            )}
           </span>
+        }
+        action={
+          view.anyFilterActive ? (
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          ) : undefined
         }
       >
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(5, 1fr)',
+            gridTemplateColumns: 'repeat(3, 1fr)',
             gap: 8,
             marginBottom: 12,
           }}
         >
           <Combobox
-            ariaLabel="Status"
-            clearable
-            value={statusFilter}
-            onChange={(v) => {
-              setStatusFilter(v);
-              setPage(1);
-            }}
-            options={[
-              { value: 'DRAFT', label: 'Draft' },
-              { value: 'SENT', label: 'Sent' },
-              { value: 'PARTIALLY_PAID', label: 'Partially paid' },
-              { value: 'PAID', label: 'Paid' },
-              { value: 'OVERDUE', label: 'Overdue' },
-              { value: 'VOIDED', label: 'Voided' },
-            ]}
-            placeholder="Any status"
-            size="sm"
-          />
-          <Combobox
-            ariaLabel="Client"
-            clearable
-            value={clientId}
-            onChange={(v) => {
-              setClientId(v);
-              setPage(1);
-            }}
-            options={clients.map((c) => ({ value: c.id, label: c.name }))}
-            placeholder="Any client"
-            size="sm"
-          />
-          <Combobox
             ariaLabel="Client owner"
             clearable
             value={clientOwnerId}
-            onChange={(v) => {
-              setClientOwnerId(v);
-              setPage(1);
-            }}
+            onChange={setClientOwnerId}
             options={users.map((u) => ({ value: u.id, label: u.fullName }))}
             placeholder="Any owner"
             size="sm"
@@ -252,20 +203,14 @@ export function InvoicesPage(): JSX.Element {
           <input
             type="date"
             value={startDate}
-            onChange={(e) => {
-              setStartDate(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => setStartDate(e.target.value)}
             aria-label="Issued from"
             style={dateInputStyle}
           />
           <input
             type="date"
             value={endDate}
-            onChange={(e) => {
-              setEndDate(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => setEndDate(e.target.value)}
             aria-label="Issued to"
             style={dateInputStyle}
           />
@@ -279,49 +224,84 @@ export function InvoicesPage(): JSX.Element {
               {
                 key: 'num',
                 header: (
-                  <button
-                    type="button"
-                    style={headerBtn}
-                    onClick={() => toggleSort('invoiceNumber')}
-                  >
-                    Invoice{sortIcon('invoiceNumber')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Invoice{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by invoice number"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('invoice')}
+                      onApply={(_, dir) => view.apply('invoice', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (i) => i.invoiceNumber,
               },
               {
                 key: 'client',
                 header: (
-                  <button type="button" style={headerBtn} onClick={() => toggleSort('clientName')}>
-                    Client{sortIcon('clientName')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Client{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort client"
+                      values={clientValues}
+                      selected={view.filterFor('client')}
+                      sort={view.sortFor('client')}
+                      onApply={(sel, dir) => view.apply('client', sel, dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (i) => i.clientName,
               },
               {
                 key: 'issue',
                 header: (
-                  <button type="button" style={headerBtn} onClick={() => toggleSort('issueDate')}>
-                    Issued{sortIcon('issueDate')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Issued{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by issued date"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('issued')}
+                      onApply={(_, dir) => view.apply('issued', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (i) => i.issueDate,
               },
               {
                 key: 'due',
                 header: (
-                  <button type="button" style={headerBtn} onClick={() => toggleSort('dueDate')}>
-                    Due{sortIcon('dueDate')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Due{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by due date"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('due')}
+                      onApply={(_, dir) => view.apply('due', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (i) => i.dueDate,
               },
               {
                 key: 'total',
                 header: (
-                  <button type="button" style={headerBtn} onClick={() => toggleSort('total')}>
-                    Total{sortIcon('total')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Total{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by total"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('total')}
+                      onApply={(_, dir) => view.apply('total', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 align: 'right',
                 render: (i) => formatCents(i.totalCents),
@@ -329,9 +309,17 @@ export function InvoicesPage(): JSX.Element {
               {
                 key: 'paid',
                 header: (
-                  <button type="button" style={headerBtn} onClick={() => toggleSort('paid')}>
-                    Paid{sortIcon('paid')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Paid{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by paid"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('paid')}
+                      onApply={(_, dir) => view.apply('paid', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 align: 'right',
                 render: (i) => formatCents(i.paidCents),
@@ -339,9 +327,17 @@ export function InvoicesPage(): JSX.Element {
               {
                 key: 'status',
                 header: (
-                  <button type="button" style={headerBtn} onClick={() => toggleSort('status')}>
-                    Status{sortIcon('status')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={STATUS_VALUES}
+                      selected={view.filterFor('status')}
+                      searchable={false}
+                      sort={view.sortFor('status')}
+                      onApply={(sel, dir) => view.apply('status', sel, dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (i) => <Pill tone={tone(i.status)}>{i.status}</Pill>,
               },
@@ -403,7 +399,7 @@ export function InvoicesPage(): JSX.Element {
                 },
               },
             ]}
-            rows={items}
+            rows={visible}
             rowKey={(i) => i.id}
             empty="No invoices match the current filters."
           />
@@ -412,17 +408,6 @@ export function InvoicesPage(): JSX.Element {
     </div>
   );
 }
-
-const headerBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  fontFamily: 'inherit',
-  fontWeight: 'inherit',
-  fontSize: 'inherit',
-  color: 'inherit',
-  cursor: 'pointer',
-};
 
 const dateInputStyle: React.CSSProperties = {
   padding: '6px 8px',
