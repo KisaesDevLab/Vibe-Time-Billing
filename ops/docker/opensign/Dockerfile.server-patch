@@ -1,0 +1,18 @@
+# Derived OpenSign server image — one-line fix for an upstream regression.
+#
+# AGPL-3.0 NOTICE: this is a MODIFIED OpenSign image. The only change is the
+# one-line patch below; the corresponding source modification is kept in
+# this repo (this Dockerfile) so the modified source stays available per
+# AGPL §13. Base is pinned by digest for reproducibility.
+#
+# Bug: cloud/parsefunction/saveFile.js assigns `fileUrl` without declaring
+# it (`fileUrl = getSecureUrl(...)`). The file is an ES module (strict
+# mode), so the undeclared assignment throws `ReferenceError: fileUrl is
+# not defined` — AFTER the file uploads successfully but BEFORE the URL is
+# returned, breaking every `savefile` call (and thus every signature send).
+# Present in both `:main` and `:staging`; the publisher ships no fixed tag.
+FROM opensign/opensignserver@sha256:cd75541a910f080bcd8a96a5dcb33a40a6f2e6132844658f8f3621ddcb9f2c23
+
+RUN sed -i 's/^\([[:space:]]*\)fileUrl = getSecureUrl/\1let fileUrl = getSecureUrl/' \
+      /usr/src/app/cloud/parsefunction/saveFile.js \
+ && grep -q 'let fileUrl = getSecureUrl' /usr/src/app/cloud/parsefunction/saveFile.js

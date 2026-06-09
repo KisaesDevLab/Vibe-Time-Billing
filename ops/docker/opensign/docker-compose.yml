@@ -1,8 +1,10 @@
 # OpenSign self-host (official 4-service topology), adapted for this box.
 #
-# AGPL: OpenSign is AGPL-3.0 and runs ONLY as unmodified upstream images on
-# its own private network (see /LICENSING.md). The Vibe appliance never
-# imports/bundles/links OpenSign source — it talks to it over HTTP only.
+# AGPL: OpenSign is AGPL-3.0 and runs on its own private network (see
+# /LICENSING.md). The Vibe appliance never imports/bundles/links OpenSign
+# source — it talks to it over HTTP only. The `server` image carries ONE
+# one-line upstream bugfix (Dockerfile.server-patch); that modified source
+# is in-repo per AGPL §13. The client/caddy images are unmodified upstream.
 #
 # Differences from upstream OpenSignLabs/OpenSign/docker-compose.yml:
 #   - UI/caddy published on host 4001 (3001 is taken by vibe-tb-api), so
@@ -15,7 +17,12 @@
 
 services:
   server:
-    image: opensign/opensignserver:main
+    # Derived image: upstream :main pinned by digest + a one-line saveFile.js
+    # bugfix (see Dockerfile.server-patch + the AGPL note above).
+    build:
+      context: .
+      dockerfile: Dockerfile.server-patch
+    image: vibe-opensignserver:patched
     container_name: opensign-server
     volumes:
       - opensign-files:/usr/src/app/files
