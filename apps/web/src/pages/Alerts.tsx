@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, ColumnFilter, Pill, Table, tokens, type SortDir } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
 
 interface AlertRow {
@@ -64,6 +65,7 @@ export function AlertsPage(): JSX.Element {
           when: (r) => r.occurredAt,
           kind: (r) => r.entityType,
         },
+        searchText: (r) => `${r.entityType} ${r.entityId ?? ''}`,
       }),
     [items, view],
   );
@@ -88,6 +90,9 @@ export function AlertsPage(): JSX.Element {
           creep, aged WIP, engagement rollovers). Read-only; alerts are immutable in the audit log.
         </p>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search alerts…" />
+        </div>
         {view.anyFilterActive && (
           <div style={{ marginBottom: 8 }}>
             <button

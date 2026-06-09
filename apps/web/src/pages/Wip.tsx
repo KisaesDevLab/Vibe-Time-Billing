@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens, type SortDir } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
 
 interface WipRow {
@@ -88,6 +89,7 @@ export function WipDashboardPage(): JSX.Element {
           entries: (r) => r.entryCount,
           oldest: (r) => r.oldestDate ?? '',
         },
+        searchText: (r) => `${r.clientName} ${r.engagementName}`,
       }),
     [rows, view],
   );
@@ -240,6 +242,9 @@ export function WipDashboardPage(): JSX.Element {
           )}
         </div>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search WIP…" />
+        </div>
         <Table<WipRow>
           columns={[
             {

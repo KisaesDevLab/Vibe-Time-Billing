@@ -18,6 +18,8 @@ import { Link } from 'react-router-dom';
 import { Card, ColumnFilter, EmptyState, Pill, tokens, type SortDir } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { TableSearch } from '../../components/TableSearch';
+import type { ColumnView } from '../../lib/column-view';
 
 interface ReturnRow {
   id: string;
@@ -118,6 +120,7 @@ export function TaxReturnsTab(): JSX.Element {
   const [formFilter, setFormFilter] = useState<Set<string>>(new Set(initial.form));
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set(initial.type));
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(initial.status));
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     void (async () => {
@@ -174,12 +177,20 @@ export function TaxReturnsTab(): JSX.Element {
   );
 
   const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
     let r = items.filter((row) => {
       if (clientFilter.size > 0 && !clientFilter.has(row.clientId)) return false;
       if (yearFilter.size > 0 && !yearFilter.has(String(row.taxYear))) return false;
       if (formFilter.size > 0 && !formFilter.has(row.formCode)) return false;
       if (typeFilter.size > 0 && !typeFilter.has(row.releaseKind)) return false;
       if (statusFilter.size > 0 && !statusFilter.has(row.status)) return false;
+      if (
+        q &&
+        !`${row.clientName} ${row.title} ${row.formCode} ${row.jurisdiction} ${row.taxYear}`
+          .toLowerCase()
+          .includes(q)
+      )
+        return false;
       return true;
     });
     if (sortBy.col && sortBy.dir) {
@@ -222,11 +233,12 @@ export function TaxReturnsTab(): JSX.Element {
       });
     }
     return r;
-  }, [items, clientFilter, yearFilter, formFilter, typeFilter, statusFilter, sortBy]);
+  }, [items, clientFilter, yearFilter, formFilter, typeFilter, statusFilter, sortBy, search]);
 
   const sortFor = (col: SortCol): SortDir => (sortBy.col === col ? sortBy.dir : null);
   const filtersActive =
-    clientFilter.size + yearFilter.size + formFilter.size + typeFilter.size + statusFilter.size > 0;
+    clientFilter.size + yearFilter.size + formFilter.size + typeFilter.size + statusFilter.size >
+      0 || search.trim().length > 0;
 
   function clearAll(): void {
     setClientFilter(new Set());
@@ -234,6 +246,7 @@ export function TaxReturnsTab(): JSX.Element {
     setFormFilter(new Set());
     setTypeFilter(new Set());
     setStatusFilter(new Set());
+    setSearch('');
   }
 
   return (
@@ -280,185 +293,195 @@ export function TaxReturnsTab(): JSX.Element {
           body="When a return is parsed into the system it appears here, ready for review and release."
         />
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table
-            style={{
-              width: '100%',
-              borderCollapse: 'collapse',
-              fontSize: 13,
-              fontFamily: tokens.font.body,
-            }}
-          >
-            <thead>
-              <tr style={{ background: tokens.color.surface }}>
-                <th style={th()}>
-                  Client{' '}
-                  <ColumnFilter
-                    ariaLabel="Filter / sort client"
-                    values={clientValues}
-                    selected={clientFilter}
-                    sort={sortFor('client')}
-                    onApply={(sel, dir) => {
-                      setClientFilter(sel);
-                      if (dir) setSortBy({ col: 'client', dir });
-                    }}
-                  />
-                </th>
-                <th style={th()}>
-                  Year{' '}
-                  <ColumnFilter
-                    ariaLabel="Filter / sort tax year"
-                    values={yearValues}
-                    selected={yearFilter}
-                    sort={sortFor('year')}
-                    onApply={(sel, dir) => {
-                      setYearFilter(sel);
-                      if (dir) setSortBy({ col: 'year', dir });
-                    }}
-                  />
-                </th>
-                <th style={th()}>
-                  Form{' '}
-                  <ColumnFilter
-                    ariaLabel="Filter / sort form"
-                    values={formValues}
-                    selected={formFilter}
-                    sort={sortFor('form')}
-                    onApply={(sel, dir) => {
-                      setFormFilter(sel);
-                      if (dir) setSortBy({ col: 'form', dir });
-                    }}
-                  />
-                </th>
-                <th style={th()}>
-                  Title{' '}
-                  <ColumnFilter
-                    ariaLabel="Sort by title"
-                    values={[]}
-                    selected={new Set()}
-                    searchable={false}
-                    sort={sortFor('title')}
-                    onApply={(_, dir) => {
-                      if (dir) setSortBy({ col: 'title', dir });
-                    }}
-                  />
-                </th>
-                <th style={th()}>
-                  Type{' '}
-                  <ColumnFilter
-                    ariaLabel="Filter / sort type"
-                    values={TYPE_VALUES}
-                    selected={typeFilter}
-                    searchable={false}
-                    sort={sortFor('kind')}
-                    onApply={(sel, dir) => {
-                      setTypeFilter(sel);
-                      if (dir) setSortBy({ col: 'kind', dir });
-                    }}
-                  />
-                </th>
-                <th style={th()}>
-                  Status{' '}
-                  <ColumnFilter
-                    ariaLabel="Filter / sort status"
-                    values={Object.keys(STATUS_LABELS).map((s) => ({
-                      value: s,
-                      label: STATUS_LABELS[s]!,
-                    }))}
-                    selected={statusFilter}
-                    searchable={false}
-                    sort={sortFor('status')}
-                    onApply={(sel, dir) => {
-                      setStatusFilter(sel);
-                      if (dir) setSortBy({ col: 'status', dir });
-                    }}
-                  />
-                </th>
-                <th style={th('right')}>
-                  Pages{' '}
-                  <ColumnFilter
-                    ariaLabel="Sort by pages"
-                    values={[]}
-                    selected={new Set()}
-                    searchable={false}
-                    sort={sortFor('pages')}
-                    onApply={(_, dir) => {
-                      if (dir) setSortBy({ col: 'pages', dir });
-                    }}
-                  />
-                </th>
-                <th style={th()}>
-                  Released{' '}
-                  <ColumnFilter
-                    ariaLabel="Sort by released date"
-                    values={[]}
-                    selected={new Set()}
-                    searchable={false}
-                    sort={sortFor('released')}
-                    onApply={(_, dir) => {
-                      if (dir) setSortBy({ col: 'released', dir });
-                    }}
-                  />
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={8}
-                    style={{
-                      textAlign: 'center',
-                      padding: 40,
-                      color: tokens.color.textMuted,
-                      fontSize: 13,
-                    }}
-                  >
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
-                    <strong>No results</strong>
-                    <div>Please refine your filters.</div>
-                  </td>
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <TableSearch
+              view={{ search, setSearch } as unknown as ColumnView}
+              placeholder="Search returns…"
+            />
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table
+              style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                fontSize: 13,
+                fontFamily: tokens.font.body,
+              }}
+            >
+              <thead>
+                <tr style={{ background: tokens.color.surface }}>
+                  <th style={th()}>
+                    Client{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort client"
+                      values={clientValues}
+                      selected={clientFilter}
+                      sort={sortFor('client')}
+                      onApply={(sel, dir) => {
+                        setClientFilter(sel);
+                        if (dir) setSortBy({ col: 'client', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th()}>
+                    Year{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort tax year"
+                      values={yearValues}
+                      selected={yearFilter}
+                      sort={sortFor('year')}
+                      onApply={(sel, dir) => {
+                        setYearFilter(sel);
+                        if (dir) setSortBy({ col: 'year', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th()}>
+                    Form{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort form"
+                      values={formValues}
+                      selected={formFilter}
+                      sort={sortFor('form')}
+                      onApply={(sel, dir) => {
+                        setFormFilter(sel);
+                        if (dir) setSortBy({ col: 'form', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th()}>
+                    Title{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by title"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={sortFor('title')}
+                      onApply={(_, dir) => {
+                        if (dir) setSortBy({ col: 'title', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th()}>
+                    Type{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort type"
+                      values={TYPE_VALUES}
+                      selected={typeFilter}
+                      searchable={false}
+                      sort={sortFor('kind')}
+                      onApply={(sel, dir) => {
+                        setTypeFilter(sel);
+                        if (dir) setSortBy({ col: 'kind', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th()}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={Object.keys(STATUS_LABELS).map((s) => ({
+                        value: s,
+                        label: STATUS_LABELS[s]!,
+                      }))}
+                      selected={statusFilter}
+                      searchable={false}
+                      sort={sortFor('status')}
+                      onApply={(sel, dir) => {
+                        setStatusFilter(sel);
+                        if (dir) setSortBy({ col: 'status', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th('right')}>
+                    Pages{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by pages"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={sortFor('pages')}
+                      onApply={(_, dir) => {
+                        if (dir) setSortBy({ col: 'pages', dir });
+                      }}
+                    />
+                  </th>
+                  <th style={th()}>
+                    Released{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by released date"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={sortFor('released')}
+                      onApply={(_, dir) => {
+                        if (dir) setSortBy({ col: 'released', dir });
+                      }}
+                    />
+                  </th>
                 </tr>
-              ) : (
-                visible.map((r) => (
-                  <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-                    <td style={td()}>
-                      <Link
-                        to={`/tax/returns/${r.id}`}
-                        style={{
-                          color: tokens.color.accent,
-                          textDecoration: 'none',
-                          fontWeight: 500,
-                        }}
-                      >
-                        {r.clientName}
-                      </Link>
-                    </td>
-                    <td style={td()}>{r.taxYear}</td>
-                    <td style={td()}>
-                      {r.formCode} · {r.jurisdiction}
-                    </td>
-                    <td style={td()}>{r.title || '—'}</td>
-                    <td style={td()}>
-                      <Pill tone={r.releaseKind === 'AMENDED' ? 'warning' : 'accent'}>
-                        {r.releaseKind}
-                      </Pill>
-                    </td>
-                    <td style={td()}>
-                      <Pill tone={statusTone(r.status)}>{r.status}</Pill>
-                    </td>
-                    <td style={{ ...td(), textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                      {r.totalPages != null ? r.totalPages : '—'}
-                    </td>
-                    <td style={td()}>
-                      {r.releasedAt ? new Date(r.releasedAt).toLocaleDateString() : '—'}
+              </thead>
+              <tbody>
+                {visible.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={8}
+                      style={{
+                        textAlign: 'center',
+                        padding: 40,
+                        color: tokens.color.textMuted,
+                        fontSize: 13,
+                      }}
+                    >
+                      <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
+                      <strong>No results</strong>
+                      <div>Please refine your filters.</div>
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ) : (
+                  visible.map((r) => (
+                    <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                      <td style={td()}>
+                        <Link
+                          to={`/tax/returns/${r.id}`}
+                          style={{
+                            color: tokens.color.accent,
+                            textDecoration: 'none',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {r.clientName}
+                        </Link>
+                      </td>
+                      <td style={td()}>{r.taxYear}</td>
+                      <td style={td()}>
+                        {r.formCode} · {r.jurisdiction}
+                      </td>
+                      <td style={td()}>{r.title || '—'}</td>
+                      <td style={td()}>
+                        <Pill tone={r.releaseKind === 'AMENDED' ? 'warning' : 'accent'}>
+                          {r.releaseKind}
+                        </Pill>
+                      </td>
+                      <td style={td()}>
+                        <Pill tone={statusTone(r.status)}>{r.status}</Pill>
+                      </td>
+                      <td
+                        style={{ ...td(), textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {r.totalPages != null ? r.totalPages : '—'}
+                      </td>
+                      <td style={td()}>
+                        {r.releasedAt ? new Date(r.releasedAt).toLocaleDateString() : '—'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </Card>
   );

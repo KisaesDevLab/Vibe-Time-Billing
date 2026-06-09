@@ -5,6 +5,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe
 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { TableSearch } from '../components/TableSearch';
 
 type Bucket = '0-30' | '31-60' | '61-90' | '90+';
 
@@ -205,6 +206,7 @@ export function ArPage(): JSX.Element {
   const visible = useMemo(
     () =>
       selectRows(clients, view, {
+        searchText: (c) => `${c.clientName}`,
         filters: { client: (c) => c.clientId },
         sortValues: {
           client: (c) => c.clientName,
@@ -315,6 +317,9 @@ export function ArPage(): JSX.Element {
             placeholder="Any owner"
             size="sm"
           />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search clients…" />
         </div>
         {/* 0054 — bulk action bar appears when rows are selected. */}
         {selected.size > 0 && (

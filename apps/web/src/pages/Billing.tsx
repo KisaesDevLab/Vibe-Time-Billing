@@ -7,6 +7,7 @@ import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, tokens } from
 import { api } from '../api-client';
 import { AdjustmentDialog } from './AdjustmentDialog';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { TableSearch } from '../components/TableSearch';
 
 interface BatchRow {
   id: string;
@@ -177,6 +178,7 @@ function BatchListPage(): JSX.Element {
           status: (r) => r.status,
         },
         tieBreak: (a, b) => b.periodStart.localeCompare(a.periodStart),
+        searchText: (r) => `${r.engagementName} ${r.clientName ?? ''} ${r.status}`,
       }),
     [items, view],
   );
@@ -450,6 +452,9 @@ function BatchListPage(): JSX.Element {
           ) : undefined
         }
       >
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search batches…" />
+        </div>
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (

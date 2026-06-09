@@ -28,6 +28,7 @@ interface ColumnViewState {
   sortCol: string;
   sortDir: SortDir;
   filters: Record<string, string[]>;
+  search: string;
 }
 
 export interface ColumnView {
@@ -39,8 +40,12 @@ export interface ColumnView {
   filterFor: (col: string) => Set<string>;
   /** Wire to ColumnFilter.onApply: set the column's selection + (if dir given) the active sort. */
   apply: (col: string, selected: Set<string>, dir: SortDir) => void;
-  /** Clear every column's value filter (leaves the active sort intact). */
+  /** Free-text search box value (see the `searchText` accessor in selectRows). */
+  search: string;
+  setSearch: (q: string) => void;
+  /** Clear every column's value filter AND the search box (leaves the active sort intact). */
   clearFilters: () => void;
+  /** True when any column filter or the search box is active. */
   anyFilterActive: boolean;
 }
 
@@ -53,6 +58,7 @@ export function useColumnView(
       sortCol: defaults.sortCol ?? '',
       sortDir: defaults.sortDir ?? null,
       filters: {},
+      search: '',
     };
     try {
       const raw = sessionStorage.getItem(storageKey);
@@ -62,6 +68,7 @@ export function useColumnView(
         sortCol: parsed.sortCol ?? base.sortCol,
         sortDir: parsed.sortDir ?? base.sortDir,
         filters: parsed.filters ?? {},
+        search: parsed.search ?? '',
       };
     } catch {
       return base;
@@ -88,13 +95,17 @@ export function useColumnView(
           if (selected.size > 0) filters[col] = Array.from(selected);
           else delete filters[col];
           return {
+            ...prev,
             sortCol: dir ? col : prev.sortCol,
             sortDir: dir ?? prev.sortDir,
             filters,
           };
         }),
-      clearFilters: () => setState((prev) => ({ ...prev, filters: {} })),
-      anyFilterActive: Object.values(state.filters).some((v) => v.length > 0),
+      search: state.search,
+      setSearch: (q) => setState((prev) => ({ ...prev, search: q })),
+      clearFilters: () => setState((prev) => ({ ...prev, filters: {}, search: '' })),
+      anyFilterActive:
+        Object.values(state.filters).some((v) => v.length > 0) || state.search.trim().length > 0,
     }),
     [state],
   );
@@ -105,13 +116,20 @@ export interface SelectRowsConfig<T> {
   filters?: Record<string, (row: T) => string>;
   /** col key → the value used to sort when that column is the active sort. */
   sortValues?: Record<string, (row: T) => string | number>;
+  /** Free-text searchable text for a row (matched, case-insensitive, against view.search). */
+  searchText?: (row: T) => string;
   /** Deterministic tie-break when the sort value is equal. */
   tieBreak?: (a: T, b: T) => number;
 }
 
-/** Apply a ColumnView's filters + active sort to a row list, client-side. */
+/** Apply a ColumnView's search + filters + active sort to a row list, client-side. */
 export function selectRows<T>(rows: T[], view: ColumnView, cfg: SelectRowsConfig<T>): T[] {
   let out = rows;
+
+  const q = view.search.trim().toLowerCase();
+  if (q && cfg.searchText) {
+    out = out.filter((row) => cfg.searchText!(row).toLowerCase().includes(q));
+  }
 
   if (cfg.filters) {
     const active = Object.entries(cfg.filters)

@@ -5,6 +5,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe
 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { TableSearch } from '../components/TableSearch';
 
 interface Invoice {
   id: string;
@@ -128,6 +129,7 @@ export function InvoicesPage(): JSX.Element {
   const visible = useMemo(
     () =>
       selectRows(items, view, {
+        searchText: (i) => `${i.invoiceNumber} ${i.clientName} ${i.status}`,
         filters: {
           client: (i) => i.clientId,
           status: (i) => i.status,
@@ -214,6 +216,9 @@ export function InvoicesPage(): JSX.Element {
             aria-label="Issued to"
             style={dateInputStyle}
           />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search invoices…" />
         </div>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         {loading ? (

@@ -12,6 +12,7 @@ import { Button, Card, ColumnFilter, Pill, Stat, Table, tokens } from '@vibe/ui'
 
 import { api } from '../../api-client';
 import { selectRows, useColumnView } from '../../lib/column-view';
+import { TableSearch } from '../../components/TableSearch';
 
 function fmtCents(c: number | null | undefined): string {
   if (c == null) return '—';
@@ -294,6 +295,7 @@ export function RetainerDashboardPage(): JSX.Element {
           expires: (r) => r.expiryDate,
           status: (r) => r.status,
         },
+        searchText: (r) => `${r.name} ${r.returnType} ${r.tier} ${r.status}`,
       }),
     [items, view],
   );
@@ -369,6 +371,9 @@ export function RetainerDashboardPage(): JSX.Element {
           </span>
         }
       >
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search retainers…" />
+        </div>
         {items.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No retainers yet.</p>
         ) : (
