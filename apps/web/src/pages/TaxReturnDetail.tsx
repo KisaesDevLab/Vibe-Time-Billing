@@ -10,12 +10,20 @@
 //   POST   /api/staff/tax/returns/:returnId/releases
 //   DELETE /api/staff/tax/returns/:returnId/releases/:releaseId
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { dollarsInputToCents } from '../lib/money';
 import { ShareFileDialog } from './clients/ShareFileDialog';
 
 interface SectionRow {
@@ -446,6 +454,24 @@ interface PaymentRow {
   status: 'SCHEDULED' | 'PAID' | 'VOIDED';
 }
 
+interface EngagementOption {
+  id: string;
+  name: string;
+  clientId: string;
+}
+interface JurisdictionOption {
+  id: string;
+  name: string;
+  active: boolean;
+}
+interface PaymentTypeOption {
+  id: string;
+  jurisdictionId: string;
+  name: string;
+  paymentUrl: string | null;
+  active: boolean;
+}
+
 function money(cents: number): string {
   return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -468,13 +494,22 @@ function TaxPaymentsCard({
 }): JSX.Element {
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Form
-  const [paymentType, setPaymentType] = useState('Estimated Tax');
-  const [jur, setJur] = useState(jurisdiction);
-  const [amount, setAmount] = useState('');
-  const [dueDate, setDueDate] = useState('');
+
+  // Composer state — mirrors the client Billing-tab "Schedule tax
+  // payment" form (catalog-driven dropdowns + optional engagement/notes),
+  // but stays scoped to this return (sends taxReturnId).
+  const [showCreate, setShowCreate] = useState(false);
+  const [engagements, setEngagements] = useState<EngagementOption[]>([]);
+  const [jurisdictions, setJurisdictions] = useState<JurisdictionOption[]>([]);
+  const [paymentTypes, setPaymentTypes] = useState<PaymentTypeOption[]>([]);
+  const [createEngagementId, setCreateEngagementId] = useState('');
+  const [createJurisdictionId, setCreateJurisdictionId] = useState('');
+  const [createPaymentTypeId, setCreatePaymentTypeId] = useState('');
+  const [createTaxYear, setCreateTaxYear] = useState<number | ''>(taxYear);
+  const [createAmount, setCreateAmount] = useState('');
+  const [createDueDate, setCreateDueDate] = useState('');
+  const [createNotes, setCreateNotes] = useState('');
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -489,31 +524,81 @@ function TaxPaymentsCard({
     void load();
   }, [load]);
 
-  const validAmount = Number(amount) > 0;
-  const valid =
-    paymentType.trim() && jur.trim() && validAmount && /^\d{4}-\d{2}-\d{2}$/.test(dueDate);
+  function resetComposer(): void {
+    setShowCreate(false);
+    setCreateEngagementId('');
+    setCreateJurisdictionId('');
+    setCreatePaymentTypeId('');
+    setCreateTaxYear(taxYear);
+    setCreateAmount('');
+    setCreateDueDate('');
+    setCreateNotes('');
+  }
 
-  async function create(): Promise<void> {
+  async function openCreate(): Promise<void> {
+    setError(null);
+    setShowCreate(true);
+    if (engagements.length === 0) {
+      try {
+        const r = await api<{ items: EngagementOption[] }>(
+          `/api/staff/engagements?clientId=${encodeURIComponent(clientId)}`,
+        );
+        setEngagements(r.items ?? []);
+      } catch {
+        // Engagement select stays empty; tax payments can still be saved without one.
+      }
+    }
+    // Load the firm's jurisdiction + payment-type catalog. The type
+    // dropdown is filtered to the picked jurisdiction at render time.
+    try {
+      const [j, t] = await Promise.all([
+        api<{ items: JurisdictionOption[] }>('/api/staff/admin/tax-jurisdictions'),
+        api<{ items: PaymentTypeOption[] }>('/api/staff/admin/tax-payment-types'),
+      ]);
+      const activeJur = (j.items ?? []).filter((x) => x.active);
+      setJurisdictions(activeJur);
+      setPaymentTypes((t.items ?? []).filter((x) => x.active));
+      // Pre-select the catalog jurisdiction matching the return's, if any.
+      const match = activeJur.find(
+        (x) => x.name.toLowerCase() === jurisdiction.trim().toLowerCase(),
+      );
+      if (match) setCreateJurisdictionId(match.id);
+    } catch {
+      // Catalog empty → the form will tell the user to configure it.
+    }
+  }
+
+  async function performCreate(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    if (busy) return;
+    const juris = jurisdictions.find((j) => j.id === createJurisdictionId);
+    const type = paymentTypes.find((t) => t.id === createPaymentTypeId);
+    if (!juris || !type || !createDueDate) return;
+    const amountCents = dollarsInputToCents(createAmount);
+    if (amountCents == null || amountCents < 0) {
+      setError('Amount must be a non-negative number.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      await api('/api/staff/tax-payments', {
-        method: 'POST',
-        body: JSON.stringify({
-          clientId,
-          taxReturnId: returnId,
-          jurisdiction: jur.trim(),
-          paymentType: paymentType.trim(),
-          taxYear,
-          amountCents: Math.round(Number(amount) * 100),
-          dueDate,
-        }),
-      });
-      setAdding(false);
-      setAmount('');
-      setDueDate('');
-      setPaymentType('Estimated Tax');
-      setJur(jurisdiction);
+      // Send the resolved names (so historical rows survive catalog
+      // deletes) + the URL snapshot. Stays linked to this return via
+      // taxReturnId.
+      const body: Record<string, unknown> = {
+        clientId,
+        taxReturnId: returnId,
+        jurisdiction: juris.name,
+        paymentType: type.name,
+        amountCents,
+        dueDate: createDueDate,
+      };
+      if (type.paymentUrl) body['paymentUrl'] = type.paymentUrl;
+      if (createEngagementId) body['engagementId'] = createEngagementId;
+      if (createTaxYear !== '') body['taxYear'] = Number(createTaxYear);
+      if (createNotes) body['notes'] = createNotes;
+      await api('/api/staff/tax-payments', { method: 'POST', body: JSON.stringify(body) });
+      resetComposer();
       await load();
     } catch (err) {
       const code = err instanceof Error ? err.message : 'failed';
@@ -530,64 +615,140 @@ function TaxPaymentsCard({
   }
 
   return (
-    <Card title={`Tax payments (${rows.length})`}>
-      <div style={{ marginBottom: 10 }}>
-        <Button size="sm" variant="ghost" onClick={() => setAdding((a) => !a)}>
-          {adding ? 'Cancel' : 'Add payment'}
-        </Button>
-      </div>
-      {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 0 }}>{error}</p>}
-      {adding && (
-        <div
-          style={{
-            display: 'grid',
-            gap: 8,
-            padding: 12,
-            marginBottom: 10,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: 6,
+    <Card
+      title={`Tax payments (${rows.length})`}
+      action={
+        <Button
+          size="sm"
+          variant={showCreate ? 'ghost' : 'secondary'}
+          onClick={() => {
+            if (showCreate) resetComposer();
+            else void openCreate();
           }}
         >
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 6 }}>
-            <Input
-              value={paymentType}
-              onChange={(e) => setPaymentType(e.target.value)}
-              placeholder="Payment type (e.g. Estimated Tax — Q1, Balance Due)"
+          {showCreate ? 'Cancel' : '+ Schedule tax payment'}
+        </Button>
+      }
+    >
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 0 }} role="alert">
+          {error}
+        </p>
+      )}
+      {showCreate && (
+        <form
+          onSubmit={(e) => void performCreate(e)}
+          style={{
+            display: 'grid',
+            gap: 10,
+            padding: 12,
+            marginBottom: 14,
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+          }}
+        >
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+            Schedules a tax obligation linked to this return. The client sees it on the portal home
+            page with the due date. Notes stay firm-internal.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <LabeledSelect
+              label="Jurisdiction *"
+              value={createJurisdictionId}
+              onChange={(v) => {
+                setCreateJurisdictionId(v);
+                setCreatePaymentTypeId('');
+              }}
+              options={[
+                { value: '', label: 'Select…' },
+                ...jurisdictions.map((j) => ({ value: j.id, label: j.name })),
+              ]}
+            />
+            <LabeledSelect
+              label="Payment type *"
+              value={createPaymentTypeId}
+              onChange={setCreatePaymentTypeId}
+              disabled={!createJurisdictionId}
+              options={[
+                {
+                  value: '',
+                  label: createJurisdictionId ? 'Select…' : 'Pick a jurisdiction first',
+                },
+                ...paymentTypes
+                  .filter((t) => t.jurisdictionId === createJurisdictionId)
+                  .map((t) => ({
+                    value: t.id,
+                    label: t.paymentUrl ? `${t.name} (online)` : t.name,
+                  })),
+              ]}
+            />
+            <LabeledSelect
+              label="Engagement (optional)"
+              value={createEngagementId}
+              onChange={setCreateEngagementId}
+              options={[
+                { value: '', label: '— None —' },
+                ...engagements.map((en) => ({ value: en.id, label: en.name })),
+              ]}
             />
             <Input
-              value={jur}
-              onChange={(e) => setJur(e.target.value)}
-              placeholder="Jurisdiction"
+              label="Tax year"
+              type="number"
+              value={createTaxYear === '' ? '' : String(createTaxYear)}
+              onChange={(e) =>
+                setCreateTaxYear(e.target.value === '' ? '' : Number(e.target.value))
+              }
+              placeholder={`${taxYear}`}
+            />
+            <Input
+              label="Amount (USD) *"
+              value={createAmount}
+              onChange={(e) => setCreateAmount(e.target.value)}
+              placeholder="2500.00"
+              required
+            />
+            <Input
+              label="Due date *"
+              type="date"
+              value={createDueDate}
+              onChange={(e) => setCreateDueDate(e.target.value)}
+              required
             />
           </div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label style={lbl()}>
-              Amount $
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                style={{ ...numStyle(), width: 110 }}
-              />
-            </label>
-            <label style={lbl()}>
-              Due
-              <input
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                style={selStyle()}
-              />
-            </label>
-            <div style={{ marginLeft: 'auto' }}>
-              <Button size="sm" onClick={() => void create()} disabled={busy || !valid}>
-                {busy ? 'Adding…' : 'Add payment'}
-              </Button>
-            </div>
+          {(() => {
+            const t = paymentTypes.find((x) => x.id === createPaymentTypeId);
+            if (!t?.paymentUrl) return null;
+            return (
+              <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+                Client portal link:{' '}
+                <a href={t.paymentUrl} target="_blank" rel="noopener noreferrer">
+                  {t.paymentUrl}
+                </a>
+              </p>
+            );
+          })()}
+          {jurisdictions.length === 0 && (
+            <p style={{ fontSize: 12, color: tokens.color.warning, margin: 0 }}>
+              No jurisdictions configured yet — set them up in{' '}
+              <strong>Admin → Catalog → Tax payments</strong>.
+            </p>
+          )}
+          <Input
+            label="Internal notes (not shown to client)"
+            value={createNotes}
+            onChange={(e) => setCreateNotes(e.target.value)}
+            placeholder="Optional"
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button type="submit" size="sm" disabled={busy}>
+              {busy ? 'Scheduling…' : 'Schedule'}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={resetComposer}>
+              Cancel
+            </Button>
           </div>
-        </div>
+        </form>
       )}
       {rows.length === 0 ? (
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
@@ -694,6 +855,56 @@ function lbl(): CSSProperties {
     fontSize: 12,
     color: tokens.color.textMuted,
   };
+}
+
+// Labeled <select> — mirrors the client Billing-tab Tax Payments composer
+// so the two add-payment forms look identical.
+function LabeledSelect({
+  label,
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  disabled?: boolean;
+}): JSX.Element {
+  const id = `select-${label.replace(/\W+/g, '-').toLowerCase()}`;
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <label htmlFor={id} style={{ fontSize: 11, color: tokens.color.textMuted }}>
+        {label}
+      </label>
+      <select
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        style={{
+          padding: '10px 12px',
+          fontSize: 14,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.md,
+          background: tokens.color.surface,
+          color: disabled ? tokens.color.textMuted : tokens.color.text,
+          fontFamily: tokens.font.body,
+          boxSizing: 'border-box',
+          width: '100%',
+          opacity: disabled ? 0.7 : 1,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 }
 
 function SectionsManager({
