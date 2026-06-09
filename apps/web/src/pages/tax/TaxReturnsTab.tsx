@@ -3,17 +3,19 @@
 // Tax Returns tab body. Extracted from TaxReturns.tsx so the parent
 // page can host both the Returns tab and the firm-wide Payments tab.
 //
-// Filtering + sorting mirror the Clients table (search + dropdown
-// filters, click-to-sort column headers). The endpoint returns the
-// firm's returns in one call (≤500), so filter/sort run client-side for
-// instant response. The user's filter + sort selections persist for the
-// browser session via sessionStorage, so navigating away and back keeps
-// the view they set up.
+// Filtering + sorting use per-column header dropdowns (the shared
+// @vibe/ui ColumnFilter), exactly like the Engagements table: each
+// column's ▾ opens Sort A→Z / Z→A plus a checkbox value filter. The
+// endpoint returns the firm's returns in one call (≤500), so filter +
+// sort run client-side for instant response. The user's selections
+// persist for the browser session via sessionStorage, so navigating
+// away (e.g. to the Payments tab, which unmounts this one) and back
+// keeps the view they set up.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Button, Card, Combobox, EmptyState, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Card, ColumnFilter, EmptyState, Pill, tokens, type SortDir } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -32,36 +34,19 @@ interface ReturnRow {
   createdAt: string;
 }
 
+// Sortable column keys.
 type SortCol = 'client' | 'year' | 'form' | 'title' | 'kind' | 'status' | 'pages' | 'released';
 
-interface ViewState {
-  q: string;
-  status: string; // '' = any
-  type: string; // '' = any  (releaseKind)
-  year: string; // '' = any  (stringified tax year)
-  sortCol: SortCol;
-  sortDir: 'asc' | 'desc';
-}
-
-const DEFAULT_VIEW: ViewState = {
-  q: '',
-  status: '',
-  type: '',
-  year: '',
-  sortCol: 'year',
-  sortDir: 'desc',
+const STATUS_LABELS: Record<string, string> = {
+  DRAFT: 'Draft',
+  PARSED: 'Parsed',
+  REVIEW: 'Review',
+  APPROVED: 'Approved',
+  RELEASED: 'Released',
+  SUPERSEDED: 'Superseded',
 };
 
-const STATUS_OPTIONS = [
-  { value: 'DRAFT', label: 'Draft' },
-  { value: 'PARSED', label: 'Parsed' },
-  { value: 'REVIEW', label: 'Review' },
-  { value: 'APPROVED', label: 'Approved' },
-  { value: 'RELEASED', label: 'Released' },
-  { value: 'SUPERSEDED', label: 'Superseded' },
-];
-
-const TYPE_OPTIONS = [
+const TYPE_VALUES = [
   { value: 'ORIGINAL', label: 'Original' },
   { value: 'AMENDED', label: 'Amended' },
   { value: 'SUPERSEDED', label: 'Superseded' },
@@ -83,45 +68,56 @@ function statusTone(s: string): 'success' | 'warning' | 'neutral' | 'accent' {
   }
 }
 
-// Session-persisted state — survives navigation + reload within the tab,
-// cleared when the browser session ends. Keyed so it can't collide with
-// other pages.
-function useSessionState<T>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [val, setVal] = useState<T>(() => {
-    try {
-      const raw = sessionStorage.getItem(key);
-      return raw != null ? ({ ...initial, ...(JSON.parse(raw) as Partial<T>) } as T) : initial;
-    } catch {
-      return initial;
-    }
-  });
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(key, JSON.stringify(val));
-    } catch {
-      /* storage unavailable (private mode) — fall back to in-memory only */
-    }
-  }, [key, val]);
-  return [val, setVal];
+// ── Session-persisted view state ────────────────────────────────────
+// Survives navigation + reload within the browser session (cleared when
+// the session ends). Sets are serialized as arrays.
+const STORAGE_KEY = 'vibe.tax-returns.view';
+
+interface PersistedView {
+  sortCol: SortCol | '';
+  sortDir: SortDir;
+  client: string[];
+  year: string[];
+  form: string[];
+  type: string[];
+  status: string[];
 }
 
-const headerBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  fontFamily: 'inherit',
-  fontWeight: 'inherit',
-  fontSize: 'inherit',
-  color: 'inherit',
-  cursor: 'pointer',
+const DEFAULT_VIEW: PersistedView = {
+  sortCol: 'year',
+  sortDir: 'desc',
+  client: [],
+  year: [],
+  form: [],
+  type: [],
+  status: [],
 };
+
+function loadView(): PersistedView {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_VIEW;
+    return { ...DEFAULT_VIEW, ...(JSON.parse(raw) as Partial<PersistedView>) };
+  } catch {
+    return DEFAULT_VIEW;
+  }
+}
 
 export function TaxReturnsTab(): JSX.Element {
   const [items, setItems] = useState<ReturnRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [view, setView] = useSessionState<ViewState>('vibe.tax-returns.view', DEFAULT_VIEW);
+  const initial = useMemo(() => loadView(), []);
+  const [sortBy, setSortBy] = useState<{ col: SortCol | ''; dir: SortDir }>({
+    col: initial.sortCol,
+    dir: initial.sortDir,
+  });
+  const [clientFilter, setClientFilter] = useState<Set<string>>(new Set(initial.client));
+  const [yearFilter, setYearFilter] = useState<Set<string>>(new Set(initial.year));
+  const [formFilter, setFormFilter] = useState<Set<string>>(new Set(initial.form));
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set(initial.type));
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(initial.status));
 
   useEffect(() => {
     void (async () => {
@@ -136,78 +132,142 @@ export function TaxReturnsTab(): JSX.Element {
     })();
   }, []);
 
-  // Distinct tax years present, for the Year filter dropdown.
-  const yearOptions = useMemo(() => {
-    const years = Array.from(new Set(items.map((r) => r.taxYear))).sort((a, b) => b - a);
-    return years.map((y) => ({ value: String(y), label: String(y) }));
-  }, [items]);
-
-  const visible = useMemo(() => {
-    const q = view.q.trim().toLowerCase();
-    const filtered = items.filter((r) => {
-      if (view.status && r.status !== view.status) return false;
-      if (view.type && r.releaseKind !== view.type) return false;
-      if (view.year && String(r.taxYear) !== view.year) return false;
-      if (q) {
-        const hay = `${r.clientName} ${r.title} ${r.formCode} ${r.jurisdiction}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-    const dir = view.sortDir === 'asc' ? 1 : -1;
-    const cmp = (a: ReturnRow, b: ReturnRow): number => {
-      switch (view.sortCol) {
-        case 'client':
-          return a.clientName.localeCompare(b.clientName);
-        case 'year':
-          return a.taxYear - b.taxYear;
-        case 'form':
-          return a.formCode.localeCompare(b.formCode);
-        case 'title':
-          return (a.title || '').localeCompare(b.title || '');
-        case 'kind':
-          return a.releaseKind.localeCompare(b.releaseKind);
-        case 'status':
-          return a.status.localeCompare(b.status);
-        case 'pages':
-          return (a.totalPages ?? 0) - (b.totalPages ?? 0);
-        case 'released':
-          return (
-            (a.releasedAt ? Date.parse(a.releasedAt) : 0) -
-            (b.releasedAt ? Date.parse(b.releasedAt) : 0)
-          );
-        default:
-          return 0;
-      }
+  // Persist selections for the session whenever any change.
+  useEffect(() => {
+    const view: PersistedView = {
+      sortCol: sortBy.col,
+      sortDir: sortBy.dir,
+      client: Array.from(clientFilter),
+      year: Array.from(yearFilter),
+      form: Array.from(formFilter),
+      type: Array.from(typeFilter),
+      status: Array.from(statusFilter),
     };
-    // Stable-ish secondary sort by createdAt desc keeps ties deterministic.
-    return [...filtered].sort((a, b) => {
-      const primary = cmp(a, b);
-      if (primary !== 0) return primary * dir;
-      return Date.parse(b.createdAt) - Date.parse(a.createdAt);
-    });
-  }, [items, view]);
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(view));
+    } catch {
+      /* storage unavailable (private mode) — in-memory only */
+    }
+  }, [sortBy, clientFilter, yearFilter, formFilter, typeFilter, statusFilter]);
 
-  function toggleSort(col: SortCol): void {
-    setView((prev) =>
-      prev.sortCol === col
-        ? { ...prev, sortDir: prev.sortDir === 'asc' ? 'desc' : 'asc' }
-        : { ...prev, sortCol: col, sortDir: 'asc' },
-    );
-  }
-  const sortIcon = (col: SortCol): string =>
-    view.sortCol === col ? (view.sortDir === 'asc' ? ' ▲' : ' ▼') : '';
-  const sortHeader = (col: SortCol, label: string): JSX.Element => (
-    <button type="button" onClick={() => toggleSort(col)} style={headerBtn}>
-      {label}
-      {sortIcon(col)}
-    </button>
+  // Distinct value lists for the per-column dropdowns.
+  const clientValues = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of items) map.set(r.clientId, r.clientName);
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [items]);
+  const yearValues = useMemo(
+    () =>
+      Array.from(new Set(items.map((r) => r.taxYear)))
+        .sort((a, b) => b - a)
+        .map((y) => ({ value: String(y), label: String(y) })),
+    [items],
+  );
+  const formValues = useMemo(
+    () =>
+      Array.from(new Set(items.map((r) => r.formCode)))
+        .sort((a, b) => a.localeCompare(b))
+        .map((f) => ({ value: f, label: f })),
+    [items],
   );
 
-  const filtersActive = Boolean(view.q || view.status || view.type || view.year);
+  const visible = useMemo(() => {
+    let r = items.filter((row) => {
+      if (clientFilter.size > 0 && !clientFilter.has(row.clientId)) return false;
+      if (yearFilter.size > 0 && !yearFilter.has(String(row.taxYear))) return false;
+      if (formFilter.size > 0 && !formFilter.has(row.formCode)) return false;
+      if (typeFilter.size > 0 && !typeFilter.has(row.releaseKind)) return false;
+      if (statusFilter.size > 0 && !statusFilter.has(row.status)) return false;
+      return true;
+    });
+    if (sortBy.col && sortBy.dir) {
+      const sign = sortBy.dir === 'asc' ? 1 : -1;
+      const col = sortBy.col;
+      const num = (r: ReturnRow): number => {
+        switch (col) {
+          case 'year':
+            return r.taxYear;
+          case 'pages':
+            return r.totalPages ?? 0;
+          case 'released':
+            return r.releasedAt ? Date.parse(r.releasedAt) : 0;
+          default:
+            return NaN;
+        }
+      };
+      const str = (r: ReturnRow): string => {
+        switch (col) {
+          case 'client':
+            return r.clientName.toLowerCase();
+          case 'form':
+            return r.formCode.toLowerCase();
+          case 'title':
+            return (r.title || '').toLowerCase();
+          case 'kind':
+            return r.releaseKind;
+          case 'status':
+            return r.status;
+          default:
+            return '';
+        }
+      };
+      const numeric = col === 'year' || col === 'pages' || col === 'released';
+      r = [...r].sort((a, b) => {
+        const cmp = numeric ? num(a) - num(b) : str(a) < str(b) ? -1 : str(a) > str(b) ? 1 : 0;
+        if (cmp !== 0) return cmp * sign;
+        // Deterministic tie-break: newest first.
+        return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+      });
+    }
+    return r;
+  }, [items, clientFilter, yearFilter, formFilter, typeFilter, statusFilter, sortBy]);
+
+  const sortFor = (col: SortCol): SortDir => (sortBy.col === col ? sortBy.dir : null);
+  const filtersActive =
+    clientFilter.size + yearFilter.size + formFilter.size + typeFilter.size + statusFilter.size > 0;
+
+  function clearAll(): void {
+    setClientFilter(new Set());
+    setYearFilter(new Set());
+    setFormFilter(new Set());
+    setTypeFilter(new Set());
+    setStatusFilter(new Set());
+  }
 
   return (
-    <Card title={`Tax returns${items.length ? ` (${visible.length} of ${items.length})` : ''}`}>
+    <Card
+      title={
+        <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <span>Tax returns</span>
+          {items.length > 0 && (
+            <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+              {visible.length === items.length
+                ? `${items.length} return${items.length === 1 ? '' : 's'}`
+                : `${visible.length} of ${items.length}`}
+            </span>
+          )}
+        </span>
+      }
+      action={
+        filtersActive ? (
+          <button
+            type="button"
+            onClick={clearAll}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: tokens.color.accent,
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            Clear filters
+          </button>
+        ) : undefined
+      }
+    >
       {error && (
         <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }}>{error}</p>
       )}
@@ -220,117 +280,204 @@ export function TaxReturnsTab(): JSX.Element {
           body="When a return is parsed into the system it appears here, ready for review and release."
         />
       ) : (
-        <>
-          <form
-            onSubmit={(e) => e.preventDefault()}
+        <div style={{ overflowX: 'auto' }}>
+          <table
             style={{
-              display: 'grid',
-              gap: 8,
-              gridTemplateColumns: '2fr 1fr 1fr 1fr auto',
-              alignItems: 'center',
-              marginBottom: tokens.space.md,
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: 13,
+              fontFamily: tokens.font.body,
             }}
           >
-            <Input
-              value={view.q}
-              onChange={(e) => setView((p) => ({ ...p, q: e.target.value }))}
-              placeholder="Search client, title, form, jurisdiction"
-            />
-            <Combobox
-              ariaLabel="Status"
-              clearable
-              value={view.status}
-              onChange={(v) => setView((p) => ({ ...p, status: v }))}
-              options={STATUS_OPTIONS}
-              placeholder="Any status"
-            />
-            <Combobox
-              ariaLabel="Type"
-              clearable
-              value={view.type}
-              onChange={(v) => setView((p) => ({ ...p, type: v }))}
-              options={TYPE_OPTIONS}
-              placeholder="Any type"
-            />
-            <Combobox
-              ariaLabel="Tax year"
-              clearable
-              value={view.year}
-              onChange={(v) => setView((p) => ({ ...p, year: v }))}
-              options={yearOptions}
-              placeholder="Any year"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={!filtersActive}
-              onClick={() => setView((p) => ({ ...p, q: '', status: '', type: '', year: '' }))}
-            >
-              Clear
-            </Button>
-          </form>
-
-          <Table<ReturnRow>
-            columns={[
-              {
-                key: 'client',
-                header: sortHeader('client', 'Client') as unknown as string,
-                render: (r) => (
-                  <Link
-                    to={`/tax/returns/${r.id}`}
-                    style={{ color: tokens.color.accent, textDecoration: 'none', fontWeight: 500 }}
+            <thead>
+              <tr style={{ background: tokens.color.surface }}>
+                <th style={th()}>
+                  Client{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort client"
+                    values={clientValues}
+                    selected={clientFilter}
+                    sort={sortFor('client')}
+                    onApply={(sel, dir) => {
+                      setClientFilter(sel);
+                      if (dir) setSortBy({ col: 'client', dir });
+                    }}
+                  />
+                </th>
+                <th style={th()}>
+                  Year{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort tax year"
+                    values={yearValues}
+                    selected={yearFilter}
+                    sort={sortFor('year')}
+                    onApply={(sel, dir) => {
+                      setYearFilter(sel);
+                      if (dir) setSortBy({ col: 'year', dir });
+                    }}
+                  />
+                </th>
+                <th style={th()}>
+                  Form{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort form"
+                    values={formValues}
+                    selected={formFilter}
+                    sort={sortFor('form')}
+                    onApply={(sel, dir) => {
+                      setFormFilter(sel);
+                      if (dir) setSortBy({ col: 'form', dir });
+                    }}
+                  />
+                </th>
+                <th style={th()}>
+                  Title{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by title"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={sortFor('title')}
+                    onApply={(_, dir) => {
+                      if (dir) setSortBy({ col: 'title', dir });
+                    }}
+                  />
+                </th>
+                <th style={th()}>
+                  Type{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort type"
+                    values={TYPE_VALUES}
+                    selected={typeFilter}
+                    searchable={false}
+                    sort={sortFor('kind')}
+                    onApply={(sel, dir) => {
+                      setTypeFilter(sel);
+                      if (dir) setSortBy({ col: 'kind', dir });
+                    }}
+                  />
+                </th>
+                <th style={th()}>
+                  Status{' '}
+                  <ColumnFilter
+                    ariaLabel="Filter / sort status"
+                    values={Object.keys(STATUS_LABELS).map((s) => ({
+                      value: s,
+                      label: STATUS_LABELS[s]!,
+                    }))}
+                    selected={statusFilter}
+                    searchable={false}
+                    sort={sortFor('status')}
+                    onApply={(sel, dir) => {
+                      setStatusFilter(sel);
+                      if (dir) setSortBy({ col: 'status', dir });
+                    }}
+                  />
+                </th>
+                <th style={th('right')}>
+                  Pages{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by pages"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={sortFor('pages')}
+                    onApply={(_, dir) => {
+                      if (dir) setSortBy({ col: 'pages', dir });
+                    }}
+                  />
+                </th>
+                <th style={th()}>
+                  Released{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by released date"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={sortFor('released')}
+                    onApply={(_, dir) => {
+                      if (dir) setSortBy({ col: 'released', dir });
+                    }}
+                  />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={8}
+                    style={{
+                      textAlign: 'center',
+                      padding: 40,
+                      color: tokens.color.textMuted,
+                      fontSize: 13,
+                    }}
                   >
-                    {r.clientName}
-                  </Link>
-                ),
-              },
-              {
-                key: 'year',
-                header: sortHeader('year', 'Year') as unknown as string,
-                render: (r) => String(r.taxYear),
-              },
-              {
-                key: 'form',
-                header: sortHeader('form', 'Form') as unknown as string,
-                render: (r) => `${r.formCode} · ${r.jurisdiction}`,
-              },
-              {
-                key: 'title',
-                header: sortHeader('title', 'Title') as unknown as string,
-                render: (r) => r.title || '—',
-              },
-              {
-                key: 'kind',
-                header: sortHeader('kind', 'Type') as unknown as string,
-                render: (r) => (
-                  <Pill tone={r.releaseKind === 'AMENDED' ? 'warning' : 'accent'}>
-                    {r.releaseKind}
-                  </Pill>
-                ),
-              },
-              {
-                key: 'status',
-                header: sortHeader('status', 'Status') as unknown as string,
-                render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill>,
-              },
-              {
-                key: 'pages',
-                header: sortHeader('pages', 'Pages') as unknown as string,
-                align: 'right',
-                render: (r) => (r.totalPages != null ? String(r.totalPages) : '—'),
-              },
-              {
-                key: 'released',
-                header: sortHeader('released', 'Released') as unknown as string,
-                render: (r) => (r.releasedAt ? new Date(r.releasedAt).toLocaleDateString() : '—'),
-              },
-            ]}
-            rows={visible}
-            rowKey={(r) => r.id}
-            empty="No returns match the current filters."
-          />
-        </>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
+                    <strong>No results</strong>
+                    <div>Please refine your filters.</div>
+                  </td>
+                </tr>
+              ) : (
+                visible.map((r) => (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                    <td style={td()}>
+                      <Link
+                        to={`/tax/returns/${r.id}`}
+                        style={{
+                          color: tokens.color.accent,
+                          textDecoration: 'none',
+                          fontWeight: 500,
+                        }}
+                      >
+                        {r.clientName}
+                      </Link>
+                    </td>
+                    <td style={td()}>{r.taxYear}</td>
+                    <td style={td()}>
+                      {r.formCode} · {r.jurisdiction}
+                    </td>
+                    <td style={td()}>{r.title || '—'}</td>
+                    <td style={td()}>
+                      <Pill tone={r.releaseKind === 'AMENDED' ? 'warning' : 'accent'}>
+                        {r.releaseKind}
+                      </Pill>
+                    </td>
+                    <td style={td()}>
+                      <Pill tone={statusTone(r.status)}>{r.status}</Pill>
+                    </td>
+                    <td style={{ ...td(), textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {r.totalPages != null ? r.totalPages : '—'}
+                    </td>
+                    <td style={td()}>
+                      {r.releasedAt ? new Date(r.releasedAt).toLocaleDateString() : '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   );
+}
+
+function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
+  return {
+    textAlign: align,
+    padding: '10px 8px',
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: tokens.color.textMuted,
+    fontWeight: 600,
+    borderBottom: `1px solid ${tokens.color.border}`,
+    whiteSpace: 'nowrap',
+  };
+}
+
+function td(): React.CSSProperties {
+  return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
 }
