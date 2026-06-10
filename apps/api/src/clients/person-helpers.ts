@@ -85,3 +85,35 @@ export async function findOrCreatePerson(db: Db, input: PersonInput): Promise<st
   }
   throw new Error('person_upsert_failed');
 }
+
+export interface PersonFieldUpdate {
+  fullName?: string;
+  email?: string | null;
+  phone?: string | null;
+  mobile?: string | null;
+}
+
+/**
+ * Update the canonical fields on a firm-global person. Only the keys
+ * present (not `undefined`) are written, so it composes with partial
+ * PATCH bodies. The shared person row is the single source of truth, so
+ * this propagates to every client the person is a contact of.
+ *
+ * Email is stored as provided (the `(firm_id, lower(email))` unique index
+ * still catches collisions case-insensitively); the caller is expected to
+ * catch the resulting DB error and surface a 409.
+ */
+export async function updatePerson(
+  db: Db,
+  personId: string,
+  input: PersonFieldUpdate,
+): Promise<void> {
+  const fields: Record<string, unknown> = {};
+  if (input.fullName !== undefined) fields['fullName'] = input.fullName;
+  if (input.email !== undefined) fields['email'] = input.email;
+  if (input.phone !== undefined) fields['phone'] = input.phone;
+  if (input.mobile !== undefined) fields['mobile'] = input.mobile;
+  if (Object.keys(fields).length === 0) return;
+  fields['updatedAt'] = new Date();
+  await db.update(persons).set(fields).where(eq(persons.id, personId));
+}

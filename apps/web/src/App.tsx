@@ -21,6 +21,8 @@ import { AuthProvider, useAuth, usePermission } from './auth-context';
 import { BillingBatchesPage } from './pages/Billing';
 import { ClientDetailPage } from './pages/ClientDetail';
 import { ClientsPage } from './pages/Clients';
+import { PeopleDirectoryPage } from './pages/People';
+import { PersonDetailPage } from './pages/PersonDetail';
 import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
@@ -94,6 +96,8 @@ export function App(): JSX.Element {
                   <Route path="/" element={<DashboardPage />} />
                   <Route path="/clients" element={<ClientsPage />} />
                   <Route path="/clients/:id" element={<ClientDetailPage />} />
+                  <Route path="/people" element={<PeopleDirectoryPage />} />
+                  <Route path="/people/:id" element={<PersonDetailPage />} />
                   <Route path="/engagements" element={<EngagementsPage />} />
                   <Route path="/engagements/new" element={<EngagementCreatePage />} />
                   <Route path="/engagements/:id" element={<EngagementDetailPage />} />
@@ -262,6 +266,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/clients',
           icon: '◯',
           active: location.pathname.startsWith('/clients'),
+          show: can.clients,
+        },
+        {
+          section: 'Work',
+          label: 'People',
+          href: '/people',
+          icon: '👤',
+          active: location.pathname.startsWith('/people'),
           show: can.clients,
         },
         {

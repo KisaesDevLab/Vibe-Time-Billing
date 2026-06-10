@@ -17,6 +17,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { PersonSearchField, type PersonSearchResult } from './PersonSearchField';
 
 type Role = 'FULL' | 'VIEW_ONLY' | 'PAY_ONLY';
 type Kind = 'linked' | 'contact_only' | 'portal_only' | 'invited';
@@ -693,25 +694,38 @@ function AddContactForm({
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [roleId, setRoleId] = useState('');
+  const [selected, setSelected] = useState<PersonSearchResult | null>(null);
   const [busy, setBusy] = useState(false);
+
+  function onSelectPerson(p: PersonSearchResult | null): void {
+    setSelected(p);
+    if (p) {
+      setEmail(p.email ?? '');
+      setPhone(p.phone ?? '');
+    }
+  }
 
   async function submit(): Promise<void> {
     if (!fullName.trim()) return;
     setBusy(true);
     onError('');
     try {
+      const body = selected
+        ? { personId: selected.id, roleId: roleId || null }
+        : {
+            fullName: fullName.trim(),
+            email: email.trim() || null,
+            phone: phone.trim() || null,
+            roleId: roleId || null,
+          };
       await api(`/api/staff/clients/${clientId}/contacts`, {
         method: 'POST',
-        body: JSON.stringify({
-          fullName: fullName.trim(),
-          email: email.trim() || null,
-          phone: phone.trim() || null,
-          roleId: roleId || null,
-        }),
+        body: JSON.stringify(body),
       });
       onCreated();
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'add_failed');
+      const msg = e instanceof Error ? e.message : 'add_failed';
+      onError(msg === 'already_linked' ? 'That person is already a contact of this client.' : msg);
     } finally {
       setBusy(false);
     }
@@ -729,14 +743,15 @@ function AddContactForm({
       }}
     >
       <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-        Add a directory contact (no login). Invite them to the portal separately when ready.
+        Add a directory contact (no login). Start typing to reuse someone already in the firm, or
+        enter a new name. Invite them to the portal separately when ready.
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        <input
-          style={fieldStyle}
+        <PersonSearchField
+          clientId={clientId}
           value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          placeholder="Full name *"
+          onChangeText={setFullName}
+          onSelectPerson={onSelectPerson}
         />
         <Combobox
           ariaLabel="Role"
@@ -747,21 +762,29 @@ function AddContactForm({
           placeholder="Role…"
         />
         <input
-          style={fieldStyle}
+          style={{ ...fieldStyle, ...(selected ? { opacity: 0.7 } : {}) }}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="Email"
+          disabled={Boolean(selected)}
         />
         <input
-          style={fieldStyle}
+          style={{ ...fieldStyle, ...(selected ? { opacity: 0.7 } : {}) }}
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           placeholder="Phone"
+          disabled={Boolean(selected)}
         />
       </div>
+      {selected && (
+        <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+          Linking <strong>{selected.fullName}</strong> from the directory — their name, email &amp;
+          phone are shared, so edit those from their People page.
+        </div>
+      )}
       <div>
         <Button size="sm" disabled={busy || !fullName.trim()} onClick={() => void submit()}>
-          Add contact
+          {selected ? 'Link contact' : 'Add contact'}
         </Button>
       </div>
     </div>
@@ -786,7 +809,16 @@ function InviteForm({
   const [phone, setPhone] = useState(seed?.phone ?? '');
   const [role, setRole] = useState<Role>('FULL');
   const [channel, setChannel] = useState<'EMAIL' | 'SMS'>('EMAIL');
+  const [selected, setSelected] = useState<PersonSearchResult | null>(null);
   const [busy, setBusy] = useState(false);
+
+  function onSelectPerson(p: PersonSearchResult | null): void {
+    setSelected(p);
+    if (p) {
+      if (p.email) setEmail(p.email);
+      if (p.phone) setPhone(p.phone);
+    }
+  }
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -802,6 +834,7 @@ function InviteForm({
       if (email.trim()) body['email'] = email.trim();
       if (phone.trim()) body['phone'] = phone.trim();
       if (seed) body['clientContactId'] = seed.id;
+      if (selected) body['personId'] = selected.id;
       await api('/api/staff/portal-invites', { method: 'POST', body: JSON.stringify(body) });
       onCreated();
     } catch (err) {
@@ -835,13 +868,25 @@ function InviteForm({
           : 'Invite someone to the portal. If they match a contact by email they’ll be linked; otherwise they’re added as a portal-only (3rd-party) login.'}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Input
-          label="Full name"
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          required
-          placeholder="Jane Doe"
-        />
+        <div>
+          <label
+            style={{
+              fontSize: 11,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Full name
+          </label>
+          <PersonSearchField
+            clientId={clientId}
+            value={fullName}
+            onChangeText={setFullName}
+            onSelectPerson={onSelectPerson}
+            placeholder="Jane Doe"
+          />
+        </div>
         <div>
           <label
             style={{

@@ -51,23 +51,37 @@ const InviteSchema = z
     // 0114 — link this access to an existing directory contact. Optional;
     // omitted = auto-match by email, else a standalone (3rd-party) access.
     clientContactId: z.string().uuid().optional(),
+    // 0115 — link to an existing firm person directly. Lets the People
+    // page grant portal access to a known person (and resolve their
+    // same-client contact) even when the contact has no email to match on.
+    personId: z.string().uuid().optional(),
   })
   .refine((d) => d.email || d.phone, { message: 'email or phone required' });
 
 // Resolve which directory contact (if any) an invite should link to:
 // the explicit contact when valid for this client, else a same-client
-// contact whose email matches. Returns null for a true 3rd party.
+// contact for the given person, else one whose email matches. Returns
+// null for a true 3rd party.
 async function resolveContactLink(
   db: Database,
   clientId: string,
   explicitId: string | undefined,
   email: string | undefined,
+  personId: string | undefined,
 ): Promise<string | null> {
   if (explicitId) {
     const [c] = await db
       .select({ id: clientContacts.id })
       .from(clientContacts)
       .where(and(eq(clientContacts.id, explicitId), eq(clientContacts.clientId, clientId)))
+      .limit(1);
+    if (c) return c.id;
+  }
+  if (personId) {
+    const [c] = await db
+      .select({ id: clientContacts.id })
+      .from(clientContacts)
+      .where(and(eq(clientContacts.personId, personId), eq(clientContacts.clientId, clientId)))
       .limit(1);
     if (c) return c.id;
   }
@@ -158,6 +172,7 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
         client.id,
         parsed.data.clientContactId,
         parsed.data.email,
+        parsed.data.personId,
       );
 
       if (existingIdentity) {
@@ -193,6 +208,16 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
                 eq(clientPortalAccess.id, already.id),
                 isNull(clientPortalAccess.clientContactId),
               ),
+            );
+        }
+        // 0115 — converge this login onto the firm person when asked and
+        // not already linked (keeps one identity across contact + portal).
+        if (parsed.data.personId) {
+          await deps.db
+            .update(portalIdentity)
+            .set({ personId: parsed.data.personId })
+            .where(
+              and(eq(portalIdentity.id, existingIdentity.id), isNull(portalIdentity.personId)),
             );
         }
         await notifyExisting(deps, parsed.data, client.name);

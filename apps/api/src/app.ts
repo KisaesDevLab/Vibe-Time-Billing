@@ -36,6 +36,7 @@ import { createRequestTemplateRouter } from './requests/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
 import { createTemplatePackRouter } from './taxonomy/templates';
 import { createClientRouter } from './clients/routes';
+import { createPeopleRouter } from './people/routes';
 import { createTaskRouter } from './tasks/routes';
 import { createKanbanViewRouter } from './kanban-views/routes';
 // internal-files + folder-templates routers removed in Phase 0 of the
@@ -543,6 +544,11 @@ export function createApp(deps: AppDeps): Express {
     sendStaffMail: deps.sendStaffMail,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
+
+  // Firm-wide People directory (list / detail / edit). The per-client
+  // People card stays on the clients router above; this is the global view.
+  const peopleRouter = createPeopleRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/people', auth.requireAuth, auth.requireCsrf, peopleRouter);
 
   // Top-level firm-wide task list (My tasks / All tasks + create). The
   // per-client task CRUD stays on the clients router above.

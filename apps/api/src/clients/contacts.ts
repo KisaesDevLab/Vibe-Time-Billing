@@ -17,14 +17,14 @@ import { clientContacts, clients, persons } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { findOrCreatePerson } from './person-helpers';
+import { findOrCreatePerson, updatePerson } from './person-helpers';
 
 export interface ContactRoutesDeps extends RbacDeps {
   db: Database | null;
 }
 
-const ContactCreateSchema = z.object({
-  fullName: z.string().min(1).max(200),
+const ContactBaseSchema = z.object({
+  fullName: z.string().min(1).max(200).optional(),
   roleId: z.string().uuid().nullable().optional(),
   email: z.string().email().max(254).nullable().optional(),
   phone: z.string().max(40).nullable().optional(),
@@ -34,9 +34,21 @@ const ContactCreateSchema = z.object({
   isPortalIdentity: z.boolean().optional(),
   // CAL-7 — per-contact appointment-reminder opt-out.
   receiveAppointmentReminders: z.boolean().optional(),
+  // Link an EXISTING firm person instead of creating one from the typed
+  // name/email. When set, name/email/phone are ignored (canonical values
+  // come from the person) and we skip findOrCreatePerson — this is how the
+  // "search to add" typeahead avoids spawning duplicate people.
+  personId: z.string().uuid().optional(),
 });
 
-const ContactPatchSchema = ContactCreateSchema.partial();
+// fullName is required only when creating a new person (no personId) — a
+// caller linking an existing person needn't restate their name.
+const ContactCreateSchema = ContactBaseSchema.refine(
+  (d) => Boolean(d.personId) || Boolean(d.fullName && d.fullName.trim()),
+  { message: 'fullName_or_personId_required', path: ['fullName'] },
+);
+
+const ContactPatchSchema = ContactBaseSchema.partial();
 
 async function ensureClientInFirm(
   db: Database,
@@ -122,6 +134,37 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
         return;
       }
       const data = parsed.data;
+      // Linking an existing person: verify it's a firm person and isn't
+      // already a contact of this client. Done up-front so we can return a
+      // precise 404/409 (the transaction catch below only sees a generic
+      // constraint failure). There is no (client_id, person_id) unique
+      // index, so this guard is what prevents a duplicate link.
+      if (data.personId) {
+        const [p] = await deps.db
+          .select({ id: persons.id })
+          .from(persons)
+          .where(and(eq(persons.id, data.personId), eq(persons.firmId, firmId)))
+          .limit(1);
+        if (!p) {
+          res.status(404).json({ error: 'person_not_found' });
+          return;
+        }
+        const [dup] = await deps.db
+          .select({ id: clientContacts.id })
+          .from(clientContacts)
+          .where(
+            and(
+              eq(clientContacts.clientId, clientId),
+              eq(clientContacts.personId, data.personId),
+              ne(clientContacts.status, 'ARCHIVED'),
+            ),
+          )
+          .limit(1);
+        if (dup) {
+          res.status(409).json({ error: 'already_linked', contactId: dup.id });
+          return;
+        }
+      }
       let created;
       try {
         created = await deps.db.transaction(async (tx) => {
@@ -137,14 +180,21 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
               .set({ isBilling: false, updatedAt: new Date() })
               .where(eq(clientContacts.clientId, clientId));
           }
-          // 0115 — name/email/phone live on the firm-global person.
-          const personId = await findOrCreatePerson(tx, {
-            firmId,
-            fullName: data.fullName,
-            email: data.email ?? null,
-            phone: data.phone ?? null,
-            mobile: data.mobile ?? null,
-          });
+          // 0115 — name/email/phone live on the firm-global person. When a
+          // personId is supplied we link that existing person verbatim
+          // (no field overwrite); otherwise find-or-create from the typed
+          // fields.
+          const personId =
+            data.personId ??
+            (await findOrCreatePerson(tx, {
+              firmId,
+              // Guaranteed present here by the create-schema refine (no
+              // personId → fullName required).
+              fullName: data.fullName ?? '',
+              email: data.email ?? null,
+              phone: data.phone ?? null,
+              mobile: data.mobile ?? null,
+            }));
           const [row] = await tx
             .insert(clientContacts)
             .values({
@@ -211,16 +261,6 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
         return;
       }
       const data = parsed.data;
-      // 0115 — name/email/phone/mobile are canonical on person. Editing them
-      // updates the shared person row, so the change propagates to this
-      // person across EVERY client they're a contact of (single source of
-      // truth). Per-client flags stay on client_contact.
-      const personFields: Record<string, unknown> = {};
-      if (data.fullName !== undefined) personFields['fullName'] = data.fullName;
-      if (data.email !== undefined) personFields['email'] = data.email;
-      if (data.phone !== undefined) personFields['phone'] = data.phone;
-      if (data.mobile !== undefined) personFields['mobile'] = data.mobile;
-
       let updated;
       try {
         updated = await deps.db.transaction(async (tx) => {
@@ -236,12 +276,11 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
               .set({ isBilling: false, updatedAt: new Date() })
               .where(and(eq(clientContacts.clientId, clientId), ne(clientContacts.id, contactId)));
           }
-          if (Object.keys(personFields).length > 0) {
-            await tx
-              .update(persons)
-              .set({ ...personFields, updatedAt: new Date() })
-              .where(eq(persons.id, existing.personId));
-          }
+          // 0115 — name/email/phone/mobile are canonical on person. Editing
+          // them updates the shared person row, so the change propagates to
+          // this person across EVERY client they're a contact of (single
+          // source of truth). Per-client flags stay on client_contact.
+          await updatePerson(tx, existing.personId, data);
           const [row] = await tx
             .update(clientContacts)
             .set({
