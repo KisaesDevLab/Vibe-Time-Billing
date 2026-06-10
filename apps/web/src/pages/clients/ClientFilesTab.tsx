@@ -47,6 +47,11 @@ interface FileRow {
   pendingUpload: boolean;
 }
 
+interface TemplateFolder {
+  name: string;
+  visibility: 'private' | 'client_visible' | null;
+}
+
 interface ListResponse {
   items: FileRow[];
   unbound?: boolean;
@@ -54,6 +59,18 @@ interface ListResponse {
   storagePath?: string;
   status?: 'active' | 'renaming' | 'missing' | 'conflict' | 'orphan';
   lastSyncedAt?: string | null;
+  // Virtual folder skeleton resolved from the client's (or firm default)
+  // folder template — shown in the Explorer even when empty.
+  templateFolders?: TemplateFolder[];
+}
+
+// File subfolderPath values carry a trailing slash (e.g. "Income Tax/");
+// template folder names do not. Normalize template names to the same
+// trailing-slash key so a template "Income Tax" and a file in "Income Tax/"
+// collapse to one folder.
+function templateFolderKey(name: string): string {
+  const trimmed = name.replace(/^\/+|\/+$/g, '');
+  return trimmed === '' ? '' : `${trimmed}/`;
 }
 
 type VisibilityFilter = 'all' | 'private' | 'client_visible';
@@ -110,6 +127,12 @@ export function ClientFilesTab({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Folder-template assignment (optional header control, gated on edit).
+  const [templates, setTemplates] = useState<{ id: string; name: string; isDefault: boolean }[]>(
+    [],
+  );
+  const [assignedTemplateId, setAssignedTemplateId] = useState<string>('');
+
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>('all');
   const [search, setSearch] = useState('');
   const [selectedSubfolder, setSelectedSubfolder] = useState<string | null>(null);
@@ -152,9 +175,45 @@ export function ClientFilesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, canView]);
 
+  // Load the firm's folder templates for the assignment selector. The files
+  // response exposes the resolved skeleton but not the assigned template id,
+  // so the selector is an assign control (no preselected value) rather than a
+  // bound state mirror.
+  useEffect(() => {
+    if (!canEdit) return;
+    void api<{ templates: { id: string; name: string; isDefault: boolean }[] }>(
+      '/api/staff/admin/folder-templates',
+    )
+      .then((r) => setTemplates(r.templates ?? []))
+      .catch(() => setTemplates([]));
+  }, [canEdit]);
+
+  async function assignTemplate(value: string): Promise<void> {
+    setAssignedTemplateId(value);
+    setBusy(true);
+    try {
+      await api(`/api/staff/admin/folder-templates/assign/${clientId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ templateId: value === '' ? null : value }),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'assign_template_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const subfolders = useMemo(() => {
     if (!data?.items) return [] as string[];
-    return Array.from(new Set(data.items.map((f) => f.subfolderPath))).sort();
+    // Union file-derived subfolders with the template skeleton so empty
+    // template folders still appear. Template names are normalized to the
+    // same trailing-slash key format as file subfolderPaths before de-duping.
+    const keys = new Set(data.items.map((f) => f.subfolderPath));
+    for (const tf of data.templateFolders ?? []) {
+      keys.add(templateFolderKey(tf.name));
+    }
+    return Array.from(keys).sort();
   }, [data]);
 
   const filtered = useMemo(() => {
@@ -343,7 +402,25 @@ export function ClientFilesTab({
               <span>{data.items.length} files</span>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {canEdit && templates.length > 0 && (
+              <div style={{ width: 200 }} title="Assign a folder-structure template to this client">
+                <Combobox
+                  ariaLabel="Folder template"
+                  value={assignedTemplateId}
+                  onChange={(v) => void assignTemplate(v)}
+                  disabled={busy}
+                  placeholder="Template: firm default"
+                  options={[
+                    { value: '', label: 'Template: firm default' },
+                    ...templates.map((t) => ({
+                      value: t.id,
+                      label: `Template: ${t.name}${t.isDefault ? ' (default)' : ''}`,
+                    })),
+                  ]}
+                />
+              </div>
+            )}
             <Button onClick={() => void load()} disabled={busy}>
               Refresh
             </Button>

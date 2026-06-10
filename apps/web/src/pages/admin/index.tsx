@@ -21,6 +21,7 @@ import { CompliancePage } from './Compliance';
 import { DataPage } from './Data';
 import { ApprovalRulesPage } from './ApprovalRules';
 import { EngagementLettersPage } from './EngagementLetters';
+import { FolderTemplatesPage } from './FolderTemplates';
 import { EngagementStatusesPage } from './EngagementStatuses';
 import { IntakeSettingsPage } from './IntakeSettings';
 import { CalendarSettingsPage } from './CalendarSettings';
@@ -172,6 +173,7 @@ const GROUPS: Group[] = [
       { key: 'storage-settings', label: 'Storage settings', href: '/admin/storage/settings' },
       { key: 'storage', label: 'Storage onboarding', href: '/admin/storage' },
       { key: 'storage-conflicts', label: 'Storage conflicts', href: '/admin/storage/conflicts' },
+      { key: 'folder-templates', label: 'Folder templates', href: '/admin/folder-templates' },
       { key: 'cloudflare-tunnel', label: 'Cloudflare Tunnel', href: '/admin/cloudflare-tunnel' },
     ],
   },
@@ -369,6 +371,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="storage" element={<StorageOnboardingPage />} />
         <Route path="storage/conflicts" element={<StorageConflictsListPage />} />
         <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />
+        <Route path="folder-templates" element={<FolderTemplatesPage />} />
         <Route path="cloudflare-tunnel" element={<CloudflareTunnelPage />} />
         <Route path="signature-page-rules" element={<SignaturePageRulesPage />} />
         <Route path="signature-documents" element={<SignatureDocTemplatesPage />} />
