@@ -60,6 +60,9 @@ export function MessagesPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [newBody, setNewBody] = useState('');
+  const [starting, setStarting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   async function uploadFiles(files: FileList | File[] | null): Promise<void> {
@@ -129,6 +132,27 @@ export function MessagesPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeThreadId]);
 
+  async function startThread(): Promise<void> {
+    const text = newBody.trim();
+    if (!text) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const r = await api<{ threadId: string }>('/api/portal/messaging/threads', {
+        method: 'POST',
+        body: JSON.stringify({ body: text }),
+      });
+      setNewBody('');
+      setComposing(false);
+      await loadThreads();
+      if (r.threadId) setActiveThreadId(r.threadId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'start_failed');
+    } finally {
+      setStarting(false);
+    }
+  }
+
   async function send(): Promise<void> {
     const text = draft.trim();
     if (!activeThreadId || (!text && pending.length === 0)) return;
@@ -151,13 +175,54 @@ export function MessagesPage(): JSX.Element {
     }
   }
 
+  const composer = (
+    <div style={{ display: 'grid', gap: tokens.space.sm }}>
+      <textarea
+        value={newBody}
+        onChange={(e) => setNewBody(e.target.value)}
+        placeholder="Write your message to the firm…"
+        rows={4}
+        style={{
+          width: '100%',
+          boxSizing: 'border-box',
+          padding: tokens.space.sm,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.sm,
+          background: tokens.color.surface,
+          color: tokens.color.text,
+          fontSize: 13,
+          fontFamily: tokens.font.body,
+          resize: 'vertical',
+        }}
+      />
+      <div style={{ display: 'flex', gap: tokens.space.sm }}>
+        <Button onClick={() => void startThread()} disabled={starting || !newBody.trim()}>
+          {starting ? 'Sending…' : 'Send message'}
+        </Button>
+        {threads.length > 0 && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setComposing(false);
+              setNewBody('');
+            }}
+            disabled={starting}
+          >
+            Cancel
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+
   if (threads.length === 0 && !error) {
     return (
       <Card title="Messages">
-        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-          You have no message threads yet. Your accountant will start one when work begins on an
-          engagement.
+        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: '0 0 12px' }}>
+          You have no messages yet. Start a conversation with the firm below — you don&apos;t need
+          an open engagement, and we&apos;ll route it to the right person.
         </p>
+        {composer}
       </Card>
     );
   }
@@ -170,10 +235,33 @@ export function MessagesPage(): JSX.Element {
         gap: tokens.space.lg,
       }}
     >
+      {composing && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <Card title="New message">{composer}</Card>
+        </div>
+      )}
+
       {/* On phones, show one pane at a time: the thread list, or (once a
           thread is picked) the conversation with a back button. */}
       {(!narrow || !activeThreadId) && (
-        <Card title="Threads">
+        <Card
+          title="Threads"
+          action={
+            <button
+              type="button"
+              onClick={() => setComposing((v) => !v)}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: tokens.color.accent,
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+            >
+              {composing ? 'Cancel' : '+ New message'}
+            </button>
+          }
+        >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             {threads.map((t) => (
               <button

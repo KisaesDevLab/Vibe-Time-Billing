@@ -11,16 +11,18 @@
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   appUsers,
   clientPortalAccess,
+  clients,
   engagementThreadLinks,
   engagements,
   messageReadReceipts,
   messages,
+  portalIdentity,
   threadMembers,
   threads,
 } from '@vibe/db/schema';
@@ -28,7 +30,11 @@ import {
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
-import { batchDecryptForThread, encryptForThread } from '../engagement-messaging/thread-crypto';
+import {
+  batchDecryptForThread,
+  encryptForThread,
+  generateWrappedTDek,
+} from '../engagement-messaging/thread-crypto';
 import {
   mountThreadAttachmentRoutes,
   listAttachmentsByMessage,
@@ -38,6 +44,10 @@ import {
 const PostSchema = z.object({
   body: z.string().min(1).max(10_000),
   attachmentIds: z.array(z.string().uuid()).max(20).optional(),
+});
+
+const StartThreadSchema = z.object({
+  body: z.string().min(1).max(10_000),
 });
 
 // Express.Request is augmented with `portalSession?` by portal-middleware
@@ -54,13 +64,14 @@ async function memberAndFirmCheck(
   portalIdentityId: string,
   activeClientId: string,
 ): Promise<{ ok: true; firmId: string } | { ok: false }> {
-  // Must be a thread member AND the thread's engagement must belong to
-  // the portal identity's active client.
+  // Must be a thread member AND the thread must belong to the portal
+  // identity's active client — either directly (thread.client_id, set on
+  // client-direct threads with no engagement) or via its engagement link.
   const [row] = await db
     .select({
       firmId: threads.firmId,
-      engagementId: engagementThreadLinks.engagementId,
-      clientId: engagements.clientId,
+      directClientId: threads.clientId,
+      engagementClientId: engagements.clientId,
       memberId: threadMembers.id,
     })
     .from(threads)
@@ -77,7 +88,9 @@ async function memberAndFirmCheck(
     .where(and(eq(threads.id, threadId), eq(threads.kind, 'client')))
     .limit(1);
   if (!row) return { ok: false };
-  if (row.clientId !== activeClientId) return { ok: false };
+  if (row.directClientId !== activeClientId && row.engagementClientId !== activeClientId) {
+    return { ok: false };
+  }
   return { ok: true, firmId: row.firmId };
 }
 
@@ -109,6 +122,10 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
       res.json({ items: [] });
       return;
     }
+    // Both client-direct threads (thread.client_id) and engagement-linked
+    // ones (engagement.client_id) for the active client. thread.client_id
+    // was backfilled in 0088 for existing engagement threads, but the
+    // engagement OR keeps any legacy null-client_id thread visible too.
     const rows = await deps.db
       .select({
         threadId: threads.id,
@@ -119,18 +136,167 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
       })
       .from(threadMembers)
       .innerJoin(threads, eq(threads.id, threadMembers.threadId))
-      .innerJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
-      .innerJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
+      .leftJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
+      .leftJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
       .where(
         and(
           eq(threadMembers.portalIdentityId, session.portalIdentityId),
           isNull(threadMembers.removedAt),
-          eq(engagements.clientId, session.activeClientId),
           eq(threads.kind, 'client'),
+          or(
+            eq(threads.clientId, session.activeClientId),
+            eq(engagements.clientId, session.activeClientId),
+          ),
         ),
       )
       .orderBy(desc(threads.updatedAt));
     res.json({ items: rows });
+  });
+
+  // Client-initiated thread. No engagement required — the firm can assign
+  // one later from the staff Messages view. Routes to the right staff:
+  // the client's partner-in-charge plus the "assigned team" (any staff
+  // already on this client's threads), falling back to the firm default
+  // partner-in-charge, then every active staff user, so the firm always
+  // sees the message.
+  router.post('/threads', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = StartThreadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const db = deps.db;
+    const { activeClientId, portalIdentityId, firmId } = session;
+
+    // Defense in depth — the identity must have access to the active client.
+    const [access] = await db
+      .select({ clientId: clientPortalAccess.clientId })
+      .from(clientPortalAccess)
+      .where(
+        and(
+          eq(clientPortalAccess.portalIdentityId, portalIdentityId),
+          eq(clientPortalAccess.clientId, activeClientId),
+          eq(clientPortalAccess.status, 'ACTIVE'),
+        ),
+      )
+      .limit(1);
+    if (!access) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+
+    const [client] = await db
+      .select({ id: clients.id, name: clients.name, partnerInChargeId: clients.partnerInChargeId })
+      .from(clients)
+      .where(and(eq(clients.id, activeClientId), eq(clients.firmId, firmId)))
+      .limit(1);
+    if (!client) {
+      res.status(404).json({ error: 'client_not_found' });
+      return;
+    }
+
+    const [me] = await db
+      .select({ fullName: portalIdentity.fullName })
+      .from(portalIdentity)
+      .where(eq(portalIdentity.id, portalIdentityId))
+      .limit(1);
+
+    // Resolve the staff recipients (the "assigned team").
+    const staffIds = new Set<string>();
+    if (client.partnerInChargeId) staffIds.add(client.partnerInChargeId);
+    const teamRows = await db
+      .selectDistinct({ appUserId: threadMembers.appUserId })
+      .from(threadMembers)
+      .innerJoin(threads, eq(threads.id, threadMembers.threadId))
+      .where(
+        and(
+          eq(threads.clientId, activeClientId),
+          eq(threads.firmId, firmId),
+          isNull(threadMembers.removedAt),
+          isNotNull(threadMembers.appUserId),
+        ),
+      );
+    for (const r of teamRows) if (r.appUserId) staffIds.add(r.appUserId);
+
+    if (staffIds.size === 0) {
+      // No partner-in-charge and no prior team — fall back to every active
+      // staff user so a client message is never invisible to the firm.
+      const allStaff = await db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.firmId, firmId), eq(appUsers.status, 'ACTIVE')));
+      for (const s of allStaff) staffIds.add(s.id);
+    }
+
+    const wrapped = generateWrappedTDek(db, firmId);
+    const title = me?.fullName
+      ? `${me.fullName} (${client.name})`
+      : `${client.name} — client message`;
+    let createdThreadId: string | null = null;
+    try {
+      await db.transaction(async (tx) => {
+        const [t] = await tx
+          .insert(threads)
+          .values({ firmId, clientId: activeClientId, tDekWrapped: wrapped, title })
+          .returning({ id: threads.id });
+        if (!t) throw new Error('thread_insert_failed');
+        createdThreadId = t.id;
+
+        // The initiating client.
+        await tx
+          .insert(threadMembers)
+          .values({ threadId: t.id, portalIdentityId, memberRole: 'client' })
+          .onConflictDoNothing();
+
+        // Staff recipients — partner-in-charge gets 'partner', rest 'staff'.
+        for (const sid of staffIds) {
+          await tx
+            .insert(threadMembers)
+            .values({
+              threadId: t.id,
+              appUserId: sid,
+              memberRole: sid === client.partnerInChargeId ? 'partner' : 'staff',
+            })
+            .onConflictDoNothing();
+        }
+      });
+    } catch (err) {
+      logger.error({ err, clientId: activeClientId }, 'portal thread create failed');
+      res.status(500).json({ error: 'thread_create_failed' });
+      return;
+    }
+
+    const threadId = createdThreadId!;
+    try {
+      const ciphertext = await encryptForThread({ db, firmId, threadId }, parsed.data.body);
+      await db.insert(messages).values({
+        threadId,
+        senderPortalIdentityId: portalIdentityId,
+        bodyCiphertext: ciphertext,
+        excerptPlaintext: parsed.data.body.slice(0, 80),
+      });
+      await db.update(threads).set({ updatedAt: new Date() }).where(eq(threads.id, threadId));
+    } catch (err) {
+      logger.error({ err, threadId }, 'portal first message encrypt failed');
+    }
+
+    await emitAudit(db, {
+      action: 'CREATE',
+      entityType: 'thread',
+      entityId: threadId,
+      actorPortalIdentityId: portalIdentityId,
+      activeClientId,
+      after: { clientId: activeClientId, staffMemberCount: staffIds.size, clientInitiated: true },
+      ip: req.ip ?? null,
+      userAgent: req.get('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+    res.status(201).json({ threadId });
   });
 
   router.get('/threads/:id/messages', async (req: Request, res: Response) => {

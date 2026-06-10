@@ -43,6 +43,7 @@ export function ClientMessagesCard({ clientId }: { clientId: string }): JSX.Elem
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
+  const [engagements, setEngagements] = useState<EngagementRow[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -62,6 +63,21 @@ export function ClientMessagesCard({ clientId }: { clientId: string }): JSX.Elem
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<{ items: EngagementRow[] }>(
+          `/api/staff/engagements?clientId=${clientId}`,
+        );
+        setEngagements((r.items ?? []).filter((e) => e.status !== 'ARCHIVED'));
+      } catch {
+        // Assign picker stays empty; threads still usable client-scoped.
+      }
+    })();
+  }, [clientId]);
+
+  const activeThread = threads?.find((t) => t.threadId === activeId) ?? null;
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
@@ -146,10 +162,18 @@ export function ClientMessagesCard({ clientId }: { clientId: string }): JSX.Elem
         </Card>
 
         <Card
-          title={
-            activeId
-              ? (threads?.find((t) => t.threadId === activeId)?.title ?? 'Thread')
-              : 'Pick or start a thread'
+          title={activeId ? (activeThread?.title ?? 'Thread') : 'Pick or start a thread'}
+          action={
+            activeThread && !activeThread.engagementId ? (
+              <AssignEngagement
+                threadId={activeThread.threadId}
+                engagements={engagements}
+                onAssigned={() => void load()}
+                onError={setError}
+              />
+            ) : activeThread?.engagementId ? (
+              <Pill tone="accent">Engagement</Pill>
+            ) : null
           }
         >
           {activeId ? (
@@ -161,6 +185,82 @@ export function ClientMessagesCard({ clientId }: { clientId: string }): JSX.Elem
           )}
         </Card>
       </div>
+    </div>
+  );
+}
+
+function AssignEngagement({
+  threadId,
+  engagements,
+  onAssigned,
+  onError,
+}: {
+  threadId: string;
+  engagements: EngagementRow[];
+  onAssigned: () => void;
+  onError: (msg: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [engagementId, setEngagementId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (!open) {
+    return (
+      <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+        Assign to engagement
+      </Button>
+    );
+  }
+
+  async function assign(): Promise<void> {
+    if (!engagementId) return;
+    setBusy(true);
+    onError('');
+    try {
+      await api(`/api/staff/engagement-messaging/threads/${threadId}/engagement`, {
+        method: 'POST',
+        body: JSON.stringify({ engagementId }),
+      });
+      setOpen(false);
+      setEngagementId('');
+      onAssigned();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'assign_failed';
+      const friendly =
+        msg === 'engagement_thread_exists'
+          ? 'That engagement already has a thread.'
+          : msg === 'thread_already_linked'
+            ? 'This thread is already linked to an engagement.'
+            : msg === 'engagement_client_mismatch'
+              ? "That engagement doesn't belong to this client."
+              : msg;
+      onError(`Could not assign: ${friendly}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const options: ComboboxOption[] = [
+    { value: '', label: '— Pick an engagement —' },
+    ...engagements.map((e) => ({ value: e.id, label: e.name })),
+  ];
+
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <div style={{ minWidth: 200 }}>
+        <Combobox
+          ariaLabel="Engagement to assign"
+          value={engagementId}
+          onChange={setEngagementId}
+          options={options}
+        />
+      </div>
+      <Button size="sm" onClick={() => void assign()} disabled={busy || !engagementId}>
+        {busy ? 'Assigning…' : 'Assign'}
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={busy}>
+        Cancel
+      </Button>
     </div>
   );
 }
