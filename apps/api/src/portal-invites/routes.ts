@@ -10,7 +10,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -18,7 +18,6 @@ import {
   clientContacts,
   clientPortalAccess,
   clients,
-  persons,
   portalIdentity,
   portalInvitation,
 } from '@vibe/db/schema';
@@ -27,9 +26,9 @@ import { normalizePhone } from '@vibe/core/auth';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { findOrCreatePerson } from '../clients/person-helpers';
-import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { grantOrInvitePortalAccess } from './grant';
 
 export interface PortalInviteDeps extends RbacDeps {
   db: Database | null;
@@ -57,51 +56,6 @@ const InviteSchema = z
     personId: z.string().uuid().optional(),
   })
   .refine((d) => d.email || d.phone, { message: 'email or phone required' });
-
-// Resolve which directory contact (if any) an invite should link to:
-// the explicit contact when valid for this client, else a same-client
-// contact for the given person, else one whose email matches. Returns
-// null for a true 3rd party.
-async function resolveContactLink(
-  db: Database,
-  clientId: string,
-  explicitId: string | undefined,
-  email: string | undefined,
-  personId: string | undefined,
-): Promise<string | null> {
-  if (explicitId) {
-    const [c] = await db
-      .select({ id: clientContacts.id })
-      .from(clientContacts)
-      .where(and(eq(clientContacts.id, explicitId), eq(clientContacts.clientId, clientId)))
-      .limit(1);
-    if (c) return c.id;
-  }
-  if (personId) {
-    const [c] = await db
-      .select({ id: clientContacts.id })
-      .from(clientContacts)
-      .where(and(eq(clientContacts.personId, personId), eq(clientContacts.clientId, clientId)))
-      .limit(1);
-    if (c) return c.id;
-  }
-  if (email) {
-    // 0115 — contact email is canonical on person; match through the join.
-    const [c] = await db
-      .select({ id: clientContacts.id })
-      .from(clientContacts)
-      .innerJoin(persons, eq(persons.id, clientContacts.personId))
-      .where(
-        and(
-          eq(clientContacts.clientId, clientId),
-          sql`lower(${persons.email}) = ${email.toLowerCase()}`,
-        ),
-      )
-      .limit(1);
-    if (c) return c.id;
-  }
-  return null;
-}
 
 export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
   const router = express.Router();
@@ -132,177 +86,39 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
         return;
       }
 
-      const normPhone = parsed.data.phone ? normalizePhone(parsed.data.phone) : null;
-      if (parsed.data.phone && !normPhone) {
-        res.status(400).json({ error: 'invalid_phone' });
-        return;
-      }
-
-      // Dedup: same firm + same contact -> attach access to existing identity.
-      let existingIdentity: { id: string } | null = null;
-      if (parsed.data.email) {
-        const [row] = await deps.db
-          .select({ id: portalIdentity.id })
-          .from(portalIdentity)
-          .where(
-            and(
-              eq(portalIdentity.firmId, session.firmId),
-              eq(portalIdentity.primaryEmail, parsed.data.email),
-            ),
-          )
-          .limit(1);
-        if (row) existingIdentity = row;
-      }
-      if (!existingIdentity && normPhone) {
-        const [row] = await deps.db
-          .select({ id: portalIdentity.id })
-          .from(portalIdentity)
-          .where(
-            and(
-              eq(portalIdentity.firmId, session.firmId),
-              eq(portalIdentity.primaryPhone, normPhone),
-            ),
-          )
-          .limit(1);
-        if (row) existingIdentity = row;
-      }
-
-      const contactLink = await resolveContactLink(
-        deps.db,
-        client.id,
-        parsed.data.clientContactId,
-        parsed.data.email,
-        parsed.data.personId,
-      );
-
-      if (existingIdentity) {
-        // Either grant access immediately or no-op if already granted.
-        const [already] = await deps.db
-          .select({ id: clientPortalAccess.id })
-          .from(clientPortalAccess)
-          .where(
-            and(
-              eq(clientPortalAccess.portalIdentityId, existingIdentity.id),
-              eq(clientPortalAccess.clientId, client.id),
-            ),
-          )
-          .limit(1);
-        if (!already) {
-          await deps.db.insert(clientPortalAccess).values({
-            portalIdentityId: existingIdentity.id,
-            clientId: client.id,
-            role: parsed.data.role,
-            status: 'ACTIVE',
-            invitedBy: session.appUserId,
-            invitedAt: new Date(),
-            acceptedAt: new Date(),
-            clientContactId: contactLink,
-          });
-        } else if (contactLink) {
-          // Backfill the link on a pre-existing access if it had none.
-          await deps.db
-            .update(clientPortalAccess)
-            .set({ clientContactId: contactLink })
-            .where(
-              and(
-                eq(clientPortalAccess.id, already.id),
-                isNull(clientPortalAccess.clientContactId),
-              ),
-            );
-        }
-        // 0115 — converge this login onto the firm person when asked and
-        // not already linked (keeps one identity across contact + portal).
-        if (parsed.data.personId) {
-          await deps.db
-            .update(portalIdentity)
-            .set({ personId: parsed.data.personId })
-            .where(
-              and(eq(portalIdentity.id, existingIdentity.id), isNull(portalIdentity.personId)),
-            );
-        }
-        await notifyExisting(deps, parsed.data, client.name);
-        await emitAudit(deps.db, {
-          action: 'CREATE',
-          entityType: 'client_portal_access',
-          entityId: existingIdentity.id,
+      const result = await grantOrInvitePortalAccess(
+        {
+          db: deps.db,
+          sendEmail: deps.sendEmail,
+          sendSms: deps.sendSms,
+          portalBaseUrl: deps.portalBaseUrl,
+        },
+        {
+          firmId: session.firmId,
+          client,
+          fullName: parsed.data.fullName,
+          email: parsed.data.email ?? null,
+          phone: parsed.data.phone ?? null,
+          role: parsed.data.role,
+          deliveryChannel: parsed.data.deliveryChannel,
+          clientContactId: parsed.data.clientContactId,
+          personId: parsed.data.personId,
           actorAppUserId: session.appUserId,
-          after: { clientId: client.id, role: parsed.data.role, dedupedTo: existingIdentity.id },
           ip: clientIp(req),
           userAgent: req.header('user-agent') ?? null,
-        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-        res.status(200).json({ ok: true, deduped: true, identityId: existingIdentity.id });
+        },
+      );
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
         return;
       }
-
-      // New invitation: token + magic link to onboarding.
-      const rawToken = randomBytes(24).toString('hex');
-      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-      const [invitation] = await deps.db
-        .insert(portalInvitation)
-        .values({
-          firmId: session.firmId,
-          clientId: client.id,
-          invitedEmail: parsed.data.email ?? null,
-          invitedPhone: normPhone,
-          proposedFullName: parsed.data.fullName,
-          proposedRole: parsed.data.role,
-          deliveryChannel: parsed.data.deliveryChannel,
-          tokenHash,
-          invitedBy: session.appUserId,
-          expiresAt,
-        })
-        .returning({ id: portalInvitation.id });
-
-      const link = `${deps.portalBaseUrl}/auth/accept?token=${encodeURIComponent(rawToken)}`;
-      const message = `${parsed.data.fullName}, you've been invited to the ${client.name} client portal.\n\nAccept: ${link}\n\nLink expires in 7 days.`;
-
-      if (parsed.data.deliveryChannel === 'EMAIL' && parsed.data.email && deps.sendEmail) {
-        const subject = `Client portal invitation — ${client.name}`;
-        await deps
-          .sendEmail({ to: parsed.data.email, subject, body: message })
-          .catch((err: unknown) => logger.error({ err }, 'portal invite email failed'));
-        await recordOutbound({
-          db: deps.db,
-          firmId: session.firmId,
-          clientId: client.id,
-          channel: 'EMAIL',
-          subject,
-          body: message,
-          relatedEntityType: 'portal_invitation',
-          relatedEntityId: invitation?.id,
-        }).catch(() => undefined);
-      } else if (parsed.data.deliveryChannel === 'SMS' && normPhone && deps.sendSms) {
-        const smsBody = `Portal invite from ${client.name}: ${link}`;
-        await deps
-          .sendSms({ to: normPhone, body: smsBody })
-          .catch((err: unknown) => logger.error({ err }, 'portal invite sms failed'));
-        await recordOutbound({
-          db: deps.db,
-          firmId: session.firmId,
-          clientId: client.id,
-          channel: 'SMS',
-          body: smsBody,
-          relatedEntityType: 'portal_invitation',
-          relatedEntityId: invitation?.id,
-        }).catch(() => undefined);
+      if (result.deduped) {
+        res.status(200).json({ ok: true, deduped: true, identityId: result.identityId });
+        return;
       }
-
-      await emitAudit(deps.db, {
-        action: 'CREATE',
-        entityType: 'portal_invitation',
-        entityId: invitation?.id,
-        actorAppUserId: session.appUserId,
-        after: {
-          clientId: client.id,
-          deliveryChannel: parsed.data.deliveryChannel,
-          role: parsed.data.role,
-        },
-        ip: clientIp(req),
-        userAgent: req.header('user-agent') ?? null,
-      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-
-      res.status(201).json({ ok: true, invitationId: invitation?.id, expiresAt });
+      res
+        .status(201)
+        .json({ ok: true, invitationId: result.invitationId, expiresAt: result.expiresAt });
     },
   );
 
@@ -798,32 +614,6 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
   );
 
   return router;
-}
-
-async function notifyExisting(
-  deps: PortalInviteDeps,
-  args: z.infer<typeof InviteSchema>,
-  clientName: string,
-): Promise<void> {
-  const subject = `You've been added to ${clientName} in your portal`;
-  const body = `You now have access to ${clientName}. Sign in to the portal to view and pay invoices.`;
-  // Best-effort delivery, but log failures so a missing invite is diagnosable
-  // (don't swallow silently). channel only — no recipient PII in the log.
-  if (args.deliveryChannel === 'EMAIL' && args.email && deps.sendEmail) {
-    await deps
-      .sendEmail({ to: args.email, subject, body })
-      .catch((err: unknown) =>
-        logger.warn({ err, channel: 'EMAIL' }, 'portal invite notification failed'),
-      );
-  } else if (args.deliveryChannel === 'SMS' && args.phone && deps.sendSms) {
-    const normPhone = normalizePhone(args.phone);
-    if (normPhone)
-      await deps
-        .sendSms({ to: normPhone, body })
-        .catch((err: unknown) =>
-          logger.warn({ err, channel: 'SMS' }, 'portal invite notification failed'),
-        );
-  }
 }
 
 function clientIp(req: Request): string {

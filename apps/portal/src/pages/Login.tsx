@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
 import { useState, type FormEvent } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { AuthLayout, Button, Input, tokens } from '@vibe/ui';
 
@@ -82,6 +82,12 @@ function CombinedLogin(): JSX.Element {
               ? 'Email me a link'
               : 'Text me a code'}
         </Button>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, textAlign: 'center', margin: 0 }}>
+          Don&apos;t have access yet?{' '}
+          <Link to="/auth/request-access" style={{ color: tokens.color.accent }}>
+            Request access
+          </Link>
+        </p>
       </form>
     </AuthLayout>
   );

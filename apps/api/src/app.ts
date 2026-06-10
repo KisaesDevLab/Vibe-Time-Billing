@@ -121,6 +121,8 @@ import { createCpaChargeWebhookRouter } from './webhooks/cpacharge';
 import { createNotificationWebhookRouter } from './webhooks/notifications';
 import { createWebhookRouter } from './webhooks/outbound';
 import { createPortalInviteRouter } from './portal-invites/routes';
+import { createPortalAccessRequestRouter } from './portal-access-requests/routes';
+import { createPortalAccessRequestPublicRouter } from './portal-access-requests/public-routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
@@ -849,6 +851,13 @@ export function createApp(deps: AppDeps): Express {
     staffSecret: config.STAFF_JWT_SECRET,
   });
   app.use('/api/portal/auth', portalRouter);
+
+  // PUBLIC self-service access request — unauthenticated, rate-limited,
+  // enumeration-safe. Sits alongside the portal auth surface (no session).
+  app.use(
+    '/api/portal/access-request',
+    createPortalAccessRequestPublicRouter({ db: deps.db, redis: deps.redis }),
+  );
 
   const portalInvoiceRouter = createPortalInvoiceRouter({
     db: deps.db,
@@ -1622,6 +1631,21 @@ export function createApp(deps: AppDeps): Express {
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/portal-invites', auth.requireAuth, auth.requireCsrf, portalInviteRouter);
+
+  // Self-service portal access requests — staff review/approve under Approvals.
+  const portalAccessRequestRouter = createPortalAccessRequestRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    sendSms: deps.sendPortalSms,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
+  app.use(
+    '/api/staff/portal-access-requests',
+    auth.requireAuth,
+    auth.requireCsrf,
+    portalAccessRequestRouter,
+  );
 
   const webhookRouter = createWebhookRouter({
     db: deps.db,

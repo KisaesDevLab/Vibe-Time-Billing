@@ -974,3 +974,54 @@ export async function acceptInvitation(
 //    add `primary_phone_verification_due_at` and a background job that
 //    nullifies primary_phone_verified_at when the due date passes.
 // =====================================================================
+
+// =====================================================================
+// TABLE: portal_access_request (0143)
+//
+// Self-service portal-access requests. One row per (person, client) the
+// matched person is a contact of — each independently approvable under
+// Approvals. id_value is the display-only verification id (last-4 SSN or
+// entity EIN) the visitor entered; staff eyeball it to decide.
+// =====================================================================
+
+export const portalAccessRequest = pgTable(
+  'portal_access_request',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    // Groups the fan-out rows created from one portal submission.
+    submissionId: uuid('submission_id').notNull(),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
+      onDelete: 'set null',
+    }),
+    submittedEmail: text('submitted_email'),
+    submittedPhone: text('submitted_phone'),
+    idType: text('id_type', { enum: ['SSN_LAST4', 'EIN'] }).notNull(),
+    idValue: text('id_value').notNull(),
+    status: text('status', { enum: ['PENDING', 'APPROVED', 'DENIED'] })
+      .notNull()
+      .default('PENDING'),
+    decidedBy: uuid('decided_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmStatusIdx: index('portal_access_request_firm_status_idx').on(t.firmId, t.status),
+    personIdx: index('portal_access_request_person_idx').on(t.personId),
+    clientIdx: index('portal_access_request_client_idx').on(t.clientId),
+    submissionIdx: index('portal_access_request_submission_idx').on(t.submissionId),
+    // At most one PENDING request per (person, client).
+    pendingUk: uniqueIndex('portal_access_request_pending_uk')
+      .on(t.personId, t.clientId)
+      .where(sql`status = 'PENDING'`),
+  }),
+);

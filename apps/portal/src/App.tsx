@@ -22,6 +22,7 @@ import { ImpersonatePage } from './pages/Impersonate';
 import { PortalInvoicesPage } from './pages/Invoices';
 import { LettersPage } from './pages/Letters';
 import { LoginPage } from './pages/Login';
+import { RequestAccessPage } from './pages/RequestAccess';
 import { MessagesPage } from './pages/Messages';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
@@ -79,6 +80,7 @@ function PortalRoutes(): JSX.Element {
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
         <Route path="/auth/verify" element={<LoginPage />} />
+        <Route path="/auth/request-access" element={<RequestAccessPage />} />
         <Route path="/auth/impersonate" element={<ImpersonatePage />} />
         <Route path="/auth/accept" element={<AcceptInvitationPage />} />
         <Route path="/p/:token" element={<ProposalPage />} />
