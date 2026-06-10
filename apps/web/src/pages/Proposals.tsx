@@ -97,6 +97,37 @@ function td(): React.CSSProperties {
   return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
 }
 
+// ── Session-persisted view state ────────────────────────────────────
+// Survives navigation + reload within the browser session. Sets are
+// serialized as arrays.
+const STORAGE_KEY = 'vibe.proposals.view';
+
+interface PersistedView {
+  sortCol: string;
+  sortDir: SortDir;
+  status: string[];
+  client: string[];
+  creator: string[];
+}
+
+const DEFAULT_VIEW: PersistedView = {
+  sortCol: 'updated',
+  sortDir: 'desc',
+  status: [],
+  client: [],
+  creator: [],
+};
+
+function loadView(): PersistedView {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_VIEW;
+    return { ...DEFAULT_VIEW, ...(JSON.parse(raw) as Partial<PersistedView>) };
+  } catch {
+    return DEFAULT_VIEW;
+  }
+}
+
 export function ProposalsListPage(): JSX.Element {
   const [items, setItems] = useState<ProposalRow[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -105,13 +136,33 @@ export function ProposalsListPage(): JSX.Element {
   const [q, setQ] = useState('');
 
   // Engagements-style: per-column filter sets + a single active sort.
+  // Hydrated from sessionStorage so the view survives reload/navigation.
+  const initial = useMemo(() => loadView(), []);
   const [sortBy, setSortBy] = useState<{ col: string; dir: SortDir }>({
-    col: 'updated',
-    dir: 'desc',
+    col: initial.sortCol,
+    dir: initial.sortDir,
   });
-  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
-  const [clientFilter, setClientFilter] = useState<Set<string>>(new Set());
-  const [creatorFilter, setCreatorFilter] = useState<Set<string>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(initial.status));
+  const [clientFilter, setClientFilter] = useState<Set<string>>(new Set(initial.client));
+  const [creatorFilter, setCreatorFilter] = useState<Set<string>>(new Set(initial.creator));
+
+  // Persist selections for the session whenever any change.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          sortCol: sortBy.col,
+          sortDir: sortBy.dir,
+          status: Array.from(statusFilter),
+          client: Array.from(clientFilter),
+          creator: Array.from(creatorFilter),
+        } satisfies PersistedView),
+      );
+    } catch {
+      /* storage unavailable (private mode) — in-memory only */
+    }
+  }, [sortBy, statusFilter, clientFilter, creatorFilter]);
 
   async function load(): Promise<void> {
     // Load all proposals; filtering/sorting happens client-side (≤500 rows).
