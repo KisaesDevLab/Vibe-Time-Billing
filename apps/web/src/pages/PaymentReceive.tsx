@@ -368,6 +368,27 @@ function Inner({
     }));
   }
 
+  // Spread the amount entered across the outstanding invoices, oldest
+  // first (the list is returned oldest-first), filling each up to its open
+  // balance. Selects the invoices that receive an allocation and clears the
+  // rest, so the result is a clean from-scratch distribution.
+  function autoAllocate(): void {
+    let remaining = dollarsToCents(amountDollars);
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const inv of outstanding) {
+        const cur = next[inv.id] ?? { invoiceId: inv.id, amountDollars: '', selected: false };
+        const take = Math.min(Math.max(0, remaining), inv.openCents);
+        remaining -= take;
+        next[inv.id] =
+          take > 0
+            ? { ...cur, selected: true, amountDollars: centsToDollarsInput(take) }
+            : { ...cur, selected: false, amountDollars: '' };
+      }
+      return next;
+    });
+  }
+
   function addEntity(id: string): void {
     if (!id || id === payerClientId || includedClientIds.includes(id)) return;
     setIncludedClientIds((prev) => [...prev, id]);
@@ -714,19 +735,29 @@ function Inner({
             placeholder="0.00"
           />
           {(totalEntered > 0 || totalCreditApplied > 0) && (
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8 }}>
-              {totalEntered > 0 && (
-                <>
-                  Payment: {dollars(totalAllocated)} allocated
-                  {totalCreditApplied > 0 && ` · Credit: ${dollars(totalCreditApplied)}`}
-                </>
-              )}
-              {totalEntered === 0 && totalCreditApplied > 0 && (
-                <>Credit only: {dollars(totalCreditApplied)} applied</>
+            <div
+              style={{
+                fontSize: 12,
+                marginTop: 8,
+                display: 'grid',
+                gap: 2,
+                borderTop: `1px solid ${tokens.color.border}`,
+                paddingTop: 6,
+              }}
+            >
+              <SummaryRow label="Received" value={dollars(totalEntered)} />
+              <SummaryRow label="Allocated" value={dollars(totalAllocated)} />
+              {totalCreditApplied > 0 && (
+                <SummaryRow label="Credit applied" value={dollars(totalCreditApplied)} />
               )}
               {unallocated > 0 && (
-                <div style={{ color: tokens.color.warning, marginTop: 4 }}>
+                <div style={{ color: tokens.color.warning, marginTop: 2 }}>
                   {dollars(unallocated)} surplus → becomes a credit on submit
+                </div>
+              )}
+              {totalAllocated > totalEntered && (
+                <div style={{ color: tokens.color.danger, marginTop: 2 }}>
+                  Allocated exceeds received by {dollars(totalAllocated - totalEntered)}.
                 </div>
               )}
             </div>
@@ -823,7 +854,20 @@ function Inner({
       )}
 
       {outstanding.length > 0 && (
-        <Card title="Outstanding transactions">
+        <Card
+          title="Outstanding transactions"
+          action={
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={autoAllocate}
+              disabled={totalEntered <= 0}
+              title="Spread the amount received across these invoices, oldest first"
+            >
+              Auto-allocate
+            </Button>
+          }
+        >
           <Table<OutstandingInvoice>
             columns={[
               {
@@ -1099,6 +1143,15 @@ function Inner({
 // (jsx-a11y/label-has-associated-control wants real text inside <label>,
 // not just a nested element tree).
 // ---------------------------------------------------------------------
+
+function SummaryRow({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+      <span style={{ color: tokens.color.textMuted }}>{label}</span>
+      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+    </div>
+  );
+}
 
 function ModeRadio({
   checked,
