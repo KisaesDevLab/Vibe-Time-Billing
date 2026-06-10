@@ -45,6 +45,8 @@ import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
 import { SavedReportsPage } from './SavedReports';
 import { ServicesCatalogPage } from './ServicesCatalog';
+import { SignatureDocTemplatesPage } from './SignatureDocTemplates';
+import { SignaturePageRulesPage } from './SignaturePageRules';
 import { PackagesPage } from './Packages';
 import { PaymentMethodsPage } from './PaymentMethods';
 import { TaxPaymentCatalogPage } from './TaxPaymentCatalog';
@@ -178,6 +180,22 @@ const GROUPS: Group[] = [
     label: 'Scheduling',
     tabs: [
       { key: 'appointment-types', label: 'Appointment types', href: '/admin/appointment-types' },
+    ],
+  },
+  {
+    key: 'signatures',
+    label: 'Signatures',
+    tabs: [
+      {
+        key: 'signature-page-rules',
+        label: 'Signature page rules',
+        href: '/admin/signature-page-rules',
+      },
+      {
+        key: 'signature-documents',
+        label: 'Signature documents',
+        href: '/admin/signature-documents',
+      },
     ],
   },
   {
@@ -352,6 +370,8 @@ export function AdminLayout(): JSX.Element {
         <Route path="storage/conflicts" element={<StorageConflictsListPage />} />
         <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />
         <Route path="cloudflare-tunnel" element={<CloudflareTunnelPage />} />
+        <Route path="signature-page-rules" element={<SignaturePageRulesPage />} />
+        <Route path="signature-documents" element={<SignatureDocTemplatesPage />} />
         <Route path="kb" element={<KnowledgeBaseAdminPage />} />
       </Routes>
     </div>
