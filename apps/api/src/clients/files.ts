@@ -40,6 +40,7 @@ import { storage as coreStorage } from '@vibe/core';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { resolveClientFolders } from './folder-templates';
 
 export interface FileRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -223,12 +224,20 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
         .from(files)
         .where(and(eq(files.clientFolderId, folder.clientFolderId), isNull(files.deletedAt)))
         .orderBy(asc(files.subfolderPath), asc(files.originalFilename));
+      // Virtual folder skeleton from the client's (or firm default) template —
+      // shown in the Explorer even when empty.
+      const templateFolders = await resolveClientFolders(
+        deps.db,
+        session.firmId,
+        req.params['id']!,
+      ).catch(() => []);
       res.json({
         items: rows,
         clientFolderId: folder.clientFolderId,
         storagePath: folder.storagePath,
         status: folder.status,
         lastSyncedAt: folder.lastSyncedAt,
+        templateFolders,
       });
     },
   );

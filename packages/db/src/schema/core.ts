@@ -1008,6 +1008,10 @@ export const clients = pgTable(
     // folder names. See FILE_MANAGER_ADDENDUM.md §3.1.
     taxSoftwareId: text('tax_software_id'),
     taxSoftwareKind: text('tax_software_kind'),
+    // 0142 — per-client folder-structure template (NULL → firm default).
+    // Plain column (no Drizzle ref) to avoid a schema import cycle; the FK is
+    // enforced in SQL (migration 0142).
+    folderTemplateId: uuid('folder_template_id'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

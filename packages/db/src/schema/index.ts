@@ -8,3 +8,4 @@ export * from './signatures';
 export * from './calendar';
 export * from './booking';
 export * from './filer';
+export * from './folder-templates';

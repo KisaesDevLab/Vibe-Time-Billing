@@ -77,6 +77,7 @@ import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createSignaturesRouter } from './signatures/routes';
 import { createSignatureConfigRouter } from './signatures/admin-config-routes';
+import { createFolderTemplateRouter } from './clients/folder-template-routes';
 import { createCalendarAdminRouter } from './calendar/admin-routes';
 import { createCalendarConnectRouter } from './calendar/connect-routes';
 import { createCalendarMatchRouter } from './calendar/match-routes';
@@ -593,6 +594,18 @@ export function createApp(deps: AppDeps): Express {
     auth.requireAuth,
     auth.requireCsrf,
     signatureConfigRouter,
+  );
+
+  // Client folder-structure templates (firm config + per-client assignment).
+  const folderTemplateRouter = createFolderTemplateRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/folder-templates',
+    auth.requireAuth,
+    auth.requireCsrf,
+    folderTemplateRouter,
   );
 
   // 0109 — Calendar Integration: firm admin OAuth app registration.
