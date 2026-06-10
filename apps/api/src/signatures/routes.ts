@@ -15,6 +15,7 @@
 // status reconciliation (P7) live in sibling files.
 
 import express, { type Request, type Response, type Router } from 'express';
+import QRCode from 'qrcode';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 
@@ -24,6 +25,7 @@ import {
   clientPortalAccess,
   clients,
   engagements,
+  firms,
   signatureEvents,
   signatureFieldPlacements,
   signaturePlacementProfiles,
@@ -38,6 +40,8 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
+import { buildQrSheetHtml } from '../pdf-templates/signature-qr-sheet';
+import { renderHtmlToPdf } from '../pdf/render';
 import { signerSigningUrl, type SignerMailer } from './notify';
 import { reconcileSignatureRequestByDocument } from './reconcile';
 import {
@@ -981,6 +985,67 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
       } catch {
         res.status(404).json({ error: 'source_unavailable' });
       }
+    },
+  );
+
+  // GET /:id/qr-sheet.pdf — printable one-page-per-signer QR sheet for
+  // in-office signing. Each card carries a QR pointing at that signer's public
+  // OpenSign guest link, generated server-side and embedded as a data-URL so
+  // the sheet renders through the shared Puppeteer pipeline.
+  router.get(
+    '/:id/qr-sheet.pdf',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (request.status !== 'sent' && request.status !== 'partially_signed') {
+        res.status(409).json({ error: 'not_sent' });
+        return;
+      }
+      const opensign = getOpenSign();
+      if (!opensign || !request.opensignDocumentId) {
+        res.status(409).json({ error: 'not_sent' });
+        return;
+      }
+      const signers = await deps.db
+        .select()
+        .from(signatureSigners)
+        .where(eq(signatureSigners.requestId, request.id))
+        .orderBy(signatureSigners.order);
+      const sheetSigners: Array<{ name: string; qrDataUrl: string }> = [];
+      for (const s of signers) {
+        if (!s.opensignSignerId) continue;
+        const url = signerSigningUrl(
+          opensign.publicUrl,
+          request.opensignDocumentId,
+          s.opensignSignerId,
+        );
+        const qrDataUrl = await QRCode.toDataURL(url, { margin: 1, width: 256 });
+        sheetSigners.push({ name: s.name, qrDataUrl });
+      }
+      const [firm] = await deps.db
+        .select({ name: firms.name })
+        .from(firms)
+        .where(eq(firms.id, firmId))
+        .limit(1);
+      const html = buildQrSheetHtml({
+        firmName: firm?.name,
+        documentTitle: request.title,
+        signers: sheetSigners,
+      });
+      const pdf = await renderHtmlToPdf(html);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="signature-qr.pdf"');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send(pdf);
     },
   );
 

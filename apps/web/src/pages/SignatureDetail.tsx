@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import QRCode from 'qrcode';
 import { Button, Card, Combobox, Pill, Table, tokens, type TableColumn } from '@vibe/ui';
 
 import { api, getCsrfToken, type ApiError } from '../api-client';
@@ -23,6 +24,7 @@ interface Signer {
   order: number;
   status: string;
   signedAt: string | null;
+  signingUrl?: string | null;
 }
 interface Placement {
   id: string;
@@ -51,6 +53,7 @@ interface RequestDetail {
   id: string;
   title: string;
   status: string;
+  signingMode: string;
   formType: string | null;
   sourceFileKey: string | null;
   pageGeometry: PageGeometry[] | null;
@@ -109,6 +112,14 @@ export function SignatureDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [profileId, setProfileId] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [inOfficeOpen, setInOfficeOpen] = useState(false);
+  // Per-signer identity attestation for the 8879 in-office path:
+  // signerId -> { idType, verified }.
+  const [idVerify, setIdVerify] = useState<Record<string, { idType: string; verified: boolean }>>(
+    {},
+  );
+  const [qrSigner, setQrSigner] = useState<Signer | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -130,6 +141,21 @@ export function SignatureDetailPage(): JSX.Element {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Render the selected signer's QR when the Show-QR modal opens.
+  useEffect(() => {
+    let cancelled = false;
+    if (!qrSigner?.signingUrl) {
+      setQrDataUrl(null);
+      return;
+    }
+    void QRCode.toDataURL(qrSigner.signingUrl, { margin: 1, width: 224 }).then((url) => {
+      if (!cancelled) setQrDataUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [qrSigner]);
 
   if (loading || !data) {
     return (
@@ -192,6 +218,48 @@ export function SignatureDetailPage(): JSX.Element {
     }
   }
 
+  async function startInOffice(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const body: {
+        inPerson: true;
+        identityVerifications?: Array<{ signerId: string; idType: string }>;
+      } = {
+        inPerson: true,
+      };
+      if (request.formType === '8879') {
+        body.identityVerifications = signers.map((s) => ({
+          signerId: s.id,
+          idType: idVerify[s.id]?.idType ?? '',
+        }));
+      }
+      await api(`/api/staff/signatures/${id}/send`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setInOfficeOpen(false);
+      await load();
+    } catch (err) {
+      setError(messageFor(err as ApiError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshStatus(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/signatures/${id}/refresh`, { method: 'POST' });
+      await load();
+    } catch (err) {
+      setError(messageFor(err as ApiError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function discard(): Promise<void> {
     if (!window.confirm('Discard this draft? This cannot be undone.')) return;
     setBusy(true);
@@ -220,6 +288,24 @@ export function SignatureDetailPage(): JSX.Element {
 
   const isTerminal = ['completed', 'declined', 'expired', 'voided'].includes(request.status);
   const canVoid = !isTerminal && request.status !== 'draft';
+
+  const isLive = request.status === 'sent' || request.status === 'partially_signed';
+  const showInOfficeCard = isLive && request.signingMode === 'in_person';
+  const requiresIdAttestation = request.formType === '8879';
+  const inOfficeReady =
+    !requiresIdAttestation ||
+    signers.every((s) => {
+      const v = idVerify[s.id];
+      return Boolean(v?.idType) && v?.verified === true;
+    });
+  const idTypeOptions = [
+    { value: '', label: 'Select ID type…' },
+    { value: 'drivers_license', label: 'Driver’s license' },
+    { value: 'state_id', label: 'State ID' },
+    { value: 'passport', label: 'Passport' },
+    { value: 'military_id', label: 'Military ID' },
+    { value: 'other', label: 'Other' },
+  ];
 
   const signerCols: TableColumn<Signer>[] = [
     { key: 'name', header: 'Name', render: (s) => s.name },
@@ -307,6 +393,65 @@ export function SignatureDetailPage(): JSX.Element {
         <Table columns={signerCols} rows={signers} rowKey={(s) => s.id} empty="No signers." />
       </Card>
 
+      {showInOfficeCard && (
+        <Card
+          title="In-office signing"
+          action={
+            canWrite ? (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button
+                  variant="secondary"
+                  onClick={() => window.open(`/api/staff/signatures/${id}/qr-sheet.pdf`, '_blank')}
+                >
+                  Print QR sheet
+                </Button>
+                <Button variant="ghost" onClick={() => void refreshStatus()} disabled={busy}>
+                  Refresh status
+                </Button>
+              </div>
+            ) : undefined
+          }
+        >
+          <div style={{ display: 'grid', gap: tokens.space.sm }}>
+            <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
+              The signer(s) must be physically present. Hand each person their device or scan their
+              QR.
+            </div>
+            {signers.map((s) => {
+              const signed = s.status === 'signed';
+              return (
+                <div
+                  key={s.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    paddingBottom: 8,
+                    borderBottom: `1px solid ${tokens.color.border}`,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <span style={{ fontWeight: 600, minWidth: 160 }}>{s.name}</span>
+                  <Pill tone={statusTone(s.status)}>{statusLabel(s.status)}</Pill>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                    <Button
+                      variant="secondary"
+                      onClick={() => window.open(s.signingUrl ?? '', '_blank')}
+                      disabled={!canWrite || !s.signingUrl || signed}
+                    >
+                      Sign now
+                    </Button>
+                    <Button variant="ghost" onClick={() => setQrSigner(s)} disabled={!s.signingUrl}>
+                      Show QR
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       {isDraft && canWrite && (
         <Card title="Prepare & send">
           <div style={{ display: 'grid', gap: tokens.space.md }}>
@@ -376,9 +521,18 @@ export function SignatureDetailPage(): JSX.Element {
                   <Button variant="danger" onClick={() => void discard()} disabled={busy}>
                     Discard draft
                   </Button>
-                  <Button onClick={() => void send()} disabled={busy || placements.length === 0}>
-                    {busy ? 'Sending…' : 'Send for signature'}
-                  </Button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setInOfficeOpen(true)}
+                      disabled={busy || placements.length === 0}
+                    >
+                      Set up in-office signing
+                    </Button>
+                    <Button onClick={() => void send()} disabled={busy || placements.length === 0}>
+                      {busy ? 'Sending…' : 'Send for signature'}
+                    </Button>
+                  </div>
                 </div>
               </>
             )}
@@ -472,9 +626,163 @@ export function SignatureDetailPage(): JSX.Element {
           </div>
         </div>
       )}
+
+      {inOfficeOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Set up in-office signing"
+          style={modalBackdrop}
+        >
+          <div style={{ ...modalPanel, width: 'min(560px, 95vw)' }}>
+            <div style={modalHeader}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: tokens.color.text }}>
+                Set up in-office signing
+              </div>
+              <Button variant="ghost" onClick={() => setInOfficeOpen(false)}>
+                Close
+              </Button>
+            </div>
+            <div style={{ padding: tokens.space.md, display: 'grid', gap: tokens.space.md }}>
+              <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                The signer(s) must be physically present. No email is sent.
+              </div>
+              {requiresIdAttestation && (
+                <div style={{ display: 'grid', gap: tokens.space.sm }}>
+                  {signers.map((s) => {
+                    const v = idVerify[s.id] ?? { idType: '', verified: false };
+                    return (
+                      <div
+                        key={s.id}
+                        style={{
+                          display: 'grid',
+                          gap: 6,
+                          paddingBottom: 8,
+                          borderBottom: `1px solid ${tokens.color.border}`,
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{s.name}</div>
+                        <Combobox
+                          options={idTypeOptions}
+                          value={v.idType}
+                          onChange={(idType) =>
+                            setIdVerify((prev) => ({
+                              ...prev,
+                              [s.id]: { idType, verified: prev[s.id]?.verified ?? false },
+                            }))
+                          }
+                          ariaLabel={`ID type for ${s.name}`}
+                        />
+                        <label
+                          style={{
+                            display: 'flex',
+                            gap: 8,
+                            alignItems: 'center',
+                            fontSize: 13,
+                            color: tokens.color.text,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={v.verified}
+                            onChange={(e) =>
+                              setIdVerify((prev) => ({
+                                ...prev,
+                                [s.id]: {
+                                  idType: prev[s.id]?.idType ?? '',
+                                  verified: e.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          I verified this person’s government photo ID in person.
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {error && <div style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</div>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <Button variant="ghost" onClick={() => setInOfficeOpen(false)} disabled={busy}>
+                  Cancel
+                </Button>
+                <Button onClick={() => void startInOffice()} disabled={busy || !inOfficeReady}>
+                  {busy ? 'Starting…' : 'Start in-office signing'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {qrSigner && (
+        <div role="dialog" aria-modal="true" aria-label="Signer QR code" style={modalBackdrop}>
+          <div style={{ ...modalPanel, width: 'min(320px, 95vw)' }}>
+            <div style={modalHeader}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: tokens.color.text }}>
+                {qrSigner.name}
+              </div>
+              <Button variant="ghost" onClick={() => setQrSigner(null)}>
+                Close
+              </Button>
+            </div>
+            <div
+              style={{
+                padding: tokens.space.md,
+                display: 'grid',
+                gap: tokens.space.sm,
+                justifyItems: 'center',
+              }}
+            >
+              {qrDataUrl ? (
+                <img
+                  src={qrDataUrl}
+                  alt={`QR code for ${qrSigner.name}`}
+                  width={224}
+                  height={224}
+                />
+              ) : (
+                <div style={{ color: tokens.color.textMuted, fontSize: 13 }}>Generating…</div>
+              )}
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, textAlign: 'center' }}>
+                Scan with your phone camera to review and sign.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+const modalBackdrop: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0,0,0,0.55)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+  padding: tokens.space.lg,
+};
+
+const modalPanel: React.CSSProperties = {
+  background: tokens.color.surface,
+  borderRadius: 8,
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  boxShadow: '0 10px 40px rgba(0,0,0,0.4)',
+};
+
+const modalHeader: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: `${tokens.space.sm}px ${tokens.space.md}px`,
+  borderBottom: `1px solid ${tokens.color.border}`,
+};
 
 function Meta({ label, value }: { label: string; value: string }): JSX.Element {
   return (
