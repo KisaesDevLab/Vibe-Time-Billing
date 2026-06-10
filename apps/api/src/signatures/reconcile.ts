@@ -24,7 +24,12 @@ import { signatureEvents, signatureRequests, signatureSigners } from '@vibe/db/s
 import type { StorageClient } from '@vibe/storage';
 
 import type { OpenSignClient, ParseDoc } from '../esign/opensign-client';
+import { fileExistingObjectIntoClientFolder } from '../clients/file-existing';
 import { notifySigner, signerSigningUrl, type SignerMailer } from './notify';
+
+// Subfolder the signed package is auto-filed into when the request was
+// assembled from a tax return.
+const SIGNED_RETURN_SUBFOLDER = 'Tax Returns';
 
 export interface ReconcileDeps {
   db: Database;
@@ -103,12 +108,14 @@ export async function reconcileSignatureRequestByDocument(
   // OpenSign never gets our storage creds — we pull the bytes and write
   // them to our own bucket.
   let signedKey: string | null = null;
+  let signedSize = 0;
   let certKey: string | null = null;
   if (completed) {
     const url = doc.SignedUrl ?? doc.CertificateUrl;
     if (url) {
       const pdf = await deps.client.fetchPdfUrl(url);
       signedKey = signedFileKey(request.firmId, request.id);
+      signedSize = Buffer.isBuffer(pdf.body) ? pdf.body.length : Buffer.byteLength(pdf.body);
       await deps.storage.put(signedKey, pdf.body, { contentType: pdf.contentType });
     }
     // Audit certificate (signer IP, signed date/time, document hash, event
@@ -202,6 +209,51 @@ export async function reconcileSignatureRequestByDocument(
           next.opensignSignerId,
         ),
       });
+    }
+  }
+
+  // Auto-file the signed package into the client's Tax Returns folder when
+  // this request was assembled from a tax return. Runs once — reconcile
+  // short-circuits on an already-terminal request, so only the transition to
+  // 'completed' reaches here. Best-effort: a filing failure (e.g. the client
+  // folder isn't bound) is recorded but never undoes completion.
+  if (
+    advancedStatus === 'completed' &&
+    signedKey &&
+    request.taxReturnId &&
+    request.clientId &&
+    request.createdBy
+  ) {
+    try {
+      const filed = await fileExistingObjectIntoClientFolder(db, deps.storage, {
+        firmId: request.firmId,
+        clientId: request.clientId,
+        actorId: request.createdBy,
+        subfolderPath: SIGNED_RETURN_SUBFOLDER,
+        originalFilename: `${request.title} (signed).pdf`,
+        sourceKey: signedKey,
+        mimeType: 'application/pdf',
+        sizeBytes: signedSize,
+        source: 'signature',
+      });
+      await db.insert(signatureEvents).values({
+        requestId: request.id,
+        actor: 'system',
+        event: filed.ok ? 'signed_filed' : 'signed_file_skipped',
+        detail: filed.ok
+          ? { fileId: filed.fileId, taxReturnId: request.taxReturnId }
+          : { reason: filed.code, taxReturnId: request.taxReturnId },
+      });
+    } catch (err) {
+      await db
+        .insert(signatureEvents)
+        .values({
+          requestId: request.id,
+          actor: 'system',
+          event: 'signed_file_skipped',
+          detail: { reason: String(err) },
+        })
+        .catch(() => undefined);
     }
   }
 

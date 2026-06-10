@@ -48,7 +48,25 @@ export type SendOutcome =
   | { kind: 'not_draft'; status: string }
   | { kind: 'no_source' }
   | { kind: 'kba_required'; formType: string }
+  | { kind: 'identity_required'; missing: string[] }
   | { kind: 'invalid'; errors: ValidationError[] };
+
+export interface IdentityVerification {
+  signerId: string;
+  /** Government photo ID type the ERO inspected in person (Pub 1345). */
+  idType: string;
+}
+
+export interface SendArgs {
+  requestId: string;
+  firmId: string;
+  actor: string;
+  /** In-office signing: suppress signer email; with an identity attestation
+   *  it satisfies IRS in-person ID verification and bypasses the KBA gate. */
+  inPerson?: boolean;
+  /** Per-signer in-person ID attestation (required for KBA forms in-person). */
+  identityVerifications?: IdentityVerification[];
+}
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -66,7 +84,7 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
  */
 export async function sendSignatureRequest(
   deps: SendDeps,
-  args: { requestId: string; firmId: string; actor: string },
+  args: SendArgs,
   now: Date = new Date(),
 ): Promise<SendOutcome> {
   const { db } = deps;
@@ -79,17 +97,24 @@ export async function sendSignatureRequest(
   if (!request || request.firmId !== args.firmId) return { kind: 'not_found' };
   if (request.status !== 'draft') return { kind: 'not_draft', status: request.status };
   if (!request.sourceFileKey) return { kind: 'no_source' };
-  // IRS §8 — a KBA-gated form (individual 1040 8879) cannot go out the
-  // entity path. No KBA flow is wired yet, so block it outright.
-  if (formRequiresKba(request.formType)) {
-    return { kind: 'kba_required', formType: request.formType! };
-  }
 
   const signers = await db
     .select()
     .from(signatureSigners)
     .where(eq(signatureSigners.requestId, request.id))
     .orderBy(signatureSigners.order);
+
+  // KBA gate. A KBA-gated form (individual 1040 8879) cannot go out remotely
+  // (no KBA flow). In-person it's allowed when the ERO has attested to
+  // verifying each signer's government photo ID (IRS Pub 1345).
+  const idBySigner = new Map(
+    (args.identityVerifications ?? []).map((v) => [v.signerId, (v.idType ?? '').trim()]),
+  );
+  if (formRequiresKba(request.formType)) {
+    if (!args.inPerson) return { kind: 'kba_required', formType: request.formType! };
+    const missing = signers.filter((s) => !idBySigner.get(s.id)).map((s) => s.id);
+    if (missing.length > 0) return { kind: 'identity_required', missing };
+  }
   const placements = await db
     .select()
     .from(signatureFieldPlacements)
@@ -166,6 +191,7 @@ export async function sendSignatureRequest(
       .set({
         opensignDocumentId: created.opensignDocumentId,
         status: 'sent',
+        signingMode: args.inPerson ? 'in_person' : 'remote',
         sentAt: now,
         expiresAt,
         updatedAt: now,
@@ -186,15 +212,41 @@ export async function sendSignatureRequest(
       requestId: request.id,
       actor: args.actor,
       event: 'sent',
-      detail: { opensignDocumentId: created.opensignDocumentId, signers: signers.length },
+      detail: {
+        opensignDocumentId: created.opensignDocumentId,
+        signers: signers.length,
+        signingMode: args.inPerson ? 'in_person' : 'remote',
+      },
     });
+
+    // In-person ID attestation — one append-only audit row per signer the
+    // ERO verified (Pub 1345). No ID numbers are stored.
+    if (args.inPerson) {
+      for (const s of signers) {
+        const idType = idBySigner.get(s.id);
+        if (idType) {
+          await tx.insert(signatureEvents).values({
+            requestId: request.id,
+            actor: args.actor,
+            event: 'identity_verified',
+            detail: {
+              signerId: s.id,
+              signerName: s.name,
+              idType,
+              method: 'in_person_photo_id',
+            },
+          });
+        }
+      }
+    }
   });
 
   // Notify signers of their signing link (OpenSign sends nothing itself).
   // Parallel → all at once; sequential → only the first, the rest are
   // notified from reconcile as each completes. Best-effort: a mail failure
-  // never undoes the committed send.
-  if (deps.sendEmail) {
+  // never undoes the committed send. In-person sends email NOTHING — the
+  // client is in the office and signs on a device / via the QR sheet.
+  if (deps.sendEmail && !args.inPerson) {
     const urlBySigner = new Map(created.signers.map((s) => [s.signerId, s.signingUrl]));
     const toNotify = request.sendInOrder ? signers.slice(0, 1) : signers;
     let notified = 0;

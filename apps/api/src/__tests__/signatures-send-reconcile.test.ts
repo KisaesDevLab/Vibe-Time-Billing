@@ -438,3 +438,92 @@ describe('signatures send + reconcile (phase 6+7)', () => {
     expect(dl.headers['content-disposition']).toContain('attachment');
   });
 });
+
+describe('in-person (in-office) signing', () => {
+  // Build an 8879 (KBA-gated) draft with one signer + a placement.
+  async function prepared8879(app: express.Express, role = 'taxpayer'): Promise<string> {
+    const create = await request(app)
+      .post('/api/staff/signatures')
+      .send({
+        title: 'Form 8879',
+        formType: '8879',
+        clientId: seed.clientId,
+        signers: [{ name: 'Pat Taxpayer', email: 'pat@co.example', role }],
+      });
+    const id = create.body.id as string;
+    await request(app)
+      .post(`/api/staff/signatures/${id}/source`)
+      .set('Content-Type', 'application/pdf')
+      .send(await onePagePdf());
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerIds = (detail.body.signers as { id: string }[]).map((s) => s.id);
+    await request(app)
+      .put(`/api/staff/signatures/${id}/placements`)
+      .send({
+        placements: signerIds.map((sid) => ({
+          signerId: sid,
+          fieldType: 'signature',
+          pageNumber: 1,
+          nx: 0.1,
+          ny: 0.7,
+          nw: 0.3,
+          nh: 0.05,
+        })),
+      });
+    return id;
+  }
+
+  it('in-person engagement letter: no email, signing_mode in_person, exposes signingUrl', async () => {
+    const mailbox: SentMail[] = [];
+    const app = buildApp(mockClient(), memStorage(), mailbox);
+    const { id } = await preparedRequest(app);
+
+    const send = await request(app)
+      .post(`/api/staff/signatures/${id}/send`)
+      .send({ inPerson: true });
+    expect(send.status).toBe(200);
+    expect(mailbox).toHaveLength(0); // in-person sends no email
+
+    const [row] = await harness.db
+      .select()
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id));
+    expect(row!.signingMode).toBe('in_person');
+
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    expect(detail.body.signers[0].signingUrl).toContain('/load/recipientSignPdf/doc_sent_1/');
+  });
+
+  it('8879 in-person without attestation → identity_required; remote → kba_required', async () => {
+    const app = buildApp(mockClient(), memStorage());
+    const remoteId = await prepared8879(app);
+    const remote = await request(app).post(`/api/staff/signatures/${remoteId}/send`);
+    expect(remote.status).toBe(409);
+    expect(remote.body.error).toBe('kba_required');
+
+    const inPersonId = await prepared8879(app);
+    const noAttest = await request(app)
+      .post(`/api/staff/signatures/${inPersonId}/send`)
+      .send({ inPerson: true });
+    expect(noAttest.status).toBe(400);
+    expect(noAttest.body.error).toBe('identity_required');
+  });
+
+  it('8879 in-person WITH attestation → sent, KBA bypassed, identity_verified recorded', async () => {
+    const app = buildApp(mockClient(), memStorage());
+    const id = await prepared8879(app);
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerId = detail.body.signers[0].id as string;
+
+    const send = await request(app)
+      .post(`/api/staff/signatures/${id}/send`)
+      .send({ inPerson: true, identityVerifications: [{ signerId, idType: "Driver's license" }] });
+    expect(send.status).toBe(200);
+
+    const events = await request(app).get(`/api/staff/signatures/${id}`);
+    const hasAttestation = (events.body.events as { event: string }[]).some(
+      (e) => e.event === 'identity_verified',
+    );
+    expect(hasAttestation).toBe(true);
+  });
+});

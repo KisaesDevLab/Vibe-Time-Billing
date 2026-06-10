@@ -29,6 +29,7 @@ import {
   signaturePlacementProfiles,
   signatureRequests,
   signatureSigners,
+  taxReturns,
 } from '@vibe/db/schema';
 
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
@@ -37,7 +38,8 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
-import type { SignerMailer } from './notify';
+import { signerSigningUrl, type SignerMailer } from './notify';
+import { reconcileSignatureRequestByDocument } from './reconcile';
 import {
   applyProfile,
   listLatestProfiles,
@@ -576,7 +578,36 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
           .limit(1);
         client = c ?? null;
       }
-      res.json({ request, signers, placements, events, engagement, client });
+      // Resolve the linked tax return (if assembled from one).
+      let taxReturn: { id: string; title: string } | null = null;
+      if (request.taxReturnId) {
+        const [tr] = await deps.db
+          .select({ id: taxReturns.id, title: taxReturns.title })
+          .from(taxReturns)
+          .where(and(eq(taxReturns.id, request.taxReturnId), eq(taxReturns.firmId, firmId)))
+          .limit(1);
+        taxReturn = tr ?? null;
+      }
+      // Per-signer in-office signing URL (a public OpenSign guest link) once
+      // the request is out and each signer has an OpenSign contact id.
+      const publicUrl = getOpenSign()?.publicUrl ?? '';
+      const live = request.status === 'sent' || request.status === 'partially_signed';
+      const signersOut = signers.map((s) => ({
+        ...s,
+        signingUrl:
+          live && publicUrl && request.opensignDocumentId && s.opensignSignerId
+            ? signerSigningUrl(publicUrl, request.opensignDocumentId, s.opensignSignerId)
+            : null,
+      }));
+      res.json({
+        request,
+        signers: signersOut,
+        placements,
+        events,
+        engagement,
+        client,
+        taxReturn,
+      });
     },
   );
 
@@ -1085,6 +1116,15 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         res.status(503).json({ error: 'opensign_not_configured' });
         return;
       }
+      const body = (req.body ?? {}) as {
+        inPerson?: boolean;
+        identityVerifications?: Array<{ signerId?: string; idType?: string }>;
+      };
+      const identityVerifications = Array.isArray(body.identityVerifications)
+        ? body.identityVerifications
+            .filter((v) => typeof v?.signerId === 'string' && typeof v?.idType === 'string')
+            .map((v) => ({ signerId: v.signerId!, idType: v.idType! }))
+        : undefined;
       let outcome;
       try {
         outcome = await sendSignatureRequest(
@@ -1095,7 +1135,13 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             expiresInDays: deps.expiresInDays,
             sendEmail: deps.sendEmail,
           },
-          { requestId: req.params['id']!, firmId, actor },
+          {
+            requestId: req.params['id']!,
+            firmId,
+            actor,
+            inPerson: body.inPerson === true,
+            identityVerifications,
+          },
         );
       } catch (err) {
         // OpenSign create failed AFTER validation but BEFORE any local
@@ -1120,6 +1166,9 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         case 'kba_required':
           res.status(409).json({ error: 'kba_required', formType: outcome.formType });
           return;
+        case 'identity_required':
+          res.status(400).json({ error: 'identity_required', missing: outcome.missing });
+          return;
         case 'invalid':
           res.status(422).json({ error: 'invalid_placements', errors: outcome.errors });
           return;
@@ -1136,6 +1185,52 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
           });
           res.json({ ok: true, opensignDocumentId: outcome.opensignDocumentId });
           return;
+      }
+    },
+  );
+
+  // POST /:id/refresh — force an immediate OpenSign reconcile (in-office staff
+  // need instant "Signed ✓" rather than waiting for the ~2-min poll).
+  router.post(
+    '/:id/refresh',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!request.opensignDocumentId) {
+        res.json({ status: request.status, reconciled: false });
+        return;
+      }
+      const storage = getStorage();
+      const client = getOpenSign();
+      if (!storage || !client) {
+        res.status(503).json({ error: 'opensign_not_configured' });
+        return;
+      }
+      try {
+        const outcome = await reconcileSignatureRequestByDocument(
+          { db: deps.db, client, storage },
+          request.opensignDocumentId,
+        );
+        const [fresh] = await deps.db
+          .select({ status: signatureRequests.status })
+          .from(signatureRequests)
+          .where(eq(signatureRequests.id, request.id))
+          .limit(1);
+        res.json({
+          status: fresh?.status ?? request.status,
+          reconciled: outcome.kind === 'updated',
+        });
+      } catch {
+        res.status(502).json({ error: 'reconcile_failed' });
       }
     },
   );
