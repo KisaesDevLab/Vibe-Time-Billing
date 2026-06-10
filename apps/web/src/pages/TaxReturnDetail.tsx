@@ -545,6 +545,7 @@ function CollectSignaturesDialog({
   const [checkedBookmarks, setCheckedBookmarks] = useState<Set<number>>(new Set());
   const [checkedTemplates, setCheckedTemplates] = useState<Set<string>>(new Set());
   const [filingStatus, setFilingStatus] = useState<'single' | 'mfj'>('single');
+  const [showBookmarks, setShowBookmarks] = useState(false);
 
   const [people, setPeople] = useState<SigPerson[]>([]);
   const [picked, setPicked] = useState<PickedSigner[]>([]);
@@ -617,6 +618,42 @@ function CollectSignaturesDialog({
       else next.add(n);
       return next;
     });
+  }
+  function renderBookmarkList(bookmarks: DetectBookmark[]): JSX.Element {
+    return (
+      <div
+        style={{
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.sm,
+          padding: 8,
+          maxHeight: 220,
+          overflowY: 'auto',
+        }}
+      >
+        {bookmarks.map((b, i) => (
+          <label
+            key={`${b.pageNumber}-${i}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '4px 0',
+              paddingLeft: 8 + Math.min(b.depth, 4) * 14,
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={checkedBookmarks.has(b.pageNumber)}
+              onChange={() => toggleBookmark(b.pageNumber)}
+            />
+            <span style={{ flex: 1 }}>{b.title}</span>
+            <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>p.{b.pageNumber}</span>
+          </label>
+        ))}
+      </div>
+    );
   }
   function toggleTemplate(id: string): void {
     setCheckedTemplates((prev) => {
@@ -790,86 +827,73 @@ function CollectSignaturesDialog({
                       ? ' Pick the signature page(s) from the bookmark list below, or proceed with documents.'
                       : ' You can still proceed with documents below.'}
                   </div>
-                  {(detect.allBookmarks?.length ?? 0) > 0 && (
-                    <div
-                      style={{
-                        border: `1px solid ${tokens.color.border}`,
-                        borderRadius: tokens.radius.sm,
-                        padding: 8,
-                        maxHeight: 220,
-                        overflowY: 'auto',
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: tokens.color.textMuted,
-                          textTransform: 'uppercase',
-                          marginBottom: 4,
-                        }}
-                      >
-                        Bookmarks in this PDF
-                      </div>
-                      {detect.allBookmarks.map((b, i) => (
-                        <label
-                          key={`${b.pageNumber}-${i}`}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '4px 0',
-                            paddingLeft: 8 + Math.min(b.depth, 4) * 14,
-                            fontSize: 13,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checkedBookmarks.has(b.pageNumber)}
-                            onChange={() => toggleBookmark(b.pageNumber)}
-                          />
-                          <span style={{ flex: 1 }}>{b.title}</span>
-                          <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
-                            p.{b.pageNumber}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
+                  {(detect.allBookmarks?.length ?? 0) > 0 &&
+                    renderBookmarkList(detect.allBookmarks)}
                 </>
               ) : (
-                <div
-                  style={{
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    padding: 8,
-                    maxHeight: 180,
-                    overflowY: 'auto',
-                  }}
-                >
-                  {detect.pages.map((p) => (
-                    <label
-                      key={p.pageNumber}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        padding: '4px 0',
-                        fontSize: 13,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checkedPages.has(p.pageNumber)}
-                        onChange={() => togglePage(p.pageNumber)}
-                      />
-                      <span style={{ flex: 1 }}>
-                        p.{p.pageNumber} — {p.bookmarkTitle}
-                      </span>
-                    </label>
-                  ))}
-                </div>
+                <>
+                  <div
+                    style={{
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      padding: 8,
+                      maxHeight: 180,
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {detect.pages.map((p) => (
+                      <label
+                        key={p.pageNumber}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '4px 0',
+                          fontSize: 13,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checkedPages.has(p.pageNumber)}
+                          onChange={() => togglePage(p.pageNumber)}
+                        />
+                        <span style={{ flex: 1 }}>
+                          p.{p.pageNumber} — {p.bookmarkTitle}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {/* Optional: add pages the rules missed, from the full bookmark list. */}
+                  {(() => {
+                    const detectedPageSet = new Set(detect.pages.map((p) => p.pageNumber));
+                    const extra = (detect.allBookmarks ?? []).filter(
+                      (b) => !detectedPageSet.has(b.pageNumber),
+                    );
+                    if (extra.length === 0) return null;
+                    return (
+                      <div style={{ marginTop: 8 }}>
+                        <button
+                          type="button"
+                          onClick={() => setShowBookmarks((v) => !v)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: tokens.color.accent,
+                            fontSize: 12,
+                            cursor: 'pointer',
+                            padding: 0,
+                          }}
+                        >
+                          {showBookmarks ? '▾ Hide bookmarks' : '＋ Add a page from bookmarks'}
+                        </button>
+                        {showBookmarks && (
+                          <div style={{ marginTop: 6 }}>{renderBookmarkList(extra)}</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
 
