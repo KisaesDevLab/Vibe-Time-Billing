@@ -72,6 +72,12 @@ export async function createCardPresentIntent(
     customerId?: string;
     /** Save the tapped card for later (recurring) use → generated_card. */
     saveForFutureUse?: boolean;
+    /**
+     * 'manual' (default) — firm reviews before capture (admin/terminal).
+     * 'automatic' — capture on tap, no separate step (the /payments/new
+     * "collect and done" flow that auto-polls to a recorded receipt).
+     */
+    captureMethod?: 'manual' | 'automatic';
     metadata?: Record<string, string>;
     idempotencyKey?: string;
   },
@@ -80,8 +86,7 @@ export async function createCardPresentIntent(
     amount: String(input.amountCents),
     currency: input.currency ?? 'usd',
     'payment_method_types[0]': 'card_present',
-    // Review before money moves; capture (or adjust) happens after the tap.
-    capture_method: 'manual',
+    capture_method: input.captureMethod ?? 'manual',
   };
   if (input.customerId) params['customer'] = input.customerId;
   if (input.saveForFutureUse) {

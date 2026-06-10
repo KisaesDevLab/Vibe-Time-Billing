@@ -6,13 +6,15 @@
 // the reader, and capture/cancel. Reader results arrive via webhooks.
 
 import express, { type Router } from 'express';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
 import {
+  clients,
   firmSettingsProposals,
   invoices,
+  paymentReceipts,
   payments,
   terminalLocations,
   terminalReaders,
@@ -59,6 +61,18 @@ const CollectSchema = z.object({
   saveCard: z.boolean().optional(),
 });
 const PiSchema = z.object({ paymentIntentId: z.string().min(1).max(120) });
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const CollectReceiptSchema = z.object({
+  readerId: z.string().uuid(),
+  payerClientId: z.string().uuid(),
+  paymentDate: z.string().regex(DATE_RE),
+  reference: z.string().max(200).nullable().optional(),
+  allocations: z
+    .array(z.object({ invoiceId: z.string().uuid(), amountCents: z.number().int().positive() }))
+    .min(1)
+    .max(100),
+});
 
 export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
   const router = express.Router();
@@ -225,6 +239,105 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
     }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
     // 200 = acknowledgement only; the UI confirms via reader webhooks.
     res.json({ paymentIntentId: pi.id, actionStatus });
+  });
+
+  // Collect a multi-invoice payment in person, producing the SAME grouped
+  // payment_receipt the manual/card flows create (so print/email receipt
+  // work). Auto-capture on tap; the existing payment_intent.succeeded
+  // webhook materializes the receipt. The UI polls /payments/receive/:id.
+  router.post('/collect-receipt', requirePermission(deps, 'payment:write'), async (req, res) => {
+    const session = req.staffSession!;
+    const parsed = CollectReceiptSchema.safeParse(req.body);
+    if (!parsed.success) return void res.status(400).json({ error: 'invalid_payload' });
+    const c = await conn(session.firmId);
+    if (!c) return void res.status(409).json({ error: 'stripe_not_connected' });
+    const db = deps.db!;
+
+    const [reader] = await db
+      .select({ stripeReaderId: terminalReaders.stripeReaderId })
+      .from(terminalReaders)
+      .where(
+        and(
+          eq(terminalReaders.id, parsed.data.readerId),
+          eq(terminalReaders.firmId, session.firmId),
+        ),
+      )
+      .limit(1);
+    if (!reader) return void res.status(404).json({ error: 'reader_not_found' });
+
+    const [payer] = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.id, parsed.data.payerClientId), eq(clients.firmId, session.firmId)))
+      .limit(1);
+    if (!payer) return void res.status(404).json({ error: 'client_not_found' });
+
+    // Every targeted invoice must belong to the firm.
+    const invoiceIds = [...new Set(parsed.data.allocations.map((a) => a.invoiceId))];
+    const found = await db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(inArray(invoices.id, invoiceIds), eq(invoices.firmId, session.firmId)));
+    if (found.length !== invoiceIds.length) {
+      return void res.status(404).json({ error: 'invoice_not_found' });
+    }
+    const totalCents = parsed.data.allocations.reduce((s, a) => s + a.amountCents, 0);
+
+    // PENDING receipt holding the allocations; materialized by the webhook.
+    const [receipt] = await db
+      .insert(paymentReceipts)
+      .values({
+        firmId: session.firmId,
+        payerClientId: parsed.data.payerClientId,
+        paymentDate: parsed.data.paymentDate,
+        reference: parsed.data.reference ?? null,
+        paymentMethod: 'CARD_PRESENT',
+        mode: 'CHARGE',
+        totalCents,
+        provider: 'STRIPE',
+        status: 'PENDING',
+        allocationsPending: parsed.data.allocations,
+        createdById: session.appUserId,
+      })
+      .returning({ id: paymentReceipts.id });
+    if (!receipt) return void res.status(500).json({ error: 'receipt_insert_failed' });
+
+    const pi = await createCardPresentIntent(c, {
+      amountCents: totalCents,
+      captureMethod: 'automatic',
+      metadata: { receipt_id: receipt.id, firm_id: session.firmId },
+      idempotencyKey: `cpr-${receipt.id}`,
+    });
+    await db
+      .update(paymentReceipts)
+      .set({ providerChargeId: pi.id, updatedAt: new Date() })
+      .where(eq(paymentReceipts.id, receipt.id));
+
+    let actionStatus = 'in_progress';
+    try {
+      const r = await processPaymentIntent(c, {
+        readerId: reader.stripeReaderId,
+        paymentIntentId: pi.id,
+      });
+      actionStatus = r.actionStatus;
+    } catch (err) {
+      logger.error({ err, pi: pi.id }, 'terminal collect-receipt process failed');
+      // Abandon the receipt so it isn't left dangling.
+      await db
+        .update(paymentReceipts)
+        .set({ status: 'VOIDED', updatedAt: new Date() })
+        .where(eq(paymentReceipts.id, receipt.id))
+        .catch(() => undefined);
+      return void res.status(502).json({ error: 'reader_process_failed', paymentIntentId: pi.id });
+    }
+    await emitAudit(db, {
+      action: 'PAYMENT',
+      entityType: 'payment_receipt',
+      entityId: receipt.id,
+      actorAppUserId: session.appUserId,
+      after: { channel: 'terminal', paymentIntentId: pi.id, totalCents },
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.json({ receiptId: receipt.id, paymentIntentId: pi.id, actionStatus });
   });
 
   router.post('/capture', requirePermission(deps, 'payment:write'), async (req, res) => {

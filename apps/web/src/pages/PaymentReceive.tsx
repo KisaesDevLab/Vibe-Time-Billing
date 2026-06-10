@@ -28,7 +28,13 @@ import { api } from '../api-client';
 // Types
 // ---------------------------------------------------------------------
 
-type Mode = 'RECORD' | 'CHARGE';
+type Mode = 'RECORD' | 'CHARGE' | 'TERMINAL';
+
+interface TerminalReader {
+  id: string;
+  label: string;
+  status: string;
+}
 // Loosened from a closed union in 0089 — paymentMethod is now an
 // UPPER_SNAKE key sourced from /admin/payment-method-types. The two
 // synthetic protocol values (CARD_STRIPE, CREDIT_APPLY) are kept
@@ -205,6 +211,16 @@ function Inner({
     banner: boolean;
   } | null>(null);
 
+  // TERMINAL (in-person reader) flow state.
+  const [readers, setReaders] = useState<TerminalReader[]>([]);
+  const [readerId, setReaderId] = useState('');
+  const [terminalPending, setTerminalPending] = useState<{
+    receiptId: string;
+    paymentIntentId: string;
+  } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const terminalAvailable = config.stripeEnabled && readers.length > 0;
+
   // Cache the payer + any selected entities so the Combobox always has labels.
   const allSelectedIds = useMemo(
     () => (payerClientId ? [payerClientId, ...includedClientIds] : []),
@@ -222,6 +238,23 @@ function Inner({
       }
     })();
   }, []);
+
+  // Terminal readers — only when Stripe is connected. Drives the in-person
+  // "Terminal" mode (hidden when no readers are provisioned).
+  useEffect(() => {
+    if (!config.stripeEnabled) return;
+    void api<{ readers: TerminalReader[] }>('/api/staff/terminal/readers')
+      .then((r) => setReaders(r.readers ?? []))
+      .catch(() => undefined);
+  }, [config.stripeEnabled]);
+
+  // Stop polling on unmount.
+  useEffect(
+    () => () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    },
+    [],
+  );
 
   // 0089 — pull the firm's payment-method catalog. Falls back to the
   // four built-ins (CHECK/CASH/ACH_MANUAL/OTHER) if the endpoint is
@@ -646,6 +679,81 @@ function Inner({
     }
   }
 
+  // ---- TERMINAL (in-person reader) ----
+  function pollReceipt(receiptId: string): void {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => {
+      void api<{ receipt: { status: string } | null }>(`/api/staff/payments/receive/${receiptId}`)
+        .then((r) => {
+          const status = r.receipt?.status;
+          if (!status || status === 'PENDING') return;
+          if (pollRef.current) clearInterval(pollRef.current);
+          if (status === 'SUCCEEDED') {
+            setRecorded({
+              receiptId,
+              clientName: payerName(),
+              amountCents: dollarsToCents(amountDollars),
+              banner: false,
+            });
+          } else {
+            setError('The card was declined or cancelled on the reader.');
+          }
+          setTerminalPending(null);
+        })
+        .catch(() => undefined);
+    }, 2500);
+  }
+
+  async function startTerminal(): Promise<void> {
+    setError(null);
+    const v = validate(false);
+    if (!v.ok) {
+      setError(v.reason);
+      return;
+    }
+    if (v.creditApplications.length > 0) {
+      setError('Credit applications are only available in Record mode.');
+      return;
+    }
+    if (!readerId) {
+      setError('Pick a card reader.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api<{ receiptId: string; paymentIntentId: string }>(
+        '/api/staff/terminal/collect-receipt',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            readerId,
+            payerClientId,
+            paymentDate,
+            reference: reference.trim() || null,
+            allocations: v.allocations,
+          }),
+        },
+      );
+      setTerminalPending({ receiptId: r.receiptId, paymentIntentId: r.paymentIntentId });
+      pollReceipt(r.receiptId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'terminal_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelTerminal(): Promise<void> {
+    if (!terminalPending) return;
+    if (pollRef.current) clearInterval(pollRef.current);
+    const pi = terminalPending.paymentIntentId;
+    setTerminalPending(null);
+    await api('/api/staff/terminal/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ paymentIntentId: pi }),
+    }).catch(() => undefined);
+  }
+
   // ---- Mode change resets the method ----
   useEffect(() => {
     if (mode === 'CHARGE') setPaymentMethod('CARD_STRIPE');
@@ -784,6 +892,42 @@ function Inner({
                   : 'Stripe + credit card processing must be enabled in firm settings.'
               }
             />
+            {terminalAvailable && (
+              <ModeRadio
+                checked={mode === 'TERMINAL'}
+                onChange={() => setMode('TERMINAL')}
+                label="In-person terminal"
+                hint="Tap or insert a card on a connected reader."
+              />
+            )}
+
+            {mode === 'TERMINAL' && (
+              <div>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Card reader
+                </div>
+                <select
+                  value={readerId}
+                  onChange={(e) => setReaderId(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: tokens.radius.md,
+                    border: `1px solid ${tokens.color.border}`,
+                    background: tokens.color.surface,
+                    color: tokens.color.text,
+                    fontSize: 13,
+                  }}
+                >
+                  <option value="">— pick a reader —</option>
+                  {readers.map((rd) => (
+                    <option key={rd.id} value={rd.id}>
+                      {rd.label} ({rd.status})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Input
@@ -1227,11 +1371,26 @@ function Inner({
         </Card>
       )}
 
+      {mode === 'TERMINAL' && terminalPending && (
+        <Card title="Waiting for the card reader">
+          <p style={{ fontSize: 13, margin: 0 }}>
+            Sent {dollars(totalEntered)} to the reader — ask the client to tap, insert, or swipe
+            their card. This screen updates automatically when the payment completes.
+          </p>
+        </Card>
+      )}
+
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <Button variant="ghost" onClick={() => navigate('/ar')} disabled={busy}>
-          Cancel
-        </Button>
-        {mode === 'RECORD' ? (
+        {mode === 'TERMINAL' && terminalPending ? (
+          <Button variant="danger" onClick={() => void cancelTerminal()}>
+            Cancel charge
+          </Button>
+        ) : (
+          <Button variant="ghost" onClick={() => navigate('/ar')} disabled={busy}>
+            Cancel
+          </Button>
+        )}
+        {mode === 'RECORD' && (
           <>
             <Button onClick={() => void submitRecord(false)} disabled={busy}>
               {busy
@@ -1249,12 +1408,16 @@ function Inner({
               Record + New
             </Button>
           </>
-        ) : (
-          !chargeReceipt && (
-            <Button onClick={() => void startCharge()} disabled={busy || !chargeAvailable}>
-              {busy ? 'Preparing charge…' : `Charge ${dollars(totalEntered)}`}
-            </Button>
-          )
+        )}
+        {mode === 'CHARGE' && !chargeReceipt && (
+          <Button onClick={() => void startCharge()} disabled={busy || !chargeAvailable}>
+            {busy ? 'Preparing charge…' : `Charge ${dollars(totalEntered)}`}
+          </Button>
+        )}
+        {mode === 'TERMINAL' && !terminalPending && (
+          <Button onClick={() => void startTerminal()} disabled={busy || !readerId}>
+            {busy ? 'Sending…' : `Send ${dollars(totalEntered)} to reader`}
+          </Button>
         )}
       </div>
     </div>
