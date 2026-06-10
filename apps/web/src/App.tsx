@@ -34,7 +34,6 @@ import { ProposalEditorPage } from './pages/ProposalEditor';
 import { ProposalPreviewPage } from './pages/ProposalPreview';
 import { SignaturesPage } from './pages/Signatures';
 import { SignatureDetailPage } from './pages/SignatureDetail';
-import { CalendarUnmatchedPage } from './pages/CalendarUnmatched';
 import { MyCalendarPage } from './pages/MyCalendar';
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 import { InvoiceDetailPage } from './pages/InvoiceDetail';
@@ -107,7 +106,10 @@ export function App(): JSX.Element {
                   <Route path="/signatures" element={<SignaturesPage />} />
                   <Route path="/signatures/:id" element={<SignatureDetailPage />} />
                   <Route path="/calendar/mine" element={<MyCalendarPage />} />
-                  <Route path="/calendar/unmatched" element={<CalendarUnmatchedPage />} />
+                  <Route
+                    path="/calendar/unmatched"
+                    element={<Navigate to="/appointments#review" replace />}
+                  />
                   <Route path="/time" element={<TimeEntryPage />} />
                   <Route path="/tasks" element={<TasksPage />} />
                   <Route path="/billing/*" element={<BillingBatchesPage />} />
@@ -222,7 +224,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       adminRateRead,
   };
   const [teamUnread, setTeamUnread] = useState(0);
-  const [calUnmatched, setCalUnmatched] = useState(0);
   const [notifUnread, setNotifUnread] = useState(0);
   useEffect(() => {
     let alive = true;
@@ -230,11 +231,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       void api<{ unread: number }>('/api/staff/internal-messaging/unread-count')
         .then((r) => {
           if (alive) setTeamUnread(r.unread);
-        })
-        .catch(() => undefined);
-      void api<{ count: number }>('/api/staff/calendar/unmatched/count')
-        .then((r) => {
-          if (alive) setCalUnmatched(r.count);
         })
         .catch(() => undefined);
       void api<{ count: number }>('/api/staff/notifications/unread-count')
@@ -314,14 +310,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/calendar/mine',
           icon: '📆',
           active: location.pathname.startsWith('/calendar/mine'),
-          show: can.appointments,
-        },
-        {
-          section: 'Work',
-          label: calUnmatched > 0 ? `Calendar review (${calUnmatched})` : 'Calendar review',
-          href: '/calendar/unmatched',
-          icon: '🗓',
-          active: location.pathname.startsWith('/calendar/unmatched'),
           show: can.appointments,
         },
         {

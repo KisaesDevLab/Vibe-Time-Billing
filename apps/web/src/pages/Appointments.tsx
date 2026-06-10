@@ -16,6 +16,7 @@ import {
   type ReminderStep,
 } from '../components/ReminderScheduleEditor';
 import { BookingSettingsEditor } from './BookingSettingsEditor';
+import { CalendarUnmatchedPage } from './CalendarUnmatched';
 
 type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
 const LOC_LABEL: Record<LocationType, string> = {
@@ -194,7 +195,7 @@ function StaffAvatarStack({ staff }: { staff: { id: string; name: string }[] }):
   );
 }
 
-const TABS = ['list', 'book', 'inbox', 'availability'] as const;
+const TABS = ['list', 'book', 'inbox', 'availability', 'review'] as const;
 type TabKey = (typeof TABS)[number];
 
 function hashTab(): TabKey {
@@ -205,6 +206,7 @@ function hashTab(): TabKey {
 export function AppointmentsPage(): JSX.Element {
   const [tab, setTab] = useState<TabKey>(hashTab());
   const [inboxCount, setInboxCount] = useState(0);
+  const [reviewCount, setReviewCount] = useState(0);
 
   useEffect(() => {
     const onHash = (): void => setTab(hashTab());
@@ -216,6 +218,9 @@ export function AppointmentsPage(): JSX.Element {
     const poll = (): void => {
       void api<{ count: number }>('/api/staff/appointments/reschedule-requests/count')
         .then((r) => alive && setInboxCount(r.count))
+        .catch(() => undefined);
+      void api<{ count: number }>('/api/staff/calendar/unmatched/count')
+        .then((r) => alive && setReviewCount(r.count))
         .catch(() => undefined);
     };
     poll();
@@ -247,6 +252,11 @@ export function AppointmentsPage(): JSX.Element {
             badge: inboxCount > 0 ? <Pill tone="danger">{inboxCount}</Pill> : undefined,
           },
           { key: 'availability', label: 'Availability' },
+          {
+            key: 'review',
+            label: 'Calendar review',
+            badge: reviewCount > 0 ? <Pill tone="warning">{reviewCount}</Pill> : undefined,
+          },
         ]}
         active={tab}
         onChange={(k) => go(k as TabKey)}
@@ -255,6 +265,7 @@ export function AppointmentsPage(): JSX.Element {
       {tab === 'book' && <BookTab onBooked={() => go('list')} />}
       {tab === 'inbox' && <InboxTab onResolved={() => setInboxCount((c) => Math.max(0, c - 1))} />}
       {tab === 'availability' && <AvailabilityTab />}
+      {tab === 'review' && <CalendarUnmatchedPage />}
     </div>
   );
 }
@@ -400,8 +411,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-              // a JSX header is safe at runtime.
-            ) as unknown as string,
+            ) as // a JSX header is safe at runtime.
+            unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -1261,7 +1272,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setSlot(null);
     setSlots([]);
     setSlotMsg(null);
-  }, [selStaff, duration, location]);
+  }, [selStaff, duration, location, appointmentLocationId]);
 
   // Month availability (which days have any open slot) auto-loads.
   useEffect(() => {
@@ -1278,6 +1289,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       durationMinutes: String(duration),
       location,
     });
+    if (appointmentLocationId) params.set('locationId', appointmentLocationId);
     void api<{ days: Record<string, boolean> }>(`/api/staff/booking/slots/month?${params}`)
       .then((r) => {
         if (alive) setMonthAvail(r.days ?? {});
@@ -1291,7 +1303,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [selStaff, duration, viewYear, viewMonth, location]);
+  }, [selStaff, duration, viewYear, viewMonth, location, appointmentLocationId]);
 
   const loadSlots = useCallback(
     (d: string) => {
@@ -1305,6 +1317,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
         durationMinutes: String(duration),
         location,
       });
+      if (appointmentLocationId) params.set('locationId', appointmentLocationId);
       void api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${params}`)
         .then((r) => {
           if (!alive) return;
@@ -1321,7 +1334,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
         alive = false;
       };
     },
-    [selStaff, duration, location],
+    [selStaff, duration, location, appointmentLocationId],
   );
 
   // Slots auto-load when a day is selected.
