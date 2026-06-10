@@ -18,21 +18,24 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   achReturns,
+  clientContacts,
   clientPortalAccess,
   clients,
   creditApplications,
   creditMemos,
   firmSettings,
+  firms,
   invoices,
   paymentMethod,
   paymentMethodTypes,
   paymentReceipts,
   payments,
+  persons,
   portalIdentity,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
@@ -43,14 +46,24 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { methodLabel, renderPaymentReceiptHtml, type PaymentReceiptDoc } from './receipt-doc';
 
 export interface PaymentRoutesDeps extends RbacDeps {
   db: Database | null;
   stripe?: PaymentProvider | null;
   stripePublishableKey?: string | null;
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
+  /** Firm mailer (HTML + attachments) — used to email a payment receipt. */
+  sendStaffMail?: (args: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: string;
+    attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
+  }) => Promise<void>;
   portalBaseUrl?: string;
 }
 
@@ -1543,6 +1556,201 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           voided: r.voidedAt != null,
         })),
       });
+    },
+  );
+
+  // ----- Receipt document (print / email) ----------------------------
+
+  async function loadReceiptDoc(
+    db: Database,
+    firmId: string,
+    receiptId: string,
+  ): Promise<{ doc: PaymentReceiptDoc; payerClientId: string } | null> {
+    const [receipt] = await db
+      .select({
+        id: paymentReceipts.id,
+        payerClientId: paymentReceipts.payerClientId,
+        paymentDate: paymentReceipts.paymentDate,
+        paymentMethod: paymentReceipts.paymentMethod,
+        reference: paymentReceipts.reference,
+        totalCents: paymentReceipts.totalCents,
+        payerName: clients.name,
+      })
+      .from(paymentReceipts)
+      .innerJoin(clients, eq(clients.id, paymentReceipts.payerClientId))
+      .where(and(eq(paymentReceipts.id, receiptId), eq(paymentReceipts.firmId, firmId)))
+      .limit(1);
+    if (!receipt) return null;
+    const [firm] = await db
+      .select({ name: firms.name })
+      .from(firms)
+      .where(eq(firms.id, firmId))
+      .limit(1);
+    const lineRows = await db
+      .select({ invoiceNumber: invoices.invoiceNumber, amountCents: payments.amountCents })
+      .from(payments)
+      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+      .where(and(eq(payments.receiptId, receiptId), isNull(payments.voidedAt)))
+      .orderBy(asc(invoices.invoiceNumber));
+    const paymentDate =
+      typeof receipt.paymentDate === 'string'
+        ? receipt.paymentDate
+        : new Date(receipt.paymentDate as unknown as Date).toISOString().slice(0, 10);
+    return {
+      payerClientId: receipt.payerClientId,
+      doc: {
+        firmName: firm?.name ?? 'Your firm',
+        receiptId: receipt.id,
+        paymentDate,
+        methodLabel: methodLabel(receipt.paymentMethod),
+        reference: receipt.reference,
+        payerName: receipt.payerName,
+        totalCents: Number(receipt.totalCents),
+        lines: lineRows.map((l) => ({
+          invoiceNumber: l.invoiceNumber,
+          amountCents: Number(l.amountCents),
+        })),
+      },
+    };
+  }
+
+  async function renderReceiptDoc(
+    req: Request,
+    res: Response,
+    format: 'html' | 'pdf',
+  ): Promise<void> {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.status(503).send('db_unavailable');
+      return;
+    }
+    const loaded = await loadReceiptDoc(deps.db, session.firmId, req.params['receiptId']!);
+    if (!loaded) {
+      res.status(404).send('not_found');
+      return;
+    }
+    const html = renderPaymentReceiptHtml(loaded.doc);
+    if (format === 'html') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+    try {
+      const { renderHtmlToPdf } = await import('../pdf/render');
+      const pdf = await renderHtmlToPdf(html);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="receipt-${loaded.doc.receiptId}.pdf"`,
+      );
+      res.send(pdf);
+    } catch (err) {
+      logger.warn(
+        { err, receiptId: loaded.doc.receiptId },
+        'receipt PDF render failed; serving HTML',
+      );
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    }
+  }
+
+  router.get(
+    '/receipt/:receiptId/print.html',
+    requirePermission(deps, 'payment:read'),
+    (req, res) => renderReceiptDoc(req, res, 'html'),
+  );
+  router.get('/receipt/:receiptId/print.pdf', requirePermission(deps, 'payment:read'), (req, res) =>
+    renderReceiptDoc(req, res, 'pdf'),
+  );
+
+  // Email the receipt to the payer client's billing contact (falling back
+  // to the primary contact). Attaches the PDF when renderable.
+  router.post(
+    '/receipt/:receiptId/email',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail) {
+        res.status(503).json({ error: 'mail_not_configured' });
+        return;
+      }
+      const loaded = await loadReceiptDoc(deps.db, session.firmId, req.params['receiptId']!);
+      if (!loaded) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Billing contact first, then primary.
+      const [contact] = await deps.db
+        .select({
+          email: persons.email,
+          name: persons.fullName,
+          isBilling: clientContacts.isBilling,
+        })
+        .from(clientContacts)
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
+        .where(
+          and(
+            eq(clientContacts.clientId, loaded.payerClientId),
+            or(eq(clientContacts.isBilling, true), eq(clientContacts.isPrimary, true)),
+            sql`${persons.email} IS NOT NULL`,
+          ),
+        )
+        .orderBy(desc(clientContacts.isBilling))
+        .limit(1);
+      if (!contact?.email) {
+        res.status(422).json({ error: 'no_billing_contact_email' });
+        return;
+      }
+      const html = renderPaymentReceiptHtml(loaded.doc);
+      let attachments:
+        | Array<{ filename: string; content: Buffer; contentType?: string }>
+        | undefined;
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        const pdf = await renderHtmlToPdf(html);
+        attachments = [
+          {
+            filename: `receipt-${loaded.doc.receiptId.slice(0, 8)}.pdf`,
+            content: pdf,
+            contentType: 'application/pdf',
+          },
+        ];
+      } catch (err) {
+        logger.warn({ err }, 'receipt PDF for email failed; sending HTML body only');
+      }
+      const subject = `Payment receipt — ${loaded.doc.firmName}`;
+      const body = `Thank you for your payment of $${(loaded.doc.totalCents / 100).toFixed(2)} received ${loaded.doc.paymentDate}. Your receipt is ${attachments ? 'attached' : 'below'}.`;
+      try {
+        await deps.sendStaffMail({ to: contact.email, subject, body, html, attachments });
+      } catch (err) {
+        logger.error({ err, receiptId: loaded.doc.receiptId }, 'receipt email send failed');
+        res.status(502).json({ error: 'send_failed' });
+        return;
+      }
+      await recordOutbound({
+        db: deps.db,
+        firmId: session.firmId,
+        clientId: loaded.payerClientId,
+        channel: 'EMAIL',
+        subject,
+        body,
+        relatedEntityType: 'payment_receipt',
+        relatedEntityId: loaded.doc.receiptId,
+      }).catch(() => undefined);
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'payment_receipt',
+        entityId: loaded.doc.receiptId,
+        actorAppUserId: session.appUserId,
+        after: { emailed: true, to: contact.email },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, to: contact.email });
     },
   );
 

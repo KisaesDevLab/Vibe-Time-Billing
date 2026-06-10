@@ -7,12 +7,13 @@
 // Reports → Payments Received.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { Button, Card, ColumnFilter, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { AchReturnsPage } from './admin/AchReturns';
 
 interface Row {
   paymentId: string;
@@ -34,20 +35,10 @@ interface Row {
   canVoid: boolean;
 }
 
-interface ClientLite {
-  id: string;
-  name: string;
-}
 interface OutstandingInvoice {
   id: string;
   invoiceNumber: string;
   openCents: number;
-}
-interface MethodOpt {
-  key: string;
-  label: string;
-  active: boolean;
-  displayOrder: number;
 }
 interface Summary {
   count: number;
@@ -78,6 +69,17 @@ const STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> 
 };
 
 export function PaymentsPage(): JSX.Element {
+  const navigate = useNavigate();
+  const [tab, setTab] = useState<'payments' | 'ach'>(() =>
+    window.location.hash.replace('#', '') === 'ach-returns' ? 'ach' : 'payments',
+  );
+  useEffect(() => {
+    if (tab === 'ach' && window.location.hash !== '#ach-returns') {
+      window.history.replaceState(null, '', '#ach-returns');
+    } else if (tab === 'payments' && window.location.hash === '#ach-returns') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, [tab]);
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(today());
   const [q, setQ] = useState('');
@@ -87,21 +89,14 @@ export function PaymentsPage(): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const view = useColumnView('vibe.payments.view', { sortCol: 'date', sortDir: 'desc' });
 
-  // Drawer (create + edit + reapply + receipt drill-in)
-  const [drawer, setDrawer] = useState<'create' | 'edit' | 'reapply' | 'receipt' | null>(null);
+  // Drawer (edit + reapply + receipt drill-in). Recording a new payment
+  // happens on the full /payments/new screen.
+  const [drawer, setDrawer] = useState<'edit' | 'reapply' | 'receipt' | null>(null);
   const [editRow, setEditRow] = useState<Row | null>(null);
   const [reapplyRow, setReapplyRow] = useState<Row | null>(null);
   const [saving, setSaving] = useState(false);
   const [drawerErr, setDrawerErr] = useState<string | null>(null);
-  // create form
-  const [clients, setClients] = useState<ClientLite[]>([]);
-  const [methods, setMethods] = useState<MethodOpt[]>([]);
-  const [cClient, setCClient] = useState('');
-  const [cMethod, setCMethod] = useState('');
-  const [cAmount, setCAmount] = useState(''); // amount received
-  const [cDate, setCDate] = useState(today());
-  const [cRef, setCRef] = useState('');
-  // allocation lines (shared by create + reapply): per-invoice amount strings
+  // allocation lines (reapply): per-invoice amount strings
   const [allocLines, setAllocLines] = useState<
     { invoiceId: string; invoiceNumber: string; openCents: number; amount: string }[]
   >([]);
@@ -193,61 +188,14 @@ export function PaymentsPage(): JSX.Element {
     [rows, view],
   );
 
+  // Recording a payment now happens on the full /payments/new screen
+  // (terminal / manual / card), which also offers print + email receipt.
   function openCreate(): void {
-    setDrawer('create');
-    setDrawerErr(null);
-    setCClient('');
-    setCMethod('');
-    setCAmount('');
-    setCDate(today());
-    setCRef('');
-    setAllocLines([]);
-    if (clients.length === 0)
-      void api<{ items: ClientLite[] }>('/api/staff/clients?pageSize=200')
-        .then((r) => setClients(r.items ?? []))
-        .catch(() => undefined);
-    if (methods.length === 0)
-      void api<{ items: MethodOpt[] }>('/api/staff/admin/payment-method-types')
-        .then((r) => setMethods((r.items ?? []).filter((m) => m.active)))
-        .catch(() => undefined);
+    navigate('/payments/new');
   }
-
-  // Load the client's open invoices into allocation lines (create mode).
-  useEffect(() => {
-    if (drawer !== 'create' || !cClient) {
-      if (drawer === 'create') setAllocLines([]);
-      return;
-    }
-    void api<{ items: OutstandingInvoice[] }>(
-      `/api/staff/payments/outstanding?clientIds=${encodeURIComponent(cClient)}`,
-    )
-      .then((r) =>
-        setAllocLines(
-          (r.items ?? []).map((o) => ({
-            invoiceId: o.id,
-            invoiceNumber: o.invoiceNumber,
-            openCents: o.openCents,
-            amount: '',
-          })),
-        ),
-      )
-      .catch(() => setAllocLines([]));
-  }, [drawer, cClient]);
 
   function setLineAmount(invoiceId: string, amount: string): void {
     setAllocLines((prev) => prev.map((l) => (l.invoiceId === invoiceId ? { ...l, amount } : l)));
-  }
-
-  // Auto-allocate the received amount across open invoices, oldest first.
-  function autoAllocate(): void {
-    let remaining = Math.round(Number(cAmount) * 100) || 0;
-    setAllocLines((prev) =>
-      prev.map((l) => {
-        const take = Math.min(remaining, l.openCents);
-        remaining -= take;
-        return { ...l, amount: take > 0 ? (take / 100).toFixed(2) : '' };
-      }),
-    );
   }
 
   function openEdit(row: Row): void {
@@ -296,35 +244,6 @@ export function PaymentsPage(): JSX.Element {
       setReceiptItems(r.items);
     } catch (e) {
       setDrawerErr(e instanceof Error ? e.message : 'load_failed');
-    }
-  }
-
-  async function saveCreate(): Promise<void> {
-    setSaving(true);
-    setDrawerErr(null);
-    try {
-      const received = Math.round(Number(cAmount) * 100);
-      const allocations = allocLines
-        .filter((l) => Math.round(Number(l.amount) * 100) > 0)
-        .map((l) => ({ invoiceId: l.invoiceId, amountCents: Math.round(Number(l.amount) * 100) }));
-      if (allocations.length === 0) throw new Error('allocate to at least one invoice');
-      await api('/api/staff/payments/receive', {
-        method: 'POST',
-        body: JSON.stringify({
-          payerClientId: cClient,
-          paymentDate: cDate,
-          paymentMethod: cMethod,
-          reference: cRef || null,
-          amountReceivedCents: received,
-          allocations,
-        }),
-      });
-      setDrawer(null);
-      await load();
-    } catch (e) {
-      setDrawerErr(e instanceof Error ? e.message : 'create_failed');
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -433,472 +352,412 @@ export function PaymentsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400, alignContent: 'start' }}>
-      <SectionHeading
-        title="Payments"
-        description="Payments received — card, ACH, in-person, and manually recorded. Refunds are handled on the invoice."
-        action={
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Button size="sm" onClick={openCreate}>
-              + Record payment
-            </Button>
-            <Button size="sm" variant="ghost" onClick={exportCsv} disabled={rows.length === 0}>
-              ⤓ CSV
-            </Button>
-            <Link to="/reports/payments-received">
-              <Button size="sm" variant="ghost">
-                Full report ↗
-              </Button>
-            </Link>
-          </div>
-        }
-      />
-
-      {summary && (
-        <Card>
-          <div style={{ display: 'flex', gap: 36, flexWrap: 'wrap' }}>
-            <Stat label="Payments" value={String(summary.count)} />
-            <Stat label="Gross received" value={dollars(summary.grossCents)} />
-            <Stat label="Processing fees" value={dollars(summary.feesCents)} />
-            <Stat label="Net" value={dollars(summary.netCents)} />
-            <Stat label="Refunds" value={dollars(summary.refundsCents)} />
-            <Stat
-              label="In flight (ACH)"
-              value={String(summary.pendingCount)}
-              tone={summary.pendingCount > 0 ? tokens.color.warning : undefined}
-            />
-          </div>
-        </Card>
-      )}
-
-      <Card>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <Field label="From">
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              style={inputStyle}
-            />
-          </Field>
-          <Field label="To">
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              style={inputStyle}
-            />
-          </Field>
-          <Field label="Search">
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void load();
-              }}
-              placeholder="client or invoice #"
-              style={{ ...inputStyle, width: 200 }}
-            />
-          </Field>
-          <Button size="sm" variant="ghost" onClick={() => void load()}>
-            Apply
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setQ('');
-              setFrom(monthStart());
-              setTo(today());
-              view.clearFilters();
+      <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${tokens.color.border}` }}>
+        {(
+          [
+            ['payments', 'Payments'],
+            ['ach', 'ACH returns'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            style={{
+              padding: '8px 14px',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: `2px solid ${tab === key ? tokens.color.accent : 'transparent'}`,
+              color: tab === key ? tokens.color.text : tokens.color.textMuted,
+              fontWeight: tab === key ? 600 : 400,
+              fontSize: 14,
+              cursor: 'pointer',
             }}
           >
-            Reset
-          </Button>
-        </div>
-        {err && <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 0 }}>{err}</p>}
-      </Card>
+            {label}
+          </button>
+        ))}
+      </div>
 
-      <Card>
-        {loading ? (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
-        ) : (
-          <Table<Row>
-            columns={[
-              {
-                key: 'date',
-                header: (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    Date{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by date"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={view.sortFor('date')}
-                      onApply={(_, dir) => view.apply('date', new Set(), dir)}
-                    />
-                  </span>
-                ) as unknown as string,
-                render: (r) => new Date(r.receivedAt).toLocaleDateString(),
-              },
-              {
-                key: 'client',
-                header: (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    Client{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter / sort client"
-                      values={clientValues}
-                      selected={view.filterFor('client')}
-                      sort={view.sortFor('client')}
-                      onApply={(sel, dir) => view.apply('client', sel, dir)}
-                    />
-                  </span>
-                ) as unknown as string,
-                render: (r) => r.clientName,
-              },
-              {
-                key: 'invoice',
-                header: 'Invoice',
-                render: (r) => (
-                  <Link to={`/invoices/${r.invoiceId}`} style={{ color: tokens.color.accent }}>
-                    {r.invoiceNumber}
-                  </Link>
-                ),
-              },
-              {
-                key: 'channel',
-                header: (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    Channel{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter / sort channel"
-                      values={channelValues}
-                      selected={view.filterFor('channel')}
-                      sort={view.sortFor('channel')}
-                      searchable={false}
-                      onApply={(sel, dir) => view.apply('channel', sel, dir)}
-                    />
-                  </span>
-                ) as unknown as string,
-                render: (r) => r.channel,
-              },
-              {
-                key: 'amount',
-                header: (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    Amount{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by amount"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={view.sortFor('amount')}
-                      onApply={(_, dir) => view.apply('amount', new Set(), dir)}
-                    />
-                  </span>
-                ) as unknown as string,
-                render: (r) => dollars(r.amountCents),
-              },
-              {
-                key: 'fee',
-                header: 'Fee',
-                render: (r) => (r.feeCents ? dollars(r.feeCents) : '—'),
-              },
-              { key: 'net', header: 'Net', render: (r) => dollars(r.netCents) },
-              {
-                key: 'status',
-                header: (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    Status{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter / sort status"
-                      values={statusValues}
-                      selected={view.filterFor('status')}
-                      sort={view.sortFor('status')}
-                      searchable={false}
-                      onApply={(sel, dir) => view.apply('status', sel, dir)}
-                    />
-                  </span>
-                ) as unknown as string,
-                render: (r) =>
-                  r.voided ? (
-                    <Pill tone="neutral">VOIDED</Pill>
-                  ) : (
-                    <Pill tone={STATUS_TONE[r.status] ?? 'neutral'}>
-                      {r.status === 'PENDING' ? 'PROCESSING' : r.status.replace(/_/g, ' ')}
-                    </Pill>
-                  ),
-              },
-              {
-                key: 'refunded',
-                header: 'Refunded',
-                render: (r) => (r.refundedAmountCents ? dollars(r.refundedAmountCents) : '—'),
-              },
-              {
-                key: 'actions',
-                header: '',
-                render: (r) => (
-                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    {r.receiptId && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void openReceipt(r)}
-                        title="Show all invoices this payment was applied to"
-                      >
-                        Receipt
-                      </Button>
-                    )}
-                    {r.canEdit && (
-                      <Button size="sm" variant="ghost" onClick={() => openReapply(r)}>
-                        Re-apply
-                      </Button>
-                    )}
-                    {r.canEdit && (
-                      <Button size="sm" variant="ghost" onClick={() => openEdit(r)}>
-                        Edit
-                      </Button>
-                    )}
-                    {r.canVoid && (
-                      <Button size="sm" variant="ghost" onClick={() => void voidRow(r)}>
-                        Void
-                      </Button>
-                    )}
-                  </div>
-                ),
-              },
-            ]}
-            rows={visible}
-            rowKey={(r) => r.paymentId}
-            empty="No payments in this range."
-          />
-        )}
-      </Card>
-
-      {drawer && (
-        <Drawer
-          title={
-            drawer === 'create'
-              ? 'Record a payment'
-              : drawer === 'edit'
-                ? 'Edit payment'
-                : drawer === 'reapply'
-                  ? 'Re-apply payment'
-                  : 'Payment receipt'
-          }
-          onClose={() => {
-            setDrawer(null);
-            setEditRow(null);
-            setReapplyRow(null);
-          }}
-        >
-          {drawerErr && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{drawerErr}</p>}
-
-          {drawer === 'create' && (
-            <div style={{ display: 'grid', gap: 10 }}>
-              <Field label="Client">
-                <select
-                  value={cClient}
-                  onChange={(e) => setCClient(e.target.value)}
-                  style={inputStyle}
-                >
-                  <option value="">— pick a client —</option>
-                  {clients.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+      {tab === 'ach' ? (
+        <AchReturnsPage />
+      ) : (
+        <>
+          <SectionHeading
+            title="Payments"
+            description="Payments received — card, ACH, in-person, and manually recorded. Refunds are handled on the invoice."
+            action={
               <div style={{ display: 'flex', gap: 8 }}>
-                <Field label="Method">
-                  <select
-                    value={cMethod}
-                    onChange={(e) => setCMethod(e.target.value)}
-                    style={inputStyle}
-                  >
-                    <option value="">— method —</option>
-                    {methods.map((m) => (
-                      <option key={m.key} value={m.key}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Amount received ($)">
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={cAmount}
-                    onChange={(e) => setCAmount(e.target.value)}
-                    style={inputStyle}
-                  />
-                </Field>
-                <Field label="Date">
-                  <input
-                    type="date"
-                    value={cDate}
-                    onChange={(e) => setCDate(e.target.value)}
-                    style={inputStyle}
-                  />
-                </Field>
+                <Button size="sm" onClick={openCreate}>
+                  + Record payment
+                </Button>
+                <Button size="sm" variant="ghost" onClick={exportCsv} disabled={rows.length === 0}>
+                  ⤓ CSV
+                </Button>
+                <Link to="/reports/payments-received">
+                  <Button size="sm" variant="ghost">
+                    Full report ↗
+                  </Button>
+                </Link>
               </div>
-              <Field label="Reference (optional)">
-                <input
-                  value={cRef}
-                  onChange={(e) => setCRef(e.target.value)}
-                  style={inputStyle}
-                  placeholder="check # / memo"
-                />
-              </Field>
+            }
+          />
 
-              <div
-                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-              >
-                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                  Apply to invoices
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={autoAllocate}
-                  disabled={!cClient || !cAmount}
-                >
-                  Auto-allocate
-                </Button>
+          {summary && (
+            <Card>
+              <div style={{ display: 'flex', gap: 36, flexWrap: 'wrap' }}>
+                <Stat label="Payments" value={String(summary.count)} />
+                <Stat label="Gross received" value={dollars(summary.grossCents)} />
+                <Stat label="Processing fees" value={dollars(summary.feesCents)} />
+                <Stat label="Net" value={dollars(summary.netCents)} />
+                <Stat label="Refunds" value={dollars(summary.refundsCents)} />
+                <Stat
+                  label="In flight (ACH)"
+                  value={String(summary.pendingCount)}
+                  tone={summary.pendingCount > 0 ? tokens.color.warning : undefined}
+                />
               </div>
-              <AllocList lines={allocLines} onChange={setLineAmount} inputStyle={inputStyle} />
-              <AllocTotals
-                allocatedCents={allocTotalCents}
-                receivedCents={Math.round(Number(cAmount) * 100) || 0}
-                mode="create"
-              />
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                <Button
-                  size="sm"
-                  onClick={() => void saveCreate()}
-                  disabled={saving || !cClient || !cMethod || !cAmount || allocTotalCents === 0}
-                >
-                  {saving ? 'Recording…' : 'Record payment'}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
+            </Card>
           )}
 
-          {drawer === 'edit' && (
-            <div style={{ display: 'grid', gap: 10 }}>
-              <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-                Editing a manually-recorded payment. To change which invoices it covers, use
-                Re-apply; method/reference are set on the original receipt.
-              </p>
-              <Field label="Amount ($)">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={eAmount}
-                  onChange={(e) => setEAmount(e.target.value)}
-                  style={inputStyle}
-                />
-              </Field>
-              <Field label="Date">
+          <Card>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <Field label="From">
                 <input
                   type="date"
-                  value={eDate}
-                  onChange={(e) => setEDate(e.target.value)}
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
                   style={inputStyle}
                 />
               </Field>
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                <Button size="sm" onClick={() => void saveEdit()} disabled={saving || !eAmount}>
-                  {saving ? 'Saving…' : 'Save changes'}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {drawer === 'reapply' && reapplyRow && (
-            <div style={{ display: 'grid', gap: 10 }}>
-              <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-                Move or split <strong>{dollars(reapplyRow.amountCents)}</strong> from #
-                {reapplyRow.invoiceNumber} across this client&apos;s invoices. The allocations must
-                total the payment amount.
-              </p>
-              <AllocList lines={allocLines} onChange={setLineAmount} inputStyle={inputStyle} />
-              <AllocTotals
-                allocatedCents={allocTotalCents}
-                receivedCents={reapplyRow.amountCents}
-                mode="reapply"
-              />
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                <Button
-                  size="sm"
-                  onClick={() => void saveReapply()}
-                  disabled={saving || allocTotalCents !== reapplyRow.amountCents}
-                >
-                  {saving ? 'Re-applying…' : 'Re-apply'}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {drawer === 'receipt' && (
-            <div style={{ display: 'grid', gap: 8 }}>
-              <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-                All invoices this payment was applied to.
-              </p>
-              {receiptItems.map((it) => (
-                <div
-                  key={it.paymentId}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    padding: '6px 0',
-                    borderBottom: `1px solid ${tokens.color.border}`,
-                    fontSize: 13,
-                    opacity: it.voided ? 0.5 : 1,
+              <Field label="To">
+                <input
+                  type="date"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  style={inputStyle}
+                />
+              </Field>
+              <Field label="Search">
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void load();
                   }}
-                >
-                  <span>
-                    #{it.invoiceNumber}
-                    {it.voided && ' (voided)'}
-                  </span>
-                  <span style={{ fontWeight: 600 }}>{dollars(it.amountCents)}</span>
-                </div>
-              ))}
-              {receiptItems.length === 0 && (
-                <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
-              )}
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  marginTop: 4,
+                  placeholder="client or invoice #"
+                  style={{ ...inputStyle, width: 200 }}
+                />
+              </Field>
+              <Button size="sm" variant="ghost" onClick={() => void load()}>
+                Apply
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setQ('');
+                  setFrom(monthStart());
+                  setTo(today());
+                  view.clearFilters();
                 }}
               >
-                <span>Total applied</span>
-                <span>
-                  {dollars(
-                    receiptItems.filter((i) => !i.voided).reduce((s, i) => s + i.amountCents, 0),
-                  )}
-                </span>
-              </div>
+                Reset
+              </Button>
             </div>
+            {err && (
+              <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 0 }}>{err}</p>
+            )}
+          </Card>
+
+          <Card>
+            {loading ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
+            ) : (
+              <Table<Row>
+                columns={[
+                  {
+                    key: 'date',
+                    header: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        Date{' '}
+                        <ColumnFilter
+                          ariaLabel="Sort by date"
+                          values={[]}
+                          selected={new Set()}
+                          searchable={false}
+                          sort={view.sortFor('date')}
+                          onApply={(_, dir) => view.apply('date', new Set(), dir)}
+                        />
+                      </span>
+                    ) as unknown as string,
+                    render: (r) => new Date(r.receivedAt).toLocaleDateString(),
+                  },
+                  {
+                    key: 'client',
+                    header: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        Client{' '}
+                        <ColumnFilter
+                          ariaLabel="Filter / sort client"
+                          values={clientValues}
+                          selected={view.filterFor('client')}
+                          sort={view.sortFor('client')}
+                          onApply={(sel, dir) => view.apply('client', sel, dir)}
+                        />
+                      </span>
+                    ) as unknown as string,
+                    render: (r) => r.clientName,
+                  },
+                  {
+                    key: 'invoice',
+                    header: 'Invoice',
+                    render: (r) => (
+                      <Link to={`/invoices/${r.invoiceId}`} style={{ color: tokens.color.accent }}>
+                        {r.invoiceNumber}
+                      </Link>
+                    ),
+                  },
+                  {
+                    key: 'channel',
+                    header: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        Channel{' '}
+                        <ColumnFilter
+                          ariaLabel="Filter / sort channel"
+                          values={channelValues}
+                          selected={view.filterFor('channel')}
+                          sort={view.sortFor('channel')}
+                          searchable={false}
+                          onApply={(sel, dir) => view.apply('channel', sel, dir)}
+                        />
+                      </span>
+                    ) as unknown as string,
+                    render: (r) => r.channel,
+                  },
+                  {
+                    key: 'amount',
+                    header: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        Amount{' '}
+                        <ColumnFilter
+                          ariaLabel="Sort by amount"
+                          values={[]}
+                          selected={new Set()}
+                          searchable={false}
+                          sort={view.sortFor('amount')}
+                          onApply={(_, dir) => view.apply('amount', new Set(), dir)}
+                        />
+                      </span>
+                    ) as unknown as string,
+                    render: (r) => dollars(r.amountCents),
+                  },
+                  {
+                    key: 'fee',
+                    header: 'Fee',
+                    render: (r) => (r.feeCents ? dollars(r.feeCents) : '—'),
+                  },
+                  { key: 'net', header: 'Net', render: (r) => dollars(r.netCents) },
+                  {
+                    key: 'status',
+                    header: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        Status{' '}
+                        <ColumnFilter
+                          ariaLabel="Filter / sort status"
+                          values={statusValues}
+                          selected={view.filterFor('status')}
+                          sort={view.sortFor('status')}
+                          searchable={false}
+                          onApply={(sel, dir) => view.apply('status', sel, dir)}
+                        />
+                      </span>
+                    ) as unknown as string,
+                    render: (r) =>
+                      r.voided ? (
+                        <Pill tone="neutral">VOIDED</Pill>
+                      ) : (
+                        <Pill tone={STATUS_TONE[r.status] ?? 'neutral'}>
+                          {r.status === 'PENDING' ? 'PROCESSING' : r.status.replace(/_/g, ' ')}
+                        </Pill>
+                      ),
+                  },
+                  {
+                    key: 'refunded',
+                    header: 'Refunded',
+                    render: (r) => (r.refundedAmountCents ? dollars(r.refundedAmountCents) : '—'),
+                  },
+                  {
+                    key: 'actions',
+                    header: '',
+                    render: (r) => (
+                      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                        {r.receiptId && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void openReceipt(r)}
+                            title="Show all invoices this payment was applied to"
+                          >
+                            Receipt
+                          </Button>
+                        )}
+                        {r.canEdit && (
+                          <Button size="sm" variant="ghost" onClick={() => openReapply(r)}>
+                            Re-apply
+                          </Button>
+                        )}
+                        {r.canEdit && (
+                          <Button size="sm" variant="ghost" onClick={() => openEdit(r)}>
+                            Edit
+                          </Button>
+                        )}
+                        {r.canVoid && (
+                          <Button size="sm" variant="ghost" onClick={() => void voidRow(r)}>
+                            Void
+                          </Button>
+                        )}
+                      </div>
+                    ),
+                  },
+                ]}
+                rows={visible}
+                rowKey={(r) => r.paymentId}
+                empty="No payments in this range."
+              />
+            )}
+          </Card>
+
+          {drawer && (
+            <Drawer
+              title={
+                drawer === 'edit'
+                  ? 'Edit payment'
+                  : drawer === 'reapply'
+                    ? 'Re-apply payment'
+                    : 'Payment receipt'
+              }
+              onClose={() => {
+                setDrawer(null);
+                setEditRow(null);
+                setReapplyRow(null);
+              }}
+            >
+              {drawerErr && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{drawerErr}</p>}
+
+              {drawer === 'edit' && (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                    Editing a manually-recorded payment. To change which invoices it covers, use
+                    Re-apply; method/reference are set on the original receipt.
+                  </p>
+                  <Field label="Amount ($)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={eAmount}
+                      onChange={(e) => setEAmount(e.target.value)}
+                      style={inputStyle}
+                    />
+                  </Field>
+                  <Field label="Date">
+                    <input
+                      type="date"
+                      value={eDate}
+                      onChange={(e) => setEDate(e.target.value)}
+                      style={inputStyle}
+                    />
+                  </Field>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <Button size="sm" onClick={() => void saveEdit()} disabled={saving || !eAmount}>
+                      {saving ? 'Saving…' : 'Save changes'}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {drawer === 'reapply' && reapplyRow && (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                    Move or split <strong>{dollars(reapplyRow.amountCents)}</strong> from #
+                    {reapplyRow.invoiceNumber} across this client&apos;s invoices. The allocations
+                    must total the payment amount.
+                  </p>
+                  <AllocList lines={allocLines} onChange={setLineAmount} inputStyle={inputStyle} />
+                  <AllocTotals
+                    allocatedCents={allocTotalCents}
+                    receivedCents={reapplyRow.amountCents}
+                    mode="reapply"
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <Button
+                      size="sm"
+                      onClick={() => void saveReapply()}
+                      disabled={saving || allocTotalCents !== reapplyRow.amountCents}
+                    >
+                      {saving ? 'Re-applying…' : 'Re-apply'}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setDrawer(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {drawer === 'receipt' && (
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                    All invoices this payment was applied to.
+                  </p>
+                  {receiptItems.map((it) => (
+                    <div
+                      key={it.paymentId}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        padding: '6px 0',
+                        borderBottom: `1px solid ${tokens.color.border}`,
+                        fontSize: 13,
+                        opacity: it.voided ? 0.5 : 1,
+                      }}
+                    >
+                      <span>
+                        #{it.invoiceNumber}
+                        {it.voided && ' (voided)'}
+                      </span>
+                      <span style={{ fontWeight: 600 }}>{dollars(it.amountCents)}</span>
+                    </div>
+                  ))}
+                  {receiptItems.length === 0 && (
+                    <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
+                  )}
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      marginTop: 4,
+                    }}
+                  >
+                    <span>Total applied</span>
+                    <span>
+                      {dollars(
+                        receiptItems
+                          .filter((i) => !i.voided)
+                          .reduce((s, i) => s + i.amountCents, 0),
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </Drawer>
           )}
-        </Drawer>
+        </>
       )}
     </div>
   );

@@ -1599,6 +1599,7 @@ export function createApp(deps: AppDeps): Express {
     stripePublishableKey: config.STRIPE_PUBLISHABLE_KEY ?? null,
     fakeUserRoles: deps.fakeUserRoles,
     sendEmail: deps.sendPortalEmail,
+    sendStaffMail: deps.sendStaffMail,
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payments', auth.requireAuth, auth.requireCsrf, paymentRouter);

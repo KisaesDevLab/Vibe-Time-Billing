@@ -195,6 +195,16 @@ function Inner({
     clientSecret: string;
   } | null>(null);
 
+  // Post-record state. `banner` = recorded via "Record + New" (form is reset
+  // and a confirmation banner with receipt actions stays on top); otherwise
+  // the success screen replaces the form.
+  const [recorded, setRecorded] = useState<{
+    receiptId: string;
+    clientName: string;
+    amountCents: number;
+    banner: boolean;
+  } | null>(null);
+
   // Cache the payer + any selected entities so the Combobox always has labels.
   const allSelectedIds = useMemo(
     () => (payerClientId ? [payerClientId, ...includedClientIds] : []),
@@ -538,7 +548,25 @@ function Inner({
     };
   }
 
-  async function submitRecord(): Promise<void> {
+  // Clear the form for a fresh payment (used by "Record + New" and the
+  // "Record another payment" success action).
+  function resetForm(): void {
+    setPayerClientId('');
+    setIncludedClientIds([]);
+    setOutstanding([]);
+    setDrafts({});
+    setOpenCredits([]);
+    setCreditDrafts({});
+    setAmountDollars('');
+    setReference('');
+    setChargeReceipt(null);
+    setError(null);
+  }
+
+  const payerName = (): string =>
+    allClients.find((c) => c.id === payerClientId)?.name ?? 'the client';
+
+  async function submitRecord(thenNew: boolean): Promise<void> {
     setError(null);
     const v = validate(true /* allow overpayment → server creates credit */);
     if (!v.ok) {
@@ -562,7 +590,17 @@ function Inner({
           creditApplications: v.creditApplications,
         }),
       });
-      navigate(`/ar?receipt=${r.receiptId}`);
+      const success = {
+        receiptId: r.receiptId,
+        clientName: payerName(),
+        amountCents: v.amountCentsToSend,
+      };
+      if (thenNew) {
+        resetForm();
+        setRecorded({ ...success, banner: true });
+      } else {
+        setRecorded({ ...success, banner: false });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'submit_failed');
     } finally {
@@ -630,11 +668,79 @@ function Inner({
 
   const chargeAvailable = config.stripeEnabled && config.ccEnabled;
 
+  // Full success screen (single record) — replaces the form.
+  if (recorded && !recorded.banner) {
+    return (
+      <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 680 }}>
+        <Card title="Payment recorded">
+          <p style={{ fontSize: 14, marginTop: 0 }}>
+            ✓ Recorded <strong>{dollars(recorded.amountCents)}</strong> from{' '}
+            <strong>{recorded.clientName}</strong>.
+          </p>
+          <div style={{ marginTop: 8 }}>
+            <ReceiptActions receiptId={recorded.receiptId} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
+            <Button
+              onClick={() => {
+                resetForm();
+                setRecorded(null);
+              }}
+            >
+              Record another payment
+            </Button>
+            <Button variant="ghost" onClick={() => navigate('/ar')}>
+              Done
+            </Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>Receive payment</h1>
       </div>
+
+      {recorded?.banner && (
+        <div
+          role="status"
+          style={{
+            display: 'flex',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.success}`,
+            borderRadius: tokens.radius.md,
+            padding: '10px 14px',
+            fontSize: 13,
+          }}
+        >
+          <span>
+            ✓ Recorded <strong>{dollars(recorded.amountCents)}</strong> from{' '}
+            <strong>{recorded.clientName}</strong>.
+          </span>
+          <ReceiptActions receiptId={recorded.receiptId} />
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setRecorded(null)}
+            style={{
+              marginLeft: 'auto',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              color: tokens.color.textMuted,
+              fontSize: 16,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {error && (
         <div
@@ -1107,7 +1213,14 @@ function Inner({
           >
             <StripeChargeForm
               receiptId={chargeReceipt.receiptId}
-              onComplete={(id) => navigate(`/ar?receipt=${id}`)}
+              onComplete={(id) =>
+                setRecorded({
+                  receiptId: id,
+                  clientName: payerName(),
+                  amountCents: dollarsToCents(amountDollars),
+                  banner: false,
+                })
+              }
               onError={(msg) => setError(msg)}
             />
           </Elements>
@@ -1119,13 +1232,23 @@ function Inner({
           Cancel
         </Button>
         {mode === 'RECORD' ? (
-          <Button onClick={() => void submitRecord()} disabled={busy}>
-            {busy
-              ? 'Saving…'
-              : isPureCreditApply
-                ? `Apply ${dollars(totalCreditApplied)} from credits`
-                : 'Record payment'}
-          </Button>
+          <>
+            <Button onClick={() => void submitRecord(false)} disabled={busy}>
+              {busy
+                ? 'Saving…'
+                : isPureCreditApply
+                  ? `Apply ${dollars(totalCreditApplied)} from credits`
+                  : 'Record payment'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => void submitRecord(true)}
+              disabled={busy || isPureCreditApply}
+              title="Record this payment, then start a new one for another client"
+            >
+              Record + New
+            </Button>
+          </>
         ) : (
           !chargeReceipt && (
             <Button onClick={() => void startCharge()} disabled={busy || !chargeAvailable}>
@@ -1150,6 +1273,52 @@ function SummaryRow({ label, value }: { label: string; value: string }): JSX.Ele
       <span style={{ color: tokens.color.textMuted }}>{label}</span>
       <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
     </div>
+  );
+}
+
+// Print or email the receipt for a recorded payment. Email goes to the
+// client's billing contact (falling back to primary).
+function ReceiptActions({ receiptId }: { receiptId: string }): JSX.Element {
+  const [sending, setSending] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function emailReceipt(): Promise<void> {
+    setSending(true);
+    setMsg(null);
+    try {
+      const r = await api<{ to: string }>(`/api/staff/payments/receipt/${receiptId}/email`, {
+        method: 'POST',
+        body: '{}',
+      });
+      setMsg(`Emailed to ${r.to}.`);
+    } catch (e) {
+      const m = e instanceof Error ? e.message : 'failed';
+      setMsg(
+        m === 'no_billing_contact_email'
+          ? 'No billing/primary contact with an email on file.'
+          : m === 'mail_not_configured'
+            ? 'Email delivery is not configured.'
+            : `Email failed: ${m}`,
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => window.open(`/api/staff/payments/receipt/${receiptId}/print.html`, '_blank')}
+      >
+        Print receipt
+      </Button>
+      <Button size="sm" variant="secondary" disabled={sending} onClick={() => void emailReceipt()}>
+        {sending ? 'Emailing…' : 'Email receipt'}
+      </Button>
+      {msg && <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{msg}</span>}
+    </span>
   );
 }
 
