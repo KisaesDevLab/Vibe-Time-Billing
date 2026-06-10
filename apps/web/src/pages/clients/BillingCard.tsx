@@ -30,6 +30,7 @@ interface Invoice {
   totalCents: number;
   paidCents: number;
   primaryEngagementId: string | null;
+  engagementTypes: string | null;
 }
 
 interface CreditApplication {
@@ -319,7 +320,12 @@ export function BillingCard({ clientId }: Props): JSX.Element {
             {
               key: 'num',
               header: 'Number',
-              render: (i) => <a href={`/invoices?focus=${i.id}`}>{i.invoiceNumber}</a>,
+              render: (i) => <a href={`/invoices/${i.id}`}>{i.invoiceNumber}</a>,
+            },
+            {
+              key: 'type',
+              header: 'Engagement type',
+              render: (i) => <span style={{ fontSize: 12 }}>{i.engagementTypes ?? '—'}</span>,
             },
             { key: 'issue', header: 'Issued', render: (i) => i.issueDate },
             { key: 'due', header: 'Due', render: (i) => i.dueDate },
@@ -364,26 +370,34 @@ export function BillingCard({ clientId }: Props): JSX.Element {
               key: 'notify',
               header: '',
               render: (i) => {
-                if (i.status === 'VOIDED') return null;
                 const busy = sendingId === i.id;
                 return (
                   <div style={{ display: 'inline-flex', gap: 4 }}>
                     <IconButton
-                      label={
-                        i.status === 'DRAFT'
-                          ? 'Email invoice to the billing contact (marks SENT)'
-                          : 'Resend invoice email to the billing contact'
-                      }
-                      glyph="✉"
-                      disabled={busy}
-                      onClick={() => void sendEmail(i)}
+                      label="Open a printable PDF of this invoice"
+                      glyph="🖨"
+                      onClick={() => window.open(`/api/staff/invoices/${i.id}/pdf`, '_blank')}
                     />
-                    <IconButton
-                      label="Text the billing contact a link to this invoice"
-                      glyph="☏"
-                      disabled={busy}
-                      onClick={() => void sendSms(i)}
-                    />
+                    {i.status !== 'VOIDED' && (
+                      <>
+                        <IconButton
+                          label={
+                            i.status === 'DRAFT'
+                              ? 'Email invoice to the billing contact (marks SENT)'
+                              : 'Resend invoice email to the billing contact'
+                          }
+                          glyph="✉"
+                          disabled={busy}
+                          onClick={() => void sendEmail(i)}
+                        />
+                        <IconButton
+                          label="Text the billing contact a link to this invoice"
+                          glyph="☏"
+                          disabled={busy}
+                          onClick={() => void sendSms(i)}
+                        />
+                      </>
+                    )}
                   </div>
                 );
               },

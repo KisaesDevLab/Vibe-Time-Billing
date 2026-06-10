@@ -389,6 +389,15 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           SELECT MAX(sent_at) FROM invoice_reminder_log
           WHERE invoice_id = ${invoices.id}
         )`,
+        // Distinct engagement type names billed on this invoice (across its
+        // line items' engagements), comma-joined for the client billing view.
+        engagementTypes: sql<string | null>`(
+          SELECT string_agg(DISTINCT et.name, ', ')
+          FROM invoice_line_item ili
+          JOIN engagement e ON e.id = ili.engagement_id
+          JOIN engagement_type et ON et.id = e.engagement_type_id
+          WHERE ili.invoice_id = ${invoices.id}
+        )`,
       })
       .from(invoices)
       .innerJoin(clients, eq(clients.id, invoices.clientId));
