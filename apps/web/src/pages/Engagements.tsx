@@ -210,7 +210,8 @@ export function EngagementsPage(): JSX.Element {
       if (ws.length > 0) params.set('workflowState', ws.join(','));
       if (priorityFilter.size > 0) params.set('priority', Array.from(priorityFilter).join(','));
       if (tab === 'mine' && currentUserId) params.set('assigneeUserId', currentUserId);
-      if (clientFilter.size > 0) params.set('clientId', Array.from(clientFilter).join(','));
+      // Client multi-select is applied client-side (see the `visible` memo);
+      // not sent here so the filter dropdown's options stay stable.
       if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
       // When exactly one service line is picked, narrow server-side
       // (cheaper for large firms). Multi-select runs client-side below.
@@ -236,7 +237,6 @@ export function EngagementsPage(): JSX.Element {
     tab,
     workflowFilter,
     priorityFilter,
-    clientFilter,
     assigneeFilter,
     serviceLineFilter,
     clientOwnerId,
@@ -308,6 +308,11 @@ export function EngagementsPage(): JSX.Element {
     if (serviceLineFilter.size > 1) {
       r = r.filter((row) => row.serviceLineId && serviceLineFilter.has(row.serviceLineId));
     }
+    // Client multi-select runs client-side so the dropdown options (derived
+    // from the loaded rows) stay stable as you check/uncheck clients.
+    if (clientFilter.size > 0) {
+      r = r.filter((row) => clientFilter.has(row.clientId));
+    }
     if (assigneeFilter.size > 0) {
       r = r.filter(
         (row) =>
@@ -356,7 +361,7 @@ export function EngagementsPage(): JSX.Element {
       });
     }
     return r;
-  }, [rows, typeFilter, assigneeFilter, serviceLineFilter, sortBy]);
+  }, [rows, typeFilter, assigneeFilter, serviceLineFilter, clientFilter, sortBy]);
 
   const clientOptions = useMemo(() => {
     const map = new Map<string, string>();

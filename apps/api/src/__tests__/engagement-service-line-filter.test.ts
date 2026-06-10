@@ -272,3 +272,94 @@ describe('engagements list — service-line dimension', () => {
     expect(r.statusCode).toBe(400);
   });
 });
+
+describe('engagements list — client filter (multi-select)', () => {
+  async function addClientWithEngagement(
+    db: PgliteHarness['db'],
+    firmId: string,
+    appUserId: string,
+    name: string,
+  ): Promise<{ clientId: string; engagementId: string }> {
+    const c = await db.execute(
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          VALUES (${firmId}, ${name}, ${appUserId},
+                  (SELECT id FROM office WHERE firm_id = ${firmId} ORDER BY is_default DESC LIMIT 1))
+          RETURNING id`,
+    );
+    const clientId = (c as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const e = await db.execute(
+      sql`INSERT INTO engagement (client_id, name, fee_structure)
+          VALUES (${clientId}, ${`${name} work`}, 'HOURLY') RETURNING id`,
+    );
+    const engagementId = (e as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    return { clientId, engagementId };
+  }
+
+  it('a single clientId narrows to that client', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const other = await addClientWithEngagement(
+      harness.db,
+      seed.firmId,
+      seed.appUserId,
+      'Delta LLC',
+    );
+    const router = createEngagementRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'get', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        query: { clientId: other.clientId },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    expect((r.jsonBody as { items: Array<{ id: string }> }).items.map((i) => i.id)).toEqual([
+      other.engagementId,
+    ]);
+  });
+
+  it('comma-separated clientIds return the union (the bug fix)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const a = await addClientWithEngagement(harness.db, seed.firmId, seed.appUserId, 'Delta LLC');
+    const b = await addClientWithEngagement(
+      harness.db,
+      seed.firmId,
+      seed.appUserId,
+      'Delta Medical',
+    );
+    const router = createEngagementRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'get', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        query: { clientId: `${a.clientId},${b.clientId}` },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    const ids = (r.jsonBody as { items: Array<{ id: string }> }).items.map((i) => i.id).sort();
+    expect(ids).toEqual([a.engagementId, b.engagementId].sort());
+  });
+
+  it('a malformed id in the list → 400 invalid_client_id', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const a = await addClientWithEngagement(harness.db, seed.firmId, seed.appUserId, 'Delta LLC');
+    const router = createEngagementRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'get', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        query: { clientId: `${a.clientId},not-a-uuid` },
+      }),
+    });
+    expect(r.statusCode).toBe(400);
+    expect((r.jsonBody as { error: string }).error).toBe('invalid_client_id');
+  });
+});

@@ -236,12 +236,20 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         if (orExpr) conds.push(orExpr);
       }
 
-      const clientId = uuidQueryParam(req.query['clientId']);
-      if (clientId === 'invalid') {
-        res.status(400).json({ error: 'invalid_client_id' });
-        return;
+      // Accept one or more comma-separated client ids (the table's
+      // multi-select client filter and the CSV export both send a list).
+      const clientIdRaw = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
+      if (clientIdRaw && clientIdRaw.trim() !== '') {
+        const clientIds = clientIdRaw
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (clientIds.length === 0 || clientIds.some((id) => uuidQueryParam(id) === 'invalid')) {
+          res.status(400).json({ error: 'invalid_client_id' });
+          return;
+        }
+        conds.push(inArray(engagements.clientId, clientIds));
       }
-      if (clientId) conds.push(eq(engagements.clientId, clientId));
 
       // 0050 — filter to engagements whose client has a given owner
       // (client.partnerInChargeId). Surfaced across the UI as a chip.
