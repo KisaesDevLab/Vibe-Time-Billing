@@ -421,13 +421,26 @@ interface DetectTemplate {
   totalPages: number;
   autoInclude: boolean;
 }
+interface DetectBookmark {
+  pageNumber: number;
+  title: string;
+  depth: number;
+}
 interface SignatureDetect {
   formCode: string;
   signatureFormType: string;
   pages: DetectPage[];
+  allBookmarks: DetectBookmark[];
   templates: DetectTemplate[];
   noRulesConfigured: boolean;
   noSource: boolean;
+}
+
+// Default field layout for a manually-picked bookmark page (no rule matched).
+function defaultLayoutForForm(signatureFormType: string): string {
+  if (signatureFormType === '8879') return 'us-8879';
+  if (signatureFormType.startsWith('8879-')) return 'entity-8879';
+  return 'generic';
 }
 
 type SignerRole = 'taxpayer' | 'spouse' | 'officer';
@@ -529,6 +542,7 @@ function CollectSignaturesDialog({
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
   const [checkedPages, setCheckedPages] = useState<Set<number>>(new Set());
+  const [checkedBookmarks, setCheckedBookmarks] = useState<Set<number>>(new Set());
   const [checkedTemplates, setCheckedTemplates] = useState<Set<string>>(new Set());
   const [filingStatus, setFilingStatus] = useState<'single' | 'mfj'>('single');
 
@@ -590,6 +604,14 @@ function CollectSignaturesDialog({
 
   function togglePage(n: number): void {
     setCheckedPages((prev) => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  }
+  function toggleBookmark(n: number): void {
+    setCheckedBookmarks((prev) => {
       const next = new Set(prev);
       if (next.has(n)) next.delete(n);
       else next.add(n);
@@ -662,9 +684,19 @@ function CollectSignaturesDialog({
       setError('Add at least one signer with a name and email.');
       return;
     }
-    const returnPages = detect.pages
-      .filter((p) => checkedPages.has(p.pageNumber))
-      .map((p) => ({ page: p.pageNumber, layoutKey: p.layoutKey }));
+    // Merge rule-detected pages (their layout) with manually-picked bookmark
+    // pages (a default layout for the return type). Detected layout wins.
+    const pageLayout = new Map<number, string>();
+    for (const p of detect.pages) {
+      if (checkedPages.has(p.pageNumber)) pageLayout.set(p.pageNumber, p.layoutKey);
+    }
+    const manualLayout = defaultLayoutForForm(detect.signatureFormType);
+    for (const b of detect.allBookmarks ?? []) {
+      if (checkedBookmarks.has(b.pageNumber) && !pageLayout.has(b.pageNumber)) {
+        pageLayout.set(b.pageNumber, manualLayout);
+      }
+    }
+    const returnPages = [...pageLayout.entries()].map(([page, layoutKey]) => ({ page, layoutKey }));
     const templateIds = detect.templates.filter((t) => checkedTemplates.has(t.id)).map((t) => t.id);
     if (returnPages.length === 0 && templateIds.length === 0 && adHocKeys.length === 0) {
       setError('Select at least one page or document to include.');
@@ -744,17 +776,67 @@ function CollectSignaturesDialog({
                 Detected signature pages
               </div>
               {detect.pages.length === 0 ? (
-                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                  No signature pages detected from bookmarks
-                  {detect.noRulesConfigured && (
-                    <>
-                      {' — '}
-                      configure rules in Admin → Signatures
-                    </>
+                <>
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 8 }}>
+                    No signature pages detected from bookmarks
+                    {detect.noRulesConfigured && (
+                      <>
+                        {' — '}
+                        configure rules in Admin → Signatures
+                      </>
+                    )}
+                    {detect.noSource && <> — the return has no source PDF</>}.
+                    {(detect.allBookmarks?.length ?? 0) > 0
+                      ? ' Pick the signature page(s) from the bookmark list below, or proceed with documents.'
+                      : ' You can still proceed with documents below.'}
+                  </div>
+                  {(detect.allBookmarks?.length ?? 0) > 0 && (
+                    <div
+                      style={{
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius: tokens.radius.sm,
+                        padding: 8,
+                        maxHeight: 220,
+                        overflowY: 'auto',
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: tokens.color.textMuted,
+                          textTransform: 'uppercase',
+                          marginBottom: 4,
+                        }}
+                      >
+                        Bookmarks in this PDF
+                      </div>
+                      {detect.allBookmarks.map((b, i) => (
+                        <label
+                          key={`${b.pageNumber}-${i}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '4px 0',
+                            paddingLeft: 8 + Math.min(b.depth, 4) * 14,
+                            fontSize: 13,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checkedBookmarks.has(b.pageNumber)}
+                            onChange={() => toggleBookmark(b.pageNumber)}
+                          />
+                          <span style={{ flex: 1 }}>{b.title}</span>
+                          <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+                            p.{b.pageNumber}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
                   )}
-                  {detect.noSource && <> — the return has no source PDF</>}. You can still proceed
-                  with documents below.
-                </div>
+                </>
               ) : (
                 <div
                   style={{
