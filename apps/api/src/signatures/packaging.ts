@@ -14,10 +14,32 @@
 // Single vs MFJ is automatic: applyProfile drops a role with no matching
 // signer, so a Taxpayer-only session places one signature, MFJ places two.
 
+import { returnTypeFamily } from '@vibe/core/signatures';
+
 import type { PageGeometry } from './geometry';
 import { applyProfile, type AppliedPlacement, type ProfileField } from './profiles';
 
 export type LayoutKey = 'us-8879' | 'entity-8879' | 'state-auth' | 'generic';
+
+// Map a return's formCode to the signature `formType` used for KBA gating +
+// display. Individual 1040 → bare '8879' (KBA-gated); entity returns → their
+// non-KBA e-file authorization. Everything else keeps the return code.
+export function signatureFormTypeForReturn(returnFormCode: string | null | undefined): string {
+  const family = returnTypeFamily(returnFormCode);
+  switch (family) {
+    case '1040':
+    case '1040-NR':
+      return '8879';
+    case '1120-S':
+      return '8879-S';
+    case '1120':
+      return '8879-C';
+    case '1065':
+      return '8879-PE';
+    default:
+      return family || 'generic';
+  }
+}
 
 // Sensible starting coordinates (normalized, top-left origin). Firms nudge
 // per-session in the editor — these are NOT pixel-authoritative IRS spots.

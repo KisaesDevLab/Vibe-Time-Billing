@@ -43,6 +43,11 @@ import { appendAccessLog, exportAccessLogCsv, listAccessLog } from './access-log
 import { AmendError, computeAmendDiff, createAmendedReturn, markOriginalSuperseded } from './amend';
 import { applyParsedSections, parseReturnSections } from './parse';
 import { intakeTaxReturnFromFile } from './intake';
+import {
+  createSignaturePackageFromReturn,
+  detectSignaturePagesForReturn,
+} from './signature-package';
+import { randomUUID } from 'node:crypto';
 
 export interface TaxReturnRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -78,6 +83,26 @@ const CreateSectionSchema = z
   })
   .strict()
   .refine((v) => v.endPage >= v.startPage, { message: 'end_before_start' });
+
+const SignaturePackageSchema = z.object({
+  signers: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(200),
+        email: z.string().email(),
+        role: z.string().min(1).max(40),
+        personId: z.string().uuid().nullable().optional(),
+        clientContactId: z.string().uuid().nullable().optional(),
+        portalIdentityId: z.string().uuid().nullable().optional(),
+      }),
+    )
+    .min(1),
+  returnPages: z
+    .array(z.object({ page: z.number().int().positive(), layoutKey: z.string().min(1).max(40) }))
+    .default([]),
+  templateIds: z.array(z.string().uuid()).default([]),
+  adHocKeys: z.array(z.string().min(1).max(400)).default([]),
+});
 
 const CreateReleaseSchema = z.object({
   releasedToClientId: z.string().uuid(),
@@ -1037,6 +1062,105 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         sections: sectionsRows.sort((a, b) => a.ordinal - b.ordinal),
         releases: releaseRows,
       });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // In-office signature packages assembled from the return's bookmarks.
+  // -------------------------------------------------------------------
+
+  // GET /:returnId/signature-detect — preview the signature pages found in
+  // the return PDF + the default-document templates for its return type.
+  router.get(
+    '/:returnId/signature-detect',
+    requirePermission(deps, 'proposal:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const result = await detectSignaturePagesForReturn(
+        deps.db,
+        resolveStorage(deps),
+        session.firmId,
+        req.params['returnId']!,
+      );
+      if (!result) {
+        res.status(404).json({ error: 'tax_return_not_found' });
+        return;
+      }
+      res.json(result);
+    },
+  );
+
+  // POST /:returnId/signature-doc — upload a one-off ad-hoc PDF for a signing
+  // session; returns its storage key to pass back as adHocKeys.
+  router.post(
+    '/:returnId/signature-doc',
+    requirePermission(deps, 'proposal:write'),
+    express.raw({ type: 'application/pdf', limit: 25 * 1024 * 1024 }),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const storage = resolveStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const body = req.body as Buffer;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        res.status(400).json({ error: 'empty_body' });
+        return;
+      }
+      const key = `signatures/adhoc/${session.firmId}/${randomUUID()}.pdf`;
+      await storage.put(key, body, { contentType: 'application/pdf' });
+      res.json({ key });
+    },
+  );
+
+  // POST /:returnId/signature-request — merge the selected return pages +
+  // templates + ad-hoc docs into one draft signature package.
+  router.post(
+    '/:returnId/signature-request',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = resolveStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const parsed = SignaturePackageSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_request', detail: parsed.error.flatten() });
+        return;
+      }
+      const result = await createSignaturePackageFromReturn(deps.db, storage, {
+        firmId: session.firmId,
+        returnId: req.params['returnId']!,
+        actorId: session.appUserId,
+        signers: parsed.data.signers,
+        returnPages: parsed.data.returnPages,
+        templateIds: parsed.data.templateIds,
+        adHocKeys: parsed.data.adHocKeys,
+      });
+      if (!result.ok) {
+        const status = result.code === 'not_found' ? 404 : 422;
+        res.status(status).json({ error: result.code });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'signature_request.from_return',
+        entityId: result.requestId,
+        actorAppUserId: session.appUserId,
+        after: { taxReturnId: req.params['returnId'] },
+      });
+      res.json({ requestId: result.requestId });
     },
   );
 
