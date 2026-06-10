@@ -27,6 +27,7 @@ import { sql } from 'drizzle-orm';
 
 import { appUsers, clientContacts, clients, engagements, firms, persons } from './core';
 import { portalIdentity } from './portal';
+import { taxReturns } from './tax-returns';
 
 export const signatureRequests = pgTable(
   'signature_requests',
@@ -50,6 +51,15 @@ export const signatureRequests = pgTable(
     // OpenSign completion/audit certificate (IP, signed date/time, signer
     // trail) — stored separately from the signed PDF. See migration 0138.
     certificateFileUrl: text('certificate_file_url'),
+    // 0139 — in-office signing: 'in_person' suppresses email + (with an
+    // identity attestation) bypasses the KBA gate.
+    signingMode: text('signing_mode').notNull().default('remote'),
+    // 0139 — the tax return this signature package was assembled from.
+    taxReturnId: uuid('tax_return_id').references(() => taxReturns.id, {
+      onDelete: 'set null',
+    }),
+    // 0139 — merged-package parts: [{ source, label, pageStart, pageEnd, refId? }].
+    packageManifest: jsonb('package_manifest'),
     // [{ pageNumber, widthPt, heightPt }] read from each page's MediaBox.
     pageGeometry: jsonb('page_geometry'),
     formType: text('form_type'),
@@ -65,9 +75,14 @@ export const signatureRequests = pgTable(
     firmStatusIdx: index('signature_requests_firm_status_idx').on(t.firmId, t.status),
     firmEngagementIdx: index('signature_requests_firm_engagement_idx').on(t.firmId, t.engagementId),
     opensignIdx: index('signature_requests_opensign_idx').on(t.opensignDocumentId),
+    taxReturnIdx: index('signature_requests_tax_return_idx').on(t.taxReturnId),
     statusCk: check(
       'signature_requests_status_ck',
       sql`${t.status} IN ('draft','sent','partially_signed','completed','declined','expired','voided')`,
+    ),
+    signingModeCk: check(
+      'signature_requests_signing_mode_ck',
+      sql`${t.signingMode} IN ('remote','in_person')`,
     ),
   }),
 );
@@ -170,5 +185,64 @@ export const signatureEvents = pgTable(
   },
   (t) => ({
     requestIdx: index('signature_events_request_idx').on(t.requestId),
+  }),
+);
+
+// 0140 — Signature Page Rules. Per-return-type bookmark patterns that
+// identify the signature page(s) inside a tax-return PDF. Mirrors
+// migration 0140; modeled on the Filer routing rules.
+export const signaturePageRules = pgTable(
+  'signature_page_rules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    formType: text('form_type').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    bookmarkPattern: text('bookmark_pattern').notNull(),
+    matchMode: text('match_mode').notNull().default('contains'),
+    caseSensitive: boolean('case_sensitive').notNull().default(false),
+    layoutKey: text('layout_key').notNull().default('generic'),
+    enabled: boolean('enabled').notNull().default(true),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('signature_page_rules_firm_idx').on(t.firmId, t.formType, t.sortOrder),
+    matchModeCk: check(
+      'signature_page_rules_match_mode_ck',
+      sql`${t.matchMode} IN ('contains','exact','regex')`,
+    ),
+    layoutCk: check(
+      'signature_page_rules_layout_ck',
+      sql`${t.layoutKey} IN ('us-8879','entity-8879','state-auth','generic')`,
+    ),
+  }),
+);
+
+// 0141 — Signature Document Library. Firm default documents to append to a
+// signing package, segregated by return type. `fields` optionally holds
+// saved role-tagged placements. Mirrors migration 0141.
+export const signatureDocumentTemplates = pgTable(
+  'signature_document_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    formType: text('form_type').notNull(),
+    name: text('name').notNull(),
+    storageKey: text('storage_key').notNull(),
+    totalPages: integer('total_pages').notNull().default(1),
+    pageGeometry: jsonb('page_geometry'),
+    fields: jsonb('fields'),
+    autoInclude: boolean('auto_include').notNull().default(true),
+    enabled: boolean('enabled').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('signature_document_templates_firm_idx').on(t.firmId, t.formType, t.sortOrder),
   }),
 );
