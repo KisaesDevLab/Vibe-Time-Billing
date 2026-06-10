@@ -128,6 +128,39 @@ describe('invoices list — engagement types billed', () => {
     expect(row!.engagementTypes).toBe('Bookkeeping, Individual 1040');
   });
 
+  it('falls back to the invoice primary engagement when line items carry no engagement_id', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const db = harness.db;
+    const typeId = await scalarId(
+      db,
+      sql`INSERT INTO engagement_type (firm_id, key, name)
+          VALUES (${seed.firmId}, '1120s', '1120-S Tax Return') RETURNING id`,
+    );
+    await db.execute(
+      sql`UPDATE engagement SET engagement_type_id = ${typeId} WHERE id = ${seed.engagementId}`,
+    );
+    const invId = await scalarId(
+      db,
+      sql`INSERT INTO invoice (firm_id, client_id, primary_engagement_id, invoice_number,
+                               issue_date, due_date, subtotal_cents, total_cents, status)
+          VALUES (${seed.firmId}, ${seed.clientId}, ${seed.engagementId}, 'INV-T3',
+                  '2026-04-15', '2026-05-15', 50000, 50000, 'SENT') RETURNING id`,
+    );
+    // Line item with NO engagement_id — the common real-world shape.
+    await db.execute(
+      sql`INSERT INTO invoice_line_item (invoice_id, kind, description, amount_cents, sort_order)
+          VALUES (${invId}, 'TIME_AGGREGATE', 'work', 50000, 0)`,
+    );
+    const router = createInvoiceRouter({
+      db,
+      fakeUserRoles: new Map<string, RoleSlug[]>([[seed.appUserId, ['partner']]]),
+    });
+    const res = await invokeGet(router, { clientId: seed.clientId }, seed.firmId, seed.appUserId);
+    const items = (res.jsonBody as { items: Array<{ id: string; engagementTypes: string | null }> })
+      .items;
+    expect(items.find((i) => i.id === invId)!.engagementTypes).toBe('1120-S Tax Return');
+  });
+
   it('is null when no line item is tied to a typed engagement', async () => {
     const seed = await seedMinimalFirm(harness.db);
     const db = harness.db;
