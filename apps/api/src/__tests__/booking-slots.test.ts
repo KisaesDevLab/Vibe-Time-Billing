@@ -637,3 +637,119 @@ describe('getAvailableSlots — multiple windows + location types', () => {
     expect(res.reason).toBe('staff_unavailable');
   });
 });
+
+describe('getAvailableSlots — saved location preset filtering', () => {
+  async function addLocationOption(name: string): Promise<string> {
+    const { sql } = await import('drizzle-orm');
+    const r = await harness.db.execute(
+      sql`INSERT INTO appointment_location_option (firm_id, name, location_type)
+          VALUES (${seed.firmId}, ${name}, 'IN_PERSON') RETURNING id`,
+    );
+    return (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+  }
+
+  async function setWinAt(
+    staffId: string,
+    date: string,
+    start: string,
+    end: string,
+    locationOptionId: string | null,
+  ): Promise<void> {
+    await harness.db.insert(staffAvailability).values({
+      staffId,
+      dayOfWeek: dow(date),
+      startTime: start,
+      endTime: end,
+      locationTypes: ['IN_PERSON'],
+      locationOptionId,
+      isActive: true,
+    });
+  }
+
+  it('a chosen preset only matches windows tagged with that preset', async () => {
+    const a = seed.appUserId;
+    const monett = await addLocationOption('Monett');
+    const cassville = await addLocationOption('Cassville');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinAt(a, MONDAY, '09:00', '11:00', cassville);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'IN_PERSON',
+      locationOptionId: monett, // chose Monett; window is Cassville
+    });
+    expect(res.slots).toHaveLength(0);
+    expect(res.reason).toBe('staff_unavailable');
+  });
+
+  it('a chosen preset matches a window tagged with the same preset', async () => {
+    const a = seed.appUserId;
+    const monett = await addLocationOption('Monett');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinAt(a, MONDAY, '09:00', '11:00', monett);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'IN_PERSON',
+      locationOptionId: monett,
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+  });
+
+  it('a window with no preset is location-agnostic (matches any chosen preset)', async () => {
+    const a = seed.appUserId;
+    const monett = await addLocationOption('Monett');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinAt(a, MONDAY, '09:00', '11:00', null);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'IN_PERSON',
+      locationOptionId: monett,
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+  });
+
+  it('no chosen preset → preset-tagged windows still match (back-compat)', async () => {
+    const a = seed.appUserId;
+    const cassville = await addLocationOption('Cassville');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinAt(a, MONDAY, '09:00', '11:00', cassville);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'IN_PERSON',
+      // no locationOptionId
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+  });
+});

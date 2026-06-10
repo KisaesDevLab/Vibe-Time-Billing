@@ -39,6 +39,12 @@ function parseLocation(raw: unknown): string | undefined {
   return typeof raw === 'string' && LOCATIONS.has(raw) ? raw : undefined;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseLocationId(raw: unknown): string | undefined {
+  return typeof raw === 'string' && UUID_RE.test(raw) ? raw : undefined;
+}
+
 function parseStaffIds(raw: unknown): string[] {
   if (typeof raw !== 'string' || !raw.trim()) return [];
   return [
@@ -108,7 +114,8 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
       }
 
       const location = parseLocation(req.query['location']);
-      const cacheKey = `slots:${[...staffIds].sort().join(',')}:${date}:${durationMinutes}:${location ?? 'any'}`;
+      const locationOptionId = parseLocationId(req.query['locationId']);
+      const cacheKey = `slots:${[...staffIds].sort().join(',')}:${date}:${durationMinutes}:${location ?? 'any'}:${locationOptionId ?? 'any'}`;
       if (deps.redis && !deps.busyProvider) {
         try {
           const hit = await deps.redis.get(cacheKey);
@@ -135,6 +142,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         busyProvider: providerFor(session.firmId),
         excludeAppointmentId,
         location,
+        locationOptionId,
       });
       if (deps.redis && !deps.busyProvider) {
         try {
@@ -181,6 +189,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
           ? req.query['excludeAppointmentId']
           : undefined;
       const location = parseLocation(req.query['location']);
+      const locationOptionId = parseLocationId(req.query['locationId']);
       const timezone = await firmTimezone(deps.db, session.firmId);
       const result = await getMonthAvailability({
         db: deps.db,
@@ -192,6 +201,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         busyProvider: providerFor(session.firmId),
         excludeAppointmentId,
         location,
+        locationOptionId,
       });
       res.json(result);
     },

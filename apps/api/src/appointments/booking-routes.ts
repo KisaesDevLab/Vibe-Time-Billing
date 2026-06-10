@@ -560,6 +560,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         now: nowFn(),
         busyProvider: providerFor(session.firmId),
         location: resolvedLocation,
+        locationOptionId: locationOptionId ?? undefined,
       });
       const match = avail.slots.find(
         (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),
