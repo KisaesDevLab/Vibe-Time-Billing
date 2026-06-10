@@ -218,8 +218,8 @@ export function ClientDetailPage(): JSX.Element {
         >
           <dt style={{ color: tokens.color.textMuted }}>Terms</dt>
           <dd style={{ margin: 0 }}>{client.termsDays} days</dd>
-          <dt style={{ color: tokens.color.textMuted }}>Consolidation</dt>
-          <dd style={{ margin: 0 }}>{client.invoiceConsolidationPreference}</dd>
+          <dt style={{ color: tokens.color.textMuted }}>Outstanding</dt>
+          <dd style={{ margin: 0 }}>{summary ? formatCents(summary.outstandingCents) : '—'}</dd>
           {client.externalId && (
             <>
               <dt style={{ color: tokens.color.textMuted }}>External ID</dt>
