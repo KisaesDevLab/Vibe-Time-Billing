@@ -12,10 +12,12 @@ import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
 import {
+  clientContacts,
   clients,
   engagements,
   invoiceLineItems,
   invoices,
+  persons,
   retainerEligibleServices,
   retainerLedger,
   retainerOffers,
@@ -27,6 +29,7 @@ import { computeExpiryDate, computeSplit, isEligibleEntry } from '@vibe/core/ret
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import {
@@ -39,6 +42,13 @@ export interface RetainerRoutesDeps extends RbacDeps {
   db: Database | null;
   /** Portal origin used to build the client-facing offer link (Copy link). */
   portalBaseUrl?: string;
+  /** Firm mailer — used to email an offer proposal to the primary contact. */
+  sendStaffMail?: (args: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: string;
+  }) => Promise<void>;
 }
 
 export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
@@ -173,6 +183,140 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.status(201).json({ invoiceId, invoiceNumber, priceCents });
+    },
+  );
+
+  // Delete a PENDING offer (e.g. created in error / superseded). Only
+  // pending offers are deletable — once a tier is selected or the offer is
+  // purchased/declined/expired it carries history and is kept.
+  router.delete(
+    '/offers/:id',
+    requirePermission(deps, 'retainer:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [offer] = await deps.db
+        .select()
+        .from(retainerOffers)
+        .where(
+          and(eq(retainerOffers.id, req.params['id']!), eq(retainerOffers.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!offer) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (offer.status !== 'pending') {
+        res.status(409).json({ error: 'offer_not_pending', currentStatus: offer.status });
+        return;
+      }
+      await deps.db.delete(retainerOffers).where(eq(retainerOffers.id, offer.id));
+      // Cancel any in-flight reminder jobs (mirrors the portal decline path).
+      try {
+        const { cancelOfferReminders } = await import('./scheduler');
+        await cancelOfferReminders(offer.id);
+      } catch (err) {
+        logger.error({ err, offerId: offer.id }, 'cancel offer reminders failed (delete)');
+      }
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'retainer_offer',
+        entityId: offer.id,
+        actorAppUserId: session.appUserId,
+        before: { status: offer.status, clientId: offer.clientId },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // Email the offer proposal (portal link) to the client's primary contact.
+  router.post(
+    '/offers/:id/email',
+    requirePermission(deps, 'retainer:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail) {
+        res.status(503).json({ error: 'mail_not_configured' });
+        return;
+      }
+      const [offer] = await deps.db
+        .select()
+        .from(retainerOffers)
+        .where(
+          and(eq(retainerOffers.id, req.params['id']!), eq(retainerOffers.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!offer) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Primary contact's email (name/email canonical on person, 0115).
+      const [contact] = await deps.db
+        .select({ email: persons.email, name: persons.fullName })
+        .from(clientContacts)
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
+        .where(and(eq(clientContacts.clientId, offer.clientId), eq(clientContacts.isPrimary, true)))
+        .limit(1);
+      if (!contact?.email) {
+        res.status(422).json({ error: 'no_primary_contact_email' });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, offer.clientId))
+        .limit(1);
+      const base = deps.portalBaseUrl ?? process.env['PORTAL_BASE_URL'] ?? '';
+      const link = base ? `${base}/retainer-offers/${offer.id}` : '';
+      const validThrough = offer.offerExpiresAt
+        ? ` It's valid through ${new Date(offer.offerExpiresAt).toLocaleDateString('en-US')}.`
+        : '';
+      const subject = `Your retainer offer — ${offer.returnType} ${offer.taxYear}`;
+      const greeting = contact.name ? `Hello ${contact.name},` : 'Hello,';
+      const body = `${greeting}
+
+${client?.name ?? 'Your account'} has a retainer offer ready for your review.${validThrough}
+
+Review the options and choose the one that works for you here:
+${link}
+
+Thank you.`;
+      try {
+        await deps.sendStaffMail({ to: contact.email, subject, body });
+      } catch (err) {
+        logger.error({ err, offerId: offer.id }, 'retainer offer email send failed');
+        res.status(502).json({ error: 'send_failed' });
+        return;
+      }
+      await recordOutbound({
+        db: deps.db,
+        firmId: session.firmId,
+        clientId: offer.clientId,
+        channel: 'EMAIL',
+        subject,
+        body,
+        relatedEntityType: 'retainer_offer',
+        relatedEntityId: offer.id,
+      }).catch(() => undefined);
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'retainer_offer',
+        entityId: offer.id,
+        actorAppUserId: session.appUserId,
+        after: { emailed: true, to: contact.email },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, to: contact.email });
     },
   );
 

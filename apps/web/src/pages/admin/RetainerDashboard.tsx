@@ -59,6 +59,7 @@ interface OfferRow {
   purchasedTier: 'TIER_1' | 'TIER_2' | null;
   purchasedInvoiceId: string | null;
   offerExpiresAt: string;
+  createdAt: string;
   portalUrl: string | null;
 }
 
@@ -87,14 +88,27 @@ const RETAINER_STATUS_VALUES = [
   { value: 'pending_payment', label: 'Awaiting payment' },
 ];
 
+const OFFER_STATUS_VALUES = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'pending_payment', label: 'Awaiting payment' },
+  { value: 'purchased', label: 'Purchased' },
+  { value: 'declined', label: 'Declined' },
+  { value: 'expired', label: 'Expired' },
+];
+
 export function RetainerDashboardPage(): JSX.Element {
   const navigate = useNavigate();
   const view = useColumnView('vibe.retainers.view', { sortCol: 'expires', sortDir: 'asc' });
+  const offerView = useColumnView('vibe.retainerOffers.view', {
+    sortCol: 'created',
+    sortDir: 'desc',
+  });
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [items, setItems] = useState<RetainerRow[]>([]);
   const [offers, setOffers] = useState<OfferRow[]>([]);
   const [offerMsg, setOfferMsg] = useState<string | null>(null);
   const [sellingId, setSellingId] = useState<string | null>(null);
+  const [emailingId, setEmailingId] = useState<string | null>(null);
   const [voidId, setVoidId] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -299,6 +313,61 @@ export function RetainerDashboardPage(): JSX.Element {
       }),
     [items, view],
   );
+
+  const visibleOffers = useMemo(
+    () =>
+      selectRows(offers, offerView, {
+        filters: { status: (o) => o.status },
+        sortValues: {
+          client: (o) => o.clientName ?? '',
+          return: (o) => `${o.returnType} ${o.taxYear}`,
+          tiers: (o) => o.tier1PriceCents,
+          status: (o) => o.status,
+          expires: (o) => o.offerExpiresAt,
+          created: (o) => o.createdAt,
+        },
+        searchText: (o) => `${o.clientName ?? ''} ${o.returnType} ${o.taxYear} ${o.status}`,
+      }),
+    [offers, offerView],
+  );
+
+  async function deleteOffer(offer: OfferRow): Promise<void> {
+    if (!confirm(`Delete the pending retainer offer for ${offer.clientName ?? 'this client'}?`))
+      return;
+    setError(null);
+    setOfferMsg(null);
+    try {
+      await api(`/api/staff/retainers/offers/${offer.id}`, { method: 'DELETE' });
+      setOfferMsg('Offer deleted.');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'delete failed');
+    }
+  }
+
+  async function emailOffer(offer: OfferRow): Promise<void> {
+    setError(null);
+    setOfferMsg(null);
+    setEmailingId(offer.id);
+    try {
+      const r = await api<{ to: string }>(`/api/staff/retainers/offers/${offer.id}/email`, {
+        method: 'POST',
+        body: '{}',
+      });
+      setOfferMsg(`Proposal emailed to ${r.to}.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'email failed';
+      setError(
+        msg === 'no_primary_contact_email'
+          ? 'No primary contact with an email on file for this client.'
+          : msg === 'mail_not_configured'
+            ? 'Email delivery is not configured on this appliance.'
+            : `Email failed: ${msg}`,
+      );
+    } finally {
+      setEmailingId(null);
+    }
+  }
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
@@ -532,30 +601,108 @@ export function RetainerDashboardPage(): JSX.Element {
         )}
       </Card>
 
-      <Card title="Retainer offers">
+      <Card
+        title="Retainer offers"
+        action={
+          offerView.anyFilterActive ? (
+            <button
+              type="button"
+              onClick={offerView.clearFilters}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          ) : undefined
+        }
+      >
         {offerMsg && (
           <p style={{ fontSize: 12, color: tokens.color.success, marginTop: 0 }}>{offerMsg}</p>
         )}
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
-          Proposal-style offers auto-created when a tax-prep invoice is billed. Hand the client a
-          printable PDF or the portal link; or sell a tier in-office to generate the retainer
-          invoice for counter payment.
+          Proposal-style offers auto-created when a tax-prep invoice is billed. Email the
+          client&apos;s primary contact the proposal, hand them a printable PDF or the portal link,
+          or sell a tier in-office to generate the retainer invoice for counter payment.
         </p>
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={offerView} placeholder="Search offers…" />
+        </div>
         {offers.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No offers yet.</p>
         ) : (
           <Table<OfferRow>
             columns={[
-              { key: 'client', header: 'Client', render: (o) => o.clientName ?? '—' },
-              { key: 'rt', header: 'Return', render: (o) => `${o.returnType} ${o.taxYear}` },
+              {
+                key: 'client',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Client{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by client"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={offerView.sortFor('client')}
+                      onApply={(_, dir) => offerView.apply('client', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (o) => o.clientName ?? '—',
+              },
+              {
+                key: 'rt',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Return{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by return"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={offerView.sortFor('return')}
+                      onApply={(_, dir) => offerView.apply('return', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (o) => `${o.returnType} ${o.taxYear}`,
+              },
               {
                 key: 'tiers',
-                header: 'Tier add-on',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Tier add-on{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by tier price"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={offerView.sortFor('tiers')}
+                      onApply={(_, dir) => offerView.apply('tiers', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (o) => `${fmtCents(o.tier1PriceCents)} / ${fmtCents(o.tier2PriceCents)}`,
               },
               {
                 key: 'status',
-                header: 'Status',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={OFFER_STATUS_VALUES}
+                      selected={offerView.filterFor('status')}
+                      sort={offerView.sortFor('status')}
+                      searchable={false}
+                      onApply={(sel, dir) => offerView.apply('status', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (o) => (
                   <Pill
                     tone={
@@ -615,6 +762,15 @@ export function RetainerDashboardPage(): JSX.Element {
                       <>
                         <Button
                           type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={emailingId === o.id}
+                          onClick={() => void emailOffer(o)}
+                        >
+                          {emailingId === o.id ? 'Emailing…' : 'Email'}
+                        </Button>
+                        <Button
+                          type="button"
                           size="sm"
                           disabled={sellingId === o.id}
                           onClick={() => void sellTier(o, 'TIER_1')}
@@ -628,6 +784,14 @@ export function RetainerDashboardPage(): JSX.Element {
                           onClick={() => void sellTier(o, 'TIER_2')}
                         >
                           Sell T2
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="danger"
+                          size="sm"
+                          onClick={() => void deleteOffer(o)}
+                        >
+                          Delete
                         </Button>
                       </>
                     )}
@@ -645,8 +809,9 @@ export function RetainerDashboardPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={offers}
+            rows={visibleOffers}
             rowKey={(o) => o.id}
+            empty="No offers match the current filters."
           />
         )}
       </Card>

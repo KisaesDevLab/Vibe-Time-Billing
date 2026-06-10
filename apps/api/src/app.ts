@@ -1291,6 +1291,9 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     portalBaseUrl: config.PORTAL_BASE_URL,
+    sendStaffMail: deps.sendStaffMail
+      ? (a) => deps.sendStaffMail!({ to: a.to, subject: a.subject, body: a.body, html: a.html })
+      : undefined,
   });
   app.use('/api/staff/retainers', auth.requireAuth, auth.requireCsrf, retainerRouter);
 
