@@ -14,6 +14,7 @@ import { AiUsagePage } from './AiUsage';
 import { AiSettingsPage } from './AiSettings';
 import { ApiTokensPage } from './ApiTokens';
 import { AppointmentTypesPage } from './AppointmentTypes';
+import { AppointmentLocationsPage } from './AppointmentLocations';
 import { BackupPage } from './Backup';
 import { CloudflareTunnelPage } from './CloudflareTunnel';
 import { KnowledgeBaseAdminPage } from './KnowledgeBase';
@@ -182,6 +183,7 @@ const GROUPS: Group[] = [
     label: 'Scheduling',
     tabs: [
       { key: 'appointment-types', label: 'Appointment types', href: '/admin/appointment-types' },
+      { key: 'appointment-locations', label: 'Locations', href: '/admin/appointment-locations' },
     ],
   },
   {
@@ -337,6 +339,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="tax-payments" element={<TaxPaymentCatalogPage />} />
         <Route path="rate-codes" element={<RateCodesPage />} />
         <Route path="appointment-types" element={<AppointmentTypesPage />} />
+        <Route path="appointment-locations" element={<AppointmentLocationsPage />} />
         <Route path="rates" element={<RatesPage />} />
         <Route path="recurring-plans" element={<RecurringPlansPage />} />
         <Route path="hour-banks" element={<HourBanksPage />} />

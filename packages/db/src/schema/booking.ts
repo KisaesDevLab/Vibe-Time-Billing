@@ -29,6 +29,7 @@ import { sql } from 'drizzle-orm';
 
 import {
   appUsers,
+  appointmentLocationOptions,
   appointmentRsvpStatus,
   appointments,
   clientContacts,
@@ -153,6 +154,11 @@ export const staffAvailability = pgTable(
     // 0120 — allowed meeting location types for this window (e.g.
     // ['IN_PERSON']). NULL/empty = all locations allowed.
     locationTypes: text('location_types').array(),
+    // 0144 — optional location preset for this window. When a slot in this
+    // window is booked, the appointment defaults to this location.
+    locationOptionId: uuid('location_option_id').references(() => appointmentLocationOptions.id, {
+      onDelete: 'set null',
+    }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -29,14 +29,27 @@ const LOCATION_OPTS: { key: LocationType; label: string }[] = [
   { key: 'VIDEO', label: 'Video' },
 ];
 
+interface LocOption {
+  id: string;
+  name: string;
+  locationType: LocationType;
+}
+
 interface Win {
   startTime: string;
   endTime: string;
   /** Empty = all locations allowed for this window. */
   locationTypes: LocationType[];
+  /** 0144 — preset location for bookings made in this window (null = none). */
+  locationOptionId: string | null;
 }
 
-const newWin = (): Win => ({ startTime: '09:00', endTime: '17:00', locationTypes: [] });
+const newWin = (): Win => ({
+  startTime: '09:00',
+  endTime: '17:00',
+  locationTypes: [],
+  locationOptionId: null,
+});
 
 export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Element {
   const [settings, setSettings] = useState<BookingSettings>({
@@ -50,9 +63,16 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
   const [windows, setWindows] = useState<Win[][]>(() =>
     DOW.map((_, i) => (i >= 1 && i <= 5 ? [newWin()] : [])),
   );
+  const [locations, setLocations] = useState<LocOption[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api<{ items: LocOption[] }>('/api/staff/appointments/locations')
+      .then((r) => setLocations(r.items ?? []))
+      .catch(() => undefined);
+  }, []);
 
   async function load(): Promise<void> {
     setError(null);
@@ -71,6 +91,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
           startTime: string;
           endTime: string;
           locationTypes: LocationType[] | null;
+          locationOptionId: string | null;
           isActive: boolean;
         }[];
       }>(`/api/staff/booking/${userId}/availability`);
@@ -82,6 +103,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
               startTime: r.startTime.slice(0, 5),
               endTime: r.endTime.slice(0, 5),
               locationTypes: r.locationTypes ?? [],
+              locationOptionId: r.locationOptionId ?? null,
             });
           }
         }
@@ -145,6 +167,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
           startTime: w.startTime,
           endTime: w.endTime,
           locationTypes: w.locationTypes.length > 0 ? w.locationTypes : null,
+          locationId: w.locationOptionId,
           isActive: true,
         })),
       );
@@ -242,6 +265,31 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
                         );
                       })}
                     </div>
+                    {locations.length > 0 && (
+                      <select
+                        aria-label="Window location"
+                        value={w.locationOptionId ?? ''}
+                        onChange={(e) =>
+                          updateWindow(dow, idx, { locationOptionId: e.target.value || null })
+                        }
+                        title="Bookings in this window default to this location"
+                        style={{
+                          padding: '5px 8px',
+                          borderRadius: tokens.radius.sm,
+                          border: `1px solid ${tokens.color.border}`,
+                          background: tokens.color.surface,
+                          color: tokens.color.text,
+                          fontSize: 12,
+                        }}
+                      >
+                        <option value="">No location</option>
+                        {locations.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            @ {l.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                     <button
                       type="button"
                       aria-label="Remove window"

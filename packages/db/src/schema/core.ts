@@ -4008,6 +4008,12 @@ export const appointments = pgTable(
     endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
     location: appointmentLocation('location').notNull().default('VIDEO'),
     locationDetail: text('location_detail'),
+    // 0144 — optional link to a firm-managed location preset. The canonical
+    // location/locationDetail above are still populated (from the preset at
+    // booking time) so all readers keep working; this just records provenance.
+    locationOptionId: uuid('location_option_id').references(() => appointmentLocationOptions.id, {
+      onDelete: 'set null',
+    }),
     leadAppUserId: uuid('lead_app_user_id').references(() => appUsers.id, {
       onDelete: 'set null',
     }),
@@ -4093,6 +4099,33 @@ export const appointmentTypes = pgTable(
 
 export type AppointmentType = typeof appointmentTypes.$inferSelect;
 export type NewAppointmentType = typeof appointmentTypes.$inferInsert;
+
+// 0144 — firm-managed list of reusable appointment locations. Each preset
+// carries a meeting type + a free-text detail (address / video link / phone),
+// selectable at booking time in addition to typing a one-off location, and
+// attachable to a staff availability window (staff_availability.location_option_id).
+export const appointmentLocationOptions = pgTable(
+  'appointment_location_option',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    locationType: appointmentLocation('location_type').notNull().default('IN_PERSON'),
+    // Address (IN_PERSON), meeting link (VIDEO), or phone number (PHONE).
+    detail: text('detail'),
+    isActive: boolean('is_active').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmSortIdx: index('appointment_location_option_firm_sort_idx').on(t.firmId, t.sortOrder),
+  }),
+);
+
+export type AppointmentLocationOption = typeof appointmentLocationOptions.$inferSelect;
 
 // =====================================================================
 // 0069 — Tax payments (CP1)

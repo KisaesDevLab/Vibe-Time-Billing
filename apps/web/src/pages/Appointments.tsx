@@ -23,6 +23,12 @@ const LOC_LABEL: Record<LocationType, string> = {
   PHONE: 'Phone',
   VIDEO: 'Video',
 };
+interface LocOption {
+  id: string;
+  name: string;
+  locationType: LocationType;
+  detail: string | null;
+}
 const REMINDER_CH_LABEL: Record<ReminderStep['channel'], string> = {
   EMAIL: 'Email',
   SMS: 'SMS',
@@ -394,8 +400,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-            ) as // a JSX header is safe at runtime.
-            unknown as string,
+              // a JSX header is safe at runtime.
+            ) as unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -1166,6 +1172,8 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   const [duration, setDuration] = useState(30);
   const [location, setLocation] = useState<LocationType>('VIDEO');
   const [locationDetail, setLocationDetail] = useState('');
+  const [locations, setLocations] = useState<LocOption[]>([]);
+  const [appointmentLocationId, setAppointmentLocationId] = useState('');
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth() + 1);
@@ -1212,6 +1220,9 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       .catch(() => undefined);
     void api<{ items: ApptType[] }>('/api/staff/appointments/appointment-types')
       .then((r) => setTypes(r.items ?? []))
+      .catch(() => undefined);
+    void api<{ items: LocOption[] }>('/api/staff/appointments/locations')
+      .then((r) => setLocations(r.items ?? []))
       .catch(() => undefined);
     void api<{ items: { id: string; name: string }[] }>('/api/staff/clients')
       .then((r) => setClients(r.items ?? []))
@@ -1330,6 +1341,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setTypeId(t.id);
     setDuration(t.defaultDurationMinutes);
     setLocation(t.defaultLocationType);
+    setAppointmentLocationId('');
     if (!subject || types.some((x) => x.name === subject)) setSubject(t.name);
     // Prefill reminders from the type's default schedule (editable in step 3).
     setReminderSchedule(t.reminderSchedule ?? []);
@@ -1368,6 +1380,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           endsAt: slot.end,
           location,
           locationDetail: locationDetail || null,
+          appointmentLocationId: appointmentLocationId || null,
           clientId: clientId || null,
           engagementId: clientId && engagementId ? engagementId : null,
           participantContactIds: participantIds,
@@ -1396,6 +1409,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     setDuration(30);
     setLocation('VIDEO');
     setLocationDetail('');
+    setAppointmentLocationId('');
     setDate(null);
     setSlots([]);
     setSlot(null);
@@ -1476,10 +1490,22 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
   }
 
   const STEP_LABELS = ['Staff & type', 'Date & time', 'Client & details', 'Review'] as const;
+  function pickLocationPreset(id: string): void {
+    setAppointmentLocationId(id);
+    const opt = locations.find((l) => l.id === id);
+    if (opt) {
+      setLocation(opt.locationType);
+      setLocationDetail(opt.detail ?? '');
+    }
+  }
+
   const locBtn = (loc: LocationType, label: string): JSX.Element => (
     <button
       type="button"
-      onClick={() => setLocation(loc)}
+      onClick={() => {
+        setLocation(loc);
+        setAppointmentLocationId('');
+      }}
       style={{
         flex: 1,
         padding: '7px 10px',
@@ -1721,6 +1747,36 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
             </div>
           </div>
 
+          {locations.length > 0 && (
+            <div>
+              <div style={fieldLabel}>
+                Saved location <span style={{ textTransform: 'none' }}>(optional)</span>
+              </div>
+              <select
+                value={appointmentLocationId}
+                onChange={(e) => pickLocationPreset(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  borderRadius: tokens.radius.md,
+                  border: `1px solid ${tokens.color.border}`,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                  fontSize: 13,
+                }}
+                aria-label="Saved location"
+              >
+                <option value="">Pick a saved location, or enter your own below…</option>
+                {locations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name} · {LOC_LABEL[l.locationType]}
+                    {l.detail ? ` · ${l.detail}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div>
             <div style={fieldLabel}>
               {location === 'VIDEO'
@@ -1732,7 +1788,10 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
             </div>
             <Input
               value={locationDetail}
-              onChange={(e) => setLocationDetail(e.target.value)}
+              onChange={(e) => {
+                setLocationDetail(e.target.value);
+                setAppointmentLocationId('');
+              }}
               placeholder={location === 'VIDEO' ? 'Paste Zoom, Teams, or Meet link…' : undefined}
             />
           </div>

@@ -28,6 +28,7 @@ import type { Database } from '@vibe/db';
 import {
   appUsers,
   appointmentEngagementNotes,
+  appointmentLocationOptions,
   appointmentParticipants,
   appointmentRemindersSent,
   appointmentRescheduleRequests,
@@ -40,6 +41,7 @@ import {
   engagements,
   offices,
   persons,
+  staffAvailability,
   staffBookingSettings,
   staffCalendarConnections,
 } from '@vibe/db/schema';
@@ -100,6 +102,10 @@ const BookSchema = z.object({
   durationMinutes: z.number().int().min(5).max(480).optional(),
   location: z.enum(['VIDEO', 'PHONE', 'IN_PERSON']).optional(),
   locationDetail: z.string().max(1000).nullable().optional(),
+  // 0144 — optional firm-managed location preset. When set, its type +
+  // detail populate the appointment (an explicit location/locationDetail
+  // in the same request still wins).
+  appointmentLocationId: z.string().uuid().nullable().optional(),
   clientId: z.string().uuid().nullable().optional(),
   engagementId: z.string().uuid().nullable().optional(),
   participantContactIds: z.array(z.string().uuid()).max(50).optional(),
@@ -130,6 +136,62 @@ function dateInTz(at: Date, tz: string): string {
   }).formatToParts(at);
   const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+// Local wall-clock 'HH:MM:00' of an instant in `tz` (for matching a slot
+// against staff_availability time windows).
+function timeInTz(at: Date, tz: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(at);
+  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '00';
+  const hh = get('hour') === '24' ? '00' : get('hour');
+  return `${hh}:${get('minute')}:00`;
+}
+
+// 0144 — the location preset (if any) on the lead staff's active
+// availability window covering this instant. Drives the booking default
+// when the booker didn't pick a location of their own.
+async function leadWindowLocation(
+  db: Database,
+  staffId: string,
+  at: Date,
+  tz: string,
+  firmId: string,
+): Promise<{
+  id: string;
+  locationType: 'VIDEO' | 'PHONE' | 'IN_PERSON';
+  detail: string | null;
+} | null> {
+  const dow = new Date(`${dateInTz(at, tz)}T00:00:00Z`).getUTCDay();
+  const hhmmss = timeInTz(at, tz);
+  const [row] = await db
+    .select({
+      id: appointmentLocationOptions.id,
+      locationType: appointmentLocationOptions.locationType,
+      detail: appointmentLocationOptions.detail,
+    })
+    .from(staffAvailability)
+    .innerJoin(
+      appointmentLocationOptions,
+      eq(appointmentLocationOptions.id, staffAvailability.locationOptionId),
+    )
+    .where(
+      and(
+        eq(staffAvailability.staffId, staffId),
+        eq(staffAvailability.dayOfWeek, dow),
+        eq(staffAvailability.isActive, true),
+        eq(appointmentLocationOptions.firmId, firmId),
+        sql`${staffAvailability.startTime} <= ${hhmmss}::time`,
+        sql`${staffAvailability.endTime} > ${hhmmss}::time`,
+      ),
+    )
+    .orderBy(asc(staffAvailability.startTime))
+    .limit(1);
+  return row ?? null;
 }
 
 export function createBookingRouter(deps: BookingRoutesDeps): Router {
@@ -207,6 +269,30 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
           and(eq(appointmentTypes.firmId, session.firmId), eq(appointmentTypes.isActive, true)),
         )
         .orderBy(appointmentTypes.sortOrder);
+      res.json({ items });
+    },
+  );
+
+  // ---- active location presets (for the booking form picker) ---------
+  router.get(
+    '/locations',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select()
+        .from(appointmentLocationOptions)
+        .where(
+          and(
+            eq(appointmentLocationOptions.firmId, session.firmId),
+            eq(appointmentLocationOptions.isActive, true),
+          ),
+        )
+        .orderBy(appointmentLocationOptions.sortOrder, appointmentLocationOptions.name);
       res.json({ items });
     },
   );
@@ -422,8 +508,49 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         }
       }
 
-      // Server-side slot re-validation (intersection across staff).
       const tz = await firmTimezone(db, session.firmId);
+
+      // 0144 — resolve the appointment location. Precedence:
+      //   1. an explicitly chosen location preset (appointmentLocationId);
+      //   2. else, when the booker typed no location detail, the preset on
+      //      the lead staff's availability window covering this slot;
+      //   3. else the typed location type + detail (today's behavior).
+      let locationOptionId: string | null = null;
+      let resolvedLocation: 'VIDEO' | 'PHONE' | 'IN_PERSON' = data.location ?? 'VIDEO';
+      let resolvedDetail: string | null = data.locationDetail ?? null;
+      if (data.appointmentLocationId) {
+        const [opt] = await db
+          .select({
+            id: appointmentLocationOptions.id,
+            locationType: appointmentLocationOptions.locationType,
+            detail: appointmentLocationOptions.detail,
+          })
+          .from(appointmentLocationOptions)
+          .where(
+            and(
+              eq(appointmentLocationOptions.id, data.appointmentLocationId),
+              eq(appointmentLocationOptions.firmId, session.firmId),
+              eq(appointmentLocationOptions.isActive, true),
+            ),
+          )
+          .limit(1);
+        if (!opt) {
+          res.status(400).json({ error: 'unknown_location' });
+          return;
+        }
+        locationOptionId = opt.id;
+        resolvedLocation = data.location ?? opt.locationType;
+        resolvedDetail = data.locationDetail ?? opt.detail;
+      } else if (!data.locationDetail) {
+        const win = await leadWindowLocation(db, staffIds[0]!, startsAt, tz, session.firmId);
+        if (win) {
+          locationOptionId = win.id;
+          resolvedLocation = win.locationType;
+          resolvedDetail = win.detail;
+        }
+      }
+
+      // Server-side slot re-validation (intersection across staff).
       const avail = await getAvailableSlots({
         db,
         staffIds,
@@ -432,7 +559,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         timezone: tz,
         now: nowFn(),
         busyProvider: providerFor(session.firmId),
-        location: data.location ?? 'VIDEO',
+        location: resolvedLocation,
       });
       const match = avail.slots.find(
         (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),
@@ -483,8 +610,9 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
             startsAt,
             endsAt,
             durationMinutes,
-            location: data.location ?? 'VIDEO',
-            locationDetail: data.locationDetail ?? null,
+            location: resolvedLocation,
+            locationDetail: resolvedDetail,
+            locationOptionId,
             internalNotes: data.internalNotes ?? null,
             reminderSchedule:
               data.reminderSchedule && data.reminderSchedule.length > 0

@@ -128,6 +128,7 @@ import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createAppointmentRouter } from './appointments/routes';
 import { createAppointmentTypeRouter } from './appointments/types-routes';
+import { createAppointmentLocationRouter } from './appointments/locations-routes';
 import { createBookingSettingsRouter } from './appointments/booking-settings-routes';
 import { createSlotsRouter } from './appointments/slots-routes';
 import { createBookingRouter } from './appointments/booking-routes';
@@ -1331,6 +1332,17 @@ export function createApp(deps: AppDeps): Express {
     auth.requireAuth,
     auth.requireCsrf,
     appointmentTypeRouter,
+  );
+  // 0144 — firm-managed appointment locations (Settings → Scheduling).
+  const appointmentLocationRouter = createAppointmentLocationRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/appointment-locations',
+    auth.requireAuth,
+    auth.requireCsrf,
+    appointmentLocationRouter,
   );
   const bookingSettingsRouter = createBookingSettingsRouter({
     db: deps.db,

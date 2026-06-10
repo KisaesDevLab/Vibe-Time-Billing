@@ -52,6 +52,9 @@ const AvailabilitySchema = z.object({
         endTime: z.string().regex(TIME_RE),
         // Allowed meeting locations for this window; null/empty = all.
         locationTypes: z.array(z.enum(LOCATION_TYPES)).max(3).nullable().optional(),
+        // 0144 — optional location preset for this window (bookings default
+        // to it).
+        locationId: z.string().uuid().nullable().optional(),
         isActive: z.boolean().optional(),
       }),
     )
@@ -201,6 +204,7 @@ export function createBookingSettingsRouter(deps: BookingSettingsRoutesDeps): Ro
             startTime: r.startTime,
             endTime: r.endTime,
             locationTypes: r.locationTypes && r.locationTypes.length > 0 ? r.locationTypes : null,
+            locationOptionId: r.locationId ?? null,
             isActive: r.isActive ?? true,
           })),
         );
