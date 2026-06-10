@@ -920,6 +920,12 @@ const REPORT_CARDS: CardSpec[] = [
     href: '/reports/payments-received',
   },
   {
+    key: 'signed-forms',
+    title: 'Signed forms',
+    blurb: 'Date range, sortable/searchable, with direct links to signed PDFs + certificates.',
+    href: '/reports/signed-forms',
+  },
+  {
     key: 'realization',
     title: 'Realization',
     blurb: 'Original vs adjusted value by firm / timekeeper / engagement / client.',

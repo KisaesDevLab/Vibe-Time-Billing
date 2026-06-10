@@ -47,6 +47,7 @@ import { PaymentReceivePage } from './pages/PaymentReceive';
 import { ProfitabilityPage } from './pages/Profitability';
 import { ReportsPage } from './pages/Reports';
 import { PaymentsReceivedReportPage } from './pages/reports/PaymentsReceivedReport';
+import { SignedFormsReportPage } from './pages/reports/SignedFormsReport';
 import { RetainerDashboardPage } from './pages/admin/RetainerDashboard';
 import { RetainerDetailPage } from './pages/admin/RetainerDetail';
 import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
@@ -125,6 +126,7 @@ export function App(): JSX.Element {
                     path="/reports/payments-received"
                     element={<PaymentsReceivedReportPage />}
                   />
+                  <Route path="/reports/signed-forms" element={<SignedFormsReportPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
                   <Route path="/retainers" element={<RetainersGate />} />
                   <Route path="/retainers/:id" element={<RetainerDetailPage />} />

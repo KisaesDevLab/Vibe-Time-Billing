@@ -79,6 +79,9 @@ export const PERMISSION_KEYS = [
   'report:utilization:read',
   'report:profitability:read',
   'report:ar:read',
+  // Signed-forms report — completed e-signature requests with direct
+  // links to signed PDFs + certificates. Partner + manager (admin inherits).
+  'report:signed-forms:read',
   // Phase 17 #29 — partner-level data (book-of-business, partner
   // realization, partner profitability). Senior/staff don't get this.
   'report:partner-data:read',
@@ -210,6 +213,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'report:utilization:read',
     'report:profitability:read',
     'report:ar:read',
+    'report:signed-forms:read',
     'report:partner-data:read',
     'approval:queue:read',
     'approval:act',
@@ -268,6 +272,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'report:utilization:read',
     'report:profitability:read',
     'report:ar:read',
+    'report:signed-forms:read',
     'approval:queue:read',
     'approval:act',
     // Storage v2 — Manager row. No reconcile (owner only).
