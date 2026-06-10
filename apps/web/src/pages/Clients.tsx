@@ -20,6 +20,7 @@ interface ClientRow {
   partnerName: string | null;
   termsDays: number;
   invoiceConsolidationPreference: 'CONSOLIDATED' | 'SEPARATE';
+  officeName: string | null;
   createdAt: string;
   outstandingBalanceCents: number;
   mailingCity: string | null;
@@ -419,9 +420,9 @@ export function ClientsPage(): JSX.Element {
                 ),
               },
               {
-                key: 'consol',
-                header: 'Consolidation',
-                render: (c) => <Pill>{c.invoiceConsolidationPreference}</Pill>,
+                key: 'office',
+                header: 'Office',
+                render: (c) => c.officeName ?? '—',
               },
               {
                 key: 'status',
