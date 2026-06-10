@@ -20,9 +20,10 @@ import {
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, tokens } from '@vibe/ui';
 
-import { api } from '../api-client';
+import { api, getCsrfToken } from '../api-client';
+import { usePermission } from '../auth-context';
 import { dollarsInputToCents } from '../lib/money';
 import { ShareFileDialog } from './clients/ShareFileDialog';
 
@@ -92,6 +93,7 @@ export function TaxReturnDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [signaturesOpen, setSignaturesOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
@@ -289,6 +291,8 @@ export function TaxReturnDetailPage(): JSX.Element {
         taxYear={ret.taxYear}
       />
 
+      <SignaturesCard onCollect={() => setSignaturesOpen(true)} />
+
       <Card title={`Active releases (${releases.length})`}>
         {releases.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
@@ -357,6 +361,15 @@ export function TaxReturnDetailPage(): JSX.Element {
         />
       )}
 
+      {signaturesOpen && (
+        <CollectSignaturesDialog
+          returnId={ret.id}
+          clientId={ret.clientId}
+          onClose={() => setSignaturesOpen(false)}
+          onCreated={(requestId) => navigate(`/signatures/${requestId}`)}
+        />
+      )}
+
       {previewUrl && (
         <PdfPreviewModal
           title={`${ret.taxYear} ${ret.formCode} ${ret.jurisdiction}`}
@@ -364,6 +377,609 @@ export function TaxReturnDetailPage(): JSX.Element {
           onClose={() => setPreviewUrl(null)}
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Signatures card — entry point to the collect-signatures flow.
+// ---------------------------------------------------------------------------
+
+function SignaturesCard({ onCollect }: { onCollect: () => void }): JSX.Element {
+  const canWrite = usePermission('proposal:write');
+  return (
+    <Card title="Signatures">
+      <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
+        Build an e-signature package from this return — detected signature pages, default documents,
+        and any ad-hoc attachments — then route it to the signers for review.
+      </p>
+      <Button disabled={!canWrite} onClick={onCollect}>
+        Collect signatures
+      </Button>
+      {!canWrite && (
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8, marginBottom: 0 }}>
+          You need write access to collect signatures.
+        </p>
+      )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Collect-signatures dialog — detect pages, pick templates/ad-hoc docs,
+// choose signers (with filing status for 1040), then create the request.
+// ---------------------------------------------------------------------------
+
+interface DetectPage {
+  pageNumber: number;
+  bookmarkTitle: string;
+  layoutKey: string;
+}
+interface DetectTemplate {
+  id: string;
+  name: string;
+  totalPages: number;
+  autoInclude: boolean;
+}
+interface SignatureDetect {
+  formCode: string;
+  signatureFormType: string;
+  pages: DetectPage[];
+  templates: DetectTemplate[];
+  noRulesConfigured: boolean;
+  noSource: boolean;
+}
+
+type SignerRole = 'taxpayer' | 'spouse' | 'officer';
+
+const ROLE_OPTIONS: ReadonlyArray<{ value: SignerRole; label: string }> = [
+  { value: 'taxpayer', label: 'Taxpayer' },
+  { value: 'spouse', label: 'Spouse' },
+  { value: 'officer', label: 'Officer' },
+];
+
+// One reconciled person on the client (subset of /clients/:id/people we need).
+interface SigPerson {
+  key: string;
+  name: string;
+  email: string | null;
+  hint: string;
+  personId?: string;
+  clientContactId?: string;
+  portalIdentityId?: string;
+}
+
+interface SigPeopleApiEntry {
+  key: string;
+  kind: string;
+  contact: {
+    id: string;
+    personId: string;
+    fullName: string;
+    email?: string | null;
+    isPrimary?: boolean;
+  } | null;
+  access: {
+    portalIdentityId: string;
+    fullName: string;
+    primaryEmail?: string | null;
+  } | null;
+  pendingInvitation: {
+    proposedFullName: string;
+    invitedEmail?: string | null;
+  } | null;
+}
+
+const SIG_KIND_HINT: Record<string, string> = {
+  linked: 'Contact + portal',
+  contact_only: 'Contact',
+  portal_only: 'Portal user',
+  invited: 'Invited',
+};
+
+function toSigPerson(e: SigPeopleApiEntry): SigPerson | null {
+  const name =
+    e.contact?.fullName ?? e.access?.fullName ?? e.pendingInvitation?.proposedFullName ?? '';
+  if (!name) return null;
+  const email =
+    e.contact?.email ?? e.access?.primaryEmail ?? e.pendingInvitation?.invitedEmail ?? null;
+  const hint = e.contact?.isPrimary ? 'Primary contact' : (SIG_KIND_HINT[e.kind] ?? e.kind);
+  return {
+    key: e.key,
+    name,
+    email,
+    hint,
+    personId: e.contact?.personId,
+    clientContactId: e.contact?.id,
+    portalIdentityId: e.access?.portalIdentityId,
+  };
+}
+
+// Default role for a freshly-picked signer given the return's form type and
+// (for 1040) the chosen filing status / existing picks.
+function defaultRoleFor(
+  signatureFormType: string,
+  filingStatus: 'single' | 'mfj',
+  alreadyTaxpayer: boolean,
+): SignerRole {
+  if (signatureFormType === '8879') {
+    return filingStatus === 'mfj' && alreadyTaxpayer ? 'spouse' : 'taxpayer';
+  }
+  if (signatureFormType.startsWith('8879-')) return 'officer';
+  return 'taxpayer';
+}
+
+interface PickedSigner {
+  person: SigPerson;
+  role: SignerRole;
+}
+
+function CollectSignaturesDialog({
+  returnId,
+  clientId,
+  onClose,
+  onCreated,
+}: {
+  returnId: string;
+  clientId: string;
+  onClose: () => void;
+  onCreated: (requestId: string) => void;
+}): JSX.Element {
+  const [detect, setDetect] = useState<SignatureDetect | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const [checkedPages, setCheckedPages] = useState<Set<number>>(new Set());
+  const [checkedTemplates, setCheckedTemplates] = useState<Set<string>>(new Set());
+  const [filingStatus, setFilingStatus] = useState<'single' | 'mfj'>('single');
+
+  const [people, setPeople] = useState<SigPerson[]>([]);
+  const [picked, setPicked] = useState<PickedSigner[]>([]);
+
+  const [adHocKeys, setAdHocKeys] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Load the signature-detect payload + the client's people.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await api<SignatureDetect>(`/api/staff/tax/returns/${returnId}/signature-detect`);
+        if (cancelled) return;
+        setDetect(r);
+        setCheckedPages(new Set(r.pages.map((p) => p.pageNumber)));
+        setCheckedTemplates(new Set(r.templates.filter((t) => t.autoInclude).map((t) => t.id)));
+      } catch (e) {
+        if (!cancelled) setLoadErr(e instanceof Error ? e.message : 'detect_failed');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [returnId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api<{ items?: SigPeopleApiEntry[]; people?: SigPeopleApiEntry[] }>(
+      `/api/staff/clients/${clientId}/people`,
+    )
+      .then((r) => {
+        if (cancelled) return;
+        const raw = r.items ?? r.people ?? [];
+        const entries = raw.map(toSigPerson).filter((x): x is SigPerson => x !== null);
+        const seen = new Set<string>();
+        setPeople(entries.filter((e) => (seen.has(e.key) ? false : (seen.add(e.key), true))));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  const is1040 = detect?.signatureFormType === '8879';
+
+  function togglePage(n: number): void {
+    setCheckedPages((prev) => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  }
+  function toggleTemplate(id: string): void {
+    setCheckedTemplates((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function togglePerson(p: SigPerson, checked: boolean): void {
+    setPicked((prev) => {
+      if (checked) {
+        if (prev.some((s) => s.person.key === p.key)) return prev;
+        const hasTaxpayer = prev.some((s) => s.role === 'taxpayer');
+        const role = defaultRoleFor(detect?.signatureFormType ?? '', filingStatus, hasTaxpayer);
+        return [...prev, { person: p, role }];
+      }
+      return prev.filter((s) => s.person.key !== p.key);
+    });
+  }
+  function setRole(key: string, role: SignerRole): void {
+    setPicked((prev) => prev.map((s) => (s.person.key === key ? { ...s, role } : s)));
+  }
+
+  const pickedKeys = new Set(picked.map((s) => s.person.key));
+
+  async function uploadAdHoc(file: File): Promise<void> {
+    setUploading(true);
+    setError(null);
+    try {
+      const csrf = getCsrfToken();
+      const res = await fetch(`/api/staff/tax/returns/${returnId}/signature-doc`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/pdf',
+          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+        },
+        body: file,
+      });
+      if (!res.ok) throw new Error(`upload_failed_${res.status}`);
+      const body = (await res.json()) as { key: string };
+      setAdHocKeys((prev) => [...prev, body.key]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'upload_failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function submit(): Promise<void> {
+    if (!detect) return;
+    const signers = picked
+      .filter((s) => s.person.name.trim() && (s.person.email ?? '').trim())
+      .map((s) => ({
+        name: s.person.name.trim(),
+        email: (s.person.email ?? '').trim(),
+        role: s.role,
+        personId: s.person.personId,
+        clientContactId: s.person.clientContactId,
+        portalIdentityId: s.person.portalIdentityId,
+      }));
+    if (signers.length === 0) {
+      setError('Add at least one signer with a name and email.');
+      return;
+    }
+    const returnPages = detect.pages
+      .filter((p) => checkedPages.has(p.pageNumber))
+      .map((p) => ({ page: p.pageNumber, layoutKey: p.layoutKey }));
+    const templateIds = detect.templates.filter((t) => checkedTemplates.has(t.id)).map((t) => t.id);
+    if (returnPages.length === 0 && templateIds.length === 0 && adHocKeys.length === 0) {
+      setError('Select at least one page or document to include.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{ requestId: string }>(
+        `/api/staff/tax/returns/${returnId}/signature-request`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ signers, returnPages, templateIds, adHocKeys }),
+        },
+      );
+      onCreated(r.requestId);
+    } catch (e) {
+      const code = e instanceof Error ? e.message : 'failed';
+      setError(
+        code.includes('empty_package')
+          ? 'Select at least one page or document.'
+          : code.includes('no_signers')
+            ? 'Add at least one signer.'
+            : code.includes('not_found')
+              ? 'This return could not be found.'
+              : `Could not create the request: ${code}`,
+      );
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="collect-sig-title"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.5)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: tokens.space.md,
+      }}
+    >
+      <div
+        style={{
+          background: tokens.color.bg,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.lg,
+          padding: tokens.space.lg,
+          width: '100%',
+          maxWidth: 640,
+          maxHeight: '92vh',
+          overflowY: 'auto',
+        }}
+      >
+        <h2 id="collect-sig-title" style={{ margin: 0, fontSize: 18 }}>
+          Collect signatures
+        </h2>
+
+        {loadErr ? (
+          <p style={{ fontSize: 13, color: tokens.color.danger, marginTop: tokens.space.md }}>
+            Could not detect signature pages: {loadErr}
+          </p>
+        ) : !detect ? (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: tokens.space.md }}>
+            Detecting signature pages…
+          </p>
+        ) : (
+          <div style={{ marginTop: tokens.space.md, display: 'grid', gap: 16 }}>
+            {/* Detected signature pages */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Detected signature pages
+              </div>
+              {detect.pages.length === 0 ? (
+                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  No signature pages detected from bookmarks
+                  {detect.noRulesConfigured && (
+                    <>
+                      {' — '}
+                      configure rules in Admin → Signatures
+                    </>
+                  )}
+                  {detect.noSource && <> — the return has no source PDF</>}. You can still proceed
+                  with documents below.
+                </div>
+              ) : (
+                <div
+                  style={{
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    padding: 8,
+                    maxHeight: 180,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {detect.pages.map((p) => (
+                    <label
+                      key={p.pageNumber}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '4px 0',
+                        fontSize: 13,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checkedPages.has(p.pageNumber)}
+                        onChange={() => togglePage(p.pageNumber)}
+                      />
+                      <span style={{ flex: 1 }}>
+                        p.{p.pageNumber} — {p.bookmarkTitle}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Default documents */}
+            {detect.templates.length > 0 && (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                  Default documents
+                </div>
+                <div
+                  style={{
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    padding: 8,
+                  }}
+                >
+                  {detect.templates.map((t) => (
+                    <label
+                      key={t.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '4px 0',
+                        fontSize: 13,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checkedTemplates.has(t.id)}
+                        onChange={() => toggleTemplate(t.id)}
+                      />
+                      <span style={{ flex: 1 }}>{t.name}</span>
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {t.totalPages}pp
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Filing status (1040 only) */}
+            {is1040 && (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Filing status</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button
+                    size="sm"
+                    variant={filingStatus === 'single' ? 'primary' : 'secondary'}
+                    onClick={() => setFilingStatus('single')}
+                  >
+                    Single
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={filingStatus === 'mfj' ? 'primary' : 'secondary'}
+                    onClick={() => setFilingStatus('mfj')}
+                  >
+                    Married filing jointly
+                  </Button>
+                </div>
+                <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '6px 0 0' }}>
+                  {filingStatus === 'mfj'
+                    ? 'Taxpayer + Spouse signer slots.'
+                    : 'One Taxpayer signer slot.'}
+                </p>
+              </div>
+            )}
+
+            {/* Signers */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Signers</div>
+              {people.length === 0 ? (
+                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  No people found on this client.
+                </div>
+              ) : (
+                <div
+                  style={{
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {people.map((p) => {
+                    const noEmail = !p.email;
+                    const sel = pickedKeys.has(p.key);
+                    const role = picked.find((s) => s.person.key === p.key)?.role;
+                    return (
+                      <div
+                        key={p.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '6px 10px',
+                          fontSize: 13,
+                          borderBottom: `1px solid ${tokens.color.border}`,
+                        }}
+                      >
+                        <label
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            flex: 1,
+                            opacity: noEmail ? 0.5 : 1,
+                            cursor: noEmail ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={noEmail}
+                            checked={sel}
+                            onChange={(e) => togglePerson(p, e.target.checked)}
+                          />
+                          <span style={{ flex: 1 }}>
+                            {p.name}
+                            {p.email ? (
+                              <span style={{ color: tokens.color.textMuted }}> · {p.email}</span>
+                            ) : (
+                              <span style={{ color: tokens.color.danger }}>
+                                {' '}
+                                · no email on file
+                              </span>
+                            )}
+                          </span>
+                          <Pill>{p.hint}</Pill>
+                        </label>
+                        {sel && (
+                          <div style={{ width: 130 }}>
+                            <Combobox
+                              options={ROLE_OPTIONS.map((o) => ({
+                                value: o.value,
+                                label: o.label,
+                              }))}
+                              value={role ?? 'taxpayer'}
+                              onChange={(v) => setRole(p.key, v as SignerRole)}
+                              ariaLabel={`Role for ${p.name}`}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Add document */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Add document (optional)
+              </div>
+              <input
+                type="file"
+                accept="application/pdf"
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void uploadAdHoc(f);
+                  e.target.value = '';
+                }}
+                style={{ fontSize: 13 }}
+              />
+              <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '6px 0 0' }}>
+                {uploading
+                  ? 'Uploading…'
+                  : adHocKeys.length > 0
+                    ? `${adHocKeys.length} document${adHocKeys.length === 1 ? '' : 's'} attached.`
+                    : 'Attach a one-off PDF to include in the package.'}
+              </p>
+            </div>
+
+            {error && (
+              <p style={{ fontSize: 12, color: tokens.color.danger, margin: 0 }}>{error}</p>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Button variant="ghost" onClick={onClose} disabled={busy}>
+                Cancel
+              </Button>
+              <Button onClick={() => void submit()} disabled={busy}>
+                {busy ? 'Creating…' : 'Create & review'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
