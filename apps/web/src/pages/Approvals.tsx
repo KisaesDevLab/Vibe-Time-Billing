@@ -245,7 +245,7 @@ function PortalAccessRequestsCard(): JSX.Element {
               header: 'ID',
               render: (r) => (
                 <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {r.idType === 'SSN_LAST4' ? `SSN ••• ${r.idValue}` : `EIN ${r.idValue}`}
+                  {r.idType === 'SSN_LAST4' ? `SSN ••• ${r.idValue}` : `EIN ••• ${r.idValue}`}
                 </span>
               ),
             },

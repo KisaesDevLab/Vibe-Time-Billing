@@ -17,6 +17,7 @@ export function LoginPage(): JSX.Element {
 }
 
 function CombinedLogin(): JSX.Element {
+  const navigate = useNavigate();
   const [contact, setContact] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'sent_email' | 'sent_sms'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -29,10 +30,16 @@ function CombinedLogin(): JSX.Element {
     setStatus('sending');
     setError(null);
     try {
-      await api('/api/portal/auth/login', {
+      const r = await api<{ access?: boolean }>('/api/portal/auth/login', {
         method: 'POST',
         body: JSON.stringify({ contact }),
       });
+      // No active portal access for this contact → send them to request it,
+      // pre-filling what they typed.
+      if (!r.access) {
+        navigate(`/auth/request-access?contact=${encodeURIComponent(contact.trim())}`);
+        return;
+      }
       if (looksLikeEmail) {
         setStatus('sent_email');
       } else {

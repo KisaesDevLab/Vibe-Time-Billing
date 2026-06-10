@@ -53,13 +53,12 @@ function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
 }
 
-// Validate the verification id's shape. Bad shapes are rejected outright
-// (a format error leaks nothing about whether the contact matched).
-function normalizeIdValue(idType: 'SSN_LAST4' | 'EIN', raw: string): string | null {
+// Validate the verification id's shape — the last 4 digits of the SSN or
+// EIN. Bad shapes are rejected outright (a format error leaks nothing about
+// whether the contact matched).
+function normalizeIdValue(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
-  if (idType === 'SSN_LAST4') return digits.length === 4 ? digits : null;
-  // EIN is 9 digits; keep the entered formatting for display.
-  return digits.length === 9 ? raw.trim() : null;
+  return digits.length === 4 ? digits : null;
 }
 
 export function createPortalAccessRequestPublicRouter(deps: PortalAccessRequestPublicDeps): Router {
@@ -71,7 +70,7 @@ export function createPortalAccessRequestPublicRouter(deps: PortalAccessRequestP
       res.status(400).json({ error: 'invalid_payload' });
       return;
     }
-    const idValue = normalizeIdValue(parsed.data.idType, parsed.data.idValue);
+    const idValue = normalizeIdValue(parsed.data.idValue);
     if (!idValue) {
       res.status(400).json({ error: 'invalid_id' });
       return;

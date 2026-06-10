@@ -7,7 +7,7 @@
 // confirmation regardless of whether the contact matched.
 
 import { useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { AuthLayout, Button, Input, tokens } from '@vibe/ui';
 
@@ -16,14 +16,14 @@ import { api } from '../api-client';
 type IdType = 'SSN_LAST4' | 'EIN';
 
 export function RequestAccessPage(): JSX.Element {
-  const [contact, setContact] = useState('');
+  const [searchParams] = useSearchParams();
+  const [contact, setContact] = useState(searchParams.get('contact') ?? '');
   const [idType, setIdType] = useState<IdType>('SSN_LAST4');
   const [idValue, setIdValue] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'done'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  const idOk =
-    idType === 'SSN_LAST4' ? /^\d{4}$/.test(idValue) : idValue.replace(/\D/g, '').length === 9;
+  const idOk = /^\d{4}$/.test(idValue);
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -41,7 +41,7 @@ export function RequestAccessPage(): JSX.Element {
         msg === 'invalid_id'
           ? idType === 'SSN_LAST4'
             ? 'Enter the last 4 digits of your SSN.'
-            : 'Enter a valid 9-digit EIN.'
+            : 'Enter the last 4 digits of your EIN.'
           : 'Something went wrong. Please try again.',
       );
       setStatus('idle');
@@ -103,25 +103,15 @@ export function RequestAccessPage(): JSX.Element {
           </div>
         </div>
 
-        {idType === 'SSN_LAST4' ? (
-          <Input
-            label="Last 4 digits of SSN"
-            value={idValue}
-            onChange={(e) => setIdValue(e.target.value.replace(/\D/g, '').slice(0, 4))}
-            inputMode="numeric"
-            required
-            maxLength={4}
-            placeholder="1234"
-          />
-        ) : (
-          <Input
-            label="Entity EIN"
-            value={idValue}
-            onChange={(e) => setIdValue(e.target.value)}
-            required
-            placeholder="12-3456789"
-          />
-        )}
+        <Input
+          label={idType === 'SSN_LAST4' ? 'Last 4 digits of SSN' : 'Last 4 digits of EIN'}
+          value={idValue}
+          onChange={(e) => setIdValue(e.target.value.replace(/\D/g, '').slice(0, 4))}
+          inputMode="numeric"
+          required
+          maxLength={4}
+          placeholder="1234"
+        />
 
         {error && <div style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</div>}
 

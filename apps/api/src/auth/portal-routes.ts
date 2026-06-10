@@ -93,7 +93,7 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
       max: 20,
     });
     if (!ipLimit.allowed) {
-      res.status(200).json(GENERIC_RESPONSE);
+      res.status(200).json({ ...GENERIC_RESPONSE, access: false });
       return;
     }
 
@@ -105,11 +105,12 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
         max: 5,
       });
       if (!cl.allowed) {
-        res.status(200).json(GENERIC_RESPONSE);
+        res.status(200).json({ ...GENERIC_RESPONSE, access: false });
         return;
       }
       const id = await findIdentityByEmail(deps.db, email);
-      if (id) {
+      const access = id ? await hasActiveAccess(deps.db, id.id) : false;
+      if (id && access) {
         const nonce = randomNonce();
         const token = await issueMagicLink({
           subjectId: id.id,
@@ -130,14 +131,14 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
           .sendEmail({ to: email, subject: 'Your sign-in link', body: link })
           .catch((err: unknown) => logger.error({ err }, 'portal magic-link delivery'));
       }
-      res.status(200).json(GENERIC_RESPONSE);
+      res.status(200).json({ ...GENERIC_RESPONSE, access });
       return;
     }
 
     if (kind === 'phone') {
       const phone = normalizePhone(parsed.data.contact);
       if (!phone) {
-        res.status(200).json(GENERIC_RESPONSE);
+        res.status(200).json({ ...GENERIC_RESPONSE, access: false });
         return;
       }
       const cl = await checkAndIncrement(deps.redis, {
@@ -146,11 +147,12 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
         max: 5,
       });
       if (!cl.allowed) {
-        res.status(200).json(GENERIC_RESPONSE);
+        res.status(200).json({ ...GENERIC_RESPONSE, access: false });
         return;
       }
       const id = await findIdentityByPhone(deps.db, phone);
-      if (id) {
+      const access = id ? await hasActiveAccess(deps.db, id.id) : false;
+      if (id && access) {
         const code = generateSmsOtp();
         await deps.redis.set(
           `portal:otp:${phone}`,
@@ -162,12 +164,12 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
           .sendSms({ to: phone, body: `Your Vibe sign-in code: ${code}` })
           .catch((err: unknown) => logger.error({ err }, 'portal sms delivery'));
       }
-      res.status(200).json(GENERIC_RESPONSE);
+      res.status(200).json({ ...GENERIC_RESPONSE, access });
       return;
     }
 
-    // Unknown kind — same generic response.
-    res.status(200).json(GENERIC_RESPONSE);
+    // Unknown kind — route to request access.
+    res.status(200).json({ ...GENERIC_RESPONSE, access: false });
   });
 
   router.post('/verify-magic-link', async (req: Request, res: Response) => {
@@ -663,6 +665,25 @@ async function findIdentityByPhone(
     .where(eq(portalIdentity.primaryPhone, phone))
     .limit(1);
   return row ?? null;
+}
+
+// Does this identity have at least one ACTIVE client access? Drives the
+// sign-in screen's auto-route: with access we send a link/code, without it
+// we send the visitor to Request access. (Relaxes QUESTIONS #29 by design —
+// the firm opted for usability over account-enumeration opacity here.)
+async function hasActiveAccess(db: Database | null, identityId: string): Promise<boolean> {
+  if (!db) return false;
+  const [row] = await db
+    .select({ id: clientPortalAccess.id })
+    .from(clientPortalAccess)
+    .where(
+      and(
+        eq(clientPortalAccess.portalIdentityId, identityId),
+        eq(clientPortalAccess.status, 'ACTIVE'),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
 }
 
 async function findIdentityById(

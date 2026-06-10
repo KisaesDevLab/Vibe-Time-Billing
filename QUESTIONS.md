@@ -244,6 +244,8 @@ Same HTTP response status and body whether the contact exists or not. Generic me
 
 No timing delays, no IP bans. Limits configurable but defaults shipped.
 
+**Addendum 2026-06-10 — portal sign-in auto-route (firm decision):** The portal *sign-in* screen now returns an `access` boolean from `POST /api/portal/auth/login` so it can route a visitor with no active access straight to Request access (and only send a link/code when access exists). This intentionally reveals whether a contact is a portal user — a deliberate relaxation of Q29 for the sign-in surface, chosen for client usability. The rate limits above still apply, and the self-service *access-request* endpoint (`/api/portal/access-request`) remains fully enumeration-safe (identical generic response regardless of match).
+
 ### Q30 — Invoice read receipts
 **Decided:** Portal-view only, no tracking pixels.
 

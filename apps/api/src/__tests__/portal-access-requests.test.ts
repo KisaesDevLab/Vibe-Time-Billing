@@ -160,7 +160,7 @@ describe('portal access request — public submission (0143)', () => {
     // Same person is also a contact of c2.
     await harness.db.insert(clientContacts).values({ clientId: c2, personId });
 
-    const res = await submit({ contact: 'di@x.com', idType: 'EIN', idValue: '12-3456789' });
+    const res = await submit({ contact: 'di@x.com', idType: 'EIN', idValue: '6789' });
     expect(res.status).toBe(200);
 
     const rows = await harness.db
@@ -298,7 +298,7 @@ describe('portal access request — staff review (0143)', () => {
       fullName: 'On Ce',
       email: 'once@x.com',
     });
-    await submit({ contact: 'once@x.com', idType: 'EIN', idValue: '99-9999999' });
+    await submit({ contact: 'once@x.com', idType: 'EIN', idValue: '9999' });
     const [reqRow] = await harness.db
       .select({ id: portalAccessRequest.id })
       .from(portalAccessRequest)
