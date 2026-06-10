@@ -75,6 +75,7 @@ import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createSignaturesRouter } from './signatures/routes';
+import { createSignatureConfigRouter } from './signatures/admin-config-routes';
 import { createCalendarAdminRouter } from './calendar/admin-routes';
 import { createCalendarConnectRouter } from './calendar/connect-routes';
 import { createCalendarMatchRouter } from './calendar/match-routes';
@@ -580,6 +581,18 @@ export function createApp(deps: AppDeps): Express {
       : undefined,
   });
   app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signaturesRouter);
+
+  // Admin config for bookmark-driven signing: page rules + default-doc library.
+  const signatureConfigRouter = createSignatureConfigRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/signature-config',
+    auth.requireAuth,
+    auth.requireCsrf,
+    signatureConfigRouter,
+  );
 
   // 0109 — Calendar Integration: firm admin OAuth app registration.
   app.use(

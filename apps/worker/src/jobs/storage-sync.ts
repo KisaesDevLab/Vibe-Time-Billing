@@ -666,6 +666,11 @@ export async function runStorageSyncTick(
     if (systemPrefix && entry.key === systemPrefix) continue;
     if (systemPrefix && entry.key.startsWith(systemPrefix)) continue;
     if (entry.key === filerInboxPrefix || entry.key === `${topPrefix}${filerInboxPrefix}`) continue;
+    // Signature module storage (source/signed/cert packages + default-doc
+    // templates) are not client folders — never reconcile them as one.
+    if (entry.key === 'signatures/' || entry.key === `${topPrefix}signatures/`) continue;
+    if (entry.key === 'signature-templates/' || entry.key === `${topPrefix}signature-templates/`)
+      continue;
     const sentinel = await readSentinel(storage, entry.key, {
       folder: sentinelFolder,
       file: sentinelFile,
