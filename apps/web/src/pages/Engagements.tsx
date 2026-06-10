@@ -110,12 +110,41 @@ const QUEUED_WORK = new Set<WorkflowState>(['NO_STATUS', 'NOT_STARTED', 'DRAFT']
 
 type Tab = 'active' | 'all' | 'mine' | 'queued';
 
+// Filter/sort state persisted to localStorage so the table's filters
+// survive a refresh or leaving and returning to the view.
+const FILTERS_KEY = '__vibe_eng_filters';
+
+interface PersistedFilters {
+  tab?: Tab;
+  workflow?: string[];
+  priority?: string[];
+  client?: string[];
+  type?: string[];
+  serviceLine?: string[];
+  assignee?: string[];
+  clientOwnerId?: string;
+  sortBy?: { col: string; dir: SortDir };
+}
+
+function readPersistedFilters(): PersistedFilters {
+  try {
+    const raw = localStorage.getItem(FILTERS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as PersistedFilters) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function EngagementsPage(): JSX.Element {
   const { me } = useAuth();
   const currentUserId = me?.appUserId ?? '';
   const navigate = useNavigate();
+  // Hydrate filters from localStorage once (lazy init below reads this).
+  const [saved] = useState<PersistedFilters>(() => readPersistedFilters());
   // 0050 — default = My Work. Was 'active'.
-  const [tab, setTab] = useState<Tab>('mine');
+  const [tab, setTab] = useState<Tab>(saved.tab ?? 'mine');
   const [rows, setRows] = useState<EngagementRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,17 +154,19 @@ export function EngagementsPage(): JSX.Element {
   const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
 
   // Per-column filter state.
-  const [workflowFilter, setWorkflowFilter] = useState<Set<string>>(new Set());
-  const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set());
-  const [clientFilter, setClientFilter] = useState<Set<string>>(new Set());
-  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+  const [workflowFilter, setWorkflowFilter] = useState<Set<string>>(new Set(saved.workflow));
+  const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set(saved.priority));
+  const [clientFilter, setClientFilter] = useState<Set<string>>(new Set(saved.client));
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set(saved.type));
   // Service-line filter — sent server-side via ?serviceLineId. A single
   // value at a time (the API filters by exact match); multi-select on
   // top of that runs client-side via the visible useMemo below.
-  const [serviceLineFilter, setServiceLineFilter] = useState<Set<string>>(new Set());
-  const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
+  const [serviceLineFilter, setServiceLineFilter] = useState<Set<string>>(
+    new Set(saved.serviceLine),
+  );
+  const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set(saved.assignee));
   // 0050 — filter by client owner (client.partnerInChargeId).
-  const [clientOwnerId, setClientOwnerId] = useState<string>('');
+  const [clientOwnerId, setClientOwnerId] = useState<string>(saved.clientOwnerId ?? '');
   // 0050 — List | Kanban view toggle. Persisted in localStorage so users
   // don't have to re-pick on each session.
   const [view, setView] = useState<'list' | 'kanban'>(() => {
@@ -186,7 +217,9 @@ export function EngagementsPage(): JSX.Element {
     persistHidden(next);
   }
 
-  const [sortBy, setSortBy] = useState<{ col: string; dir: SortDir }>({ col: '', dir: null });
+  const [sortBy, setSortBy] = useState<{ col: string; dir: SortDir }>(
+    saved.sortBy ?? { col: '', dir: null },
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   async function load(): Promise<void> {
@@ -242,6 +275,38 @@ export function EngagementsPage(): JSX.Element {
     clientOwnerId,
     // 0050 — when auth resolves and default tab is 'mine', refetch.
     currentUserId,
+  ]);
+
+  // Persist filters/sort so they survive a refresh or leaving the view.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        FILTERS_KEY,
+        JSON.stringify({
+          tab,
+          workflow: Array.from(workflowFilter),
+          priority: Array.from(priorityFilter),
+          client: Array.from(clientFilter),
+          type: Array.from(typeFilter),
+          serviceLine: Array.from(serviceLineFilter),
+          assignee: Array.from(assigneeFilter),
+          clientOwnerId,
+          sortBy,
+        } satisfies PersistedFilters),
+      );
+    } catch {
+      // Storage may be disabled — in-memory state still drives the session.
+    }
+  }, [
+    tab,
+    workflowFilter,
+    priorityFilter,
+    clientFilter,
+    typeFilter,
+    serviceLineFilter,
+    assigneeFilter,
+    clientOwnerId,
+    sortBy,
   ]);
 
   useEffect(() => {
