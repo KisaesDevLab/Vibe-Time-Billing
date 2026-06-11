@@ -51,7 +51,43 @@ export interface PortalRoutesDeps {
   staffSecret?: string | null;
 }
 
+// Q6 — phone re-verification on every new device. We fingerprint by
+// IP + user-agent (best-effort) and keep a per-identity set of known
+// devices in Redis. A magic-link sign-in from an unrecognized device is
+// challenged with an SMS OTP before a session is issued (only when the
+// identity has a verified phone to challenge against).
+const DEVICE_TTL_SECONDS = 180 * 24 * 3600;
+
+function deviceFingerprint(req: Request): string {
+  const ip = clientIp(req) ?? '';
+  const ua = req.header('user-agent') ?? '';
+  return createHash('sha256').update(`${ip}\n${ua}`).digest('hex').slice(0, 32);
+}
+
+async function isKnownDevice(redis: Redis, identityId: string, fp: string): Promise<boolean> {
+  try {
+    return (await redis.sismember(`portal:devices:${identityId}`, fp)) === 1;
+  } catch {
+    // Fail open on Redis trouble — don't lock users out of the portal.
+    return true;
+  }
+}
+
+async function rememberDevice(redis: Redis, identityId: string, fp: string): Promise<void> {
+  try {
+    const key = `portal:devices:${identityId}`;
+    await redis.sadd(key, fp);
+    await redis.expire(key, DEVICE_TTL_SECONDS);
+  } catch (err) {
+    logger.warn({ err }, 'portal device remember failed');
+  }
+}
+
 const LoginSchema = z.object({ contact: z.string().min(3).max(254) });
+const VerifyDeviceSchema = z.object({
+  challengeToken: z.string().min(1).max(128),
+  code: z.string().regex(/^\d{6}$/),
+});
 const VerifyMagicSchema = z.object({ token: z.string().min(1) });
 const VerifyOtpSchema = z.object({
   phone: z.string().min(5),
@@ -195,7 +231,86 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
       res.status(401).json({ error: 'token_already_used' });
       return;
     }
+
+    // Q6 — new-device check. Email possession is proven by the link; if the
+    // device is unrecognized and the identity has a verified phone, step up
+    // with an SMS OTP before issuing the session.
+    const fp = deviceFingerprint(req);
+    const known = await isKnownDevice(deps.redis, payload.sub, fp);
+    if (!known && deps.db) {
+      const [idn] = await deps.db
+        .select({
+          phone: portalIdentity.primaryPhone,
+          phoneVerifiedAt: portalIdentity.primaryPhoneVerifiedAt,
+        })
+        .from(portalIdentity)
+        .where(eq(portalIdentity.id, payload.sub))
+        .limit(1);
+      if (idn?.phone && idn.phoneVerifiedAt) {
+        const cfg2 = loadConfig();
+        const code = generateSmsOtp();
+        const challengeToken = randomNonce();
+        await deps.redis.set(
+          `portal:devotp:${challengeToken}`,
+          JSON.stringify({
+            hash: hashSmsOtp(code),
+            identityId: payload.sub,
+            firmId: payload.fid,
+            attempts: 0,
+          }),
+          'EX',
+          cfg2.SMS_OTP_TTL_MINUTES * 60,
+        );
+        await deps
+          .sendSms({ to: idn.phone, body: `Your Vibe device-verification code: ${code}` })
+          .catch((err: unknown) => logger.error({ err }, 'portal device otp delivery'));
+        res.status(200).json({
+          deviceChallenge: true,
+          challengeToken,
+          phoneHint: idn.phone.slice(-4),
+        });
+        return;
+      }
+      // No verified phone to challenge — record the device and continue.
+    }
+    await rememberDevice(deps.redis, payload.sub, fp);
     await issueSession(deps, res, req, payload.sub, payload.fid);
+  });
+
+  // Q6 — complete a new-device challenge: verify the SMS code tied to the
+  // challenge token, record the device, and issue the session.
+  router.post('/verify-device-otp', async (req: Request, res: Response) => {
+    const parsed = VerifyDeviceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const key = `portal:devotp:${parsed.data.challengeToken}`;
+    const raw = await deps.redis.get(key);
+    if (!raw) {
+      res.status(401).json({ error: 'no_pending_challenge' });
+      return;
+    }
+    const state = JSON.parse(raw) as {
+      hash: string;
+      identityId: string;
+      firmId: string;
+      attempts: number;
+    };
+    state.attempts += 1;
+    if (state.attempts > 5) {
+      await deps.redis.del(key);
+      res.status(429).json({ error: 'too_many_attempts' });
+      return;
+    }
+    if (hashSmsOtp(parsed.data.code) !== state.hash) {
+      await deps.redis.set(key, JSON.stringify(state), 'KEEPTTL');
+      res.status(401).json({ error: 'invalid_code' });
+      return;
+    }
+    await deps.redis.del(key);
+    await rememberDevice(deps.redis, state.identityId, deviceFingerprint(req));
+    await issueSession(deps, res, req, state.identityId, state.firmId);
   });
 
   router.post('/verify-sms-otp', async (req: Request, res: Response) => {
@@ -250,6 +365,8 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
       res.status(401).json({ error: 'unknown_identity' });
       return;
     }
+    // SMS possession on this device — trust it for future magic-link logins.
+    await rememberDevice(deps.redis, identity.id, deviceFingerprint(req));
     await issueSession(deps, res, req, identity.id, identity.firmId);
   });
 

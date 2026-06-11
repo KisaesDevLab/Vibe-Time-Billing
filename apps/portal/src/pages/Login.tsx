@@ -151,13 +151,73 @@ function VerifyMagic({ token }: { token: string }): JSX.Element {
   const { refresh } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Q6 — when the firm doesn't recognize this device, the server sends an
+  // SMS code and asks us to verify it before completing sign-in.
+  const [challenge, setChallenge] = useState<{ token: string; phoneHint: string } | null>(null);
 
   async function verify(): Promise<void> {
     setSubmitting(true);
     try {
-      const res = await api<{ csrfToken: string }>('/api/portal/auth/verify-magic-link', {
+      const res = await api<{
+        csrfToken?: string;
+        deviceChallenge?: boolean;
+        challengeToken?: string;
+        phoneHint?: string;
+      }>('/api/portal/auth/verify-magic-link', {
         method: 'POST',
         body: JSON.stringify({ token }),
+      });
+      if (res.deviceChallenge && res.challengeToken) {
+        setChallenge({ token: res.challengeToken, phoneHint: res.phoneHint ?? '••••' });
+        return;
+      }
+      if (res.csrfToken) setCsrfToken(res.csrfToken);
+      await refresh();
+      navigate('/', { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'verification failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (challenge) {
+    return <DeviceOtpForm challengeToken={challenge.token} phoneHint={challenge.phoneHint} />;
+  }
+
+  return (
+    <AuthLayout brand="Client Portal" title="Confirm sign-in">
+      <p style={{ fontSize: 14 }}>Tap continue to complete sign-in.</p>
+      <Button onClick={verify} disabled={submitting}>
+        {submitting ? 'Verifying…' : 'Continue'}
+      </Button>
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+    </AuthLayout>
+  );
+}
+
+// Q6 — verify a code sent to the phone on file to trust a new device.
+function DeviceOtpForm({
+  challengeToken,
+  phoneHint,
+}: {
+  challengeToken: string;
+  phoneHint: string;
+}): JSX.Element {
+  const [code, setCode] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { refresh } = useAuth();
+  const navigate = useNavigate();
+
+  async function submit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await api<{ csrfToken: string }>('/api/portal/auth/verify-device-otp', {
+        method: 'POST',
+        body: JSON.stringify({ challengeToken, code }),
       });
       setCsrfToken(res.csrfToken);
       await refresh();
@@ -170,12 +230,25 @@ function VerifyMagic({ token }: { token: string }): JSX.Element {
   }
 
   return (
-    <AuthLayout brand="Client Portal" title="Confirm sign-in">
-      <p style={{ fontSize: 14 }}>Tap continue to complete sign-in.</p>
-      <Button onClick={verify} disabled={submitting}>
-        {submitting ? 'Verifying…' : 'Continue'}
-      </Button>
-      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+    <AuthLayout
+      brand="Client Portal"
+      title="Verify this device"
+      subtitle={`For your security, enter the code we texted to the number ending in ${phoneHint}.`}
+    >
+      <form onSubmit={submit} style={{ display: 'grid', gap: 12 }}>
+        <Input
+          label="6-digit code"
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+          inputMode="numeric"
+          required
+          maxLength={6}
+        />
+        {error && <div style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</div>}
+        <Button type="submit" disabled={submitting || code.length !== 6}>
+          {submitting ? 'Verifying…' : 'Verify device'}
+        </Button>
+      </form>
     </AuthLayout>
   );
 }
