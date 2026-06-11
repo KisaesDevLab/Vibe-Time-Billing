@@ -18,6 +18,52 @@ type AnyBrowser = any;
 
 let cached: AnyBrowser | null = null;
 
+// SSRF guard for in-process Chrome. Templates are HTML-escaped, so tag
+// injection shouldn't be possible — but if a firm-set URL (e.g. a logo)
+// or a future template ever points at an internal address, Chrome would
+// happily fetch it (cloud metadata, localhost services, LAN hosts). Block
+// requests to loopback / link-local / RFC-1918 / unique-local targets and
+// any non-http(s) scheme other than inlined data: URIs.
+function isBlockedPdfHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (h === '::1' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80:')) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a === 127 || a === 0 || a === 10) return true; // loopback / this-host / RFC1918
+    if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
+    if (a === 192 && b === 168) return true; // RFC1918
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  }
+  return false;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function guardPageRequests(page: any): Promise<void> {
+  await page.setRequestInterception(true);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page.on('request', (intercepted: any) => {
+    const url: string = intercepted.url();
+    if (url.startsWith('data:') || url.startsWith('about:')) {
+      void intercepted.continue();
+      return;
+    }
+    try {
+      const u = new URL(url);
+      if ((u.protocol === 'http:' || u.protocol === 'https:') && !isBlockedPdfHost(u.hostname)) {
+        void intercepted.continue();
+        return;
+      }
+    } catch {
+      /* fall through to abort */
+    }
+    void intercepted.abort();
+  });
+}
+
 async function getBrowser(): Promise<AnyBrowser> {
   if (cached) return cached;
   const puppeteer = await import('puppeteer');
@@ -81,6 +127,7 @@ export async function renderHtmlToPdf(html: string, opts: PdfRenderOptions = {})
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
+    await guardPageRequests(page);
     await page.setContent(html, { waitUntil: 'networkidle0' });
     const pdf = await page.pdf({
       format: 'Letter',

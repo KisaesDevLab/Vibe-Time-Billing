@@ -71,6 +71,10 @@ pg_dump "${DATABASE_URL}" \
   2>>"${LOG_FILE}" | gzip --best > "${BACKUP_FILE}" \
   || abort "pg_dump failed (see ${LOG_FILE})"
 
+# Restrict to owner — a full DB dump must not be world/group readable even
+# if the /backups volume is mounted with permissive defaults.
+chmod 600 "${BACKUP_FILE}" || log "warning: could not chmod 600 ${BACKUP_FILE}"
+
 # Verify the file is non-trivial
 size_bytes=$(stat -c%s "${BACKUP_FILE}" 2>/dev/null || stat -f%z "${BACKUP_FILE}" 2>/dev/null || echo 0)
 if (( size_bytes < 1024 )); then

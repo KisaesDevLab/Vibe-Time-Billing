@@ -5,6 +5,8 @@
 // Q29 locked decision: account-enumeration mitigation uses these limits
 // for magic-link issuance and SMS OTP. Backed by Redis sorted sets.
 
+import { randomBytes } from 'node:crypto';
+
 export interface RateLimiterDeps {
   zadd: (key: string, score: number, member: string) => Promise<unknown>;
   zremrangebyscore: (key: string, min: number, max: number) => Promise<unknown>;
@@ -33,7 +35,9 @@ export async function checkAndIncrement(
   const now = args.now ?? Date.now();
   const windowMs = args.windowSeconds * 1000;
   const cutoff = now - windowMs;
-  const member = `${now}:${Math.random()}`;
+  // Unique ZSET member per call (dedup only — not a security token, but use
+  // CSPRNG bytes so distinct same-millisecond calls never collide).
+  const member = `${now}:${randomBytes(8).toString('hex')}`;
 
   await deps.zremrangebyscore(args.key, 0, cutoff);
   const beforeCount = await deps.zcard(args.key);

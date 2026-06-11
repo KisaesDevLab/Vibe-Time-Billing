@@ -53,10 +53,13 @@ const ReaderSchema = z.object({
   locationId: z.string().uuid(),
   label: z.string().min(1).max(120),
 });
+// Stripe rejects charges above $999,999.99; cap here too so a bogus
+// amount can't overflow JS number precision in downstream math.
+const MAX_AMOUNT_CENTS = 99_999_999;
 const CollectSchema = z.object({
   readerId: z.string().uuid(),
   invoiceId: z.string().uuid(),
-  amountCents: z.number().int().positive(),
+  amountCents: z.number().int().positive().max(MAX_AMOUNT_CENTS),
   customerId: z.string().optional(),
   saveCard: z.boolean().optional(),
 });
@@ -69,7 +72,12 @@ const CollectReceiptSchema = z.object({
   paymentDate: z.string().regex(DATE_RE),
   reference: z.string().max(200).nullable().optional(),
   allocations: z
-    .array(z.object({ invoiceId: z.string().uuid(), amountCents: z.number().int().positive() }))
+    .array(
+      z.object({
+        invoiceId: z.string().uuid(),
+        amountCents: z.number().int().positive().max(MAX_AMOUNT_CENTS),
+      }),
+    )
     .min(1)
     .max(100),
 });
@@ -282,6 +290,9 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
       return void res.status(404).json({ error: 'invoice_not_found' });
     }
     const totalCents = parsed.data.allocations.reduce((s, a) => s + a.amountCents, 0);
+    if (totalCents > MAX_AMOUNT_CENTS) {
+      return void res.status(400).json({ error: 'amount_too_large' });
+    }
 
     // PENDING receipt holding the allocations; materialized by the webhook.
     const [receipt] = await db
