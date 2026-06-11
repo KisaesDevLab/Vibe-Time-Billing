@@ -18,11 +18,12 @@
 // completion path (apps/api/src/esign/opensign-complete.ts).
 
 import { eq } from 'drizzle-orm';
-import { PDFDocument } from 'pdf-lib';
 
 import type { Database } from '@vibe/db';
 import { signatureEvents, signatureRequests, signatureSigners } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
+
+import { appendPdfPages } from '../lib/pdf-merge';
 
 import type { OpenSignClient, ParseDoc } from '../esign/opensign-client';
 import { fileExistingObjectIntoClientFolder } from '../clients/file-existing';
@@ -54,18 +55,6 @@ function signedFileKey(firmId: string, requestId: string): string {
 
 function certFileKey(firmId: string, requestId: string): string {
   return `signatures/${firmId}/${requestId}/certificate.pdf`;
-}
-
-/** Append the audit certificate's pages to the signed document so the stored
- *  artifact is ONE PDF (signature pages followed by the certificate) instead
- *  of two separate downloads on the signed page. Throws if either part isn't
- *  a loadable PDF — callers fall back to storing the two files separately. */
-async function appendCertificatePages(signed: Buffer, certificate: Buffer): Promise<Buffer> {
-  const out = await PDFDocument.load(signed, { ignoreEncryption: true });
-  const cert = await PDFDocument.load(certificate, { ignoreEncryption: true });
-  const pages = await out.copyPages(cert, cert.getPageIndices());
-  for (const p of pages) out.addPage(p);
-  return Buffer.from(await out.save());
 }
 
 // Collect the lower-cased emails that have a 'Signed' audit-trail entry.
@@ -155,7 +144,7 @@ export async function reconcileSignatureRequestByDocument(
     // A merge failure falls back to the legacy two-file shape.
     if (signedBuf && certBuf) {
       try {
-        signedBuf = await appendCertificatePages(signedBuf, certBuf);
+        signedBuf = await appendPdfPages(signedBuf, certBuf);
         certBuf = null;
       } catch {
         // unmergeable bytes — keep both files separately.

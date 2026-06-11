@@ -14,6 +14,7 @@
 // doesn't have to branch on which provider is wired. Firm-settings UI
 // picks the provider per firm.
 
+import { appendPdfPages } from '../lib/pdf-merge';
 import { sanitizeSignatureSvg } from '../portal/signature-svg';
 import { createOpenSignClient, type ParseDoc } from './opensign-client';
 
@@ -278,18 +279,38 @@ export function createOpenSignProvider(opts: OpenSignProviderOptions): EsignProv
       return deserialize(await client.getDocument(envelopeId));
     },
     async fetchCertificatePdf(envelopeId) {
-      // Resolve the document, then fetch the signed PDF bytes. Prefer the
-      // completion certificate (audit trail); fall back to the signed
-      // document URL. generatecertificate is idempotent + master-keyed.
+      // Resolve the document, then fetch the PDF bytes. When BOTH the
+      // signed document and the completion certificate exist, return ONE
+      // PDF — signed pages with the certificate appended — so the stored
+      // artifact carries the agreement and its audit trail together.
+      // generatecertificate is idempotent + master-keyed.
       const doc = await client.getDocument(envelopeId);
       let certUrl = doc.CertificateUrl;
       if (!certUrl) {
         const gen = await client.generateCertificate(envelopeId);
         certUrl = gen?.CertificateUrl;
       }
-      const target = certUrl ?? doc.SignedUrl;
-      if (!target) throw new Error('opensign_certificate_unavailable: no signed/certificate url');
-      return client.fetchPdfUrl(target);
+      const signedUrl = doc.SignedUrl;
+      if (!signedUrl && !certUrl) {
+        throw new Error('opensign_certificate_unavailable: no signed/certificate url');
+      }
+      if (!signedUrl || !certUrl) {
+        // Only one part exists — legacy single-file behavior.
+        return client.fetchPdfUrl((certUrl ?? signedUrl)!);
+      }
+      const [signed, cert] = await Promise.all([
+        client.fetchPdfUrl(signedUrl),
+        client.fetchPdfUrl(certUrl),
+      ]);
+      const toBuf = (b: Buffer | string): Buffer => (Buffer.isBuffer(b) ? b : Buffer.from(b));
+      try {
+        const merged = await appendPdfPages(toBuf(signed.body), toBuf(cert.body));
+        return { body: merged, contentType: 'application/pdf' };
+      } catch {
+        // Unmergeable bytes — keep the certificate (the audit evidence),
+        // matching the pre-merge behavior.
+        return { body: toBuf(cert.body), contentType: cert.contentType };
+      }
     },
   };
 }

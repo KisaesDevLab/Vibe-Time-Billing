@@ -263,6 +263,47 @@ describe('Q35 — OpenSign provider contract (real Parse cloud functions)', () =
     expect(cert.contentType).toBe('application/pdf');
     expect(cert.body.toString()).toBe('%PDF-bytes');
   });
+
+  it('fetchCertificatePdf merges signed doc + certificate into one PDF', async () => {
+    const { PDFDocument } = await import('pdf-lib');
+    const mk = async (pages: number): Promise<Buffer> => {
+      const d = await PDFDocument.create();
+      for (let i = 0; i < pages; i++) d.addPage([612, 792]);
+      return Buffer.from(await d.save());
+    };
+    const signedPdf = await mk(2);
+    const certPdf = await mk(1);
+    const fetchImpl: typeof fetch = (async (url: string) => {
+      if (url.includes('/functions/getDocument')) {
+        return new Response(
+          JSON.stringify({
+            result: {
+              objectId: 'doc_abc',
+              IsCompleted: true,
+              SignedUrl: 'http://opensign:8080/files/signed.pdf?token=jwt',
+              CertificateUrl: 'http://opensign:8080/files/cert.pdf?token=jwt',
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      const body = url.includes('cert.pdf') ? certPdf : signedPdf;
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+      });
+    }) as unknown as typeof fetch;
+    const p = createOpenSignProvider({
+      baseUrl: 'http://opensign:8080/app',
+      appId: 'opensign',
+      masterKey: 'mk',
+      fetchImpl,
+    });
+    const out = await p.fetchCertificatePdf('doc_abc');
+    expect(out.contentType).toBe('application/pdf');
+    const merged = await PDFDocument.load(out.body);
+    expect(merged.getPageCount()).toBe(3); // 2 signed pages + 1 certificate page
+  });
 });
 
 describe('Q35 — OpenSign webhook', () => {
