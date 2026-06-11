@@ -204,6 +204,10 @@ export const signaturePageRules = pgTable(
     matchMode: text('match_mode').notNull().default('contains'),
     caseSensitive: boolean('case_sensitive').notNull().default(false),
     layoutKey: text('layout_key').notNull().default('generic'),
+    // 0145 — optional reference to a firm placement profile (by form_type;
+    // the latest version resolves at package-build time). NULL → layoutKey's
+    // built-in layout.
+    profileFormType: text('profile_form_type'),
     enabled: boolean('enabled').notNull().default(true),
     notes: text('notes'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

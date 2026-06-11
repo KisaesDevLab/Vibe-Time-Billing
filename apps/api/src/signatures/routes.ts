@@ -143,6 +143,11 @@ const ApplyProfileSchema = z.object({
   profileId: z.string().uuid(),
 });
 
+const SaveProfileSchema = z.object({
+  /** Defaults to the request's formType when omitted. */
+  formType: z.string().trim().min(1).max(40).optional(),
+});
+
 export function createSignaturesRouter(deps: SignaturesDeps): Router {
   const router = express.Router();
 
@@ -527,6 +532,99 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         count: applied.placements.length,
         unmatchedRoles: applied.unmatchedRoles,
       });
+    },
+  );
+
+  // POST /:id/save-profile — capture the request's CURRENT placements as a
+  // new version of a role-based profile ("calibrate once on a real doc,
+  // reuse everywhere"). Placements key back to roles via their signer;
+  // every placed signer must carry a role.
+  router.post(
+    '/:id/save-profile',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = SaveProfileSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+        return;
+      }
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const formType = parsed.data.formType ?? request.formType;
+      if (!formType) {
+        res.status(422).json({ error: 'form_type_required' });
+        return;
+      }
+      const [placements, signers] = await Promise.all([
+        deps.db
+          .select()
+          .from(signatureFieldPlacements)
+          .where(eq(signatureFieldPlacements.requestId, request.id)),
+        deps.db
+          .select({ id: signatureSigners.id, role: signatureSigners.role })
+          .from(signatureSigners)
+          .where(eq(signatureSigners.requestId, request.id)),
+      ]);
+      if (placements.length === 0) {
+        res.status(422).json({ error: 'no_placements' });
+        return;
+      }
+      const roleBySigner = new Map(signers.map((s) => [s.id, s.role]));
+      if (placements.some((p) => !roleBySigner.get(p.signerId))) {
+        // A profile is role-keyed; a placement on a role-less signer can't
+        // be expressed. Staff assign roles to signers, then retry.
+        res.status(422).json({ error: 'signers_missing_roles' });
+        return;
+      }
+      const fields: ProfileField[] = placements.map((p) => ({
+        role: roleBySigner.get(p.signerId)!,
+        fieldType: p.fieldType as ProfileField['fieldType'],
+        pageNumber: p.pageNumber,
+        nx: Number(p.nx),
+        ny: Number(p.ny),
+        nw: Number(p.nw),
+        nh: Number(p.nh),
+        required: p.required,
+      }));
+      const existing = await deps.db
+        .select({ version: signaturePlacementProfiles.version })
+        .from(signaturePlacementProfiles)
+        .where(
+          and(
+            eq(signaturePlacementProfiles.firmId, firmId),
+            eq(signaturePlacementProfiles.formType, formType),
+          ),
+        )
+        .orderBy(desc(signaturePlacementProfiles.version))
+        .limit(1);
+      const nextVersion = (existing[0]?.version ?? 0) + 1;
+      const [row] = await deps.db
+        .insert(signaturePlacementProfiles)
+        .values({ firmId, formType, version: nextVersion, fields })
+        .returning({ id: signaturePlacementProfiles.id });
+      await recordEvent(deps.db, request.id, actor, 'profile_saved', {
+        profileId: row!.id,
+        formType,
+        version: nextVersion,
+        count: fields.length,
+      });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'signature_placement_profile',
+        entityId: row!.id,
+        actorAppUserId: actor,
+        after: { formType, version: nextVersion, fromRequestId: request.id },
+      });
+      res.status(201).json({ id: row!.id, formType, version: nextVersion, count: fields.length });
     },
   );
 

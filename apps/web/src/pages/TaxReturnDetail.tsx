@@ -414,6 +414,7 @@ interface DetectPage {
   pageNumber: number;
   bookmarkTitle: string;
   layoutKey: string;
+  profileFormType: string | null;
 }
 interface DetectTemplate {
   id: string;
@@ -721,19 +722,25 @@ function CollectSignaturesDialog({
       setError('Add at least one signer with a name and email.');
       return;
     }
-    // Merge rule-detected pages (their layout) with manually-picked bookmark
-    // pages (a default layout for the return type). Detected layout wins.
-    const pageLayout = new Map<number, string>();
+    // Merge rule-detected pages (their layout + optional placement profile)
+    // with manually-picked bookmark pages (a default layout for the return
+    // type). Detected layout wins.
+    const pageLayout = new Map<number, { layoutKey: string; profileFormType: string | null }>();
     for (const p of detect.pages) {
-      if (checkedPages.has(p.pageNumber)) pageLayout.set(p.pageNumber, p.layoutKey);
+      if (checkedPages.has(p.pageNumber)) {
+        pageLayout.set(p.pageNumber, {
+          layoutKey: p.layoutKey,
+          profileFormType: p.profileFormType ?? null,
+        });
+      }
     }
     const manualLayout = defaultLayoutForForm(detect.signatureFormType);
     for (const b of detect.allBookmarks ?? []) {
       if (checkedBookmarks.has(b.pageNumber) && !pageLayout.has(b.pageNumber)) {
-        pageLayout.set(b.pageNumber, manualLayout);
+        pageLayout.set(b.pageNumber, { layoutKey: manualLayout, profileFormType: null });
       }
     }
-    const returnPages = [...pageLayout.entries()].map(([page, layoutKey]) => ({ page, layoutKey }));
+    const returnPages = [...pageLayout.entries()].map(([page, v]) => ({ page, ...v }));
     const templateIds = detect.templates.filter((t) => checkedTemplates.has(t.id)).map((t) => t.id);
     if (returnPages.length === 0 && templateIds.length === 0 && adHocKeys.length === 0) {
       setError('Select at least one page or document to include.');

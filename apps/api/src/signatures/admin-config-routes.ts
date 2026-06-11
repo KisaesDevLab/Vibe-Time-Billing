@@ -39,6 +39,9 @@ const RuleSchema = z.object({
   matchMode: z.enum(['contains', 'exact', 'regex']).default('contains'),
   caseSensitive: z.boolean().default(false),
   layoutKey: z.enum(['us-8879', 'entity-8879', 'state-auth', 'generic']).default('generic'),
+  // 0145 — when set, the firm's latest placement profile for this form type
+  // supplies the fields; layoutKey stays the fallback.
+  profileFormType: z.string().trim().min(1).max(40).nullable().default(null),
   enabled: z.boolean().default(true),
   notes: z.string().max(500).nullable().default(null),
   sortOrder: z.number().int().nonnegative().optional(),

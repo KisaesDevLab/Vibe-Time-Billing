@@ -205,6 +205,35 @@ export function SignatureDetailPage(): JSX.Element {
     }
   }
 
+  async function saveAsProfile(): Promise<void> {
+    const formType = window.prompt(
+      'Save current placements as a profile for form type:',
+      request?.formType ?? '',
+    );
+    if (!formType || !formType.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{ formType: string; version: number; count: number }>(
+        `/api/staff/signatures/${id}/save-profile`,
+        { method: 'POST', body: JSON.stringify({ formType: formType.trim() }) },
+      );
+      setError(`Saved ${r.count} fields as profile ${r.formType} v${r.version}.`);
+      await load();
+    } catch (err) {
+      const msg = (err as ApiError).message;
+      setError(
+        msg === 'signers_missing_roles'
+          ? 'Every signer with a placed field needs a role before saving a profile (profiles are keyed by role).'
+          : msg === 'no_placements'
+            ? 'Place at least one field before saving a profile.'
+            : messageFor(err as ApiError),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function send(): Promise<void> {
     setBusy(true);
     setError(null);
@@ -504,6 +533,14 @@ export function SignatureDetailPage(): JSX.Element {
                     disabled={busy || !profileId}
                   >
                     Apply profile
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    title="Save this request's current field placements as a new reusable profile version (keyed by signer role)"
+                    onClick={() => void saveAsProfile()}
+                    disabled={busy || placements.length === 0}
+                  >
+                    Save as profile
                   </Button>
                 </div>
 

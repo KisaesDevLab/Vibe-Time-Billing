@@ -16,6 +16,7 @@ import {
   files,
   signatureDocumentTemplates,
   signatureFieldPlacements,
+  signaturePlacementProfiles,
   signatureRequests,
   signatureSigners,
   taxReturns,
@@ -162,6 +163,133 @@ describe('createSignaturePackageFromReturn', () => {
     expect(placements.filter((p) => p.pageNumber === 1)).toHaveLength(4);
     // page 2 (template, generic): taxpayer + spouse = 4
     expect(placements.filter((p) => p.pageNumber === 2)).toHaveLength(4);
+  });
+
+  it('a return page whose rule references a placement profile uses its fields', async () => {
+    const storage = memStorage();
+    const [folder] = await harness.db
+      .insert(clientFolders)
+      .values({ firmId: seed.firmId, clientId: seed.clientId, storagePath: 'Test Client Co' })
+      .returning({ id: clientFolders.id });
+    const sourceKey = 'Test Client Co/return2.pdf';
+    storage.objects.set(sourceKey, await pdfOf(2));
+    const [srcFile] = await harness.db
+      .insert(files)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        clientFolderId: folder!.id,
+        originalFilename: 'return2.pdf',
+        storageKey: sourceKey,
+        sizeBytes: 1,
+      })
+      .returning({ id: files.id });
+    const [ret] = await harness.db
+      .insert(taxReturns)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        taxYear: 2024,
+        formCode: '1040',
+        title: 'Jones 2024 1040',
+        sourceFileId: srcFile!.id,
+        totalPages: 2,
+      })
+      .returning({ id: taxReturns.id });
+
+    // A calibrated firm profile with a distinctive coordinate. Only the
+    // taxpayer role — the spouse must get nothing from this profile.
+    await harness.db.insert(signaturePlacementProfiles).values({
+      firmId: seed.firmId,
+      formType: 'my-8879',
+      version: 1,
+      fields: [
+        {
+          role: 'taxpayer',
+          fieldType: 'signature',
+          pageNumber: 1,
+          nx: 0.123,
+          ny: 0.456,
+          nw: 0.3,
+          nh: 0.04,
+        },
+      ],
+    });
+
+    const result = await createSignaturePackageFromReturn(harness.db, storage, {
+      firmId: seed.firmId,
+      returnId: ret!.id,
+      actorId: seed.appUserId,
+      signers: [
+        { name: 'Pat Jones', email: 'pat@j.example', role: 'taxpayer' },
+        { name: 'Sam Jones', email: 'sam@j.example', role: 'spouse' },
+      ],
+      returnPages: [{ page: 1, layoutKey: 'us-8879', profileFormType: 'my-8879' }],
+      templateIds: [],
+      adHocKeys: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const placements = await harness.db
+      .select()
+      .from(signatureFieldPlacements)
+      .where(eq(signatureFieldPlacements.requestId, result.requestId));
+    // Profile fields (1 taxpayer field), NOT the us-8879 built-in (4 fields).
+    expect(placements).toHaveLength(1);
+    expect(Number(placements[0]!.nx)).toBeCloseTo(0.123);
+    expect(Number(placements[0]!.ny)).toBeCloseTo(0.456);
+  });
+
+  it('an unknown profileFormType falls back to the built-in layoutKey', async () => {
+    const storage = memStorage();
+    const [folder] = await harness.db
+      .insert(clientFolders)
+      .values({ firmId: seed.firmId, clientId: seed.clientId, storagePath: 'Test Client Co' })
+      .returning({ id: clientFolders.id });
+    const sourceKey = 'Test Client Co/return3.pdf';
+    storage.objects.set(sourceKey, await pdfOf(1));
+    const [srcFile] = await harness.db
+      .insert(files)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        clientFolderId: folder!.id,
+        originalFilename: 'return3.pdf',
+        storageKey: sourceKey,
+        sizeBytes: 1,
+      })
+      .returning({ id: files.id });
+    const [ret] = await harness.db
+      .insert(taxReturns)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        taxYear: 2024,
+        formCode: '1040',
+        title: 'Lee 2024 1040',
+        sourceFileId: srcFile!.id,
+        totalPages: 1,
+      })
+      .returning({ id: taxReturns.id });
+
+    const result = await createSignaturePackageFromReturn(harness.db, storage, {
+      firmId: seed.firmId,
+      returnId: ret!.id,
+      actorId: seed.appUserId,
+      signers: [{ name: 'Kim Lee', email: 'kim@l.example', role: 'taxpayer' }],
+      returnPages: [{ page: 1, layoutKey: 'us-8879', profileFormType: 'deleted-profile' }],
+      templateIds: [],
+      adHocKeys: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const placements = await harness.db
+      .select()
+      .from(signatureFieldPlacements)
+      .where(eq(signatureFieldPlacements.requestId, result.requestId));
+    // us-8879 built-in: taxpayer sig+date (spouse role unmatched) = 2.
+    expect(placements).toHaveLength(2);
   });
 
   it('rejects an empty package (no pages, no docs)', async () => {

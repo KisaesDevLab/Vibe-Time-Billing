@@ -365,6 +365,52 @@ describe('signatures send + reconcile (phase 6+7)', () => {
     expect(merged.getPageCount()).toBe(3);
   });
 
+  it('save-profile captures current placements as a role-keyed profile version', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    const { id } = await preparedRequest(app);
+
+    // No formType in the body and none on the request → 422; with one → v1.
+    const first = await request(app)
+      .post(`/api/staff/signatures/${id}/save-profile`)
+      .send({ formType: 'engagement-letter-custom' });
+    expect(first.status).toBe(201);
+    expect(first.body.version).toBe(1);
+    expect(first.body.count).toBe(1);
+
+    const { signaturePlacementProfiles } = await import('@vibe/db/schema');
+    const [profile] = await harness.db
+      .select()
+      .from(signaturePlacementProfiles)
+      .where(eq(signaturePlacementProfiles.id, first.body.id));
+    const fields = profile!.fields as Array<{ role: string; pageNumber: number; nx: number }>;
+    expect(fields).toHaveLength(1);
+    expect(fields[0]!.role).toBe('client');
+    expect(fields[0]!.pageNumber).toBe(1);
+    expect(Number(fields[0]!.nx)).toBeCloseTo(0.1);
+
+    // Saving again bumps the version, never mutates v1.
+    const second = await request(app)
+      .post(`/api/staff/signatures/${id}/save-profile`)
+      .send({ formType: 'engagement-letter-custom' });
+    expect(second.status).toBe(201);
+    expect(second.body.version).toBe(2);
+  });
+
+  it('save-profile rejects a request with no placements', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    // Draft with a signer but no source/placements.
+    const create = await request(app)
+      .post('/api/staff/signatures')
+      .send({ title: 'Empty', signers: [{ name: 'A', email: 'a@co.example', role: 'client' }] });
+    const res = await request(app)
+      .post(`/api/staff/signatures/${create.body.id}/save-profile`)
+      .send({ formType: 'x' });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe('no_placements');
+  });
+
   it('sweeps a past-expiry request to expired', async () => {
     const storage = memStorage();
     const app = buildApp(mockClient(), storage);

@@ -98,7 +98,13 @@ const SignaturePackageSchema = z.object({
     )
     .min(1),
   returnPages: z
-    .array(z.object({ page: z.number().int().positive(), layoutKey: z.string().min(1).max(40) }))
+    .array(
+      z.object({
+        page: z.number().int().positive(),
+        layoutKey: z.string().min(1).max(40),
+        profileFormType: z.string().min(1).max(40).nullable().optional(),
+      }),
+    )
     .default([]),
   templateIds: z.array(z.string().uuid()).default([]),
   adHocKeys: z.array(z.string().min(1).max(400)).default([]),

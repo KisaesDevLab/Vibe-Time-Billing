@@ -20,9 +20,18 @@ interface PageRule {
   matchMode: MatchMode;
   caseSensitive: boolean;
   layoutKey: LayoutKey;
+  /** When set, the firm's latest placement profile for this form type
+   *  supplies the fields; layoutKey is the fallback. */
+  profileFormType: string | null;
   enabled: boolean;
   notes: string | null;
   sortOrder: number;
+}
+
+interface PlacementProfile {
+  id: string;
+  formType: string;
+  version: number;
 }
 
 const FORM_TYPE_OPTIONS = [
@@ -74,6 +83,31 @@ function layoutLabel(key: LayoutKey): string {
   return LAYOUT_OPTIONS.find((o) => o.value === key)?.label ?? key;
 }
 
+// The layout picker mixes the four built-in layouts with the firm's saved
+// placement profiles (value-encoded as `profile:<formType>`; the latest
+// version resolves when a package is built).
+const PROFILE_PREFIX = 'profile:';
+
+function layoutChoiceOptions(profiles: PlacementProfile[]): { value: string; label: string }[] {
+  return [
+    ...LAYOUT_OPTIONS,
+    ...profiles.map((p) => ({
+      value: `${PROFILE_PREFIX}${p.formType}`,
+      label: `Profile: ${p.formType} (v${p.version})`,
+    })),
+  ];
+}
+
+function choiceFromRule(r: PageRule): string {
+  return r.profileFormType ? `${PROFILE_PREFIX}${r.profileFormType}` : r.layoutKey;
+}
+
+function patchFromChoice(v: string): { layoutKey?: LayoutKey; profileFormType: string | null } {
+  return v.startsWith(PROFILE_PREFIX)
+    ? { profileFormType: v.slice(PROFILE_PREFIX.length) }
+    : { layoutKey: v as LayoutKey, profileFormType: null };
+}
+
 export function SignaturePageRulesPage(): JSX.Element {
   const canWrite = usePermission('firm:settings:write');
   const [rules, setRules] = useState<PageRule[]>([]);
@@ -88,15 +122,22 @@ export function SignaturePageRulesPage(): JSX.Element {
   const [bookmarkPattern, setBookmarkPattern] = useState('');
   const [matchMode, setMatchMode] = useState<MatchMode>('contains');
   const [caseSensitive, setCaseSensitive] = useState(false);
-  const [layoutKey, setLayoutKey] = useState<LayoutKey>('us-8879');
+  const [layoutChoice, setLayoutChoice] = useState<string>('us-8879');
   const [enabled, setEnabled] = useState(true);
   const [notes, setNotes] = useState('');
+  const [profiles, setProfiles] = useState<PlacementProfile[]>([]);
 
   async function load(): Promise<void> {
     setLoading(true);
     try {
-      const r = await api<{ rules: PageRule[] }>('/api/staff/admin/signature-config/page-rules');
+      const [r, p] = await Promise.all([
+        api<{ rules: PageRule[] }>('/api/staff/admin/signature-config/page-rules'),
+        api<{ profiles: PlacementProfile[] }>('/api/staff/signatures/profiles').catch(() => ({
+          profiles: [],
+        })),
+      ]);
       setRules(r.rules ?? []);
+      setProfiles(p.profiles ?? []);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'load_failed');
@@ -116,6 +157,7 @@ export function SignaturePageRulesPage(): JSX.Element {
       return;
     }
     try {
+      const choice = patchFromChoice(layoutChoice);
       await api('/api/staff/admin/signature-config/page-rules', {
         method: 'POST',
         body: JSON.stringify({
@@ -123,7 +165,8 @@ export function SignaturePageRulesPage(): JSX.Element {
           bookmarkPattern,
           matchMode,
           caseSensitive,
-          layoutKey,
+          layoutKey: choice.layoutKey ?? 'generic',
+          profileFormType: choice.profileFormType,
           enabled,
           notes: notes.trim() === '' ? null : notes.trim(),
         }),
@@ -225,12 +268,12 @@ export function SignaturePageRulesPage(): JSX.Element {
                 options={MATCH_MODE_OPTIONS}
               />
             </div>
-            <div style={{ width: 220 }}>
+            <div style={{ width: 240 }}>
               <Combobox
-                ariaLabel="Layout"
-                value={layoutKey}
-                onChange={(v) => setLayoutKey(v as LayoutKey)}
-                options={LAYOUT_OPTIONS}
+                ariaLabel="Layout or profile"
+                value={layoutChoice}
+                onChange={setLayoutChoice}
+                options={layoutChoiceOptions(profiles)}
               />
             </div>
             <label
@@ -298,8 +341,22 @@ export function SignaturePageRulesPage(): JSX.Element {
               },
               {
                 key: 'layout',
-                header: 'Layout',
-                render: (r) => layoutLabel(r.layoutKey),
+                header: 'Fields from',
+                render: (r) =>
+                  canWrite ? (
+                    <div style={{ minWidth: 220 }}>
+                      <Combobox
+                        ariaLabel="Layout or profile"
+                        value={choiceFromRule(r)}
+                        onChange={(v) => void patch(r.id, patchFromChoice(v))}
+                        options={layoutChoiceOptions(profiles)}
+                      />
+                    </div>
+                  ) : r.profileFormType ? (
+                    `Profile: ${r.profileFormType}`
+                  ) : (
+                    layoutLabel(r.layoutKey)
+                  ),
               },
               {
                 key: 'notes',

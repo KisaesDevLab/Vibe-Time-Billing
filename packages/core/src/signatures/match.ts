@@ -19,6 +19,9 @@ export interface SignaturePageRule {
   matchMode: PageRuleMatchMode;
   caseSensitive: boolean;
   layoutKey: string;
+  /** 0145 — when set, the firm's latest placement profile for this form
+   *  type supplies the fields instead of layoutKey's built-in layout. */
+  profileFormType?: string | null;
   enabled: boolean;
   sortOrder?: number;
 }
@@ -28,6 +31,7 @@ export interface MatchedSignaturePage {
   bookmarkTitle: string;
   ruleId: string;
   layoutKey: string;
+  profileFormType?: string | null;
 }
 
 function titleMatches(rule: SignaturePageRule, title: string): boolean {
@@ -74,6 +78,7 @@ export function matchSignaturePages(
           bookmarkTitle: section.rawTitle || section.normalizedTitle,
           ruleId: rule.id,
           layoutKey: rule.layoutKey,
+          profileFormType: rule.profileFormType ?? null,
         });
         break;
       }
