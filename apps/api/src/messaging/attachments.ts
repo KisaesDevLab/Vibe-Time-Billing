@@ -49,6 +49,24 @@ function isImage(mime: string | null): boolean {
   return Boolean(mime && mime.toLowerCase().startsWith('image/'));
 }
 
+// Only these MIME types may be served inline (rendered in the browser).
+// Anything else — notably text/html, svg, json — is forced to a download
+// with a generic content-type so a thread member can't upload an HTML
+// "attachment" that executes script in the app origin when previewed.
+const INLINE_SAFE = /^(image\/(png|jpe?g|gif|webp|bmp)|application\/pdf)$/i;
+
+/** Strip control chars (incl. CR/LF) and quotes so the value is safe inside
+ *  a quoted Content-Disposition filename. */
+function safeHeaderFilename(name: string): string {
+  let out = '';
+  for (const ch of name) {
+    const c = ch.charCodeAt(0);
+    if (c < 0x20 || c === 0x7f || c === 0x22 || c === 0x5c) continue;
+    out += ch;
+  }
+  return out.slice(0, 200) || 'attachment';
+}
+
 /** Decrypt + group attachments for a set of messages in one thread. */
 export async function listAttachmentsByMessage(
   db: Database,
@@ -277,9 +295,17 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
             row.nameEnc,
           ).catch(() => null)) ?? 'attachment')
         : 'attachment';
-      res.setHeader('Content-Type', row.mimeType ?? 'application/octet-stream');
-      const disp = req.query['download'] ? 'attachment' : 'inline';
-      res.setHeader('Content-Disposition', `${disp}; filename="${filename.replace(/"/g, '')}"`);
+      // Only image/PDF may render inline; everything else (notably an
+      // uploaded text/html "attachment") is forced to a download with a
+      // generic type so it can't execute as script in the app origin.
+      const forced = Boolean(req.query['download']);
+      const inlineSafe = !forced && INLINE_SAFE.test(row.mimeType ?? '');
+      res.setHeader('Content-Type', inlineSafe ? row.mimeType! : 'application/octet-stream');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader(
+        'Content-Disposition',
+        `${inlineSafe ? 'inline' : 'attachment'}; filename="${safeHeaderFilename(filename)}"`,
+      );
       res.setHeader('Cache-Control', 'private, max-age=300');
       res.send(Buffer.from(plain));
     } catch (err) {
