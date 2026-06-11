@@ -35,6 +35,13 @@ describe('ROLE_TEMPLATES', () => {
     expect(ROLE_TEMPLATES.partner.has('adjustment:approve')).toBe(true);
     expect(ROLE_TEMPLATES.partner.has('rate:write')).toBe(true);
   });
+
+  it('notification:approve goes to partner and manager, not senior/staff', () => {
+    expect(ROLE_TEMPLATES.partner.has('notification:approve')).toBe(true);
+    expect(ROLE_TEMPLATES.manager.has('notification:approve')).toBe(true);
+    expect(ROLE_TEMPLATES.senior.has('notification:approve')).toBe(false);
+    expect(ROLE_TEMPLATES.staff.has('notification:approve')).toBe(false);
+  });
 });
 
 describe('unionPermissions', () => {

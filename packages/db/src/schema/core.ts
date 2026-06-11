@@ -534,7 +534,7 @@ export const notificationTemplates = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
-    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL'] }).notNull(),
+    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'PORTAL'] }).notNull(),
     subject: text('subject'),
     body: text('body').notNull(),
     variablesJson: jsonb('variables_json'),
@@ -1481,7 +1481,7 @@ export const clientCommunications = pgTable(
     clientId: uuid('client_id')
       .notNull()
       .references(() => clients.id, { onDelete: 'cascade' }),
-    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'MEETING', 'NOTE'] }).notNull(),
+    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'MEETING', 'NOTE', 'PORTAL'] }).notNull(),
     direction: text('direction', { enum: ['INBOUND', 'OUTBOUND', 'INTERNAL'] }).notNull(),
     subject: text('subject'),
     body: text('body').notNull(),
@@ -3243,6 +3243,15 @@ export const engagementStatusConfig = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     kanbanVisible: boolean('kanban_visible').notNull().default(true),
     triggersClientComm: boolean('triggers_client_comm').notNull().default(false),
+    // 0146 — notification config used when triggers_client_comm is set:
+    // dispatch mode, channel fan-out, and recipient resolution rule.
+    notifyMode: text('notify_mode', { enum: ['IMMEDIATE', 'STAGED'] })
+      .notNull()
+      .default('STAGED'),
+    notifyChannels: text('notify_channels').array().notNull().default([]),
+    notifyRecipients: text('notify_recipients', { enum: ['BILLING_CONTACT', 'ALL_CONTACTS'] })
+      .notNull()
+      .default('BILLING_CONTACT'),
     // 0101 — the 10 originals are is_system (un-deletable, key immutable);
     // firm-created rows are deletable. Client-facing text shown in the
     // portal in place of the internal label when set + client_visible.
@@ -3255,6 +3264,66 @@ export const engagementStatusConfig = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.firmId, t.workflowState] }),
     firmSortIdx: index('engagement_status_config_firm_sort_idx').on(t.firmId, t.sortOrder),
+  }),
+);
+
+// 0146 — staged_notification. One row per notification trigger event
+// (trigger_kind 'engagement_status' first). Recipients + rendered
+// per-channel content are snapshotted at staging time; the worker only
+// re-checks guards at fire time. IMMEDIATE mode rows go straight to
+// SCHEDULED so all sends share one worker path. A partial unique index
+// on supersede_key (active statuses only) enforces at most one unsent
+// notification per engagement+trigger; newer changes supersede.
+export const stagedNotifications = pgTable(
+  'staged_notification',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    triggerKind: text('trigger_kind').notNull(),
+    entityType: text('entity_type').notNull(),
+    entityId: uuid('entity_id').notNull(),
+    // { workflowState, fromState, statusLabel }
+    triggerContext: jsonb('trigger_context').notNull(),
+    supersedeKey: text('supersede_key').notNull(),
+    mode: text('mode', { enum: ['IMMEDIATE', 'STAGED'] }).notNull(),
+    status: text('status', {
+      enum: ['PENDING_APPROVAL', 'SCHEDULED', 'SENT', 'CANCELED', 'FAILED'],
+    }).notNull(),
+    channels: text('channels').array().notNull(),
+    recipientMode: text('recipient_mode', {
+      enum: ['BILLING_CONTACT', 'ALL_CONTACTS'],
+    }).notNull(),
+    // [{ personId, name, email, phone }]
+    recipients: jsonb('recipients').notNull(),
+    // { EMAIL: {subject, body}, SMS: {body}, PORTAL: {title, body} }
+    rendered: jsonb('rendered').notNull(),
+    templateKind: text('template_kind').notNull(),
+    scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+    decidedBy: uuid('decided_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    canceledReason: text('canceled_reason', {
+      enum: ['SUPERSEDED', 'MANUAL', 'STATE_CHANGED_AT_FIRE'],
+    }),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    // { EMAIL: {ok, sentTo[], error?}, ... }
+    channelResults: jsonb('channel_results'),
+    errorMessage: text('error_message'),
+    createdBy: uuid('created_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmStatusIdx: index('staged_notification_firm_status_idx').on(t.firmId, t.status),
+    clientIdx: index('staged_notification_client_idx').on(t.clientId),
+    entityIdx: index('staged_notification_entity_idx').on(t.entityType, t.entityId),
+    activeSupersedeUk: uniqueIndex('staged_notification_active_supersede_uk')
+      .on(t.supersedeKey)
+      .where(sql`status IN ('PENDING_APPROVAL', 'SCHEDULED')`),
   }),
 );
 

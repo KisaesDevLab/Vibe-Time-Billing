@@ -662,6 +662,50 @@ export const portalStepUpChallenge = pgTable(
 );
 
 // =====================================================================
+// 0146 — portal_notification. Client-portal in-app notifications,
+// modeled on staff_notification (booking.ts). One row per portal
+// identity with access to the client at send time; scoped at read time
+// to (portal_identity_id, active client_id) so multi-entity identities
+// only see notices for the entity they're switched into.
+// =====================================================================
+
+export const portalNotifications = pgTable(
+  'portal_notification',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    portalIdentityId: uuid('portal_identity_id')
+      .notNull()
+      .references(() => portalIdentity.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    entityType: text('entity_type'),
+    entityId: uuid('entity_id'),
+    title: text('title').notNull(),
+    body: text('body'),
+    actionUrl: text('action_url'),
+    status: text('status', { enum: ['UNREAD', 'READ'] })
+      .notNull()
+      .default('UNREAD'),
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    readAt: timestamp('read_at', { withTimezone: true }),
+  },
+  (t) => ({
+    identityClientStatusIdx: index('portal_notification_identity_client_status_idx').on(
+      t.portalIdentityId,
+      t.clientId,
+      t.status,
+    ),
+    createdIdx: index('portal_notification_created_idx').on(t.createdAt),
+  }),
+);
+
+// =====================================================================
 // RELATIONS
 //
 // Drizzle's relations() API enables type-safe joins via the query

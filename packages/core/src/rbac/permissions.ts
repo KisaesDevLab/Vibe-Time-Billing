@@ -90,6 +90,12 @@ export const PERMISSION_KEYS = [
   'approval:queue:read',
   'approval:act',
 
+  // 0146 — staged client-notification queue. Gates the Approvals-page
+  // notification section and its send-now/schedule/cancel actions.
+  // Separate from approval:act so firms can split who approves client
+  // communications from who approves billing.
+  'notification:approve',
+
   // MCP / AI / webhooks (admin-only)
   'admin:mcp:manage',
   'admin:webhooks:manage',
@@ -217,6 +223,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'report:partner-data:read',
     'approval:queue:read',
     'approval:act',
+    'notification:approve',
     'admin:audit:read',
     // Storage v2 — Owner row in addendum §3.7 default matrix.
     'storage:folder:view',
@@ -275,6 +282,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'report:signed-forms:read',
     'approval:queue:read',
     'approval:act',
+    'notification:approve',
     // Storage v2 — Manager row. No reconcile (owner only).
     'storage:folder:view',
     'storage:folder:edit',
