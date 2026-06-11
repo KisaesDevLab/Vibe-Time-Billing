@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { usePermission } from '../auth-context';
 
 interface PersonRow {
   key: string;
@@ -36,6 +37,37 @@ export function PeopleDirectoryPage(): JSX.Element {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(true);
+  const [viewAsBusy, setViewAsBusy] = useState<string | null>(null);
+  // Mirrors the impersonate endpoint's gate (engagement:read).
+  const canViewAs = usePermission('engagement:read');
+
+  // The list row doesn't carry access ids, so resolve them on demand:
+  // exactly one ACTIVE access → open the portal directly; several →
+  // land on the person page where each client has its own button.
+  async function viewAs(p: PersonRow): Promise<void> {
+    setViewAsBusy(p.key);
+    try {
+      const detail = await api<{
+        clients: Array<{ clientId: string; accessId: string | null; accessStatus: string | null }>;
+      }>(`/api/staff/people/${p.id}`);
+      const active = (detail.clients ?? []).filter(
+        (c) => c.accessStatus === 'ACTIVE' && c.accessId,
+      );
+      if (active.length === 1) {
+        const r = await api<{ portalUrl: string }>(
+          `/api/staff/clients/${active[0]!.clientId}/impersonate`,
+          { method: 'POST', body: JSON.stringify({ accessId: active[0]!.accessId }) },
+        );
+        window.open(r.portalUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        navigate(`/people/${p.id}`);
+      }
+    } catch {
+      navigate(`/people/${p.id}`);
+    } finally {
+      setViewAsBusy(null);
+    }
+  }
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -158,7 +190,20 @@ export function PeopleDirectoryPage(): JSX.Element {
                 header: 'Portal',
                 render: (p) =>
                   p.hasPortalAccess ? (
-                    <Pill tone="success">Enabled</Pill>
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <Pill tone="success">Enabled</Pill>
+                      {canViewAs && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={viewAsBusy === p.key}
+                          title="Open the portal as this person (read-only impersonation, 5-min token)"
+                          onClick={() => void viewAs(p)}
+                        >
+                          {viewAsBusy === p.key ? 'Opening…' : 'View as'}
+                        </Button>
+                      )}
+                    </span>
                   ) : (
                     <Pill tone="neutral">—</Pill>
                   ),

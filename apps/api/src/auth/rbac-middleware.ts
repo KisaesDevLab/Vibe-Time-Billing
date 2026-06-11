@@ -30,15 +30,30 @@ export function requirePermission(deps: RbacDeps, key: PermissionKey) {
       res.status(401).json({ error: 'no_session' });
       return;
     }
-    const userRoleSlugs = await loadRoleSlugs(deps, session.appUserId);
-    const overrides = await loadOverrides(deps, session.firmId, userRoleSlugs);
-    const perms = unionPermissionsWithOverrides(userRoleSlugs, overrides);
+    const perms = await resolveUserPermissions(deps, session.appUserId, session.firmId);
     if (!hasPermission(perms, key)) {
       res.status(403).json({ error: 'forbidden', required: key });
       return;
     }
     next();
   };
+}
+
+/**
+ * 0147 — the single source of truth for a staff user's effective
+ * permission set: role templates ± the firm's matrix overrides. Every
+ * caller (this middleware, /me, files/visibility) must go through it
+ * so UI gating and enforcement can never disagree.
+ */
+export async function resolveUserPermissions(
+  deps: RbacDeps,
+  appUserId: string,
+  firmId?: string | null,
+): Promise<Set<PermissionKey>> {
+  const slugs = await loadRoleSlugs(deps, appUserId);
+  const effectiveFirmId = firmId ?? (await loadFirmId(deps, appUserId));
+  const overrides = await loadOverrides(deps, effectiveFirmId, slugs);
+  return unionPermissionsWithOverrides(slugs, overrides);
 }
 
 /**
@@ -51,10 +66,7 @@ export async function userHasPermission(
   appUserId: string,
   key: PermissionKey,
 ): Promise<boolean> {
-  const slugs = await loadRoleSlugs(deps, appUserId);
-  const firmId = await loadFirmId(deps, appUserId);
-  const overrides = await loadOverrides(deps, firmId, slugs);
-  return hasPermission(unionPermissionsWithOverrides(slugs, overrides), key);
+  return hasPermission(await resolveUserPermissions(deps, appUserId), key);
 }
 
 async function loadRoleSlugs(deps: RbacDeps, appUserId: string): Promise<RoleSlug[]> {

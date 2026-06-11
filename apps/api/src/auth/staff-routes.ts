@@ -25,9 +25,10 @@ import {
 } from '@vibe/core/auth';
 import { SignJWT, jwtVerify } from 'jose';
 import { verifyPassword } from './password';
-import { unionPermissions, type PermissionKey, type RoleSlug } from '@vibe/core/rbac';
+import type { RoleSlug } from '@vibe/core/rbac';
+import { resolveUserPermissions } from './rbac-middleware';
 import type { Database } from '@vibe/db';
-import { appUserCredentials, appUsers, roles, userRoles } from '@vibe/db/schema';
+import { appUserCredentials, appUsers } from '@vibe/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { loadConfig } from '../config';
@@ -1670,30 +1671,19 @@ async function loadEffectivePermissions(
   deps: StaffRoutesDeps,
   appUserId: string,
 ): Promise<string[]> {
-  let slugs: RoleSlug[];
-  if (deps.fakeUserRoles) {
-    slugs = deps.fakeUserRoles.get(appUserId) ?? [];
-  } else if (deps.db) {
-    try {
-      const rows = await deps.db
-        .select({ slug: roles.name })
-        .from(userRoles)
-        .innerJoin(roles, eq(roles.id, userRoles.roleId))
-        .where(eq(userRoles.appUserId, appUserId));
-      const known: RoleSlug[] = ['partner', 'manager', 'senior', 'staff', 'admin'];
-      slugs = rows
-        .map((r) => r.slug.toLowerCase() as RoleSlug)
-        .filter((s): s is RoleSlug => known.includes(s));
-    } catch (err) {
-      // Tests pass a partial DB stub that doesn't implement innerJoin;
-      // a thrown TypeError here would 500 /me. Return empty perms so
-      // the rest of the response still ships — production hits the
-      // real DB and never lands here.
-      logger.warn({ err }, '/me: failed to load effective permissions, returning empty set');
-      slugs = [];
-    }
-  } else {
-    slugs = [];
+  try {
+    // 0147 — shared resolver applies the firm's permission-matrix
+    // overrides, so the FE's usePermission() gating always matches
+    // what requirePermission enforces.
+    return Array.from(
+      await resolveUserPermissions({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }, appUserId),
+    );
+  } catch (err) {
+    // Tests pass a partial DB stub that doesn't implement innerJoin;
+    // a thrown TypeError here would 500 /me. Return empty perms so
+    // the rest of the response still ships — production hits the
+    // real DB and never lands here.
+    logger.warn({ err }, '/me: failed to load effective permissions, returning empty set');
+    return [];
   }
-  return Array.from(unionPermissions(slugs)) as PermissionKey[];
 }

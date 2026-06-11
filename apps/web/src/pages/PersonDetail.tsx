@@ -14,6 +14,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { usePermission } from '../auth-context';
 
 type Role = 'FULL' | 'VIEW_ONLY' | 'PAY_ONLY';
 
@@ -59,6 +60,21 @@ export function PersonDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyClient, setBusyClient] = useState<string | null>(null);
+  // View-as mirrors the impersonate endpoint's gate (engagement:read —
+  // partner/manager/senior; plain staff don't see the button).
+  const canViewAs = usePermission('engagement:read');
+
+  async function viewAs(clientId: string, accessId: string): Promise<void> {
+    try {
+      const r = await api<{ portalUrl: string }>(`/api/staff/clients/${clientId}/impersonate`, {
+        method: 'POST',
+        body: JSON.stringify({ accessId }),
+      });
+      window.open(r.portalUrl, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'impersonation_failed');
+    }
+  }
 
   async function load(): Promise<void> {
     try {
@@ -211,6 +227,17 @@ export function PersonDetailPage(): JSX.Element {
                           />
                         </div>
                         <Pill tone="success">Enabled</Pill>
+                        {canViewAs && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy}
+                            title="Open the portal as this person (read-only impersonation, 5-min token)"
+                            onClick={() => void viewAs(c.clientId, c.accessId!)}
+                          >
+                            View as
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="danger"

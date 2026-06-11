@@ -22,17 +22,15 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { fileVisibilityEvents, files } from '@vibe/db/schema';
-import {
-  hasPermission,
-  unionPermissions,
-  type PermissionKey,
-  type RoleSlug,
-} from '@vibe/core/rbac';
-import { roles, userRoles } from '@vibe/db/schema';
+import { type PermissionKey } from '@vibe/core/rbac';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
-import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import {
+  requirePermission,
+  userHasPermission as sharedUserHasPermission,
+  type RbacDeps,
+} from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface FileVisibilityRoutesDeps extends RbacDeps {
@@ -152,23 +150,13 @@ async function userHasPermission(
   appUserId: string,
   key: PermissionKey,
 ): Promise<boolean> {
-  let slugs: RoleSlug[];
-  if (deps.fakeUserRoles) {
-    slugs = deps.fakeUserRoles.get(appUserId) ?? [];
-  } else if (deps.db) {
-    const rows = await deps.db
-      .select({ slug: roles.name })
-      .from(userRoles)
-      .innerJoin(roles, eq(roles.id, userRoles.roleId))
-      .where(eq(userRoles.appUserId, appUserId));
-    const known: RoleSlug[] = ['partner', 'manager', 'senior', 'staff', 'admin'];
-    slugs = rows
-      .map((r) => r.slug.toLowerCase() as RoleSlug)
-      .filter((s): s is RoleSlug => known.includes(s));
-  } else {
-    slugs = [];
-  }
-  return hasPermission(unionPermissions(slugs), key);
+  // 0147 — delegate to the shared resolver so the firm's permission-
+  // matrix overrides apply here exactly as they do in requirePermission.
+  return sharedUserHasPermission(
+    { db: deps.db, fakeUserRoles: deps.fakeUserRoles },
+    appUserId,
+    key,
+  );
 }
 
 export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Router {
