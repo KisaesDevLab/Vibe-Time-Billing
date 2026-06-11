@@ -31,10 +31,14 @@ export function ProtectedPdfViewer({
   url,
   canDownload,
   filename,
+  downloadUrl,
 }: {
   url: string;
   canDownload: boolean;
   filename: string;
+  /** 0150 — server-enforced download endpoint when it differs from the
+   *  inline-view URL (gated file shares). Defaults to `url`. */
+  downloadUrl?: string;
 }): JSX.Element {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState<string | null>(null);
@@ -141,7 +145,7 @@ export function ProtectedPdfViewer({
       />
       {canDownload ? (
         <div style={{ marginTop: tokens.space.sm }}>
-          <a href={url} download={filename}>
+          <a href={downloadUrl ?? url} download={filename}>
             <Button variant="secondary" size="sm">
               Download PDF
             </Button>
