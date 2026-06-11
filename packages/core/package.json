@@ -15,6 +15,7 @@
     "./invoicing": "./src/invoicing/index.ts",
     "./payments": "./src/payments/index.ts",
     "./dunning": "./src/dunning/index.ts",
+    "./notifications": "./src/notifications/index.ts",
     "./reporting": "./src/reporting/index.ts",
     "./approvals": "./src/approvals/index.ts",
     "./webhooks": "./src/webhooks/index.ts",
