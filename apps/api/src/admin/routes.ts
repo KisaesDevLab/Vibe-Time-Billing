@@ -1546,6 +1546,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       sortOrder: z.number().int().min(0).max(9999).optional(),
       kanbanVisible: z.boolean().optional(),
       triggersClientComm: z.boolean().optional(),
+      // 0146 — per-status notification config.
+      notifyMode: z.enum(['IMMEDIATE', 'STAGED']).optional(),
+      notifyChannels: z
+        .array(z.enum(['EMAIL', 'SMS', 'PORTAL']))
+        .max(3)
+        .optional(),
+      notifyRecipients: z.enum(['BILLING_CONTACT', 'ALL_CONTACTS']).optional(),
       clientLabel: z.string().max(120).nullable().optional(),
       clientDescription: z.string().max(500).nullable().optional(),
       clientVisible: z.boolean().optional(),
@@ -1573,6 +1580,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       sortOrder: z.number().int().min(0).max(9999).optional(),
       kanbanVisible: z.boolean().optional(),
       triggersClientComm: z.boolean().optional(),
+      // 0146 — per-status notification config.
+      notifyMode: z.enum(['IMMEDIATE', 'STAGED']).optional(),
+      notifyChannels: z
+        .array(z.enum(['EMAIL', 'SMS', 'PORTAL']))
+        .max(3)
+        .optional(),
+      notifyRecipients: z.enum(['BILLING_CONTACT', 'ALL_CONTACTS']).optional(),
       clientLabel: z.string().max(120).nullable().optional(),
       clientDescription: z.string().max(500).nullable().optional(),
       clientVisible: z.boolean().optional(),
@@ -1617,6 +1631,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         sortOrder: d.sortOrder ?? 100,
         kanbanVisible: d.kanbanVisible ?? true,
         triggersClientComm: d.triggersClientComm ?? false,
+        notifyMode: d.notifyMode ?? 'STAGED',
+        notifyChannels: d.notifyChannels ?? [],
+        notifyRecipients: d.notifyRecipients ?? 'BILLING_CONTACT',
         isSystem: false,
         clientLabel: d.clientLabel ?? null,
         clientDescription: d.clientDescription ?? null,

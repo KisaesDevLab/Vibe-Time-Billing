@@ -29,6 +29,7 @@ import { desc } from 'drizzle-orm';
 import { queryStatusHistory } from './status-history';
 
 import { emitAudit } from '../auth/audit';
+import { stageStatusNotification } from '../notifications/staged/pipeline';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -1016,6 +1017,19 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // 0146 — stage/send the configured client notification for the new
+      // status. Fire-and-forget: a notification failure must not fail the
+      // transition itself.
+      void stageStatusNotification(deps.db, {
+        firmId: session.firmId,
+        engagementId: eng.id,
+        clientId: eng.clientId,
+        fromState: eng.prev,
+        toState: ws,
+        actorAppUserId: session.appUserId,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'status notification staging failed'));
       res.json({ ok: true });
     },
   );
