@@ -67,6 +67,10 @@ import {
   runRetainerExpiryWarning,
   type ExpiryWarningJobPayload,
 } from './jobs/retainer-expiry-warning';
+import {
+  runStagedNotificationSend,
+  type StagedNotificationSendPayload,
+} from './jobs/staged-notification-send';
 import { runShieldHealthcheck } from './jobs/shield-healthcheck';
 import { runViewRefresh } from './jobs/view-refresh';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
@@ -810,6 +814,10 @@ async function setup(): Promise<void> {
   // activation time; handlers fire after the queue delay elapses.
   setupRetainerDelayedQueues();
 
+  // 0146 — staged client-notification sends (delayed-only; enqueued by
+  // the API at decision time).
+  setupStagedNotificationQueue();
+
   // Document-intake pipeline. Enqueued on demand by the API at
   // /session/:id/complete (never on a schedule); scans + assembles +
   // notifies. Same parallel-registration pattern as storage-mutation.
@@ -1103,6 +1111,41 @@ let offerReminderWorkerRef: Worker<OfferReminderJobPayload> | null = null;
 let expiryWarningQueueRef: Queue<ExpiryWarningJobPayload> | null = null;
 let expiryWarningEventsRef: QueueEvents | null = null;
 let expiryWarningWorkerRef: Worker<ExpiryWarningJobPayload> | null = null;
+let stagedNotifQueueRef: Queue<StagedNotificationSendPayload> | null = null;
+let stagedNotifEventsRef: QueueEvents | null = null;
+let stagedNotifWorkerRef: Worker<StagedNotificationSendPayload> | null = null;
+
+// 0146 — staged client-notification sends. The API enqueues delayed
+// jobs at decision time (send-now / schedule / IMMEDIATE staging);
+// the handler re-checks guards against the row and fans out per
+// channel. attempts:1 — failures surface as FAILED rows with a Retry
+// action in the Approvals queue, never as blind re-sends.
+function setupStagedNotificationQueue(): void {
+  if (!db) {
+    logger.warn('staged-notification queue not registered — db missing');
+    return;
+  }
+  const name = 'staged-notification-send';
+  stagedNotifQueueRef = new Queue<StagedNotificationSendPayload>(name, { connection });
+  stagedNotifEventsRef = new QueueEvents(name, { connection });
+  stagedNotifEventsRef.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: name, failedReason }, 'staged notification send failed');
+  });
+  stagedNotifWorkerRef = new Worker<StagedNotificationSendPayload>(
+    name,
+    async (job) => {
+      const result = await runStagedNotificationSend(
+        db!,
+        logger,
+        { sendEmail: dunningSendEmail, sendSms: dunningSendSms },
+        job.data,
+      );
+      logger.info({ jobId: job.id, ...result }, 'staged-notification-send complete');
+    },
+    { connection, concurrency: 2 },
+  );
+  logger.info({ queue: name }, 'staged-notification queue registered');
+}
 
 function setupRetainerDelayedQueues(): void {
   if (!db) {
@@ -1233,6 +1276,9 @@ async function shutdown(): Promise<void> {
   if (expiryWarningWorkerRef) await expiryWarningWorkerRef.close();
   if (expiryWarningQueueRef) await expiryWarningQueueRef.close();
   if (expiryWarningEventsRef) await expiryWarningEventsRef.close();
+  if (stagedNotifWorkerRef) await stagedNotifWorkerRef.close();
+  if (stagedNotifQueueRef) await stagedNotifQueueRef.close();
+  if (stagedNotifEventsRef) await stagedNotifEventsRef.close();
   if (intakeWorkerRef) await intakeWorkerRef.close();
   if (intakeQueueRef) await intakeQueueRef.close();
   if (intakeEventsRef) await intakeEventsRef.close();
