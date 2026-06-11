@@ -95,6 +95,15 @@ export async function createShare(input: CreateShareInput): Promise<CreateShareR
   if (input.scope === 'FULL' && input.sectionIds.length > 0) {
     throw new ShareError('scope_mismatch', 'FULL scope must have empty sectionIds');
   }
+  // A FULL-scope share exposes every page; that is only permitted when
+  // the caller's own release is FULL. Without this guard a client with
+  // a SELECTED (partial) release could share sections the firm withheld.
+  if (input.scope === 'FULL' && release.scope !== 'FULL') {
+    throw new ShareError(
+      'scope_exceeds_release',
+      'cannot share the full return from a partial release',
+    );
+  }
   if (input.scope === 'SELECTED' && input.sectionIds.length === 0) {
     throw new ShareError('scope_mismatch', 'SELECTED scope requires at least one section_id');
   }

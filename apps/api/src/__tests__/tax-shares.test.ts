@@ -139,6 +139,31 @@ describe('TR-6 — createShare', () => {
     expect(row!.recipientEmail).toBe('banker@chase.example');
   });
 
+  it('rejects a FULL-scope share when the release is SELECTED (partial)', async () => {
+    const f = await setup('SELECTED');
+    await expect(
+      createShare({
+        db: harness.db,
+        returnId: f.returnId,
+        sharedByAccessId: f.accessId,
+        callerClientIds: [f.clientId],
+        recipientName: 'Banker',
+        recipientEmail: 'banker@chase.example',
+        recipientPhone: null,
+        organization: 'Chase',
+        role: 'lender',
+        accessLevel: 'view_only',
+        scope: 'FULL',
+        sectionIds: [],
+        expiresAt: tomorrow(),
+        require2fa: false,
+        verifyChannel: 'NONE',
+        watermark: true,
+        personalMessage: '',
+      }),
+    ).rejects.toThrow(/scope_exceeds_release/);
+  });
+
   it('rejects SELECTED section that is outside the release scope', async () => {
     const f = await setup('SELECTED');
     // Release only contains sectionIds[0]; try to share sectionIds[1].
