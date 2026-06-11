@@ -15,7 +15,7 @@ interface Eng {
   // Joined from engagement_type → service_line by the list endpoint.
   serviceLineId: string | null;
   serviceLineName: string | null;
-  serviceLineCategory: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll' | null;
+  serviceLineCategory: string | null;
 }
 
 interface Summary {
@@ -43,7 +43,7 @@ interface EngType {
 interface ServiceLine {
   id: string;
   name: string;
-  category: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll';
+  category: string;
 }
 
 type SortCol = 'name' | 'cost' | 'billed' | 'paid' | 'margin' | 'pct';

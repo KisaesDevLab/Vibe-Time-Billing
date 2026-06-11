@@ -50,7 +50,7 @@ interface EngagementRow {
   // service_line). NULL for engagements without an assigned type.
   serviceLineId: string | null;
   serviceLineName: string | null;
-  serviceLineCategory: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll' | null;
+  serviceLineCategory: string | null;
 }
 
 interface AppUser {
@@ -66,7 +66,7 @@ interface EngagementType {
 interface ServiceLine {
   id: string;
   name: string;
-  category: 'tax' | 'audit' | 'advisory' | 'bookkeeping' | 'payroll';
+  category: string;
 }
 
 const WORKFLOW_LABELS: Record<WorkflowState, string> = {

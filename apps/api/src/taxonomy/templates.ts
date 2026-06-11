@@ -193,7 +193,7 @@ export function createTemplatePackRouter(deps: TemplatePackDeps): Router {
         .where(
           and(
             eq(serviceLines.firmId, session.firmId),
-            eq(serviceLines.category, template.service_line_category as 'tax'),
+            eq(serviceLines.category, template.service_line_category),
           ),
         )
         .limit(1);

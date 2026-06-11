@@ -26,6 +26,8 @@ interface Engagement {
   status?: string;
   // Progress/board status — preselects the status picker when logging time.
   workflowState?: string;
+  // 0148 — drives the work-code filter (joined via engagement_type).
+  serviceLineId?: string | null;
 }
 
 interface StatusOption {
@@ -42,6 +44,9 @@ interface Client {
 interface WorkCode {
   id: string;
   name: string;
+  // 0148 — codes tagged to a service line only show for matching
+  // engagements; null = available everywhere.
+  serviceLineId?: string | null;
 }
 
 interface TimeEntry {
@@ -336,6 +341,16 @@ function LogView({
   });
   const [engagementId, setEngagementId] = useState(initialEngagementId);
   const [workCodeId, setWorkCodeId] = useState('');
+  // 0148 — only offer codes applicable to the engagement's service line.
+  // Codes with no service line are universal; engagements without a
+  // service line (no engagement type) see every code.
+  const selectedEngagement = engagements.find((e) => e.id === engagementId);
+  const applicableWorkCodes = workCodes.filter(
+    (w) =>
+      !w.serviceLineId ||
+      !selectedEngagement?.serviceLineId ||
+      w.serviceLineId === selectedEngagement.serviceLineId,
+  );
   // Progress status to set on save; preselected to the engagement's current.
   const [workflowState, setWorkflowState] = useState('');
   const [entryDate, setEntryDate] = useState(today());
@@ -679,7 +694,10 @@ function LogView({
                 clearable
                 value={workCodeId}
                 onChange={setWorkCodeId}
-                options={workCodes.map<ComboboxOption>((w) => ({ value: w.id, label: w.name }))}
+                options={applicableWorkCodes.map<ComboboxOption>((w) => ({
+                  value: w.id,
+                  label: w.name,
+                }))}
                 placeholder="— none —"
               />
             </div>

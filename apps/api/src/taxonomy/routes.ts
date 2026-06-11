@@ -73,7 +73,13 @@ export interface TaxonomyRoutesDeps extends RbacDeps {
 
 const ServiceLineSchema = z.object({
   name: z.string().min(1).max(120),
-  category: z.enum(['tax', 'audit', 'advisory', 'bookkeeping', 'payroll']),
+  // 0148 — firm-managed category text (lowercased for stable grouping).
+  category: z
+    .string()
+    .trim()
+    .min(1)
+    .max(40)
+    .transform((v) => v.toLowerCase()),
   color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
@@ -87,7 +93,7 @@ const WorkCodeSchema = z.object({
     .max(64)
     .regex(/^[a-z][a-z0-9_]*$/),
   name: z.string().min(1).max(120),
-  serviceLineId: z.string().uuid().optional(),
+  serviceLineId: z.string().uuid().nullable().optional(),
   billableDefault: z.boolean().optional(),
   descriptionTemplate: z.string().max(500).optional(),
 });

@@ -757,7 +757,9 @@ export const serviceLines = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    category: serviceLineCategory('category').notNull(),
+    // 0148 — was the service_line_category enum; firm-managed text now
+    // (same relaxation 0101 applied to workflow states).
+    category: text('category').notNull(),
     color: text('color'),
     icon: text('icon'),
     status: entityStatus('status').notNull().default('ACTIVE'),

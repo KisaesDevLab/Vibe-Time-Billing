@@ -302,10 +302,9 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         typeof req.query['serviceLineCategory'] === 'string'
           ? req.query['serviceLineCategory']
           : null;
-      const slCategoryAllowed = ['tax', 'audit', 'advisory', 'bookkeeping', 'payroll'] as const;
-      type ServiceLineCategory = (typeof slCategoryAllowed)[number];
-      if (slCategoryRaw && (slCategoryAllowed as readonly string[]).includes(slCategoryRaw)) {
-        conds.push(eq(serviceLines.category, slCategoryRaw as ServiceLineCategory));
+      // 0148 — categories are firm-managed text now; any value filters.
+      if (slCategoryRaw) {
+        conds.push(eq(serviceLines.category, slCategoryRaw.toLowerCase()));
       }
 
       // Per-engagement unbilled time-entry count. Drives the "Bill"
