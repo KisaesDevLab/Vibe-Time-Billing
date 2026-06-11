@@ -20,6 +20,7 @@ interface Invoice {
   status: 'DRAFT' | 'SENT' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'VOIDED';
   firstViewedAt: string | null;
   lastReminderAt: string | null;
+  engagementTypes: string | null;
 }
 
 interface AppUser {
@@ -126,17 +127,29 @@ export function InvoicesPage(): JSX.Element {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [items]);
 
+  // Distinct engagement-type strings for the Type column dropdown.
+  const typeValues = useMemo(() => {
+    const set = new Set<string>();
+    for (const i of items) if (i.engagementTypes) set.add(i.engagementTypes);
+    return Array.from(set)
+      .sort((a, b) => a.localeCompare(b))
+      .map((v) => ({ value: v, label: v }));
+  }, [items]);
+
   const visible = useMemo(
     () =>
       selectRows(items, view, {
-        searchText: (i) => `${i.invoiceNumber} ${i.clientName} ${i.status}`,
+        searchText: (i) =>
+          `${i.invoiceNumber} ${i.clientName} ${i.engagementTypes ?? ''} ${i.status}`,
         filters: {
           client: (i) => i.clientId,
+          type: (i) => i.engagementTypes ?? '',
           status: (i) => i.status,
         },
         sortValues: {
           invoice: (i) => i.invoiceNumber,
           client: (i) => i.clientName,
+          type: (i) => i.engagementTypes ?? '',
           issued: (i) => i.issueDate,
           due: (i) => i.dueDate ?? '',
           total: (i) => i.totalCents,
@@ -258,6 +271,22 @@ export function InvoicesPage(): JSX.Element {
                   </span>
                 ) as unknown as string,
                 render: (i) => i.clientName,
+              },
+              {
+                key: 'type',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Type{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort engagement type"
+                      values={typeValues}
+                      selected={view.filterFor('type')}
+                      sort={view.sortFor('type')}
+                      onApply={(sel, dir) => view.apply('type', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (i) => <span style={{ fontSize: 12 }}>{i.engagementTypes ?? '—'}</span>,
               },
               {
                 key: 'issue',

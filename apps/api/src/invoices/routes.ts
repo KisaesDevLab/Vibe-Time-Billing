@@ -451,6 +451,18 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           totalCents: invoices.totalCents,
           paidCents: invoices.paidCents,
           status: invoices.status,
+          // Same aggregate as the list endpoint — engagement type names
+          // billed on the invoice (primary + line-item engagements).
+          engagementTypes: sql<string | null>`(
+            SELECT string_agg(DISTINCT et.name, ', ')
+            FROM engagement e
+            JOIN engagement_type et ON et.id = e.engagement_type_id
+            WHERE e.id = ${invoices.primaryEngagementId}
+               OR e.id IN (
+                 SELECT ili.engagement_id FROM invoice_line_item ili
+                 WHERE ili.invoice_id = ${invoices.id} AND ili.engagement_id IS NOT NULL
+               )
+          )`,
         })
         .from(invoices)
         .innerJoin(clients, eq(clients.id, invoices.clientId))
@@ -465,6 +477,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           columns: [
             { header: 'Invoice', render: (i) => i.invoiceNumber },
             { header: 'Client', render: (i) => i.clientName },
+            { header: 'Engagement type', render: (i) => i.engagementTypes ?? '' },
             { header: 'Issued', render: (i) => i.issueDate ?? '' },
             { header: 'Due', render: (i) => i.dueDate ?? '' },
             { header: 'Total', render: (i) => Number(i.totalCents) / 100, numeric: true },
@@ -490,6 +503,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         'id',
         'invoiceNumber',
         'clientName',
+        'engagementTypes',
         'issueDate',
         'dueDate',
         'totalCents',
@@ -505,6 +519,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             inv.id,
             inv.invoiceNumber,
             csvStr(inv.clientName),
+            csvStr(inv.engagementTypes ?? ''),
             inv.issueDate,
             inv.dueDate,
             String(inv.totalCents),
