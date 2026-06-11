@@ -89,6 +89,13 @@ const MONTHS = [
 
 type EsignProvider = 'native' | 'opensign';
 
+// 0054 — statement layouts the renderer supports. One today; add
+// entries here (and to the renderer + the admin zod enum) as more
+// formats land.
+const STATEMENT_FORMAT_OPTIONS = [
+  { value: 'detailed_open_amounts', label: 'Detailed — open items with aging (default)' },
+];
+
 export function FirmSettingsPage(): JSX.Element {
   const [s, setS] = useState<Settings | null>(null);
   const [f, setF] = useState<Firm | null>(null);
@@ -520,18 +527,6 @@ export function FirmSettingsPage(): JSX.Element {
         </p>
         <div style={{ display: 'grid', gap: 16, maxWidth: 720 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Select
-              label="Default invoice format (new clients)"
-              value={s.invoiceTemplateStyle}
-              onChange={(v) =>
-                setS({ ...s, invoiceTemplateStyle: v as 'modern' | 'classic' | 'minimal' })
-              }
-              options={[
-                { value: 'modern', label: 'Modern (professional letterhead — default)' },
-                { value: 'classic', label: 'Classic (centered, serif)' },
-                { value: 'minimal', label: 'Minimal (compact)' },
-              ]}
-            />
             <Input
               label="Number of days until invoice is due"
               type="number"
@@ -540,6 +535,9 @@ export function FirmSettingsPage(): JSX.Element {
               value={f.defaultTermsDays}
               onChange={(e) => setF({ ...f, defaultTermsDays: Number(e.target.value) })}
             />
+            {/* Invoice PDF style lives in the Branding card above — it was
+                duplicated here as "Default invoice format" until 0147. */}
+            <span />
           </div>
 
           <h3
@@ -554,12 +552,11 @@ export function FirmSettingsPage(): JSX.Element {
             A/R options
           </h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Input
+            <Select
               label="Default statement format (new clients)"
-              value={s.defaultStatementFormat ?? ''}
-              onChange={(e) => setS({ ...s, defaultStatementFormat: e.target.value })}
-              placeholder="detailed_open_amounts"
-              hint="Preset key used when generating client statements."
+              value={s.defaultStatementFormat || 'detailed_open_amounts'}
+              onChange={(v) => setS({ ...s, defaultStatementFormat: v })}
+              options={STATEMENT_FORMAT_OPTIONS}
             />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 18 }}>
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>

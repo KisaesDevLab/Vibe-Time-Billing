@@ -110,7 +110,8 @@ const FirmSettingsPatchSchema = z.object({
   // 0053 — Billing + A/R block.
   arTermsText: z.string().max(4000).nullable().optional(),
   statementEmailMessage: z.string().max(4000).nullable().optional(),
-  defaultStatementFormat: z.string().max(80).optional(),
+  // 0147 — constrained to the layouts the statement renderer supports.
+  defaultStatementFormat: z.enum(['detailed_open_amounts']).optional(),
   achProcessingEnabled: z.boolean().optional(),
   creditCardProcessingEnabled: z.boolean().optional(),
   assessServiceChargesEnabled: z.boolean().optional(),
