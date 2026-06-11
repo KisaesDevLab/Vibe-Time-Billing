@@ -93,14 +93,12 @@ interface StaffTargetRow {
 }
 
 interface RoleAssignment {
-  roleId: string;
-  roleSlug: string;
-  roleName: string;
+  id: string;
+  name: string;
 }
 
 interface RoleOption {
   id: string;
-  slug: string;
   name: string;
 }
 
@@ -134,6 +132,7 @@ interface Snapshot {
 type Tab = 'main' | 'contact' | 'rates' | 'skills' | 'targets' | 'notes' | 'booking';
 
 const fieldStyle: React.CSSProperties = {
+  boxSizing: 'border-box',
   padding: '6px 10px',
   background: tokens.color.surface,
   color: tokens.color.text,
@@ -258,18 +257,20 @@ export function UserDetailPage(): JSX.Element {
     }
   }
 
-  async function assignRole(roleId: string): Promise<void> {
-    if (!id || !roleId) return;
+  // The endpoint replaces the user's full role set, so both assign and
+  // remove send the complete desired list.
+  async function saveRoles(roleIds: string[]): Promise<void> {
+    if (!id) return;
     setBusy(true);
     setError(null);
     try {
       await api(`/api/staff/admin/users/${id}/roles`, {
         method: 'POST',
-        body: JSON.stringify({ roleId }),
+        body: JSON.stringify({ roleIds }),
       });
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'assign_failed');
+      setError(e instanceof Error ? e.message : 'role_save_failed');
     } finally {
       setBusy(false);
     }
@@ -466,86 +467,118 @@ export function UserDetailPage(): JSX.Element {
         />
       )}
 
-      <Card
-        title="Roles"
-        action={
-          <div style={{ width: 220 }}>
-            <Combobox
-              ariaLabel="Assign role"
-              disabled={busy}
-              value=""
-              onChange={(val) => {
-                if (val) void assignRole(val);
-              }}
-              options={allRoles
-                .filter((r) => !roles.some((cur) => cur.roleId === r.id))
-                .map<ComboboxOption>((r) => ({ value: r.id, label: r.name }))}
-              placeholder="+ Assign role…"
-              size="sm"
-            />
-          </div>
-        }
-      >
-        {roles.length === 0 ? (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-            No roles assigned. User has read-only baseline access until at least one role is
-            attached.
-          </p>
-        ) : (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {roles.map((r) => (
-              <Pill key={r.roleId} tone="accent">
-                {r.roleName} <code style={{ fontSize: 10, opacity: 0.6 }}>{r.roleSlug}</code>
-              </Pill>
-            ))}
-          </div>
-        )}
-      </Card>
+      {/* Roles / Authentication / Lifecycle are account-level, so they
+          live on the Main tab only (they used to render under every tab). */}
+      {tab === 'main' && (
+        <>
+          <Card
+            title="Roles"
+            action={
+              <div style={{ width: 220 }}>
+                <Combobox
+                  ariaLabel="Assign role"
+                  disabled={busy}
+                  value=""
+                  onChange={(val) => {
+                    if (val) {
+                      void saveRoles([...roles.map((r) => r.id), val]);
+                    }
+                  }}
+                  options={allRoles
+                    .filter((r) => !roles.some((cur) => cur.id === r.id))
+                    .map<ComboboxOption>((r) => ({ value: r.id, label: r.name }))}
+                  placeholder="+ Assign role…"
+                  size="sm"
+                />
+              </div>
+            }
+          >
+            {roles.length === 0 ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+                No roles assigned. User has read-only baseline access until at least one role is
+                attached.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {roles.map((r) => (
+                  <span key={r.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    <Pill tone="accent">{r.name}</Pill>
+                    <button
+                      type="button"
+                      aria-label={`Remove role ${r.name}`}
+                      title="Remove role"
+                      disabled={busy}
+                      onClick={() =>
+                        void saveRoles(roles.filter((x) => x.id !== r.id).map((x) => x.id))
+                      }
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: tokens.color.textMuted,
+                        fontSize: 12,
+                        padding: '0 2px',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </Card>
 
-      <Card title="Authentication">
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 12,
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 13 }}>
-              TOTP:{' '}
-              {user.totpEnrolledAt ? (
-                <Pill tone="success">enrolled</Pill>
-              ) : (
-                <Pill tone="warning">not enrolled</Pill>
+          <Card title="Authentication">
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 13 }}>
+                  TOTP:{' '}
+                  {user.totpEnrolledAt ? (
+                    <Pill tone="success">enrolled</Pill>
+                  ) : (
+                    <Pill tone="warning">not enrolled</Pill>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>
+                  {user.totpEnrolledAt
+                    ? `Enrolled ${new Date(user.totpEnrolledAt).toLocaleDateString()}`
+                    : 'Required at first sign-in (locked decision #5).'}
+                </div>
+              </div>
+              {user.totpEnrolledAt && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void resetTotp()}
+                  disabled={busy}
+                >
+                  Reset TOTP
+                </Button>
               )}
             </div>
-            <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 4 }}>
-              {user.totpEnrolledAt
-                ? `Enrolled ${new Date(user.totpEnrolledAt).toLocaleDateString()}`
-                : 'Required at first sign-in (locked decision #5).'}
-            </div>
-          </div>
-          {user.totpEnrolledAt && (
-            <Button size="sm" variant="secondary" onClick={() => void resetTotp()} disabled={busy}>
-              Reset TOTP
-            </Button>
-          )}
-        </div>
-      </Card>
+          </Card>
 
-      <Card title="Lifecycle">
-        <div style={{ display: 'flex', gap: 8 }}>
-          {user.status === 'ACTIVE' && (
-            <Button variant="secondary" onClick={() => void archive()} disabled={busy}>
-              Archive
-            </Button>
-          )}
-          <span style={{ fontSize: 12, color: tokens.color.textMuted, alignSelf: 'center' }}>
-            Created {new Date(user.createdAt).toLocaleDateString()}
-          </span>
-        </div>
-      </Card>
+          <Card title="Lifecycle">
+            <div style={{ display: 'flex', gap: 8 }}>
+              {user.status === 'ACTIVE' && (
+                <Button variant="secondary" onClick={() => void archive()} disabled={busy}>
+                  Archive
+                </Button>
+              )}
+              <span style={{ fontSize: 12, color: tokens.color.textMuted, alignSelf: 'center' }}>
+                Created {new Date(user.createdAt).toLocaleDateString()}
+              </span>
+            </div>
+          </Card>
+        </>
+      )}
     </div>
   );
 }
@@ -888,7 +921,9 @@ function ContactTab({
         />
       }
     >
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div
+        style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16 }}
+      >
         <div style={{ display: 'grid', gap: 12 }}>
           <Field label="Email">
             <Plain>{user.email}</Plain>
@@ -937,48 +972,9 @@ function ContactTab({
           />
         </div>
       </div>
-      {/* Business address */}
-      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 13, color: tokens.color.textMuted }}>
-        Business address
-      </h4>
-      <div style={{ display: 'grid', gap: 12 }}>
-        <Field label="Address line 1">{inp('addressLine1')}</Field>
-        <Field label="Address line 2">{inp('addressLine2')}</Field>
-      </div>
-      <div
-        style={{
-          marginTop: 12,
-          display: 'grid',
-          gridTemplateColumns: '2fr 100px 100px 1fr',
-          gap: 12,
-        }}
-      >
-        <Field label="City">{inp('city')}</Field>
-        <Field label="State">{inp('state')}</Field>
-        <Field label="Zip">{inp('zip')}</Field>
-        <Field label="Country">{inp('addressCountry')}</Field>
-      </div>
-      {/* Home address — separate section */}
-      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 13, color: tokens.color.textMuted }}>
-        Home address
-      </h4>
-      <div style={{ display: 'grid', gap: 12 }}>
-        <Field label="Address line 1">{inp('homeAddressLine1')}</Field>
-        <Field label="Address line 2">{inp('homeAddressLine2')}</Field>
-      </div>
-      <div
-        style={{
-          marginTop: 12,
-          display: 'grid',
-          gridTemplateColumns: '2fr 100px 100px 1fr',
-          gap: 12,
-        }}
-      >
-        <Field label="City">{inp('homeCity')}</Field>
-        <Field label="State">{inp('homeState')}</Field>
-        <Field label="Zip">{inp('homeZip')}</Field>
-        <Field label="Country">{inp('homeCountry')}</Field>
-      </div>
+      {/* Business/Home address sections removed — staff records don't
+          need per-user mailing addresses (the columns remain in the DB
+          and PATCH schema if a future need shows up). */}
     </Card>
   );
 }
