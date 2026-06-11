@@ -289,6 +289,11 @@ function InboxTab(): JSX.Element {
         method: 'PATCH',
         body: JSON.stringify(body),
       });
+      // Client / year edits re-run the routing rules server-side; pull
+      // the recomputed destination + status.
+      if (body.matchedClient !== undefined || body.overrideYear !== undefined) {
+        void loadInbox();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'update failed');
       // Re-pull authoritative state on failure.

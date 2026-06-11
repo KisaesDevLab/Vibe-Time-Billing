@@ -40,8 +40,11 @@ import {
 } from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
+import { evaluateRules, resolveYearSubfolder } from '@vibe/core/filer';
+
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from '../clients/folder-templates';
+import { loadActiveRules } from './scan';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { scanInbox } from './scan';
@@ -209,10 +212,51 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       .update(inboxItems)
       .set(set)
       .where(and(eq(inboxItems.id, req.params['id']!), eq(inboxItems.firmId, session.firmId)))
-      .returning({ id: inboxItems.id });
+      .returning({
+        id: inboxItems.id,
+        originalName: inboxItems.originalName,
+        matchStatus: inboxItems.matchStatus,
+        matchedClient: inboxItems.matchedClient,
+        parsedYear: inboxItems.parsedYear,
+        overrideYear: inboxItems.overrideYear,
+      });
     if (!row) {
       res.status(404).json({ error: 'not_found' });
       return;
+    }
+
+    // Re-run routing rules when the review edit changes their inputs
+    // (manual client assignment / override year). Without this, a
+    // manually-assigned row never gets a rule destination and a
+    // year_needed row stays stuck after the year is supplied.
+    if (
+      (parsed.data.matchedClient !== undefined || parsed.data.overrideYear !== undefined) &&
+      row.matchedClient
+    ) {
+      const rules = await loadActiveRules(deps.db, session.firmId);
+      const rule = evaluateRules(row.originalName, rules);
+      const effectiveYear = row.overrideYear ?? row.parsedYear;
+      const recompute: Record<string, unknown> = { suggestedRule: rule?.id ?? null };
+      if (rule) {
+        const yearSub = resolveYearSubfolder(effectiveYear, rule.yearBehavior);
+        if (yearSub === null) {
+          recompute['suggestedPath'] = null;
+          recompute['matchStatus'] = 'year_needed';
+        } else {
+          recompute['suggestedPath'] =
+            `${rule.targetPath}${rule.targetPath && !rule.targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+          if (row.matchStatus === 'year_needed' || row.matchStatus === 'unparseable') {
+            recompute['matchStatus'] = 'matched';
+          }
+        }
+      } else {
+        recompute['suggestedPath'] = null;
+        if (row.matchStatus === 'unparseable') recompute['matchStatus'] = 'matched';
+      }
+      await deps.db
+        .update(inboxItems)
+        .set(recompute)
+        .where(and(eq(inboxItems.id, row.id), eq(inboxItems.firmId, session.firmId)));
     }
     res.json({ ok: true });
   });

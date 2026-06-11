@@ -36,13 +36,29 @@ export function yearWindow(now: Date = new Date()): { min: number; max: number }
 
 function detectYear(rest: string, now: Date): number | null {
   const { min, max } = yearWindow(now);
-  const matches = rest.match(/\d{4}/g);
+  // Boundary-guarded: a 4-digit window inside a longer digit run (e.g.
+  // "1234" inside id "123456") is not a year candidate.
+  const matches = rest.match(/(?<!\d)\d{4}(?!\d)/g);
   if (!matches) return null;
   for (const m of matches) {
     const n = Number(m);
     if (n >= min && n <= max) return n;
   }
   return null;
+}
+
+/**
+ * Year detection over the WHOLE stem. The strict parser only scans the
+ * segment after the `name_ID_` slot, which loses the year when a
+ * year-like number was (mis)consumed as the id — e.g.
+ * `David, Allen_2025_1040_..._ALLE1234.pdf` parses id="2025", leaving
+ * no year in the rest. The loose external-id matcher calls this to
+ * recover it.
+ */
+export function detectYearAnywhere(filename: string, opts: ParseOptions = {}): number | null {
+  const now = opts.now ?? new Date();
+  const { stem } = splitExt(filename);
+  return detectYear(stem, now);
 }
 
 function splitExt(filename: string): { stem: string; ext: string | null } {

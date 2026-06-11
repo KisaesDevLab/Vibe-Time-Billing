@@ -147,6 +147,32 @@ describe('matchObject (pure)', () => {
     expect(r.matchedClient).toBe('c3');
     expect(r.parsedId).toBe('ALLE1234');
   });
+  it('loose match recovers the year the strict parse consumed as id', () => {
+    const rules = [
+      {
+        id: 'r1',
+        sortOrder: 0,
+        identifier: '1040',
+        matchMode: 'contains' as const,
+        caseSensitive: false,
+        targetPath: 'Tax Returns',
+        yearBehavior: 'current_only' as const,
+        isTaxReturn: true,
+        enabled: true,
+      },
+    ];
+    const r = matchObject(
+      'David, Allen_2025_1040_GovernmentCopyTaxReturn_ALLE1234.pdf',
+      alnumClients,
+      rules,
+      alnumBound,
+    );
+    expect(r.matchStatus).toBe('matched');
+    expect(r.parsedYear).toBe(2025);
+    expect(r.suggestedRule).toBe('r1');
+    expect(r.suggestedPath).toBe('Tax Returns/2025/');
+  });
+
   it('alphanumeric id is case-insensitive and boundary-guarded', () => {
     expect(matchObject('alle1234 w2.pdf', alnumClients, [], alnumBound).matchedClient).toBe('c3');
     // Embedded in a longer token → no match (XALLE12345 ≠ ALLE1234).

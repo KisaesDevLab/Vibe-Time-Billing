@@ -18,6 +18,7 @@ import {
 } from '@vibe/db/schema';
 import { jaroWinkler, normalizeNameString, type StorageClient } from '@vibe/storage';
 import {
+  detectYearAnywhere,
   evaluateRules,
   parseFilename,
   resolveYearSubfolder,
@@ -113,6 +114,9 @@ export function matchObject(
       const only = [...hits.values()][0]!;
       client = only.c;
       base.parsedId = only.id;
+      // The strict parse may have consumed a year-like number as the
+      // (wrong) id; recover the year from the full filename.
+      if (base.parsedYear == null) base.parsedYear = detectYearAnywhere(originalName, { now });
     }
   }
   if (client) {
@@ -153,7 +157,7 @@ export function matchObject(
   const rule = evaluateRules(originalName, rules);
   let suggestedPath: string | null = null;
   if (rule) {
-    const yearSub = resolveYearSubfolder(parsed.year, rule.yearBehavior);
+    const yearSub = resolveYearSubfolder(base.parsedYear, rule.yearBehavior);
     if (yearSub === null) {
       // rule needs a year but none parsed
       return {
@@ -181,6 +185,31 @@ export interface ScanResult {
 }
 
 /** List the Inbox/ prefix and upsert inbox_items, preserving review state. */
+/** The active routing profile's rules, mapped to the core shape. */
+export async function loadActiveRules(db: Database, firmId: string): Promise<RoutingRule[]> {
+  const [profile] = await db
+    .select({ id: inboxRoutingProfiles.id })
+    .from(inboxRoutingProfiles)
+    .where(and(eq(inboxRoutingProfiles.firmId, firmId), eq(inboxRoutingProfiles.isActive, true)))
+    .limit(1);
+  if (!profile) return [];
+  const rows = await db
+    .select()
+    .from(inboxRoutingRules)
+    .where(eq(inboxRoutingRules.profileId, profile.id));
+  return rows.map((r) => ({
+    id: r.id,
+    sortOrder: r.sortOrder,
+    identifier: r.identifier,
+    matchMode: r.matchMode as RoutingRule['matchMode'],
+    caseSensitive: r.caseSensitive,
+    targetPath: r.targetPath,
+    yearBehavior: r.yearBehavior as RoutingRule['yearBehavior'],
+    isTaxReturn: r.isTaxReturn,
+    enabled: r.enabled,
+  }));
+}
+
 export async function scanInbox(
   db: Database,
   storage: StorageClient,
@@ -212,26 +241,7 @@ export async function scanInbox(
     .where(eq(clientFolders.firmId, firmId));
   const boundIds = new Set(bound.map((b) => b.clientId));
 
-  const [profile] = await db
-    .select({ id: inboxRoutingProfiles.id })
-    .from(inboxRoutingProfiles)
-    .where(and(eq(inboxRoutingProfiles.firmId, firmId), eq(inboxRoutingProfiles.isActive, true)))
-    .limit(1);
-  const rules: RoutingRule[] = profile
-    ? (
-        await db.select().from(inboxRoutingRules).where(eq(inboxRoutingRules.profileId, profile.id))
-      ).map((r) => ({
-        id: r.id,
-        sortOrder: r.sortOrder,
-        identifier: r.identifier,
-        matchMode: r.matchMode as RoutingRule['matchMode'],
-        caseSensitive: r.caseSensitive,
-        targetPath: r.targetPath,
-        yearBehavior: r.yearBehavior as RoutingRule['yearBehavior'],
-        isTaxReturn: r.isTaxReturn,
-        enabled: r.enabled,
-      }))
-    : [];
+  const rules = await loadActiveRules(db, firmId);
 
   let matched = 0;
   const liveKeys: string[] = [];
