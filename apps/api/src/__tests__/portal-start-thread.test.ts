@@ -7,6 +7,7 @@
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import express from 'express';
+import type { Redis } from 'ioredis';
 import request from 'supertest';
 import { and, eq, isNull } from 'drizzle-orm';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -14,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { sql } from 'drizzle-orm';
-import { engagementThreadLinks, threadMembers, threads } from '@vibe/db/schema';
+import { engagementThreadLinks, staffNotifications, threadMembers, threads } from '@vibe/db/schema';
 import type { RoleSlug } from '@vibe/core/rbac';
 import type { PortalSession } from '@vibe/core/auth';
 
@@ -29,7 +30,44 @@ let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 let identityId: string;
 let sealDir: string;
 
-function portalApp(): express.Express {
+/** In-memory stand-in for the sliding-window limiter's Redis surface. */
+function fakeRedis(): {
+  zremrangebyscore: (k: string, a: number, b: number) => Promise<number>;
+  zcard: (k: string) => Promise<number>;
+  zadd: (k: string, score: number, member: string) => Promise<number>;
+  expire: (k: string, s: number) => Promise<number>;
+} {
+  const zsets = new Map<string, Map<string, number>>();
+  const get = (k: string): Map<string, number> => {
+    if (!zsets.has(k)) zsets.set(k, new Map());
+    return zsets.get(k)!;
+  };
+  return {
+    async zremrangebyscore(k, a, b) {
+      const z = get(k);
+      let n = 0;
+      for (const [m, s] of z) {
+        if (s >= a && s <= b) {
+          z.delete(m);
+          n++;
+        }
+      }
+      return n;
+    },
+    async zcard(k) {
+      return get(k).size;
+    },
+    async zadd(k, score, member) {
+      get(k).set(member, score);
+      return 1;
+    },
+    async expire() {
+      return 1;
+    },
+  };
+}
+
+function portalApp(redis?: ReturnType<typeof fakeRedis>): express.Express {
   const app = express();
   app.use(express.json());
   const session: PortalSession = {
@@ -50,6 +88,8 @@ function portalApp(): express.Express {
       (req as unknown as { portalSession: PortalSession }).portalSession = session;
       next();
     },
+    // reason: the limiter only uses the four zset methods the fake provides.
+    redis: redis as unknown as Redis | undefined,
   });
   app.use('/api/portal/messaging', router);
   return app;
@@ -184,5 +224,81 @@ describe('portal-initiated thread', () => {
       .send({ engagementId: seed.engagementId });
     expect(again.status).toBe(409);
     expect(again.body.error).toBe('thread_already_linked');
+
+    // …and unlink restores the client-direct state.
+    const unlink = await request(staffApp()).delete(
+      `/api/staff/engagement-messaging/threads/${threadId}/engagement`,
+    );
+    expect(unlink.status).toBe(200);
+    const links = await harness.db
+      .select()
+      .from(engagementThreadLinks)
+      .where(eq(engagementThreadLinks.threadId, threadId));
+    expect(links).toHaveLength(0);
+    const unlinkAgain = await request(staffApp()).delete(
+      `/api/staff/engagement-messaging/threads/${threadId}/engagement`,
+    );
+    expect(unlinkAgain.status).toBe(404);
+    expect(unlinkAgain.body.error).toBe('not_linked');
+  });
+
+  it('notifies the routed staff and dates the thread title', async () => {
+    const res = await request(portalApp())
+      .post('/api/portal/messaging/threads')
+      .send({ body: 'question about my W-2' });
+    expect(res.status).toBe(201);
+    const threadId = res.body.threadId as string;
+
+    const [t] = await harness.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
+    // Title carries the contact name and an ISO date suffix.
+    expect(t!.title).toMatch(/^Client Tom \(.*\) — \d{4}-\d{2}-\d{2}$/);
+
+    const notifs = await harness.db
+      .select()
+      .from(staffNotifications)
+      .where(eq(staffNotifications.entityId, threadId));
+    expect(notifs.length).toBeGreaterThanOrEqual(1);
+    expect(notifs.some((n) => n.recipientAppUserId === seed.appUserId)).toBe(true);
+    expect(notifs[0]!.type).toBe('client_message_thread');
+    expect(notifs[0]!.body).toContain('question about my W-2');
+  });
+
+  it('rate-limits thread creation (5/hour per identity → 429)', async () => {
+    const redis = fakeRedis();
+    const app = portalApp(redis);
+    for (let i = 0; i < 5; i++) {
+      const ok = await request(app)
+        .post('/api/portal/messaging/threads')
+        .send({ body: `message ${i}` });
+      expect(ok.status).toBe(201);
+    }
+    const blocked = await request(app)
+      .post('/api/portal/messaging/threads')
+      .send({ body: 'one too many' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toBe('rate_limited');
+  });
+
+  it('routes to engagement-assigned staff too', async () => {
+    // A second staff user assigned to the client's engagement (but who has
+    // never messaged) must be a member of the new thread.
+    const u = await harness.db.execute(
+      sql`INSERT INTO app_user (firm_id, email, full_name, first_name, last_name)
+          VALUES (${seed.firmId}, 'assignee@test.example', 'Assigned Anna', 'Anna', 'A') RETURNING id`,
+    );
+    const assigneeId = (u as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`INSERT INTO engagement_assignment (engagement_id, app_user_id, role)
+          VALUES (${seed.engagementId}, ${assigneeId}, 'STAFF')`,
+    );
+    const res = await request(portalApp())
+      .post('/api/portal/messaging/threads')
+      .send({ body: 'hello team' });
+    expect(res.status).toBe(201);
+    const members = await harness.db
+      .select()
+      .from(threadMembers)
+      .where(and(eq(threadMembers.threadId, res.body.threadId), isNull(threadMembers.removedAt)));
+    expect(members.some((m) => m.appUserId === assigneeId)).toBe(true);
   });
 });

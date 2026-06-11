@@ -1049,6 +1049,7 @@ export function createApp(deps: AppDeps): Express {
   const portalMessagingRouter = createPortalMessagingRouter({
     db: deps.db,
     requireAuth: portal.requireAuth,
+    redis: deps.redis,
   });
   app.use('/api/portal/messaging', portalMessagingRouter);
 

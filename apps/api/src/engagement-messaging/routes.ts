@@ -240,6 +240,58 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
     },
   );
 
+  // Unlink a thread from its engagement (undo for a mis-assignment). The
+  // thread stays client-scoped (thread.client_id is untouched).
+  router.delete(
+    '/threads/:id/engagement',
+    requirePermission(deps, 'messaging:write'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const threadId = req.params['id']!;
+      if (!(await isMember(deps.db, { threadId, appUserId: session.appUserId }))) {
+        res.status(403).json({ error: 'not_a_member' });
+        return;
+      }
+      const [thread] = await deps.db
+        .select({ id: threads.id, firmId: threads.firmId, clientId: threads.clientId })
+        .from(threads)
+        .where(eq(threads.id, threadId))
+        .limit(1);
+      if (!thread || thread.firmId !== session.firmId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [link] = await deps.db
+        .select({ engagementId: engagementThreadLinks.engagementId })
+        .from(engagementThreadLinks)
+        .where(eq(engagementThreadLinks.threadId, threadId))
+        .limit(1);
+      if (!link) {
+        res.status(404).json({ error: 'not_linked' });
+        return;
+      }
+      await deps.db
+        .delete(engagementThreadLinks)
+        .where(eq(engagementThreadLinks.threadId, threadId));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'thread',
+        entityId: threadId,
+        actorAppUserId: session.appUserId,
+        activeClientId: thread.clientId,
+        before: { engagementId: link.engagementId },
+        after: { engagementId: null },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.get(
     '/threads/:id/messages',
     requirePermission(deps, 'messaging:read'),

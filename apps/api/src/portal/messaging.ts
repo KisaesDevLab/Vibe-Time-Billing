@@ -11,18 +11,22 @@
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 
+import { checkAndIncrement } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
   clientPortalAccess,
   clients,
+  engagementAssignments,
   engagementThreadLinks,
   engagements,
   messageReadReceipts,
   messages,
   portalIdentity,
+  staffNotifications,
   threadMembers,
   threads,
 } from '@vibe/db/schema';
@@ -56,7 +60,13 @@ const StartThreadSchema = z.object({
 export interface PortalMessagingDeps {
   db: Database | null;
   requireAuth: (req: Request, res: Response, next: NextFunction) => unknown;
+  /** Sliding-window rate limit for client-initiated threads. Absent in
+   *  some tests; the limiter fails open when missing or erroring. */
+  redis?: Redis | null;
 }
+
+const NEW_THREAD_MAX_PER_WINDOW = 5;
+const NEW_THREAD_WINDOW_SECONDS = 3600;
 
 async function memberAndFirmCheck(
   db: Database,
@@ -173,6 +183,27 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
     const db = deps.db;
     const { activeClientId, portalIdentityId, firmId } = session;
 
+    // Sliding-window rate limit — a client shouldn't be able to mass-create
+    // threads (each wraps a T-DEK + fans out members + notifications).
+    // Fails open on Redis trouble: messaging the firm must not break
+    // because the limiter is down.
+    if (deps.redis) {
+      try {
+        const limit = await checkAndIncrement(deps.redis, {
+          key: `rl:portal-thread:${portalIdentityId}`,
+          max: NEW_THREAD_MAX_PER_WINDOW,
+          windowSeconds: NEW_THREAD_WINDOW_SECONDS,
+        });
+        if (!limit.allowed) {
+          res.setHeader('Retry-After', String(limit.retryAfterSeconds));
+          res.status(429).json({ error: 'rate_limited' });
+          return;
+        }
+      } catch (err) {
+        logger.warn({ err }, 'portal thread rate limiter error; allowing');
+      }
+    }
+
     // Defense in depth — the identity must have access to the active client.
     const [access] = await db
       .select({ clientId: clientPortalAccess.clientId })
@@ -223,6 +254,15 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
       );
     for (const r of teamRows) if (r.appUserId) staffIds.add(r.appUserId);
 
+    // …plus staff assigned to the client's non-archived engagements — they
+    // are part of the working team even if they haven't messaged yet.
+    const assignedRows = await db
+      .selectDistinct({ appUserId: engagementAssignments.appUserId })
+      .from(engagementAssignments)
+      .innerJoin(engagements, eq(engagements.id, engagementAssignments.engagementId))
+      .where(and(eq(engagements.clientId, activeClientId), ne(engagements.status, 'ARCHIVED')));
+    for (const r of assignedRows) staffIds.add(r.appUserId);
+
     if (staffIds.size === 0) {
       // No partner-in-charge and no prior team — fall back to every active
       // staff user so a client message is never invisible to the firm.
@@ -234,9 +274,12 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
     }
 
     const wrapped = generateWrappedTDek(db, firmId);
+    // Date suffix keeps repeat conversations from the same contact
+    // distinguishable in both the staff and portal thread lists.
+    const today = new Date().toISOString().slice(0, 10);
     const title = me?.fullName
-      ? `${me.fullName} (${client.name})`
-      : `${client.name} — client message`;
+      ? `${me.fullName} (${client.name}) — ${today}`
+      : `${client.name} — client message ${today}`;
     let createdThreadId: string | null = null;
     try {
       await db.transaction(async (tx) => {
@@ -283,6 +326,26 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
       await db.update(threads).set({ updatedAt: new Date() }).where(eq(threads.id, threadId));
     } catch (err) {
       logger.error({ err, threadId }, 'portal first message encrypt failed');
+    }
+
+    // In-app notification so the routed staff actually see the new
+    // conversation without having to open the client's Messages card.
+    try {
+      const senderName = me?.fullName ?? 'A client contact';
+      await db.insert(staffNotifications).values(
+        [...staffIds].map((sid) => ({
+          firmId,
+          recipientAppUserId: sid,
+          type: 'client_message_thread',
+          entityType: 'thread',
+          entityId: threadId,
+          title: `New message from ${senderName} (${client.name})`,
+          body: parsed.data.body.slice(0, 160),
+          actionUrl: `/clients/${activeClientId}`,
+        })),
+      );
+    } catch (err) {
+      logger.error({ err, threadId }, 'client thread staff notification failed');
     }
 
     await emitAudit(db, {

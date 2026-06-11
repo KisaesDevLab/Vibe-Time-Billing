@@ -62,8 +62,31 @@ export function MessagesPage(): JSX.Element {
   const [uploading, setUploading] = useState(false);
   const [composing, setComposing] = useState(false);
   const [newBody, setNewBody] = useState('');
+  // Files staged in the new-thread composer. They can't upload until the
+  // thread exists, so they're held as File objects and uploaded right
+  // after creation.
+  const [newFiles, setNewFiles] = useState<File[]>([]);
   const [starting, setStarting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const newFileInput = useRef<HTMLInputElement>(null);
+
+  async function uploadOne(threadId: string, f: File): Promise<PendingAttachment> {
+    const qs = new URLSearchParams({
+      filename: f.name || 'pasted-image.png',
+      mimeType: f.type || 'application/octet-stream',
+    });
+    const res = await fetch(`/api/portal/messaging/threads/${threadId}/attachments?${qs}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': f.type || 'application/octet-stream',
+        'X-CSRF-Token': getCsrfToken() ?? '',
+      },
+      body: f,
+      credentials: 'same-origin',
+    });
+    if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+    return (await res.json()) as PendingAttachment;
+  }
 
   async function uploadFiles(files: FileList | File[] | null): Promise<void> {
     if (!files) return;
@@ -73,24 +96,7 @@ export function MessagesPage(): JSX.Element {
     setError(null);
     try {
       for (const f of arr) {
-        const qs = new URLSearchParams({
-          filename: f.name || 'pasted-image.png',
-          mimeType: f.type || 'application/octet-stream',
-        });
-        const res = await fetch(
-          `/api/portal/messaging/threads/${activeThreadId}/attachments?${qs.toString()}`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': f.type || 'application/octet-stream',
-              'X-CSRF-Token': getCsrfToken() ?? '',
-            },
-            body: f,
-            credentials: 'same-origin',
-          },
-        );
-        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
-        const a = (await res.json()) as PendingAttachment;
+        const a = await uploadOne(activeThreadId, f);
         setPending((prev) => [...prev, a]);
       }
     } catch (err) {
@@ -142,7 +148,28 @@ export function MessagesPage(): JSX.Element {
         method: 'POST',
         body: JSON.stringify({ body: text }),
       });
+      // Staged files upload after the thread exists, then post as an
+      // attachments message right behind the text.
+      if (r.threadId && newFiles.length > 0) {
+        try {
+          const uploaded: PendingAttachment[] = [];
+          for (const f of newFiles) uploaded.push(await uploadOne(r.threadId, f));
+          await api(`/api/portal/messaging/threads/${r.threadId}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({
+              body:
+                uploaded.length === 1 ? uploaded[0]!.filename : `Shared ${uploaded.length} files`,
+              attachmentIds: uploaded.map((a) => a.id),
+            }),
+          });
+        } catch (err) {
+          // The thread + text made it; surface the attachment failure but
+          // don't treat the whole send as failed.
+          setError(err instanceof Error ? err.message : 'attachment_upload_failed');
+        }
+      }
       setNewBody('');
+      setNewFiles([]);
       setComposing(false);
       await loadThreads();
       if (r.threadId) setActiveThreadId(r.threadId);
@@ -195,7 +222,60 @@ export function MessagesPage(): JSX.Element {
           resize: 'vertical',
         }}
       />
+      {newFiles.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {newFiles.map((f, idx) => (
+            <span
+              key={`${f.name}-${idx}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.pill,
+                padding: '2px 8px',
+              }}
+            >
+              {f.name} <span style={{ color: tokens.color.textMuted }}>({fmtSize(f.size)})</span>
+              <button
+                type="button"
+                aria-label={`Remove ${f.name}`}
+                onClick={() => setNewFiles((prev) => prev.filter((_, i) => i !== idx))}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: tokens.color.danger,
+                  cursor: 'pointer',
+                  fontSize: 15,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: tokens.space.sm }}>
+        <input
+          ref={newFileInput}
+          type="file"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            setNewFiles((prev) => [...prev, ...Array.from(e.target.files ?? [])]);
+            e.target.value = '';
+          }}
+        />
+        <Button
+          variant="ghost"
+          onClick={() => newFileInput.current?.click()}
+          disabled={starting}
+          title="Attach files or images"
+        >
+          <Paperclip size={20} />
+        </Button>
         <Button onClick={() => void startThread()} disabled={starting || !newBody.trim()}>
           {starting ? 'Sending…' : 'Send message'}
         </Button>
@@ -205,6 +285,7 @@ export function MessagesPage(): JSX.Element {
             onClick={() => {
               setComposing(false);
               setNewBody('');
+              setNewFiles([]);
             }}
             disabled={starting}
           >

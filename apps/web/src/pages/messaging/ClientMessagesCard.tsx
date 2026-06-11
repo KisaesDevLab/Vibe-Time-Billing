@@ -172,7 +172,24 @@ export function ClientMessagesCard({ clientId }: { clientId: string }): JSX.Elem
                 onError={setError}
               />
             ) : activeThread?.engagementId ? (
-              <Pill tone="accent">Engagement</Pill>
+              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <Pill tone="accent">Engagement</Pill>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    if (!confirm('Unlink this thread from its engagement?')) return;
+                    void api(
+                      `/api/staff/engagement-messaging/threads/${activeThread.threadId}/engagement`,
+                      { method: 'DELETE' },
+                    )
+                      .then(() => void load())
+                      .catch((e) => setError(e instanceof Error ? e.message : 'unassign_failed'));
+                  }}
+                >
+                  Unassign
+                </Button>
+              </span>
             ) : null
           }
         >
