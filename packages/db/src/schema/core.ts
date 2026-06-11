@@ -4005,6 +4005,10 @@ export const fileShares = pgTable(
     firstViewedAt: timestamp('first_viewed_at', { withTimezone: true }),
     lastViewedAt: timestamp('last_viewed_at', { withTimezone: true }),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    // 0150 — gated shares open the access-code landing page instead of
+    // direct-downloading. Pre-0150 rows are false (legacy links honored
+    // until expiry); all new shares are gated.
+    gated: boolean('gated').notNull().default(true),
   },
   (t) => ({
     fileIdx: index('file_share_file_idx').on(t.fileId),
@@ -4039,13 +4043,42 @@ export const fileShareEvents = pgTable(
     shareIdx: index('file_share_event_share_idx').on(t.fileShareId, t.occurredAt),
     outcomeCk: check(
       'file_share_event_outcome_ck',
-      sql`${t.outcome} IN ('allowed', 'denied_revoked', 'denied_expired', 'denied_file_gone')`,
+      sql`${t.outcome} IN ('allowed', 'denied_revoked', 'denied_expired', 'denied_file_gone', 'otp_sent', 'otp_failed', 'otp_verified', 'otp_locked', 'denied_gated', 'denied_not_verified', 'revoked_lockout')`,
     ),
+  }),
+);
+
+// 0150 — one row per "send access code" on a gated share. The 6-digit
+// code and the post-verify browser grant are both sha256-hashed at
+// rest. Cooldown (60s) and the 24h send quota are computed by counting
+// rows; 5 wrong attempts lock a challenge, 3 exhausted challenges
+// revoke the share.
+export const fileShareOtps = pgTable(
+  'file_share_otp',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    fileShareId: uuid('file_share_id')
+      .notNull()
+      .references(() => fileShares.id, { onDelete: 'cascade' }),
+    channel: text('channel', { enum: ['EMAIL', 'SMS'] }).notNull(),
+    codeHash: text('code_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    grantTokenHash: text('grant_token_hash'),
+    grantExpiresAt: timestamp('grant_expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    shareIdx: index('file_share_otp_share_idx').on(t.fileShareId, t.createdAt),
+    attemptsNonneg: check('file_share_otp_attempts_nonneg', sql`${t.attempts} >= 0`),
   }),
 );
 
 export type FileShare = typeof fileShares.$inferSelect;
 export type FileShareEvent = typeof fileShareEvents.$inferSelect;
+export type FileShareOtp = typeof fileShareOtps.$inferSelect;
 
 // =====================================================================
 // 0073 — Appointments (CP12)
