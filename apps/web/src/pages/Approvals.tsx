@@ -5,6 +5,7 @@ import { Button, Card, Combobox, Input, Pill, Table, tokens, type ComboboxOption
 
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
+import { StagedNotificationsCard } from './StagedNotificationsCard';
 
 interface PendingRequest {
   id: string;
@@ -61,10 +62,12 @@ export function ApprovalsPage(): JSX.Element {
   }
 
   const canManagePortal = usePermission('client:portal-access:manage');
+  const canApproveNotifications = usePermission('notification:approve');
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       {canManagePortal && <PortalAccessRequestsCard />}
+      {canApproveNotifications && <StagedNotificationsCard />}
       <Card title={`Pending approvals (${items.length})`}>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         {loading ? (
