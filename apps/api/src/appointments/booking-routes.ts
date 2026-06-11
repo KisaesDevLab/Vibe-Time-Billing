@@ -1103,6 +1103,9 @@ async function rescheduleAppointment(
     busyProvider: providerFor(firmId),
     excludeAppointmentId: appt.id,
     location: appt.location,
+    // Keep the appointment's saved location preset binding on reschedule —
+    // a Monett appointment must not land on a Cassville-only window.
+    locationOptionId: appt.locationOptionId ?? undefined,
   });
   const match = avail.slots.find(
     (s) => s.start === startsAt.toISOString() && s.end === endsAt.toISOString(),
