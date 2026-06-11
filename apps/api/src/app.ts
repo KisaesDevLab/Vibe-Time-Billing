@@ -135,6 +135,7 @@ import { createBookingRouter } from './appointments/booking-routes';
 import { createAppointmentPublicRouter } from './appointments/public-routes';
 import { createAppointmentTwilioRouter } from './appointments/twilio-routes';
 import { createNotificationCenterRouter } from './notifications/center-routes';
+import { createStagedNotificationRouter } from './notifications/staged/routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
 import { createPackageRouter } from './packages/routes';
@@ -1365,6 +1366,18 @@ export function createApp(deps: AppDeps): Express {
   // BK-7 — in-app staff notification center.
   const notificationCenterRouter = createNotificationCenterRouter({ db: deps.db });
   app.use('/api/staff/notifications', auth.requireAuth, auth.requireCsrf, notificationCenterRouter);
+
+  // 0146 — staged client-notification approval queue.
+  const stagedNotificationRouter = createStagedNotificationRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/staged-notifications',
+    auth.requireAuth,
+    auth.requireCsrf,
+    stagedNotificationRouter,
+  );
 
   // P02 — services catalog + tags (proposal addendum). read for
   // partner/manager/senior/staff; write for partner + manager.
