@@ -344,11 +344,14 @@ export function SignatureDetailPage(): JSX.Element {
             {request.status === 'completed' && (
               <Button
                 variant="secondary"
+                title="Signed document with the audit certificate appended"
                 onClick={() => window.open(`/api/staff/signatures/${id}/signed`, '_blank')}
               >
                 Download signed PDF
               </Button>
             )}
+            {/* Legacy: requests completed before the certificate was merged
+                into the signed PDF stored it as a separate file. */}
             {request.status === 'completed' && request.certificateFileUrl && (
               <Button
                 variant="secondary"

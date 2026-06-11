@@ -319,6 +319,52 @@ describe('signatures send + reconcile (phase 6+7)', () => {
     expect(storage.objects.has(row!.signedFileUrl!)).toBe(true);
   });
 
+  it('merges the audit certificate into a single signed PDF', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    const { id } = await preparedRequest(app);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+
+    // Real PDFs this time: a 2-page signed doc + a 1-page certificate,
+    // served by URL so the reconcile can fetch each part.
+    const signedDoc = await PDFDocument.create();
+    signedDoc.addPage([612, 792]);
+    signedDoc.addPage([612, 792]);
+    const signedPdf = Buffer.from(await signedDoc.save());
+    const certPdf = await onePagePdf();
+
+    const client = mockClient({
+      doc: () => ({
+        objectId: 'doc_sent_1',
+        IsCompleted: true,
+        SignedUrl: 'http://os/files/signed.pdf',
+        CertificateUrl: 'http://os/files/cert.pdf',
+      }),
+    });
+    client.fetchPdfUrl = async (url: string) => ({
+      body: url.includes('cert') ? certPdf : signedPdf,
+      contentType: 'application/pdf',
+    });
+
+    const done = await reconcileSignatureRequestByDocument(
+      { db: harness.db, storage, client },
+      'doc_sent_1',
+    );
+    expect(done.kind).toBe('updated');
+
+    const [row] = await harness.db
+      .select()
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id));
+    expect(row!.status).toBe('completed');
+    // One stored artifact — signed pages + certificate pages appended; no
+    // separate certificate file for new completions.
+    expect(row!.certificateFileUrl).toBeNull();
+    const stored = storage.objects.get(row!.signedFileUrl!)!;
+    const merged = await PDFDocument.load(stored);
+    expect(merged.getPageCount()).toBe(3);
+  });
+
   it('sweeps a past-expiry request to expired', async () => {
     const storage = memStorage();
     const app = buildApp(mockClient(), storage);

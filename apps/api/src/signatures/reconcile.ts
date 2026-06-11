@@ -18,6 +18,7 @@
 // completion path (apps/api/src/esign/opensign-complete.ts).
 
 import { eq } from 'drizzle-orm';
+import { PDFDocument } from 'pdf-lib';
 
 import type { Database } from '@vibe/db';
 import { signatureEvents, signatureRequests, signatureSigners } from '@vibe/db/schema';
@@ -53,6 +54,18 @@ function signedFileKey(firmId: string, requestId: string): string {
 
 function certFileKey(firmId: string, requestId: string): string {
   return `signatures/${firmId}/${requestId}/certificate.pdf`;
+}
+
+/** Append the audit certificate's pages to the signed document so the stored
+ *  artifact is ONE PDF (signature pages followed by the certificate) instead
+ *  of two separate downloads on the signed page. Throws if either part isn't
+ *  a loadable PDF — callers fall back to storing the two files separately. */
+async function appendCertificatePages(signed: Buffer, certificate: Buffer): Promise<Buffer> {
+  const out = await PDFDocument.load(signed, { ignoreEncryption: true });
+  const cert = await PDFDocument.load(certificate, { ignoreEncryption: true });
+  const pages = await out.copyPages(cert, cert.getPageIndices());
+  for (const p of pages) out.addPage(p);
+  return Buffer.from(await out.save());
 }
 
 // Collect the lower-cased emails that have a 'Signed' audit-trail entry.
@@ -112,29 +125,50 @@ export async function reconcileSignatureRequestByDocument(
   let certKey: string | null = null;
   if (completed) {
     const url = doc.SignedUrl ?? doc.CertificateUrl;
+    let signedBuf: Buffer | null = null;
     if (url) {
       const pdf = await deps.client.fetchPdfUrl(url);
-      signedKey = signedFileKey(request.firmId, request.id);
-      signedSize = Buffer.isBuffer(pdf.body) ? pdf.body.length : Buffer.byteLength(pdf.body);
-      await deps.storage.put(signedKey, pdf.body, { contentType: pdf.contentType });
+      signedBuf = Buffer.isBuffer(pdf.body) ? pdf.body : Buffer.from(pdf.body);
     }
     // Audit certificate (signer IP, signed date/time, document hash, event
     // trail). Prefer OpenSign's CertificateUrl; generate it on demand if the
-    // document didn't surface one. Best-effort — never block completion; the
-    // poll re-fetches next tick if this fails.
-    try {
-      let certUrl = doc.CertificateUrl;
-      if (!certUrl) {
-        const gen = await deps.client.generateCertificate(opensignDocumentId);
-        certUrl = gen?.CertificateUrl;
+    // document didn't surface one. Best-effort — never block completion.
+    // Skipped when the "signed" bytes ARE the certificate (no SignedUrl).
+    let certBuf: Buffer | null = null;
+    if (doc.SignedUrl) {
+      try {
+        let certUrl = doc.CertificateUrl;
+        if (!certUrl) {
+          const gen = await deps.client.generateCertificate(opensignDocumentId);
+          certUrl = gen?.CertificateUrl;
+        }
+        if (certUrl) {
+          const certPdf = await deps.client.fetchPdfUrl(certUrl);
+          certBuf = Buffer.isBuffer(certPdf.body) ? certPdf.body : Buffer.from(certPdf.body);
+        }
+      } catch {
+        // certificate unavailable — store the signed doc alone.
       }
-      if (certUrl) {
-        const certPdf = await deps.client.fetchPdfUrl(certUrl);
-        certKey = certFileKey(request.firmId, request.id);
-        await deps.storage.put(certKey, certPdf.body, { contentType: certPdf.contentType });
+    }
+    // Single signed package: append the certificate pages to the signed PDF
+    // so the signed page (and the auto-filed client copy) is one document.
+    // A merge failure falls back to the legacy two-file shape.
+    if (signedBuf && certBuf) {
+      try {
+        signedBuf = await appendCertificatePages(signedBuf, certBuf);
+        certBuf = null;
+      } catch {
+        // unmergeable bytes — keep both files separately.
       }
-    } catch {
-      // leave certKey null; a later reconcile tick will retry.
+    }
+    if (signedBuf) {
+      signedKey = signedFileKey(request.firmId, request.id);
+      signedSize = signedBuf.length;
+      await deps.storage.put(signedKey, signedBuf, { contentType: 'application/pdf' });
+    }
+    if (certBuf) {
+      certKey = certFileKey(request.firmId, request.id);
+      await deps.storage.put(certKey, certBuf, { contentType: 'application/pdf' });
     }
   }
 
