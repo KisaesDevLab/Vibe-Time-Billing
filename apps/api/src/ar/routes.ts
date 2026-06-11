@@ -5,6 +5,7 @@
 // bucketize helper so staff and any future report consumers share semantics.
 
 import express, { type Request, type Response, type Router } from 'express';
+import { csvField } from '../lib/csv';
 import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
@@ -614,7 +615,7 @@ function agingToCsv(data: {
 }
 
 function csvCell(s: string): string {
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return csvField(s);
 }
 
 function emptyBuckets(): Record<AgingBucket, number> {

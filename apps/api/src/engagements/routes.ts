@@ -3,6 +3,7 @@
 // Engagement management (Phase 8).
 
 import express, { type Request, type Response, type Router } from 'express';
+import { csvField } from '../lib/csv';
 import { z } from 'zod';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 
@@ -42,7 +43,7 @@ function clientIp(req: Request): string {
 }
 
 function csv(s: string): string {
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return csvField(s);
 }
 
 export interface EngagementRoutesDeps extends RbacDeps {
@@ -372,11 +373,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           'due_date',
         ];
         const lines = [header.join(',')];
-        const cell = (s: string | number | null | undefined): string => {
-          if (s == null) return '';
-          const str = String(s);
-          return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-        };
+        const cell = (s: string | number | null | undefined): string => csvField(s);
         for (const it of items) {
           lines.push(
             [

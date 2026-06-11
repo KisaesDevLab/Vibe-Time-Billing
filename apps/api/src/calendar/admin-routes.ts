@@ -6,6 +6,7 @@
 // provider must be enabled before staff can connect it (CAL-2).
 
 import express, { type Request, type Response, type Router } from 'express';
+import { csvField } from '../lib/csv';
 import { z } from 'zod';
 import { and, desc, eq, gte, isNull, lte } from 'drizzle-orm';
 
@@ -340,7 +341,7 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
               r.matchTier ?? '',
               r.matchStatus ?? '',
             ]
-              .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+              .map((v) => csvField(v as string))
               .join(','),
           )
           .join('\n');

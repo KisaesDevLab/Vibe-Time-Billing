@@ -10,6 +10,7 @@
 // completedAt) we fall back to sentAt so the window still bounds the set.
 
 import express, { type Request, type Response, type Router } from 'express';
+import { csvField } from '../lib/csv';
 import { and, desc, eq, gte, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
@@ -45,10 +46,7 @@ function defaultRange(): { from: string; to: string } {
 }
 
 function csvCell(s: string | number | null | undefined): string {
-  if (s == null) return '';
-  const str = String(s);
-  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
+  return csvField(s);
 }
 
 export function createSignedFormsReportRouter(deps: { db: Database | null } & RbacDeps): Router {

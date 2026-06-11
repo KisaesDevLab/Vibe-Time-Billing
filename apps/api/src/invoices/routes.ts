@@ -43,6 +43,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { maybeCreateRetainerOffer } from '../retainers/offers';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
+import { csvField } from '../lib/csv';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
@@ -2529,7 +2530,7 @@ function clientIp(req: Request): string {
 }
 
 function csvStr(s: string): string {
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return csvField(s);
 }
 
 // Reference to firmSettings to avoid unused-import warning — used in

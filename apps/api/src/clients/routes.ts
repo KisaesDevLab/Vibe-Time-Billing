@@ -3,6 +3,7 @@
 // Client management (Phase 6).
 
 import express, { type Request, type Response, type Router } from 'express';
+import { csvField } from '../lib/csv';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
@@ -1243,5 +1244,5 @@ function clientIp(req: Request): string {
 }
 
 function csvCell(s: string): string {
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return csvField(s);
 }

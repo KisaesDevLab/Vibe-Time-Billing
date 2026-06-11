@@ -36,6 +36,7 @@ import { clientRequestTimeEntryLinks, clientRequests } from '@vibe/db/schema';
 import { sql as drz } from 'drizzle-orm';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { csvField } from '../lib/csv';
 
 export interface ReportRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -67,10 +68,7 @@ const QuerySchema = z.object({
 });
 
 function csvCell(s: string | number | null | undefined): string {
-  if (s == null) return '';
-  const str = String(s);
-  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
+  return csvField(s);
 }
 
 export function createReportRouter(deps: ReportRoutesDeps): Router {

@@ -12,6 +12,7 @@
 // Pure helpers — no Express, no routing. Routes call into them.
 
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { csvField } from '../lib/csv';
 
 import type { Database } from '@vibe/db';
 import { taxReturnAccessLog, taxReturns } from '@vibe/db/schema';
@@ -150,9 +151,7 @@ export async function listAccessLog(input: ListAccessLogInput): Promise<ListAcce
 
 function csvCell(raw: unknown): string {
   if (raw == null) return '';
-  const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
+  return csvField(typeof raw === 'string' ? raw : JSON.stringify(raw));
 }
 
 function toRow(cells: unknown[]): string {

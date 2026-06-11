@@ -6,6 +6,7 @@
 // dispatch and retry live in the worker (apps/worker/src/jobs/webhook-dispatch.ts).
 
 import crypto from 'node:crypto';
+import { csvField } from '../lib/csv';
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
@@ -353,11 +354,8 @@ export function createWebhookRouter(deps: WebhookRoutesDeps): Router {
       if (format === 'csv') {
         const header =
           'id,event_type,status,attempt_count,last_attempt_at,next_attempt_at,response_status,created_at';
-        const csvEscape = (v: unknown): string => {
-          if (v === null || v === undefined) return '';
-          const s = v instanceof Date ? v.toISOString() : String(v);
-          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-        };
+        const csvEscape = (v: unknown): string =>
+          csvField(v instanceof Date ? v.toISOString() : (v as string | number | null | undefined));
         const rows = items.map((r) =>
           [
             r.id,

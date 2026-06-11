@@ -12,6 +12,8 @@
 //                          adapter. Strips description, app_user_id,
 //                          and any staff name.
 
+import { csvField } from '../lib/csv';
+
 const CSV_HEADER_LEDGER =
   'created_at,kind,hours_delta,hours_balance_after,time_entry_id,created_by_id';
 
@@ -190,11 +192,7 @@ export function buildActivityStatementHtml(input: ActivityStatementInput): strin
 }
 
 function csvCell(v: string | number): string {
-  const s = String(v);
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
+  return csvField(v);
 }
 
 function escapeHtml(s: string): string {

@@ -4,6 +4,7 @@
 // append-only at the DB role level.
 
 import express, { type Request, type Response, type Router } from 'express';
+import { csvField } from '../lib/csv';
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, lte, type SQL } from 'drizzle-orm';
 
@@ -381,5 +382,5 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
 }
 
 function csvCell(s: string): string {
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return csvField(s);
 }
