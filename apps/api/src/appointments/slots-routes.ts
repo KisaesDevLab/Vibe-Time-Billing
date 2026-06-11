@@ -190,6 +190,24 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
           : undefined;
       const location = parseLocation(req.query['location']);
       const locationOptionId = parseLocationId(req.query['locationId']);
+      // Month grids are ~31 day computations per request — cache like the
+      // day endpoint. Key shares the `slots:` prefix so the BK-4 bust
+      // (SCAN MATCH slots:*) invalidates it on booking create/sync.
+      // Reschedule requests (excludeAppointmentId) skip the cache — the
+      // exclusion changes the result per appointment.
+      const monthCacheKey = `slots:month:${[...staffIds].sort().join(',')}:${year}-${month}:${durationMinutes}:${location ?? 'any'}:${locationOptionId ?? 'any'}`;
+      const cacheable = !excludeAppointmentId && deps.redis && !deps.busyProvider;
+      if (cacheable) {
+        try {
+          const hit = await deps.redis!.get(monthCacheKey);
+          if (hit) {
+            res.json(JSON.parse(hit));
+            return;
+          }
+        } catch (err) {
+          logger.warn({ err }, 'month slots cache read failed');
+        }
+      }
       const timezone = await firmTimezone(deps.db, session.firmId);
       const result = await getMonthAvailability({
         db: deps.db,
@@ -203,6 +221,13 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         location,
         locationOptionId,
       });
+      if (cacheable) {
+        try {
+          await deps.redis!.set(monthCacheKey, JSON.stringify(result), 'EX', CACHE_TTL_SECONDS);
+        } catch (err) {
+          logger.warn({ err }, 'month slots cache write failed');
+        }
+      }
       res.json(result);
     },
   );
