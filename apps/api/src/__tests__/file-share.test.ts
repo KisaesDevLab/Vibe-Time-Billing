@@ -188,7 +188,11 @@ describe('staff file share', () => {
     };
     expect(body.delivered.emailed).toBe(true);
     expect(sent[0]!.to).toBe('jane@lender.example');
-    expect(sent[0]!.body).toContain('/api/shared/');
+    // 0150 — the email links the gated landing page, not the direct
+    // download endpoint, and explains the access code.
+    expect(sent[0]!.body).toContain('/shared/file/');
+    expect(sent[0]!.body).not.toContain('/api/shared/');
+    expect(sent[0]!.body).toContain('access code');
     // delivered_at stamped.
     const [row] = await harness.db.select().from(fileShares).where(eq(fileShares.id, body.shareId));
     expect(row!.deliveredAt).toBeTruthy();
