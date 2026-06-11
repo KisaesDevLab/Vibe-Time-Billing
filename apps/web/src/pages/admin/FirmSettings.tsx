@@ -153,6 +153,7 @@ export function FirmSettingsPage(): JSX.Element {
           aiMonthlyBudgetCents: s.aiMonthlyBudgetCents,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
           lateEntryAlertDays: s.lateEntryAlertDays,
+          timeEntryRoundingHours: s.timeEntryRoundingHours,
           lateEntryLockoutDays: s.lateEntryLockoutDays,
           invoiceNumberingPrefix: s.invoiceNumberingPrefix,
           portalEnabled: s.portalEnabled,
@@ -535,9 +536,16 @@ export function FirmSettingsPage(): JSX.Element {
               value={f.defaultTermsDays}
               onChange={(e) => setF({ ...f, defaultTermsDays: Number(e.target.value) })}
             />
-            {/* Invoice PDF style lives in the Branding card above — it was
-                duplicated here as "Default invoice format" until 0147. */}
-            <span />
+            <Select
+              label="Time entry rounding (hours, firm-wide)"
+              value={s.timeEntryRoundingHours}
+              onChange={(v) => setS({ ...s, timeEntryRoundingHours: v })}
+              options={[
+                { value: '0.25', label: '0.25 — quarter hour (default)' },
+                { value: '0.10', label: '0.10 — six minutes' },
+                { value: '0.00', label: 'No rounding (free decimal)' },
+              ]}
+            />
           </div>
 
           <h3
