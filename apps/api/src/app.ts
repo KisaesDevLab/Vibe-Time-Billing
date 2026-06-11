@@ -65,6 +65,7 @@ import { createPortalInvoiceRouter } from './portal/invoices';
 import { createPortalProfileRouter } from './portal/profile';
 import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
 import { createPortalActivityRouter } from './portal/activity';
+import { createPortalNotificationRouter } from './portal/notifications';
 import { createPortalAppointmentRouter } from './portal/appointments';
 import { createPortalCalendarRouter } from './portal/calendar';
 import { createPortalEngagementAutopayRouter } from './portal/engagement-autopay';
@@ -930,6 +931,13 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/activity', portalActivityRouter);
+
+  // 0146 — portal in-app notifications (PORTAL channel read side).
+  const portalNotificationRouter = createPortalNotificationRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/notifications', portalNotificationRouter);
 
   // CP9 — per-engagement autopay enrollment.
   const portalEngagementAutopayRouter = createPortalEngagementAutopayRouter({

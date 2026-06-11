@@ -25,6 +25,7 @@ import { LoginPage } from './pages/Login';
 import { RequestAccessPage } from './pages/RequestAccess';
 import { MessagesPage } from './pages/Messages';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
+import { UpdatesPage } from './pages/Updates';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
 import { ProfilePage } from './pages/Profile';
 import { ProposalPage } from './pages/Proposal';
@@ -110,6 +111,7 @@ function PortalRoutes(): JSX.Element {
                   <Route path="/help" element={<HelpPage />} />
                   <Route path="/switch" element={<SwitchEntityPage />} />
                   <Route path="/notifications" element={<NotificationPrefsPage />} />
+                  <Route path="/updates" element={<UpdatesPage />} />
                   <Route path="/retainer-offers/:id" element={<RetainerOfferPage />} />
                   <Route path="/retainers" element={<PortalRetainersPage />} />
                   <Route path="/tax-payments" element={<TaxPaymentsPage />} />
@@ -166,6 +168,28 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { clientNames } = useScope();
   const location = useLocation();
   const [branding, setBranding] = useState<Branding | null>(null);
+  // 0146 — unread in-app notification count for the Updates nav badge.
+  // Polled every 60s; also refreshed on route change so reading items
+  // updates the count without a full minute's lag.
+  const [unreadUpdates, setUnreadUpdates] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll(): Promise<void> {
+      try {
+        const r = await api<{ count: number }>('/api/portal/notifications/unread-count');
+        if (!cancelled) setUnreadUpdates(r.count ?? 0);
+      } catch {
+        // ignore; badge is best-effort
+      }
+    }
+    void poll();
+    const t = setInterval(() => void poll(), 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [location.pathname]);
 
   // Name of the account currently in view, so clients with access to more
   // than one entity always know which they're looking at. Falls back to a
@@ -207,6 +231,12 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/messages',
           icon: '💬',
           active: location.pathname.startsWith('/messages'),
+        },
+        {
+          label: unreadUpdates > 0 ? `Updates (${unreadUpdates})` : 'Updates',
+          href: '/updates',
+          icon: '🔔',
+          active: location.pathname.startsWith('/updates'),
         },
 
         // ---- Billing & payments ----
