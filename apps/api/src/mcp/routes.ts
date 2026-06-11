@@ -139,6 +139,17 @@ export function createMcpRouter(deps: McpRoutesDeps): Router {
   return router;
 }
 
+/** Engagement ids whose client belongs to the firm — the firm's full set of
+ *  engagements, used to scope time-entry reads/writes for MCP tokens. */
+async function firmEngagementIdSet(db: Database, firmId: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: engagements.id })
+    .from(engagements)
+    .innerJoin(clients, eq(clients.id, engagements.clientId))
+    .where(eq(clients.firmId, firmId));
+  return rows.map((r) => r.id);
+}
+
 async function dispatch(
   deps: McpRoutesDeps,
   tool: McpToolKey,
@@ -167,13 +178,21 @@ async function dispatch(
       return { items };
     }
     case 'get_time_entries': {
+      // Scope to the firm's engagements — never disclose time entries
+      // outside the token's firm (the no-engagementId case previously
+      // returned the whole appliance).
+      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId);
+      if (firmEngagementIds.length === 0) return { items: [] };
       const engagementId = String(args['engagementId'] ?? '');
-      const conds = [] as ReturnType<typeof eq>[];
-      if (engagementId) conds.push(eq(timeEntries.engagementId, engagementId));
+      if (engagementId && !firmEngagementIds.includes(engagementId)) return { items: [] };
       const items = await deps.db
         .select()
         .from(timeEntries)
-        .where(conds.length === 0 ? undefined : and(...conds))
+        .where(
+          engagementId
+            ? eq(timeEntries.engagementId, engagementId)
+            : inArray(timeEntries.engagementId, firmEngagementIds),
+        )
         .orderBy(desc(timeEntries.entryDate))
         .limit(200);
       return { items };
@@ -189,6 +208,11 @@ async function dispatch(
         standardRateSnapshotCents: z.number().int().nonnegative(),
       });
       const parsed = Schema.parse(args);
+      // The target engagement must belong to the token's firm.
+      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId);
+      if (!firmEngagementIds.includes(parsed.engagementId)) {
+        throw new Error('engagement_not_in_firm');
+      }
       const [row] = await deps.db
         .insert(timeEntries)
         .values({

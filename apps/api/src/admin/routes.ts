@@ -467,7 +467,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       await deps.db
         .update(appUsers)
         .set({ status: 'ARCHIVED' })
-        .where(eq(appUsers.id, req.params['id']!));
+        .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
       res.json({ ok: true });
     },
   );
@@ -1035,7 +1035,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.status(409).json({ error: 'system_role_undeletable' });
         return;
       }
-      await deps.db.delete(roles).where(eq(roles.id, req.params['id']!));
+      await deps.db
+        .delete(roles)
+        .where(and(eq(roles.id, req.params['id']!), eq(roles.firmId, session.firmId)));
       await emitAudit(deps.db, {
         action: 'ARCHIVE',
         entityType: 'role',
