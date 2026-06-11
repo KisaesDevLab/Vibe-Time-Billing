@@ -103,10 +103,13 @@ async function runRoute(
     return;
   }
 
-  const isTax = item.reviewAction === 'flag_tax';
-  const subfolder = isTax
-    ? (item.overrideFolder ?? TAX_RETURN_SUBFOLDER)
-    : (item.overrideFolder ?? item.suggestedPath ?? '');
+  // flag_tax files into the tax subfolder (legacy behavior);
+  // file_flag_tax files to the normal routed destination AND flags.
+  const isTax = item.reviewAction === 'flag_tax' || item.reviewAction === 'file_flag_tax';
+  const subfolder =
+    item.reviewAction === 'flag_tax'
+      ? (item.overrideFolder ?? TAX_RETURN_SUBFOLDER)
+      : (item.overrideFolder ?? item.suggestedPath ?? '');
   const destName = stripIdSegment(item.originalName, item.parsedId);
 
   const filed = await fileExistingObjectIntoClientFolder(db, storage, {

@@ -19,6 +19,7 @@ import {
 import { jaroWinkler, normalizeNameString, type StorageClient } from '@vibe/storage';
 import {
   evaluateRules,
+  extractIdCandidates,
   parseFilename,
   resolveYearSubfolder,
   type RoutingRule,
@@ -73,17 +74,38 @@ export function matchObject(
     suggestedRule: null,
     suggestedPath: null,
   };
-  if (parsed.unparseable) return base;
+  // (No early unparseable return — a unique external-id hit anywhere in
+  // the filename still matches even when the name segment is unusable.)
 
-  // 1. ID hit against clients.external_id.
+  // 1. ID hit against clients.external_id. Strict `name_ID_rest` slot
+  //    first; failing that, try every id-pattern token anywhere in the
+  //    filename (a hit is only taken when exactly ONE client matches —
+  //    ambiguity falls through to the name path).
   let client: ClientLite | null = null;
   let status: MatchStatus = 'unparseable';
+  let strictIdHit = false;
   if (parsed.id) {
     client = clientList.find((c) => c.externalId && c.externalId === parsed.id) ?? null;
+    strictIdHit = client != null;
+  }
+  if (!client) {
+    const candidates = extractIdCandidates(originalName).filter((c) => c !== parsed.id);
+    const hits = new Map<string, { c: ClientLite; id: string }>();
+    for (const cand of candidates) {
+      const hit = clientList.find((c) => c.externalId && c.externalId === cand);
+      if (hit) hits.set(hit.id, { c: hit, id: cand });
+    }
+    if (hits.size === 1) {
+      const only = [...hits.values()][0]!;
+      client = only.c;
+      base.parsedId = only.id;
+    }
   }
   if (client) {
+    // The name-similarity gate only applies to strict-format names —
+    // loose (anywhere-in-filename) hits have no reliable name segment.
     const nameSim =
-      parsed.name != null
+      strictIdHit && parsed.name != null
         ? jaroWinkler(normalizeNameString(parsed.name), normalizeNameString(client.name))
         : 1;
     status =

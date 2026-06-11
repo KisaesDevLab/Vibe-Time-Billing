@@ -57,7 +57,7 @@ export const inboxItems = pgTable(
     ),
     reviewActionCk: check(
       'inbox_items_review_action_ck',
-      sql`${t.reviewAction} IS NULL OR ${t.reviewAction} IN ('file','flag_tax','skip')`,
+      sql`${t.reviewAction} IS NULL OR ${t.reviewAction} IN ('file','flag_tax','skip','file_flag_tax')`,
     ),
   }),
 );

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { describe, expect, it } from 'vitest';
 
-import { parseFilename, stripIdSegment, yearWindow } from './parse';
+import { extractIdCandidates, parseFilename, stripIdSegment, yearWindow } from './parse';
 import { evaluateRules, resolveYearSubfolder, type RoutingRule } from './rules';
 
 const NOW = new Date('2026-06-09T00:00:00Z');
@@ -122,4 +122,17 @@ describe('resolveYearSubfolder', () => {
   it('previous → {year-1}/', () => expect(resolveYearSubfolder(2024, 'previous')).toBe('2023/'));
   it('missing year when required → null', () =>
     expect(resolveYearSubfolder(null, 'current_only')).toBeNull());
+});
+
+describe('extractIdCandidates (0149)', () => {
+  it('finds every id-pattern token anywhere in the stem', () => {
+    expect(extractIdCandidates('2024 W2 123456.pdf')).toEqual(['2024', '123456']);
+    expect(extractIdCandidates('Smith-123456-W2.pdf')).toEqual(['123456']);
+  });
+  it('dedupes and ignores the extension', () => {
+    expect(extractIdCandidates('123456_123456.7890')).toEqual(['123456']);
+  });
+  it('empty when nothing matches', () => {
+    expect(extractIdCandidates('notes.pdf')).toEqual([]);
+  });
 });

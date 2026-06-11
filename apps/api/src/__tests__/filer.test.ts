@@ -106,6 +106,29 @@ describe('matchObject (pure)', () => {
     const r = matchObject('Nobody_999999_2024.pdf', clientsList, [], bound);
     expect(r.matchStatus).toBe('unparseable');
   });
+
+  // 0149 — external id found ANYWHERE in the filename, not just the
+  // strict name_ID_rest slot.
+  it('id anywhere: trailing token matches', () => {
+    const r = matchObject('2024 W2 123456.pdf', clientsList, [], bound);
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c1');
+    expect(r.parsedId).toBe('123456');
+  });
+  it('id anywhere: dash-separated matches without a name-sim penalty', () => {
+    const r = matchObject('Smith-123456-W2.pdf', clientsList, [], bound);
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c1');
+  });
+  it('id anywhere: ambiguous (two clients) falls through to name match', () => {
+    const r = matchObject('123456 222222 transfer.pdf', clientsList, [], bound);
+    expect(r.matchedClient).toBeNull();
+  });
+  it('id anywhere: digits-only filename still matches', () => {
+    const r = matchObject('123456.pdf', clientsList, [], bound);
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c1');
+  });
 });
 
 describe('scanInbox', () => {

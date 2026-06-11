@@ -115,3 +115,23 @@ export function stripIdSegment(originalName: string, id: string | null): string 
   if (!id) return originalName;
   return originalName.replace(`_${id}_`, '_');
 }
+
+/**
+ * All id-pattern matches anywhere in the stem (not just the strict
+ * `name_ID_rest` slot). Used by the matcher to find a client external
+ * id wherever it appears in the filename — "W2 2024 123456.pdf",
+ * "Smith-123456 W2.pdf", etc. Year-window numbers are NOT excluded
+ * here; the caller matches candidates against real client ids, which
+ * disambiguates.
+ */
+export function extractIdCandidates(filename: string, opts: ParseOptions = {}): string[] {
+  const idSrc =
+    opts.idPattern && opts.idPattern.trim().length > 0 ? opts.idPattern : DEFAULT_ID_PATTERN;
+  const { stem } = splitExt(filename);
+  const re = new RegExp(idSrc, 'g');
+  const out: string[] = [];
+  for (const m of stem.matchAll(re)) {
+    if (m[0] && !out.includes(m[0])) out.push(m[0]);
+  }
+  return out;
+}

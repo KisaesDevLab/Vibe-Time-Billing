@@ -30,7 +30,9 @@ import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
 import {
+  clientFolders,
   clients,
+  files,
   inboxItems,
   inboxRoutingLog,
   inboxRoutingProfiles,
@@ -39,6 +41,7 @@ import {
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { resolveClientFolders } from '../clients/folder-templates';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { scanInbox } from './scan';
@@ -59,7 +62,7 @@ function resolveStorage(deps: FilerRoutesDeps): StorageClient | null {
 }
 
 const ReviewSchema = z.object({
-  reviewAction: z.enum(['file', 'flag_tax', 'skip']).nullable().optional(),
+  reviewAction: z.enum(['file', 'flag_tax', 'skip', 'file_flag_tax']).nullable().optional(),
   overrideFolder: z.string().max(512).nullable().optional(),
   overrideYear: z.number().int().min(1900).max(2999).nullable().optional(),
   matchedClient: z.string().uuid().nullable().optional(),
@@ -582,6 +585,48 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       }
       await enqueueFilerUndo({ firmId: session.firmId, actorId: session.appUserId, logId: row.id });
       res.status(202).json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // GET /clients/:clientId/folders — the client's known folder paths
+  // for the inbox target-folder dropdown: every distinct subfolder that
+  // already holds a file, plus the (possibly empty) top-level skeleton
+  // from the firm's folder template.
+  // -----------------------------------------------------------------
+  router.get(
+    '/clients/:clientId/folders',
+    requirePermission(deps, 'storage:folder:view'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ folders: [] });
+        return;
+      }
+      const clientId = req.params['clientId']!;
+      const [folder] = await deps.db
+        .select({ id: clientFolders.id })
+        .from(clientFolders)
+        .where(and(eq(clientFolders.clientId, clientId), eq(clientFolders.firmId, session.firmId)))
+        .limit(1);
+      const existing = folder
+        ? await deps.db
+            .selectDistinct({ subfolderPath: files.subfolderPath })
+            .from(files)
+            .where(and(eq(files.clientFolderId, folder.id), sql`${files.deletedAt} IS NULL`))
+        : [];
+      const template = await resolveClientFolders(deps.db, session.firmId, clientId).catch(
+        () => [],
+      );
+      const out = new Set<string>();
+      for (const r of existing) {
+        const p = (r.subfolderPath ?? '').trim();
+        if (p) out.add(p);
+      }
+      for (const t of template) {
+        if (t.name) out.add(t.name);
+      }
+      res.json({ folders: [...out].sort((a, b) => a.localeCompare(b)) });
     },
   );
 

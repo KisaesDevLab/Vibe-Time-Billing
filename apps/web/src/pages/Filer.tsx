@@ -37,7 +37,7 @@ type MatchStatus =
   | 'folder_unbound'
   | 'unparseable';
 
-type ReviewAction = 'file' | 'flag_tax' | 'skip' | null;
+type ReviewAction = 'file' | 'flag_tax' | 'skip' | 'file_flag_tax' | null;
 
 interface InboxRow {
   id: string;
@@ -267,6 +267,20 @@ function InboxTab(): JSX.Element {
     }
   }
 
+  // 0149 — per-client folder lists for the target-folder dropdown.
+  // Fetched lazily the first time a row with that client renders.
+  const [clientFolders, setClientFolders] = useState<Record<string, string[]>>({});
+  const ensureFolders = useCallback(
+    (clientId: string): void => {
+      if (!clientId || clientId in clientFolders) return;
+      setClientFolders((prev) => ({ ...prev, [clientId]: [] }));
+      void api<{ folders: string[] }>(`${BASE}/clients/${clientId}/folders`)
+        .then((r) => setClientFolders((prev) => ({ ...prev, [clientId]: r.folders ?? [] })))
+        .catch(() => undefined);
+    },
+    [clientFolders],
+  );
+
   // Optimistic PATCH of a single inbox row.
   async function patchRow(id: string, body: Partial<InboxRow>): Promise<void> {
     setItems((prev) => prev.map((r) => (r.id === id ? { ...r, ...body } : r)));
@@ -358,7 +372,9 @@ function InboxTab(): JSX.Element {
     return pool.filter((r) => r.included && isCommittable(r));
   }, [items, selectedIds]);
 
-  const flaggedCount = commitTargets.filter((r) => r.reviewAction === 'flag_tax').length;
+  const flaggedCount = commitTargets.filter(
+    (r) => r.reviewAction === 'flag_tax' || r.reviewAction === 'file_flag_tax',
+  ).length;
   const folderCount = new Set(
     commitTargets.map((r) => r.suggestedPath ?? r.overrideFolder ?? '(client root)'),
   ).size;
@@ -498,6 +514,9 @@ function InboxTab(): JSX.Element {
               <Button size="sm" variant="secondary" onClick={() => void bulkSet('flag_tax')}>
                 Flag selected for tax
               </Button>
+              <Button size="sm" variant="secondary" onClick={() => void bulkSet('file_flag_tax')}>
+                File &amp; flag for tax
+              </Button>
               <Button size="sm" variant="secondary" onClick={() => void bulkSet('file')}>
                 Mark File
               </Button>
@@ -596,6 +615,8 @@ function InboxTab(): JSX.Element {
                       row={r}
                       selected={selectedIds.has(r.id)}
                       clientOptions={clientOptions}
+                      clientFolders={r.matchedClient ? (clientFolders[r.matchedClient] ?? []) : []}
+                      onEnsureFolders={ensureFolders}
                       onToggleSelect={() => toggleSelect(r.id)}
                       onPatch={(body) => void patchRow(r.id, body)}
                       onOpen={() => void openPreview(r.id)}
@@ -627,6 +648,8 @@ function InboxRowView({
   row,
   selected,
   clientOptions,
+  clientFolders,
+  onEnsureFolders,
   onToggleSelect,
   onPatch,
   onOpen,
@@ -634,10 +657,17 @@ function InboxRowView({
   row: InboxRow;
   selected: boolean;
   clientOptions: Array<{ value: string; label: string }>;
+  clientFolders: string[];
+  onEnsureFolders: (clientId: string) => void;
   onToggleSelect: () => void;
   onPatch: (body: Partial<InboxRow>) => void;
   onOpen: () => void;
 }): JSX.Element {
+  // Load the matched client's folder list once it's known, so the
+  // target-folder dropdown is populated by the time it's opened.
+  useEffect(() => {
+    if (row.matchedClient) onEnsureFolders(row.matchedClient);
+  }, [row.matchedClient, onEnsureFolders]);
   const needsClient = row.matchStatus === 'unparseable' || !row.matchedClient;
   // Unparseable rows can't be included until a client is manually assigned.
   const includeDisabled = row.matchStatus === 'unparseable' && !row.matchedClient;
@@ -711,14 +741,20 @@ function InboxRowView({
           <input
             type="text"
             aria-label="Override folder"
-            placeholder="Override folder (optional)"
+            placeholder="Target folder (client folders listed)"
             defaultValue={row.overrideFolder ?? ''}
+            list={`folders-${row.id}`}
             onBlur={(e) => {
               const v = e.target.value.trim();
               if (v !== (row.overrideFolder ?? '')) onPatch({ overrideFolder: v || null });
             }}
             style={{ ...controlStyle, width: '100%' }}
           />
+          <datalist id={`folders-${row.id}`}>
+            {clientFolders.map((f) => (
+              <option key={f} value={f} />
+            ))}
+          </datalist>
         </div>
       </td>
 
@@ -733,9 +769,10 @@ function InboxRowView({
             <option value="">— choose —</option>
             <option value="file">File</option>
             <option value="flag_tax">Flag for tax</option>
+            <option value="file_flag_tax">File &amp; flag for tax</option>
             <option value="skip">Skip</option>
           </select>
-          {row.reviewAction === 'flag_tax' && (
+          {(row.reviewAction === 'flag_tax' || row.reviewAction === 'file_flag_tax') && (
             <div style={{ display: 'grid', gap: 4 }}>
               <input
                 type="text"
