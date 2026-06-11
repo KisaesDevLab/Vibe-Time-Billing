@@ -218,7 +218,10 @@ export function ClientDetailPage(): JSX.Element {
         >
           <dt style={{ color: tokens.color.textMuted }}>Terms</dt>
           <dd style={{ margin: 0 }}>{client.termsDays} days</dd>
-          <dt style={{ color: tokens.color.textMuted }}>Outstanding</dt>
+          {/* All-time figure (from /stats/client) — the Billing tab's
+              Outstanding defaults to the current year, so label the scope
+              here to keep the two from looking contradictory. */}
+          <dt style={{ color: tokens.color.textMuted }}>Outstanding (all time)</dt>
           <dd style={{ margin: 0 }}>{summary ? formatCents(summary.outstandingCents) : '—'}</dd>
           {client.externalId && (
             <>

@@ -1,6 +1,6 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
 // SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
@@ -42,8 +42,41 @@ type SortCol =
   | 'clientType'
   | 'status'
   | 'partnerName'
+  | 'officeName'
   | 'createdAt'
   | 'outstandingBalanceCents';
+
+// Session-persisted filters/sort — survives refresh + navigation, same
+// lifetime as the other table views.
+const STORAGE_KEY = 'vibe.clients.view';
+
+interface PersistedView {
+  q: string;
+  clientOwnerId: string;
+  clientType: string;
+  status: string;
+  officeId: string;
+  sort: { col: SortCol; dir: 'asc' | 'desc' };
+}
+
+const DEFAULT_VIEW: PersistedView = {
+  q: '',
+  clientOwnerId: '',
+  clientType: '',
+  status: '',
+  officeId: '',
+  sort: { col: 'name', dir: 'asc' },
+};
+
+function loadView(): PersistedView {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_VIEW;
+    return { ...DEFAULT_VIEW, ...(JSON.parse(raw) as Partial<PersistedView>) };
+  } catch {
+    return DEFAULT_VIEW;
+  }
+}
 
 export function ClientsPage(): JSX.Element {
   const [clients, setClients] = useState<ClientRow[]>([]);
@@ -52,19 +85,20 @@ export function ClientsPage(): JSX.Element {
   // toolbar action enables when at least one row is selected.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
-  const [q, setQ] = useState('');
+  const initial = useMemo(() => loadView(), []);
+  const [q, setQ] = useState(initial.q);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rollOpen, setRollOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // 0050 — filters
-  const [clientOwnerId, setClientOwnerId] = useState<string>('');
-  const [clientType, setClientType] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<string>('');
+  // 0050 — filters (hydrated from sessionStorage)
+  const [clientOwnerId, setClientOwnerId] = useState<string>(initial.clientOwnerId);
+  const [clientType, setClientType] = useState<string>(initial.clientType);
+  const [statusFilter, setStatusFilter] = useState<string>(initial.status);
   // 0092 — office filter chip. Multi-office firms can scope the list
   // to a single office; '' = all offices.
-  const [officeFilter, setOfficeFilter] = useState<string>('');
+  const [officeFilter, setOfficeFilter] = useState<string>(initial.officeId);
   const [officeOptions, setOfficeOptions] = useState<
     Array<{ id: string; name: string; isDefault: boolean }>
   >([]);
@@ -73,10 +107,26 @@ export function ClientsPage(): JSX.Element {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
-  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({
-    col: 'name',
-    dir: 'asc',
-  });
+  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>(initial.sort);
+
+  // Persist the view for the session whenever a filter/sort changes.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          q,
+          clientOwnerId,
+          clientType,
+          status: statusFilter,
+          officeId: officeFilter,
+          sort,
+        } satisfies PersistedView),
+      );
+    } catch {
+      /* storage unavailable — in-memory only */
+    }
+  }, [q, clientOwnerId, clientType, statusFilter, officeFilter, sort]);
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -421,7 +471,11 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'office',
-                header: 'Office',
+                header: (
+                  <button type="button" onClick={() => toggleSort('officeName')} style={headerBtn}>
+                    Office{sortIcon('officeName')}
+                  </button>
+                ) as unknown as string,
                 render: (c) => c.officeName ?? '—',
               },
               {

@@ -188,6 +188,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       status: sql`${clients.status}`,
       createdAt: sql`${clients.createdAt}`,
       partnerName: sql`${appUsers.fullName}`,
+      officeName: sql`${offices.name}`,
       // Reuse the same correlated subquery as the SELECT projection
       // (defined just below) so sort matches what the user sees.
       outstandingBalanceCents: sql`COALESCE((
