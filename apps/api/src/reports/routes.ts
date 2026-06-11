@@ -43,8 +43,6 @@ export interface ReportRoutesDeps extends RbacDeps {
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const SERVICE_LINE_CATEGORIES = ['tax', 'audit', 'advisory', 'bookkeeping', 'payroll'] as const;
-type ServiceLineCategory = (typeof SERVICE_LINE_CATEGORIES)[number];
 const QuerySchema = z.object({
   // 'service_line' rolls allocations up by engagement_type.service_line_id;
   // engagements without an assigned type are excluded from this dimension.
@@ -58,10 +56,10 @@ const QuerySchema = z.object({
   engagementId: z.string().uuid().optional(),
   clientId: z.string().uuid().optional(),
   // Service-line drill filters. Both narrow the allocation set before
-  // grouping. `serviceLineId` is exact; `serviceLineCategory` is the
-  // five-value enum tax|audit|advisory|bookkeeping|payroll.
+  // grouping. `serviceLineId` is exact; `serviceLineCategory` matches
+  // the firm-managed category text (0148 — was a five-value enum).
   serviceLineId: z.string().uuid().optional(),
-  serviceLineCategory: z.enum(SERVICE_LINE_CATEGORIES).optional(),
+  serviceLineCategory: z.string().trim().min(1).max(40).toLowerCase().optional(),
   // v2 followup — CSV export (workstream 4). When format=csv the
   // response body is text/csv instead of JSON, same shape otherwise.
   format: z.enum(['json', 'csv']).default('json'),
@@ -170,15 +168,12 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       // assigned type with a service line. Engagements without one stay
       // absent, which naturally drops them from service-line filters and
       // the service_line dimension.
-      const enginToServiceLine = new Map<
-        string,
-        { serviceLineId: string; category: ServiceLineCategory }
-      >();
+      const enginToServiceLine = new Map<string, { serviceLineId: string; category: string }>();
       for (const e of firmEngagements) {
         if (e.serviceLineId && e.serviceLineCategory) {
           enginToServiceLine.set(e.id, {
             serviceLineId: e.serviceLineId,
-            category: e.serviceLineCategory as ServiceLineCategory,
+            category: e.serviceLineCategory,
           });
         }
       }
