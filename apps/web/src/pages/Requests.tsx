@@ -133,25 +133,99 @@ function emptyItem(ord: number): NewItemDraft {
   return { ordinal: ord, label: '', body: '', itemKind: 'QUESTION', required: true };
 }
 
+// Session-persisted filter/sort state — survives refresh + navigation,
+// matching the other table views.
+const VIEW_KEY = 'vibe.requests.view';
+
+interface PersistedRequestsView {
+  status: StatusFilter;
+  priority: Priority | '';
+  assigned: string;
+  client: string;
+  search: string;
+  tag: string;
+  dueAfter: string;
+  dueBefore: string;
+  sort: string;
+  dir: 'asc' | 'desc';
+}
+
+const DEFAULT_REQUESTS_VIEW: PersistedRequestsView = {
+  status: 'OPEN',
+  priority: '',
+  assigned: '',
+  client: '',
+  search: '',
+  tag: '',
+  dueAfter: '',
+  dueBefore: '',
+  sort: 'created_at',
+  dir: 'desc',
+};
+
+function loadRequestsView(): PersistedRequestsView {
+  try {
+    const raw = sessionStorage.getItem(VIEW_KEY);
+    if (!raw) return DEFAULT_REQUESTS_VIEW;
+    return { ...DEFAULT_REQUESTS_VIEW, ...(JSON.parse(raw) as Partial<PersistedRequestsView>) };
+  } catch {
+    return DEFAULT_REQUESTS_VIEW;
+  }
+}
+
 export function RequestsPage(): JSX.Element {
   const navigate = useNavigate();
   const [items, setItems] = useState<RequestRow[]>([]);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  // Filter / sort / pagination state.
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('OPEN');
-  const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('');
-  const [assignedFilter, setAssignedFilter] = useState<string>('');
-  const [clientFilter, setClientFilter] = useState<string>('');
-  const [search, setSearch] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [dueAfter, setDueAfter] = useState('');
-  const [dueBefore, setDueBefore] = useState('');
-  const [sort, setSort] = useState<string>('created_at');
-  const [dir, setDir] = useState<'asc' | 'desc'>('desc');
+  // Filter / sort / pagination state (hydrated from sessionStorage).
+  const initialView = useMemo(() => loadRequestsView(), []);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialView.status);
+  const [priorityFilter, setPriorityFilter] = useState<Priority | ''>(initialView.priority);
+  const [assignedFilter, setAssignedFilter] = useState<string>(initialView.assigned);
+  const [clientFilter, setClientFilter] = useState<string>(initialView.client);
+  const [search, setSearch] = useState(initialView.search);
+  const [tagFilter, setTagFilter] = useState(initialView.tag);
+  const [dueAfter, setDueAfter] = useState(initialView.dueAfter);
+  const [dueBefore, setDueBefore] = useState(initialView.dueBefore);
+  const [sort, setSort] = useState<string>(initialView.sort);
+  const [dir, setDir] = useState<'asc' | 'desc'>(initialView.dir);
   const [limit, setLimit] = useState(25);
   const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        VIEW_KEY,
+        JSON.stringify({
+          status: statusFilter,
+          priority: priorityFilter,
+          assigned: assignedFilter,
+          client: clientFilter,
+          search,
+          tag: tagFilter,
+          dueAfter,
+          dueBefore,
+          sort,
+          dir,
+        } satisfies PersistedRequestsView),
+      );
+    } catch {
+      /* storage unavailable — in-memory only */
+    }
+  }, [
+    statusFilter,
+    priorityFilter,
+    assignedFilter,
+    clientFilter,
+    search,
+    tagFilter,
+    dueAfter,
+    dueBefore,
+    sort,
+    dir,
+  ]);
 
   // Reference data.
   const [clients, setClients] = useState<ClientLite[]>([]);

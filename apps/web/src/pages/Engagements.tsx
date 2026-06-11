@@ -110,8 +110,9 @@ const QUEUED_WORK = new Set<WorkflowState>(['NO_STATUS', 'NOT_STARTED', 'DRAFT']
 
 type Tab = 'active' | 'all' | 'mine' | 'queued';
 
-// Filter/sort state persisted to localStorage so the table's filters
-// survive a refresh or leaving and returning to the view.
+// Filter/sort state persisted to sessionStorage so the table's filters
+// survive a refresh or leaving and returning to the view — same lifetime
+// as every other column-filter view (useColumnView, TaxReturnsTab, …).
 const FILTERS_KEY = '__vibe_eng_filters';
 
 interface PersistedFilters {
@@ -128,7 +129,7 @@ interface PersistedFilters {
 
 function readPersistedFilters(): PersistedFilters {
   try {
-    const raw = localStorage.getItem(FILTERS_KEY);
+    const raw = sessionStorage.getItem(FILTERS_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? (parsed as PersistedFilters) : {};
@@ -141,7 +142,7 @@ export function EngagementsPage(): JSX.Element {
   const { me } = useAuth();
   const currentUserId = me?.appUserId ?? '';
   const navigate = useNavigate();
-  // Hydrate filters from localStorage once (lazy init below reads this).
+  // Hydrate filters from sessionStorage once (lazy init below reads this).
   const [saved] = useState<PersistedFilters>(() => readPersistedFilters());
   // 0050 — default = My Work. Was 'active'.
   const [tab, setTab] = useState<Tab>(saved.tab ?? 'mine');
@@ -280,7 +281,7 @@ export function EngagementsPage(): JSX.Element {
   // Persist filters/sort so they survive a refresh or leaving the view.
   useEffect(() => {
     try {
-      localStorage.setItem(
+      sessionStorage.setItem(
         FILTERS_KEY,
         JSON.stringify({
           tab,
