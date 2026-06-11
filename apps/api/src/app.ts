@@ -45,6 +45,7 @@ import { createEngagementRouter } from './engagements/routes';
 import { createStatusHistoryRouter } from './engagements/status-history';
 import { createStatusOptionsRouter } from './engagements/status-options';
 import { createStaffFileShareRouter } from './files/share-routes';
+import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
@@ -955,8 +956,24 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/portal/files', portalFileShareRouter);
 
   // CP11 — public token-based share access (no portal auth).
-  const sharePublicRouter = createSharePublicRouter({ db: deps.db });
+  const sharePublicRouter = createSharePublicRouter({
+    db: deps.db,
+    portalBaseUrl: config.PORTAL_BASE_URL,
+  });
   app.use('/api/shared', sharePublicRouter);
+
+  // 0150 — gated file-share recipient API (access-code landing page
+  // backend). Distinct base /api/shared-file for the same reason as
+  // /api/shared-tax below.
+  const fileRecipientRouter = createFileRecipientRouter({
+    db: deps.db,
+    redis: deps.redis,
+    sendEmail: deps.sendStaffMail
+      ? (m) => deps.sendStaffMail!({ to: m.to, subject: m.subject, body: m.body })
+      : undefined,
+    sendSms: deps.sendPortalSms,
+  });
+  app.use('/api/shared-file', fileRecipientRouter);
 
   // TR-7 — tax-return recipient API (3rd-party token surface). Mounted
   // under /api so Caddy proxies it; the recipient *page* is the portal

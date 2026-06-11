@@ -15,29 +15,23 @@
 // Mounted at /api/shared/* outside the portal-auth chain, isolated so a
 // bug in portal middleware can't gate the share flow.
 
-import type { Readable } from 'node:stream';
-
 import express, { type Request, type Response, type Router } from 'express';
 import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { fileShareEvents, files } from '@vibe/db/schema';
+import { files } from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { logger } from './logger';
-import {
-  resolveFileShareToken,
-  markFileShareViewed,
-  type ResolvedFileShare,
-} from './sharing/file-share-helper';
-import { watermarkPdf, recipientWatermarkText } from './sharing/watermark-pdf';
+import { resolveFileShareToken, type ResolvedFileShare } from './sharing/file-share-helper';
+import { logShareEvent, serveSharedFile } from './sharing/serve-shared-file';
 
 export interface SharePublicDeps {
   db: Database | null;
   storageClient?: StorageClient;
+  /** Landing-page origin for redirecting gated rows (0150). */
+  portalBaseUrl?: string;
 }
-
-const PRESIGN_TTL_SECONDS = 5 * 60;
 
 function getStorage(deps: SharePublicDeps): StorageClient | null {
   if (deps.storageClient) return deps.storageClient;
@@ -52,36 +46,6 @@ function clientIp(req: Request): string {
   const fwd = req.headers['x-forwarded-for'];
   const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0];
   return (first ?? req.ip ?? '0.0.0.0').trim();
-}
-
-async function logEvent(
-  db: Database,
-  fileShareId: string,
-  outcome: 'allowed' | 'denied_revoked' | 'denied_expired' | 'denied_file_gone',
-  ip: string,
-  userAgent: string | null,
-): Promise<void> {
-  try {
-    await db.insert(fileShareEvents).values({ fileShareId, outcome, ip, userAgent });
-  } catch (err) {
-    logger.error({ err, fileShareId, outcome }, 'file_share_event insert failed');
-  }
-}
-
-async function streamToBuffer(stream: Readable): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-  }
-  return Buffer.concat(chunks);
-}
-
-function isPdf(mimeType: string | null, filename: string): boolean {
-  return mimeType === 'application/pdf' || filename.toLowerCase().endsWith('.pdf');
-}
-
-function safeFilename(name: string): string {
-  return name.replace(/[^\w.\- ]+/g, '_').slice(0, 200) || 'document';
 }
 
 export function createSharePublicRouter(deps: SharePublicDeps): Router {
@@ -113,13 +77,23 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       res.status(404).type('text/plain').send('Not found');
       return;
     }
+    // 0150 — gated shares never serve bytes from the direct path. New
+    // links point at the landing page already; a hit here is a trimmed
+    // URL (redirect = good UX) or a gate-bypass attempt (redirect = no
+    // bytes). Pre-0150 rows (gated=false) keep direct-serving below.
+    if (share.gated) {
+      await logShareEvent(deps.db, share.id, 'denied_gated', ip, userAgent);
+      const base = (deps.portalBaseUrl ?? '').replace(/\/$/, '');
+      res.redirect(302, `${base}/shared/file/${token}`);
+      return;
+    }
     if (share.revokedAt || share.status === 'REVOKED') {
-      await logEvent(deps.db, share.id, 'denied_revoked', ip, userAgent);
+      await logShareEvent(deps.db, share.id, 'denied_revoked', ip, userAgent);
       res.status(410).type('text/plain').send('This link has been revoked.');
       return;
     }
     if (share.expiresAt && share.expiresAt.getTime() < Date.now()) {
-      await logEvent(deps.db, share.id, 'denied_expired', ip, userAgent);
+      await logShareEvent(deps.db, share.id, 'denied_expired', ip, userAgent);
       res.status(410).type('text/plain').send('This link has expired.');
       return;
     }
@@ -138,7 +112,7 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       .limit(1);
     // The share itself grants access — visibility is NOT required here.
     if (!file || file.deletedAt != null || file.pendingUpload) {
-      await logEvent(deps.db, share.id, 'denied_file_gone', ip, userAgent);
+      await logShareEvent(deps.db, share.id, 'denied_file_gone', ip, userAgent);
       res.status(410).type('text/plain').send('This file is no longer available.');
       return;
     }
@@ -149,52 +123,16 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       return;
     }
 
-    const disposition = share.accessLevel === 'download' ? 'attachment' : 'inline';
-
-    try {
-      // Watermarked PDFs are streamed (we must rewrite the bytes); everything
-      // else redirects to a short-lived presigned URL.
-      if (share.watermark && isPdf(file.mimeType, file.originalFilename)) {
-        const obj = await storage.get(file.storageKey);
-        const raw = await streamToBuffer(obj.body);
-        const stamped = await watermarkPdf(
-          raw,
-          recipientWatermarkText({
-            recipientName: share.recipientName,
-            organization: share.organization,
-          }),
-        );
-        await logEvent(deps.db, share.id, 'allowed', ip, userAgent);
-        await markFileShareViewed(deps.db, share.id);
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader(
-          'Content-Disposition',
-          `${disposition}; filename="${safeFilename(file.originalFilename)}"`,
-        );
-        res.send(stamped);
-        return;
-      }
-
-      const url = await storage.presignGet(file.storageKey, PRESIGN_TTL_SECONDS);
-      await logEvent(deps.db, share.id, 'allowed', ip, userAgent);
-      await markFileShareViewed(deps.db, share.id);
-      if (!/^https?:\/\//.test(url)) {
-        // Mock storage returns opaque URIs — surface via JSON for dev.
-        res.json({
-          ok: true,
-          mode: 'mock',
-          url,
-          filename: file.originalFilename,
-          mimeType: file.mimeType,
-          accessLevel: share.accessLevel,
-        });
-        return;
-      }
-      res.redirect(302, url);
-    } catch (err) {
-      logger.error({ err, shareId: share.id }, 'shared access failed');
-      res.status(500).type('text/plain').send('Could not generate access URL.');
-    }
+    await serveSharedFile({
+      db: deps.db,
+      storage,
+      share,
+      file,
+      res,
+      disposition: share.accessLevel === 'download' ? 'attachment' : 'inline',
+      ip,
+      userAgent,
+    });
   });
 
   return router;

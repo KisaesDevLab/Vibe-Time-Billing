@@ -218,6 +218,9 @@ describe('staff file share', () => {
     });
     expect(rev.statusCode).toBe(200);
 
+    // 0150 — the direct endpoint only serves legacy (ungated) rows; flip
+    // this share to legacy so the revoked-410 path is exercised.
+    await harness.db.update(fileShares).set({ gated: false }).where(eq(fileShares.id, shareId));
     const redeem = createSharePublicRouter({ db: harness.db, storageClient: mockStorage() });
     const res = await invoke(redeem, 'get', '/:token', {
       params: { token },
@@ -245,6 +248,9 @@ describe('public redeem', () => {
     });
     const { token, shareId } = create.jsonBody as { token: string; shareId: string };
 
+    // 0150 — direct serving is legacy-only now; this test covers the
+    // pre-0150 path, so mark the row ungated.
+    await harness.db.update(fileShares).set({ gated: false }).where(eq(fileShares.id, shareId));
     const redeem = createSharePublicRouter({ db: harness.db, storageClient: mockStorage() });
     const res = await invoke(redeem, 'get', '/:token', {
       params: { token },

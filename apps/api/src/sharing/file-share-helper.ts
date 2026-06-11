@@ -104,6 +104,8 @@ export async function createFileShare(
   const expiresAt = capExpiry(input.expiresAt, now);
 
   await db.insert(fileShares).values({
+    // 0150 — all new shares are gated (explicit; not just the DDL default).
+    gated: true,
     id: shareId,
     firmId: input.firmId,
     clientId: input.clientId,
