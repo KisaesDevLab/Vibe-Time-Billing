@@ -1323,7 +1323,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           ? 'SMS'
           : req.params['channel'] === 'CALL'
             ? 'CALL'
-            : 'EMAIL';
+            : req.params['channel'] === 'PORTAL'
+              ? 'PORTAL'
+              : 'EMAIL';
       const body = (req.body ?? {}) as { subject?: string; body?: string; enabled?: boolean };
       if (typeof body.body !== 'string' || body.body.length === 0) {
         res.status(400).json({ error: 'body_required' });
@@ -1340,7 +1342,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       const values = {
         firmId,
         kind,
-        channel: channel as 'EMAIL' | 'SMS' | 'CALL',
+        channel: channel as 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL',
         subject: body.subject ?? null,
         body: body.body,
         variablesJson: variables,
@@ -1384,7 +1386,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           ? 'SMS'
           : req.params['channel'] === 'CALL'
             ? 'CALL'
-            : 'EMAIL';
+            : req.params['channel'] === 'PORTAL'
+              ? 'PORTAL'
+              : 'EMAIL';
       await deps.db
         .delete(notificationTemplates)
         .where(

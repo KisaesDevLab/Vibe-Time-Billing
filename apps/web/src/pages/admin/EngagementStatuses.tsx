@@ -128,6 +128,25 @@ export function EngagementStatusesPage(): JSX.Element {
               ),
             },
             {
+              key: 'notifies',
+              header: 'Notifies',
+              render: (r) =>
+                r.triggersClientComm && r.notifyChannels.length > 0 ? (
+                  <span style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {r.notifyChannels.map((c) => (
+                      <Pill key={c} tone="accent">
+                        {c === 'EMAIL' ? 'email' : c === 'SMS' ? 'sms' : 'portal'}
+                      </Pill>
+                    ))}
+                    <Pill tone={r.notifyMode === 'IMMEDIATE' ? 'warning' : 'neutral'}>
+                      {r.notifyMode === 'IMMEDIATE' ? 'immediate' : 'approval'}
+                    </Pill>
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>—</span>
+                ),
+            },
+            {
               key: 'sort',
               header: 'Order',
               align: 'right',

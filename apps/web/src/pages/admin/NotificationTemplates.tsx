@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
@@ -7,10 +8,12 @@ import { api } from '../../api-client';
 import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
+type Channel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL';
+
 interface Template {
   id: string;
   kind: string;
-  channel: 'EMAIL' | 'SMS' | 'CALL';
+  channel: Channel;
   subject: string | null;
   body: string;
   variablesJson: string[] | null;
@@ -18,11 +21,13 @@ interface Template {
   updatedAt: string;
 }
 
-const KINDS: ReadonlyArray<{
+interface KindEntry {
   key: string;
   label: string;
-  channels: Array<'EMAIL' | 'SMS' | 'CALL'>;
-}> = [
+  channels: Channel[];
+}
+
+const KINDS: ReadonlyArray<KindEntry> = [
   { key: 'invoice_sent', label: 'Invoice sent', channels: ['EMAIL'] },
   { key: 'invoice_overdue', label: 'Invoice overdue', channels: ['EMAIL', 'SMS'] },
   { key: 'dunning_first', label: 'First dunning', channels: ['EMAIL', 'SMS'] },
@@ -84,14 +89,39 @@ const SAMPLE_VARIABLES = [
   'request.message',
 ];
 
+// 0146 — tokens available to engagement_status:* templates (mirrors
+// STATUS_NOTIFICATION_TOKENS in @vibe/core/notifications).
+const STATUS_VARIABLES = [
+  'client.name',
+  'firm.name',
+  'engagement.name',
+  'status.label',
+  'status.client_label',
+  'status.client_description',
+  'recipient.name',
+  'today',
+];
+
+function variablesFor(kind: string): string[] {
+  return kind.startsWith('engagement_status:') ? STATUS_VARIABLES : SAMPLE_VARIABLES;
+}
+
 // Same tokens, shaped for the rich-text editor's "Insert variable" dropdown.
 const RICH_TEXT_VARIABLES: RichTextVariable[] = SAMPLE_VARIABLES.map((token) => ({ token }));
+const STATUS_RICH_TEXT_VARIABLES: RichTextVariable[] = STATUS_VARIABLES.map((token) => ({ token }));
+
+interface StatusRow {
+  workflowState: string;
+  label: string;
+}
 
 export function NotificationTemplatesPage(): JSX.Element {
   const [items, setItems] = useState<Template[]>([]);
+  const [statuses, setStatuses] = useState<StatusRow[]>([]);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [active, setActive] = useState<{
     kind: string;
-    channel: 'EMAIL' | 'SMS' | 'CALL';
+    channel: Channel;
     subject: string;
     body: string;
   } | null>(null);
@@ -108,9 +138,43 @@ export function NotificationTemplatesPage(): JSX.Element {
   }
   useEffect(() => {
     void load();
+    // 0146 — one editable template set per engagement status.
+    void (async () => {
+      try {
+        const r = await api<{ items: StatusRow[] }>('/api/staff/admin/engagement-statuses');
+        setStatuses(r.items ?? []);
+      } catch {
+        // status kinds are additive; the static list still renders
+      }
+    })();
   }, []);
 
-  function open(kind: string, channel: 'EMAIL' | 'SMS' | 'CALL'): void {
+  // 0146 — engagement-status kinds appended after the static catalog.
+  const allKinds = useMemo<KindEntry[]>(
+    () => [
+      ...KINDS,
+      ...statuses.map((st) => ({
+        key: `engagement_status:${st.workflowState}`,
+        label: `Status: ${st.label}`,
+        channels: ['EMAIL', 'SMS', 'PORTAL'] as Channel[],
+      })),
+    ],
+    [statuses],
+  );
+
+  // ?kind= deep-link (StatusEditorModal links here). Opens the EMAIL
+  // editor for the requested kind once the catalogs resolve.
+  useEffect(() => {
+    const requested = searchParams.get('kind');
+    if (!requested) return;
+    const entry = allKinds.find((k) => k.key === requested);
+    if (!entry) return;
+    open(entry.key, entry.channels[0] ?? 'EMAIL');
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per kind param resolution
+  }, [searchParams, allKinds]);
+
+  function open(kind: string, channel: Channel): void {
     const existing = items.find((i) => i.kind === kind && i.channel === channel);
     setActive({
       kind,
@@ -168,7 +232,7 @@ export function NotificationTemplatesPage(): JSX.Element {
   // packages/ui). "← Back" returns to the list.
   if (active) {
     const isEmail = active.channel === 'EMAIL';
-    const kindLabel = KINDS.find((k) => k.key === active.kind)?.label ?? active.kind;
+    const kindLabel = allKinds.find((k) => k.key === active.kind)?.label ?? active.kind;
     return (
       <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
         <Card title={`Edit ${kindLabel} · ${active.channel}`}>
@@ -223,7 +287,11 @@ export function NotificationTemplatesPage(): JSX.Element {
                     key={`${active.kind}:${active.channel}`}
                     value={active.body}
                     onChange={(md) => setActive((a) => (a ? { ...a, body: md } : a))}
-                    variables={RICH_TEXT_VARIABLES}
+                    variables={
+                      active.kind.startsWith('engagement_status:')
+                        ? STATUS_RICH_TEXT_VARIABLES
+                        : RICH_TEXT_VARIABLES
+                    }
                     placeholder="Compose the email body — use Variable to insert merge fields."
                   />
                 ) : (
@@ -259,7 +327,7 @@ export function NotificationTemplatesPage(): JSX.Element {
                   Variables
                 </div>
                 <div style={{ display: 'grid', gap: 4 }}>
-                  {SAMPLE_VARIABLES.map((v) => (
+                  {variablesFor(active.kind).map((v) => (
                     <button
                       key={v}
                       type="button"
@@ -329,12 +397,12 @@ export function NotificationTemplatesPage(): JSX.Element {
           </Button>
         </div>
         <div style={{ display: 'grid', gap: 8 }}>
-          {KINDS.map((k) => (
+          {allKinds.map((k) => (
             <div
               key={k.key}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '2fr 1fr 1fr 1fr',
+                gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
                 gap: 8,
                 alignItems: 'center',
                 padding: 8,
@@ -344,7 +412,7 @@ export function NotificationTemplatesPage(): JSX.Element {
               }}
             >
               <span>{k.label}</span>
-              {(['EMAIL', 'SMS', 'CALL'] as const).map((ch) => {
+              {(['EMAIL', 'SMS', 'CALL', 'PORTAL'] as const).map((ch) => {
                 const has = items.some((i) => i.kind === k.key && i.channel === ch);
                 if (!k.channels.includes(ch)) return <span key={ch} />;
                 return (

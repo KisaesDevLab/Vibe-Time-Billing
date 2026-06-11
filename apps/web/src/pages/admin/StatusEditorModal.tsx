@@ -19,6 +19,9 @@ export interface StatusConfigRow {
   sortOrder: number;
   kanbanVisible: boolean;
   triggersClientComm: boolean;
+  notifyMode: 'IMMEDIATE' | 'STAGED';
+  notifyChannels: string[];
+  notifyRecipients: 'BILLING_CONTACT' | 'ALL_CONTACTS';
   isSystem: boolean;
   clientLabel: string | null;
   clientDescription: string | null;
@@ -54,6 +57,14 @@ export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Elem
   const [clientLabel, setClientLabel] = useState(status?.clientLabel ?? '');
   const [clientDescription, setClientDescription] = useState(status?.clientDescription ?? '');
   const [clientVisible, setClientVisible] = useState(status?.clientVisible ?? true);
+  const [notifyEnabled, setNotifyEnabled] = useState(status?.triggersClientComm ?? false);
+  const [notifyMode, setNotifyMode] = useState<'IMMEDIATE' | 'STAGED'>(
+    status?.notifyMode ?? 'STAGED',
+  );
+  const [notifyChannels, setNotifyChannels] = useState<string[]>(status?.notifyChannels ?? []);
+  const [notifyRecipients, setNotifyRecipients] = useState<'BILLING_CONTACT' | 'ALL_CONTACTS'>(
+    status?.notifyRecipients ?? 'BILLING_CONTACT',
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,6 +88,10 @@ export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Elem
       clientLabel: clientLabel.trim() || null,
       clientDescription: clientDescription.trim() || null,
       clientVisible,
+      triggersClientComm: notifyEnabled,
+      notifyMode,
+      notifyChannels,
+      notifyRecipients,
     };
     try {
       if (creating) {
@@ -265,6 +280,135 @@ export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Elem
               placeholder="Optional longer message clients see"
             />
           </div>
+
+          <hr
+            style={{
+              border: 'none',
+              borderTop: `1px solid ${tokens.color.border}`,
+              margin: '2px 0',
+            }}
+          />
+
+          {/* 0146 — per-status client notification config */}
+          <div style={{ fontSize: 12, fontWeight: 600, color: tokens.color.textMuted }}>
+            CLIENT NOTIFICATIONS
+          </div>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={notifyEnabled}
+              onChange={(e) => setNotifyEnabled(e.target.checked)}
+            />
+            Notify the client when an engagement enters this status
+          </label>
+          {notifyEnabled && (
+            <>
+              <div>
+                <span style={labelStyle}>Delivery</span>
+                <div style={{ display: 'flex', gap: 0 }}>
+                  {(
+                    [
+                      ['STAGED', 'Require approval'],
+                      ['IMMEDIATE', 'Send immediately'],
+                    ] as const
+                  ).map(([value, text], i) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setNotifyMode(value)}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: 13,
+                        cursor: 'pointer',
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius:
+                          i === 0
+                            ? `${tokens.radius.sm} 0 0 ${tokens.radius.sm}`
+                            : `0 ${tokens.radius.sm} ${tokens.radius.sm} 0`,
+                        borderLeftWidth: i === 0 ? 1 : 0,
+                        background:
+                          notifyMode === value ? tokens.color.accentMuted : tokens.color.surface,
+                        fontWeight: notifyMode === value ? 600 : 400,
+                        color: tokens.color.text,
+                      }}
+                    >
+                      {text}
+                    </button>
+                  ))}
+                </div>
+                {notifyMode === 'STAGED' && (
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    Queued under Approvals for send-now, schedule, or cancel.
+                  </span>
+                )}
+              </div>
+              <div>
+                <span style={labelStyle}>Methods</span>
+                <div style={{ display: 'flex', gap: 14 }}>
+                  {(
+                    [
+                      ['EMAIL', 'Email'],
+                      ['SMS', 'Text message'],
+                      ['PORTAL', 'Portal notice'],
+                    ] as const
+                  ).map(([value, text]) => (
+                    <label
+                      key={value}
+                      style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={notifyChannels.includes(value)}
+                        onChange={(e) =>
+                          setNotifyChannels((prev) =>
+                            e.target.checked ? [...prev, value] : prev.filter((c) => c !== value),
+                          )
+                        }
+                      />
+                      {text}
+                    </label>
+                  ))}
+                </div>
+                {notifyChannels.length === 0 && (
+                  <span style={{ fontSize: 12, color: tokens.color.warning }}>
+                    Pick at least one method or nothing will be sent.
+                  </span>
+                )}
+              </div>
+              <div>
+                <span style={labelStyle}>Recipients</span>
+                <div style={{ display: 'flex', gap: 14 }}>
+                  {(
+                    [
+                      ['BILLING_CONTACT', 'Billing contact'],
+                      ['ALL_CONTACTS', 'All contacts'],
+                    ] as const
+                  ).map(([value, text]) => (
+                    <label
+                      key={value}
+                      style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}
+                    >
+                      <input
+                        type="radio"
+                        name="notify-recipients"
+                        checked={notifyRecipients === value}
+                        onChange={() => setNotifyRecipients(value)}
+                      />
+                      {text}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {!creating && (
+                <a
+                  href={`/admin/notification-templates?kind=engagement_status:${status!.workflowState}`}
+                  style={{ fontSize: 13, color: tokens.color.accent }}
+                >
+                  Customize message templates →
+                </a>
+              )}
+            </>
+          )}
 
           {error && (
             <div
