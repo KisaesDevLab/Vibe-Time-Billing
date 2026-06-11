@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Per-engagement progress-status change history: who moved it from one
 // status to another, and when. Reads the already-logged audit trail via

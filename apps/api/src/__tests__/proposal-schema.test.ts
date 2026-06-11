@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // P01 — Proposal Module schema invariants. Pins the locked addendum
 // decisions in §0.3 and the structural choices that subsequent

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Message attachments (images/files) shared by the client (engagement) and
 // internal (team) messaging routers. Bytes are encrypted under the thread

@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Client-scoped Messages view. Lists every thread for this client that
 // the signed-in staff user is a member of — both client-direct threads

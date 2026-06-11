@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CP9 — Per-engagement autopay control (Build Plan §2.2).
 //

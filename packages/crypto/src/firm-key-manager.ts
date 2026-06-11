@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // FirmKeyManager — owns the firm's Master Firm Key (MFK) lifecycle:
 // bootstrap (first-ever boot), unseal (every subsequent boot), wrap/

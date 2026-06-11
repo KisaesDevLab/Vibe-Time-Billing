@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // System client-template starter pack. Imported into client_template; these
 // pre-fill the new-client wizard (defaultsJson) keyed by clientType, and may

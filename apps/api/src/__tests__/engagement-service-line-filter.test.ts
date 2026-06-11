@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Service-line dimension on the engagements list: response enrichment,
 // ?serviceLineId filter, ?serviceLineCategory filter, and NULL handling

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Reporting endpoints — Phase 17. Realization rollups straight off
 // `adjustment_allocation`. No materialized view yet — the query joins to

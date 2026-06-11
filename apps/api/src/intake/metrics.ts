@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Prometheus-format gauges for the document-intake surface, folded into the
 // API's /metrics endpoint. Best-effort; the caller swallows failures.

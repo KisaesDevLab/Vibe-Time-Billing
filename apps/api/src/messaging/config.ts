@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Messaging provider config — shape definitions, validation, and on-disk
 // encryption. The DB column stores the v1:<iv>:<ct>:<tag> envelope; this

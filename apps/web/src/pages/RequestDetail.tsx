@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Staff Request detail page — 0084. Header card with status / priority
 // / due / assigned + re-attach engagement combobox. Tabs:

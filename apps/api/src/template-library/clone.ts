@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Clone engine for the system template library → firm catalog import.
 // Reads the shipped, typed template data from @vibe/db/seed-helpers and

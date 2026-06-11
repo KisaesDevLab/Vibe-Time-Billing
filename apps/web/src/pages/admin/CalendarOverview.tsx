@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-6 — admin all-staff calendar overview: appointment list (filterable),
 // CSV export, and a connection-health table.

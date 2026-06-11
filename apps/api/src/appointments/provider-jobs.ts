@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-5 — per-staff calendar write-back for appointments. One job per
 // staff member: create / update / delete the event on THAT staff

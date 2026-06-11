@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-8 — when a confirmed appointment has just ended, queue a one-time
 // "log your time?" suggestion for its staff member. Idempotent via the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Per-client communications timeline (v2 Sprint C, workstream 1.5).
 // GET is paginated; POST is for manual entries (call notes, meeting

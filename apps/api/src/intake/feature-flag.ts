@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0103 — Document Intake feature gate. The public intake surface and the
 // staff Intake Inbox are off by default; a firm turns them on via

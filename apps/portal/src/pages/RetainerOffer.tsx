@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R3 / hybrid — Client portal retainer offer, presented as a proposal-style
 // document. Three options: tax return only / + Standard / + Premium. Once the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Error-handling coverage for the CPACharge webhook: signature mismatch
 // fails closed (401) and never echoes the signature; unconfigured → 503;

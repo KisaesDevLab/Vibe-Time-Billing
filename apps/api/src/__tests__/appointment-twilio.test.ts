@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0121 — two-way appointment confirmation webhooks (Twilio). Signature
 // verification + RSVP flip on inbound SMS "YES" / voice press-1.

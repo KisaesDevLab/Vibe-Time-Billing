@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Printable QR sheet for in-office signing. Pure function: given the document
 // title and a QR data-URL per signer, returns a self-contained HTML document

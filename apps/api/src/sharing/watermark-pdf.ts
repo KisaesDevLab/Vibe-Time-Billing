@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0102 — recipient watermark for shared PDFs. Stamps a light diagonal
 // label (recipient name/org + view timestamp) on every page at download

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Late-entry alert (Phase 9 #15). Per-firm:
 //   1. Read late_entry_alert_days from firm_settings (default 3).

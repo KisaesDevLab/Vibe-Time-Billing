@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0101 — unlimited custom engagement progress-statuses + client-facing text.
 // Verifies: GET self-heals the built-ins; POST creates a custom status

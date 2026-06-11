@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0085 — Cloudflare Tunnel status poller. Once per minute we hit the
 // sidecar's local metrics endpoints (default http://cloudflared:2000)

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-2 — PUBLIC OAuth callback (mounted at /api/calendar, outside the
 // staff auth chain). It MUST be public: the provider redirects the browser

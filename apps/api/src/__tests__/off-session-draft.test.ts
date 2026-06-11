@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phases 12/13 — off-session draft param correctness. The #1 ACH mistake is
 // adding `off_session` / re-collecting a mandate; assert we never do for ACH,

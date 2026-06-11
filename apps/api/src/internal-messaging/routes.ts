@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Staff-to-staff messaging — direct (1:1) + ad-hoc group threads. Built on
 // the same thread/message tables + per-thread T-DEK encryption as client

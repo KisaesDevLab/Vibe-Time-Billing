@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Quick-find global search (Phase 4 cmd-K-style). Returns up to ~30
 // matches across clients, engagements, invoices, and users for the

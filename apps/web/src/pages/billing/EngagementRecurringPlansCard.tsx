@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Per-engagement Recurring billing plans card. Lists plans scoped to
 // this engagement and exposes a "+ New plan" button that opens the

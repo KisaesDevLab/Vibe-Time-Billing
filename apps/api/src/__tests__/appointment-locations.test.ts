@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0144 — appointment location presets: admin CRUD, booking with a chosen
 // preset (fills type + detail), availability window location persistence,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Late-fee accrual job (Phase 13 #15). For each invoice whose status is
 // OVERDUE/PARTIALLY_PAID and whose due_date has passed, compute the

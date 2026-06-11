@@ -4,7 +4,7 @@
 
 **Status:** Design locked, pending build plan
 **Author:** Kurt / KisaesDevLab
-**License:** PolyForm Internal Use 1.0.0
+**License:** Elastic License 2.0
 
 ---
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Lightweight Excel export (Phase 17 #23). Renders the rows as an
 // HTML table with the Excel MIME type — every desktop Excel /

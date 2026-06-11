@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // B2StorageClient — production. Uses @aws-sdk/client-s3 against
 // Backblaze B2's S3-compatible endpoint. Wiring deferred until

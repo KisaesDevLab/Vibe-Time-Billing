@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // FMv2 §5.2 — re-export of the canonical helper in @vibe/core/storage.
 //

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Admin layout (v2 Sprint E). The flat 26-tab sidebar collapses into
 // 7 semantic groups: Firm / People / Catalog / Billing / Messaging /

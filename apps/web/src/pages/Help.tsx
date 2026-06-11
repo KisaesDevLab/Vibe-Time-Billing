@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Help & Support — a Knowledge Base browser/search and (when AI is
 // enabled) a KB-grounded "Ask AI" chat assistant.

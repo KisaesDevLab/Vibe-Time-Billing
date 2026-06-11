@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Top-level "Tasks" view. Lists tasks across all clients with a My/All
 // toggle plus status / priority / client / overdue filters and search, and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Regression: the realization rollup must join allocations → adjustments →
 // billing_batches. A prior bug joined adjustment_allocations.adjustment_id

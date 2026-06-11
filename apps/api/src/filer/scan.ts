@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Inbox scan + client match for Vibe Filer. Lists the B2 Inbox/ prefix,
 // parses each filename, matches it to a client (clients.external_id first,

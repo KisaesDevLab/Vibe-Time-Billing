@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Self-service portal access requests (0143): the public submission
 // endpoint matches a firm person and fans out one PENDING request per

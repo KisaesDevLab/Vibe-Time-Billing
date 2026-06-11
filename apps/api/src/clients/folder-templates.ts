@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Client folder-structure templates. Templates are a firm-level definition;
 // they're applied as a *virtual* skeleton — the Explorer unions a client's

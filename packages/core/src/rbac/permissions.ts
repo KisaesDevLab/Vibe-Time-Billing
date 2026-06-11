@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Permission catalog. Keys are stable, namespaced strings. Role templates
 // bundle permission keys; users may have multiple role assignments and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Public intake API client. The intake surface is anonymous — no session
 // cookie, no CSRF token. Every call targets /api/public/intake/* on the

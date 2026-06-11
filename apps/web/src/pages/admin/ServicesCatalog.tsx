@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // P02 — Services catalog admin page (ADDENDUM-PROPOSAL-MODULE.md §P02).
 //

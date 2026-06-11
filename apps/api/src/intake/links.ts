@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // "Send a link" — a staff member generates a one-time, expiring intake link
 // pre-bound to a target staff member. The token is the bearer credential;

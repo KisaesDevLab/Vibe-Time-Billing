@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Heavy demo seed — populates every page with realistic data on top of
 // the baseline produced by `seed.ts`. Targets the volumes the user

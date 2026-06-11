@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R4 — Daily offer expiry sweep. Flips status from 'pending' to
 // 'expired' when offer_expires_at < now. pending_payment offers stay

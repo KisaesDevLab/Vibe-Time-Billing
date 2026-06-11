@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-4 — LLM matching tier STUB (v1.5). Interface + feature flag only; the
 // body is intentionally unimplemented. Enable via FEATURE_LLM_CALENDAR_MATCH

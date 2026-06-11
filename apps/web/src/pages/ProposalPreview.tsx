@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Staff "preview as client" — a chrome-less, full-page render of a proposal's
 // brochure using the same block renderers (mode="portal") the client sees.

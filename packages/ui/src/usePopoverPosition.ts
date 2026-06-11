@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Shared positioning hook for portal-rendered popovers (Combobox,
 // MultiCombobox, ColumnFilter). Computes viewport-relative top/left/

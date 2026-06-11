@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Q6 — portal new-device re-verification. A magic-link sign-in from an
 // unrecognized device is challenged with an SMS OTP before a session is

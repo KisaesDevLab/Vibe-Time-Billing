@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Edit + void of manually-recorded payments: recompute the invoice, exclude
 // voided rows, and keep Stripe-processed payments read-only.

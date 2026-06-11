@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Seed a single SENT proposal that offers a real multi-tier package, so the
 // end-to-end tier-selection feature can be verified in the UI:

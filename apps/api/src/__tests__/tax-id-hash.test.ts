@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Connect I.4 — tax-id hash helper + verify path. Verifies the
 // normalization rules, the pepper gate, and constant-time compare.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal invitation acceptance page. Reached via the magic link in the
 // invitation email (or SMS) — e.g. portal.firm.com/auth/accept?token=...

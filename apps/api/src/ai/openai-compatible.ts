@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // OpenAI-compatible provider (Phase 23 #4). Speaks the standard
 // /v1/chat/completions wire format used by OpenAI itself plus most

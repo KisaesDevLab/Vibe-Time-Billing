@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-3 — firm calendar sync settings (interval / lookback / lookahead),
 // with sane defaults when no row exists.

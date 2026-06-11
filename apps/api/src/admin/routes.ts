@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Admin endpoints (Phase 4). Backs the firm-settings, office, and user
 // admin UIs. RBAC-gated via `requirePermission`.

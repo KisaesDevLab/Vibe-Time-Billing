@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Connect I.4 — server-peppered HMAC of a client's tax id, used as
 // the knowledge factor for the ssn-last-4 / ein step-up challenges.

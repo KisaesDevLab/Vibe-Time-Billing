@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Single-firm-per-appliance resolver for the anonymous intake surface.
 // Unauthenticated callers carry no session, so "which firm" is simply the

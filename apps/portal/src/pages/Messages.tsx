@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Stage 4 — portal Messages page. Lists engagement threads the active
 // client participates in, lets the user open a thread and post a

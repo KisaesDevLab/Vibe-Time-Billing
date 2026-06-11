@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // "Send a link" dialog — generates a tokenized intake link bound to a staff
 // member, optionally emailing/texting it to a recipient. Shows the URL so

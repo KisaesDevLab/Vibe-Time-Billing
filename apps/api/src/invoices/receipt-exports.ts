@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CP3 — per-payment receipt HTML builder. Extracted from
 // apps/api/src/portal/invoices.ts so it's unit-testable and reusable

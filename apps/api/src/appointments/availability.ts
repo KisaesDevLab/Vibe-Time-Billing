@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-2 — Multi-staff slot availability engine. Computes bookable slots
 // for one or more staff on a given calendar date: the INTERSECTION of

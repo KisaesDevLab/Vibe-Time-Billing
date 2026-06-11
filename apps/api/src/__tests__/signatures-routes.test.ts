@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 4 — Signatures CRUD API: create → place → detail round-trip,
 // field-level rejection of bad placements + placeless signers, draft-only

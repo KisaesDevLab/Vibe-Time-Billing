@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Connect H.8 — wrap MailProvider / SmsProvider so every send appends
 // a notification_log row. Best-effort: a DB write failure logs but

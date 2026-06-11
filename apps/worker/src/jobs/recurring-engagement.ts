@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Recurring-engagement worker (Q23). Daily sweep that fires the
 // engagement_recurrence schedule + completion paths and spawns the

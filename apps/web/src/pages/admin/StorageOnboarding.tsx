@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Storage onboarding (Phase 4 of FILE_MANAGER_ADDENDUM.md).
 //

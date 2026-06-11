@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0054 — rate-code catalog. Firm-scoped codes referenced by engagement
 // defaultRateCodeId and by per-staff snapshot entries. StandardRate is

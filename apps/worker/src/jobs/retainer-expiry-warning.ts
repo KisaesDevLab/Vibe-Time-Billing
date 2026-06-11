@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R4-followup — delayed retainer expiry warning. Triggered by jobs the
 // API enqueued at activation time (R3) and at manual activation (R7).

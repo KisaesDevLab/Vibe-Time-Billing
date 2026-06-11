@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Filename parsing for the Vibe Filer inbox. Best-effort: the export
 // owner's convention is `ClientName_NNNNNN_rest.ext` (client names must

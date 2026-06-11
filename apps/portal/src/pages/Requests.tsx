@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal Requests page — 0084 update. Row click navigates to detail;
 // open / closed buckets honor the new NEEDS_INFO status.

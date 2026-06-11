@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Hour-bank auto-replenish worker (Phase 10 #15). For each hour_bank
 // with auto_replenish_enabled=true whose running balance has fallen

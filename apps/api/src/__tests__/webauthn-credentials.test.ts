@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // WebAuthn credential management tests. The full register/verify dance
 // requires a real browser authenticator (or fixtures recorded from

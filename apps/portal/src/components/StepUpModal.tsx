@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // P4.5 — Portal step-up challenge dialog. Opens when the api-client
 // intercepts a 403 step_up_required from the server. Lets the user

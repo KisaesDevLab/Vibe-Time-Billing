@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0102 — staff-initiated secure file sharing. Lets staff share any firm
 // file with an outside recipient: emailed, expiring, revocable, audited

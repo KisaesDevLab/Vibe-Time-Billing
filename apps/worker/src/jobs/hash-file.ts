@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // SHA-256 hashing worker (Phase 5 of FILE_MANAGER_ADDENDUM.md).
 //

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Admin endpoints to manually trigger background-worker jobs. The worker
 // runs them on cron; this surface lets an operator force a run right

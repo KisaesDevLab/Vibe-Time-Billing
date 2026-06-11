@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0108 — Signatures module (OpenSign Integration Addendum). Arbitrary-PDF
 // e-signature requests with drag-to-place fields and reusable, role-based

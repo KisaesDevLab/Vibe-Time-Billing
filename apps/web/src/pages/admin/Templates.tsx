@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Template admin (v2 Sprint D). Replaces the read-only starter-pack
 // viewer with full CRUD across the three template families:

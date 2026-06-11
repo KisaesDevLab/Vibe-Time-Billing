@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Public document-intake SPA. Three routes, no auth:
 //   /            — staff lookup grid (pick who to send to)

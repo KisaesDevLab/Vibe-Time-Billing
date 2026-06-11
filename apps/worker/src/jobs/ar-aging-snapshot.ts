@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Nightly per-client AR aging snapshot. Writes one row per
 // (firm, client, as_of_date) into ar_aging_snapshot. Bucketize uses the

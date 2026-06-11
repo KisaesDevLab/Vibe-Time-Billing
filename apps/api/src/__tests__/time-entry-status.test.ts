@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Change engagement progress status while logging time:
 //  - staff-readable status-options list (engagement:read gated)

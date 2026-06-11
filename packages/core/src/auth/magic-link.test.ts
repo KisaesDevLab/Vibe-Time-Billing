@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 import { describe, it, expect } from 'vitest';
 
 import { issueMagicLink, verifyMagicLink, randomNonce } from './magic-link';

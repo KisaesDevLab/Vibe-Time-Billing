@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CP0 — Mobile card-list fallback for the portal invoice table.
 // At <720px the row layout becomes a stacked card so columns don't

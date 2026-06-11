@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Q35 — OpenSign async completion (shared by the HMAC webhook fast path
 // and the worker poll safety net).

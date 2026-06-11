@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Staff authentication routes. Magic-link primary + mandatory TOTP step-up.
 // Q5 locked: TOTP is required for all staff. Q4 locked: step-up timeout

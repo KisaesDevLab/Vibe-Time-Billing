@@ -323,8 +323,8 @@ Implication if wrong: If we needed multi-signer UI in v1, only the acceptance fl
 **RESOLVED 2026-06-03 (operator):** Build multi-signer UI now. Schema is already plural, so this is acceptance-flow + UI work only.
 
 ## Q35 — OpenSign AGPL boundary [proposal P15]
-Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #2. OpenSign is AGPL; T&B core is PolyForm Internal Use 1.0.0. AGPL infection would force the entire appliance source code under AGPL.
-Assumed default: **OpenSign runs as a separate sidecar container reached over the network.** AGPL applies to the OpenSign binary only; the network boundary keeps T&B core's PolyForm license clean. One-line note to be added to `LICENSING.md` in P15. T&B does NOT statically link, NOT bundle, NOT import any OpenSign source.
+Context: `ADDENDUM-PROPOSAL-MODULE.md` §0.3 #2. OpenSign is AGPL; T&B core is Elastic License 2.0. AGPL infection would force the entire appliance source code under AGPL.
+Assumed default: **OpenSign runs as a separate sidecar container reached over the network.** AGPL applies to the OpenSign binary only; the network boundary keeps T&B core's Elastic License 2.0 clean. One-line note to be added to `LICENSING.md` in P15. T&B does NOT statically link, NOT bundle, NOT import any OpenSign source.
 Implication if wrong: If AGPL is read as infecting any system that talks to the OpenSign API, we'd have to either (a) write our own e-signature backend or (b) license T&B under AGPL. We accept the standard reading per FSF/SFLC guidance that network communication via stable API is not derivation.
 **RESOLVED 2026-06-04 (operator):** Build out OpenSign now as a first-class alternative to the native HMAC backend, via the AGPL-isolated sidecar (network boundary; no static link/bundle/import). Wire real envelope creation, the sidecar signing UI handoff, signed-cert storage in object storage, and the poll/refresh hook; keep native as the default provider and the sidecar opt-in per firm. Add the AGPL note to `LICENSING.md`.
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Multi-step modal with a left-side stepper. Pattern matches the Canopy
 // Create-Client wizard the user requested as the v2 bar: tabs on the

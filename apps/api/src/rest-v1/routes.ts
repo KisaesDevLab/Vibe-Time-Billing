@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // REST API v1 (Phase 21). Token-authenticated read/write surface for
 // integrators. Uses the same `mcp_token` table as the MCP server, with

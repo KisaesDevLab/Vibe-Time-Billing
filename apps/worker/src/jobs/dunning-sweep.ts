@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Dunning sweep: walks invoices with status SENT/PARTIALLY_PAID/OVERDUE
 // whose due_date is past today and emits the dunning steps that haven't

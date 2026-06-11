@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Proposal tier-selection end-to-end: send snapshots the offered package
 // tiers into proposal_packages, the client's selection is captured on accept

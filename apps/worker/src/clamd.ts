@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Minimal clamd (ClamAV daemon) TCP client for the intake virus-scan gate.
 // Uses the INSTREAM command so we never write the candidate to clamd's

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // PUBLIC (unauthenticated) self-service portal access request. A visitor
 // to the client portal enters an email/phone + a verification id (last-4

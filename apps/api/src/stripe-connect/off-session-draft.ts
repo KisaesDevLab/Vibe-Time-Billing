@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phases 12/13 — off-session payment drafts against a saved method on the
 // firm's connected account (MIT). Two variants:

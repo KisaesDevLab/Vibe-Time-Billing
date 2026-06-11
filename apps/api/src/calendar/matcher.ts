@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-4 — two-tier client matching (pure). Tier 1: exact attendee/organizer
 // email → client contact. Tier 2: fuse.js fuzzy on a cleaned event subject

@@ -4,7 +4,7 @@
 
 **Status:** Draft v1.0
 **Parent module:** Vibe Time & Billing (existing)
-**License:** PolyForm Internal Use 1.0.0 (matches Vibe family)
+**License:** Elastic License 2.0 (matches Vibe family)
 **Env prefix:** `VIBETB_` (existing T&B prefix)
 **DB schema:** `vibetb` (existing T&B schema)
 **Stack:** React 18 / TypeScript / Node.js 20 / Express / Drizzle ORM / PostgreSQL 16 / Redis 7 / BullMQ / pnpm workspaces / Vitest / Playwright / distroless Docker / GHCR

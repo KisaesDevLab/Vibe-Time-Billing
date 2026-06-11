@@ -1,3 +1,3 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 
 export type ServiceCategory = 'TAX' | 'BOOKKEEPING' | 'AUDIT' | 'ADVISORY' | 'PAYROLL' | 'CFO';

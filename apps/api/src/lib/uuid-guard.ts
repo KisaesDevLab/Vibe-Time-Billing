@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Shared UUID param validator. Every route with a UUID-typed path param
 // was historically vulnerable to: a request like GET /clients/pins

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Repro/guard for "Calendar integrations page errors when saving a provider".
 // Exercises the real PUT /providers/:provider path: firm-MFK encryption +

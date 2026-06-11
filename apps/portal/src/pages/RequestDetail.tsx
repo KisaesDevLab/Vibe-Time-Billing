@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal request detail — 0084. Lets a client see items + attachments,
 // type a reply, flip status to NEEDS_INFO, or mark the whole request

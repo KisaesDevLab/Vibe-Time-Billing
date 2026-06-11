@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0087 — username + password sign-in. Exercises the three-step flow:
 //   POST /login/password → pending token + available factors

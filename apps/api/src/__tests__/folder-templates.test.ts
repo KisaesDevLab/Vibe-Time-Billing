@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Folder-structure templates: default seed, per-client resolution, and the
 // assignment override. The Explorer renders resolveClientFolders() as the

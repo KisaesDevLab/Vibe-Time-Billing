@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0103 — MFK-envelope column crypto for intake records. Each intake
 // session/link carries a per-record DEK (random key) wrapped by the firm

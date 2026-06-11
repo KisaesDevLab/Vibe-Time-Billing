@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Per-client tax returns card. Sits at the top of the client dashboard
 // Tax tab above the existing TaxPaymentsCard, so staff can see every

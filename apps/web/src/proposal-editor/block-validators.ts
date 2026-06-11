@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // PP4b / P05 — Per-block-type validators. Plugged into validateTree()
 // on every tree change so the editor can flag malformed blocks before

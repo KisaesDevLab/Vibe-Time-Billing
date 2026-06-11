@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // P5.2 — Vibe Shield reachability probe. Runs every 5 minutes; pings
 // each firm's configured `vibe_shield_endpoint` and stamps the result

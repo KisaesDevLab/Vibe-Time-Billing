@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // End-to-end demo loop. Requires a freshly-seeded database (the Vance
 // scenario lands automatically when DATABASE_URL points at an empty

@@ -2,7 +2,7 @@
   "name": "vibe-time-billing",
   "version": "0.1.0",
   "private": true,
-  "license": "PolyForm-Internal-Use-1.0.0",
+  "license": "Elastic-2.0",
   "description": "Self-hosted time tracking, recurring billing, and adjustment allocation for CPA firms",
   "engines": {
     "node": ">=24.0.0",

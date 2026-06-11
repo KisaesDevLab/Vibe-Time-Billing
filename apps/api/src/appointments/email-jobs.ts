@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-6 — appointment transactional emails (confirmation, reschedule,
 // cancellation) + the decline notice. Defaults live here; a per-firm

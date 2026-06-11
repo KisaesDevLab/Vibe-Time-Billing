@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Local Ollama provider. Free at the dollar layer — costEstimateCents
 // always 0. The hardware-adaptive model picker lives at install

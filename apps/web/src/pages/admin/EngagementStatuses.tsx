@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Engagement progress-status catalog (0101). A compact list of the firm's
 // statuses; create/edit happens in a popup (StatusEditorModal) so the form

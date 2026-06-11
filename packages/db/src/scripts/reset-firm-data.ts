@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Reset-to-blank — wipe every operational data table in the appliance
 // while preserving the firm row, staff identities, RBAC, taxonomy,

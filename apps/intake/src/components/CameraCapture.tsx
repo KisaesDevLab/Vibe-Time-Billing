@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phone document scanner. Opens the rear camera (getUserMedia), lets the
 // visitor snap multiple pages, and hands each captured frame back as a JPEG

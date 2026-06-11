@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0121 — two-way appointment confirmation via Twilio inbound webhooks.
 // Mounted PUBLIC at /api/public/appointments/twilio (outside auth). Clients

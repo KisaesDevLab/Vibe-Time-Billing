@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R6-followup — coverage for the retainer Prometheus gauge collector.
 // The function is a pure projection over the retainer + retainer_offer

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Printable / PDF HTML for the proposal-style retainer offer. Pure function:
 // given the presentation data, returns a self-contained HTML document staff can

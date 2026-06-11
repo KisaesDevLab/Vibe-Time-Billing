@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Minimal public-facing chrome for the intake surface: a centered card on
 // a plain background, a header, and a privacy footer. No nav — anonymous

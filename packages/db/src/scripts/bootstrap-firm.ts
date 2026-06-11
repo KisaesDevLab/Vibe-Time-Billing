@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // First-boot firm bootstrapper. The repo's seed.ts is a fully-loaded
 // dev fixture ("Granite Peak CPAs" with sample staff, clients,

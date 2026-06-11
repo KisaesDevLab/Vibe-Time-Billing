@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Producer side of the intake-process pipeline. POST /session/:id/complete
 // enqueues one job per completed session; the worker consumer (Phase D)

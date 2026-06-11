@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Support knowledge base seed content. A comprehensive set of product/
 // support articles shipped with the app, seeded per firm with

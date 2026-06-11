@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Email-in worker stub (Phase 22 #1). Polls an IMAP mailbox for new
 // messages and converts them into draft time entries — useful for

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Free-text search box for table views, wired to a ColumnView (see
 // apps/web/src/lib/column-view.ts). Filters rows client-side as the user

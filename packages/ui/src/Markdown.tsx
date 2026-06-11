@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Minimal, dependency-free markdown renderer for knowledge-base articles.
 // Supports headings, paragraphs, unordered/ordered lists, blockquotes,

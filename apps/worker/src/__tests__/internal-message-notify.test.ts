@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Worker notify fan-out: emails/texts unread members, debounces repeats,
 // and skips members who have already read the thread.
@@ -53,14 +53,12 @@ async function setup(): Promise<{
       title: null,
     })
     .returning({ id: threads.id });
-  await harness.db
-    .insert(threadMembers)
-    .values({
-      threadId: t!.id,
-      appUserId: seed.appUserId,
-      memberRole: 'staff',
-      lastReadAt: new Date(),
-    });
+  await harness.db.insert(threadMembers).values({
+    threadId: t!.id,
+    appUserId: seed.appUserId,
+    memberRole: 'staff',
+    lastReadAt: new Date(),
+  });
   const [rm] = await harness.db
     .insert(threadMembers)
     .values({ threadId: t!.id, appUserId: b!.id, memberRole: 'staff' })

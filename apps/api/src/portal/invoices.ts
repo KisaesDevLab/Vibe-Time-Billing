@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal-side invoice endpoints. Scoped to the session's active_client_id.
 // Marks invoice.first_viewed_at on first GET (Q30 — portal-view receipt).

@@ -84,7 +84,7 @@ Then wait for human review before opening the next phase, unless `AUTONOMOUS_MOD
 - **API contracts:** Zod schemas at controller boundaries, exported types consumed by frontend
 - **Component library:** Existing Vibe shadcn/ui components — do not introduce new UI dependencies
 - **Env vars:** Prefix `VIBETB_RETAINER_` for any new vars; document each in `.env.example`
-- **License headers:** New files get the standard Vibe PolyForm Internal Use 1.0.0 header
+- **License headers:** New files get the standard Vibe Elastic License 2.0 header
 - **Docker:** No new base images; ride on existing distroless multi-stage build
 - **No comments** except (a) JSDoc on exported functions, (b) explaining non-obvious business rules with `// D{N}` referencing the locked decision number
 

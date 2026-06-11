@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Connect D.7 — realization-defense payload + HTML render. The actual
 // PDF render needs Puppeteer (not available in this test env); the

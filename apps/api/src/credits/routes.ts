@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Credit memo endpoints (0056). A credit memo represents money the
 // client has on file that hasn't been applied to a specific invoice

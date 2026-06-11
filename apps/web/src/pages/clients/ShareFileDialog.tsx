@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0102 — staff "Share file" dialog. Securely share a file with an outside
 // recipient: emailed, expiring, revocable link with view/download control

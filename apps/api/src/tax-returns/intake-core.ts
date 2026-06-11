@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Parse-free core of tax-return intake: turn an existing files row into a
 // DRAFT/ORIGINAL tax return (row + seed catch-all section + audit). Kept

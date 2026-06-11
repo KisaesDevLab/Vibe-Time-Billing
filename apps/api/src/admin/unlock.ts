@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Admin unlock endpoints. Operator POSTs the firm passphrase here at
 // boot (admin-passphrase mode only). Sealed-on-disk mode never reaches

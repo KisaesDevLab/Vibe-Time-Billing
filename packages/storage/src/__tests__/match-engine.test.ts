@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // FMv2 Phase A — match-engine.ts tests. 50+ cases covering the full
 // reason taxonomy + the §3.6 performance budget.

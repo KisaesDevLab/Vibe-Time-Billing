@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-9 — calendar write-back (two-way sync). Gated behind
 // FEATURE_CALENDAR_WRITE. When enabled, TB can push an event to a staff

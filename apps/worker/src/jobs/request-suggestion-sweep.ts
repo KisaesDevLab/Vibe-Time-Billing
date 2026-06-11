@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Stage 3 — hourly sweep that expires stale client-request time-entry
 // suggestions. A suggestion stays pending until the assigned staff

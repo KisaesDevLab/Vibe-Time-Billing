@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // P16 — signature verify route tests. The pure HMAC helpers are
 // covered in @vibe/core/proposals/signature-hmac.test.ts; this suite

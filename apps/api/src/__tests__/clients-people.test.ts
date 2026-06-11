@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Unified People view (0114): reconciles client_contact with
 // client_portal_access. Verifies the merge (linked / contact_only /
@@ -187,14 +187,12 @@ describe('unified people view (0114)', () => {
 
   it('links an invite to a contact by email', async () => {
     const cId = await contact('Frank', 'frank@x.com');
-    const res = await request(app())
-      .post('/api/staff/portal-invites')
-      .send({
-        clientId: seed.clientId,
-        fullName: 'Frank',
-        email: 'frank@x.com',
-        role: 'VIEW_ONLY',
-      });
+    const res = await request(app()).post('/api/staff/portal-invites').send({
+      clientId: seed.clientId,
+      fullName: 'Frank',
+      email: 'frank@x.com',
+      role: 'VIEW_ONLY',
+    });
     expect(res.status).toBe(201);
     // Accept the (pending) invite by simulating the identity+access the
     // accept flow would create, then confirm the people view links them.

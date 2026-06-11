@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal-side engagement letter endpoints. Clients can list letters
 // awaiting acceptance on their active client and accept them via the

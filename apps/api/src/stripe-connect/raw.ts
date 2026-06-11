@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Shared raw Stripe HTTP helpers for connected-account (direct) calls. Every
 // request carries the firm's `Stripe-Account` header and an optional

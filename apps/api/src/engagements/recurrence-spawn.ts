@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Recurrence spawn helper. Both the recurrence router's /run-now
 // endpoint and the worker's daily sweep call this. Encapsulates:

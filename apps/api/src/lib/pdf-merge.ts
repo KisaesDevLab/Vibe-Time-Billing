@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Append one PDF's pages to another. Used to store a signed document and
 // its OpenSign audit certificate as a SINGLE artifact (signature pages

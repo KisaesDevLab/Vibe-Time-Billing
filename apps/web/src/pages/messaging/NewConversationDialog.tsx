@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Start a staff conversation: pick one teammate (direct) or several (group,
 // with an optional name), and optionally send a first message.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Default signature page rules + idempotent seeding. A rule maps a bookmark
 // pattern (per return type) to a signature page and the field layout placed

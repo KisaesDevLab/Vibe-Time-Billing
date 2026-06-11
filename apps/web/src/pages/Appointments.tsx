@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-3 / BK-7 — the tabbed Appointments surface: a 4-step multi-staff
 // booking wizard, the appointments list with a detail drawer, the
@@ -411,8 +411,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-              // a JSX header is safe at runtime.
-            ) as unknown as string,
+            ) as // a JSX header is safe at runtime.
+            unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 22 — ACH return reactions: record the return and apply NACHA-correct
 // side effects (invalidate mandate, block PM, pause autopay schedules).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Stripe webhook endpoint (Phase 14 #18). Verifies signature against
 // the firm's webhook secret, dispatches charge.succeeded / charge.failed

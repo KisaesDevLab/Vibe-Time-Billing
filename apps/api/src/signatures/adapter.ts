@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 5 — the coordinate adapter. THE ONLY place the normalized→OpenSign
 // coordinate math lives, so it is fixture-tested in one spot.

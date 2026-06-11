@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-6/CAL-8 — public one-click RSVP (no login). The reminder email embeds
 // a signed token URL; this router renders a tiny branded confirm/decline

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-1 — Default appointment types seeded on first firm setup. Firms
 // tune these in Settings → Appointments → Appointment Types. Idempotent:

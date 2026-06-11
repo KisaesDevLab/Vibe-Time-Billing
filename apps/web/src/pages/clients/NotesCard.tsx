@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Client notes tab (v2 followup). Uses the existing /clients/:id/notes
 // endpoint family (list / POST / DELETE / PATCH /:noteId/pin).

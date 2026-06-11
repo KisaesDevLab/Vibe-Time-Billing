@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R4 — Daily retainer expiry sweep. Flips status from active/exhausted
 // to expired when expiry_date < CURRENT_DATE. Hours forfeit per D4.

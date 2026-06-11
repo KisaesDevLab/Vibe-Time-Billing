@@ -154,7 +154,7 @@ time-entry write; plan-change proration commit path (preview dialog exists).
   customer DNS; no platform account.
 - **License gate on portal** — `portal-middleware` checks `COMMERCIAL_LICENSE_TOKEN` at request time;
   absent token → 503 `portal_disabled`.
-- **PolyForm Internal Use 1.0.0** — SPDX header on source files.
+- **Elastic License 2.0** — SPDX header on source files.
 
 ---
 

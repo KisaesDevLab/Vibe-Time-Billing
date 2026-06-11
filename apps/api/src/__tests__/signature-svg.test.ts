@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CP8 — Signature SVG sanitizer. These tests pin the security
 // contract: anything outside the allowlisted tag set returns null

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal identity profile + payment-method endpoints (Phase 16).
 // Operations on the session's identity — read profile, update preferences,

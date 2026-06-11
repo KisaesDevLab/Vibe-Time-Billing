@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Saved column-views dropdown for the engagements kanban. Each view is a
 // per-user named set of visible status columns (CRUD via

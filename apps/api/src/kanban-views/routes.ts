@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Saved kanban "column views" (0122). Each row is a per-user named set of
 // visible status columns for a board (today: the engagements board).

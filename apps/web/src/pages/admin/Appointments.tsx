@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CP12 — Appointments admin page. Read-only mirror of the firm's
 // calendar; staff enter rows here (or a future webhook posts into

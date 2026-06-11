@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Per-client task CRUD (v2 Sprint C, workstream 1.3). Mounted on the
 // client router at /clients/:id/tasks.

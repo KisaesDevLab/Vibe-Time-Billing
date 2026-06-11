@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Visibility-rule evaluator (Phase 6 of FILE_MANAGER_ADDENDUM.md
 // §3.6 + §4 Phase 6).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal-facing KB help + AI support chat. The portal must only ever see
 // client-visible (audience client/both) articles — staff content must never

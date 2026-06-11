@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Searchable single-select dropdown. Replaces native <select> wherever
 // the option list is long enough that scroll-to-find is painful (clients,

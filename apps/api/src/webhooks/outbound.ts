@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Outbound webhook subscriptions (Phase 21). The firm registers an HTTPS
 // URL + an event list, and the worker dispatches matching events to it

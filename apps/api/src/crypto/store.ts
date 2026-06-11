@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Drizzle-backed FirmKeyStore for @vibe/crypto's FirmKeyManager.
 // Lives in the API layer so the crypto package stays DB-agnostic.

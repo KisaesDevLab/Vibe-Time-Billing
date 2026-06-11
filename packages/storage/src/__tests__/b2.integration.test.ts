@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Real-B2 integration suite. Skipped unless `B2_INTEGRATION=1` and
 // all B2_* env vars are present. The test bucket should be a

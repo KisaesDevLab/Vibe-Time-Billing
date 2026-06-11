@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-4 — run matching for one event and persist the result. Idempotent: an
 // event with a confirmed match is left alone; otherwise its non-confirmed

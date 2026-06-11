@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-7 — reminders: an in-window offset fires once per (event, contact,
 // offset), creates an RSVP token, respects opt-out, and is idempotent.

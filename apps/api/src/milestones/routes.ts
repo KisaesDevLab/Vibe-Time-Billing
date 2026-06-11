@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Milestone endpoints (Phase 10 #1-#9). Per-engagement milestone plans
 // for FIXED_FEE_WITH_MILESTONES engagements. Each milestone becomes an

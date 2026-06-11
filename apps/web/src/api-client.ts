@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Thin fetch wrapper. Carries the CSRF token on mutating requests
 // (Phase 3 CSRF middleware double-submit cookie pattern).

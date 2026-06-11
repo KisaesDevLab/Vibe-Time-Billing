@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Admin: per-return-type bookmark rules that locate signature pages inside a
 // tax-return PDF. Rules are grouped by form type; each rule maps a PDF bookmark

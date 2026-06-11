@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Server-side-copy sibling of createFileInClientFolder. The Vibe Filer
 // route worker relocates an object that already lives in B2 (the Inbox/

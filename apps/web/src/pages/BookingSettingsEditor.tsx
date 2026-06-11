@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-1/BK-7 — per-staff booking config editor: weekly availability +
 // buffers/notice/increment + the booking on/off switch. Reads/writes the

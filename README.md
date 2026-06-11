@@ -42,7 +42,7 @@ Vibe PM covers the engagement-to-cash workflow: time tracking, billing & realiza
 
 ## License
 
-PolyForm Internal Use 1.0.0 for self-deployment within a single firm. Commercial license required to enable client portal access (separately licensed). See `LICENSE.md` for full terms.
+Elastic License 2.0 — source-available. Firms may self-host, use, modify, and serve their own clients freely; providing the software to third parties as a hosted or managed service is not permitted, and license-key functionality may not be circumvented. Commercial license required to enable client portal access (separately licensed). See `LICENSE.md` for full terms.
 
 ## Status
 

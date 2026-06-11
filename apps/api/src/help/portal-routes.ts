@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal-realm help center (read-only). Mounted at /api/portal/help under
 // portal auth. Surfaces ONLY client-visible PUBLISHED articles (audience

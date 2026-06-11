@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Client tasks card + full tab (v2 Sprint C, workstream 1.3). The same
 // component renders in two modes:

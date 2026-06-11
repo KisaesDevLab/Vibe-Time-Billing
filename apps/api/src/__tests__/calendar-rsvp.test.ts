@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-6 — .ics builder + the public RSVP flow (render page, record response,
 // reflect into the event's attendee list, reject expired tokens).

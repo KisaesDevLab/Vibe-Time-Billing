@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Embedded engagement-level messages card. Resolves the thread from
 // the engagement id (the API auto-provisions one thread per engagement

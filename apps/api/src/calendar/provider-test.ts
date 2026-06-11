@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-1 — "Test Connection" for a firm's OAuth app registration. Validates
 // the client id/secret WITHOUT a user present.

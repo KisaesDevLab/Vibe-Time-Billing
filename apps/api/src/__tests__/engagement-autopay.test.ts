@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CP9 — Per-engagement autopay tests. Exercises:
 //   1. Column wiring (engagement.autopay_method_id + autopay_paused_until)

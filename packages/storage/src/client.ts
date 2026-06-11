@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // StorageClient interface — the abstraction the sync worker, upload
 // path, and onboarding tools talk to. Implementations:

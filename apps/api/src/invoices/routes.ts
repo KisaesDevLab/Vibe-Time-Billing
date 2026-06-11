@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Invoice endpoints (Phase 13). Generates an invoice from an approved
 // billing batch by aggregating the included time entries net of any

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Minimal dispatchers for the worker realm. The full pluggable provider
 // abstraction lives in apps/api/src/{mail,sms}; the worker only needs

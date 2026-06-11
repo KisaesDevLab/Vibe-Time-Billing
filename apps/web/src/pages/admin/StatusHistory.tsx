@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Firm-wide engagement progress-status change report (who / when / old → new),
 // across all engagements. Backed by GET /api/staff/engagement-status-history.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // MCP / REST API token issuance & revocation (Phase 22 #12, 21 #13).
 // Mints a one-time-display token, stores only its SHA-256 hash, lists

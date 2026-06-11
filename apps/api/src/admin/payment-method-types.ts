@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Firm-editable catalog of manually-recorded payment method types.
 // Backs Admin → Catalog → Payment methods and is consumed by the

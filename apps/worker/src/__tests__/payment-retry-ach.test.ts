@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 21 — the autopay retry worker honors NACHA for ACH: a no-authorization
 // return (R10) is never retried; an NSF return (R01) within the cap still is.

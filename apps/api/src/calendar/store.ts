@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-2 — decrypt helpers shared by the connect flow + sync engine. Reads
 // the firm's provider config and a staff connection's tokens out of their

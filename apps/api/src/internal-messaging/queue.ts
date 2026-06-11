@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Producer for internal-message notifications. POST a message → enqueue a
 // debounced fan-out job; the worker emails/texts members who haven't read

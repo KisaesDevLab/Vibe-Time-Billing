@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Messaging provider admin (v2 Sprint A, workstream 3.1). Replaces
 // env-only config with self-service per-firm provider config. Credentials

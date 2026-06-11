@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Dashboard "Needs attention" counts — GET /api/staff/stats/inbox-counts.
 // Seeds one unread internal message + one received intake session and

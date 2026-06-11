@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0121 — shared editor for an appointment reminder schedule (a list of
 // { offsetMinutes, channel } steps). Used by the appointment-type admin and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Test harness that builds an Express app backed by an in-memory ioredis
 // double, so integration-shaped tests can exercise the auth flows without

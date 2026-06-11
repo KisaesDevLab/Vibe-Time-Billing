@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Portal-realm AI support chat. Mounted at /api/portal/ai under the portal
 // auth middleware (distinct cookie/signing key — cross-realm isolation

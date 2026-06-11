@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';

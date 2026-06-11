@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Production wiring. Providers are constructed only if their secrets are
 // present in env; otherwise the corresponding API surface returns a

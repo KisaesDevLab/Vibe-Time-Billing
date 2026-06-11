@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Reports / profitability — verifies the per-engagement cost
 // subtraction. Previous version of the endpoint returned invoiced

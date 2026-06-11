@@ -5,12 +5,12 @@ appliance and, in particular, how the optional OpenSign e-signature
 integration stays compliant with OpenSign's AGPL-3.0 license without
 infecting the appliance core.
 
-## Appliance core — PolyForm Internal Use 1.0.0
+## Appliance core — Elastic License 2.0
 
 The Vibe Time & Billing appliance (everything under `apps/`, `packages/`,
 `ops/`, `seed/`, and the built container image published to GHCR) is
-licensed under **PolyForm Internal Use 1.0.0** (see `LICENSE.md`). Every
-source file carries the SPDX header `PolyForm-Internal-Use-1.0.0`.
+licensed under **Elastic License 2.0** (see `LICENSE.md`). Every
+source file carries the SPDX header `Elastic-2.0`.
 
 The CI license-check **must continue to find zero AGPL or GPL
 dependencies** in `package.json` / the lockfile. OpenSign is **not** a
@@ -30,7 +30,7 @@ AGPL/GPL code is reached.
 OpenSign (https://github.com/OpenSignLabs/OpenSign) is licensed under
 **AGPL-3.0**. It is supported as an **optional**, **per-firm opt-in**,
 **off-by-default** e-signature provider, subject to the following hard
-constraints that keep it isolated from the PolyForm appliance core:
+constraints that keep it isolated from the ELv2 appliance core:
 
 1. **No source import.** None of OpenSign's source code is copied,
    vendored, or imported into this repository.
@@ -77,5 +77,5 @@ Because it runs as the **unmodified** upstream images, that obligation is
 satisfied by OpenSign's own published source
 (https://github.com/OpenSignLabs/OpenSign). Do not modify the images; if
 you do, you must offer your modified source to its users yourself. The
-PolyForm-licensed appliance core is a separate program reached over the
+ELv2-licensed appliance core is a separate program reached over the
 network and is not a derivative work of OpenSign.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Node ESM resolve hook for the appliance image. The TypeScript build runs
 // with moduleResolution: "Bundler" which preserves extensionless relative

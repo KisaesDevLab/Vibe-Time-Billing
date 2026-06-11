@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Create-engagement page (v2 followup). Opens from /engagements/new or
 // /engagements/new?clientId=<id> (the latter is what the time-entry

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // HTML templates for invoice PDFs. Plain text-interpolation — Q28 says
 // no Markdown / WYSIWYG, just variable substitution. The Puppeteer

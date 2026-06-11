@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Scheduled payment retry (Phase 10 #28). For autopay charges that
 // failed, retry on day 3, day 7, day 14 after the first failure.

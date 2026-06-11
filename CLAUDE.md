@@ -1,7 +1,7 @@
 # CLAUDE.md — Vibe Time & Billing
 
 **Repository:** `KisaesDevLab/Vibe-Time-Billing`
-**License:** PolyForm Internal Use 1.0.0 (commercial license required for client portal access)
+**License:** Elastic License 2.0 (commercial license required for client portal access)
 **Mode:** Autonomous build via Claude Code
 
 You (Claude Code) are building this product end-to-end. This file is your standing operating manual. Read it first, every session, before doing anything else.
@@ -152,7 +152,7 @@ These come from `QUESTIONS.md` and must be respected everywhere they touch.
 ├── CLAUDE.md             # this file
 ├── QUESTIONS.md
 ├── README.md
-├── LICENSE.md            # PolyForm Internal Use 1.0.0
+├── LICENSE.md            # Elastic License 2.0
 └── package.json
 ```
 
@@ -290,7 +290,7 @@ These cannot be relaxed regardless of expedience:
 4. **Per-timekeeper allocation grain.** `adjustment_allocation` rows are at the (adjustment_id, time_entry_id, app_user_id) grain. Aggregations roll up FROM this grain, never the other way.
 5. **Customer-owned external resources.** Firm owns their Stripe account, their Cloudflare account, their domain. Kisaes never holds customer credentials.
 6. **License gate on portal.** The client portal feature requires a commercial license token. The token check runs at app boot and on critical portal routes. Token absence disables the portal cleanly (clear message, no crashes).
-7. **PolyForm Internal Use 1.0.0.** Every source file has the license header. No GPL or AGPL dependencies (license-check in CI).
+7. **Elastic License 2.0.** Every source file has the license header. No GPL or AGPL dependencies (license-check in CI).
 
 ---
 

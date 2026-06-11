@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R4 — Worker sweep tests. Runs against the pglite harness so the
 // SQL hits the same migrations the worker would use in prod.

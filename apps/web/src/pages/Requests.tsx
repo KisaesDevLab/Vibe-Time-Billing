@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Staff Requests page — 0084 overhaul. Filterable, sortable,
 // paginated list backed by /api/staff/requests, with a much richer

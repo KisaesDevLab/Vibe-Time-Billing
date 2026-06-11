@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // P07 — Terms templates CRUD + seed-starters + preview tests.
 // Same direct-handler invocation pattern as services-catalog +

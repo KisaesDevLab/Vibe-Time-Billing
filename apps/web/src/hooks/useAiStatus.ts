@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // useAiStatus — single-fetch hook that gates every embedded AI panel.
 // Returns null while loading; an AiStatus object after.

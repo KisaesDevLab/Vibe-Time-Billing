@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-6 — appointment email jobs: render (default + override), per-
 // participant send, confirmation/cancellation stamping, ICS attendees.

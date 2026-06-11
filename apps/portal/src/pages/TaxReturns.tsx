@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // TR-4 — Portal tax-return list. Renders every release the active
 // client has access to. Selecting a row navigates to the viewer.

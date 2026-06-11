@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 import { useCallback, useEffect, useState } from 'react';
 
 import { tokens, THEME_STORAGE_KEY, type ThemeMode } from './tokens';

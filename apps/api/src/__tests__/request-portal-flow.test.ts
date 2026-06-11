@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0084 — portal-side request flow: GET detail, POST reply, POST
 // needs-info, POST attachments, POST per-item fulfill. Cross-client

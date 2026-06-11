@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Design tokens shared across staff and portal apps. Color tokens resolve
 // to CSS custom properties defined in theme.css — switching the

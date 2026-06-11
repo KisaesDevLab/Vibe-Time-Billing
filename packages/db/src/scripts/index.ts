@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Public callable surface of the DB scripts directory. The CLI shims
 // (bootstrap-firm.ts, seed-demo.ts, migrate.ts) all live in the same

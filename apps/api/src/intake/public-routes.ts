@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Public, anonymous document-intake API. Mounted at /api/public/intake/*
 // OUTSIDE the /api/staff auth+csrf chain and the portal chain — isolated

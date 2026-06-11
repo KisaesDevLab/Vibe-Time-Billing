@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Single-thread message list + reply composer. Reused by:
 //   - Top-level staff /messages page (after a thread is picked)

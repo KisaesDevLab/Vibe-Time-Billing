@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // 0084 — POST /api/staff/requests/bulk: one template → N targets,
 // cross-firm guard, partial-failure isolation, defaults applied.

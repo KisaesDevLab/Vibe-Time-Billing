@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Saved-report definitions (Phase 18 #21). Each row is a name + report
 // kind + params payload owned by a staff user. When shared_flag is true,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Firm-wide People directory (0115 follow-up). One searchable table of
 // every human in the firm — directory contacts plus standalone portal

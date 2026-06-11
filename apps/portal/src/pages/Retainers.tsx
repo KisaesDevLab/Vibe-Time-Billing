@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R6 — Portal retainer list + detail. Read-only client view of every
 // active retainer + per-retainer ledger. Internal fields (staff name,

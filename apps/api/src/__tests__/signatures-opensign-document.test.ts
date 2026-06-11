@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 2 — createSignatureDocument drives the SHARED OpenSign client with
 // multi-signer + placeholder payloads. No live sidecar: a mocked fetch

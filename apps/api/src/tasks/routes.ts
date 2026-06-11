@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Firm-wide task list (top-level "Tasks" view). The per-client task CRUD
 // lives at /clients/:id/tasks (see ../clients/tasks.ts); this router adds a

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Recurring-billing plan administration (Phase 10). Lists active plans for
 // the firm, exposes pause/resume/archive actions, and a summary "health"

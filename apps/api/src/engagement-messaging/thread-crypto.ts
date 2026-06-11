@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Per-thread T-DEK lifecycle. Wraps @vibe/crypto's envelope codec with
 // thread-aware encrypt/decrypt helpers — every operation looks up the

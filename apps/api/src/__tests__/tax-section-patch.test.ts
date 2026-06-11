@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // TR section PATCH — staff edits to a parsed section. Verifies that:
 //   - Successful PATCH writes the new field values + sets

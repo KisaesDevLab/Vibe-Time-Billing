@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R6-followup — per-retainer detail page. Pulls /api/staff/retainers/:id/detail
 // and renders four sections:

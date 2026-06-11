@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // EnvelopeCodec — XChaCha20-Poly1305 authenticated encryption used at
 // every encryption point in TB (MFK ↔ KEK, T-DEK ↔ MFK, content ↔

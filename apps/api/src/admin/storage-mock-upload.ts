@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Dev-only translator for mock-presign:// upload URLs (Phase 10 of
 // FILE_MANAGER_ADDENDUM.md). When STORAGE_PROVIDER=mock, the

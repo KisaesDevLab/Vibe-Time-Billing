@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Approval SLA monitor (Phase 18 #13). Scans PENDING approval_requests
 // whose due_at has passed and emits one audit_log row per request per

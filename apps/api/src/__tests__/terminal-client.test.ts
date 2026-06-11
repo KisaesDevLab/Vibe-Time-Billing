@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 16 — card_present PaymentIntent param correctness: manual capture,
 // card_present type, no application fee (firm owns the account), and the

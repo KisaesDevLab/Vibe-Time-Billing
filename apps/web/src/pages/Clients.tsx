@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 import { useEffect, useMemo, useState } from 'react';
 
 import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';

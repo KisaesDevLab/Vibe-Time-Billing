@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-8 — integration: book → (inline) per-staff calendar write +
 // confirmation email → cancel → calendar delete + cancellation email.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Client Info card on the Home tab (v2 followup) with inline pencil-
 // edit. Exposes the v2 expansion fields (clientType, externalId,

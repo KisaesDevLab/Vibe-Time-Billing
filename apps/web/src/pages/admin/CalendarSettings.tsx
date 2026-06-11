@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-1 — admin "Calendar Integrations" settings. Register the firm's
 // Microsoft 365 / Google OAuth apps; secrets are write-only (masked, never

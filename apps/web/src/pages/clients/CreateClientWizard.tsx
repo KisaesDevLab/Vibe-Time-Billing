@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Create Client wizard (v2 Sprint B, workstream 1.7). Replaces the
 // previous inline form in Clients.tsx with a Canopy-style multi-step

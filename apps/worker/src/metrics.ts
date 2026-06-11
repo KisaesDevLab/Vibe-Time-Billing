@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Lightweight in-process metrics for the storage workers (Phase 12 of
 // FILE_MANAGER_ADDENDUM.md). The appliance is single-process per

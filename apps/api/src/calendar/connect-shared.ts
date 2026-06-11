@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-2 — shared bits for the connect flow: the OAuth `state` store
 // (Redis-backed in prod, injectable in tests), the redirect-URI builder,

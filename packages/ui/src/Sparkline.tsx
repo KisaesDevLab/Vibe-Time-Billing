@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Inline SVG sparkline (Phase 17 #25). Pure rendering — no axis,
 // no labels, no tooltips. The container should provide its own title

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Admin intake card settings (mounted at /api/staff/admin/intake). Controls
 // which staff appear on the public intake page, their order/title, per-card

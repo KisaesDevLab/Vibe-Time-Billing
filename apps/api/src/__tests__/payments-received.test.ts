@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Billing → Payments listing endpoint: channel derivation, summary math
 // (gross = succeeded only, fees, net, refunds, pending count), channel filter.

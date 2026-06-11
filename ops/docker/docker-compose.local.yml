@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+# SPDX-License-Identifier: Elastic-2.0
 #
 # Local-only compose for running the appliance image (built from the local
 # Dockerfile, tagged vibe-time-billing:local) against the dev infra

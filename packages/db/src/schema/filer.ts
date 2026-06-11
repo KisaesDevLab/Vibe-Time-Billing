@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Drizzle schema for the Vibe Filer module (document inbox & routing).
 // Mirrors packages/db/migrations/0137_filer.sql — edit both together.

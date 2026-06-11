@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+# SPDX-License-Identifier: Elastic-2.0
 #
 # Exclude host artifacts so COPY . . doesn't drag Windows-built
 # node_modules into the Linux image. The Dockerfile reinstalls fresh

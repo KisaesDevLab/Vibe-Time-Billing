@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Printable payment receipt. A receipt groups one received payment (or
 // charge) across one-or-many invoices; this renders a self-contained HTML

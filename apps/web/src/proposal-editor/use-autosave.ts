@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // PP4b — Debounced autosave hook. Watches a "dirty value," waits for
 // `delayMs` of quiet, then fires `save(value)`. Concurrent saves are

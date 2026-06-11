@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 4 — server-side placement validation. Pure + field-level so both
 // the placement-save endpoint and the send gate (P6) reject the same way:

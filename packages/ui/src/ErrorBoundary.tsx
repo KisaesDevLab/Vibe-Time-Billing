@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Top-level error boundary. Without one, a render-time exception anywhere
 // in the tree unmounts the whole SPA to a blank white screen. This catches

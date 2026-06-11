@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CAL-2 — OAuth 2.0 authorization-code flow for Microsoft 365 + Google
 // Calendar, plus token refresh and calendar listing. Implemented with

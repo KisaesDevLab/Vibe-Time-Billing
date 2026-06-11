@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Recurring billing core. Pure-function next-run computation, proration,
 // and hour-bank balance computation. Worker scheduling sits on top

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // BK-1 — Appointment booking relational tables. The firm-managed
 // `appointment_type` library, the booking enums, and the additive

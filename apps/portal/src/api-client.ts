@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 const CSRF_KEY = '__vibe_portal_csrf';
 
 export function setCsrfToken(token: string | null): void {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // CRITICAL non-negotiable #2: staff and portal sessions are isolated in
 // every dimension. A staff cookie must not authenticate to portal routes

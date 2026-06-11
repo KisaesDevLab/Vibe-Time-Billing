@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // R7 — manual activation + pause/resume behavior. Drives the new
 // retainer:write surface through the in-memory pglite harness via a

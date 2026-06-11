@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 export * from './pricing';
 export * from './prep-fee-basis';
 export * from './eligibility';

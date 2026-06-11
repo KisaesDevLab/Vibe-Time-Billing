@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // KB-grounded AI support chat: retrieves knowledge-base articles, injects
 // them as context, returns the answer + sources. 503 when no provider.

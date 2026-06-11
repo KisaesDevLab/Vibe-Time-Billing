@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Parser tests — the pure header-detection fallback + the
 // applyParsedSections persistence (replace + flip to PARSED). The

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase E — staff side: auto-match ranking, send-a-link round trip, and the
 // inbox→disposition flow (decrypt PII, file into a client folder, write an

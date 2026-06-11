@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Phase 6+7 — source upload → transactional send → status reconciliation.
 //   - upload captures geometry; send turns draft→sent, stamps the document

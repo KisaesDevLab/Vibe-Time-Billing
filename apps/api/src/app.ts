@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 // QA fix — express-async-errors patches Express 4's Layer.handle to
 // await async handlers and forward rejections to the error
 // middleware. Without it, an async handler that throws (e.g. a

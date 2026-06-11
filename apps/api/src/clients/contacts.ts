@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // v2 Sprint B (workstream 1.2) — multi-contact CRUD endpoints. Mounted
 // at /api/staff/clients/:id/contacts by createClientRouter.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Internal-Use-1.0.0
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Extends the bulk demo seed (packages/db/src/scripts/seed-demo.ts) with data
 // for the newer features that demo seed doesn't cover:
