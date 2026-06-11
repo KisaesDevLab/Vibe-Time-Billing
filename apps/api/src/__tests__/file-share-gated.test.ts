@@ -20,6 +20,7 @@ import type { StorageClient } from '@vibe/storage';
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { createFileRecipientRouter } from '../share-public/file-recipient';
 import { createSharePublicRouter } from '../share-public';
+import { createPortalFileShareRouter } from '../portal/file-shares';
 import { createFileShare } from '../sharing/file-share-helper';
 
 let harness: PgliteHarness;
@@ -316,5 +317,61 @@ describe('legacy /api/shared guard', () => {
     const direct = await request(legacy).get(`/api/shared/${token}`);
     expect(direct.status).toBe(200);
     expect(direct.headers['content-type']).toBe('application/pdf');
+  });
+});
+
+describe('portal-initiated shares (0150)', () => {
+  function portalApp(identityId: string, clientId: string) {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/portal/files',
+      createPortalFileShareRouter({
+        db: harness.db,
+        portalBaseUrl: 'https://portal.test.example',
+        requireAuth: (req, _res, next) => {
+          // reason: minimal portal session fake for route-level tests.
+          (req as unknown as Record<string, unknown>)['portalSession'] = {
+            portalIdentityId: identityId,
+            activeClientId: clientId,
+            firmId: seed.firmId,
+          };
+          next();
+        },
+      }),
+    );
+    return app;
+  }
+
+  it('requires recipientEmail and returns a landing-page URL', async () => {
+    const { portalIdentity } = await import('@vibe/db/schema');
+    const [ident] = await harness.db
+      .insert(portalIdentity)
+      .values({ firmId: seed.firmId, fullName: 'Lisa', primaryEmail: 'lisa@example.com' })
+      .returning({ id: portalIdentity.id });
+    await harness.db
+      .update(files)
+      .set({ visibility: 'client_visible' })
+      .where(eq(files.id, fileId));
+    const app = portalApp(ident!.id, seed.clientId);
+
+    const missing = await request(app)
+      .post(`/api/portal/files/${fileId}/shares`)
+      .send({ accessLevel: 'view' });
+    expect(missing.status).toBe(400);
+
+    const ok = await request(app)
+      .post(`/api/portal/files/${fileId}/shares`)
+      .send({ accessLevel: 'view', recipientEmail: 'out.side@example.com', expiresInDays: 7 });
+    expect(ok.status).toBe(201);
+    expect(ok.body.url).toContain('https://portal.test.example/shared/file/');
+    expect(ok.body.token).toContain('.');
+
+    const [row] = await harness.db
+      .select()
+      .from(fileShares)
+      .where(eq(fileShares.id, ok.body.shareId));
+    expect(row!.gated).toBe(true);
+    expect(row!.recipientEmail).toBe('out.side@example.com');
   });
 });

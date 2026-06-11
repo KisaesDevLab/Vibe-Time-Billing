@@ -307,6 +307,7 @@ function ShareLinkModal({
 }): JSX.Element {
   const [expires, setExpires] = useState<'1' | '7' | '30' | 'never'>('7');
   const [accessLevel, setAccessLevel] = useState<'view' | 'download'>('view');
+  const [recipientEmail, setRecipientEmail] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -315,7 +316,10 @@ function ShareLinkModal({
     setBusy(true);
     setErr(null);
     try {
-      const body: Record<string, unknown> = { accessLevel };
+      const body: Record<string, unknown> = {
+        accessLevel,
+        recipientEmail: recipientEmail.trim(),
+      };
       if (expires !== 'never') body['expiresInDays'] = Number(expires);
       if (note.trim()) body['note'] = note.trim();
       const r = await api<CreatedShare>(`/api/portal/files/${fileId}/shares`, {
@@ -371,8 +375,9 @@ function ShareLinkModal({
         {created ? (
           <>
             <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 8 }}>
-              Send this link to whoever needs to see the file. Anyone with the link can open it
-              until you revoke it
+              Send this link to the recipient. When they open it, a one-time access code is sent to
+              their email address — only they can unlock the file, even if the link is forwarded.
+              The link works until you revoke it
               {created.expiresAt ? ' or it expires.' : '.'}
             </p>
             <div
@@ -403,9 +408,32 @@ function ShareLinkModal({
         ) : (
           <>
             <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 8 }}>
-              Generate a link that lets someone without a portal account open this file.
+              Generate a link that lets someone without a portal account open this file. They will
+              receive a one-time access code at their email when opening it.
             </p>
             <div style={{ display: 'grid', gap: 12, marginTop: tokens.space.md }}>
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Recipient email (receives the access code)
+                </div>
+                <input
+                  type="email"
+                  required
+                  value={recipientEmail}
+                  onChange={(e) => setRecipientEmail(e.target.value)}
+                  placeholder="name@example.com"
+                  style={{
+                    padding: '8px 10px',
+                    fontSize: 13,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.surface,
+                    color: tokens.color.text,
+                    width: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
               <div>
                 <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
                   Expires
@@ -462,7 +490,10 @@ function ShareLinkModal({
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
-              <Button onClick={() => void create()} disabled={busy}>
+              <Button
+                onClick={() => void create()}
+                disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail.trim())}
+              >
                 {busy ? 'Creating…' : 'Create link'}
               </Button>
             </div>

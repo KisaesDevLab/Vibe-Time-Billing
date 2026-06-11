@@ -106,7 +106,8 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
         return;
       }
 
-      const link = `${deps.portalBaseUrl}/api/shared/${result.token}`;
+      // 0150 — landing page (access-code gate), not the direct endpoint.
+      const link = `${deps.portalBaseUrl}/shared/file/${result.token}`;
       const [firm] = await deps.db
         .select({ name: firms.name })
         .from(firms)

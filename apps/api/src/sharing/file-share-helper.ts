@@ -207,8 +207,10 @@ export async function deliverShare(
       '',
       `${args.senderLabel} has shared a document with you securely.`,
       args.personalMessage ? `\n${args.personalMessage}\n` : '',
-      `Open it here (expires ${expiry}):`,
+      `View it here (expires ${expiry}):`,
       args.link,
+      '',
+      "When you open the page, you'll receive a one-time access code at this address to unlock the document.",
       '',
       'This link is private — please do not forward it.',
     ]
@@ -220,7 +222,7 @@ export async function deliverShare(
   if (args.sendSms && args.recipientPhone && args.verifyChannel === 'SMS') {
     await args.sendSms({
       to: args.recipientPhone,
-      body: `${args.senderLabel} shared a secure document: ${args.link} (expires ${expiry})`,
+      body: `${args.senderLabel} shared a secure document: ${args.link} (expires ${expiry}). You'll get an access code when you open it.`,
     });
     smsed = true;
   }

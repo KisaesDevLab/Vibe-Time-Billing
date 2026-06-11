@@ -19,8 +19,6 @@
 //
 // Public endpoint lives in `share-public.ts`.
 
-import { createHash, randomBytes } from 'node:crypto';
-
 import express, { type Request, type Response, type Router } from 'express';
 import { and, desc, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -31,6 +29,7 @@ import { files, fileShares } from '@vibe/db/schema';
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { createFileShare } from '../sharing/file-share-helper';
 
 export interface PortalFileShareDeps {
   db: Database | null;
@@ -42,6 +41,10 @@ const CreateSchema = z.object({
   expiresInDays: z.number().int().min(1).max(365).optional(),
   accessLevel: z.enum(['view', 'download']).optional(),
   note: z.string().max(1000).optional(),
+  // 0150 — required: every new share is gated, and the access code is
+  // delivered to this address when the recipient opens the link.
+  recipientEmail: z.string().email().max(254),
+  recipientName: z.string().max(200).optional(),
 });
 
 export function createPortalFileShareRouter(deps: PortalFileShareDeps): Router {
@@ -83,45 +86,47 @@ export function createPortalFileShareRouter(deps: PortalFileShareDeps): Router {
       res.status(404).json({ error: 'file_not_found' });
       return;
     }
-    const rawToken = randomBytes(32).toString('hex');
-    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    // 0150 — unified helper: argon2 dotted token, expiry cap, per-actor
+    // and per-recipient creation limits, gated:true.
     const expiresAt =
       parsed.data.expiresInDays != null
         ? new Date(Date.now() + parsed.data.expiresInDays * 24 * 3600_000)
         : null;
-    const [row] = await deps.db
-      .insert(fileShares)
-      .values({
-        firmId: file.firmId,
-        clientId: file.clientId,
-        fileId: file.id,
-        createdByPortalIdentityId: session.portalIdentityId,
-        tokenHash,
-        accessLevel: parsed.data.accessLevel ?? 'view',
-        expiresAt,
-        note: parsed.data.note ?? null,
-      })
-      .returning({ id: fileShares.id });
-    if (!row) throw new Error('file_share_insert_failed');
+    const result = await createFileShare(deps.db, {
+      firmId: file.firmId,
+      clientId: file.clientId,
+      fileId: file.id,
+      createdByPortalIdentityId: session.portalIdentityId,
+      accessLevel: parsed.data.accessLevel ?? 'view',
+      recipientEmail: parsed.data.recipientEmail,
+      recipientName: parsed.data.recipientName ?? null,
+      note: parsed.data.note ?? null,
+      expiresAt,
+    });
+    if (!result.ok) {
+      res.status(429).json({ error: result.error });
+      return;
+    }
     await emitAudit(deps.db, {
       action: 'CREATE',
       entityType: 'file_share',
-      entityId: row.id,
+      entityId: result.shareId,
       actorPortalIdentityId: session.portalIdentityId,
       activeClientId: session.activeClientId,
       after: {
         fileId: file.id,
         accessLevel: parsed.data.accessLevel ?? 'view',
-        expiresAt: expiresAt?.toISOString() ?? null,
+        recipientEmail: parsed.data.recipientEmail,
+        expiresAt: result.expiresAt.toISOString(),
       },
     }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
     const base = deps.portalBaseUrl ?? process.env['PORTAL_BASE_URL'] ?? 'https://portal.firm.com';
     res.status(201).json({
-      shareId: row.id,
-      token: rawToken,
-      url: `${base.replace(/\/$/, '')}/shared/${rawToken}`,
-      expiresAt: expiresAt?.toISOString() ?? null,
+      shareId: result.shareId,
+      token: result.token,
+      url: `${base.replace(/\/$/, '')}/shared/file/${result.token}`,
+      expiresAt: result.expiresAt.toISOString(),
       accessLevel: parsed.data.accessLevel ?? 'view',
     });
   });
