@@ -371,6 +371,45 @@ export function unionPermissions(roles: ReadonlyArray<RoleSlug>): Set<Permission
   return out;
 }
 
+// 0147 — per-firm matrix deltas over the templates. granted=true adds
+// a key the role's template lacks; granted=false revokes one it has.
+export interface PermissionOverride {
+  roleSlug: RoleSlug;
+  permissionKey: string;
+  granted: boolean;
+}
+
+/**
+ * Effective permission set for a role: template ± its overrides. The
+ * admin role ignores overrides — it always holds every key.
+ */
+export function effectiveRolePermissions(
+  role: RoleSlug,
+  overrides: ReadonlyArray<PermissionOverride>,
+): Set<PermissionKey> {
+  const out = new Set<PermissionKey>(ROLE_TEMPLATES[role]);
+  if (role === 'admin') return out;
+  const keys = new Set<string>(PERMISSION_KEYS);
+  for (const o of overrides) {
+    if (o.roleSlug !== role || !keys.has(o.permissionKey)) continue;
+    if (o.granted) out.add(o.permissionKey as PermissionKey);
+    else out.delete(o.permissionKey as PermissionKey);
+  }
+  return out;
+}
+
+/** unionPermissions with the firm's overrides applied per role first. */
+export function unionPermissionsWithOverrides(
+  roles: ReadonlyArray<RoleSlug>,
+  overrides: ReadonlyArray<PermissionOverride>,
+): Set<PermissionKey> {
+  const out = new Set<PermissionKey>();
+  for (const r of roles) {
+    for (const p of effectiveRolePermissions(r, overrides)) out.add(p);
+  }
+  return out;
+}
+
 export function hasPermission(
   userPermissions: ReadonlySet<PermissionKey>,
   required: PermissionKey,

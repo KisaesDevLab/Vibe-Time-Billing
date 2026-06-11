@@ -720,6 +720,31 @@ export const userRoles = pgTable(
   }),
 );
 
+// 0147 — per-firm deltas over the code-level role templates, toggled
+// from the admin permission matrix. granted=true adds a key the
+// template lacks; granted=false revokes one it has. The admin role is
+// never overridable (CHECK in migration); requirePermission merges
+// these at request time.
+export const rolePermissionOverrides = pgTable(
+  'role_permission_override',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    roleSlug: text('role_slug', { enum: ['partner', 'manager', 'senior', 'staff'] }).notNull(),
+    permissionKey: text('permission_key').notNull(),
+    granted: boolean('granted').notNull(),
+    updatedBy: uuid('updated_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uk: uniqueIndex('role_permission_override_uk').on(t.firmId, t.roleSlug, t.permissionKey),
+    firmIdx: index('role_permission_override_firm_idx').on(t.firmId),
+  }),
+);
+
 // =====================================================================
 // TAXONOMY: service_line, work_code, engagement_type, reason_code
 // =====================================================================

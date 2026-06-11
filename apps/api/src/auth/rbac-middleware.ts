@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
 // requirePermission middleware. Resolves the staff user's role
-// assignments from the database, applies the role templates, and
-// gates the request.
+// assignments from the database, applies the role templates plus the
+// firm's permission-matrix overrides (0147), and gates the request.
 
 import type { NextFunction, Request, Response } from 'express';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import {
   type PermissionKey,
+  type PermissionOverride,
   type RoleSlug,
   hasPermission,
-  unionPermissions,
+  unionPermissionsWithOverrides,
 } from '@vibe/core/rbac';
 import type { Database } from '@vibe/db';
-import { roles, userRoles } from '@vibe/db/schema';
+import { appUsers, rolePermissionOverrides, roles, userRoles } from '@vibe/db/schema';
 
 export interface RbacDeps {
   db: Database | null;
@@ -30,7 +31,8 @@ export function requirePermission(deps: RbacDeps, key: PermissionKey) {
       return;
     }
     const userRoleSlugs = await loadRoleSlugs(deps, session.appUserId);
-    const perms = unionPermissions(userRoleSlugs);
+    const overrides = await loadOverrides(deps, session.firmId, userRoleSlugs);
+    const perms = unionPermissionsWithOverrides(userRoleSlugs, overrides);
     if (!hasPermission(perms, key)) {
       res.status(403).json({ error: 'forbidden', required: key });
       return;
@@ -50,7 +52,9 @@ export async function userHasPermission(
   key: PermissionKey,
 ): Promise<boolean> {
   const slugs = await loadRoleSlugs(deps, appUserId);
-  return hasPermission(unionPermissions(slugs), key);
+  const firmId = await loadFirmId(deps, appUserId);
+  const overrides = await loadOverrides(deps, firmId, slugs);
+  return hasPermission(unionPermissionsWithOverrides(slugs, overrides), key);
 }
 
 async function loadRoleSlugs(deps: RbacDeps, appUserId: string): Promise<RoleSlug[]> {
@@ -67,4 +71,41 @@ async function loadRoleSlugs(deps: RbacDeps, appUserId: string): Promise<RoleSlu
   return rows
     .map((r) => r.slug.toLowerCase() as RoleSlug)
     .filter((s): s is RoleSlug => known.includes(s));
+}
+
+async function loadFirmId(deps: RbacDeps, appUserId: string): Promise<string | null> {
+  if (!deps.db) return null;
+  const [row] = await deps.db
+    .select({ firmId: appUsers.firmId })
+    .from(appUsers)
+    .where(eq(appUsers.id, appUserId))
+    .limit(1);
+  return row?.firmId ?? null;
+}
+
+/**
+ * 0147 — the firm's permission-matrix deltas for the user's roles.
+ * Admin never has overrides (write endpoint rejects them; the merge
+ * ignores them too), so an admin-only user skips the query entirely.
+ */
+async function loadOverrides(
+  deps: RbacDeps,
+  firmId: string | null,
+  slugs: RoleSlug[],
+): Promise<PermissionOverride[]> {
+  const overridable = slugs.filter((s): s is Exclude<RoleSlug, 'admin'> => s !== 'admin');
+  if (!deps.db || !firmId || overridable.length === 0) return [];
+  return deps.db
+    .select({
+      roleSlug: rolePermissionOverrides.roleSlug,
+      permissionKey: rolePermissionOverrides.permissionKey,
+      granted: rolePermissionOverrides.granted,
+    })
+    .from(rolePermissionOverrides)
+    .where(
+      and(
+        eq(rolePermissionOverrides.firmId, firmId),
+        inArray(rolePermissionOverrides.roleSlug, overridable),
+      ),
+    );
 }

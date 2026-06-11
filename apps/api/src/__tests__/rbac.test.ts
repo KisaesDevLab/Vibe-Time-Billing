@@ -23,9 +23,12 @@ function fakeDb() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: async () => [{ ...state, recovery: null }],
-        }),
+        // Awaiting .where() directly (0147 loadOverrides) resolves to an
+        // empty list; chaining .limit() (user lookup) returns the row.
+        where: () =>
+          Object.assign(Promise.resolve([]), {
+            limit: async () => [{ ...state, recovery: null }],
+          }),
       }),
     }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -17,6 +17,7 @@ import {
   officeSettings,
   offices,
   rateCodes,
+  rolePermissionOverrides,
   rolePermissions,
   roles,
   staffRateSnapshotEntries,
@@ -27,7 +28,13 @@ import {
   workCodes,
 } from '@vibe/db/schema';
 import { createSnapshot } from '../rates/routes';
-import { PERMISSION_KEYS, ROLE_TEMPLATES, type RoleSlug } from '@vibe/core/rbac';
+import {
+  PERMISSION_KEYS,
+  ROLE_TEMPLATES,
+  effectiveRolePermissions,
+  type PermissionOverride,
+  type RoleSlug,
+} from '@vibe/core/rbac';
 import { seedNotificationTemplates, NOTIFICATION_TEMPLATE_DEFAULTS } from '@vibe/db/seed-helpers';
 
 import { emitAudit } from '../auth/audit';
@@ -1054,13 +1061,101 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
   router.get(
     '/permission-matrix',
     requirePermission(deps, 'firm:settings:read'),
-    async (_req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const slugs: RoleSlug[] = ['admin', 'partner', 'manager', 'senior', 'staff'];
+      // 0147 — overlay the firm's matrix deltas on the templates.
+      const firmId = req.staffSession?.firmId;
+      const overrides: PermissionOverride[] =
+        deps.db && firmId
+          ? await deps.db
+              .select({
+                roleSlug: rolePermissionOverrides.roleSlug,
+                permissionKey: rolePermissionOverrides.permissionKey,
+                granted: rolePermissionOverrides.granted,
+              })
+              .from(rolePermissionOverrides)
+              .where(eq(rolePermissionOverrides.firmId, firmId))
+          : [];
+      const effective = new Map(
+        slugs.map((slug) => [slug, effectiveRolePermissions(slug, overrides)]),
+      );
+      const overridden = new Set(overrides.map((o) => `${o.roleSlug}:${o.permissionKey}`));
       const matrix = PERMISSION_KEYS.map((key) => ({
         key,
-        roles: slugs.filter((slug) => ROLE_TEMPLATES[slug].has(key)),
+        roles: slugs.filter((slug) => effective.get(slug)!.has(key)),
+        overridden: slugs.filter((slug) => overridden.has(`${slug}:${key}`)),
       }));
       res.json({ permissions: matrix, roles: slugs });
+    },
+  );
+
+  // 0147 — toggle one cell. granted matching the template clears the
+  // override row (back to default); differing upserts a delta. The
+  // admin column is locked: it always holds every key.
+  router.put(
+    '/permission-matrix',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const body = req.body as { role?: unknown; key?: unknown; granted?: unknown };
+      const role = typeof body.role === 'string' ? body.role : '';
+      const key = typeof body.key === 'string' ? body.key : '';
+      const granted = body.granted;
+      const editable: ReadonlyArray<string> = ['partner', 'manager', 'senior', 'staff'];
+      if (
+        !editable.includes(role) ||
+        !(PERMISSION_KEYS as readonly string[]).includes(key) ||
+        typeof granted !== 'boolean'
+      ) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      // reason: narrowed by the editable/PERMISSION_KEYS guards above.
+      const roleSlug = role as 'partner' | 'manager' | 'senior' | 'staff';
+      const templateHas = ROLE_TEMPLATES[roleSlug].has(key as (typeof PERMISSION_KEYS)[number]);
+      if (granted === templateHas) {
+        await deps.db
+          .delete(rolePermissionOverrides)
+          .where(
+            and(
+              eq(rolePermissionOverrides.firmId, session.firmId),
+              eq(rolePermissionOverrides.roleSlug, roleSlug),
+              eq(rolePermissionOverrides.permissionKey, key),
+            ),
+          );
+      } else {
+        await deps.db
+          .insert(rolePermissionOverrides)
+          .values({
+            firmId: session.firmId,
+            roleSlug,
+            permissionKey: key,
+            granted,
+            updatedBy: session.appUserId,
+          })
+          .onConflictDoUpdate({
+            target: [
+              rolePermissionOverrides.firmId,
+              rolePermissionOverrides.roleSlug,
+              rolePermissionOverrides.permissionKey,
+            ],
+            set: { granted, updatedBy: session.appUserId, updatedAt: new Date() },
+          });
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'role_permission_override',
+        entityId: null,
+        actorAppUserId: session.appUserId,
+        after: { role: roleSlug, key, granted, isTemplateDefault: granted === templateHas },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true, overridden: granted !== templateHas });
     },
   );
 
