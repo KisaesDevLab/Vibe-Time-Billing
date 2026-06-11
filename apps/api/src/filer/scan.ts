@@ -19,7 +19,6 @@ import {
 import { jaroWinkler, normalizeNameString, type StorageClient } from '@vibe/storage';
 import {
   evaluateRules,
-  extractIdCandidates,
   parseFilename,
   resolveYearSubfolder,
   type RoutingRule,
@@ -56,6 +55,16 @@ export interface MatchResult {
   suggestedPath: string | null;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True when `id` appears in `filename` bounded by non-alphanumerics. */
+export function idAppearsIn(filename: string, id: string): boolean {
+  const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(id)}(?![A-Za-z0-9])`, 'i');
+  return re.test(filename);
+}
+
 /** Pure matcher — exposed for unit tests. */
 export function matchObject(
   originalName: string,
@@ -89,11 +98,16 @@ export function matchObject(
     strictIdHit = client != null;
   }
   if (!client) {
-    const candidates = extractIdCandidates(originalName).filter((c) => c !== parsed.id);
+    // Client-driven scan: look for each client's actual external id
+    // anywhere in the filename. Handles alphanumeric ids (ALLE1234)
+    // that the digit-run pattern can't see. Boundary-guarded so an id
+    // can't match inside a longer token, min length 4 to avoid noise,
+    // case-insensitive. Taken only on a unique client hit.
     const hits = new Map<string, { c: ClientLite; id: string }>();
-    for (const cand of candidates) {
-      const hit = clientList.find((c) => c.externalId && c.externalId === cand);
-      if (hit) hits.set(hit.id, { c: hit, id: cand });
+    for (const c of clientList) {
+      const id = c.externalId?.trim();
+      if (!id || id.length < 4) continue;
+      if (idAppearsIn(originalName, id)) hits.set(c.id, { c, id });
     }
     if (hits.size === 1) {
       const only = [...hits.values()][0]!;

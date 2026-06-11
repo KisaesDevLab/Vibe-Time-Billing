@@ -129,6 +129,31 @@ describe('matchObject (pure)', () => {
     expect(r.matchStatus).toBe('matched');
     expect(r.matchedClient).toBe('c1');
   });
+
+  // 0149 follow-up — alphanumeric external ids match anywhere too.
+  const alnumClients = [
+    ...clientsList,
+    { id: 'c3', name: 'Allen David', externalId: 'ALLE1234', status: 'ACTIVE' },
+  ];
+  const alnumBound = new Set(['c1', 'c2', 'c3']);
+  it('alphanumeric id matches anywhere (real-world tax export name)', () => {
+    const r = matchObject(
+      'David, Allen_2025_1040_GovernmentCopyTaxReturn_ALLE1234.pdf',
+      alnumClients,
+      [],
+      alnumBound,
+    );
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c3');
+    expect(r.parsedId).toBe('ALLE1234');
+  });
+  it('alphanumeric id is case-insensitive and boundary-guarded', () => {
+    expect(matchObject('alle1234 w2.pdf', alnumClients, [], alnumBound).matchedClient).toBe('c3');
+    // Embedded in a longer token → no match (XALLE12345 ≠ ALLE1234).
+    expect(
+      matchObject('XALLE12345_notes.pdf', alnumClients, [], alnumBound).matchedClient,
+    ).toBeNull();
+  });
 });
 
 describe('scanInbox', () => {
