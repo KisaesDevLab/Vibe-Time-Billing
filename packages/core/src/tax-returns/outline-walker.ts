@@ -76,28 +76,43 @@ export function walkOutline(roots: OutlineNode[], opts: WalkOptions): FlatSectio
   }
   for (const r of roots) visit(r, null, 0);
 
-  // Step 2 — compute end_page for each. A node's end_page is the
-  // page BEFORE the next ordinal's start, except when the next
-  // ordinal is a child (then the parent's range extends to where the
-  // next sibling starts, not the child). Children inherit nothing —
-  // they're computed independently.
+  // Step 2 — compute end_page for each.
   //
-  // Simpler formulation: end_page = (next node at same-or-shallower
-  // depth's startPage) - 1, falling back to totalPages.
+  // Tax-software outlines are NOT always page-monotonic in pre-order:
+  // Drake/UltraTax-style exports carry a "Reports" wing whose items
+  // (return summary, projection worksheets, state summaries) point at
+  // pages interleaved with the Federal/State wings. Deriving end_page
+  // from "the next bookmark in OUTLINE order" then swallows pages that
+  // belong to other sections (e.g. a 1-page Return Summary claiming
+  // 1–17 because its outline-neighbor starts at 18).
+  //
+  // Robust formulation, exact for monotonic outlines too:
+  //   - a node's own range ends the page before the next page on which
+  //     ANY section starts (strictly after its own start);
+  //   - a parent additionally spans its descendants (pre-order means
+  //     they're the contiguous run of deeper nodes right after it).
+  const allStarts = [...new Set(flat.map((f) => f.node.startPage))].sort((a, b) => a - b);
+  const nextStartAfter = (page: number): number | null => {
+    for (const s of allStarts) if (s > page) return s;
+    return null;
+  };
+  // Reverse order so every descendant's end is known before its parent.
+  const endByIndex = new Array<number>(flat.length);
+  for (let i = flat.length - 1; i >= 0; i--) {
+    const cur = flat[i]!;
+    const next = nextStartAfter(cur.node.startPage);
+    let endPage = next != null ? next - 1 : opts.totalPages;
+    for (let j = i + 1; j < flat.length && flat[j]!.depth > cur.depth; j++) {
+      if (endByIndex[j]! > endPage) endPage = endByIndex[j]!;
+    }
+    if (endPage < cur.node.startPage) endPage = cur.node.startPage;
+    endByIndex[i] = endPage;
+  }
+
   const sections: FlatSection[] = [];
   for (let i = 0; i < flat.length; i++) {
     const cur = flat[i]!;
-    let endPage = opts.totalPages;
-    for (let j = i + 1; j < flat.length; j++) {
-      const candidate = flat[j]!;
-      // Only siblings or shallower ancestors close us out. Deeper
-      // descendants stay inside our range.
-      if (candidate.depth <= cur.depth) {
-        endPage = candidate.node.startPage - 1;
-        break;
-      }
-    }
-    if (endPage < cur.node.startPage) endPage = cur.node.startPage;
+    const endPage = endByIndex[i]!;
 
     const norm = normalizeTitle(cur.node.title, opts.lexicon);
     const confidence = opts.fallbackConfidence

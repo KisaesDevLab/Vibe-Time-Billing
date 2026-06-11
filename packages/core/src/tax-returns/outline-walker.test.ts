@@ -126,4 +126,78 @@ describe('TR-1 — walkOutline', () => {
     });
     expect(result[0]!.releasable).toBe(false);
   });
+
+  it('interleaved (non-monotonic) outlines do not swallow other wings’ pages', () => {
+    // Drake/UltraTax shape: a "Reports" wing whose items point at pages
+    // scattered through the document, followed by Federal/State wings that
+    // own the in-between pages. Modeled on a real 40-page MO 1040 export.
+    const drake: OutlineNode[] = [
+      {
+        title: 'Reports',
+        startPage: 1,
+        children: [
+          {
+            title: 'Federal',
+            startPage: 1,
+            children: [
+              { title: 'Return Summary', startPage: 1 },
+              { title: 'Tax Projection Worksheet 1', startPage: 18 },
+              { title: 'Tax Projection Worksheet 2', startPage: 19 },
+            ],
+          },
+          {
+            title: 'Missouri',
+            startPage: 23,
+            children: [
+              { title: 'MO Summary Report', startPage: 23 },
+              { title: 'MO Tax Projection Worksheet', startPage: 38 },
+            ],
+          },
+        ],
+      },
+      {
+        title: 'Federal',
+        startPage: 2,
+        children: [
+          { title: 'Transmittal Letter', startPage: 2 },
+          { title: 'Form 8879', startPage: 11 },
+          { title: 'Form 1040 Page 1', startPage: 13 },
+          { title: 'TPW Item Ded Limit Wrk', startPage: 20 },
+          { title: 'Tax Reconciliation Worksheet', startPage: 21 },
+          { title: 'Consent to Use Tax Information', startPage: 39 },
+        ],
+      },
+      {
+        title: 'Missouri',
+        startPage: 24,
+        children: [
+          { title: 'MO Form MO-1040ES Page 1', startPage: 24 },
+          { title: 'MO Form MO-1040 Page 1', startPage: 29 },
+          { title: 'MO Estimated Tax Worksheet', startPage: 37 },
+        ],
+      },
+    ];
+    const result = walkOutline(drake, { totalPages: 40 });
+    const byTitle = (t: string) => result.find((s) => s.rawTitle === t)!;
+
+    // The 1-page Return Summary must NOT claim pages 2–17 (transmittal
+    // letter, 8879, 1040 …) just because its outline-neighbor starts at 18.
+    expect(byTitle('Return Summary').endPage).toBe(1);
+    // TPW2 (p19) must not claim 20–22, which other sections own.
+    expect(byTitle('Tax Projection Worksheet 2').endPage).toBe(19);
+    // Backward outline jump (38 → next wing at 2) must not clamp to a lie:
+    // next page on which anything starts after 38 is 39.
+    expect(byTitle('MO Tax Projection Worksheet').endPage).toBe(38);
+    // Leaves before a gap keep the gap (no bookmark claims 14–17 except
+    // the 1040, whose next-anywhere start is 18).
+    expect(byTitle('Form 1040 Page 1').endPage).toBe(17);
+    // Parents span their (scattered) descendants.
+    expect(byTitle('Reports').startPage).toBe(1);
+    expect(byTitle('Reports').endPage).toBe(38);
+    const fedWing = result.find((s) => s.rawTitle === 'Federal' && s.depth === 0)!;
+    expect(fedWing.endPage).toBe(40); // Consent@39 runs to totalPages
+    // Last starts: Consent (39) → 40; MO Est Wrk (37) → 37.
+    expect(byTitle('Consent to Use Tax Information').endPage).toBe(40);
+    expect(byTitle('MO Estimated Tax Worksheet').endPage).toBe(37);
+  });
 });
