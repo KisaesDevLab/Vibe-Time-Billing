@@ -16,6 +16,7 @@ import {
 
 import { api } from '../api-client';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
+import { ProcessProjectDialog } from './clients/ProcessProjectDialog';
 
 interface Engagement {
   id: string;
@@ -353,6 +354,8 @@ function LogView({
   );
   // Progress status to set on save; preselected to the engagement's current.
   const [workflowState, setWorkflowState] = useState('');
+  // Process-project print dialog (opened from the green-box button).
+  const [processOpen, setProcessOpen] = useState(false);
   const [entryDate, setEntryDate] = useState(today());
   const [hours, setHours] = useState('1.00');
   const [description, setDescription] = useState(initialDescription);
@@ -752,9 +755,24 @@ function LogView({
               </span>
             </label>
           </div>
-          <Button type="submit" disabled={submitting || !engagementId}>
-            {submitting ? 'Saving…' : 'Log'}
-          </Button>
+          <div style={{ gridColumn: 4, display: 'grid', gap: 8, alignContent: 'end' }}>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!clientId || !engagementId}
+              title={
+                !clientId || !engagementId
+                  ? 'Pick a client and engagement first'
+                  : 'Print a Process Project sheet'
+              }
+              onClick={() => setProcessOpen(true)}
+            >
+              Process project
+            </Button>
+            <Button type="submit" disabled={submitting || !engagementId}>
+              {submitting ? 'Saving…' : 'Log'}
+            </Button>
+          </div>
           {linkMessageId && (
             <div
               style={{
@@ -789,6 +807,14 @@ function LogView({
             </div>
           )}
         </form>
+        {processOpen && engagementId && (
+          <ProcessProjectDialog
+            engagementId={engagementId}
+            clientName={clients.find((c) => c.id === clientId)?.name ?? ''}
+            engagementName={engagements.find((e) => e.id === engagementId)?.name ?? ''}
+            onClose={() => setProcessOpen(false)}
+          />
+        )}
         {clientHasNoActive && (
           <p
             style={{

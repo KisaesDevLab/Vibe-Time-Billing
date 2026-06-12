@@ -45,6 +45,7 @@ import { createEngagementRouter } from './engagements/routes';
 import { createStatusHistoryRouter } from './engagements/status-history';
 import { createStatusOptionsRouter } from './engagements/status-options';
 import { createRouteSheetRouter } from './route-sheets/routes';
+import { createProcessProjectRouter } from './process-project/routes';
 import { createStaffFileShareRouter } from './files/share-routes';
 import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
@@ -693,6 +694,13 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/route-sheets', auth.requireAuth, auth.requireCsrf, routeSheetRouter);
+
+  // Process Project printing (from the Quick-log view; not logged).
+  const processProjectRouter = createProcessProjectRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/process-project', auth.requireAuth, auth.requireCsrf, processProjectRouter);
 
   // 0083 — recurring engagements (CRUD + run-now). Worker sweep lives
   // in apps/worker/src/jobs/recurring-engagement.ts.
