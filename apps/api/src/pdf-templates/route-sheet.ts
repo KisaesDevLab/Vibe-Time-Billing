@@ -46,6 +46,7 @@ function sheet(item: RouteSheetItemSnapshot): string {
 
   return `
   <div class="sheet">
+    <div class="clienthead">CLIENT: ${val(c.name)}</div>
     <div class="title">FILE ROUTING SHEET</div>
 
     <table class="contactlog">
@@ -58,11 +59,6 @@ function sheet(item: RouteSheetItemSnapshot): string {
         )
         .join('')}
     </table>
-
-    <div class="row clientrow">
-      <span class="lab">CLIENT:</span>
-      <span class="cval">${val(c.name)}</span>
-    </div>
 
     <div class="section">I. ENGAGEMENT</div>
     <table class="engtbl">
@@ -133,10 +129,10 @@ export function renderRouteSheetHtml(items: RouteSheetItemSnapshot[]): string {
   body { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 11px; margin: 0; }
   .sheet { padding: 4px 2px; page-break-after: always; }
   .sheet:last-child { page-break-after: auto; }
+  .clienthead { text-align: center; font-size: 16px; font-weight: bold; margin-bottom: 2px; }
   .title { text-align: center; font-size: 16px; font-weight: bold; letter-spacing: 1px; border-bottom: 2px solid #111; padding-bottom: 4px; margin-bottom: 6px; }
   .section { background: #111; color: #fff; font-weight: bold; padding: 2px 6px; margin: 8px 0 4px; font-size: 11px; }
   .row { margin: 3px 0; }
-  .clientrow { font-size: 13px; }
   .lab { font-weight: bold; text-transform: uppercase; font-size: 10px; color: #333; }
   .cval { border-bottom: 1px solid #999; display: inline-block; min-width: 60%; }
   table { width: 100%; border-collapse: collapse; }
