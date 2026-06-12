@@ -5,7 +5,7 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { csvField } from '../lib/csv';
 import { z } from 'zod';
-import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, ne, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -101,6 +101,33 @@ const MergeSchema = z.object({
   sourceId: z.string().uuid(),
   reason: z.string().max(2000).optional(),
 });
+
+// Client `name` is unique within a firm among non-archived clients
+// (case-insensitive, trimmed). Two genuinely-different clients that
+// share a name are distinguished by editing the internal name; the
+// client-facing name can still collide freely. Returns true when a
+// conflicting client exists (optionally excluding one id, for rename).
+async function nameTaken(
+  db: Database,
+  firmId: string,
+  name: string,
+  excludeId?: string,
+): Promise<boolean> {
+  const needle = name.trim().toLowerCase();
+  if (needle.length === 0) return false;
+  const conds = [
+    eq(clients.firmId, firmId),
+    ne(clients.status, 'ARCHIVED'),
+    sql`lower(btrim(${clients.name})) = ${needle}`,
+  ];
+  if (excludeId) conds.push(ne(clients.id, excludeId));
+  const [row] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(and(...conds))
+    .limit(1);
+  return Boolean(row);
+}
 
 // Connect I.4 — staff enrolls / re-enrolls / clears a client's tax id
 // for portal step-up. The raw value is hashed server-side; the request
@@ -314,6 +341,11 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       return;
     }
     const session = req.staffSession!;
+    // Reject a duplicate name up front (case-insensitive, non-archived).
+    if (await nameTaken(deps.db, firmId, parsed.data.name)) {
+      res.status(409).json({ error: 'duplicate_name' });
+      return;
+    }
     // 0092 — resolve officeId. Caller-supplied wins; otherwise fall
     // back to the staff user's default office; otherwise the firm's
     // default office (is_default=true) or the earliest-created one.
@@ -351,7 +383,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     }
     const [row] = await deps.db
       .insert(clients)
-      .values({ firmId, ...parsed.data, officeId })
+      .values({ firmId, ...parsed.data, name: parsed.data.name.trim(), officeId })
       .returning({ id: clients.id });
     await emitAudit(deps.db, {
       action: 'CREATE',
@@ -393,9 +425,21 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           return;
         }
       }
+      // Block a rename into another (non-archived) client's name.
+      if (
+        parsed.data.name !== undefined &&
+        (await nameTaken(deps.db, firmId, parsed.data.name, req.params['id']!))
+      ) {
+        res.status(409).json({ error: 'duplicate_name' });
+        return;
+      }
+      const patch =
+        parsed.data.name !== undefined
+          ? { ...parsed.data, name: parsed.data.name.trim() }
+          : parsed.data;
       await deps.db
         .update(clients)
-        .set(parsed.data)
+        .set(patch)
         .where(and(eq(clients.firmId, firmId), eq(clients.id, req.params['id']!)));
       await emitAudit(deps.db, {
         action: 'UPDATE',

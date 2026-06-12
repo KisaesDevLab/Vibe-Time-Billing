@@ -114,7 +114,12 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
       onSaved(draft);
       setEditing(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'save_failed');
+      const msg = e instanceof Error ? e.message : 'save_failed';
+      setError(
+        msg === 'duplicate_name'
+          ? 'Another client already uses that name. Pick a distinct name (the client-facing name can stay the same).'
+          : msg,
+      );
     } finally {
       setBusy(false);
     }

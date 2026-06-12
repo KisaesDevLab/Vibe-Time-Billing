@@ -240,7 +240,12 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
         onClose();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'create_failed');
+      const msg = err instanceof Error ? err.message : 'create_failed';
+      setError(
+        msg === 'duplicate_name'
+          ? `A client named "${name.trim()}" already exists. Use a distinct name (you can set a separate client-facing name later).`
+          : msg,
+      );
     } finally {
       setBusy(false);
     }
