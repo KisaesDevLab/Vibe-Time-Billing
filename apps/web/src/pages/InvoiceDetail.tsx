@@ -111,9 +111,27 @@ export function InvoiceDetailPage(): JSX.Element {
   );
 
   // Editing happens upstream in Billing (where amounts allocate to time
-  // entries). The invoice screen is view / print / send only.
+  // entries). The invoice screen is view / print / send only — EXCEPT the
+  // line-item description, which is cosmetic and editable here when the
+  // invoice isn't locked (matches the backend: not voided, no payments).
+  const descEditable = invoice != null && invoice.status !== 'VOIDED' && invoice.paidCents === 0;
+
   function editInBilling(): void {
     navigate(billingBatchId ? `/billing/${billingBatchId}` : '/billing');
+  }
+
+  async function saveDescription(lineId: string, description: string): Promise<void> {
+    if (!invoice) return;
+    setError(null);
+    try {
+      await api(`/api/staff/invoices/${invoice.id}/line-items/${lineId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ description }),
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_failed');
+    }
   }
 
   if (loading) return <p style={{ color: tokens.color.textMuted, padding: 16 }}>Loading…</p>;
@@ -189,7 +207,14 @@ export function InvoiceDetailPage(): JSX.Element {
                 </td>
               </tr>
             ) : (
-              manualLines.map((l) => <LineRow key={l.id} line={l} />)
+              manualLines.map((l) => (
+                <LineRow
+                  key={l.id}
+                  line={l}
+                  editable={descEditable}
+                  onSaveDescription={(v) => void saveDescription(l.id, v)}
+                />
+              ))
             )}
           </tbody>
           <tfoot>
@@ -280,7 +305,17 @@ export function InvoiceDetailPage(): JSX.Element {
   );
 }
 
-function LineRow({ line }: { line: LineItem }): JSX.Element {
+function LineRow({
+  line,
+  editable,
+  onSaveDescription,
+}: {
+  line: LineItem;
+  editable: boolean;
+  onSaveDescription: (v: string) => void;
+}): JSX.Element {
+  const [desc, setDesc] = useState(line.description);
+  useEffect(() => setDesc(line.description), [line.id, line.description]);
   return (
     <tr style={{ borderTop: `1px solid ${tokens.color.border}` }}>
       <td style={td()}>
@@ -288,7 +323,33 @@ function LineRow({ line }: { line: LineItem }): JSX.Element {
           {line.kind.replace(/_/g, ' ')}
         </span>
       </td>
-      <td style={td()}>{line.description}</td>
+      <td style={td()}>
+        {editable ? (
+          <input
+            type="text"
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            onBlur={() => {
+              const v = desc.trim();
+              if (v && v !== line.description) onSaveDescription(v);
+              else if (!v) setDesc(line.description);
+            }}
+            aria-label={`Description for ${line.kind}`}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              padding: '4px 8px',
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+              background: tokens.color.bg,
+              color: tokens.color.text,
+              fontSize: 13,
+            }}
+          />
+        ) : (
+          line.description
+        )}
+      </td>
       <td style={{ ...td(), textAlign: 'right' }}>{formatCents(line.amountCents)}</td>
     </tr>
   );
