@@ -71,7 +71,9 @@ function resolveStorage(deps: FilerRoutesDeps): StorageClient | null {
   }
 }
 
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+// Buffered in RAM by express.raw — fine for a single-firm appliance, but
+// don't raise this past what the host's memory headroom allows.
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 const BLOCKED_UPLOAD_EXT =
   /\.(exe|com|bat|cmd|msi|scr|pif|cpl|js|jse|vbs|vbe|wsf|wsh|ps1|sh|jar|app|dll|sys|reg)$/i;
 
