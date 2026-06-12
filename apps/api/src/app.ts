@@ -44,6 +44,7 @@ import { createKanbanViewRouter } from './kanban-views/routes';
 import { createEngagementRouter } from './engagements/routes';
 import { createStatusHistoryRouter } from './engagements/status-history';
 import { createStatusOptionsRouter } from './engagements/status-options';
+import { createRouteSheetRouter } from './route-sheets/routes';
 import { createStaffFileShareRouter } from './files/share-routes';
 import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
@@ -685,6 +686,13 @@ export function createApp(deps: AppDeps): Express {
     auth.requireCsrf,
     statusOptionsRouter,
   );
+
+  // 0155 — Route Sheet printing (per-client routing form + history).
+  const routeSheetRouter = createRouteSheetRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/route-sheets', auth.requireAuth, auth.requireCsrf, routeSheetRouter);
 
   // 0083 — recurring engagements (CRUD + run-now). Worker sweep lives
   // in apps/worker/src/jobs/recurring-engagement.ts.

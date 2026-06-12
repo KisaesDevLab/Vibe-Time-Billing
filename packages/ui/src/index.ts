@@ -24,6 +24,7 @@ export {
   ChevronRight,
   ChevronDown,
   Folder,
+  Printer,
   type IconProps,
 } from './icons';
 export { ErrorBoundary } from './ErrorBoundary';

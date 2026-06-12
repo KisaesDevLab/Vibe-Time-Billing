@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { useEffect, useMemo, useState } from 'react';
 
-import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, Printer, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
 import { RollDueRecurrencesDialog } from './clients/RollDueRecurrencesDialog';
+import { RouteSheetDialog } from './clients/RouteSheetDialog';
 
 interface ClientRow {
   id: string;
@@ -85,6 +86,8 @@ export function ClientsPage(): JSX.Element {
   // toolbar action enables when at least one row is selected.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
+  // Route-sheet printing — the client whose dialog is open (or null).
+  const [routeSheetClient, setRouteSheetClient] = useState<ClientRow | null>(null);
   const initial = useMemo(() => loadView(), []);
   const [q, setQ] = useState(initial.q);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -324,6 +327,14 @@ export function ClientsPage(): JSX.Element {
 
       {rollOpen && <RollDueRecurrencesDialog onClose={() => setRollOpen(false)} />}
 
+      {routeSheetClient && (
+        <RouteSheetDialog
+          clientId={routeSheetClient.id}
+          clientName={routeSheetClient.name}
+          onClose={() => setRouteSheetClient(null)}
+        />
+      )}
+
       {bulkEmailOpen && (
         <BulkEmailDialog
           targets={clients.filter((c) => selectedIds.has(c.id))}
@@ -519,6 +530,34 @@ export function ClientsPage(): JSX.Element {
                     <Pill tone={c.status === 'ACTIVE' ? 'success' : 'neutral'}>{c.status}</Pill>
                   );
                 },
+              },
+              {
+                key: 'actions',
+                header: '',
+                align: 'right',
+                render: (c) => (
+                  <button
+                    type="button"
+                    onClick={() => setRouteSheetClient(c)}
+                    title="Print route sheet"
+                    aria-label={`Print route sheet for ${c.name}`}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 30,
+                      height: 30,
+                      borderRadius: tokens.radius.sm,
+                      border: `1px solid ${tokens.color.border}`,
+                      background: 'transparent',
+                      color: tokens.color.accent,
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    <Printer size={16} />
+                  </button>
+                ),
               },
             ]}
             rows={sortedDisplay}

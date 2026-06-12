@@ -4109,6 +4109,71 @@ export type FileShareEvent = typeof fileShareEvents.$inferSelect;
 export type FileShareOtp = typeof fileShareOtps.$inferSelect;
 export type FileShareItem = typeof fileShareItems.$inferSelect;
 
+// 0155 — Route Sheet prints. One parent per print (staff/when/note);
+// one item per engagement on the sheet (workflow-state before/after +
+// a JSON snapshot of the rendered payload for faithful reprint).
+export const routeSheetPrints = pgTable(
+  'route_sheet_print',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    createdByAppUserId: uuid('created_by_app_user_id').references(() => appUsers.id),
+    note: text('note'),
+    printedAt: timestamp('printed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmClientIdx: index('route_sheet_print_firm_client_idx').on(
+      t.firmId,
+      t.clientId,
+      t.printedAt,
+    ),
+  }),
+);
+
+export interface RouteSheetItemSnapshot {
+  engagementId: string;
+  engagementName: string;
+  workflowStateLabel: string;
+  periodLabel: string | null;
+  dueDate: string | null;
+  partnerName: string | null;
+  managerName: string | null;
+  assignees: string[];
+  client: {
+    name: string;
+    address: string | null;
+    contacts: Array<{ name: string; email: string | null; home: string | null; mobile: string | null }>;
+  };
+  note: string;
+}
+
+export const routeSheetPrintItems = pgTable(
+  'route_sheet_print_item',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    routeSheetPrintId: uuid('route_sheet_print_id')
+      .notNull()
+      .references(() => routeSheetPrints.id, { onDelete: 'cascade' }),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'cascade' }),
+    workflowStateBefore: text('workflow_state_before'),
+    workflowStateAfter: text('workflow_state_after'),
+    snapshotJson: jsonb('snapshot_json').$type<RouteSheetItemSnapshot>(),
+  },
+  (t) => ({
+    printIdx: index('route_sheet_print_item_print_idx').on(t.routeSheetPrintId),
+  }),
+);
+
+export type RouteSheetPrint = typeof routeSheetPrints.$inferSelect;
+export type RouteSheetPrintItem = typeof routeSheetPrintItems.$inferSelect;
+
 // =====================================================================
 // 0073 — Appointments (CP12)
 //
