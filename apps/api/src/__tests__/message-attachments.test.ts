@@ -14,7 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { appUsers, threadAttachments } from '@vibe/db/schema';
+import { appUsers, clientFolders, files, threadAttachments } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 import type { RoleSlug } from '@vibe/core/rbac';
 
@@ -204,5 +204,73 @@ describe('message attachments', () => {
       .set('Content-Type', 'application/octet-stream')
       .send(Buffer.from('MZ'));
     expect(up.status).toBe(415);
+  });
+
+  // 0154 — file an attachment into a client folder. Internal threads have
+  // no client, so the caller supplies one; the filed copy is plaintext
+  // (decrypted), internal-only, and the original attachment is untouched.
+  async function uploadAttachment(threadId: string, bytes: Buffer): Promise<string> {
+    const up = await request(appAs(seed.appUserId))
+      .post(`/api/staff/internal-messaging/threads/${threadId}/attachments`)
+      .query({ filename: 'statement.pdf', mimeType: 'application/pdf' })
+      .set('Content-Type', 'application/pdf')
+      .send(bytes);
+    expect(up.status).toBe(201);
+    return up.body.id as string;
+  }
+
+  it('files an attachment into a chosen client folder (decrypted, internal-only)', async () => {
+    await harness.db.insert(clientFolders).values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      storagePath: 'Test Client Co/',
+    });
+    const threadId = await makeThread();
+    const bytes = Buffer.from('%PDF-1.7 the real statement bytes 0123456789');
+    const attId = await uploadAttachment(threadId, bytes);
+
+    const res = await request(appAs(seed.appUserId))
+      .post(`/api/staff/internal-messaging/threads/${threadId}/attachments/${attId}/file-to-folder`)
+      .send({ clientId: seed.clientId, subfolderPath: 'Correspondence' });
+    expect(res.status).toBe(201);
+    expect(res.body.ok).toBe(true);
+
+    const fileRows = await harness.db.select().from(files).where(eq(files.firmId, seed.firmId));
+    expect(fileRows).toHaveLength(1);
+    expect(fileRows[0]!.visibility).toBe('private');
+    expect(fileRows[0]!.source).toBe('message_attachment');
+    expect(fileRows[0]!.subfolderPath).toBe('Correspondence/');
+    // The filed copy is the decrypted plaintext (the attachment object is
+    // ciphertext); prove they differ and the copy matches the original.
+    const filed = storage.objects.get(fileRows[0]!.storageKey)!;
+    expect(filed.equals(bytes)).toBe(true);
+
+    // The original attachment row is untouched.
+    const [att] = await harness.db
+      .select()
+      .from(threadAttachments)
+      .where(eq(threadAttachments.id, attId));
+    expect(att!.messageId).toBeNull();
+    expect(storage.objects.get(att!.objectKey)!.equals(bytes)).toBe(false);
+  });
+
+  it('requires a client on an internal (client-less) thread', async () => {
+    const threadId = await makeThread();
+    const attId = await uploadAttachment(threadId, Buffer.from('%PDF data'));
+    const res = await request(appAs(seed.appUserId))
+      .post(`/api/staff/internal-messaging/threads/${threadId}/attachments/${attId}/file-to-folder`)
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('client_required');
+  });
+
+  it('400s when the chosen client has no bound folder', async () => {
+    const threadId = await makeThread();
+    const attId = await uploadAttachment(threadId, Buffer.from('%PDF data'));
+    const res = await request(appAs(seed.appUserId))
+      .post(`/api/staff/internal-messaging/threads/${threadId}/attachments/${attId}/file-to-folder`)
+      .send({ clientId: seed.clientId });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('client_folder_not_bound');
   });
 });

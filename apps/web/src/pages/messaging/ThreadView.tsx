@@ -7,9 +7,9 @@
 // Bodies arrive decrypted from the API. The component never sees
 // ciphertext or any encryption material (CLAUDE.md non-negotiable).
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Button, Paperclip, tokens } from '@vibe/ui';
+import { Button, Combobox, Paperclip, tokens } from '@vibe/ui';
 
 import { api, getCsrfToken } from '../../api-client';
 
@@ -80,6 +80,9 @@ export function ThreadView({
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  // The attachment currently being filed into a client folder (dialog open).
+  const [filing, setFiling] = useState<MessageAttachment | null>(null);
+  const [filedIds, setFiledIds] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
@@ -233,38 +236,66 @@ export function ThreadView({
                   <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
                     {m.attachments.map((a) => {
                       const url = `${apiBase}/threads/${threadId}/attachments/${a.id}`;
-                      return a.isImage ? (
-                        <a key={a.id} href={url} target="_blank" rel="noreferrer">
-                          <img
-                            src={url}
-                            alt={a.filename ?? 'image'}
-                            style={{
-                              maxWidth: '100%',
-                              maxHeight: 240,
-                              borderRadius: tokens.radius.sm,
-                              border: `1px solid ${tokens.color.border}`,
-                              display: 'block',
-                            }}
-                          />
-                        </a>
-                      ) : (
-                        <a
+                      return (
+                        <div
                           key={a.id}
-                          href={`${url}?download=1`}
-                          style={{
-                            fontSize: 12,
-                            color: tokens.color.accent,
-                            textDecoration: 'none',
-                            border: `1px solid ${tokens.color.border}`,
-                            borderRadius: tokens.radius.sm,
-                            padding: '4px 8px',
-                          }}
+                          style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}
                         >
-                          📎 {a.filename ?? 'file'}{' '}
-                          <span style={{ color: tokens.color.textMuted }}>
-                            ({fmtSize(a.byteSize)})
-                          </span>
-                        </a>
+                          {a.isImage ? (
+                            <a href={url} target="_blank" rel="noreferrer">
+                              <img
+                                src={url}
+                                alt={a.filename ?? 'image'}
+                                style={{
+                                  maxWidth: '100%',
+                                  maxHeight: 240,
+                                  borderRadius: tokens.radius.sm,
+                                  border: `1px solid ${tokens.color.border}`,
+                                  display: 'block',
+                                }}
+                              />
+                            </a>
+                          ) : (
+                            <a
+                              href={`${url}?download=1`}
+                              style={{
+                                fontSize: 12,
+                                color: tokens.color.accent,
+                                textDecoration: 'none',
+                                border: `1px solid ${tokens.color.border}`,
+                                borderRadius: tokens.radius.sm,
+                                padding: '4px 8px',
+                              }}
+                            >
+                              📎 {a.filename ?? 'file'}{' '}
+                              <span style={{ color: tokens.color.textMuted }}>
+                                ({fmtSize(a.byteSize)})
+                              </span>
+                            </a>
+                          )}
+                          {filedIds.has(a.id) ? (
+                            <span style={{ fontSize: 11, color: tokens.color.success }}>
+                              ✓ filed
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setFiling(a)}
+                              title="File this attachment into a client folder"
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: tokens.color.accent,
+                                fontSize: 11,
+                                cursor: 'pointer',
+                                padding: '4px 0',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              File to folder
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -384,6 +415,192 @@ export function ThreadView({
         >
           {busy ? 'Sending…' : 'Send'}
         </Button>
+      </div>
+
+      {filing && (
+        <FileToFolderDialog
+          attachment={filing}
+          apiBase={apiBase}
+          threadId={threadId}
+          needsClient={variant === 'internal'}
+          onCancel={() => setFiling(null)}
+          onFiled={() => {
+            setFiledIds((prev) => new Set(prev).add(filing.id));
+            setFiling(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── File-an-attachment-to-a-client-folder dialog ────────────────────────
+
+interface ClientPick {
+  id: string;
+  name: string;
+  externalId: string | null;
+}
+
+function FileToFolderDialog({
+  attachment,
+  apiBase,
+  threadId,
+  needsClient,
+  onCancel,
+  onFiled,
+}: {
+  attachment: MessageAttachment;
+  apiBase: string;
+  threadId: string;
+  /** Internal threads have no client — the user must pick one. */
+  needsClient: boolean;
+  onCancel: () => void;
+  onFiled: () => void;
+}): JSX.Element {
+  const [clients, setClients] = useState<ClientPick[]>([]);
+  const [clientId, setClientId] = useState('');
+  const [subfolder, setSubfolder] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!needsClient) return;
+    void api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients?limit=500')
+      .then((r) => setClients(r.rows ?? r.items ?? []))
+      .catch(() => undefined);
+  }, [needsClient]);
+
+  const clientOptions = useMemo(
+    () =>
+      clients
+        .map((c) => ({
+          value: c.id,
+          label: c.externalId ? `${c.name} · ${c.externalId}` : c.name,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [clients],
+  );
+
+  async function submit(): Promise<void> {
+    if (needsClient && !clientId) {
+      setError('Choose a client.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`${apiBase}/threads/${threadId}/attachments/${attachment.id}/file-to-folder`, {
+        method: 'POST',
+        body: JSON.stringify({
+          clientId: needsClient ? clientId : undefined,
+          subfolderPath: subfolder.trim() || undefined,
+        }),
+      });
+      onFiled();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'file_failed';
+      setError(
+        msg === 'client_folder_not_bound'
+          ? 'That client has no document folder bound yet.'
+          : msg === 'client_required'
+            ? 'Choose a client.'
+            : `Could not file: ${msg}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        paddingTop: 90,
+        zIndex: 200,
+      }}
+    >
+      <div
+        style={{
+          minWidth: 420,
+          maxWidth: 520,
+          background: tokens.color.bg,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.md,
+          padding: 20,
+          display: 'grid',
+          gap: 14,
+        }}
+      >
+        <strong style={{ fontSize: 14 }}>File attachment to client folder</strong>
+        <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+          {attachment.filename ?? 'attachment'} ({fmtSize(attachment.byteSize)})
+        </div>
+
+        {needsClient && (
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Client</span>
+            <Combobox
+              ariaLabel="Client"
+              value={clientId}
+              onChange={setClientId}
+              options={clientOptions}
+              placeholder="Select client…"
+            />
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gap: 4 }}>
+          <label
+            htmlFor="file-to-folder-subfolder"
+            style={{ fontSize: 11, color: tokens.color.textMuted }}
+          >
+            Destination folder (optional)
+          </label>
+          <input
+            id="file-to-folder-subfolder"
+            type="text"
+            value={subfolder}
+            onChange={(e) => setSubfolder(e.target.value)}
+            placeholder="e.g. Correspondence"
+            style={{
+              boxSizing: 'border-box',
+              padding: '6px 8px',
+              fontSize: 13,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+              background: tokens.color.bg,
+              color: tokens.color.text,
+            }}
+          />
+        </div>
+
+        <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+          A copy is filed into the client folder (internal-only — not shown in the portal). The
+          attachment stays on the conversation. Existing files are never overwritten.
+        </p>
+
+        {error && (
+          <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
+            {error}
+          </p>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={busy}>
+            {busy ? 'Filing…' : 'File to folder'}
+          </Button>
+        </div>
       </div>
     </div>
   );

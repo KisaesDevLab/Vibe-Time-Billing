@@ -574,6 +574,7 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
   mountThreadAttachmentRoutes(router, {
     db: deps.db,
     storageClient: deps.storageClient,
+    allowFileToClientFolder: true,
     authorize: async (req, threadId) => {
       const s = req.staffSession;
       if (!s || !deps.db) return null;

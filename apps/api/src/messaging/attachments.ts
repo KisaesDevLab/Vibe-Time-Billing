@@ -10,8 +10,10 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
+import { z } from 'zod';
+
 import type { Database } from '@vibe/db';
-import { threadAttachments, threads } from '@vibe/db/schema';
+import { clients, threadAttachments, threads } from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { logger } from '../logger';
@@ -22,6 +24,8 @@ import {
   encryptForThread,
   decryptForThread,
 } from '../engagement-messaging/thread-crypto';
+import { createFileInClientFolder } from '../clients/create-file';
+import { CATEGORY_VALUES, type Category } from '../clients/files';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const BLOCKED_EXT =
@@ -148,7 +152,17 @@ export interface AttachmentRouteDeps {
    *  return its firmId + optional staff actor, or null → 403. The only auth
    *  difference between the staff and portal mounts. */
   authorize: (req: Request, threadId: string) => Promise<AttachmentAuth | null>;
+  /** Staff-only: when true, also mount POST …/file-to-folder which copies
+   *  an attachment into a client folder (decrypt → register a `files`
+   *  row). The portal mount leaves this off so clients can't file. */
+  allowFileToClientFolder?: boolean;
 }
+
+const FileToFolderSchema = z.object({
+  clientId: z.string().uuid().optional(),
+  subfolderPath: z.string().max(512).optional(),
+  category: z.enum(CATEGORY_VALUES).optional(),
+});
 
 /** Mount POST upload + GET download/preview on a thread-scoped router. */
 export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRouteDeps): void {
@@ -314,4 +328,139 @@ export function mountThreadAttachmentRoutes(router: Router, deps: AttachmentRout
       if (!res.headersSent) res.status(404).json({ error: 'object_gone' });
     }
   });
+
+  if (!deps.allowFileToClientFolder) return;
+
+  // POST /threads/:id/attachments/:attId/file-to-folder   (staff only)
+  //
+  // Copy an attachment into a client's folder: decrypt the thread-sealed
+  // bytes + filename, then register a `files` row via the shared upload
+  // helper (Windows-safe name, keep-both collision rename, audit). The
+  // target client comes from the thread when it's client-scoped; internal
+  // (staff-to-staff) threads carry no client, so the caller picks one.
+  // Filed copies are internal-only (visibility 'private'); the original
+  // attachment stays on the thread.
+  router.post(
+    '/threads/:id/attachments/:attId/file-to-folder',
+    express.json(),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const threadId = req.params['id']!;
+      const auth = await deps.authorize(req, threadId);
+      if (!auth || !auth.actorAppUserId) {
+        res.status(403).json({ error: 'not_a_member' });
+        return;
+      }
+      if (!unlocked(auth.firmId)) {
+        res.status(503).json({ error: 'appliance_locked' });
+        return;
+      }
+      const parsed = FileToFolderSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const storage = storageOrNull(deps.storageClient);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+
+      const [row] = await deps.db
+        .select({
+          objectKey: threadAttachments.objectKey,
+          nameEnc: threadAttachments.originalFilenameEnc,
+          mimeType: threadAttachments.mimeType,
+          threadClientId: threads.clientId,
+        })
+        .from(threadAttachments)
+        .innerJoin(threads, eq(threads.id, threadAttachments.threadId))
+        .where(
+          and(
+            eq(threadAttachments.id, req.params['attId']!),
+            eq(threadAttachments.threadId, threadId),
+            eq(threads.firmId, auth.firmId),
+          ),
+        )
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+
+      // Resolve the destination client: the thread's client for a
+      // client-scoped thread, otherwise the caller's pick (validated to
+      // the firm). A client-scoped thread ignores any override.
+      let clientId = row.threadClientId;
+      if (!clientId) {
+        if (!parsed.data.clientId) {
+          res.status(400).json({ error: 'client_required' });
+          return;
+        }
+        const [c] = await deps.db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(and(eq(clients.id, parsed.data.clientId), eq(clients.firmId, auth.firmId)))
+          .limit(1);
+        if (!c) {
+          res.status(404).json({ error: 'client_not_found' });
+          return;
+        }
+        clientId = c.id;
+      }
+
+      try {
+        const obj = await storage.get(row.objectKey);
+        const chunks: Buffer[] = [];
+        for await (const chunk of obj.body) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+        }
+        const plain = await decryptBytesForThread(
+          { db: deps.db, firmId: auth.firmId, threadId },
+          Buffer.concat(chunks),
+        );
+        const filename = row.nameEnc
+          ? ((await decryptForThread(
+              { db: deps.db, firmId: auth.firmId, threadId },
+              row.nameEnc,
+            ).catch(() => null)) ?? 'attachment')
+          : 'attachment';
+
+        const category: Category = parsed.data.category ?? 'other';
+        const result = await createFileInClientFolder(deps.db, storage, {
+          firmId: auth.firmId,
+          clientId,
+          actorId: auth.actorAppUserId,
+          category,
+          subfolderPath: parsed.data.subfolderPath,
+          // Decision: filed attachments are internal-only; staff publish
+          // later from the Files module if the client should see them.
+          visibility: 'private',
+          originalFilename: filename,
+          body: Buffer.from(plain),
+          mimeType: row.mimeType,
+          source: 'message_attachment',
+        });
+        if (!result.ok) {
+          res.status(result.code === 'client_folder_not_bound' ? 400 : 502).json({
+            error: result.code,
+            detail: result.detail,
+          });
+          return;
+        }
+        res.status(201).json({
+          ok: true,
+          fileId: result.fileId,
+          clientId,
+          filename,
+        });
+      } catch (err) {
+        logger.warn({ err, threadId }, 'attachment file-to-folder failed');
+        if (!res.headersSent) res.status(502).json({ error: 'file_failed' });
+      }
+    },
+  );
 }
