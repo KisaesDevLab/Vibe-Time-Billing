@@ -533,6 +533,33 @@ describe('billing-batch multi-engagement', () => {
     expect(body.invoiceId).toBeNull();
   });
 
+  it('billed reconciles to (std + adj) even for a header-only (unallocated) adjustment', async () => {
+    const { seed, router, batchId, timeEntryId } = await makeBatchWithEntry();
+    void timeEntryId;
+    // Set-target style adjustment: APPROVED header, NO allocation rows.
+    const rc = await harness.db.execute(
+      sql`INSERT INTO reason_code (firm_id, category, label)
+          VALUES (${seed.firmId}, 'WRITE_DOWN', 'Scope') RETURNING id`,
+    );
+    const reasonId = (rc as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`INSERT INTO adjustment (billing_batch_id, method, allocation_method, total_amount_cents,
+            reason_code_id, status, created_by_id)
+          VALUES (${batchId}, 'FEE', 'PRO_RATA_BY_VALUE', -20000, ${reasonId}, 'APPROVED', ${seed.appUserId})`,
+    );
+    const r = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    const body = r.jsonBody as {
+      entries: { billedAmountCents: number }[];
+      adjustmentTotalCents: number;
+    };
+    const billedSum = body.entries.reduce((s, e) => s + e.billedAmountCents, 0);
+    // Single included entry of $800 standard, -$200 header adjustment → $600.
+    expect(body.adjustmentTotalCents).toBe(-20000);
+    expect(billedSum).toBe(80000 - 20000);
+  });
+
   it('unfinalize: 409 not_invoiced on a draft batch', async () => {
     const { seed, router, batchId } = await makeBatchWithEntry();
     const r = await invoke(router, 'post', '/:id/unfinalize', {

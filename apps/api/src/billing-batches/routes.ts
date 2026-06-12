@@ -446,8 +446,31 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         )
         .groupBy(adjustmentAllocations.timeEntryId);
       const adjByEntry = new Map(allocRows.map((r) => [r.timeEntryId, Number(r.amount)]));
+      // Some adjustments (e.g. the "set target" delta) are header-only with
+      // no per-entry allocation rows. Distribute that UNALLOCATED remainder
+      // pro-rata by standard value across the included entries so the billed
+      // column always reconciles to Total-to-invoice (= included std + adj).
+      const totalAllocated = allocRows.reduce((s, r) => s + Number(r.amount), 0);
+      const unallocated = adjustmentTotalCents - totalAllocated;
+      const includedEntries = entries.filter((e) => e.action === 'INCLUDE');
+      const includedStdSum = includedEntries.reduce((s, e) => s + e.standardAmountCents, 0);
+      const proRata = new Map<string, number>();
+      if (unallocated !== 0 && includedStdSum > 0) {
+        let running = 0;
+        includedEntries.forEach((e, i) => {
+          const share =
+            i === includedEntries.length - 1
+              ? unallocated - running // last entry absorbs the rounding remainder
+              : Math.round((unallocated * e.standardAmountCents) / includedStdSum);
+          running += share;
+          proRata.set(e.timeEntryId, share);
+        });
+      }
       const entriesWithBilled = entries.map((e) => {
-        const adj = adjByEntry.get(e.timeEntryId) ?? 0;
+        const adj =
+          e.action === 'INCLUDE'
+            ? (adjByEntry.get(e.timeEntryId) ?? 0) + (proRata.get(e.timeEntryId) ?? 0)
+            : 0;
         const billedAmountCents = e.action === 'INCLUDE' ? e.standardAmountCents + adj : 0;
         return { ...e, adjustmentAmountCents: adj, billedAmountCents };
       });
