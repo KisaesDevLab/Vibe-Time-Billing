@@ -8,6 +8,8 @@
 //                per-row review actions (file / flag for tax / skip),
 //                manual client assignment, year + folder overrides, and a
 //                bulk Commit that relocates the files in B2 (undoable).
+//                A drag-and-drop zone uploads documents straight into the
+//                Inbox/ prefix and re-scans.
 //   - Rules    — rule profiles + ordered match rules that drive the parse
 //                + routing engine.
 //   - History  — committed routing batches, with per-batch and per-file
@@ -18,11 +20,11 @@
 // primitives + the shared useColumnView / selectRows + TableSearch on the
 // inbox table. No Tailwind on this page.
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button, Card, ColumnFilter, Combobox, EmptyState, Pill, Tabs, tokens } from '@vibe/ui';
 
-import { api } from '../api-client';
+import { api, getCsrfToken } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
 
@@ -267,6 +269,51 @@ function InboxTab(): JSX.Element {
     }
   }
 
+  // Drag-and-drop upload into the Inbox/ prefix, then re-scan so the new
+  // objects land in the review queue.
+  const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function uploadFiles(fileList: FileList | File[]): Promise<void> {
+    const picked = Array.from(fileList);
+    if (picked.length === 0 || uploading) return;
+    setUploading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      for (const f of picked) {
+        const qs = new URLSearchParams({
+          filename: f.name,
+          mimeType: f.type || 'application/octet-stream',
+        });
+        // Wire Content-Type is always octet-stream so the global JSON body
+        // parser can't intercept e.g. a dropped .json file; the real MIME
+        // type travels in the query string.
+        const res = await fetch(`${BASE}/upload?${qs.toString()}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-CSRF-Token': getCsrfToken() ?? '',
+          },
+          body: f,
+          credentials: 'same-origin',
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(`${f.name}: ${body?.error ?? `upload failed (${res.status})`}`);
+        }
+      }
+      await refresh();
+      setNotice(`Uploaded ${picked.length} file${picked.length === 1 ? '' : 's'}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   // 0149 — per-client folder lists for the target-folder dropdown.
   // Fetched lazily the first time a row with that client renders.
   const [clientFolders, setClientFolders] = useState<Record<string, string[]>>({});
@@ -463,12 +510,71 @@ function InboxTab(): JSX.Element {
         <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }}>{notice}</p>
       )}
 
+      {!loading && (
+        <div
+          onDragEnter={(e) => {
+            e.preventDefault();
+            dragDepth.current += 1;
+            setDragActive(true);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={() => {
+            dragDepth.current -= 1;
+            if (dragDepth.current <= 0) {
+              dragDepth.current = 0;
+              setDragActive(false);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            dragDepth.current = 0;
+            setDragActive(false);
+            void uploadFiles(e.dataTransfer.files);
+          }}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '14px 12px',
+            marginBottom: 12,
+            border: `2px dashed ${dragActive ? tokens.color.accent : tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            background: dragActive ? tokens.color.surface : 'transparent',
+            color: tokens.color.textMuted,
+            fontSize: 13,
+          }}
+        >
+          {uploading ? (
+            <span>Uploading…</span>
+          ) : (
+            <>
+              <span>Drag &amp; drop documents here to add them to the inbox, or</span>
+              <Button size="sm" variant="secondary" onClick={() => fileInputRef.current?.click()}>
+                Browse…
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                aria-label="Upload documents to the inbox"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  void uploadFiles(e.target.files ?? []);
+                  e.target.value = '';
+                }}
+              />
+            </>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
       ) : items.length === 0 ? (
         <EmptyState
           title="Inbox is empty"
-          body="Drop documents into the watched bucket, then press Refresh to scan and match them against the active rule profile."
+          body="Drag and drop documents above (or drop them into the watched bucket and press Refresh) to scan and match them against the active rule profile."
         />
       ) : (
         <>

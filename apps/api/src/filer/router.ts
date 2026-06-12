@@ -3,6 +3,7 @@
 // Vibe Filer staff API — document inbox & routing.
 //
 //   POST   /scan                     re-list Inbox/ and re-match (cache upsert)
+//   POST   /upload?filename=&mimeType=  raw body → put into Inbox/ (drag-drop)
 //   GET    /inbox                    current review queue
 //   PATCH  /inbox/:id                per-row review state / manual assign
 //   GET    /profiles                 routing profiles
@@ -38,13 +39,19 @@ import {
   inboxRoutingProfiles,
   inboxRoutingRules,
 } from '@vibe/db/schema';
-import { buildStorageClient, type StorageClient } from '@vibe/storage';
+import {
+  buildStorageClient,
+  enforceKeyByteCap,
+  resolveCollision,
+  sanitizeForWindows,
+  type StorageClient,
+} from '@vibe/storage';
 
 import { evaluateRules, resolveYearSubfolder } from '@vibe/core/filer';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from '../clients/folder-templates';
-import { loadActiveRules } from './scan';
+import { INBOX_PREFIX, loadActiveRules } from './scan';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { scanInbox } from './scan';
@@ -63,6 +70,10 @@ function resolveStorage(deps: FilerRoutesDeps): StorageClient | null {
     return null;
   }
 }
+
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const BLOCKED_UPLOAD_EXT =
+  /\.(exe|com|bat|cmd|msi|scr|pif|cpl|js|jse|vbs|vbe|wsf|wsh|ps1|sh|jar|app|dll|sys|reg)$/i;
 
 const ReviewSchema = z.object({
   reviewAction: z.enum(['file', 'flag_tax', 'skip', 'file_flag_tax']).nullable().optional(),
@@ -118,6 +129,56 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         .json({ error: 'scan_failed', detail: err instanceof Error ? err.message : undefined });
     }
   });
+
+  // POST /upload?filename=&mimeType= (raw body) — drag-and-drop a document
+  // straight into the Inbox/ prefix. No DB write here: the caller re-scans
+  // afterwards, which is what pulls the new object into the review queue.
+  router.post(
+    '/upload',
+    requirePermission(deps, 'storage:folder:edit'),
+    express.raw({ type: () => true, limit: MAX_UPLOAD_BYTES + 1024 }),
+    async (req, res) => {
+      const filename = String(req.query['filename'] ?? '')
+        .trim()
+        .slice(0, 255);
+      if (!filename) {
+        res.status(400).json({ error: 'filename_required' });
+        return;
+      }
+      if (BLOCKED_UPLOAD_EXT.test(filename)) {
+        res.status(415).json({ error: 'unsupported_type' });
+        return;
+      }
+      const body: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (body.byteLength === 0) {
+        res.status(400).json({ error: 'empty_body' });
+        return;
+      }
+      if (body.byteLength > MAX_UPLOAD_BYTES) {
+        res.status(413).json({ error: 'file_too_large' });
+        return;
+      }
+      const storage = resolveStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const desired = enforceKeyByteCap(`${INBOX_PREFIX}${sanitizeForWindows(filename)}`);
+      try {
+        const key = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+        const mimeType = String(req.query['mimeType'] ?? 'application/octet-stream').slice(0, 200);
+        await storage.put(key, body, { contentType: mimeType });
+        res.status(201).json({
+          key,
+          name: key.slice(key.lastIndexOf('/') + 1),
+          sizeBytes: body.byteLength,
+        });
+      } catch (err) {
+        logger.warn({ err, filename }, 'filer inbox upload failed');
+        res.status(502).json({ error: 'upload_failed' });
+      }
+    },
+  );
 
   router.get('/inbox', requirePermission(deps, 'storage:folder:view'), async (req, res) => {
     const session = req.staffSession!;

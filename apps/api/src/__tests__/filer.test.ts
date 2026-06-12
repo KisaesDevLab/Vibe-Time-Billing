@@ -3,6 +3,8 @@
 // Vibe Filer — scan/match + route + undo end-to-end (pglite + fake B2).
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import express from 'express';
+import request from 'supertest';
 import { pino } from 'pino';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -16,6 +18,7 @@ import {
 } from '@vibe/db/schema';
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { scanInbox, matchObject } from '../filer/scan';
+import { createFilerRouter } from '../filer/router';
 import { runFilerRoute } from '../../../worker/src/jobs/filer-route';
 
 const log = pino({ level: 'silent' });
@@ -330,6 +333,82 @@ describe('route + undo', () => {
       .where(eq(inboxRoutingLog.batchId, batchId));
     expect(logRow!.action).toBe('tax_flagged');
     expect(logRow!.taxReturnId).not.toBeNull();
+  });
+});
+
+describe('inbox upload route', () => {
+  function buildApp(storage: StorageClient, firmId: string, appUserId: string): express.Express {
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { staffSession: unknown }).staffSession = { firmId, appUserId };
+      next();
+    });
+    app.use(
+      '/api/staff/filer',
+      createFilerRouter({
+        db: harness.db,
+        storage,
+        fakeUserRoles: new Map([[appUserId, ['admin']]]),
+      }),
+    );
+    return app;
+  }
+
+  it('puts the raw body under Inbox/ and resolves filename collisions', async () => {
+    const f = await setup();
+    const { storage, keys } = fakeStorage([]);
+    const app = buildApp(storage, f.firmId, f.appUserId);
+
+    const res = await request(app)
+      .post('/api/staff/filer/upload')
+      .query({ filename: 'Test Client Co_123456_W2.pdf', mimeType: 'application/pdf' })
+      .set('Content-Type', 'application/pdf')
+      .send(Buffer.from('%PDF-1.4 fake'));
+    expect(res.status).toBe(201);
+    expect(res.body.key).toBe('Inbox/Test Client Co_123456_W2.pdf');
+    expect(keys()).toContain('Inbox/Test Client Co_123456_W2.pdf');
+
+    const dup = await request(app)
+      .post('/api/staff/filer/upload')
+      .query({ filename: 'Test Client Co_123456_W2.pdf' })
+      .set('Content-Type', 'application/pdf')
+      .send(Buffer.from('%PDF-1.4 fake again'));
+    expect(dup.status).toBe(201);
+    expect(dup.body.key).toBe('Inbox/Test Client Co_123456_W2 (2).pdf');
+
+    // A re-scan picks the uploaded object up as a matched inbox item.
+    await scanInbox(harness.db, storage, f.firmId);
+    const rows = await harness.db.select().from(inboxItems).where(eq(inboxItems.firmId, f.firmId));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.matchStatus === 'matched')).toBe(true);
+  });
+
+  it('rejects blocked extensions, missing filename, and empty bodies', async () => {
+    const f = await setup();
+    const { storage, keys } = fakeStorage([]);
+    const app = buildApp(storage, f.firmId, f.appUserId);
+
+    const blocked = await request(app)
+      .post('/api/staff/filer/upload')
+      .query({ filename: 'evil.exe' })
+      .set('Content-Type', 'application/octet-stream')
+      .send(Buffer.from('MZ'));
+    expect(blocked.status).toBe(415);
+
+    const noName = await request(app)
+      .post('/api/staff/filer/upload')
+      .set('Content-Type', 'application/pdf')
+      .send(Buffer.from('x'));
+    expect(noName.status).toBe(400);
+
+    const empty = await request(app)
+      .post('/api/staff/filer/upload')
+      .query({ filename: 'a.pdf' })
+      .set('Content-Type', 'application/pdf')
+      .send();
+    expect(empty.status).toBe(400);
+
+    expect(keys()).toHaveLength(0);
   });
 });
 
