@@ -98,6 +98,12 @@ export function createSharePublicRouter(deps: SharePublicDeps): Router {
       return;
     }
 
+    // 0154 — bundle shares (file_id NULL) are always gated and served
+    // only by the landing-page routes; the legacy direct route can't.
+    if (!share.fileId) {
+      res.status(404).type('text/plain').send('This link is not available here.');
+      return;
+    }
     const [file] = await deps.db
       .select({
         id: files.id,

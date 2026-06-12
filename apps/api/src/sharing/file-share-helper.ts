@@ -11,7 +11,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, count, eq, gte, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { fileShares } from '@vibe/db/schema';
+import { fileShares, fileShareItems } from '@vibe/db/schema';
 import { hashPassword, verifyPassword } from '@vibe/crypto';
 
 export const MAX_SHARE_DAYS = 90;
@@ -25,7 +25,8 @@ export type ShareVerifyChannel = 'NONE' | 'EMAIL' | 'SMS';
 export interface CreateFileShareInput {
   firmId: string;
   clientId: string;
-  fileId: string;
+  /** NULL for a bundle share (files live in file_share_item). */
+  fileId: string | null;
   createdByAppUserId?: string | null;
   createdByPortalIdentityId?: string | null;
   accessLevel: ShareAccessLevel;
@@ -129,6 +130,44 @@ export async function createFileShare(
   });
 
   return { ok: true, shareId, token, expiresAt };
+}
+
+export interface CreateFileShareBundleInput extends Omit<CreateFileShareInput, 'fileId'> {
+  /** The files to bundle behind one link (≥1). */
+  fileIds: string[];
+}
+
+/**
+ * 0154 — create a combined (bundle) share: one file_share row with
+ * file_id NULL + one file_share_item per file. Same token/rate-limit/
+ * gate model as a single-file share; the landing page lists all files.
+ */
+export async function createFileShareBundle(
+  db: Database,
+  input: CreateFileShareBundleInput,
+): Promise<CreateFileShareResult> {
+  const now = input.now ?? new Date();
+  // Reuse the single-file create for token + rate-limit + row insert,
+  // passing fileId null; then attach the item rows.
+  const base = await createFileShare(db, { ...input, fileId: null, now });
+  if (!base.ok) return base;
+  const seen = new Set<string>();
+  for (const fid of input.fileIds) {
+    if (seen.has(fid)) continue;
+    seen.add(fid);
+    await db.insert(fileShareItems).values({ fileShareId: base.shareId, fileId: fid });
+  }
+  return base;
+}
+
+/** File ids covered by a share: the bundle items, or the single file_id. */
+export async function fileShareFileIds(db: Database, share: ResolvedFileShare): Promise<string[]> {
+  if (share.fileId) return [share.fileId];
+  const items = await db
+    .select({ fileId: fileShareItems.fileId })
+    .from(fileShareItems)
+    .where(eq(fileShareItems.fileShareId, share.id));
+  return items.map((i) => i.fileId);
 }
 
 export type ResolvedFileShare = typeof fileShares.$inferSelect;

@@ -3982,9 +3982,9 @@ export const fileShares = pgTable(
     clientId: uuid('client_id')
       .notNull()
       .references(() => clients.id, { onDelete: 'cascade' }),
-    fileId: uuid('file_id')
-      .notNull()
-      .references(() => files.id, { onDelete: 'cascade' }),
+    // 0154 — NULL for a bundle (multi-file) share; the files live in
+    // file_share_item. Single-file shares keep this set.
+    fileId: uuid('file_id').references(() => files.id, { onDelete: 'cascade' }),
     // FK to portal_identity in portal.ts — kept loose to avoid circular
     // imports. Enforced by the migration. Exactly one of this /
     // created_by_app_user_id is set (client vs staff initiator).
@@ -4084,9 +4084,30 @@ export const fileShareOtps = pgTable(
   }),
 );
 
+// 0154 — files in a bundle (multi-file) share. One row per included
+// file; the parent file_share.file_id is NULL for bundles.
+export const fileShareItems = pgTable(
+  'file_share_item',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    fileShareId: uuid('file_share_id')
+      .notNull()
+      .references(() => fileShares.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    shareIdx: index('file_share_item_share_idx').on(t.fileShareId),
+    uk: uniqueIndex('file_share_item_uk').on(t.fileShareId, t.fileId),
+  }),
+);
+
 export type FileShare = typeof fileShares.$inferSelect;
 export type FileShareEvent = typeof fileShareEvents.$inferSelect;
 export type FileShareOtp = typeof fileShareOtps.$inferSelect;
+export type FileShareItem = typeof fileShareItems.$inferSelect;
 
 // =====================================================================
 // 0073 — Appointments (CP12)

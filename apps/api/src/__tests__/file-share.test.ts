@@ -203,6 +203,62 @@ describe('staff file share', () => {
     expect(resolved?.id).toBe(body.shareId);
   });
 
+  it('share-bundle creates ONE combined link to several files (0154)', async () => {
+    const [f2] = await harness.db
+      .insert(files)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        clientFolderId: (
+          await harness.db
+            .select({ id: files.clientFolderId })
+            .from(files)
+            .where(eq(files.id, fileId))
+            .limit(1)
+        )[0]!.id,
+        originalFilename: 'workpapers.pdf',
+        storageKey: `clients/${seed.clientId}/workpapers.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: 99,
+        visibility: 'private',
+      })
+      .returning({ id: files.id });
+    const sent: Array<{ to: string; body: string }> = [];
+    const r = staffRouter(['partner'], (m) => sent.push(m));
+    const res = await invoke(r, 'post', '/share-bundle', {
+      ...staffReq({
+        fileIds: [fileId, f2!.id],
+        recipientEmail: 'jane@lender.example',
+        accessLevel: 'download',
+        expiresInDays: 14,
+      }),
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.jsonBody as { shareId: string; fileCount: number; token: string };
+    expect(body.fileCount).toBe(2);
+    expect(sent[0]!.body).toContain('/shared/file/');
+    // One share row (file_id NULL) with two item rows.
+    const [share] = await harness.db
+      .select()
+      .from(fileShares)
+      .where(eq(fileShares.id, body.shareId));
+    expect(share!.fileId).toBeNull();
+    const { fileShareItems } = await import('@vibe/db/schema');
+    const items = await harness.db
+      .select()
+      .from(fileShareItems)
+      .where(eq(fileShareItems.fileShareId, body.shareId));
+    expect(items).toHaveLength(2);
+  });
+
+  it('share-bundle 403 for a role without storage:file:publish', async () => {
+    const r = staffRouter(['senior']);
+    const res = await invoke(r, 'post', '/share-bundle', {
+      ...staffReq({ fileIds: [fileId], recipientEmail: 'x@y.example' }),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
   it('403 for a role without storage:file:publish', async () => {
     const r = staffRouter(['senior']);
     const res = await invoke(r, 'post', '/:id/share', {

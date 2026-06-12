@@ -21,11 +21,13 @@ import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pgli
 import { createFileRecipientRouter } from '../share-public/file-recipient';
 import { createSharePublicRouter } from '../share-public';
 import { createPortalFileShareRouter } from '../portal/file-shares';
-import { createFileShare } from '../sharing/file-share-helper';
+import { createFileShare, createFileShareBundle } from '../sharing/file-share-helper';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 let fileId: string;
+let fileId2: string;
+let clientFolderId: string;
 let pdfBytes: Buffer;
 
 beforeEach(async () => {
@@ -53,6 +55,21 @@ beforeEach(async () => {
     })
     .returning({ id: files.id });
   fileId = f!.id;
+  clientFolderId = folder!.id;
+  const [f2] = await harness.db
+    .insert(files)
+    .values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      clientFolderId: folder!.id,
+      originalFilename: 'workpapers.pdf',
+      storageKey: `clients/${seed.clientId}/workpapers.pdf`,
+      mimeType: 'application/pdf',
+      sizeBytes: 4321,
+      visibility: 'private',
+    })
+    .returning({ id: files.id });
+  fileId2 = f2!.id;
   const doc = await PDFDocument.create();
   doc.addPage([300, 300]);
   pdfBytes = Buffer.from(await doc.save());
@@ -287,6 +304,88 @@ describe('content + download gating', () => {
     const r = await request(app).get(`/api/shared-file/${token}/download`).set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.headers['content-disposition']).toContain('attachment');
+  });
+});
+
+describe('bundle (combined multi-file) shares — 0154', () => {
+  async function makeBundle(accessLevel: 'view' | 'download' = 'download') {
+    const created = await createFileShareBundle(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fileIds: [fileId, fileId2],
+      createdByAppUserId: seed.appUserId,
+      recipientEmail: 'kurt.recipient@example.com',
+      accessLevel,
+      expiresAt: new Date(Date.now() + 7 * 86_400_000),
+    });
+    if (!created.ok) throw new Error('bundle create failed');
+    return created;
+  }
+
+  async function verifiedCookie(app: express.Express, token: string, sent: { body: string }[]) {
+    await request(app).post(`/api/shared-file/${token}/send-code`);
+    const code = codeFrom(sent as Array<{ body: string }>);
+    const good = await request(app).post(`/api/shared-file/${token}/verify`).send({ code });
+    return cookieFrom(good);
+  }
+
+  it('meta lists every file in the bundle', async () => {
+    const { token } = await makeBundle();
+    const app = buildApp([]);
+    const r = await request(app).get(`/api/shared-file/${token}/meta`);
+    expect(r.status).toBe(200);
+    expect(r.body.bundle).toBe(true);
+    expect(r.body.files).toHaveLength(2);
+    const names = (r.body.files as { fileName: string }[]).map((f) => f.fileName).sort();
+    expect(names).toEqual(['return.pdf', 'workpapers.pdf']);
+  });
+
+  it('serves each bundled file by fileId under one grant', async () => {
+    const { token } = await makeBundle('download');
+    const sent: Array<{ to: string; body: string }> = [];
+    const app = buildApp(sent);
+    const cookie = await verifiedCookie(app, token, sent);
+
+    for (const id of [fileId, fileId2]) {
+      const r = await request(app)
+        .get(`/api/shared-file/${token}/download?fileId=${id}`)
+        .set('Cookie', cookie);
+      expect(r.status).toBe(200);
+      expect(r.headers['content-disposition']).toContain('attachment');
+    }
+  });
+
+  it('rejects a fileId that is not part of the bundle', async () => {
+    // A different client's file must not be reachable via this token.
+    const [outsider] = await harness.db
+      .insert(files)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        clientFolderId,
+        originalFilename: 'not-shared.pdf',
+        storageKey: `clients/${seed.clientId}/not-shared.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+        visibility: 'private',
+      })
+      .returning({ id: files.id });
+    const { token } = await makeBundle('download');
+    const sent: Array<{ to: string; body: string }> = [];
+    const app = buildApp(sent);
+    const cookie = await verifiedCookie(app, token, sent);
+    const r = await request(app)
+      .get(`/api/shared-file/${token}/download?fileId=${outsider!.id}`)
+      .set('Cookie', cookie);
+    expect(r.status).toBe(404);
+  });
+
+  it('content 403s without a grant (gate covers the whole bundle)', async () => {
+    const { token } = await makeBundle();
+    const app = buildApp([]);
+    const r = await request(app).get(`/api/shared-file/${token}/content?fileId=${fileId}`);
+    expect(r.status).toBe(403);
+    expect(r.body.error).toBe('verification_required');
   });
 });
 

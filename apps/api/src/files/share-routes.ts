@@ -17,10 +17,12 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
 import {
   createFileShare,
+  createFileShareBundle,
   deliverShare,
   revokeFileShare,
   type ShareVerifyChannel,
 } from '../sharing/file-share-helper';
+import { inArray } from 'drizzle-orm';
 
 export interface StaffFileShareDeps extends RbacDeps {
   db: Database | null;
@@ -42,6 +44,11 @@ const CreateSchema = z.object({
   verifyChannel: z.enum(['NONE', 'EMAIL', 'SMS']).default('NONE'),
   personalMessage: z.string().max(4000).optional(),
   note: z.string().max(1000).optional(),
+});
+
+// 0154 — bundle share: same fields as a single share + the file id list.
+const BundleSchema = CreateSchema.extend({
+  fileIds: z.array(z.string().uuid()).min(1).max(100),
 });
 
 export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
@@ -156,6 +163,126 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
       res.status(201).json({
         ok: true,
         shareId: result.shareId,
+        expiresAt: result.expiresAt.toISOString(),
+        delivered,
+        ...(includeTokenForTesting ? { token: result.token, link } : {}),
+      });
+    },
+  );
+
+  // POST /share-bundle — one combined gated link to several files (0154).
+  router.post(
+    '/share-bundle',
+    requirePermission(deps, 'storage:file:publish'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = BundleSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const d = parsed.data;
+      const rows = await deps.db
+        .select({
+          id: files.id,
+          clientId: files.clientId,
+          deletedAt: files.deletedAt,
+          pendingUpload: files.pendingUpload,
+        })
+        .from(files)
+        .where(and(eq(files.firmId, session.firmId), inArray(files.id, d.fileIds)));
+      const usable = rows.filter((r) => !r.deletedAt && !r.pendingUpload);
+      if (usable.length === 0) {
+        res.status(400).json({ error: 'no_files' });
+        return;
+      }
+      // A share is scoped to one client; all files must agree.
+      const clientId = usable[0]!.clientId;
+      if (usable.some((r) => r.clientId !== clientId)) {
+        res.status(400).json({ error: 'mixed_clients' });
+        return;
+      }
+
+      const expiresAt = d.expiresInDays
+        ? new Date(Date.now() + d.expiresInDays * 86_400_000)
+        : null;
+      const result = await createFileShareBundle(deps.db, {
+        firmId: session.firmId,
+        clientId,
+        fileIds: usable.map((r) => r.id),
+        createdByAppUserId: session.appUserId,
+        accessLevel: d.accessLevel,
+        recipientName: d.recipientName ?? null,
+        recipientEmail: d.recipientEmail,
+        recipientPhone: d.recipientPhone ?? null,
+        organization: d.organization ?? null,
+        role: d.role ?? null,
+        personalMessage: d.personalMessage ?? null,
+        require2fa: d.require2fa,
+        verifyChannel: d.verifyChannel as ShareVerifyChannel,
+        watermark: d.watermark,
+        note: d.note ?? null,
+        expiresAt,
+      });
+      if (!result.ok) {
+        res.status(429).json({ error: result.error });
+        return;
+      }
+
+      const link = `${deps.portalBaseUrl}/shared/file/${result.token}`;
+      const [firm] = await deps.db
+        .select({ name: firms.name })
+        .from(firms)
+        .where(eq(firms.id, session.firmId))
+        .limit(1);
+      let delivered = { emailed: false, smsed: false };
+      try {
+        delivered = await deliverShare({
+          sendEmail: deps.sendEmail,
+          sendSms: deps.sendSms,
+          recipientEmail: d.recipientEmail,
+          recipientPhone: d.recipientPhone ?? null,
+          verifyChannel: d.verifyChannel,
+          recipientName: d.recipientName ?? null,
+          personalMessage: d.personalMessage ?? null,
+          senderLabel: firm?.name ?? 'Your accountant',
+          link,
+          expiresAt: result.expiresAt,
+        });
+        if (delivered.emailed || delivered.smsed) {
+          await deps.db
+            .update(fileShares)
+            .set({ deliveredAt: new Date() })
+            .where(eq(fileShares.id, result.shareId));
+        }
+      } catch (err) {
+        logger.error({ err, shareId: result.shareId }, 'bundle share delivery failed');
+      }
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'file_share',
+        entityId: result.shareId,
+        actorAppUserId: session.appUserId,
+        after: {
+          bundle: true,
+          fileCount: usable.length,
+          recipientEmail: d.recipientEmail,
+          accessLevel: d.accessLevel,
+          delivered,
+        },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+
+      res.status(201).json({
+        ok: true,
+        shareId: result.shareId,
+        fileCount: usable.length,
         expiresAt: result.expiresAt.toISOString(),
         delivered,
         ...(includeTokenForTesting ? { token: result.token, link } : {}),

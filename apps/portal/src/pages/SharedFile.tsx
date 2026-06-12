@@ -14,12 +14,21 @@ import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { ProtectedPdfViewer } from '../components/ProtectedPdfViewer';
 
+interface ShareFileEntry {
+  fileId: string;
+  fileName: string;
+  isPdf: boolean;
+}
+
 interface ShareMeta {
   state: 'ok' | 'expired' | 'revoked';
   gated?: boolean;
   verified?: boolean;
   fileName?: string;
   isPdf?: boolean;
+  // 0154 — combined (bundle) shares carry the full file list.
+  bundle?: boolean;
+  files?: ShareFileEntry[];
   accessLevel?: 'view' | 'download';
   watermark?: boolean;
   expiresAt?: string | null;
@@ -237,40 +246,94 @@ export function SharedFilePage(): JSX.Element {
     ? `Available until ${new Date(meta.expiresAt).toLocaleDateString()}`
     : 'Available until revoked';
 
-  // ---- Verified (or legacy ungated): show the document. ----
+  // ---- Verified (or legacy ungated): show the document(s). ----
   if (meta.verified) {
+    const isBundle = Boolean(meta.bundle) && (meta.files?.length ?? 0) > 1;
+    const canDownload = meta.accessLevel === 'download';
+    const header = (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        {meta.organization && <Pill tone="accent">{meta.organization}</Pill>}
+        <Pill tone={canDownload ? 'success' : 'neutral'}>
+          {canDownload ? 'Download enabled' : 'View only'}
+        </Pill>
+        <span style={{ fontSize: 12, color: tokens.color.textMuted, alignSelf: 'center' }}>
+          {expiryLine}
+        </span>
+      </div>
+    );
+    const watermarkNote = meta.watermark ? (
+      <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 0 }}>
+        These documents are watermarked and access is logged.
+      </p>
+    ) : null;
+
+    if (isBundle) {
+      const files = meta.files ?? [];
+      return shell(
+        <div style={{ display: 'grid', gap: tokens.space.lg }}>
+          <Card title={`Shared documents (${files.length})`}>
+            {header}
+            {watermarkNote}
+            <div style={{ display: 'grid', gap: 8 }}>
+              {files.map((f) => {
+                const q = `fileId=${encodeURIComponent(f.fileId)}`;
+                return (
+                  <div
+                    key={f.fileId}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '10px 12px',
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, wordBreak: 'break-all' }}>{f.fileName}</span>
+                    <span style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                      <a href={`${base}/content?${q}`} target="_blank" rel="noreferrer">
+                        <Button variant="secondary">Open</Button>
+                      </a>
+                      {canDownload && (
+                        <a href={`${base}/download?${q}`}>
+                          <Button>Download</Button>
+                        </a>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>,
+      );
+    }
+
+    // Single file — first entry's id keeps the URL explicit (also valid
+    // for legacy single shares, which default to the share's one file).
+    const only = meta.files?.[0];
+    const q = only ? `?fileId=${encodeURIComponent(only.fileId)}` : '';
     return shell(
       <div style={{ display: 'grid', gap: tokens.space.lg }}>
         <Card title={meta.fileName ?? 'Shared document'}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            {meta.organization && <Pill tone="accent">{meta.organization}</Pill>}
-            <Pill tone={meta.accessLevel === 'download' ? 'success' : 'neutral'}>
-              {meta.accessLevel === 'download' ? 'Download enabled' : 'View only'}
-            </Pill>
-            <span style={{ fontSize: 12, color: tokens.color.textMuted, alignSelf: 'center' }}>
-              {expiryLine}
-            </span>
-          </div>
-          {meta.watermark && (
-            <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 0 }}>
-              This document is watermarked and access is logged.
-            </p>
-          )}
+          {header}
+          {watermarkNote}
           {meta.isPdf ? (
             <ProtectedPdfViewer
-              url={`${base}/content`}
-              downloadUrl={`${base}/download`}
-              canDownload={meta.accessLevel === 'download'}
+              url={`${base}/content${q}`}
+              downloadUrl={`${base}/download${q}`}
+              canDownload={canDownload}
               filename={meta.fileName ?? 'document.pdf'}
             />
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
-              {meta.accessLevel === 'download' ? (
-                <a href={`${base}/download`}>
+              {canDownload ? (
+                <a href={`${base}/download${q}`}>
                   <Button>Download file</Button>
                 </a>
               ) : (
-                <a href={`${base}/content`} target="_blank" rel="noreferrer">
+                <a href={`${base}/content${q}`} target="_blank" rel="noreferrer">
                   <Button>Open file</Button>
                 </a>
               )}

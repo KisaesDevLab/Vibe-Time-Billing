@@ -14,6 +14,18 @@ export {
 } from './tokens';
 export { Pill, type PillProps } from './Pill';
 export { Paperclip, type PaperclipProps } from './Paperclip';
+export {
+  Lock,
+  Eye,
+  ShareIcon,
+  Flag,
+  Download,
+  Search,
+  ChevronRight,
+  ChevronDown,
+  Folder,
+  type IconProps,
+} from './icons';
 export { ErrorBoundary } from './ErrorBoundary';
 export { Button, type ButtonProps } from './Button';
 export { Input, type InputProps } from './Input';

@@ -21,11 +21,29 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
-import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  ChevronDown,
+  ChevronRight,
+  Combobox,
+  Download,
+  Eye,
+  Flag,
+  Folder,
+  Input,
+  Lock,
+  Pill,
+  Search,
+  ShareIcon,
+  Table,
+  tokens,
+} from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { usePermission } from '../../auth-context';
 import { ShareFileDialog } from './ShareFileDialog';
+import { BulkShareDialog } from './BulkShareDialog';
 import { UnlinkedEmptyState } from './fmv2/UnlinkedEmptyState';
 import { IndexingToast } from './fmv2/IndexingToast';
 import { IndexingProgressBar } from './fmv2/IndexingProgressBar';
@@ -74,6 +92,311 @@ function templateFolderKey(name: string): string {
 }
 
 type VisibilityFilter = 'all' | 'private' | 'client_visible';
+
+/** Icon-only action button with a native-tooltip label (hover popup) +
+ *  accessible name. Used across the Files toolbar + per-row actions. */
+function IconButton({
+  label,
+  onClick,
+  disabled,
+  tone = 'default',
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  tone?: 'default' | 'accent' | 'success' | 'danger';
+  children: React.ReactNode;
+}): JSX.Element {
+  const color =
+    tone === 'accent'
+      ? tokens.color.accent
+      : tone === 'success'
+        ? tokens.color.success
+        : tone === 'danger'
+          ? tokens.color.danger
+          : tokens.color.text;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 30,
+        height: 30,
+        borderRadius: tokens.radius.sm,
+        border: `1px solid ${tokens.color.border}`,
+        background: 'transparent',
+        color: disabled ? tokens.color.textMuted : color,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
+        padding: 0,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Folder tree model ───────────────────────────────────────────────────
+// Subfolder keys are slash-delimited with a trailing slash ("Income Tax/",
+// "Income Tax/2025/"). Build a nested tree so the left panel can collapse
+// roots and expand into nested subfolders.
+export interface FolderNode {
+  /** Display segment ("2025"). */
+  name: string;
+  /** Full subfolderPath key for selection + exact-match file count. */
+  path: string;
+  /** Files whose subfolderPath === this exact path. */
+  count: number;
+  children: FolderNode[];
+}
+
+export function buildFolderTree(keys: string[], countOf: (key: string) => number): FolderNode[] {
+  const roots: FolderNode[] = [];
+  const byPath = new Map<string, FolderNode>();
+  // Ensure a node (and all its ancestors) exists for a given key.
+  function ensure(key: string): FolderNode {
+    const existing = byPath.get(key);
+    if (existing) return existing;
+    const trimmed = key.replace(/\/+$/, '');
+    const slash = trimmed.lastIndexOf('/');
+    const name = slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+    const node: FolderNode = { name, path: key, count: countOf(key), children: [] };
+    byPath.set(key, node);
+    if (slash >= 0) {
+      const parentKey = `${trimmed.slice(0, slash)}/`;
+      ensure(parentKey).children.push(node);
+    } else {
+      roots.push(node);
+    }
+    return node;
+  }
+  for (const key of keys) {
+    if (key === '') continue; // folder-root files handled separately
+    ensure(key);
+  }
+  const sortRec = (nodes: FolderNode[]): void => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name));
+    for (const n of nodes) sortRec(n.children);
+  };
+  sortRec(roots);
+  return roots;
+}
+
+/** One selectable row in the folder panel (also used for "All" + root). */
+function FolderRow({
+  label,
+  count,
+  depth,
+  selected,
+  onSelect,
+  mono,
+  chevron,
+}: {
+  label: string;
+  count: number;
+  depth: number;
+  selected: boolean;
+  onSelect: () => void;
+  mono?: boolean;
+  chevron?: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center' }}>
+      <div style={{ width: depth * 14, flexShrink: 0 }} />
+      {chevron ?? (depth > 0 ? <span style={{ width: 18, flexShrink: 0 }} /> : null)}
+      <button
+        type="button"
+        onClick={onSelect}
+        style={{
+          flex: 1,
+          textAlign: 'left',
+          padding: '6px 10px',
+          borderRadius: tokens.radius.sm,
+          background: selected ? tokens.color.accentMuted : 'transparent',
+          color: selected ? tokens.color.accent : tokens.color.text,
+          border: 'none',
+          cursor: 'pointer',
+          fontSize: 13,
+          fontFamily: mono ? tokens.font.mono : tokens.font.body,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {label} <span style={{ color: tokens.color.textMuted }}>({count})</span>
+      </button>
+    </div>
+  );
+}
+
+/** Breadcrumb of the selected folder path + drill-in chips for its
+ *  immediate subfolders (the right-card half of the navigation). */
+function FolderBreadcrumb({
+  selectedPath,
+  onSelect,
+  childChips,
+}: {
+  selectedPath: string | null;
+  onSelect: (path: string | null) => void;
+  childChips: FolderNode[];
+}): JSX.Element | null {
+  // Build crumb segments from the trailing-slash path key.
+  const crumbs: { label: string; path: string | null }[] = [{ label: 'All', path: null }];
+  if (selectedPath && selectedPath !== '') {
+    const segs = selectedPath.replace(/\/+$/, '').split('/');
+    let acc = '';
+    for (const s of segs) {
+      acc += `${s}/`;
+      crumbs.push({ label: s, path: acc });
+    }
+  } else if (selectedPath === '') {
+    crumbs.push({ label: '(folder root)', path: '' });
+  }
+  const showChips = childChips.length > 0;
+  if (crumbs.length === 1 && !showChips) return null;
+  return (
+    <div style={{ marginBottom: 10, display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+        {crumbs.map((c, i) => {
+          const last = i === crumbs.length - 1;
+          return (
+            <span
+              key={c.path ?? '__all__'}
+              style={{ display: 'inline-flex', alignItems: 'center' }}
+            >
+              {i > 0 && (
+                <span style={{ color: tokens.color.textMuted, margin: '0 2px' }}>
+                  <ChevronRight size={12} />
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => onSelect(c.path)}
+                disabled={last}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: '2px 4px',
+                  fontSize: 13,
+                  cursor: last ? 'default' : 'pointer',
+                  color: last ? tokens.color.text : tokens.color.accent,
+                  fontWeight: last ? 600 : 400,
+                  fontFamily: c.path ? tokens.font.mono : tokens.font.body,
+                }}
+              >
+                {c.label}
+              </button>
+            </span>
+          );
+        })}
+      </div>
+      {showChips && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {childChips.map((node) => (
+            <button
+              key={node.path}
+              type="button"
+              onClick={() => onSelect(node.path)}
+              title={`Open ${node.name}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 10px',
+                borderRadius: tokens.radius.pill,
+                border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+                cursor: 'pointer',
+                fontSize: 12,
+                fontFamily: tokens.font.mono,
+              }}
+            >
+              <Folder size={13} color={tokens.color.textMuted} />
+              {node.name}
+              <span style={{ color: tokens.color.textMuted }}>({node.count})</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Recursive folder-tree node: a row plus its children when expanded. */
+function FolderTreeNode({
+  node,
+  depth,
+  selectedPath,
+  expanded,
+  onSelect,
+  onToggle,
+}: {
+  node: FolderNode;
+  depth: number;
+  selectedPath: string | null;
+  expanded: Set<string>;
+  onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
+}): JSX.Element {
+  const hasChildren = node.children.length > 0;
+  const isOpen = expanded.has(node.path);
+  const chevron = hasChildren ? (
+    <button
+      type="button"
+      aria-label={isOpen ? `Collapse ${node.name}` : `Expand ${node.name}`}
+      onClick={() => onToggle(node.path)}
+      style={{
+        width: 18,
+        flexShrink: 0,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'transparent',
+        border: 'none',
+        color: tokens.color.textMuted,
+        cursor: 'pointer',
+        padding: 0,
+      }}
+    >
+      {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+    </button>
+  ) : (
+    <span style={{ width: 18, flexShrink: 0 }} />
+  );
+  return (
+    <>
+      <FolderRow
+        label={node.name}
+        count={node.count}
+        depth={depth}
+        mono
+        selected={selectedPath === node.path}
+        onSelect={() => onSelect(node.path)}
+        chevron={chevron}
+      />
+      {isOpen &&
+        node.children.map((child) => (
+          <FolderTreeNode
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            expanded={expanded}
+            onSelect={onSelect}
+            onToggle={onToggle}
+          />
+        ))}
+    </>
+  );
+}
 
 const CATEGORIES = [
   { value: 'invoice', label: 'Invoice' },
@@ -137,6 +460,8 @@ export function ClientFilesTab({
   const [search, setSearch] = useState('');
   const [selectedSubfolder, setSelectedSubfolder] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Expanded folder-tree nodes (by full path key) in the left panel.
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -215,6 +540,51 @@ export function ClientFilesTab({
     }
     return Array.from(keys).sort();
   }, [data]);
+
+  // Exact-match file count per subfolder key (for tree node badges).
+  const folderCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const f of data?.items ?? []) m.set(f.subfolderPath, (m.get(f.subfolderPath) ?? 0) + 1);
+    return m;
+  }, [data]);
+
+  const folderTree = useMemo(
+    () => buildFolderTree(subfolders, (k) => folderCounts.get(k) ?? 0),
+    [subfolders, folderCounts],
+  );
+  const rootFileCount = folderCounts.get('') ?? 0;
+
+  // Immediate child subfolders of the selected node — surfaced as
+  // drill-in chips in the right card so you can descend from either side.
+  const childChips = useMemo(() => {
+    if (selectedSubfolder === null) return folderTree; // "All" → top-level folders
+    const trimmed = selectedSubfolder.replace(/\/+$/, '');
+    const find = (nodes: FolderNode[]): FolderNode | null => {
+      for (const n of nodes) {
+        if (n.path === selectedSubfolder) return n;
+        const deeper = find(n.children);
+        if (deeper) return deeper;
+      }
+      return null;
+    };
+    void trimmed;
+    return find(folderTree)?.children ?? [];
+  }, [selectedSubfolder, folderTree]);
+
+  function toggleFolderExpand(path: string): void {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  // Selecting a folder also expands it so its children are visible.
+  function selectFolder(path: string | null): void {
+    setSelectedSubfolder(path);
+    if (path !== null) setExpandedFolders((prev) => new Set(prev).add(path));
+  }
 
   const filtered = useMemo(() => {
     if (!data?.items) return [] as FileRow[];
@@ -310,6 +680,33 @@ export function ClientFilesTab({
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelectedIds(next);
+  }
+
+  // Select-all toggle, scoped to the currently-filtered rows. When every
+  // visible row is already selected, the header checkbox clears them;
+  // otherwise it selects all visible (preserving any selection of rows
+  // hidden by the active filter).
+  const visibleIds = useMemo(() => filtered.map((f) => f.id), [filtered]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected = visibleIds.some((id) => selectedIds.has(id));
+
+  // Selected files that can actually be shared (exclude pending uploads).
+  const selectedShareableIds = useMemo(
+    () =>
+      (data?.items ?? []).filter((f) => selectedIds.has(f.id) && !f.pendingUpload).map((f) => f.id),
+    [data, selectedIds],
+  );
+  const [bulkShareOpen, setBulkShareOpen] = useState(false);
+
+  function toggleSelectAll(): void {
+    setSelectedIds((prev) => {
+      if (allVisibleSelected) {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      }
+      return new Set([...prev, ...visibleIds]);
+    });
   }
 
   if (!canView) {
@@ -461,50 +858,44 @@ export function ClientFilesTab({
       <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: tokens.space.lg }}>
         <Card title="Folders">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <button
-              type="button"
-              onClick={() => setSelectedSubfolder(null)}
-              style={{
-                textAlign: 'left',
-                padding: '6px 10px',
-                borderRadius: tokens.radius.sm,
-                background: selectedSubfolder === null ? tokens.color.accentMuted : 'transparent',
-                color: selectedSubfolder === null ? tokens.color.accent : tokens.color.text,
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 13,
-              }}
-            >
-              All ({data.items.length})
-            </button>
-            {subfolders.map((sf) => {
-              const count = data.items.filter((f) => f.subfolderPath === sf).length;
-              const label = sf === '' ? '(folder root)' : sf;
-              return (
-                <button
-                  key={sf || '__root__'}
-                  type="button"
-                  onClick={() => setSelectedSubfolder(sf)}
-                  style={{
-                    textAlign: 'left',
-                    padding: '6px 10px',
-                    borderRadius: tokens.radius.sm,
-                    background: selectedSubfolder === sf ? tokens.color.accentMuted : 'transparent',
-                    color: selectedSubfolder === sf ? tokens.color.accent : tokens.color.text,
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontSize: 13,
-                    fontFamily: tokens.font.mono,
-                  }}
-                >
-                  {label} <span style={{ color: tokens.color.textMuted }}>({count})</span>
-                </button>
-              );
-            })}
+            <FolderRow
+              label="All"
+              count={data.items.length}
+              depth={0}
+              selected={selectedSubfolder === null}
+              onSelect={() => selectFolder(null)}
+            />
+            {rootFileCount > 0 && (
+              <FolderRow
+                label="(folder root)"
+                count={rootFileCount}
+                depth={0}
+                mono
+                selected={selectedSubfolder === ''}
+                onSelect={() => selectFolder('')}
+              />
+            )}
+            {folderTree.map((node) => (
+              <FolderTreeNode
+                key={node.path}
+                node={node}
+                depth={0}
+                selectedPath={selectedSubfolder}
+                expanded={expandedFolders}
+                onSelect={selectFolder}
+                onToggle={toggleFolderExpand}
+              />
+            ))}
           </div>
         </Card>
 
         <Card>
+          {/* Breadcrumb + drill-in chips (the right-card half of "both"). */}
+          <FolderBreadcrumb
+            selectedPath={selectedSubfolder}
+            onSelect={selectFolder}
+            childChips={childChips}
+          />
           <div
             style={{
               display: 'flex',
@@ -530,25 +921,34 @@ export function ClientFilesTab({
               ]}
             />
             {selectedIds.size > 0 && (
-              <>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
                   {selectedIds.size} selected
                 </span>
-                <Button
+                <IconButton
+                  label="Make client-visible (publish)"
+                  tone="success"
                   disabled={busy || !canPublish}
-                  title={!canPublish ? 'Needs storage:file:publish' : undefined}
                   onClick={() => void bulkSetVisibility('client_visible')}
                 >
-                  Publish
-                </Button>
-                <Button
+                  <Eye size={16} />
+                </IconButton>
+                <IconButton
+                  label="Make private"
                   disabled={busy || !canUnpublish}
-                  title={!canUnpublish ? 'Needs storage:file:unpublish' : undefined}
                   onClick={() => void bulkSetVisibility('private')}
                 >
-                  Make private
-                </Button>
-              </>
+                  <Lock size={16} />
+                </IconButton>
+                <IconButton
+                  label="Share selected files"
+                  tone="accent"
+                  disabled={busy || !canPublish || selectedShareableIds.length === 0}
+                  onClick={() => setBulkShareOpen(true)}
+                >
+                  <ShareIcon size={16} />
+                </IconButton>
+              </div>
             )}
           </div>
 
@@ -559,10 +959,22 @@ export function ClientFilesTab({
             columns={[
               {
                 key: 'select',
-                header: '',
+                header: (
+                  <input
+                    type="checkbox"
+                    aria-label="Select all files"
+                    checked={allVisibleSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected;
+                    }}
+                    disabled={visibleIds.length === 0}
+                    onChange={toggleSelectAll}
+                  />
+                ),
                 render: (r) => (
                   <input
                     type="checkbox"
+                    aria-label={`Select ${r.originalFilename}`}
                     checked={selectedIds.has(r.id)}
                     onChange={() => toggleSelect(r.id)}
                   />
@@ -602,63 +1014,62 @@ export function ClientFilesTab({
               {
                 key: 'visibility',
                 header: 'Visibility',
-                render: (r) => (
-                  <button
-                    type="button"
-                    onClick={() => void toggleVisibility(r)}
-                    title={`Flip to ${r.visibility === 'private' ? 'client_visible' : 'private'}`}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      padding: 0,
-                    }}
-                  >
-                    <Pill tone={r.visibility === 'client_visible' ? 'success' : 'neutral'}>
-                      {r.visibility === 'client_visible' ? '👁 visible' : '🔒 private'}
-                    </Pill>
-                  </button>
-                ),
+                render: (r) => {
+                  const visible = r.visibility === 'client_visible';
+                  return (
+                    <IconButton
+                      label={
+                        visible
+                          ? 'Client-visible — click to make private'
+                          : 'Private — click to make client-visible'
+                      }
+                      tone={visible ? 'success' : 'default'}
+                      onClick={() => void toggleVisibility(r)}
+                    >
+                      {visible ? <Eye size={16} /> : <Lock size={16} />}
+                    </IconButton>
+                  );
+                },
               },
               {
-                key: 'download',
+                key: 'actions',
                 header: '',
                 render: (r) => (
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     {canPublish && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
+                      <IconButton
+                        label="Share securely with an outside recipient (expiring link)"
+                        tone="accent"
                         onClick={() => setShareFor(r)}
                         disabled={r.pendingUpload}
-                        title="Share this file securely with an outside recipient via an expiring link."
                       >
-                        Share
-                      </Button>
+                        <ShareIcon size={16} />
+                      </IconButton>
                     )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
+                    <IconButton
+                      label="Flag as tax return — creates a draft return that can be released"
                       onClick={() => setFlagFor(r)}
                       disabled={r.pendingUpload}
-                      title="Flag this file as a tax return — creates a draft return that can be released to the client."
                     >
-                      Flag as tax return
-                    </Button>
+                      <Flag size={16} />
+                    </IconButton>
                     {isPdfFile(r) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
+                      <IconButton
+                        label="Preview this PDF in the browser"
                         onClick={() => void preview(r)}
                         disabled={r.pendingUpload}
-                        title="Preview this PDF in the browser without downloading."
                       >
-                        Preview
-                      </Button>
+                        <Search size={16} />
+                      </IconButton>
                     )}
-                    <Button onClick={() => void download(r)} disabled={r.pendingUpload}>
-                      Download
-                    </Button>
+                    <IconButton
+                      label="Download"
+                      tone="accent"
+                      onClick={() => void download(r)}
+                      disabled={r.pendingUpload}
+                    >
+                      <Download size={16} />
+                    </IconButton>
                   </div>
                 ),
               },
@@ -683,6 +1094,17 @@ export function ClientFilesTab({
           file={shareFor}
           onClose={() => setShareFor(null)}
           onShared={() => setShareFor(null)}
+        />
+      )}
+
+      {bulkShareOpen && (
+        <BulkShareDialog
+          fileIds={selectedShareableIds}
+          onClose={() => setBulkShareOpen(false)}
+          onShared={() => {
+            setBulkShareOpen(false);
+            setSelectedIds(new Set());
+          }}
         />
       )}
 

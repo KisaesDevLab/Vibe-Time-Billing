@@ -28,7 +28,7 @@
 import express, { type Request, type Response, type Router, type NextFunction } from 'express';
 import { parse as parseCookies, serialize as serializeCookie } from 'cookie';
 import type { Redis } from 'ioredis';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -38,6 +38,7 @@ import { checkAndIncrement } from '@vibe/core/auth';
 
 import { logger } from '../logger';
 import {
+  fileShareFileIds,
   resolveFileShareToken,
   revokeFileShare,
   type ResolvedFileShare,
@@ -181,6 +182,34 @@ export function createFileRecipientRouter(deps: FileRecipientDeps): Router {
     return 'ok';
   }
 
+  // The live (non-deleted) files behind a share — one for a single share,
+  // many for a 0154 bundle.
+  async function loadShareFiles(
+    share: ResolvedFileShare,
+  ): Promise<{ fileId: string; fileName: string; mimeType: string | null; isPdf: boolean }[]> {
+    const db = deps.db!;
+    const ids = await fileShareFileIds(db, share);
+    if (ids.length === 0) return [];
+    const rows = await db
+      .select({
+        id: files.id,
+        originalFilename: files.originalFilename,
+        mimeType: files.mimeType,
+        deletedAt: files.deletedAt,
+        pendingUpload: files.pendingUpload,
+      })
+      .from(files)
+      .where(inArray(files.id, ids));
+    return rows
+      .filter((r) => r.deletedAt == null && !r.pendingUpload)
+      .map((r) => ({
+        fileId: r.id,
+        fileName: r.originalFilename,
+        mimeType: r.mimeType,
+        isPdf: isPdf(r.mimeType, r.originalFilename),
+      }));
+  }
+
   // ----------------------------------------------------------------
   router.get('/:token/meta', async (req: Request, res: Response) => {
     const ctx = await resolve(req, res);
@@ -192,17 +221,8 @@ export function createFileRecipientRouter(deps: FileRecipientDeps): Router {
       res.json({ state });
       return;
     }
-    const [file] = await db
-      .select({
-        originalFilename: files.originalFilename,
-        mimeType: files.mimeType,
-        deletedAt: files.deletedAt,
-        pendingUpload: files.pendingUpload,
-      })
-      .from(files)
-      .where(eq(files.id, share.fileId))
-      .limit(1);
-    if (!file || file.deletedAt != null || file.pendingUpload) {
+    const shareFiles = await loadShareFiles(share);
+    if (shareFiles.length === 0) {
       res.json({ state: 'revoked' });
       return;
     }
@@ -211,12 +231,17 @@ export function createFileRecipientRouter(deps: FileRecipientDeps): Router {
     // Destination preview without creating a challenge (mask only).
     const channel = share.verifyChannel === 'SMS' && share.recipientPhone ? 'SMS' : 'EMAIL';
     const destination = channel === 'SMS' ? share.recipientPhone : share.recipientEmail;
+    const first = shareFiles[0]!;
     res.json({
       state: 'ok',
       gated: share.gated,
       verified,
-      fileName: file.originalFilename,
-      isPdf: isPdf(file.mimeType, file.originalFilename),
+      // Back-compat single-file fields (first file) + the full list. A
+      // bundle has bundle:true and files.length > 1.
+      bundle: shareFiles.length > 1,
+      fileName: first.fileName,
+      isPdf: first.isPdf,
+      files: shareFiles.map((f) => ({ fileId: f.fileId, fileName: f.fileName, isPdf: f.isPdf })),
       accessLevel: share.accessLevel,
       watermark: share.watermark,
       expiresAt: share.expiresAt?.toISOString() ?? null,
@@ -398,6 +423,17 @@ export function createFileRecipientRouter(deps: FileRecipientDeps): Router {
       res.status(403).json({ error: 'view_only' });
       return;
     }
+    // Pick the requested file, authorized against the share's file set
+    // (the single file_id, or any file in a 0154 bundle). A bundle must
+    // name a fileId; a single share defaults to its one file.
+    const allowedIds = new Set(await fileShareFileIds(db, share));
+    const requestedId =
+      typeof req.query['fileId'] === 'string' ? req.query['fileId'] : (share.fileId ?? null);
+    if (!requestedId || !allowedIds.has(requestedId)) {
+      await logShareEvent(db, share.id, 'denied_file_gone', ip, userAgent);
+      res.status(404).json({ error: 'file_not_found' });
+      return;
+    }
     const [file] = await db
       .select({
         storageKey: files.storageKey,
@@ -407,7 +443,7 @@ export function createFileRecipientRouter(deps: FileRecipientDeps): Router {
         pendingUpload: files.pendingUpload,
       })
       .from(files)
-      .where(eq(files.id, share.fileId))
+      .where(eq(files.id, requestedId))
       .limit(1);
     if (!file || file.deletedAt != null || file.pendingUpload) {
       await logShareEvent(db, share.id, 'denied_file_gone', ip, userAgent);
