@@ -82,6 +82,8 @@ const ClientSchema = z.object({
   clientType: z.enum(['INDIVIDUAL', 'BUSINESS']).optional(),
   clientFacingName: z.string().max(200).nullable().optional(),
   externalId: z.string().max(120).nullable().optional(),
+  // 0152 — second identifier for the Vibe Filer document mapper.
+  awsId: z.string().max(120).nullable().optional(),
   filingStatus: z.enum(['SINGLE', 'MFJ', 'MFS', 'HOH', 'QW']).nullable().optional(),
   sourceId: z.string().uuid().nullable().optional(),
   pipelineStage: z.enum(['PROSPECT', 'CLIENT', 'OTHER']).optional(),
@@ -230,6 +232,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         status: clients.status,
         clientType: clients.clientType,
         externalId: clients.externalId,
+        awsId: clients.awsId,
         partnerInChargeId: clients.partnerInChargeId,
         partnerName: appUsers.fullName,
         officeId: clients.officeId,

@@ -43,7 +43,20 @@ interface ClientLite {
   id: string;
   name: string;
   externalId: string | null;
+  // 0152 — second identifier ("AWS Id"); the matcher accepts either.
+  // Optional so pure-matcher callers/tests without one stay terse.
+  awsId?: string | null;
   status: string;
+}
+
+/** The client's identifiers usable for filename matching, trimmed. */
+function clientIds(c: ClientLite): string[] {
+  const out: string[] = [];
+  for (const id of [c.externalId, c.awsId]) {
+    const t = id?.trim();
+    if (t) out.push(t);
+  }
+  return out;
 }
 
 export interface MatchResult {
@@ -87,28 +100,34 @@ export function matchObject(
   // (No early unparseable return — a unique external-id hit anywhere in
   // the filename still matches even when the name segment is unusable.)
 
-  // 1. ID hit against clients.external_id. Strict `name_ID_rest` slot
-  //    first; failing that, try every id-pattern token anywhere in the
-  //    filename (a hit is only taken when exactly ONE client matches —
-  //    ambiguity falls through to the name path).
+  // 1. ID hit against clients.external_id OR clients.aws_id (0152 —
+  //    some export pipelines stamp filenames with the AWS Id instead).
+  //    Strict `name_ID_rest` slot first; failing that, try every
+  //    id-pattern token anywhere in the filename (a hit is only taken
+  //    when exactly ONE client matches — ambiguity falls through to the
+  //    name path).
   let client: ClientLite | null = null;
   let status: MatchStatus = 'unparseable';
   let strictIdHit = false;
   if (parsed.id) {
-    client = clientList.find((c) => c.externalId && c.externalId === parsed.id) ?? null;
+    client = clientList.find((c) => clientIds(c).includes(parsed.id!)) ?? null;
     strictIdHit = client != null;
   }
   if (!client) {
-    // Client-driven scan: look for each client's actual external id
-    // anywhere in the filename. Handles alphanumeric ids (ALLE1234)
-    // that the digit-run pattern can't see. Boundary-guarded so an id
-    // can't match inside a longer token, min length 4 to avoid noise,
-    // case-insensitive. Taken only on a unique client hit.
+    // Client-driven scan: look for each client's actual ids (external
+    // or AWS) anywhere in the filename. Handles alphanumeric ids
+    // (ALLE1234) that the digit-run pattern can't see. Boundary-guarded
+    // so an id can't match inside a longer token, min length 4 to avoid
+    // noise, case-insensitive. Taken only on a unique client hit.
     const hits = new Map<string, { c: ClientLite; id: string }>();
     for (const c of clientList) {
-      const id = c.externalId?.trim();
-      if (!id || id.length < 4) continue;
-      if (idAppearsIn(originalName, id)) hits.set(c.id, { c, id });
+      for (const id of clientIds(c)) {
+        if (id.length < 4) continue;
+        if (idAppearsIn(originalName, id)) {
+          hits.set(c.id, { c, id });
+          break;
+        }
+      }
     }
     if (hits.size === 1) {
       const only = [...hits.values()][0]!;
@@ -231,6 +250,7 @@ export async function scanInbox(
       id: clients.id,
       name: clients.name,
       externalId: clients.externalId,
+      awsId: clients.awsId,
       status: clients.status,
     })
     .from(clients)

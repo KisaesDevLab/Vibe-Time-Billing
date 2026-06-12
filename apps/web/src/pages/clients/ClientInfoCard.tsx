@@ -24,6 +24,8 @@ interface Client {
   clientType?: 'INDIVIDUAL' | 'BUSINESS';
   clientFacingName?: string | null;
   externalId?: string | null;
+  // 0152 — second identifier for the Vibe Filer document mapper.
+  awsId?: string | null;
   filingStatus?: 'SINGLE' | 'MFJ' | 'MFS' | 'HOH' | 'QW' | null;
   pipelineStage?: 'PROSPECT' | 'CLIENT' | 'OTHER';
   active?: boolean;
@@ -198,6 +200,13 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
               style={fieldStyle}
             />
           </Field>
+          <Field label="AWS ID">
+            <input
+              value={(v('awsId') as string) ?? ''}
+              onChange={(e) => setDraft({ ...draft, awsId: e.target.value || null })}
+              style={fieldStyle}
+            />
+          </Field>
           <Field label="Client type">
             <Combobox
               ariaLabel="Client type"
@@ -366,6 +375,12 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
             <>
               <dt style={{ color: tokens.color.textMuted }}>External ID</dt>
               <dd style={{ margin: 0 }}>{client.externalId}</dd>
+            </>
+          )}
+          {client.awsId && (
+            <>
+              <dt style={{ color: tokens.color.textMuted }}>AWS ID</dt>
+              <dd style={{ margin: 0 }}>{client.awsId}</dd>
             </>
           )}
           {client.filingStatus && (

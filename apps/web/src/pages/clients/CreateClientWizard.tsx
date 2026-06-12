@@ -86,6 +86,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
   const [clientFacingName, setClientFacingName] = useState('');
   const [useFacingName, setUseFacingName] = useState(false);
   const [externalId, setExternalId] = useState('');
+  const [awsId, setAwsId] = useState('');
   const [filingStatus, setFilingStatus] = useState<FilingStatus>('');
   const [sourceId, setSourceId] = useState('');
   const [partnerInChargeId, setPartnerInChargeId] = useState('');
@@ -201,6 +202,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
             clientType,
             clientFacingName: useFacingName ? clientFacingName.trim() || null : null,
             externalId: externalId.trim() || null,
+            awsId: awsId.trim() || null,
             filingStatus: clientType === 'INDIVIDUAL' && filingStatus ? filingStatus : null,
             sourceId: sourceId || null,
             pipelineStage,
@@ -346,6 +348,12 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
               value={externalId}
               onChange={(e) => setExternalId(e.target.value)}
               placeholder="(tax-prep system handle)"
+            />
+            <Input
+              label="AWS ID"
+              value={awsId}
+              onChange={(e) => setAwsId(e.target.value)}
+              placeholder="(file-mover identifier)"
             />
           </div>
 

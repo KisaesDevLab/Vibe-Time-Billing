@@ -183,6 +183,34 @@ describe('matchObject (pure)', () => {
       matchObject('XALLE12345_notes.pdf', alnumClients, [], alnumBound).matchedClient,
     ).toBeNull();
   });
+
+  // 0152 — second identifier: the matcher accepts external_id OR aws_id.
+  const awsClients = [
+    ...clientsList,
+    { id: 'c4', name: 'Delta Holdings', externalId: '777777', awsId: 'AWS9001', status: 'ACTIVE' },
+  ];
+  const awsBound = new Set(['c1', 'c2', 'c4']);
+
+  it('aws id: strict name_ID slot matches', () => {
+    const r = matchObject('Delta Holdings_AWS9001_2024.pdf', awsClients, [], awsBound);
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c4');
+  });
+  it('aws id: matches anywhere in the filename', () => {
+    const r = matchObject('2024 K1 AWS9001.pdf', awsClients, [], awsBound);
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c4');
+    expect(r.parsedId).toBe('AWS9001');
+  });
+  it('aws id: external id still wins for the same client', () => {
+    const r = matchObject('Delta Holdings_777777_2024.pdf', awsClients, [], awsBound);
+    expect(r.matchStatus).toBe('matched');
+    expect(r.matchedClient).toBe('c4');
+  });
+  it('aws id: hit on one client + external hit on another → ambiguous, falls through', () => {
+    const r = matchObject('123456 AWS9001 transfer.pdf', awsClients, [], awsBound);
+    expect(r.matchedClient).toBeNull();
+  });
 });
 
 describe('scanInbox', () => {

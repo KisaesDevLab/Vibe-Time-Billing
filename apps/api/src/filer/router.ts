@@ -201,6 +201,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         matchedClient: inboxItems.matchedClient,
         clientName: clients.name,
         clientExternalId: clients.externalId,
+        clientAwsId: clients.awsId,
         suggestedRule: inboxItems.suggestedRule,
         suggestedPath: inboxItems.suggestedPath,
         reviewAction: inboxItems.reviewAction,

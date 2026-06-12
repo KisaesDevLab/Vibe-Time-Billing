@@ -993,6 +993,9 @@ export const clients = pgTable(
     clientType: clientType('client_type').notNull().default('BUSINESS'),
     clientFacingName: text('client_facing_name'),
     externalId: text('external_id'),
+    // 0152 — second identifier for the Vibe Filer document mapper; some
+    // export pipelines stamp filenames with this id instead of external_id.
+    awsId: text('aws_id'),
     filingStatus: filingStatus('filing_status'),
     sourceId: uuid('source_id').references(() => clientSources.id, { onDelete: 'set null' }),
     pipelineStage: pipelineStage('pipeline_stage').notNull().default('CLIENT'),

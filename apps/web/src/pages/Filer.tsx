@@ -53,6 +53,7 @@ interface InboxRow {
   matchedClient: string | null;
   clientName: string | null;
   clientExternalId: string | null;
+  clientAwsId: string | null;
   suggestedRule: string | null;
   suggestedPath: string | null;
   reviewAction: ReviewAction;
@@ -815,9 +816,9 @@ function InboxRowView({
         ) : (
           <div>
             <div style={{ fontWeight: 500 }}>{row.clientName}</div>
-            {row.clientExternalId && (
+            {(row.clientExternalId ?? row.clientAwsId) && (
               <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                · ID {row.clientExternalId}
+                · ID {row.clientExternalId ?? row.clientAwsId}
               </div>
             )}
           </div>
