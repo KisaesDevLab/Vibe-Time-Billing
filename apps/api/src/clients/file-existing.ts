@@ -161,3 +161,99 @@ export async function fileExistingObjectIntoClientFolder(
 
   return { ok: true, fileId: row!.id, storageKey, etag };
 }
+
+// =====================================================================
+// 0153 — put-bytes sibling for the zip-import worker. Same registration
+// path as the copy variant above, but the bytes come from an extracted
+// zip entry, and collisions can SKIP instead of rename (zip import
+// never overwrites and reports what it skipped — re-importing a
+// cumulative export only adds the new files).
+// =====================================================================
+
+export interface FileBytesArgs {
+  firmId: string;
+  clientId: string;
+  actorId: string;
+  /** Full subfolder path under the client folder. */
+  subfolderPath: string;
+  originalFilename: string;
+  body: Buffer;
+  mimeType?: string | null;
+  visibility?: 'private' | 'client_visible';
+  /** Provenance recorded on the row + audit (e.g. 'zip_import'). */
+  source: string;
+  /** 'skip' → same-name file already there returns {code:'exists'}. */
+  onCollision: 'skip' | 'rename';
+}
+
+export type FileBytesResult =
+  | { ok: true; fileId: string; storageKey: string }
+  | { ok: false; code: 'client_folder_not_bound' | 'exists' | 'put_failed'; detail?: string };
+
+export async function fileBytesIntoClientFolder(
+  db: Database,
+  storage: StorageClient,
+  args: FileBytesArgs,
+): Promise<FileBytesResult> {
+  const folder = await loadClientFolder(db, args.firmId, args.clientId);
+  if (!folder) return { ok: false, code: 'client_folder_not_bound' };
+
+  const subfolder = normalizeSubfolderPath(args.subfolderPath);
+  const safeFilename = sanitizeForWindows(args.originalFilename);
+  const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
+
+  let storageKey = desired;
+  if (args.onCollision === 'skip') {
+    if ((await storage.head(desired)) !== null) return { ok: false, code: 'exists' };
+  } else {
+    storageKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+  }
+
+  let etag: string;
+  try {
+    const out = await storage.put(storageKey, args.body, {
+      contentType: args.mimeType ?? 'application/octet-stream',
+    });
+    etag = out.etag;
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'put_failed',
+      detail: err instanceof Error ? err.message : undefined,
+    };
+  }
+
+  const visibility =
+    args.visibility ??
+    coreStorage.resolveDefaultVisibility(subfolder, await loadFirmVisibilityRules(db, args.firmId));
+
+  const [row] = await db
+    .insert(files)
+    .values({
+      firmId: args.firmId,
+      clientId: folder.clientId,
+      clientFolderId: folder.clientFolderId,
+      subfolderPath: subfolder,
+      originalFilename: safeFilename,
+      storageKey,
+      mimeType: args.mimeType ?? null,
+      sizeBytes: args.body.byteLength,
+      etag,
+      category: 'other',
+      source: args.source,
+      visibility,
+      uploadedBy: args.actorId,
+      pendingUpload: false,
+    })
+    .returning({ id: files.id });
+
+  await emitAudit(db, {
+    action: 'CREATE',
+    entityType: 'file',
+    entityId: row?.id ?? null,
+    actorAppUserId: args.actorId,
+    after: { clientId: folder.clientId, storageKey, source: args.source, visibility },
+  }).catch(() => undefined);
+
+  return { ok: true, fileId: row!.id, storageKey };
+}

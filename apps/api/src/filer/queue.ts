@@ -55,3 +55,30 @@ export async function enqueueFilerUndo(job: {
     { jobId: `filer-undo-${job.logId}`, ...jobOpts },
   );
 }
+
+// ── 0153 — zip import ─────────────────────────────────────────────────
+
+export const ZIP_IMPORT_QUEUE = 'zip-import';
+
+export interface ZipImportJob {
+  importId: string;
+  firmId: string;
+  actorId: string;
+}
+
+let zipQueue: Queue<ZipImportJob> | null = null;
+
+export function getZipImportQueue(): Queue<ZipImportJob> {
+  if (zipQueue) return zipQueue;
+  const url = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
+  const connection = new IORedis(url, { maxRetriesPerRequest: null });
+  zipQueue = new Queue<ZipImportJob>(ZIP_IMPORT_QUEUE, { connection });
+  return zipQueue;
+}
+
+export async function enqueueZipImport(job: ZipImportJob): Promise<void> {
+  await getZipImportQueue().add('import', job, {
+    jobId: `zip-import-${job.importId}`,
+    ...jobOpts,
+  });
+}

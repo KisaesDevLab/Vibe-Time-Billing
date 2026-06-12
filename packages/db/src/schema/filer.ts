@@ -9,6 +9,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -145,5 +146,47 @@ export const inboxRoutingLog = pgTable(
       'inbox_routing_log_status_ck',
       sql`${t.status} IN ('success','reversed','error')`,
     ),
+  }),
+);
+
+// =====================================================================
+// 0153 — zip imports: upload a client document export (.zip), match
+// the client from the zip name, pick a destination folder, extract in
+// the worker. Per-entry outcomes (imported / skipped / error) live in
+// `results` JSONB. Mirrors 0153_zip_imports.sql — edit both together.
+// =====================================================================
+
+export interface ZipImportResultEntry {
+  path: string;
+  status: 'imported' | 'skipped' | 'error';
+  detail?: string;
+}
+
+export const zipImports = pgTable(
+  'zip_imports',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    zipName: text('zip_name').notNull(),
+    zipKey: text('zip_key').notNull(),
+    zipSizeBytes: bigint('zip_size_bytes', { mode: 'number' }).notNull().default(0),
+    matchedClient: uuid('matched_client').references(() => clients.id, { onDelete: 'set null' }),
+    destFolder: text('dest_folder'),
+    // draft -> queued -> running -> done | error
+    status: text('status').notNull().default('draft'),
+    totalEntries: integer('total_entries'),
+    importedCount: integer('imported_count'),
+    skippedCount: integer('skipped_count'),
+    errorCount: integer('error_count'),
+    results: jsonb('results').$type<ZipImportResultEntry[]>(),
+    error: text('error'),
+    createdBy: uuid('created_by').references(() => appUsers.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmCreatedIdx: index('zip_imports_firm_created_idx').on(t.firmId, t.createdAt),
   }),
 );

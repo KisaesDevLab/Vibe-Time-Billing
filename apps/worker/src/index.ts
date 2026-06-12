@@ -96,6 +96,7 @@ import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
 import { runIntakeProcess } from './jobs/intake-process';
 import { runFilerRoute, type FilerRouteJob } from './jobs/filer-route';
+import { runZipImport, type ZipImportJob } from './jobs/zip-import';
 import { runInternalMessageNotify } from './jobs/internal-message-notify';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
 import { buildMailDispatch, buildSmsDispatch, buildVoiceDispatch } from './dispatchers';
@@ -827,6 +828,7 @@ async function setup(): Promise<void> {
   // /filer/commit and /filer/.../undo; relocates inbox objects into client
   // folders (copy → log → delete) and reverses it on undo.
   setupFilerRouteQueue();
+  setupZipImportQueue();
 
   // Staff-to-staff message notifications (debounced email/SMS fan-out).
   setupInternalMessageNotifyQueue();
@@ -913,6 +915,39 @@ function setupFilerRouteQueue(): void {
   filerQueueRef = q;
   filerEventsRef = events;
   logger.info({ queueName: FILER_ROUTE_QUEUE }, 'filer-route queue registered');
+}
+
+// 0153 — Vibe Filer zip import (extract a client document export).
+const ZIP_IMPORT_QUEUE = 'zip-import';
+let zipImportWorkerRef: Worker<ZipImportJob> | null = null;
+let zipImportQueueRef: Queue<ZipImportJob> | null = null;
+let zipImportEventsRef: QueueEvents | null = null;
+
+function setupZipImportQueue(): void {
+  if (!db || !storage) {
+    logger.warn(
+      { dbConfigured: Boolean(db), storageConfigured: Boolean(storage) },
+      'zip-import queue not registered — db or storage missing',
+    );
+    return;
+  }
+  const q = new Queue<ZipImportJob>(ZIP_IMPORT_QUEUE, { connection });
+  const events = new QueueEvents(ZIP_IMPORT_QUEUE, { connection });
+  events.on('failed', ({ jobId, failedReason }) => {
+    logger.error({ jobId, queue: ZIP_IMPORT_QUEUE, failedReason }, 'zip-import job failed');
+  });
+  const w = new Worker<ZipImportJob>(
+    ZIP_IMPORT_QUEUE,
+    async (job) => {
+      await runZipImport(db!, storage!, logger, job.data);
+      logger.info({ jobId: job.id, importId: job.data.importId }, 'zip-import complete');
+    },
+    { connection, concurrency: 1 },
+  );
+  zipImportWorkerRef = w;
+  zipImportQueueRef = q;
+  zipImportEventsRef = events;
+  logger.info({ queueName: ZIP_IMPORT_QUEUE }, 'zip-import queue registered');
 }
 
 const INTERNAL_MESSAGE_NOTIFY_QUEUE = 'internal-message-notify';
@@ -1285,6 +1320,9 @@ async function shutdown(): Promise<void> {
   if (filerWorkerRef) await filerWorkerRef.close();
   if (filerQueueRef) await filerQueueRef.close();
   if (filerEventsRef) await filerEventsRef.close();
+  if (zipImportWorkerRef) await zipImportWorkerRef.close();
+  if (zipImportQueueRef) await zipImportQueueRef.close();
+  if (zipImportEventsRef) await zipImportEventsRef.close();
   if (imNotifyWorkerRef) await imNotifyWorkerRef.close();
   if (imNotifyQueueRef) await imNotifyQueueRef.close();
   if (imNotifyEventsRef) await imNotifyEventsRef.close();

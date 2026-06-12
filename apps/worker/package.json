@@ -19,6 +19,7 @@
     "@vibe/db": "workspace:*",
     "@vibe/storage": "workspace:*",
     "@vibe/types": "workspace:*",
+    "adm-zip": "^0.5.17",
     "bullmq": "^5.7.0",
     "drizzle-orm": "^0.30.10",
     "fuse.js": "^7.0.0",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^20.11.0",
     "@types/nodemailer": "^8.0.0",
     "tsx": "^4.7.0",

@@ -14,6 +14,12 @@
 //                + routing engine.
 //   - History  — committed routing batches, with per-batch and per-file
 //                undo.
+//   - Import   — 0153: upload a client document export (.zip), confirm
+//                the auto-matched client (External/AWS Id in the zip
+//                name), pick a destination folder, and the worker
+//                extracts it preserving the zip's structure — never
+//                overwriting (same-name files are skipped + reported),
+//                always internal-only.
 //
 // Mounted at /filer. Matches the dark-theme inline-style conventions of
 // the other staff table pages (TaxReturnsTab / Engagements): @vibe/ui
@@ -182,7 +188,7 @@ function isCommittable(r: InboxRow): boolean {
 
 // ── Top-level page ───────────────────────────────────────────────────────
 
-type Tab = 'inbox' | 'rules' | 'history';
+type Tab = 'inbox' | 'rules' | 'history' | 'import';
 
 export function FilerPage(): JSX.Element {
   const [tab, setTab] = useState<Tab>('inbox');
@@ -192,6 +198,7 @@ export function FilerPage(): JSX.Element {
       <Tabs
         tabs={[
           { key: 'inbox', label: 'Inbox' },
+          { key: 'import', label: 'Import' },
           { key: 'rules', label: 'Rules' },
           { key: 'history', label: 'History' },
         ]}
@@ -199,6 +206,7 @@ export function FilerPage(): JSX.Element {
         onChange={(k) => setTab(k as Tab)}
       />
       {tab === 'inbox' && <InboxTab />}
+      {tab === 'import' && <ImportTab />}
       {tab === 'rules' && <RulesTab />}
       {tab === 'history' && <HistoryTab />}
     </div>
@@ -978,6 +986,490 @@ function CommitConfirmDialog({
         </Card>
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Import tab (0153) — zip import
+// ═══════════════════════════════════════════════════════════════════════
+
+type ZipImportStatus = 'draft' | 'queued' | 'running' | 'done' | 'error';
+
+interface ZipImportRow {
+  id: string;
+  zipName: string;
+  zipSizeBytes: number;
+  matchedClient: string | null;
+  clientName: string | null;
+  destFolder: string | null;
+  status: ZipImportStatus;
+  totalEntries: number | null;
+  importedCount: number | null;
+  skippedCount: number | null;
+  errorCount: number | null;
+  error: string | null;
+  createdAt: string;
+}
+
+interface ZipImportResult {
+  path: string;
+  status: 'imported' | 'skipped' | 'error';
+  detail?: string;
+}
+
+const IMPORT_STATUS_TONE: Record<ZipImportStatus, 'success' | 'warning' | 'danger'> = {
+  draft: 'warning',
+  queued: 'warning',
+  running: 'warning',
+  done: 'success',
+  error: 'danger',
+};
+
+function ImportTab(): JSX.Element {
+  const [imports, setImports] = useState<ZipImportRow[]>([]);
+  const [clients, setClients] = useState<ClientPick[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // The import being configured (after upload) or watched (after start).
+  const [draft, setDraft] = useState<{
+    id: string;
+    zipName: string;
+    sizeBytes: number;
+    status: ZipImportStatus;
+  } | null>(null);
+  const [selectedClient, setSelectedClient] = useState<string>('');
+  const [destFolder, setDestFolder] = useState<string>('');
+  const [folders, setFolders] = useState<string[]>([]);
+  const [active, setActive] = useState<
+    (ZipImportRow & { results: ZipImportResult[] | null }) | null
+  >(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, ZipImportResult[] | null>>({});
+
+  const loadImports = useCallback(async (): Promise<void> => {
+    const r = await api<{ items: ZipImportRow[] }>(`${BASE}/import`);
+    setImports(r.items ?? []);
+  }, []);
+
+  useEffect(() => {
+    void loadImports().catch((err) =>
+      setError(err instanceof Error ? err.message : 'failed to load imports'),
+    );
+    void api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients?limit=500')
+      .then((r) => setClients(r.rows ?? r.items ?? []))
+      .catch(() => undefined);
+  }, [loadImports]);
+
+  // Folder list for the destination dropdown follows the chosen client.
+  useEffect(() => {
+    if (!selectedClient) {
+      setFolders([]);
+      return;
+    }
+    void api<{ folders: string[] }>(`${BASE}/clients/${selectedClient}/folders`)
+      .then((r) => setFolders(r.folders ?? []))
+      .catch(() => setFolders([]));
+  }, [selectedClient]);
+
+  // Poll the active import while the worker is on it.
+  useEffect(() => {
+    if (!active || (active.status !== 'queued' && active.status !== 'running')) return;
+    const t = setInterval(() => {
+      void api<{ item: ZipImportRow & { results: ZipImportResult[] | null } }>(
+        `${BASE}/import/${active.id}`,
+      )
+        .then((r) => {
+          setActive(r.item);
+          if (r.item.status === 'done' || r.item.status === 'error') void loadImports();
+        })
+        .catch(() => undefined);
+    }, 2000);
+    return () => clearInterval(t);
+  }, [active, loadImports]);
+
+  async function uploadZip(fileList: FileList | File[]): Promise<void> {
+    const f = Array.from(fileList)[0];
+    if (!f || uploading) return;
+    if (!f.name.toLowerCase().endsWith('.zip')) {
+      setError('Please choose a .zip file.');
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    setActive(null);
+    try {
+      const qs = new URLSearchParams({ filename: f.name });
+      const res = await fetch(`${BASE}/import/upload?${qs.toString()}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-CSRF-Token': getCsrfToken() ?? '',
+        },
+        body: f,
+        credentials: 'same-origin',
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? `upload failed (${res.status})`);
+      }
+      const r = (await res.json()) as {
+        id: string;
+        zipName: string;
+        sizeBytes: number;
+        matchedClient: string | null;
+      };
+      setDraft({ id: r.id, zipName: r.zipName, sizeBytes: r.sizeBytes, status: 'draft' });
+      setSelectedClient(r.matchedClient ?? '');
+      setDestFolder('');
+      await loadImports();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function startImport(): Promise<void> {
+    if (!draft || !selectedClient) return;
+    setError(null);
+    try {
+      await api(`${BASE}/import/${draft.id}/start`, {
+        method: 'POST',
+        body: JSON.stringify({ clientId: selectedClient, destFolder: destFolder.trim() }),
+      });
+      const r = await api<{ item: ZipImportRow & { results: ZipImportResult[] | null } }>(
+        `${BASE}/import/${draft.id}`,
+      );
+      setActive(r.item);
+      setDraft(null);
+      await loadImports();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'start failed');
+    }
+  }
+
+  async function toggleExpand(id: string): Promise<void> {
+    if (expanded === id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(id);
+    if (!(id in details)) {
+      try {
+        const r = await api<{ item: { results: ZipImportResult[] | null } }>(
+          `${BASE}/import/${id}`,
+        );
+        setDetails((prev) => ({ ...prev, [id]: r.item.results }));
+      } catch {
+        setDetails((prev) => ({ ...prev, [id]: null }));
+      }
+    }
+  }
+
+  const clientOptions = useMemo(
+    () =>
+      clients
+        .map((c) => ({ value: c.id, label: c.externalId ? `${c.name} · ${c.externalId}` : c.name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [clients],
+  );
+
+  return (
+    <Card title="Import a document zip">
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+          {error}
+        </p>
+      )}
+
+      <div style={{ display: 'grid', gap: 16 }}>
+        <div
+          onDragEnter={(e) => {
+            e.preventDefault();
+            dragDepth.current += 1;
+            setDragActive(true);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={() => {
+            dragDepth.current -= 1;
+            if (dragDepth.current <= 0) {
+              dragDepth.current = 0;
+              setDragActive(false);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            dragDepth.current = 0;
+            setDragActive(false);
+            void uploadZip(e.dataTransfer.files);
+          }}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '18px 12px',
+            border: `2px dashed ${dragActive ? tokens.color.accent : tokens.color.border}`,
+            borderRadius: tokens.radius.sm,
+            background: dragActive ? tokens.color.surface : 'transparent',
+            color: tokens.color.textMuted,
+            fontSize: 13,
+          }}
+        >
+          {uploading ? (
+            <span>Uploading…</span>
+          ) : (
+            <>
+              <span>Drag &amp; drop a .zip here, or</span>
+              <Button size="sm" variant="secondary" onClick={() => fileInputRef.current?.click()}>
+                Browse…
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip"
+                aria-label="Upload a zip to import"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  void uploadZip(e.target.files ?? []);
+                  e.target.value = '';
+                }}
+              />
+            </>
+          )}
+        </div>
+
+        {draft && (
+          <div
+            style={{
+              display: 'grid',
+              gap: 12,
+              padding: 12,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+              background: tokens.color.surface,
+            }}
+          >
+            <strong style={{ fontSize: 13 }}>
+              {draft.zipName}{' '}
+              <span style={{ color: tokens.color.textMuted, fontWeight: 400 }}>
+                ({formatSize(draft.sizeBytes)})
+              </span>
+            </strong>
+            <div style={{ display: 'grid', gap: 12, gridTemplateColumns: '1fr 1fr' }}>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={labelStyle}>
+                  Client {selectedClient ? '(matched from zip name)' : '— no match, choose one'}
+                </label>
+                <Combobox
+                  ariaLabel="Import client"
+                  value={selectedClient}
+                  onChange={setSelectedClient}
+                  options={clientOptions}
+                  placeholder="Select client…"
+                />
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={labelStyle}>
+                  Destination folder (zip structure preserved underneath)
+                </label>
+                <input
+                  type="text"
+                  aria-label="Destination folder"
+                  placeholder="e.g. Payroll"
+                  value={destFolder}
+                  onChange={(e) => setDestFolder(e.target.value)}
+                  list="zip-import-folders"
+                  style={controlStyle}
+                />
+                <datalist id="zip-import-folders">
+                  {folders.map((f) => (
+                    <option key={f} value={f} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Button variant="ghost" onClick={() => setDraft(null)}>
+                Cancel
+              </Button>
+              <Button disabled={!selectedClient} onClick={() => void startImport()}>
+                Start import
+              </Button>
+            </div>
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+              Existing files with the same name are never overwritten — they are skipped and listed
+              in the result. Imported files start internal-only (not visible in the portal).
+            </p>
+          </div>
+        )}
+
+        {active && (
+          <div
+            style={{
+              display: 'grid',
+              gap: 8,
+              padding: 12,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+            }}
+          >
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Pill tone={IMPORT_STATUS_TONE[active.status]}>{active.status}</Pill>
+              <strong style={{ fontSize: 13 }}>{active.zipName}</strong>
+              {(active.status === 'queued' || active.status === 'running') && (
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>extracting…</span>
+              )}
+              {active.status === 'done' && (
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {active.importedCount} imported · {active.skippedCount} skipped ·{' '}
+                  {active.errorCount} errors
+                </span>
+              )}
+              {active.status === 'error' && (
+                <span style={{ fontSize: 12, color: tokens.color.danger }}>{active.error}</span>
+              )}
+            </div>
+            {active.results && active.results.length > 0 && (
+              <ImportResults results={active.results} />
+            )}
+          </div>
+        )}
+
+        {/* Recent imports */}
+        {imports.length > 0 && (
+          <div style={{ overflowX: 'auto' }}>
+            <table
+              style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                fontSize: 13,
+                fontFamily: tokens.font.body,
+              }}
+            >
+              <thead>
+                <tr style={{ background: tokens.color.surface }}>
+                  <th style={th('center')}>{''}</th>
+                  <th style={th()}>When</th>
+                  <th style={th()}>Zip</th>
+                  <th style={th()}>Client</th>
+                  <th style={th()}>Folder</th>
+                  <th style={th()}>Status</th>
+                  <th style={th('right')}>Imported / skipped / errors</th>
+                </tr>
+              </thead>
+              <tbody>
+                {imports.map((row) => {
+                  const open = expanded === row.id;
+                  return (
+                    <Fragment key={row.id}>
+                      <tr style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                        <td style={{ ...td(), textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            aria-label={open ? 'Collapse' : 'Expand'}
+                            onClick={() => void toggleExpand(row.id)}
+                            style={iconBtn(false)}
+                          >
+                            {open ? '▾' : '▸'}
+                          </button>
+                        </td>
+                        <td style={td()}>{new Date(row.createdAt).toLocaleString()}</td>
+                        <td style={td()}>
+                          <div>{row.zipName}</div>
+                          <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                            {formatSize(row.zipSizeBytes)}
+                          </div>
+                        </td>
+                        <td style={td()}>{row.clientName ?? '—'}</td>
+                        <td style={td()}>{row.destFolder || '(client root)'}</td>
+                        <td style={td()}>
+                          <Pill tone={IMPORT_STATUS_TONE[row.status]}>{row.status}</Pill>
+                        </td>
+                        <td style={{ ...td(), textAlign: 'right' }}>
+                          {row.status === 'done' || row.status === 'error'
+                            ? `${row.importedCount ?? 0} / ${row.skippedCount ?? 0} / ${row.errorCount ?? 0}`
+                            : '—'}
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr>
+                          <td colSpan={7} style={{ padding: 0 }}>
+                            {details[row.id] === undefined ? (
+                              <div
+                                style={{
+                                  padding: 12,
+                                  fontSize: 12,
+                                  color: tokens.color.textMuted,
+                                }}
+                              >
+                                Loading…
+                              </div>
+                            ) : details[row.id] && details[row.id]!.length > 0 ? (
+                              <div style={{ background: tokens.color.surface, padding: 12 }}>
+                                <ImportResults results={details[row.id]!} />
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  padding: 12,
+                                  fontSize: 12,
+                                  color: tokens.color.textMuted,
+                                }}
+                              >
+                                No per-file results recorded.
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+const IMPORT_RESULT_TONE: Record<ZipImportResult['status'], 'success' | 'warning' | 'danger'> = {
+  imported: 'success',
+  skipped: 'warning',
+  error: 'danger',
+};
+
+function ImportResults({ results }: { results: ZipImportResult[] }): JSX.Element {
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      <thead>
+        <tr>
+          <th style={th()}>File</th>
+          <th style={th()}>Result</th>
+        </tr>
+      </thead>
+      <tbody>
+        {results.map((r) => (
+          <tr key={r.path} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+            <td style={{ ...td(), fontFamily: tokens.font.mono, fontSize: 11 }}>{r.path}</td>
+            <td style={td()}>
+              <Pill tone={IMPORT_RESULT_TONE[r.status]}>{r.status}</Pill>
+              {r.detail && (
+                <span style={{ fontSize: 11, color: tokens.color.textMuted, marginLeft: 6 }}>
+                  {r.detail}
+                </span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

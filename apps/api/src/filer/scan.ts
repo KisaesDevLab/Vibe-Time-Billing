@@ -26,6 +26,10 @@ import {
 } from '@vibe/core/filer';
 
 export const INBOX_PREFIX = process.env['FILER_INBOX_PREFIX'] ?? 'Inbox/';
+// 0153 — temp home for uploaded zip imports awaiting extraction. Lives
+// under Inbox/ (already excluded from storage-sync) but is hidden from
+// the document-inbox scan below.
+export const ZIP_IMPORT_PREFIX = `${INBOX_PREFIX}_imports/`;
 const PLACEHOLDER = '.bzEmpty';
 const FUZZY_THRESHOLD = 0.95;
 const ID_MISMATCH_THRESHOLD = 0.6; // id hit but name this dissimilar → name_mismatch
@@ -39,7 +43,7 @@ export type MatchStatus =
   | 'folder_unbound'
   | 'unparseable';
 
-interface ClientLite {
+export interface ClientLite {
   id: string;
   name: string;
   externalId: string | null;
@@ -71,6 +75,32 @@ export interface MatchResult {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 0153 — zip-import client match. Export pipelines often concatenate the
+ * client id straight onto a timestamp (…084954GAMB1540.zip), so the
+ * boundary-guarded `idAppearsIn` can't see it. Plain case-insensitive
+ * substring containment instead, taken only on a UNIQUE client hit —
+ * the import UI always shows the match for confirmation/override.
+ */
+export function matchClientByIdSubstring(
+  name: string,
+  clientList: ClientLite[],
+): { clientId: string; id: string } | null {
+  const lower = name.toLowerCase();
+  const hits = new Map<string, { clientId: string; id: string }>();
+  for (const c of clientList) {
+    for (const id of clientIds(c)) {
+      if (id.length < 4) continue;
+      if (lower.includes(id.toLowerCase())) {
+        hits.set(c.id, { clientId: c.id, id });
+        break;
+      }
+    }
+  }
+  if (hits.size === 1) return [...hits.values()][0]!;
+  return null;
 }
 
 /** True when `id` appears in `filename` bounded by non-alphanumerics. */
@@ -239,6 +269,7 @@ export async function scanInbox(
   const objects: Array<{ key: string; name: string; size: number; etag: string }> = [];
   for await (const entry of storage.list(INBOX_PREFIX, { recursive: true })) {
     if (entry.kind !== 'object' || !entry.meta) continue;
+    if (entry.key.startsWith(ZIP_IMPORT_PREFIX)) continue; // 0153 — pending zip imports
     const name = entry.key.slice(entry.key.lastIndexOf('/') + 1);
     if (name === PLACEHOLDER || name.length === 0) continue;
     objects.push({ key: entry.key, name, size: entry.meta.sizeBytes, etag: entry.meta.etag });

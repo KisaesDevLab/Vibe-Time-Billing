@@ -38,6 +38,7 @@ import {
   inboxRoutingLog,
   inboxRoutingProfiles,
   inboxRoutingRules,
+  zipImports,
 } from '@vibe/db/schema';
 import {
   buildStorageClient,
@@ -51,11 +52,11 @@ import { evaluateRules, resolveYearSubfolder } from '@vibe/core/filer';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from '../clients/folder-templates';
-import { INBOX_PREFIX, loadActiveRules } from './scan';
+import { INBOX_PREFIX, ZIP_IMPORT_PREFIX, loadActiveRules, matchClientByIdSubstring } from './scan';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { scanInbox } from './scan';
-import { enqueueFilerRoute, enqueueFilerUndo } from './queue';
+import { enqueueFilerRoute, enqueueFilerUndo, enqueueZipImport } from './queue';
 
 export interface FilerRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -323,6 +324,206 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         .where(and(eq(inboxItems.id, row.id), eq(inboxItems.firmId, session.firmId)));
     }
     res.json({ ok: true });
+  });
+
+  // ── 0153 — zip import ─────────────────────────────────────────────
+  //
+  // POST /import/upload?filename=   raw .zip → temp B2 key + client match
+  // POST /import/:id/start          { clientId, destFolder } → worker job
+  // GET  /import                    recent imports
+  // GET  /import/:id                one import incl. per-entry results
+
+  router.post(
+    '/import/upload',
+    requirePermission(deps, 'storage:folder:edit'),
+    express.raw({ type: () => true, limit: MAX_UPLOAD_BYTES + 1024 }),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const filename = String(req.query['filename'] ?? '')
+        .trim()
+        .slice(0, 255);
+      if (!filename.toLowerCase().endsWith('.zip')) {
+        res.status(400).json({ error: 'zip_required' });
+        return;
+      }
+      const body: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      // Zip local-file-header magic: PK\x03\x04 (empty archives use PK\x05\x06).
+      if (body.byteLength < 4 || body[0] !== 0x50 || body[1] !== 0x4b) {
+        res.status(400).json({ error: 'not_a_zip' });
+        return;
+      }
+      if (body.byteLength > MAX_UPLOAD_BYTES) {
+        res.status(413).json({ error: 'file_too_large' });
+        return;
+      }
+      const storage = resolveStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+
+      const importId = randomUUID();
+      const zipKey = `${ZIP_IMPORT_PREFIX}${importId}.zip`;
+      try {
+        await storage.put(zipKey, body, { contentType: 'application/zip' });
+      } catch (err) {
+        logger.warn({ err, filename }, 'zip-import upload failed');
+        res.status(502).json({ error: 'upload_failed' });
+        return;
+      }
+
+      // Client match from the zip name (External Id OR AWS Id, unique
+      // substring hit). The UI shows it for confirmation/override.
+      const clientList = await deps.db
+        .select({
+          id: clients.id,
+          name: clients.name,
+          externalId: clients.externalId,
+          awsId: clients.awsId,
+          status: clients.status,
+        })
+        .from(clients)
+        .where(eq(clients.firmId, session.firmId));
+      const base = filename.replace(/\.zip$/i, '');
+      const match = matchClientByIdSubstring(base, clientList);
+      const matchedClient = match ? clientList.find((c) => c.id === match.clientId) : null;
+
+      await deps.db.insert(zipImports).values({
+        id: importId,
+        firmId: session.firmId,
+        zipName: filename,
+        zipKey,
+        zipSizeBytes: body.byteLength,
+        matchedClient: matchedClient?.id ?? null,
+        createdBy: session.appUserId,
+      });
+      res.status(201).json({
+        id: importId,
+        zipName: filename,
+        sizeBytes: body.byteLength,
+        matchedClient: matchedClient?.id ?? null,
+        clientName: matchedClient?.name ?? null,
+        matchedOnId: match?.id ?? null,
+      });
+    },
+  );
+
+  router.post(
+    '/import/:id/start',
+    requirePermission(deps, 'storage:folder:edit'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const schema = z.object({
+        clientId: z.string().uuid(),
+        destFolder: z.string().max(512).default(''),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const [row] = await deps.db
+        .select({ id: zipImports.id, status: zipImports.status })
+        .from(zipImports)
+        .where(and(eq(zipImports.id, req.params['id']!), eq(zipImports.firmId, session.firmId)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (row.status !== 'draft' && row.status !== 'error') {
+        res.status(409).json({ error: 'already_started' });
+        return;
+      }
+      // The destination client must have a bound folder, else every
+      // entry would fail in the worker — fail fast here instead.
+      const [bound] = await deps.db
+        .select({ id: clientFolders.id })
+        .from(clientFolders)
+        .where(
+          and(
+            eq(clientFolders.clientId, parsed.data.clientId),
+            eq(clientFolders.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!bound) {
+        res.status(400).json({ error: 'folder_unbound' });
+        return;
+      }
+      await deps.db
+        .update(zipImports)
+        .set({
+          matchedClient: parsed.data.clientId,
+          destFolder: parsed.data.destFolder.replace(/^\/+|\/+$/g, ''),
+          status: 'queued',
+          error: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(zipImports.id, row.id));
+      await enqueueZipImport({
+        importId: row.id,
+        firmId: session.firmId,
+        actorId: session.appUserId,
+      });
+      res.status(202).json({ ok: true });
+    },
+  );
+
+  router.get('/import', requirePermission(deps, 'storage:folder:view'), async (req, res) => {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    const items = await deps.db
+      .select({
+        id: zipImports.id,
+        zipName: zipImports.zipName,
+        zipSizeBytes: zipImports.zipSizeBytes,
+        matchedClient: zipImports.matchedClient,
+        clientName: clients.name,
+        destFolder: zipImports.destFolder,
+        status: zipImports.status,
+        totalEntries: zipImports.totalEntries,
+        importedCount: zipImports.importedCount,
+        skippedCount: zipImports.skippedCount,
+        errorCount: zipImports.errorCount,
+        error: zipImports.error,
+        createdAt: zipImports.createdAt,
+      })
+      .from(zipImports)
+      .leftJoin(clients, eq(clients.id, zipImports.matchedClient))
+      .where(eq(zipImports.firmId, session.firmId))
+      .orderBy(desc(zipImports.createdAt))
+      .limit(50);
+    res.json({ items });
+  });
+
+  router.get('/import/:id', requirePermission(deps, 'storage:folder:view'), async (req, res) => {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const [row] = await deps.db
+      .select()
+      .from(zipImports)
+      .where(and(eq(zipImports.id, req.params['id']!), eq(zipImports.firmId, session.firmId)))
+      .limit(1);
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ item: row });
   });
 
   // ── Profiles ──────────────────────────────────────────────────────
