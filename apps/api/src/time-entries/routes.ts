@@ -330,6 +330,27 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
 
+  // Firm time-entry config the logging UI needs (rounding increment).
+  // Readable by any timekeeper so the Hours field can step/clamp to the
+  // firm's increment (0.10 / 0.25 / 0.00 = free decimal).
+  router.get(
+    '/config',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ roundingHours: '0.25' });
+        return;
+      }
+      const [row] = await deps.db
+        .select({ roundingHours: firmSettings.timeEntryRoundingHours })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      res.json({ roundingHours: row?.roundingHours ?? '0.25' });
+    },
+  );
+
   router.post(
     '/',
     requirePermission(deps, 'time_entry:create'),

@@ -113,6 +113,14 @@ function dayLabel(iso: string): string {
   });
 }
 
+// Map the firm rounding setting ('0.10' | '0.25' | '0.00' = free decimal)
+// to the Hours number-input step/min. Free decimal allows any positive value.
+function hoursStepMin(roundingHours: string): { step: number | 'any'; min: number } {
+  if (roundingHours === '0.00') return { step: 'any', min: 0.01 };
+  const n = Number(roundingHours);
+  return Number.isFinite(n) && n > 0 ? { step: n, min: n } : { step: 0.25, min: 0.25 };
+}
+
 export function TimeEntryPage(): JSX.Element {
   const [view, setView] = useState<ViewMode>('log');
   const [engagements, setEngagements] = useState<Engagement[]>([]);
@@ -120,11 +128,13 @@ export function TimeEntryPage(): JSX.Element {
   const [clients, setClients] = useState<Client[]>([]);
   const [statusOptions, setStatusOptions] = useState<StatusOption[]>([]);
   const [pinnedClientIds, setPinnedClientIds] = useState<Set<string>>(new Set());
+  // Firm time-entry rounding increment ('0.10' | '0.25' | '0.00' = free).
+  const [roundingHours, setRoundingHours] = useState('0.25');
 
   useEffect(() => {
     void (async () => {
       try {
-        const [e, w, c, p, s] = await Promise.all([
+        const [e, w, c, p, s, cfg] = await Promise.all([
           api<{ items: Engagement[] }>('/api/staff/engagements'),
           api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
           api<{ items: Client[] }>('/api/staff/clients'),
@@ -134,10 +144,14 @@ export function TimeEntryPage(): JSX.Element {
           api<{ items: StatusOption[] }>('/api/staff/engagement-statuses').catch(() => ({
             items: [],
           })),
+          api<{ roundingHours: string }>('/api/staff/time-entries/config').catch(() => ({
+            roundingHours: '0.25',
+          })),
         ]);
         setEngagements(e.items ?? []);
         setWorkCodes(w.items ?? []);
         setStatusOptions(s.items ?? []);
+        setRoundingHours(cfg.roundingHours ?? '0.25');
         // Sort pinned clients to top of the list.
         const pins = new Set((p.items ?? []).map((x) => x.clientId));
         setPinnedClientIds(pins);
@@ -198,6 +212,7 @@ export function TimeEntryPage(): JSX.Element {
           clients={clients}
           statusOptions={statusOptions}
           pinnedClientIds={pinnedClientIds}
+          roundingHours={roundingHours}
           onTogglePin={(id) => void togglePin(id)}
           onEngagementStatusChanged={(engId, ws) =>
             setEngagements((prev) =>
@@ -304,6 +319,7 @@ function LogView({
   clients,
   statusOptions,
   pinnedClientIds,
+  roundingHours,
   onTogglePin,
   onEngagementStatusChanged,
 }: {
@@ -312,6 +328,7 @@ function LogView({
   clients: Client[];
   statusOptions: StatusOption[];
   pinnedClientIds: Set<string>;
+  roundingHours: string;
   onTogglePin: (clientId: string) => void;
   onEngagementStatusChanged: (engagementId: string, workflowState: string) => void;
 }): JSX.Element {
@@ -680,8 +697,8 @@ function LogView({
           />
           <Input
             type="number"
-            step={0.25}
-            min={0.25}
+            step={hoursStepMin(roundingHours).step}
+            min={hoursStepMin(roundingHours).min}
             max={24}
             label="Hours"
             value={hours}
@@ -1036,8 +1053,8 @@ function LogView({
                     return (
                       <input
                         type="number"
-                        step={0.25}
-                        min={0.25}
+                        step={hoursStepMin(roundingHours).step}
+                        min={hoursStepMin(roundingHours).min}
                         max={24}
                         value={editDraft.hours}
                         onChange={(ev) => setEditDraft({ ...editDraft, hours: ev.target.value })}

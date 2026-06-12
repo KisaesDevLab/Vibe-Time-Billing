@@ -131,3 +131,32 @@ describe('time-entry create with status change', () => {
     expect((r.jsonBody as { error: string }).error).toBe('invalid_workflow_state');
   });
 });
+
+describe('GET /config — firm rounding increment', () => {
+  function router(roles: RoleSlug[]) {
+    return createTimeEntryRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, roles]]),
+    });
+  }
+
+  it('defaults to 0.25 when no firm_settings row exists', async () => {
+    const r = await invoke(router(['staff']), 'get', '/config', req({}));
+    expect(r.statusCode).toBe(200);
+    expect((r.jsonBody as { roundingHours: string }).roundingHours).toBe('0.25');
+  });
+
+  it('returns the firm-configured increment (0.10)', async () => {
+    const { firmSettings } = await import('@vibe/db/schema');
+    await harness.db
+      .insert(firmSettings)
+      .values({ firmId: seed.firmId, timeEntryRoundingHours: '0.10' });
+    const r = await invoke(router(['staff']), 'get', '/config', req({}));
+    expect((r.jsonBody as { roundingHours: string }).roundingHours).toBe('0.10');
+  });
+
+  it('requires time_entry:create (403 without it)', async () => {
+    const r = await invoke(router([]), 'get', '/config', req({}));
+    expect(r.statusCode).toBe(403);
+  });
+});
