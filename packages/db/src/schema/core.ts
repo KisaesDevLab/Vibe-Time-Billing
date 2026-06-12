@@ -364,6 +364,11 @@ export const firmSettings = pgTable('firm_settings', {
   // Step-up TOTP timeout — Q4
   stepUpTimeoutMinutes: integer('step_up_timeout_minutes').notNull().default(30),
 
+  // 0151 — revises locked decision #5: firms running fully internal can
+  // switch off the staff second-factor requirement. When false, password
+  // sign-in issues a session directly and step-up gates pass.
+  staffSecondFactorRequired: boolean('staff_second_factor_required').notNull().default(true),
+
   // Late entry alert threshold (days)
   lateEntryAlertDays: integer('late_entry_alert_days').notNull().default(3),
   lateEntryLockoutDays: integer('late_entry_lockout_days').notNull().default(14),

@@ -37,6 +37,7 @@ interface Settings {
   adjustmentApprovalThresholdCents: number;
   aiMonthlyBudgetCents: number;
   stepUpTimeoutMinutes: number;
+  staffSecondFactorRequired: boolean;
   lateEntryAlertDays: number;
   lateEntryLockoutDays: number;
   invoiceNumberingPrefix: string;
@@ -152,6 +153,7 @@ export function FirmSettingsPage(): JSX.Element {
           adjustmentApprovalThresholdCents: s.adjustmentApprovalThresholdCents,
           aiMonthlyBudgetCents: s.aiMonthlyBudgetCents,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
+          staffSecondFactorRequired: s.staffSecondFactorRequired,
           lateEntryAlertDays: s.lateEntryAlertDays,
           timeEntryRoundingHours: s.timeEntryRoundingHours,
           lateEntryLockoutDays: s.lateEntryLockoutDays,
@@ -342,6 +344,21 @@ export function FirmSettingsPage(): JSX.Element {
             value={s.stepUpTimeoutMinutes}
             onChange={(e) => setS({ ...s, stepUpTimeoutMinutes: Number(e.target.value) })}
           />
+          <div style={{ display: 'grid', gap: 4 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+              <input
+                type="checkbox"
+                checked={s.staffSecondFactorRequired}
+                onChange={(e) => setS({ ...s, staffSecondFactorRequired: e.target.checked })}
+              />
+              Require a second factor for staff sign-in
+            </label>
+            <span style={{ fontSize: 12, color: tokens.color.textMuted, paddingLeft: 24 }}>
+              When off, a correct password signs staff in directly and sensitive actions skip the
+              step-up prompt. Only disable this on a fully internal deployment that is not reachable
+              from the internet.
+            </span>
+          </div>
         </div>
       </Card>
 

@@ -35,6 +35,7 @@ import { loadConfig } from '../config';
 import { logger } from '../logger';
 import { emitAudit } from './audit';
 import { clearSessionCookie, writeSessionCookie } from './cookies';
+import { isSecondFactorRequired } from './second-factor-policy';
 import type { SessionStore } from './session-store';
 import {
   buildAuthenticationOptions,
@@ -383,6 +384,38 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     const ok = await verifyPassword(parsed.data.password, user.passwordHash);
     if (!ok) {
       res.status(401).json({ error: 'invalid_credentials' });
+      return;
+    }
+
+    // 0151 — when the firm has switched the second-factor requirement
+    // off, a correct password completes sign-in on its own: no factor
+    // challenge, no enrolled-factor prerequisite. `lastStepUpAt` is set
+    // because the firm has opted out of step-up factors entirely.
+    if (!(await isSecondFactorRequired(deps.db, user.firmId))) {
+      const session: StaffSession = {
+        realm: 'staff',
+        sid: generateSessionId(),
+        appUserId: user.id,
+        firmId: user.firmId,
+        createdAt: Date.now(),
+        lastSeenAt: Date.now(),
+        lastStepUpAt: Date.now(),
+        csrfToken: generateCsrfToken(),
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      };
+      await deps.sessionStore.put(session);
+      writeSessionCookie(res, 'staff', session.sid);
+      await emitAudit(deps.db, {
+        action: 'LOGIN',
+        entityType: 'app_user',
+        entityId: user.id,
+        actorAppUserId: user.id,
+        ip: session.ip,
+        userAgent: session.userAgent,
+        after: { method: 'password', factor: null },
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, csrfToken: session.csrfToken, needsTotpEnrollment: false });
       return;
     }
 

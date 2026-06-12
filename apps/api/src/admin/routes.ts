@@ -85,6 +85,8 @@ const FirmSettingsPatchSchema = z.object({
   aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
   timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
   stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
+  // 0151 — firm-level staff second-factor toggle (revises decision #5).
+  staffSecondFactorRequired: z.boolean().optional(),
   lateEntryAlertDays: z.number().int().min(1).max(90).optional(),
   lateEntryLockoutDays: z.number().int().min(1).max(365).optional(),
   invoiceNumberingPrefix: z.string().max(12).optional(),

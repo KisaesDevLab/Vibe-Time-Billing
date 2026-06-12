@@ -753,7 +753,7 @@ export function createApp(deps: AppDeps): Express {
   // Stage 1B — fresh-TOTP step-up with Redis lockout for sensitive ops.
   // Declared here so adjustments + invoices + credits below can share
   // a single instance.
-  const stepUpGuard = requireStepUpWithLockout(deps.redis);
+  const stepUpGuard = requireStepUpWithLockout(deps.redis, deps.db);
 
   const adjustmentRouter = createAdjustmentRouter({
     db: deps.db,

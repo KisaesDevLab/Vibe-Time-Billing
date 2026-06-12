@@ -31,6 +31,9 @@ interface FakeUserState {
   smsOtpEnrolledAt: Date | null;
   emailOtpEnrolledAt: Date | null;
   preferredSecondFactor: 'TOTP' | 'EMAIL' | 'SMS' | null;
+  // 0151 — the stub DB returns the same row for every select, so the
+  // firm-settings policy read sees this field too. Absent = required.
+  staffSecondFactorRequired?: boolean;
 }
 
 function fakeDb(initial: FakeUserState): {
@@ -129,6 +132,33 @@ describe('POST /api/auth/login/password', () => {
     expect(res.body.pendingToken).toBeTypeOf('string');
     expect(res.body.availableFactors).toEqual(['EMAIL']);
     expect(res.body.preferredFactor).toBe('EMAIL');
+  });
+
+  it('0151 — issues a session directly when the firm disabled the second factor', async () => {
+    // No factor enrolled at all — with the requirement off, the password
+    // alone completes sign-in instead of 400 no_factor_enrolled.
+    const user = await buildUser({ staffSecondFactorRequired: false });
+    const { db } = fakeDb(user);
+    harness = await buildTestApp({ db });
+    const res = await request(harness.app)
+      .post('/api/auth/login/password')
+      .send({ email: EMAIL, password: PASSWORD });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.csrfToken).toBeTypeOf('string');
+    expect(res.body.pendingToken).toBeUndefined();
+    expect(getCookie(res, '__vibe_app_session')).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('0151 — still 401s on a wrong password when the second factor is off', async () => {
+    const user = await buildUser({ staffSecondFactorRequired: false });
+    const { db } = fakeDb(user);
+    harness = await buildTestApp({ db });
+    const res = await request(harness.app)
+      .post('/api/auth/login/password')
+      .send({ email: EMAIL, password: WRONG_PASSWORD });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('invalid_credentials');
   });
 
   it('does NOT leak whether the email exists', async () => {

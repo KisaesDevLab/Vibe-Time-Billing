@@ -189,6 +189,8 @@ function PasswordFlow(): JSX.Element {
 }
 
 function PasswordForm({ onPending }: { onPending: (p: PendingState) => void }): JSX.Element {
+  const navigate = useNavigate();
+  const { refresh } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -199,10 +201,21 @@ function PasswordForm({ onPending }: { onPending: (p: PendingState) => void }): 
     setSubmitting(true);
     setError(null);
     try {
-      const r = await api<PendingState>('/api/auth/login/password', {
-        method: 'POST',
-        body: JSON.stringify({ email, password }),
-      });
+      const r = await api<PendingState | { ok: true; csrfToken: string }>(
+        '/api/auth/login/password',
+        {
+          method: 'POST',
+          body: JSON.stringify({ email, password }),
+        },
+      );
+      // 0151 — when the firm has switched the second-factor requirement
+      // off, the password alone completes sign-in (no pending token).
+      if ('csrfToken' in r) {
+        setCsrfToken(r.csrfToken);
+        await refresh();
+        navigate('/', { replace: true });
+        return;
+      }
       onPending(r);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'sign-in failed';

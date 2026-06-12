@@ -47,6 +47,8 @@ Originally TOTP was mandatory and the only option; magic-link + TOTP was the sol
 - **Password** → second-factor challenge (passkey / TOTP / email / SMS) → session.
 - **Passkey** (passwordless / discoverable credential) → session. The WebAuthn assertion itself counts as the step-up.
 
+**Revised again by 0151 (owner request, 2026-06-12):** the requirement is now a firm-level toggle, `firm_settings.staff_second_factor_required` (default **true**, preserving the behavior above). Fully internal deployments can switch it off in Admin → Firm settings; password sign-in then issues a session directly (no factor challenge, no enrolled-factor prerequisite) and the Q4 step-up gates pass without a fresh TOTP/passkey. Magic-link and passkey sign-in are unchanged either way.
+
 Email OTP is opt-in with no separate verification (the user's email is already trusted via the magic-link onboarding path); SMS OTP requires a code round-trip to verify the phone number; passkey enrollment uses the existing post-login `/webauthn/registration/*` flow. Recovery codes are generated only when TOTP is enrolled.
 
 Implementation surface:

@@ -23,6 +23,7 @@ import { firmConfig } from '@vibe/db/schema';
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
+import { isSecondFactorRequired } from './second-factor-policy';
 
 const LOCKOUT_WINDOW_SEC = 15 * 60;
 const LOCKOUT_MAX_FAILURES = 5;
@@ -71,8 +72,13 @@ export async function clearStepUpFailures(redis: Redis, appUserId: string): Prom
  * Replacement for `requireStepUp` that adds Redis-backed lockout.
  * Wraps the same freshness check, but on a stale session it also
  * increments the user's failure counter so probing is bounded.
+ *
+ * 0151 — when the firm has switched the staff second-factor requirement
+ * off, a stale session passes (there may be no enrolled factor left to
+ * challenge). Consulted only on staleness so the common fresh path
+ * stays query-free.
  */
-export function requireStepUpWithLockout(redis: Redis) {
+export function requireStepUpWithLockout(redis: Redis, db?: Database | null) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const session = req.staffSession;
     if (!session) {
@@ -86,6 +92,10 @@ export function requireStepUpWithLockout(redis: Redis) {
     }
     const cfg = loadConfig();
     if (!isStepUpFresh(session, cfg.STEP_UP_TIMEOUT_MINUTES)) {
+      if (!(await isSecondFactorRequired(db ?? null, session.firmId))) {
+        next();
+        return;
+      }
       const lockedNow = await recordStepUpFailure(redis, session.appUserId);
       res.status(403).json({
         error: 'step_up_required',
@@ -131,6 +141,8 @@ export async function ensureStepUpForAmount(
 
   const cfg = loadConfig();
   if (isStepUpFresh(session, cfg.STEP_UP_TIMEOUT_MINUTES)) return true;
+  // 0151 — firm has opted out of the second factor → no step-up to demand.
+  if (!(await isSecondFactorRequired(deps.db, args.firmId))) return true;
 
   const lockedNow = await recordStepUpFailure(deps.redis, session.appUserId);
   res.status(403).json({
