@@ -979,7 +979,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .from(invoiceLineItems)
         .where(eq(invoiceLineItems.invoiceId, inv.id))
         .orderBy(invoiceLineItems.sortOrder);
-      res.json({ invoice: inv, lineItems: lines });
+      // Source billing batch (when the invoice was generated from one) so
+      // the UI can route editing back to the pre-bill screen. Null for
+      // manual / reopened / demo invoices.
+      const batchLine = lines.find((l) => l.sourceRefType === 'billing_batch' && l.sourceRefId);
+      res.json({ invoice: inv, lineItems: lines, billingBatchId: batchLine?.sourceRefId ?? null });
     },
   );
 

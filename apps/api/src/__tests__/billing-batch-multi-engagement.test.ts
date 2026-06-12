@@ -473,6 +473,17 @@ describe('billing-batch multi-engagement', () => {
     expect(lines.find((l) => l.kind === 'SALES_TAX')).toBeUndefined();
     // Total = $800 + $400 = $1200 ($120000c)
     expect(inv!.subtotalCents).toBe(120000);
+
+    // GET /invoices/:id surfaces the source billing batch so the invoice
+    // screen can route editing back to Billing.
+    const detail = await invoke(invoiceRouter, 'get', '/:id', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        params: { id: invoiceId },
+      }),
+    });
+    expect((detail.jsonBody as { billingBatchId: string | null }).billingBatchId).toBe(batchId);
   });
 
   // ── BILLED column + invoiceId + unfinalize ──────────────────────────
