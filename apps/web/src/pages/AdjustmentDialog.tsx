@@ -4,11 +4,22 @@
 // preview live (debounced on input change), and submits. Cascade
 // preview includes the role tier so you can see who absorbs what.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
-import { api } from '../api-client';
+import { api, type ApiError } from '../api-client';
+
+/** Surface the backend `detail` (the real allocation error) when present,
+ *  else the error code, else a fallback. */
+function errText(err: unknown, fallback: string): string {
+  const body = (err as ApiError | undefined)?.body as
+    | { detail?: string; error?: string }
+    | undefined;
+  if (body?.detail) return body.detail;
+  if (err instanceof Error) return err.message;
+  return fallback;
+}
 
 type AllocationMethod =
   | 'SPECIFIC_ENTRIES'
@@ -22,6 +33,15 @@ interface ReasonCode {
   id: string;
   category: 'WRITE_DOWN' | 'WRITE_UP' | 'TRANSFER';
   label: string;
+}
+
+interface BatchEntryLite {
+  timeEntryId: string;
+  appUserId: string;
+  staffName: string | null;
+  standardAmountCents: number;
+  hours: string;
+  action: 'INCLUDE' | 'DEFER' | 'WRITE_OFF';
 }
 
 interface PreviewRow {
@@ -77,6 +97,27 @@ export function AdjustmentDialog({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Included batch entries — needed for SPECIFIC_ENTRIES (per-entry amounts)
+  // and CUSTOM_WEIGHTED (per-timekeeper weights).
+  const [entries, setEntries] = useState<BatchEntryLite[]>([]);
+  // Per-entry amount (dollars, magnitude) for SPECIFIC_ENTRIES.
+  const [entryAmounts, setEntryAmounts] = useState<Record<string, string>>({});
+  // Per-timekeeper percent weight for CUSTOM_WEIGHTED.
+  const [weights, setWeights] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    void api<{ entries: BatchEntryLite[] }>(`/api/staff/billing-batches/${billingBatchId}`)
+      .then((r) => setEntries((r.entries ?? []).filter((e) => e.action === 'INCLUDE')))
+      .catch(() => undefined);
+  }, [billingBatchId]);
+
+  // Distinct timekeepers across the included entries (for Custom weighted).
+  const timekeepers = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of entries) m.set(e.appUserId, e.staffName ?? 'Unknown');
+    return [...m.entries()].map(([appUserId, name]) => ({ appUserId, name }));
+  }, [entries]);
+
   useEffect(() => {
     void api<{ items: ReasonCode[] }>('/api/staff/taxonomy/reason-codes').then((r) => {
       const filtered = (r.items ?? []).filter((rc) =>
@@ -90,9 +131,90 @@ export function AdjustmentDialog({
 
   const totalCents =
     Math.round(Number(amountDollars) * 100) * (direction === 'WRITE_DOWN' ? -1 : 1);
+  const sign = direction === 'WRITE_DOWN' ? -1 : 1;
+
+  // SPECIFIC_ENTRIES: pre-fill per-entry amounts pro-rata by standard value
+  // (re-spreads when the amount or entry set changes; still editable).
+  useEffect(() => {
+    if (allocationMethod !== 'SPECIFIC_ENTRIES' || entries.length === 0) return;
+    const total = Math.abs(totalCents);
+    const sumStd = entries.reduce((s, e) => s + Math.abs(e.standardAmountCents), 0);
+    const next: Record<string, string> = {};
+    for (const e of entries) {
+      const share =
+        sumStd > 0 ? (total * Math.abs(e.standardAmountCents)) / sumStd : total / entries.length;
+      next[e.timeEntryId] = (share / 100).toFixed(2);
+    }
+    setEntryAmounts(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allocationMethod, entries, totalCents]);
+
+  // CUSTOM_WEIGHTED: pre-fill equal percent weights (last absorbs remainder).
+  useEffect(() => {
+    if (allocationMethod !== 'CUSTOM_WEIGHTED' || timekeepers.length === 0) return;
+    const n = timekeepers.length;
+    const base = Math.floor((100 / n) * 100) / 100;
+    const next: Record<string, string> = {};
+    timekeepers.forEach((t, i) => {
+      next[t.appUserId] = (
+        i === n - 1 ? Number((100 - base * (n - 1)).toFixed(2)) : base
+      ).toString();
+    });
+    setWeights(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allocationMethod, timekeepers]);
+
+  // Build the method-specific payload fields.
+  function allocationExtras(): Record<string, unknown> {
+    if (allocationMethod === 'HIERARCHICAL_CASCADE') return { cascadeOrder: CASCADE_DEFAULT };
+    if (allocationMethod === 'SPECIFIC_ENTRIES') {
+      return {
+        entrySelections: entries.map((e) => ({
+          entryId: e.timeEntryId,
+          amountCents: sign * Math.round(Number(entryAmounts[e.timeEntryId] ?? '0') * 100),
+        })),
+      };
+    }
+    if (allocationMethod === 'CUSTOM_WEIGHTED') {
+      return {
+        weightingMode: 'PERCENT',
+        weights: timekeepers.map((t) => ({
+          appUserId: t.appUserId,
+          weight: Number(weights[t.appUserId] ?? '0'),
+        })),
+      };
+    }
+    return {};
+  }
+
+  // Client-side validity for the two methods that need extra input, so the
+  // preview/submit don't bounce with a 400.
+  const specificSumCents = entries.reduce(
+    (s, e) => s + Math.round(Number(entryAmounts[e.timeEntryId] ?? '0') * 100),
+    0,
+  );
+  const specificValid =
+    allocationMethod !== 'SPECIFIC_ENTRIES' ||
+    (entries.length > 0 && specificSumCents === Math.abs(totalCents));
+  const weightsSum = timekeepers.reduce((s, t) => s + Number(weights[t.appUserId] ?? '0'), 0);
+  const weightsValid =
+    allocationMethod !== 'CUSTOM_WEIGHTED' ||
+    (timekeepers.length > 0 && Math.abs(weightsSum - 100) < 0.01);
 
   const runPreview = useCallback(async () => {
     setPreviewError(null);
+    // Hold the preview until the method's extra inputs are valid, so we
+    // don't surface a transient 400 while the user is still filling them.
+    if (!specificValid) {
+      setPreviewError('Per-entry amounts must sum to the adjustment amount.');
+      setPreview(null);
+      return;
+    }
+    if (!weightsValid) {
+      setPreviewError('Weights must sum to 100%.');
+      setPreview(null);
+      return;
+    }
     try {
       const body: Record<string, unknown> = {
         billingBatchId,
@@ -101,18 +223,32 @@ export function AdjustmentDialog({
         totalAmountCents: totalCents,
         reasonCodeId: reasonCodeId || '00000000-0000-0000-0000-000000000000',
         notes,
+        ...allocationExtras(),
       };
-      if (allocationMethod === 'HIERARCHICAL_CASCADE') body['cascadeOrder'] = CASCADE_DEFAULT;
       const r = await api<PreviewResp>('/api/staff/adjustments/preview', {
         method: 'POST',
         body: JSON.stringify(body),
       });
       setPreview(r);
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : 'preview failed');
+      setPreviewError(errText(err, 'preview failed'));
       setPreview(null);
     }
-  }, [allocationMethod, billingBatchId, method, notes, reasonCodeId, totalCents]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    allocationMethod,
+    billingBatchId,
+    method,
+    notes,
+    reasonCodeId,
+    totalCents,
+    entryAmounts,
+    weights,
+    entries,
+    timekeepers,
+    specificValid,
+    weightsValid,
+  ]);
 
   useEffect(() => {
     const id = setTimeout(() => void runPreview(), 300);
@@ -130,12 +266,12 @@ export function AdjustmentDialog({
         totalAmountCents: totalCents,
         reasonCodeId,
         notes,
+        ...allocationExtras(),
       };
-      if (allocationMethod === 'HIERARCHICAL_CASCADE') body['cascadeOrder'] = CASCADE_DEFAULT;
       await api('/api/staff/adjustments', { method: 'POST', body: JSON.stringify(body) });
       onCreated();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'submit failed';
+      const msg = errText(err, 'submit failed');
       setSubmitError(
         msg === 'step_up_required'
           ? 'Your session needs a fresh TOTP step-up before creating adjustments. Verify in Account → Two-factor.'
@@ -296,6 +432,117 @@ export function AdjustmentDialog({
           </div>
         </Card>
 
+        {allocationMethod === 'SPECIFIC_ENTRIES' && (
+          <Card
+            title="Per-entry amounts"
+            action={
+              <Pill tone={specificValid ? 'success' : 'warning'}>
+                ${(specificSumCents / 100).toLocaleString()} of $
+                {(Math.abs(totalCents) / 100).toLocaleString()}
+              </Pill>
+            }
+          >
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 10 }}>
+              Pre-filled pro-rata by standard value. Edit any line; the amounts must sum to the
+              total adjustment of ${(Math.abs(totalCents) / 100).toLocaleString()}.
+            </p>
+            {entries.length === 0 ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No included entries.</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {entries.map((e) => (
+                  <div
+                    key={e.timeEntryId}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr auto 140px',
+                      gap: 10,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>{e.staffName ?? 'Unknown'}</span>
+                    <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                      WIP ${(Math.abs(e.standardAmountCents) / 100).toLocaleString()}
+                    </span>
+                    <Input
+                      type="number"
+                      step={0.01}
+                      min={0}
+                      value={entryAmounts[e.timeEntryId] ?? ''}
+                      onChange={(ev) =>
+                        setEntryAmounts((m) => ({ ...m, [e.timeEntryId]: ev.target.value }))
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            {!specificValid && entries.length > 0 && (
+              <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>
+                Amounts must sum to ${(Math.abs(totalCents) / 100).toLocaleString()}.
+              </p>
+            )}
+          </Card>
+        )}
+
+        {allocationMethod === 'CUSTOM_WEIGHTED' && (
+          <Card
+            title="Custom weights (percent)"
+            action={
+              <Pill tone={weightsValid ? 'success' : 'warning'}>
+                {weightsSum.toFixed(2)}% of 100%
+              </Pill>
+            }
+          >
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 10 }}>
+              Assign each timekeeper a share of the adjustment. Weights must sum to 100%.
+            </p>
+            {timekeepers.length === 0 ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No timekeepers.</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {timekeepers.map((t) => (
+                  <div
+                    key={t.appUserId}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 140px',
+                      gap: 10,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>{t.name}</span>
+                    <Input
+                      type="number"
+                      step={0.01}
+                      min={0}
+                      value={weights[t.appUserId] ?? ''}
+                      onChange={(ev) =>
+                        setWeights((m) => ({ ...m, [t.appUserId]: ev.target.value }))
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            {!weightsValid && timekeepers.length > 0 && (
+              <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>
+                Weights must sum to 100%.
+              </p>
+            )}
+          </Card>
+        )}
+
+        {allocationMethod === 'PARTNER_ABSORBS' && (
+          <Card title="Partner absorbs">
+            <p style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              The full adjustment is allocated to partner-role time on this batch (pro-rata by
+              value). If no partner has time entries here, allocation can&apos;t run — the preview
+              below will say so.
+            </p>
+          </Card>
+        )}
+
         <Card title="Per-timekeeper preview" action={<Pill tone="accent">live</Pill>}>
           {previewError && (
             <p style={{ color: tokens.color.danger, fontSize: 12 }}>{previewError}</p>
@@ -347,7 +594,10 @@ export function AdjustmentDialog({
             <Button variant="secondary" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={() => void submit()} disabled={submitting || !reasonCodeId}>
+            <Button
+              onClick={() => void submit()}
+              disabled={submitting || !reasonCodeId || !specificValid || !weightsValid}
+            >
               {submitting ? 'Submitting…' : 'Create adjustment'}
             </Button>
           </div>
