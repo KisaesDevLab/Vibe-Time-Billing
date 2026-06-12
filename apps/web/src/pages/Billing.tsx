@@ -54,6 +54,8 @@ interface BatchEntry {
   action: 'INCLUDE' | 'DEFER' | 'WRITE_OFF';
   staffName?: string | null;
   description?: string | null;
+  // Per-entry amount after adjustments (0 for deferred / written-off).
+  billedAmountCents?: number;
 }
 
 interface BatchDetail {
@@ -64,6 +66,8 @@ interface BatchDetail {
   // 0086 — full engagement list (primary first) for the batch header.
   engagements?: Array<{ id: string; name: string; clientId: string; clientName: string }>;
   adjustmentTotalCents?: number;
+  // Invoice id once the batch is INVOICED (for print / send / unfinalize).
+  invoiceId?: string | null;
   // R2 — firm retainer feature flag + biller-toggle default, so the
   // "Offer retainer to client" checkbox can honor the firm setting.
   retainer?: { featureEnabled: boolean; defaultBillerToggleOn: boolean };
@@ -565,11 +569,15 @@ function BatchListPage(): JSX.Element {
 
 function BatchDetailPage(): JSX.Element {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [detail, setDetail] = useState<BatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [actions, setActions] = useState<Map<string, BatchEntry['action']>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
+  // Print / send / unfinalize (invoiced batches) busy flag.
+  const [acting, setActing] = useState(false);
   const [showAdjustDialog, setShowAdjustDialog] = useState(false);
 
   // 0052 — set-target form
@@ -653,6 +661,52 @@ function BatchDetailPage(): JSX.Element {
       setError(err instanceof Error ? err.message : 'finalize failed');
     } finally {
       setFinalizing(false);
+    }
+  }
+
+  function printInvoice(): void {
+    if (!detail?.invoiceId) return;
+    window.open(`/api/staff/invoices/${detail.invoiceId}/pdf`, '_blank', 'noopener,noreferrer');
+  }
+
+  async function sendInvoice(): Promise<void> {
+    if (!detail?.invoiceId) return;
+    if (!window.confirm('Email this invoice to the client now?')) return;
+    setActing(true);
+    setError(null);
+    try {
+      await api(`/api/staff/invoices/${detail.invoiceId}/send`, { method: 'POST' });
+      setNotice('Invoice sent to the client.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'send failed');
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function unfinalize(): Promise<void> {
+    if (
+      !window.confirm(
+        'Unfinalize this invoice? The current invoice will be voided and a new editable draft created.',
+      )
+    )
+      return;
+    setActing(true);
+    setError(null);
+    try {
+      const r = await api<{ newVersionId: string }>(`/api/staff/billing-batches/${id}/unfinalize`, {
+        method: 'POST',
+      });
+      navigate(`/billing/${r.newVersionId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unfinalize failed';
+      setError(
+        msg === 'invoice_has_payments'
+          ? 'Cannot unfinalize — the invoice already has a payment. Void it from the invoice screen instead.'
+          : msg,
+      );
+    } finally {
+      setActing(false);
     }
   }
 
@@ -741,6 +795,7 @@ function BatchDetailPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
+      {notice && <p style={{ color: tokens.color.success, fontSize: 13, margin: 0 }}>{notice}</p>}
       <Card
         title={(() => {
           // 0086 — render the client name + engagement set. For
@@ -757,6 +812,29 @@ function BatchDetailPage(): JSX.Element {
             {detail.batch.kind === 'RETAINER' && <Pill tone="accent">Retainer</Pill>}
             {(detail.engagements?.length ?? 0) > 1 && (
               <Pill tone="accent">Consolidated · {detail.engagements!.length} engagements</Pill>
+            )}
+            {detail.batch.status === 'INVOICED' && detail.invoiceId && (
+              <>
+                <Button size="sm" variant="secondary" onClick={printInvoice} disabled={acting}>
+                  Print
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={acting}
+                  onClick={() => void sendInvoice()}
+                >
+                  Send
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={acting}
+                  onClick={() => void unfinalize()}
+                >
+                  {acting ? 'Working…' : 'Unfinalize'}
+                </Button>
+              </>
             )}
             <Pill tone={detail.batch.status === 'APPROVED' ? 'success' : 'neutral'}>
               {detail.batch.status}
@@ -1132,46 +1210,72 @@ function BatchDetailPage(): JSX.Element {
         }
       >
         {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
-        <Table<BatchEntry>
-          columns={[
-            { key: 'date', header: 'Date', render: (e) => e.entryDate },
-            { key: 'staff', header: 'Staff', render: (e) => e.staffName ?? '—' },
-            {
-              key: 'hours',
-              header: 'Hours',
-              align: 'right',
-              render: (e) => Number(e.hours).toFixed(2),
-            },
-            {
-              key: 'amt',
-              header: 'Standard',
-              align: 'right',
-              render: (e) => `$${(e.standardAmountCents / 100).toLocaleString()}`,
-            },
-            {
-              key: 'desc',
-              header: 'Description',
-              render: (e) => e.description ?? '',
-            },
-            {
-              key: 'action',
-              header: 'Action',
-              render: (e) => (
-                <ActionPicker
-                  value={actions.get(e.timeEntryId) ?? e.action}
-                  onChange={(v) => {
-                    const m = new Map(actions);
-                    m.set(e.timeEntryId, v);
-                    setActions(m);
-                  }}
-                />
-              ),
-            },
-          ]}
-          rows={detail.entries}
-          rowKey={(e) => e.timeEntryId}
-          empty="No entries in this batch."
-        />
+        {(() => {
+          const finalized =
+            detail.batch.status === 'APPROVED' || detail.batch.status === 'INVOICED';
+          const totalHours = detail.entries.reduce((s, e) => s + Number(e.hours), 0);
+          const totalStandard = detail.entries.reduce((s, e) => s + e.standardAmountCents, 0);
+          const totalBilled = detail.entries.reduce((s, e) => s + (e.billedAmountCents ?? 0), 0);
+          const money = (cents: number): string => `$${(cents / 100).toLocaleString()}`;
+          return (
+            <Table<BatchEntry>
+              columns={[
+                { key: 'date', header: 'Date', render: (e) => e.entryDate },
+                { key: 'staff', header: 'Staff', render: (e) => e.staffName ?? '—' },
+                {
+                  key: 'hours',
+                  header: 'Hours',
+                  align: 'right',
+                  render: (e) => Number(e.hours).toFixed(2),
+                },
+                {
+                  key: 'amt',
+                  header: 'Standard',
+                  align: 'right',
+                  render: (e) => money(e.standardAmountCents),
+                },
+                {
+                  key: 'billed',
+                  header: 'Billed',
+                  align: 'right',
+                  render: (e) => (e.billedAmountCents != null ? money(e.billedAmountCents) : '—'),
+                },
+                {
+                  key: 'desc',
+                  header: 'Description',
+                  render: (e) => e.description ?? '',
+                },
+                {
+                  key: 'action',
+                  header: 'Action',
+                  render: (e) => (
+                    <ActionPicker
+                      value={actions.get(e.timeEntryId) ?? e.action}
+                      disabled={finalized}
+                      onChange={(v) => {
+                        const m = new Map(actions);
+                        m.set(e.timeEntryId, v);
+                        setActions(m);
+                      }}
+                    />
+                  ),
+                },
+              ]}
+              rows={detail.entries}
+              rowKey={(e) => e.timeEntryId}
+              empty="No entries in this batch."
+              footer={[
+                'Totals',
+                '',
+                totalHours.toFixed(2),
+                money(totalStandard),
+                money(totalBilled),
+                '',
+                '',
+              ]}
+            />
+          );
+        })()}
       </Card>
 
       <PrebillNarrativePanel batchId={detail.batch.id} />
@@ -1186,6 +1290,7 @@ function BatchDetailPage(): JSX.Element {
         <AdjustmentDialog
           billingBatchId={detail.batch.id}
           includedTotalCents={totals.included}
+          currentAdjustmentCents={detail.adjustmentTotalCents ?? 0}
           onClose={() => setShowAdjustDialog(false)}
           onCreated={() => {
             setShowAdjustDialog(false);
@@ -1418,9 +1523,11 @@ function ConvertToTimeEntryButton({
 function ActionPicker({
   value,
   onChange,
+  disabled,
 }: {
   value: BatchEntry['action'];
   onChange: (v: BatchEntry['action']) => void;
+  disabled?: boolean;
 }): JSX.Element {
   const choices: BatchEntry['action'][] = ['INCLUDE', 'DEFER', 'WRITE_OFF'];
   return (
@@ -1429,6 +1536,7 @@ function ActionPicker({
         <button
           key={c}
           type="button"
+          disabled={disabled}
           onClick={() => onChange(c)}
           style={{
             padding: '2px 8px',
@@ -1436,8 +1544,9 @@ function ActionPicker({
             borderRadius: tokens.radius.sm,
             border: `1px solid ${value === c ? tokens.color.accent : tokens.color.border}`,
             background: value === c ? tokens.color.accentMuted : 'transparent',
-            color: tokens.color.text,
-            cursor: 'pointer',
+            color: disabled ? tokens.color.textMuted : tokens.color.text,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            opacity: disabled ? 0.5 : 1,
           }}
         >
           {c.replace('_', ' ').toLowerCase()}

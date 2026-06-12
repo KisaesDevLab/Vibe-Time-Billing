@@ -10,6 +10,7 @@ import { and, between, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
+  adjustmentAllocations,
   adjustments,
   appUsers,
   billingBatchEngagements,
@@ -18,6 +19,8 @@ import {
   clients,
   engagements,
   firmRetainerSettings,
+  invoiceLineItems,
+  invoices,
   timeEntries,
 } from '@vibe/db/schema';
 import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billing';
@@ -422,13 +425,59 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         );
       const adjustmentTotalCents = Number(adjSum?.total ?? 0);
 
+      // Per-entry allocated adjustment (sum of allocations across this
+      // batch's APPROVED/APPLIED adjustments) → per-entry "billed". An
+      // INCLUDE entry's billed = standard + its signed adjustment;
+      // deferred / written-off entries aren't invoiced, so billed = 0.
+      const allocRows = await deps.db
+        .select({
+          timeEntryId: adjustmentAllocations.timeEntryId,
+          amount: sql<number>`COALESCE(SUM(${adjustmentAllocations.adjustmentAmountCents}), 0)`.as(
+            'amount',
+          ),
+        })
+        .from(adjustmentAllocations)
+        .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+        .where(
+          and(
+            eq(adjustments.billingBatchId, batch.id),
+            inArray(adjustments.status, ['APPROVED', 'APPLIED']),
+          ),
+        )
+        .groupBy(adjustmentAllocations.timeEntryId);
+      const adjByEntry = new Map(allocRows.map((r) => [r.timeEntryId, Number(r.amount)]));
+      const entriesWithBilled = entries.map((e) => {
+        const adj = adjByEntry.get(e.timeEntryId) ?? 0;
+        const billedAmountCents = e.action === 'INCLUDE' ? e.standardAmountCents + adj : 0;
+        return { ...e, adjustmentAmountCents: adj, billedAmountCents };
+      });
+
+      // When the batch is invoiced, surface the invoice id so the UI can
+      // print / send / unfinalize. The link lives on the invoice's line
+      // items (sourceRefType='billing_batch', sourceRefId=batch.id).
+      let invoiceId: string | null = null;
+      if (batch.status === 'INVOICED') {
+        const [li] = await deps.db
+          .select({ invoiceId: invoiceLineItems.invoiceId })
+          .from(invoiceLineItems)
+          .where(
+            and(
+              eq(invoiceLineItems.sourceRefType, 'billing_batch'),
+              eq(invoiceLineItems.sourceRefId, batch.id),
+            ),
+          )
+          .limit(1);
+        invoiceId = li?.invoiceId ?? null;
+      }
+
       res.json({
         batch,
-        entries,
+        entries: entriesWithBilled,
         aging,
         engagement: eng,
         engagements: engs,
         adjustmentTotalCents,
+        invoiceId,
         retainer,
       });
     },
@@ -911,6 +960,125 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true, newVersionId: newId });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Unfinalize an INVOICED batch: void the generated invoice AND reopen
+  // the batch into a fresh editable DRAFT (one transaction). Refuses if
+  // the invoice has any payment recorded. The new draft re-pulls the
+  // entries so staff can re-adjust and re-finalize.
+  // -----------------------------------------------------------------
+  router.post(
+    '/:id/unfinalize',
+    requirePermission(deps, 'invoice:void'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [batch] = await deps.db
+        .select()
+        .from(billingBatches)
+        .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(billingBatches.id, req.params['id']!), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (batch.billing_batch.status !== 'INVOICED') {
+        res.status(409).json({ error: 'not_invoiced' });
+        return;
+      }
+      // Find the generated invoice via its line items.
+      const [li] = await deps.db
+        .select({ invoiceId: invoiceLineItems.invoiceId })
+        .from(invoiceLineItems)
+        .where(
+          and(
+            eq(invoiceLineItems.sourceRefType, 'billing_batch'),
+            eq(invoiceLineItems.sourceRefId, batch.billing_batch.id),
+          ),
+        )
+        .limit(1);
+      const [inv] = li
+        ? await deps.db
+            .select({ id: invoices.id, status: invoices.status, paidCents: invoices.paidCents })
+            .from(invoices)
+            .where(eq(invoices.id, li.invoiceId))
+            .limit(1)
+        : [];
+      if (inv && Number(inv.paidCents) > 0) {
+        res.status(409).json({ error: 'invoice_has_payments' });
+        return;
+      }
+
+      const newId = await deps.db.transaction(async (tx) => {
+        // Void the invoice (if still live).
+        if (inv && inv.status !== 'VOIDED') {
+          await tx
+            .update(invoices)
+            .set({ status: 'VOIDED', voidedAt: new Date(), voidedReason: 'unfinalized' })
+            .where(eq(invoices.id, inv.id));
+        }
+        // Reopen the batch into a new DRAFT (mirror /reopen).
+        const [newBatch] = await tx
+          .insert(billingBatches)
+          .values({
+            engagementId: batch.billing_batch.engagementId,
+            periodStart: batch.billing_batch.periodStart,
+            periodEnd: batch.billing_batch.periodEnd,
+            status: 'DRAFT',
+            createdById: session.appUserId,
+            assignedPartnerId: batch.billing_batch.assignedPartnerId,
+            previousVersionId: batch.billing_batch.id,
+            version: (batch.billing_batch.version ?? 1) + 1,
+          })
+          .returning({ id: billingBatches.id });
+        if (!newBatch) throw new Error('unfinalize_failed');
+        const entries = await tx
+          .select({ id: timeEntries.id })
+          .from(timeEntries)
+          .where(eq(timeEntries.billingBatchId, batch.billing_batch.id));
+        if (entries.length > 0) {
+          await tx
+            .update(timeEntries)
+            .set({ billingBatchId: newBatch.id, lockedAt: null })
+            .where(
+              inArray(
+                timeEntries.id,
+                entries.map((e) => e.id),
+              ),
+            );
+          await tx.insert(billingBatchEntries).values(
+            entries.map((e) => ({
+              billingBatchId: newBatch.id,
+              timeEntryId: e.id,
+              action: 'INCLUDE' as const,
+            })),
+          );
+        }
+        await tx
+          .update(billingBatches)
+          .set({ status: 'CANCELLED' })
+          .where(eq(billingBatches.id, batch.billing_batch.id));
+        return newBatch.id;
+      });
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'billing_batch',
+        entityId: batch.billing_batch.id,
+        actorAppUserId: session.appUserId,
+        before: { status: 'INVOICED' },
+        after: { kind: 'unfinalized', newVersionId: newId, voidedInvoiceId: inv?.id ?? null },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true, newVersionId: newId, voidedInvoiceId: inv?.id ?? null });
     },
   );
 

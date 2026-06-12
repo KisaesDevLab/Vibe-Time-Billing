@@ -42,6 +42,9 @@ interface PreviewResp {
 export interface AdjustmentDialogProps {
   billingBatchId: string;
   includedTotalCents: number;
+  /** Current net adjustment on the batch (signed cents) — seeds the
+   *  Amount + Direction so the dialog opens matching the main screen. */
+  currentAdjustmentCents?: number;
   onClose: () => void;
   onCreated: () => void;
 }
@@ -51,6 +54,7 @@ const CASCADE_DEFAULT = ['STAFF', 'SENIOR', 'MANAGER', 'PARTNER'] as const;
 export function AdjustmentDialog({
   billingBatchId,
   includedTotalCents,
+  currentAdjustmentCents = 0,
   onClose,
   onCreated,
 }: AdjustmentDialogProps): JSX.Element {
@@ -58,9 +62,15 @@ export function AdjustmentDialog({
   const [reasonCodeId, setReasonCodeId] = useState('');
   const [method, setMethod] = useState<'TIME' | 'FEE' | 'RATE'>('TIME');
   const [allocationMethod, setAllocationMethod] = useState<AllocationMethod>('PRO_RATA_BY_VALUE');
-  // Amount in dollars (UI), converted to signed cents on submit
-  const [amountDollars, setAmountDollars] = useState('100.00');
-  const [direction, setDirection] = useState<'WRITE_DOWN' | 'WRITE_UP'>('WRITE_DOWN');
+  // Amount in dollars (UI), converted to signed cents on submit. Seed from
+  // the batch's current net adjustment so the dialog matches the summary;
+  // fall back to a sensible default when there's no adjustment yet.
+  const [amountDollars, setAmountDollars] = useState(
+    currentAdjustmentCents !== 0 ? (Math.abs(currentAdjustmentCents) / 100).toFixed(2) : '100.00',
+  );
+  const [direction, setDirection] = useState<'WRITE_DOWN' | 'WRITE_UP'>(
+    currentAdjustmentCents > 0 ? 'WRITE_UP' : 'WRITE_DOWN',
+  );
   const [notes, setNotes] = useState('');
   const [preview, setPreview] = useState<PreviewResp | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);

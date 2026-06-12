@@ -474,4 +474,122 @@ describe('billing-batch multi-engagement', () => {
     // Total = $800 + $400 = $1200 ($120000c)
     expect(inv!.subtotalCents).toBe(120000);
   });
+
+  // ── BILLED column + invoiceId + unfinalize ──────────────────────────
+  async function makeBatchWithEntry(): Promise<{
+    seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
+    router: express.Router;
+    batchId: string;
+    timeEntryId: string;
+  }> {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedTimeEntry(harness.db, {
+      engagementId: seed.engagementId,
+      appUserId: seed.appUserId,
+      workCodeId: seed.workCodeId,
+      entryDate: '2026-04-15',
+      hours: '4.00',
+      standardAmountCents: 80000,
+    });
+    const router = createBillingBatchRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner', 'admin']]]),
+    });
+    const created = await invoke(router, 'post', '/', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          engagementId: seed.engagementId,
+          periodStart: '2026-04-01',
+          periodEnd: '2026-04-30',
+        },
+      }),
+    });
+    const batchId = (created.jsonBody as { id: string }).id;
+    const detail = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    const timeEntryId = (detail.jsonBody as { entries: { timeEntryId: string }[] }).entries[0]!
+      .timeEntryId;
+    return { seed, router, batchId, timeEntryId };
+  }
+
+  it('GET /:id carries per-entry billed (= standard when no adjustment) + null invoiceId', async () => {
+    const { seed, router, batchId } = await makeBatchWithEntry();
+    const r = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    const body = r.jsonBody as {
+      entries: {
+        billedAmountCents: number;
+        adjustmentAmountCents: number;
+        standardAmountCents: number;
+      }[];
+      invoiceId: string | null;
+    };
+    expect(body.entries[0]!.adjustmentAmountCents).toBe(0);
+    expect(body.entries[0]!.billedAmountCents).toBe(body.entries[0]!.standardAmountCents);
+    expect(body.invoiceId).toBeNull();
+  });
+
+  it('unfinalize: 409 not_invoiced on a draft batch', async () => {
+    const { seed, router, batchId } = await makeBatchWithEntry();
+    const r = await invoke(router, 'post', '/:id/unfinalize', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    expect(r.statusCode).toBe(409);
+    expect((r.jsonBody as { error: string }).error).toBe('not_invoiced');
+  });
+
+  it('unfinalize: voids the invoice + creates a new editable draft; old batch cancelled', async () => {
+    const { seed, router, batchId } = await makeBatchWithEntry();
+    // Flip the batch to INVOICED + attach an invoice via a line item.
+    await harness.db.execute(
+      sql`UPDATE billing_batch SET status = 'INVOICED' WHERE id = ${batchId}`,
+    );
+    const invRow = await harness.db.execute(
+      sql`INSERT INTO invoice (firm_id, client_id, invoice_number, issue_date, due_date,
+            subtotal_cents, total_cents, status, paid_cents)
+          VALUES (${seed.firmId}, ${seed.clientId}, 'INV-T1', '2026-05-01', '2026-05-31',
+            80000, 80000, 'DRAFT', 0) RETURNING id`,
+    );
+    const invoiceId = (invRow as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`INSERT INTO invoice_line_item (invoice_id, kind, description, amount_cents,
+            source_ref_type, source_ref_id)
+          VALUES (${invoiceId}, 'TIME_AGGREGATE', 'Services', 80000, 'billing_batch', ${batchId})`,
+    );
+
+    // GET surfaces the invoice id.
+    const detail = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    expect((detail.jsonBody as { invoiceId: string }).invoiceId).toBe(invoiceId);
+
+    // Unfinalize.
+    const r = await invoke(router, 'post', '/:id/unfinalize', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    expect(r.statusCode).toBe(200);
+    const newId = (r.jsonBody as { newVersionId: string }).newVersionId;
+    expect(newId).toBeTruthy();
+
+    // Invoice voided, old batch cancelled, new batch is a DRAFT.
+    const [inv] = await harness.db
+      .select({ status: invoices.status })
+      .from(invoices)
+      .where(eq(invoices.id, invoiceId));
+    expect(inv!.status).toBe('VOIDED');
+    const [oldBatch] = await harness.db
+      .select({ status: billingBatches.status })
+      .from(billingBatches)
+      .where(eq(billingBatches.id, batchId));
+    expect(oldBatch!.status).toBe('CANCELLED');
+    const [newBatch] = await harness.db
+      .select({ status: billingBatches.status })
+      .from(billingBatches)
+      .where(eq(billingBatches.id, newId));
+    expect(newBatch!.status).toBe('DRAFT');
+  });
 });

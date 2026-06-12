@@ -16,9 +16,12 @@ export interface TableProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
   empty?: ReactNode;
+  /** Optional totals/footer row — one cell per column (by index). Rendered
+   *  in a bold <tfoot>, honoring each column's alignment. */
+  footer?: ReactNode[];
 }
 
-export function Table<T>({ columns, rows, rowKey, empty }: TableProps<T>): JSX.Element {
+export function Table<T>({ columns, rows, rowKey, empty, footer }: TableProps<T>): JSX.Element {
   if (rows.length === 0) {
     return (
       <div
@@ -84,6 +87,26 @@ export function Table<T>({ columns, rows, rowKey, empty }: TableProps<T>): JSX.E
           </tr>
         ))}
       </tbody>
+      {footer && (
+        <tfoot>
+          <tr>
+            {columns.map((c, i) => (
+              <td
+                key={c.key}
+                style={{
+                  textAlign: c.align ?? 'left',
+                  padding: '10px 6px',
+                  borderTop: `2px solid ${tokens.color.border}`,
+                  fontWeight: 700,
+                  fontVariantNumeric: c.align === 'right' ? 'tabular-nums' : 'normal',
+                }}
+              >
+                {footer[i] ?? null}
+              </td>
+            ))}
+          </tr>
+        </tfoot>
+      )}
     </table>
   );
 }
