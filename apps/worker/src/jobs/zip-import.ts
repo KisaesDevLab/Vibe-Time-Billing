@@ -185,8 +185,18 @@ export async function runZipImport(
       })
       .where(eq(zipImports.id, row.id));
 
-    // Imported zips don't need to linger in the temp prefix.
-    await storage.delete(row.zipKey).catch(() => undefined);
+    // Imported zips don't need to linger in the temp prefix — delete the
+    // temp object now that every entry is filed. Best-effort, but a
+    // failure is logged (not silently swallowed) so an undeletable zip
+    // can't pile up in storage unnoticed.
+    try {
+      await storage.delete(row.zipKey);
+    } catch (err) {
+      logger.warn(
+        { err, importId: row.id, zipKey: row.zipKey },
+        'zip-import: temp zip delete failed — object may linger in storage',
+      );
+    }
     logger.info({ importId: row.id, imported, skipped, errors }, 'zip-import complete');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'zip_import_failed';
