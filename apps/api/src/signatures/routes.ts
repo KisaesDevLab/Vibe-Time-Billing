@@ -251,14 +251,17 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
       return;
     }
     const status = req.query['status'] ? String(req.query['status']) : null;
-    const where = status
-      ? and(eq(signatureRequests.firmId, firmId), eq(signatureRequests.status, status))
-      : eq(signatureRequests.firmId, firmId);
+    const taxReturnId = req.query['taxReturnId'] ? String(req.query['taxReturnId']) : null;
+    const conds = [eq(signatureRequests.firmId, firmId)];
+    if (status) conds.push(eq(signatureRequests.status, status));
+    if (taxReturnId) conds.push(eq(signatureRequests.taxReturnId, taxReturnId));
+    const where = conds.length === 1 ? conds[0] : and(...conds);
     const rows = await deps.db
       .select({
         id: signatureRequests.id,
         title: signatureRequests.title,
         status: signatureRequests.status,
+        signingMode: signatureRequests.signingMode,
         clientId: signatureRequests.clientId,
         clientName: clients.name,
         formType: signatureRequests.formType,

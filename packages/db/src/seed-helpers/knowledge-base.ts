@@ -3666,9 +3666,11 @@ In-office signing has the signer complete a request **on-site**, on a tablet or 
 ## Why 1040s use this path
 Remotely e-signing an individual 1040 e-file authorization requires the IRS's Knowledge-Based Authentication (identity quiz), which this app doesn't offer — so **"Send for signature" is not available for a 1040**. Signing **in person** is the IRS-sanctioned alternative: the preparer verifies the taxpayer's government photo ID in person (Pub 1345), which replaces KBA. Business e-file authorizations (8879-S/C/PE) aren't KBA-gated and can be sent either way.
 
+You can drive in-office signing in two places: from the **Signatures** detail page, or **inline on the tax return** — a return assembled with **Collect signatures** shows its request right on the return's Signatures card with the in-office controls there, so for a 1040 you never leave the return.
+
 ## How it works
 1. Build the request (or assemble one from a return — see [[collect-signatures-from-return]]) and place the fields. You do **not** send it to the client.
-2. On the draft, click **Set up in-office signing**. For a 1040, this is the primary action — the screen explains that no email is sent.
+2. Click **Set up in-office signing** (on the return's Signatures card, or on the request's detail page). For a 1040, this is the primary action — the screen explains that no email is sent.
 3. For a 1040 (Form 8879), record each signer's **government photo-ID type** and check **"I verified this person's photo ID in person."** This is required to satisfy the in-person IRS rule and is saved as an audit event (no ID numbers are stored).
 4. Click **Start in-office signing**. The request goes live with **no email to the client**, and the **in-office signing** card appears.
 5. **Print QR sheet** for a one-page-per-signer PDF (each shows the signer's name and a QR to their signing page), or hand a signer the device with **Sign now**, or **Show QR** on screen.
@@ -3698,12 +3700,14 @@ From a tax return you can assemble a signature package in one step — the app f
 3. If nothing matched, expand **manual page selection** and check the pages you want from the full bookmark list.
 4. Optionally include **document templates** configured for this return's form type (engagement letter, consents) and upload any one-off PDFs.
 5. Add the **signers** (taxpayer, spouse, officers) with names and emails; signature fields are placed automatically based on each signer's role and the matched page layout.
-6. Click **Create package**. The selected pages, templates, and extra PDFs are merged into one document, the signature request is created in draft linked to the return, and you're taken to it to review placement and send.
+6. Click **Create package**. The selected pages, templates, and extra PDFs are merged into one document and the signature request is created (in draft, linked to the return). It then appears right on the return's **Signatures** card — you stay on the tax return.
+7. From the Signatures card, run **in-office signing** inline (the normal path for an individual 1040 — see [[in-office-signing]]), or click **Open** to fine-tune field placement and, for an entity return, send for signature.
 
 ## Tips
 - The return needs a source PDF uploaded for automatic detection; without one, use manual page selection.
 - The return's PDF isn't modified — the package is built as a fresh document.
 - Signature-page rules and placement profiles are configured by an admin; once set, detection and field placement are automatic.
+- An individual 1040 can't be e-signed remotely (no KBA) — sign it in office from the Signatures card. Entity e-file authorizations (8879-S/C/PE) can also be sent for signature.
 - Track completion in the [[signed-forms-report]].
 `),
   },

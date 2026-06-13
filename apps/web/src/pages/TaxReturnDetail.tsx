@@ -26,6 +26,8 @@ import { api, getCsrfToken } from '../api-client';
 import { usePermission } from '../auth-context';
 import { dollarsInputToCents } from '../lib/money';
 import { ShareFileDialog } from './clients/ShareFileDialog';
+import { statusLabel, statusTone } from './Signatures';
+import { InOfficeSigningPanel } from './signatures/InOfficeSigningPanel';
 
 interface SectionRow {
   id: string;
@@ -94,6 +96,7 @@ export function TaxReturnDetailPage(): JSX.Element {
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [signaturesOpen, setSignaturesOpen] = useState(false);
+  const [sigRefresh, setSigRefresh] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
@@ -291,7 +294,12 @@ export function TaxReturnDetailPage(): JSX.Element {
         taxYear={ret.taxYear}
       />
 
-      <SignaturesCard onCollect={() => setSignaturesOpen(true)} />
+      <SignaturesCard
+        returnId={ret.id}
+        onCollect={() => setSignaturesOpen(true)}
+        refreshKey={sigRefresh}
+        onChanged={() => void load()}
+      />
 
       <Card title={`Active releases (${releases.length})`}>
         {releases.length === 0 ? (
@@ -366,7 +374,10 @@ export function TaxReturnDetailPage(): JSX.Element {
           returnId={ret.id}
           clientId={ret.clientId}
           onClose={() => setSignaturesOpen(false)}
-          onCreated={(requestId) => navigate(`/signatures/${requestId}`)}
+          onCreated={() => {
+            setSignaturesOpen(false);
+            setSigRefresh((k) => k + 1);
+          }}
         />
       )}
 
@@ -385,13 +396,53 @@ export function TaxReturnDetailPage(): JSX.Element {
 // Signatures card — entry point to the collect-signatures flow.
 // ---------------------------------------------------------------------------
 
-function SignaturesCard({ onCollect }: { onCollect: () => void }): JSX.Element {
+interface LinkedSignatureRequest {
+  id: string;
+  title: string;
+  status: string;
+  signingMode: string;
+  formType: string | null;
+  signerCount: number;
+  signedCount: number;
+}
+
+function SignaturesCard({
+  returnId,
+  onCollect,
+  refreshKey,
+  onChanged,
+}: {
+  returnId: string;
+  onCollect: () => void;
+  /** Bumped by the parent after a new request is collected, to refetch. */
+  refreshKey: number;
+  /** Called when a request changes state (e.g. signing completed). */
+  onChanged: () => void;
+}): JSX.Element {
   const canWrite = usePermission('proposal:write');
+  const [requests, setRequests] = useState<LinkedSignatureRequest[]>([]);
+
+  const loadRequests = useCallback(async (): Promise<void> => {
+    try {
+      const r = await api<{ requests: LinkedSignatureRequest[] }>(
+        `/api/staff/signatures?taxReturnId=${returnId}`,
+      );
+      setRequests(r.requests ?? []);
+    } catch {
+      setRequests([]);
+    }
+  }, [returnId]);
+
+  useEffect(() => {
+    void loadRequests();
+  }, [loadRequests, refreshKey]);
+
   return (
     <Card title="Signatures">
       <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
         Build an e-signature package from this return — detected signature pages, default documents,
-        and any ad-hoc attachments — then route it to the signers for review.
+        and any ad-hoc attachments. Individual 1040s sign <strong>in office</strong> (no email,
+        in-person photo-ID instead of KBA); entity returns can also be sent for signature.
       </p>
       <Button disabled={!canWrite} onClick={onCollect}>
         Collect signatures
@@ -400,6 +451,41 @@ function SignaturesCard({ onCollect }: { onCollect: () => void }): JSX.Element {
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8, marginBottom: 0 }}>
           You need write access to collect signatures.
         </p>
+      )}
+
+      {requests.length > 0 && (
+        <div style={{ display: 'grid', gap: tokens.space.md, marginTop: tokens.space.md }}>
+          {requests.map((r) => (
+            <div
+              key={r.id}
+              style={{
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: 8,
+                padding: tokens.space.md,
+                display: 'grid',
+                gap: tokens.space.sm,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>{r.title}</span>
+                <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {r.signedCount}/{r.signerCount} signed
+                </span>
+                <Link to={`/signatures/${r.id}`} style={{ marginLeft: 'auto', fontSize: 13 }}>
+                  Open ↗
+                </Link>
+              </div>
+              <InOfficeSigningPanel
+                requestId={r.id}
+                onChange={() => {
+                  void loadRequests();
+                  onChanged();
+                }}
+              />
+            </div>
+          ))}
+        </div>
       )}
     </Card>
   );
