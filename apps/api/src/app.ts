@@ -169,6 +169,7 @@ import { createTerminalRouter } from './terminal/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
+import { createPaymentImportRouter } from './payments/import-routes';
 import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
 import { createHolidayRouter } from './holidays/routes';
@@ -1658,6 +1659,13 @@ export function createApp(deps: AppDeps): Express {
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payments', auth.requireAuth, auth.requireCsrf, paymentRouter);
+
+  // 0158 — Payments → Import tab (payroll-charges CSV).
+  const paymentImportRouter = createPaymentImportRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/payment-imports', auth.requireAuth, auth.requireCsrf, paymentImportRouter);
 
   // Phases 15–17 — Stripe Terminal (in-person card readers).
   const terminalRouter = createTerminalRouter({

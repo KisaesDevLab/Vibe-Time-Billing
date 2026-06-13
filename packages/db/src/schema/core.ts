@@ -2601,6 +2601,77 @@ export const creditApplications = pgTable(
 );
 
 // =====================================================================
+// TABLE: payment_import + payment_import_row (0158)
+// Payments → Import tab: payroll-charges CSV ingests. One header per
+// uploaded file; one row per CSV line with outcome breadcrumbs. Rows
+// double as the duplicate-detection ledger on re-upload.
+// =====================================================================
+export const paymentImports = pgTable(
+  'payment_import',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    engagementTypeId: uuid('engagement_type_id').references(() => engagementTypes.id, {
+      onDelete: 'set null',
+    }),
+    paymentMethodKey: text('payment_method_key').notNull(),
+    fileName: text('file_name'),
+    createdByAppUserId: uuid('created_by_app_user_id').references(() => appUsers.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('payment_import_firm_idx').on(t.firmId, t.createdAt),
+  }),
+);
+
+export const paymentImportRows = pgTable(
+  'payment_import_row',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    importId: uuid('import_id')
+      .notNull()
+      .references(() => paymentImports.id, { onDelete: 'cascade' }),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientCode: text('client_code').notNull(),
+    clientName: text('client_name'),
+    chargeDate: date('charge_date').notNull(),
+    description: text('description'),
+    amountCents: bigint('amount_cents', { mode: 'number' }).notNull(),
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'set null' }),
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'set null',
+    }),
+    invoiceId: uuid('invoice_id').references(() => invoices.id, { onDelete: 'set null' }),
+    paymentReceiptId: uuid('payment_receipt_id').references(() => paymentReceipts.id, {
+      onDelete: 'set null',
+    }),
+    creditMemoId: uuid('credit_memo_id').references(() => creditMemos.id, {
+      onDelete: 'set null',
+    }),
+    // INVOICED_PAID | PREPAYMENT | SKIPPED
+    outcome: text('outcome').notNull(),
+    detail: text('detail'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    importIdx: index('payment_import_row_import_idx').on(t.importId),
+    dedupeIdx: index('payment_import_row_dedupe_idx').on(
+      t.firmId,
+      t.clientCode,
+      t.chargeDate,
+      t.amountCents,
+    ),
+  }),
+);
+
+export type PaymentImport = typeof paymentImports.$inferSelect;
+export type PaymentImportRow = typeof paymentImportRows.$inferSelect;
+
+// =====================================================================
 // TABLE: client_note + engagement_note + approval_comment
 // Note threads — immutable rows; edits supersede via new inserts.
 // =====================================================================

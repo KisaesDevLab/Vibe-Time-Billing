@@ -14,6 +14,7 @@ import { Button, Card, ColumnFilter, Pill, SectionHeading, Table, tokens } from 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
 import { AchReturnsPage } from './admin/AchReturns';
+import { PaymentImportTab } from './payments/PaymentImportTab';
 
 interface Row {
   paymentId: string;
@@ -70,13 +71,15 @@ const STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> 
 
 export function PaymentsPage(): JSX.Element {
   const navigate = useNavigate();
-  const [tab, setTab] = useState<'payments' | 'ach'>(() =>
-    window.location.hash.replace('#', '') === 'ach-returns' ? 'ach' : 'payments',
-  );
+  const [tab, setTab] = useState<'payments' | 'ach' | 'import'>(() => {
+    const h = window.location.hash.replace('#', '');
+    return h === 'ach-returns' ? 'ach' : h === 'import' ? 'import' : 'payments';
+  });
   useEffect(() => {
-    if (tab === 'ach' && window.location.hash !== '#ach-returns') {
-      window.history.replaceState(null, '', '#ach-returns');
-    } else if (tab === 'payments' && window.location.hash === '#ach-returns') {
+    const want = tab === 'ach' ? '#ach-returns' : tab === 'import' ? '#import' : '';
+    if (want && window.location.hash !== want) {
+      window.history.replaceState(null, '', want);
+    } else if (!want && window.location.hash) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
   }, [tab]);
@@ -357,6 +360,7 @@ export function PaymentsPage(): JSX.Element {
           [
             ['payments', 'Payments'],
             ['ach', 'ACH returns'],
+            ['import', 'Import'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -381,6 +385,8 @@ export function PaymentsPage(): JSX.Element {
 
       {tab === 'ach' ? (
         <AchReturnsPage />
+      ) : tab === 'import' ? (
+        <PaymentImportTab />
       ) : (
         <>
           <SectionHeading
