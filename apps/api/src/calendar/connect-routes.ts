@@ -23,12 +23,19 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
-import { buildAuthorizeUrl, listCalendars, revokeToken, type CalendarProvider } from './oauth';
+import {
+  buildAuthorizeUrl,
+  hasWriteScope,
+  listCalendars,
+  revokeToken,
+  type CalendarProvider,
+} from './oauth';
 import {
   callbackRedirectUri,
   newState,
   stateKey,
   upsertCalendarList,
+  SYNC_ERROR_CALENDAR_LIST_FAILED,
   type OAuthStateStore,
 } from './connect-shared';
 import { applianceProviderAvailable, getProviderCreds, loadConnection } from './store';
@@ -510,6 +517,7 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
         syncError: staffCalendarConnections.syncError,
         lastSyncedAt: staffCalendarConnections.lastSyncedAt,
         connectedAt: staffCalendarConnections.connectedAt,
+        scope: staffCalendarConnections.scope,
       })
       .from(staffCalendarConnections)
       .where(eq(staffCalendarConnections.staffId, staffId));
@@ -521,8 +529,10 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
           .where(inArray(staffCalendarSelections.connectionId, ids))
       : [];
     res.json({
-      connections: conns.map((c) => ({
+      writeEnabled: isCalendarWriteEnabled(),
+      connections: conns.map(({ scope, ...c }) => ({
         ...c,
+        canWrite: hasWriteScope(c.provider as CalendarProvider, scope),
         selections: allSelections.filter((s) => s.connectionId === c.id),
       })),
     });
@@ -582,9 +592,26 @@ export function createCalendarConnectRouter(deps: CalendarConnectDeps): Router {
       const token = await ensureFreshAccessToken(deps.db, conn, creds, doFetch);
       const calendars = await listCalendars(conn.provider as CalendarProvider, token, doFetch);
       await upsertCalendarList(deps.db, conn.id, calendars);
+      // A recovered list fetch clears our own marker (sync owns the rest).
+      if (conn.syncError === SYNC_ERROR_CALENDAR_LIST_FAILED) {
+        await deps.db
+          .update(staffCalendarConnections)
+          .set({ syncError: null, updatedAt: new Date() })
+          .where(eq(staffCalendarConnections.id, conn.id));
+      }
       res.json({ ok: true, count: calendars.length });
     } catch (err) {
       logger.warn({ err, connectionId: conn.id }, 'calendar refresh failed');
+      // Persist why, so the connection doesn't look healthy in the UI.
+      const tokenFailure = err instanceof Error && /token|refresh/i.test(err.message);
+      await deps.db
+        .update(staffCalendarConnections)
+        .set({
+          syncError: tokenFailure ? 'token_expired' : SYNC_ERROR_CALENDAR_LIST_FAILED,
+          updatedAt: new Date(),
+        })
+        .where(eq(staffCalendarConnections.id, conn.id))
+        .catch(() => undefined);
       res.status(502).json({ error: 'refresh_failed' });
     }
   });

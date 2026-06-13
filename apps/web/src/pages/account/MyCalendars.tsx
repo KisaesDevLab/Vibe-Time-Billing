@@ -5,6 +5,7 @@
 // to sync. Only renders when the firm has at least one provider enabled.
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
@@ -31,6 +32,7 @@ interface Connection {
   providerEmail: string | null;
   syncError: string | null;
   lastSyncedAt: string | null;
+  canWrite: boolean;
   selections: Selection[];
 }
 
@@ -39,21 +41,61 @@ const LABEL: Record<string, string> = {
   google: 'Google Calendar',
 };
 
+// syncError values that mean the stored sign-in is dead — fixed only by
+// reconnecting (the OAuth upsert resets tokens + clears the error).
+const RECONNECT_ERRORS = new Set(['token_expired', 'auth_failed']);
+
+function errorText(syncError: string): string {
+  if (RECONNECT_ERRORS.has(syncError)) {
+    return 'Calendar sign-in expired — reconnect to resume syncing.';
+  }
+  if (syncError === 'calendar_list_failed') {
+    return "Connected, but the calendar list couldn't be loaded. Try Refresh calendars.";
+  }
+  return `Error: ${syncError}`;
+}
+
+const CONNECT_ERROR_TEXT: Record<string, string> = {
+  declined: 'The connection was cancelled at the provider.',
+  auth_failed: 'The provider rejected the connection. Try again.',
+};
+
 export function MyCalendarsCard(): JSX.Element | null {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
+  const [writeEnabled, setWriteEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useSearchParams();
+  // Outcome of an OAuth redirect (?cal_connect=success|error&cal_error=…),
+  // captured once then stripped from the URL.
+  const [connectResult, setConnectResult] = useState<{ ok: boolean; reason: string | null } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const status = search.get('cal_connect');
+    if (!status) return;
+    setConnectResult({ ok: status === 'success', reason: search.get('cal_error') });
+    const next = new URLSearchParams(search);
+    next.delete('cal_connect');
+    next.delete('cal_error');
+    setSearch(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [p, c] = await Promise.all([
         api<{ providers: ProviderRow[] }>('/api/staff/calendar/providers'),
-        api<{ connections: Connection[] }>('/api/staff/calendar/connections'),
+        api<{ connections: Connection[]; writeEnabled?: boolean }>(
+          '/api/staff/calendar/connections',
+        ),
       ]);
       setProviders(p.providers ?? []);
       setConnections(c.connections ?? []);
+      setWriteEnabled(c.writeEnabled ?? false);
     } finally {
       setLoading(false);
     }
@@ -132,6 +174,43 @@ export function MyCalendarsCard(): JSX.Element | null {
 
   return (
     <Card title="My Calendars">
+      {connectResult && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '8px 12px',
+            marginBottom: tokens.space.md,
+            borderRadius: tokens.radius.sm,
+            fontSize: 13,
+            border: `1px solid ${connectResult.ok ? tokens.color.success : tokens.color.danger}`,
+            color: connectResult.ok ? tokens.color.success : tokens.color.danger,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            {connectResult.ok
+              ? 'Calendar connected.'
+              : `Calendar connection failed. ${
+                  CONNECT_ERROR_TEXT[connectResult.reason ?? ''] ?? 'Try again.'
+                }`}
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setConnectResult(null)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              color: 'inherit',
+              fontSize: 14,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div style={{ display: 'grid', gap: tokens.space.md }}>
         {providers
           .filter((p) => p.available)
@@ -151,15 +230,29 @@ export function MyCalendarsCard(): JSX.Element | null {
                   {conn ? (
                     <Pill tone={conn.syncError ? 'danger' : 'success'}>
                       {conn.syncError
-                        ? `Error: ${conn.syncError}`
+                        ? errorText(conn.syncError)
                         : (conn.providerEmail ?? 'Connected')}
                     </Pill>
                   ) : (
                     <Pill tone="neutral">Not connected</Pill>
                   )}
+                  {conn && !conn.syncError && writeEnabled && !conn.canWrite && (
+                    <span
+                      style={{ fontSize: 12, color: tokens.color.textMuted }}
+                      title="This connection was made before calendar write was enabled"
+                    >
+                      Read-only — reconnect to enable calendar write
+                    </span>
+                  )}
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
                     {conn ? (
                       <>
+                        {(RECONNECT_ERRORS.has(conn.syncError ?? '') ||
+                          (writeEnabled && !conn.canWrite)) && (
+                          <Button onClick={() => void connect(p.provider)} disabled={busy}>
+                            Reconnect
+                          </Button>
+                        )}
                         <Button
                           variant="secondary"
                           onClick={() => void syncNow(conn.id)}

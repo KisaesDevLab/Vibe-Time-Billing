@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  calendarEvents,
   calendarProviderConfig,
   staffCalendarConnections,
   staffCalendarSelections,
@@ -88,7 +89,7 @@ const mockFetch: typeof fetch = (async (url: string) => {
 
 const REDIRECT_BASE = 'https://app.firm.example';
 
-function buildApps(store: OAuthStateStore) {
+function buildApps(store: OAuthStateStore, fetchImpl: typeof fetch = mockFetch) {
   const staff = express();
   staff.use(express.json());
   staff.use((req, _res, next) => {
@@ -104,7 +105,7 @@ function buildApps(store: OAuthStateStore) {
       db: harness.db,
       stateStore: store,
       redirectBase: REDIRECT_BASE,
-      fetchImpl: mockFetch,
+      fetchImpl,
     }),
   );
 
@@ -116,10 +117,23 @@ function buildApps(store: OAuthStateStore) {
       stateStore: store,
       redirectBase: REDIRECT_BASE,
       appBaseUrl: REDIRECT_BASE,
-      fetchImpl: mockFetch,
+      fetchImpl,
     }),
   );
   return { staff, pub };
+}
+
+/** mockFetch variant with per-URL-substring overrides. */
+function fetchWith(
+  overrides: Record<string, (url: string) => Response | Promise<Response>>,
+): typeof fetch {
+  return (async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    for (const [needle, fn] of Object.entries(overrides)) {
+      if (u.includes(needle)) return fn(u);
+    }
+    return mockFetch(url as never, init);
+  }) as unknown as typeof fetch;
 }
 
 async function enableProvider(provider: 'google' | 'microsoft'): Promise<void> {
@@ -241,5 +255,198 @@ describe('calendar connect flow (CAL-2)', () => {
         .from(staffCalendarConnections)
         .where(eq(staffCalendarConnections.id, connId)),
     ).toHaveLength(0);
+  });
+
+  it('microsoft authorize URL forces the consent screen', async () => {
+    await enableProvider('microsoft');
+    const store = memStore();
+    const { staff } = buildApps(store);
+    const begin = await request(staff).post('/api/staff/calendar/connect/microsoft');
+    expect(begin.status).toBe(200);
+    expect(begin.body.authorizeUrl).toContain('prompt=consent');
+  });
+});
+
+describe('connect-flow error visibility', () => {
+  async function beginAndGetState(staff: express.Express): Promise<string> {
+    const begin = await request(staff).post('/api/staff/calendar/connect/google');
+    return stateFromUrl(begin.body.authorizeUrl);
+  }
+
+  it('provider decline redirects with cal_error=declined', async () => {
+    await enableProvider('google');
+    const store = memStore();
+    const { staff, pub } = buildApps(store);
+    const state = await beginAndGetState(staff);
+    const cb = await request(pub).get(
+      `/api/calendar/oauth/callback/google?state=${state}&error=access_denied`,
+    );
+    expect(cb.status).toBe(302);
+    expect(cb.headers['location']).toBe(
+      `${REDIRECT_BASE}/account?cal_connect=error&cal_error=declined`,
+    );
+  });
+
+  it('token-exchange failure redirects with cal_error=auth_failed', async () => {
+    await enableProvider('google');
+    const store = memStore();
+    const failTokens = fetchWith({
+      'oauth2.googleapis.com/token': () => new Response('{"error":"bad"}', { status: 400 }),
+    });
+    const { staff, pub } = buildApps(store, failTokens);
+    const state = await beginAndGetState(staff);
+    const cb = await request(pub).get(
+      `/api/calendar/oauth/callback/google?state=${state}&code=auth-code`,
+    );
+    expect(cb.status).toBe(302);
+    expect(cb.headers['location']).toBe(
+      `${REDIRECT_BASE}/account?cal_connect=error&cal_error=auth_failed`,
+    );
+  });
+
+  it('calendar-list failure still connects but marks syncError', async () => {
+    await enableProvider('google');
+    const store = memStore();
+    const failList = fetchWith({
+      'calendar/v3/users/me/calendarList': () => new Response('nope', { status: 500 }),
+    });
+    const { staff, pub } = buildApps(store, failList);
+    const state = await beginAndGetState(staff);
+    const cb = await request(pub).get(
+      `/api/calendar/oauth/callback/google?state=${state}&code=auth-code`,
+    );
+    expect(cb.status).toBe(302);
+    expect(cb.headers['location']).toBe(`${REDIRECT_BASE}/account?cal_connect=success`);
+    const [conn] = await harness.db
+      .select()
+      .from(staffCalendarConnections)
+      .where(eq(staffCalendarConnections.staffId, seed.appUserId));
+    expect(conn!.syncError).toBe('calendar_list_failed');
+  });
+
+  it('refresh-calendars failure persists syncError; a later success clears it', async () => {
+    await enableProvider('google');
+    const store = memStore();
+    const { staff, pub } = buildApps(store);
+    const state = await beginAndGetState(staff);
+    await request(pub).get(`/api/calendar/oauth/callback/google?state=${state}&code=c`);
+    const list = await request(staff).get('/api/staff/calendar/connections');
+    const connId = list.body.connections[0].id as string;
+
+    const failList = fetchWith({
+      'calendar/v3/users/me/calendarList': () => new Response('nope', { status: 500 }),
+    });
+    const { staff: failingStaff } = buildApps(store, failList);
+    const bad = await request(failingStaff).post(
+      `/api/staff/calendar/connections/${connId}/refresh-calendars`,
+    );
+    expect(bad.status).toBe(502);
+    let [conn] = await harness.db
+      .select()
+      .from(staffCalendarConnections)
+      .where(eq(staffCalendarConnections.id, connId));
+    expect(conn!.syncError).toBe('calendar_list_failed');
+
+    const good = await request(staff).post(
+      `/api/staff/calendar/connections/${connId}/refresh-calendars`,
+    );
+    expect(good.status).toBe(200);
+    [conn] = await harness.db
+      .select()
+      .from(staffCalendarConnections)
+      .where(eq(staffCalendarConnections.id, connId));
+    expect(conn!.syncError).toBeNull();
+  });
+});
+
+describe('write capability + first sync', () => {
+  afterEach(() => {
+    delete process.env['FEATURE_CALENDAR_WRITE'];
+  });
+
+  it('GET /connections reports canWrite per scope and writeEnabled per flag', async () => {
+    process.env['FEATURE_CALENDAR_WRITE'] = 'true';
+    await enableProvider('google');
+    const store = memStore();
+    // Read-only scope (mockFetch default token response).
+    const { staff, pub } = buildApps(store);
+    const begin = await request(staff).post('/api/staff/calendar/connect/google');
+    const state = stateFromUrl(begin.body.authorizeUrl);
+    await request(pub).get(`/api/calendar/oauth/callback/google?state=${state}&code=c`);
+    let list = await request(staff).get('/api/staff/calendar/connections');
+    expect(list.body.writeEnabled).toBe(true);
+    expect(list.body.connections[0].canWrite).toBe(false);
+
+    // Reconnect with a write scope → canWrite flips.
+    const writeTokens = fetchWith({
+      'oauth2.googleapis.com/token': () =>
+        new Response(
+          JSON.stringify({
+            access_token: 'acc-w',
+            refresh_token: 'ref-w',
+            expires_in: 3600,
+            scope: 'https://www.googleapis.com/auth/calendar.events',
+          }),
+          { status: 200 },
+        ),
+    });
+    const { staff: wStaff, pub: wPub } = buildApps(store, writeTokens);
+    const begin2 = await request(wStaff).post('/api/staff/calendar/connect/google');
+    const state2 = stateFromUrl(begin2.body.authorizeUrl);
+    await request(wPub).get(`/api/calendar/oauth/callback/google?state=${state2}&code=c`);
+    list = await request(wStaff).get('/api/staff/calendar/connections');
+    expect(list.body.connections[0].canWrite).toBe(true);
+  });
+
+  it('the callback runs a first sync inline — events appear without a worker tick', async () => {
+    await enableProvider('google');
+    const store = memStore();
+    const withEvents = fetchWith({
+      '/calendar/v3/calendars/': () =>
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 'ev-1',
+                summary: 'Kickoff',
+                start: { dateTime: new Date(Date.now() + 86_400_000).toISOString() },
+                end: { dateTime: new Date(Date.now() + 90_000_000).toISOString() },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+    });
+    const { staff, pub } = buildApps(store, withEvents);
+    const begin = await request(staff).post('/api/staff/calendar/connect/google');
+    const state = stateFromUrl(begin.body.authorizeUrl);
+    const cb = await request(pub).get(`/api/calendar/oauth/callback/google?state=${state}&code=c`);
+    expect(cb.headers['location']).toBe(`${REDIRECT_BASE}/account?cal_connect=success`);
+
+    const [conn] = await harness.db
+      .select()
+      .from(staffCalendarConnections)
+      .where(eq(staffCalendarConnections.staffId, seed.appUserId));
+    expect(conn!.lastSyncedAt).not.toBeNull();
+    const events = await harness.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.connectionId, conn!.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.subject).toBe('Kickoff');
+  });
+
+  it('a failing first sync does not flip the connect outcome', async () => {
+    await enableProvider('google');
+    const store = memStore();
+    const failEvents = fetchWith({
+      '/calendar/v3/calendars/': () => new Response('boom', { status: 500 }),
+    });
+    const { staff, pub } = buildApps(store, failEvents);
+    const begin = await request(staff).post('/api/staff/calendar/connect/google');
+    const state = stateFromUrl(begin.body.authorizeUrl);
+    const cb = await request(pub).get(`/api/calendar/oauth/callback/google?state=${state}&code=c`);
+    expect(cb.status).toBe(302);
+    expect(cb.headers['location']).toBe(`${REDIRECT_BASE}/account?cal_connect=success`);
   });
 });

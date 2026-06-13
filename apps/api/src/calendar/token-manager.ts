@@ -4,7 +4,7 @@
 // within 5 minutes, refresh it and persist the rotated tokens (re-wrapped
 // under a new per-record DEK). Returns a usable access token.
 
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { staffCalendarConnections } from '@vibe/db/schema';
@@ -55,8 +55,16 @@ export async function ensureFreshAccessToken(
     now,
   );
 
+  // Compare-and-set on the expiry we read: if another caller (api vs
+  // worker) refreshed concurrently and already persisted, discard OUR
+  // token set and use theirs — persisting both would overwrite the
+  // winner's rotated refresh token (Microsoft rotates RTs) and corrupt
+  // the connection.
+  const expiryUnchanged = expiry
+    ? eq(staffCalendarConnections.tokenExpiry, expiry)
+    : isNull(staffCalendarConnections.tokenExpiry);
   const { dek, wrappedDek } = newCalendarRecordKey(db, connection.firmId);
-  await db
+  const updated = await db
     .update(staffCalendarConnections)
     .set({
       tDekWrapped: Buffer.from(wrappedDek),
@@ -67,7 +75,16 @@ export async function ensureFreshAccessToken(
       syncError: null,
       updatedAt: now,
     })
-    .where(eq(staffCalendarConnections.id, connection.id));
+    .where(and(eq(staffCalendarConnections.id, connection.id), expiryUnchanged))
+    .returning({ id: staffCalendarConnections.id });
+  if (updated.length > 0) return set.accessToken;
 
-  return set.accessToken;
+  // Lost the race — return the winner's stored token.
+  const [fresh] = await db
+    .select()
+    .from(staffCalendarConnections)
+    .where(eq(staffCalendarConnections.id, connection.id))
+    .limit(1);
+  if (!fresh) throw new Error('token_expired');
+  return decryptConnectionTokens(db, connection.firmId, fresh).accessToken;
 }

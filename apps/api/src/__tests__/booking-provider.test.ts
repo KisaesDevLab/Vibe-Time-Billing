@@ -9,8 +9,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  appointmentParticipants,
   appointmentStaff,
   appointments,
+  appUsers,
   calendarEvents,
   calendarProviderConfig,
   staffCalendarConnections,
@@ -18,12 +20,18 @@ import {
   staffNotifications,
 } from '@vibe/db/schema';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  seedContact,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import { resetFirmKeyManagerForTests, getFirmKeyManager } from '../crypto/manager';
 import { setApplianceLockState } from '../crypto/boot';
 import { newCalendarRecordKey, encField } from '../calendar/crypto';
 import {
   runAppointmentProviderWrite,
+  runAppointmentProviderUpdate,
   runAppointmentProviderDelete,
 } from '../appointments/provider-jobs';
 
@@ -218,6 +226,93 @@ describe('appointment provider write-back', () => {
       { appointmentId: apptId, staffId: seed.appUserId },
     );
     expect(r.status).toBe('skipped');
+  });
+});
+
+describe('appointment provider update (reschedule)', () => {
+  it('PATCHes attendees, flips status to updated, and clears a prior failure', async () => {
+    await seedConn(GOOGLE_WRITE);
+    const apptId = await seedAppt();
+    // Recording fetch: same shape as mockFetch but captures PATCH bodies.
+    const patches: { url: string; body: Record<string, unknown> }[] = [];
+    const recFetch: typeof fetch = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'PATCH') {
+        patches.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) });
+        return new Response(JSON.stringify({ id: 'g-1', etag: '"e2"' }), { status: 200 });
+      }
+      return mockFetch(url as never, init);
+    }) as unknown as typeof fetch;
+
+    await runAppointmentProviderWrite(
+      { db: harness.db, fetchImpl: recFetch },
+      { appointmentId: apptId, staffId: seed.appUserId },
+    );
+
+    // A participant + a second staff member join after the create…
+    const { contactId } = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Pat Client',
+      email: 'pat@client.example',
+    });
+    await harness.db
+      .insert(appointmentParticipants)
+      .values({ appointmentId: apptId, clientContactId: contactId });
+    const [other] = await harness.db
+      .insert(appUsers)
+      .values({
+        firmId: seed.firmId,
+        email: 'second@firm.example',
+        fullName: 'Second Staff',
+        firstName: 'Second',
+        lastName: 'Staff',
+      })
+      .returning({ id: appUsers.id });
+    await harness.db.insert(appointmentStaff).values({ appointmentId: apptId, staffId: other!.id });
+    // …and the row previously failed (e.g. transient provider error).
+    await harness.db
+      .update(appointmentStaff)
+      .set({ providerWriteStatus: 'failed', providerWriteError: 'provider_failed' })
+      .where(
+        and(
+          eq(appointmentStaff.appointmentId, apptId),
+          eq(appointmentStaff.staffId, seed.appUserId),
+        ),
+      );
+
+    const r = await runAppointmentProviderUpdate(
+      { db: harness.db, fetchImpl: recFetch },
+      { appointmentId: apptId, staffId: seed.appUserId },
+    );
+    expect(r.status).toBe('updated');
+
+    // Provider PATCH carried the refreshed attendee list.
+    expect(patches).toHaveLength(1);
+    const sent = patches[0]!.body['attendees'] as { email: string }[];
+    expect(sent.map((a) => a.email).sort()).toEqual(['pat@client.example', 'second@firm.example']);
+
+    // Status flips to updated and the prior failure is cleared.
+    const [row] = await harness.db
+      .select()
+      .from(appointmentStaff)
+      .where(
+        and(
+          eq(appointmentStaff.appointmentId, apptId),
+          eq(appointmentStaff.staffId, seed.appUserId),
+        ),
+      );
+    expect(row!.providerWriteStatus).toBe('updated');
+    expect(row!.providerWriteError).toBeNull();
+
+    // Local mirror reflects the new attendees too.
+    const [mirror] = await harness.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.id, row!.calendarEventId!));
+    const mirrorEmails = (mirror!.attendees as { email?: string }[] | null)?.map((a) => a.email);
+    expect(mirrorEmails).toContain('pat@client.example');
+    expect(mirrorEmails).toContain('second@firm.example');
   });
 });
 

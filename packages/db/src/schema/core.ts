@@ -4200,6 +4200,10 @@ export const providerWriteStatus = pgEnum('provider_write_status', [
   'pending',
   'written',
   'failed',
+  // 0157 — a successful reschedule write-back (distinguishes from the
+  // original create and clears a previously failed row). Appended last
+  // to match ALTER TYPE ... ADD VALUE ordering in the database.
+  'updated',
 ]);
 export const appointmentCancelledBy = pgEnum('appointment_cancelled_by', ['staff', 'client']);
 export const rescheduleRequestStatus = pgEnum('reschedule_request_status', [

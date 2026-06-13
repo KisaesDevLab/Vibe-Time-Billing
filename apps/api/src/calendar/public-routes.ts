@@ -23,10 +23,13 @@ import {
   callbackRedirectUri,
   stateKey,
   upsertCalendarList,
+  SYNC_ERROR_CALENDAR_LIST_FAILED,
   type OAuthStatePayload,
   type OAuthStateStore,
 } from './connect-shared';
-import { getProviderCreds } from './store';
+import { getProviderCreds, loadConnection } from './store';
+import { getCalendarSettings } from './settings';
+import { syncConnection } from './sync';
 
 export interface CalendarPublicDeps {
   db: Database | null;
@@ -80,8 +83,9 @@ export function createCalendarPublicRouter(deps: CalendarPublicDeps): Router {
         });
     });
   }
-  const accountUrl = (status: 'success' | 'error'): string =>
-    `${deps.appBaseUrl.replace(/\/$/, '')}/account?cal_connect=${status}`;
+  const accountUrl = (status: 'success' | 'error', reason?: string): string =>
+    `${deps.appBaseUrl.replace(/\/$/, '')}/account?cal_connect=${status}` +
+    (reason ? `&cal_error=${reason}` : '');
 
   router.get('/oauth/callback/:provider', async (req: Request, res: Response) => {
     const provider = req.params['provider']!;
@@ -118,7 +122,7 @@ export function createCalendarPublicRouter(deps: CalendarPublicDeps): Router {
     // The provider may report a user-cancel as ?error=...
     if (req.query['error']) {
       logger.warn({ provider, error: req.query['error'] }, 'calendar oauth declined');
-      res.redirect(accountUrl('error'));
+      res.redirect(accountUrl('error', 'declined'));
       return;
     }
 
@@ -176,12 +180,22 @@ export function createCalendarPublicRouter(deps: CalendarPublicDeps): Router {
         })
         .returning({ id: staffCalendarConnections.id });
 
-      // Fetch + store the calendar list (primary pre-enabled).
+      // Fetch + store the calendar list (primary pre-enabled). A failure
+      // here must not fail the connect (tokens are stored and "Refresh
+      // calendars" can recover), but mark the connection so the UI shows
+      // it rather than a healthy-looking connection with no calendars.
+      let calendarListOk = true;
       try {
         const calendars = await listCalendars(provider, tokens.accessToken, doFetch);
         await upsertCalendarList(deps.db, conn!.id, calendars);
       } catch (err) {
+        calendarListOk = false;
         logger.warn({ err, connectionId: conn!.id }, 'initial calendar list fetch failed');
+        await deps.db
+          .update(staffCalendarConnections)
+          .set({ syncError: SYNC_ERROR_CALENDAR_LIST_FAILED, updatedAt: new Date() })
+          .where(eq(staffCalendarConnections.id, conn!.id))
+          .catch(() => undefined);
       }
 
       await emitAudit(deps.db, {
@@ -191,6 +205,37 @@ export function createCalendarPublicRouter(deps: CalendarPublicDeps): Router {
         actorAppUserId: payload.staffId,
         after: { provider, providerEmail: identity.providerEmail },
       });
+
+      // First sync inline (best-effort) so events appear right away
+      // instead of waiting for the next 5-min worker heartbeat. The
+      // 60s lock mirrors the manual "Sync now" route and dedupes
+      // against it; a sync failure must not fail the connect. Skipped
+      // when the calendar list fetch failed — there is nothing to sync
+      // and a vacuous success would clear that marker.
+      if (calendarListOk) {
+        try {
+          const lockKey = `cal:sync:lock:${conn!.id}`;
+          if (!(await deps.stateStore.get(lockKey))) {
+            await deps.stateStore.set(lockKey, '1', 60);
+            const settings = await getCalendarSettings(deps.db, payload.firmId);
+            const fullConn = await loadConnection(deps.db, payload.firmId, conn!.id);
+            if (fullConn) {
+              await syncConnection(
+                {
+                  db: deps.db,
+                  fetchImpl: doFetch,
+                  lookbackDays: settings.lookbackDays,
+                  lookaheadDays: settings.lookaheadDays,
+                },
+                fullConn,
+              );
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, connectionId: conn!.id }, 'initial calendar sync failed');
+        }
+      }
+
       res.redirect(accountUrl('success'));
     } catch (err) {
       logger.error({ err, provider }, 'calendar oauth callback failed');
@@ -200,7 +245,7 @@ export function createCalendarPublicRouter(deps: CalendarPublicDeps): Router {
         .set({ syncError: 'auth_failed', updatedAt: new Date() })
         .where(eq(staffCalendarConnections.staffId, payload.staffId))
         .catch(() => undefined);
-      res.redirect(accountUrl('error'));
+      res.redirect(accountUrl('error', 'auth_failed'));
     }
   });
 

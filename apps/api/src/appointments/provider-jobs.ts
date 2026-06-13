@@ -240,6 +240,7 @@ export async function runAppointmentProviderUpdate(
 
   const svc = new CalendarWriteService();
   try {
+    const attendees = await attendeeEmails(db, job.appointmentId, job.staffId);
     const description = await buildDescription(db, appt, job.staffId);
     await svc.updateEvent(
       { db, fetchImpl },
@@ -253,10 +254,20 @@ export async function runAppointmentProviderUpdate(
           end: appt.endsAt,
           location: locationText(appt.location, appt.locationDetail),
           description,
+          attendees,
         },
         actorAppUserId: appt.createdById ?? undefined,
       },
     );
+    await db
+      .update(appointmentStaff)
+      .set({ providerWriteStatus: 'updated', providerWriteError: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(appointmentStaff.appointmentId, job.appointmentId),
+          eq(appointmentStaff.staffId, job.staffId),
+        ),
+      );
     return { status: 'updated' };
   } catch (err) {
     return handleWriteError(db, job, appt.firmId, appt.title, err);

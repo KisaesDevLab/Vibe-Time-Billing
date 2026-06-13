@@ -12,6 +12,11 @@ import { staffCalendarSelections } from '@vibe/db/schema';
 
 import type { CalendarProvider, ProviderCalendar } from './oauth';
 
+/** syncError marker: tokens are fine but the provider calendar list
+ *  couldn't be fetched (connect callback or refresh-calendars route).
+ *  Recoverable via "Refresh calendars" — distinct from token_expired. */
+export const SYNC_ERROR_CALENDAR_LIST_FAILED = 'calendar_list_failed';
+
 /** Short-lived store for the OAuth state nonce (10-min TTL). */
 export interface OAuthStateStore {
   set(key: string, value: string, ttlSeconds: number): Promise<void>;

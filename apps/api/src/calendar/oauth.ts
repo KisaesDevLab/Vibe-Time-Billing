@@ -72,6 +72,9 @@ export function buildAuthorizeUrl(provider: CalendarProvider, input: AuthorizeIn
       redirect_uri: input.redirectUri,
       response_mode: 'query',
       scope: scopesFor('microsoft'),
+      // Force the consent screen so a reconnect actually grants newly
+      // widened scopes (read → write); a silent re-auth would not.
+      prompt: 'consent',
       state: input.state,
     });
     return `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize?${p}`;
@@ -239,6 +242,9 @@ export async function listCalendars(
     const res = await fetchImpl('https://graph.microsoft.com/v1.0/me/calendars?$top=100', {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    // Throw on HTTP failure — silently returning [] here would let a broken
+    // connection masquerade as "connected with no calendars".
+    if (!res.ok) throw new Error(`calendar_list_failed: ${res.status}`);
     const j = (await res.json().catch(() => ({}))) as {
       value?: Array<{ id: string; name: string; color?: string; isDefaultCalendar?: boolean }>;
     };
@@ -253,6 +259,7 @@ export async function listCalendars(
     'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250',
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
+  if (!res.ok) throw new Error(`calendar_list_failed: ${res.status}`);
   const j = (await res.json().catch(() => ({}))) as {
     items?: Array<{ id: string; summary: string; backgroundColor?: string; primary?: boolean }>;
   };
