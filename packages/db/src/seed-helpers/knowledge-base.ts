@@ -193,6 +193,24 @@ export const KB_CATEGORIES: ReadonlyArray<CategoryDef> = [
     description: 'Connect calendars, book appointments, manage appointment types.',
     sortOrder: 145,
   },
+  {
+    slug: 'people',
+    title: 'People & Contacts',
+    description: 'The unified People directory linking contacts to portal access.',
+    sortOrder: 22,
+  },
+  {
+    slug: 'intake',
+    title: 'Client Intake',
+    description: 'Collect documents from clients and prospects with secure intake links.',
+    sortOrder: 143,
+  },
+  {
+    slug: 'signatures',
+    title: 'E-Signatures',
+    description: 'In-office signing, collecting signatures, and the Signed Forms report.',
+    sortOrder: 115,
+  },
 ];
 
 // Small helper to keep bodies readable in source.
@@ -248,24 +266,35 @@ The app has a persistent left navigation (the sidebar) and a top header. This ar
 The left sidebar lists, top to bottom:
 - **Dashboard** — your landing page (the \`/\` home view).
 - **Clients** — client records and detail pages.
-- **Time** — log and review time entries.
+- **People** — the firm-wide directory of contacts and portal logins ([[people-directory]]).
 - **Engagements** — engagement records; create and open engagements.
+- **Time** — log and review time entries.
+- **Tasks** — your and the firm's task list.
+- **Appointments** — book and manage appointments.
+- **My calendar** — connect and view your own calendar.
+- **Messages** — engagement and team messaging threads.
 - **Proposals** — draft and send client proposals.
-- **Billing** — billing batches and pre-bills.
-- **WIP** — work-in-progress dashboard.
-- **Invoices** — issued invoices and invoice detail.
-- **AR** — accounts receivable.
-- **Retainers** — firm-wide retainer dashboard (shows only with the \`retainer:read\` permission; otherwise you reach your own view at \`/my/retainers\`).
-- **Approvals** — items awaiting your approval.
+- **Signatures** — e-signature requests and their status ([[in-office-signing]]).
 - **Requests** — document/info requests to and from clients.
-- **Messages** — engagement messaging threads.
-- **Reports** — realization, utilization, profitability, AR, payments-received.
+- **Intake** — secure document intake from clients and prospects ([[intake-overview]]).
+- **Document Inbox** — match and route incoming documents into client folders ([[document-inbox]]).
 - **Tax returns** — tax return tracking.
+- **WIP** — work-in-progress dashboard.
+- **Billing** — billing batches and pre-bills.
+- **Invoices** — issued invoices and invoice detail.
+- **Payments** — receive payments and import payment CSVs ([[payment-import]]).
+- **Retainers** — firm-wide retainer dashboard (shows only with the \`retainer:read\` permission; otherwise you reach your own view at \`/my/retainers\`).
+- **A / R** — accounts receivable.
+- **Approvals** — items awaiting approval, plus portal-access and client-notification queues.
+- **Reports** — realization, utilization, profitability, AR, payments-received, signed forms.
 - **Alerts** — system and workflow alerts.
 - **Audit** — the audit log.
+- **Notifications** — your in-app notifications.
 - **Admin** — firm settings and administration.
 - **Help** — Knowledge Base and Ask AI.
 - **Account** — your profile and sign-in settings.
+
+Nav items you don't have permission for won't appear, so your sidebar may be shorter than this list.
 
 ## Search
 - Press \`Ctrl+K\` (or \`Cmd+K\` on Mac) anywhere to open Quick find.
@@ -335,6 +364,9 @@ Every staff user must have at least one second factor enrolled. The supported fa
 
 ## Recovery codes
 - Recovery codes are generated when you enroll TOTP and are shown only once, under **Recovery codes (save now)**. Save them somewhere safe — check **I have saved these codes** before finishing.
+
+## Firm-wide requirement (admin)
+By default the firm **requires** every staff member to enroll a second factor. An administrator can turn this requirement off in **Admin → Firm settings** for a fully internal deployment — with it off, password sign-in issues a session without a second-factor challenge and sensitive actions skip the step-up gate. Leaving it on is strongly recommended for any internet-reachable appliance. Turning it off doesn't remove factors staff have already enrolled.
 
 ## Tips
 - Step-up re-prompt: sensitive actions re-challenge your second factor only if it's been more than 30 minutes since your last verification. **Account** shows **Step-up last verified**.
@@ -422,7 +454,7 @@ A short, practical checklist to get a new staffer productive in the staff app. W
 2. **Client type** step — choose **Individual** ("Single filer, joint filer…") or **Business** ("C-corp, S-corp, LLC, partnership, sole prop, nonprofit"). This drives the next step's fields.
 3. **Client info** step — fill the name (**Client name (e.g. Smith, John)** for individuals, **Business name** for businesses). Optionally tick **Use a different client-facing name**.
 4. Choose **Client owner \\*** (partner in charge) and **Office \\*** (both required in the wizard).
-5. Optionally set **External ID**, **Source**, **Pipeline stage** (Client / Other / Prospect), **Terms (days)** (default 30), and — for individuals — **Filing status**. Leave **Active** on (default).
+5. Optionally set **External ID**, **AWS ID**, **Source**, **Pipeline stage** (Client / Other / Prospect), **Terms (days)** (default 30), and — for individuals — **Filing status**. Leave **Active** on (default).
 6. Step through the optional **Contacts**, **Custom fields**, and **Tags** steps.
 7. Finish with **Create and manage** (opens the new client) or **Create and close** (returns to the list).
 
@@ -437,6 +469,8 @@ Open the client and use **Edit** on the **Client info** card to change name, own
 
 ## Tips
 - Individual vs Business only changes the name label and whether Filing status appears — both store the same way.
+- **Client names must be unique within the firm** (case-insensitive). Creating or renaming to a name already in use is refused with a clear message; archiving a client frees its name for reuse.
+- **External ID** and **AWS ID** are two optional identifiers the [[document-inbox]] matches incoming documents against — set whichever your tax-software exports stamp on filenames. Both are unique per firm when set.
 `),
   },
   {
@@ -865,7 +899,10 @@ A **billing batch** is the pre-bill. The staff app uses "billing batch" and "pre
 8. Click **Finalize** (status → **APPROVED**), then on an approved batch optionally tick **Offer retainer to client** and click **Generate invoice**.
 
 ## What you'll see
-A status pill (**DRAFT / IN_REVIEW / APPROVED / INVOICED / CANCELLED**), summary figures (**Standard WIP (include)**, **Adjustments**, **Total to invoice**, **Defer**, **Write off**), a **WIP aging** panel (0-30 / 31-60 / 61-90 / 90+), an **AI pre-bill narrative** card (if AI is on), and an **Untracked client interactions** panel with **Convert** to log time from messages.
+A status pill (**DRAFT / IN_REVIEW / APPROVED / INVOICED / CANCELLED**), summary figures (**Standard WIP (include)**, **Adjustments**, **Total to invoice**, **Defer**, **Write off**), a **WIP aging** panel (0-30 / 31-60 / 61-90 / 90+), an **AI pre-bill narrative** card (if AI is on), and an **Untracked client interactions** panel with **Convert** to log time from messages. The entries table carries a **Billed** column — the per-entry amount after adjustments — alongside the standard (WIP) value, with billed totals in the footer.
+
+## After you finalize
+Finalizing locks the entry actions (the **finalized lock**). From the invoiced batch you can **Print** or **Send** the invoice, or **Unfinalize** to void the current invoice and reopen a fresh draft batch for re-editing — unfinalize is refused once the invoice has a recorded payment. The invoice screen itself is view/print/send only; see [[creating-invoices]].
 
 ## Tips
 - If an engagement's projected WIP exceeds its NTE cap, batch creation is rejected (\`nte_cap_exceeded\`).
@@ -905,7 +942,7 @@ Every allocation produces rows at the **(adjustment, time entry, timekeeper)** g
 
 ## Tips
 - Pro-rata by value is the safe default. Partner absorbs requires a partner entry on the batch.
-- In the current dialog, **Pro-rata**, **Partner absorbs**, and **Hierarchical cascade** submit directly; **Specific entries** and **Custom weighted** need per-entry/weight detail the dialog doesn't yet collect, so they may return a "required" error from there.
+- All six methods are driven from the dialog: **Specific entries** lets you type a per-entry amount on each row, and **Custom weighted** lets you enter per-timekeeper weights (toggle between percent and dollars). The dialog validates that the parts sum to the total before you can submit.
 `),
   },
   {
@@ -947,12 +984,15 @@ The approver acts in the **Approvals** queue (**Approve** / **Reject**).
     body: md(`
 # Creating & sending invoices
 
+## Where you edit vs. where you view
+The amounts, lines, and composition of an invoice are decided in **Billing** (the pre-bill), not on the invoice screen. The **invoice detail screen is view / print / send only** — the one thing you can change there is a line's **description text** (the amount stays locked). To change anything else, go back to the source pre-bill in Billing.
+
 ## Steps
-1. **Generate from a pre-bill** — finalizing an **APPROVED** (or IN_REVIEW) billing batch creates the invoice: it aggregates the included time net of adjustments, assigns a number (prefixed \`INV\`), sets the issue date to today and the due date from the client's terms, and creates it as **DRAFT**.
+1. **Generate from a pre-bill** — finalizing an **APPROVED** billing batch creates the invoice: it aggregates the included time net of adjustments, assigns a number (prefixed \`INV\`), sets the issue date to today and the due date from the client's terms.
 2. Open **Invoices** (titled "Invoices — N"; columns Invoice · Client · Issued · Due · Total · Paid · Status · Viewed). Filter by status, client, owner, and **Issued from / to**.
-3. Click **Open** (or **PDF**) on a row to view the invoice.
-4. Edit a draft with **Edit**: change each line's description/amount, **+ Add line**, or use **Add specific kind** (Time / Fixed fee / Milestone / Recurring fee / Expense / Custom). Click **Done**. (Editing is available only with no payments and not voided.)
-5. **Send** a draft from the list with **Send** — it emails the client's billing contact and flips status to **Sent**.
+3. Click **Open** (or **PDF**) on a row to view the invoice. **Edit in Billing** jumps back to the source pre-bill to change amounts, lines, or composition.
+4. To fix wording, edit a **line's description** in place on the invoice (allowed while the invoice isn't voided and has no payments). The amount can't be changed here — adjust it from Billing.
+5. **Send** from the list or the detail screen — it emails the client's billing contact and flips status to **Sent**. You can also **Print** the PDF. Composition (memo + custom lines), target amount, and write-ups/downs are all set in [[prebills-wip]].
 
 ## Render modes
 The PDF supports a \`mode\` query value: \`summary\` (one aggregate line per kind), \`by-line\` (the line items — default), or \`full-detail\` (line items + a time-entry breakdown).
@@ -1295,6 +1335,7 @@ Staff grant portal access from the client's record, in the **Portal access** car
 - Granting portal access requires the \`client:portal-access:manage\` permission.
 - Inviting a contact that already has an identity at your firm skips the email/SMS round-trip and grants access immediately (deduped by firm + email or firm + phone).
 - Bulk invites are supported via CSV with the header \`fullName,email,phone,role,deliveryChannel\`.
+- You can also manage everyone's access firm-wide from the [[people-directory]], and let clients ask for access themselves — see [[portal-access-requests]].
 `),
   },
   {
@@ -1506,7 +1547,9 @@ The Tax area is where your firm tracks finished tax returns and delivers them to
 
 ## Tips
 - A return with no parsed sections can only be released as **Full return**.
+- To gather signatures on a return (e.g. e-file authorizations), use **Collect signatures** on the return — it detects the signature pages and builds a signing package. See [[collect-signatures-from-return]].
 - Clients can re-share a release with a third party (e.g. a bank or lender) from their own portal as a tokenized recipient link with optional 2FA, an expiry, view-only or view-and-download, and a watermark. Staff see active shares in the viewer's "Shared with" rail.
+- A **full-return** re-share requires the client to hold a **full** release — if you only released selected sections, the client can't re-share the entire return, only what they were given.
 - To preview exactly what a client sees, use **View as client ↗** on the client's **Portal access** card. It opens the portal read-only; the launch token is single-use and expires 5 minutes after it's issued.
 - Every release, revoke, view, and section edit is written to the return's access log for audit.
 `),
@@ -1671,13 +1714,20 @@ Every client document the firm uploads lives in object storage, organized into o
 - A warning banner after save: "Restart the appliance" for the new provider to take effect; existing uploads do not auto-migrate.
 - A **Test connection** result line: \`Connection OK · <ms>\` or \`Connection failed: <error>\`.
 - A **Last tested …** line showing the timestamp and tested provider.
-- In the client **Files** tab: a **Storage folder** card (path, status, **Last synced**, **Refresh**, **Rename folder**), a **Folders** subfolder list, and a file table. Files mid-upload show a \`pending\` pill.
+- In the client **Files** tab: a **Storage folder** card (path, status, **Last synced**, **Refresh**, **Rename folder**), a collapsible **folder tree** on the left, and a file table on the right. Files mid-upload show a \`pending\` pill.
+
+## Working in the Files tab
+- Click a folder in the tree to filter the table to it; search by filename and filter by visibility.
+- Each file row has icon actions — **share**, **flag** (as a tax return), **preview** (PDFs), and **download** — plus a click-to-toggle visibility pill.
+- **Select multiple files** (or use select-all) to make them client-visible / private in bulk, or to share them together as one access-code link. See [[gated-share-links]].
+- The **folder template** selector sets which standard folders the client starts with — see [[folder-templates]].
 
 ## Tips
 - Credentials are sealed with the firm key before they hit the database, so a DB dump never leaks them.
 - Re-type the masked Key ID / access key to save changes; leaving the masked hint in place blocks the save.
 - \`mock\` is fine for dev or a single host; choose B2 or MinIO for production durability.
 - Saving credentials never migrates files already stored on the previous provider.
+- To get many documents into client folders at once, use the [[document-inbox]] rather than uploading one by one.
 `),
   },
   {
@@ -1751,6 +1801,9 @@ A client request is a checklist the firm sends to a client for documents, questi
 - Reminder emails carry the subject "Reminder: <title> — due <date>" and are sent at most once per day per request.
 - Explicit fields sent at create time always override template defaults.
 
+## Drop-off requests
+A request can be a **general** request (the default, which can re-send reminders while it stays open) or a **drop-off** request — an engagement hand-off tied to a specific date, such as a year-end document drop. A drop-off fires a single email-and-text reminder once its reminder window opens (rather than re-firing daily), and clients see it flagged as a drop-off in their portal.
+
 ## Tips
 - Creating/editing requests requires \`requests:manage\`; reading requires \`requests:read\`. Template CRUD is gated by \`taxonomy:write\` (read by \`taxonomy:read\`).
 - Bulk send skips targets whose engagement doesn't belong to the firm or doesn't match the given client, and reports them as skipped.
@@ -1794,9 +1847,14 @@ Every engagement has a private, encrypted message thread shared between your sta
 - Archived threads show an **Archived** pill and block new replies ("This thread is archived. Reopen the engagement to send a reply."). Threads archive when the engagement is archived.
 - Read receipts are recorded per reader; opening a message marks it read.
 
+## Attachments & filing to a folder
+Messages can carry **file attachments**, encrypted under the same thread key. When a client sends a document on a thread, staff can **file that attachment into the client's folder** directly from the message — pick the destination folder/category and it's copied into the client's file storage (the original stays on the thread), so you don't have to download and re-upload.
+
+## Client-initiated threads
+Clients can now **start** a conversation from their portal, not just reply. A new client-started thread automatically adds the relevant staff (the engagement's team, or firm staff who handle messaging) and notifies them, so it doesn't sit unseen. Client-started threads are rate-limited to curb spam.
+
 ## Tips
 - Encryption is at-rest: each thread has its own data-encryption key wrapped by the firm key, and the appliance must be unlocked to read or send. Staff and clients never see ciphertext.
-- There is **no file-attachment feature in the message thread** — share documents through the engagement's file-sharing tools instead.
 - Clients reply from the portal; your sent message appears there immediately.
 - During pre-bill review, the **Untracked client interactions** panel surfaces thread messages in a date range that aren't yet linked to a time entry — useful for capturing unbilled communication.
 - Reading requires \`messaging:read\`; posting requires \`messaging:write\`.
@@ -1997,6 +2055,9 @@ The **Approvals** page is where designated approvers act on items that exceed fi
 - Adjustments over the firm's adjustment-approval threshold (default $1,000, firm-configurable) are created in \`PENDING_APPROVAL\` and routed to the client's partner-in-charge with a default 48-hour SLA. Final-step approval flips the adjustment to \`APPLIED\`; rejection flips it to \`REJECTED\`.
 - Your queue shows items assigned to you plus any unassigned pending items.
 - On a multi-step item, approving an intermediate step advances it to the next approver and it stays pending; only a final-step approval or any rejection closes it.
+
+## Other things that land here
+The Approvals page also hosts dedicated cards for **portal access requests** (clients asking to be let into the portal — see [[portal-access-requests]]) and **client notifications** (status-change messages awaiting send — see [[staged-notifications]]). Each is gated by its own permission.
 
 ## Tips
 - Approving or rejecting requires the \`approval:act\` permission; viewing the queue requires \`approval:queue:read\`.
@@ -2761,7 +2822,7 @@ The Cloudflare Tunnel exposes the appliance on your own domain (\`app.<zone>\`, 
   // =================================================================== OpenSign e-sign
   {
     slug: 'esign-providers',
-    category: 'proposals',
+    category: 'signatures',
     title: 'E-signatures: native vs OpenSign',
     summary: 'The two e-signature backends and how to choose.',
     tags: ['e-sign', 'signature', 'opensign', 'native', 'proposals'],
@@ -3081,8 +3142,8 @@ After connecting, pick which of your calendars should be used. Use:
 
 ## What connecting unlocks
 - You appear in the **Book** wizard with a provider badge (M365 / Google), and your real availability shapes the open time slots.
-- New bookings are written to your calendar; reschedules and cancellations update the event.
-- Connection health (including any "read-only — reconnect to grant write access" warnings) shows under **Settings → Calendar overview**.
+- New bookings are written to your calendar **with the participants as attendees**, so they show up correctly for everyone; reschedules and cancellations update the same event.
+- Connection health (including any "read-only — reconnect to grant write access" warnings) shows under **Settings → Calendar overview**, where you can review connection status and reconnect.
 
 ## Keeping it healthy
 If your connection shows an error or "needs reconnect," open **Account → My Calendars** and connect again — that refreshes the access the provider granted.
@@ -3103,7 +3164,7 @@ Open **Appointments → Book** (or click **Book appointment**). The booker walks
 ## Step 1 — Staff & type
 - Pick one or more **staff members**. With more than one selected, the app only offers times when **everyone** is free.
 - Choose an **appointment type** (e.g. Tax Preparation, Tax Planning). The type pre-fills the default duration and location — you can override either.
-- Set the **duration**, **location** (In-person / Phone / Video), and an optional detail (video link, phone number, or address).
+- Set the **duration**, **location** (In-person / Phone / Video), and an optional detail (video link, phone number, or address). If the type has saved **location options** (e.g. specific offices), pick one — the offered times are limited to that location's availability window. Rescheduling honors the same location, so you won't be offered a slot backed by a different office.
 
 ## Step 2 — Date & time
 - Days with openings show in **bold**; faded days have no availability. Today is outlined.
@@ -3148,6 +3209,9 @@ For each type you can set:
 - A **color** (used as the dot in the wizard and the list).
 - **Active** toggle — inactive types are hidden from the booker but kept for history.
 - **Order** — use the up/down arrows to control how they appear.
+
+## Availability windows (per type and location)
+You can limit when each type is bookable with **availability windows** — the days and hours during which the booker will offer that type. Windows can be tied to a specific **location option** (for example, a particular office), so a type booked for the *Monett* office only offers the days/hours that office is staffed, separate from another location's window. The booker intersects these windows with each staff member's free/busy, so clients only see times that satisfy both.
 
 ## Deleting vs deactivating
 A type that has appointment history **cannot be deleted** — deactivate it instead so past appointments keep their type. Types with no history can be deleted outright.
@@ -3332,6 +3396,458 @@ Confirmations appear as the Confirmed/Awaiting chips in the appointments list an
 - Voice + SMS use Twilio — set \`SMS_TWILIO_*\` and \`VOICE_TWILIO_*\` (the voice FROM must be a voice-capable number). Without them, those channels are skipped and email still works.
 - For inbound SMS confirmation, set your Twilio number's **Messaging webhook** to \`https://<your-app-host>/api/public/appointments/twilio/sms\`. Voice press-1 needs no extra setup.
 - US senders: reliable application-to-person SMS requires **A2P 10DLC** brand/campaign registration with your carrier, and outbound voice should use a verified caller ID.
+`),
+  },
+
+  // =================================================================== People & Contacts
+  {
+    slug: 'people-directory',
+    category: 'people',
+    title: 'The People directory',
+    summary: 'One unified view of every contact and portal login across the firm.',
+    tags: ['people', 'contacts', 'portal access', 'directory'],
+    sortOrder: 10,
+    body: md(`
+# The People directory
+
+**People** (left nav) is a firm-wide directory of every individual your firm deals with — client contacts, the people who can sign in to the portal, and outside third parties such as a client's attorney or banker. Historically the same person could appear twice (once as a contact, once as a portal login) with no link between them. The People directory reconciles those into one record per person so you see a single, deduplicated picture.
+
+## What you see
+The list shows each person's name, email, and phone, plus:
+- **Clients** — how many client records this person is attached to.
+- **Portal** — whether they have an active portal login (shown as an *Enabled* badge) or none.
+
+Search matches name, email, or phone. Click any name to open the person's detail page.
+
+## A person's detail page
+The detail page has the canonical name/email/phone (edit them here and the change applies everywhere that person appears) and a table of every client they touch. For each client you can:
+- **Enable or disable portal access** — grants a login or revokes it (same action as a portal invite).
+- **Change the access role** — *Full*, *View only*, or *Pay only*.
+- **Cancel a pending invitation** — when an invite is sent but not yet accepted.
+- **View as** — open a short, read-only portal session as that person to see exactly what they see (requires the right permission).
+
+## Contacts vs. portal-only people
+- A **contact** is someone on a client's contact list (primary, billing, etc.).
+- A **portal-only** person has a login but is not on the contact list — typically an outside advisor. They show in People with a *Portal-only* marker.
+- The directory keys on **email** (unique per firm, case-insensitive). Phone is a secondary hint, since spouses and family often share a number.
+
+## Per-client People tab
+Each client record also has a **People** card showing just that client's contacts, portal-only users, and pending invitations together, so you can manage access without leaving the client.
+
+## Tips
+- Editing a person's email here updates it for the contact and the linked portal login at once — there's no separate per-client copy to keep in sync.
+- If a legacy portal login wasn't linked to its contact, the directory self-heals the link when the emails match, so the two stop showing as separate people.
+- Setting up a new login is covered in [[inviting-clients]]; self-service requests are in [[portal-access-requests]].
+`),
+  },
+
+  // =================================================================== Portal access (client-portal)
+  {
+    slug: 'portal-access-requests',
+    category: 'client-portal',
+    title: 'Approving portal access requests',
+    summary: 'Let clients ask for portal access and approve them from one queue.',
+    tags: ['portal', 'access', 'requests', 'approvals', 'invite'],
+    sortOrder: 40,
+    body: md(`
+# Approving portal access requests
+
+Instead of waiting for staff to invite them, a client (or an authorized person on the account) can request portal access themselves from a public page. Requests land in an approval queue where staff verify identity and grant access.
+
+## How a client requests access
+On the portal's **Request access** page (no login required) the person enters their email or phone, picks *Individual* or *Business*, and types the **last four digits** of the SSN or EIN on file. They always see the same neutral confirmation — "if your information matches our records, we'll review your request" — whether or not there was a match. This keeps the page from leaking who is and isn't a client.
+
+When the details match a person in your directory, the system creates one pending request for **each client** that person is a contact of — and skips any client where they already have active access.
+
+## How staff approve or deny
+1. Open **Approvals** and find the **Portal access requests** card (requires the portal-access permission).
+2. Each row shows the person's name, the client, the contact details they submitted, and the last-4 ID value they entered.
+3. **Verify the ID** against what you have on file (the value is shown for you to eyeball; the app does not auto-check it).
+4. To approve, pick a role — *Full*, *View only*, or *Pay only* — and click **Approve**. The person is granted access immediately if they've signed in before, or sent an invitation link if not.
+5. To reject, click **Deny**. No access is granted and the requester is not notified.
+
+## Tips
+- Approval uses the same grant/invite path as a manual invite, so an existing login is reused rather than duplicated.
+- Re-submitting while a request is already pending does nothing — there's one pending request per person-and-client.
+- The page is rate-limited and enumeration-safe per the firm's standard mitigation, so repeated guessing reveals nothing.
+- Manage the resulting logins anytime from the [[people-directory]].
+`),
+  },
+
+  // =================================================================== Document Inbox (Filer)
+  {
+    slug: 'document-inbox',
+    category: 'files',
+    title: 'The Document Inbox (Filer)',
+    summary: 'Auto-match scanned documents to clients and route them into folders.',
+    tags: ['filer', 'document inbox', 'routing', 'scan', 'zip import'],
+    sortOrder: 40,
+    body: md(`
+# The Document Inbox (Filer)
+
+**Document Inbox** (left nav) is the staff queue for getting bulk documents into the right client folders. Drop files (or a tax-software export) into the inbox, and the app reads each filename, matches it to a client, and proposes a destination folder using your routing rules. You review, fix anything it got wrong, and commit — the files move into each client's file storage in one batch.
+
+## The tabs
+- **Inbox** — the review queue of documents waiting to be filed.
+- **Import** — upload a \`.zip\` export of client documents (see below).
+- **Rules** — the routing rules that turn a filename into a destination folder.
+- **History** — every batch you've filed, with the option to undo.
+
+## Working the Inbox
+1. Get documents into the inbox by **dragging and dropping** them onto the drop zone, or by having your scanner/export drop them into the storage **Inbox/** prefix.
+2. The app parses each filename for a **client identifier**, a document name, and a year, then matches it to a client and suggests a folder.
+3. Review each row. Rows are color-coded — matched (ready), a soft warning (matched with a caveat such as a name mismatch), or unmatched (needs a manual client pick).
+4. Override anything that's wrong: the **client**, the **destination folder**, or the **year**. You can also flag a document as a tax return so it starts the tax-return workflow.
+5. Select the rows you want and click **Commit**. The files move into their folders in the background. The whole batch is undoable.
+
+## Matching by identifier
+Filenames are matched to a client by the client's **External ID** or **AWS ID** (a second identifier some tax-software exports use — see [[creating-clients]]). When the identifier is found, the parsed name is cross-checked against the client name; a low-similarity match is flagged rather than filed silently.
+
+## Routing rules
+On the **Rules** tab, build an ordered list of rules. Each rule looks for an identifier string in the filename (contains / starts-with / regex), and points matches at a target folder, optionally adding a year subfolder. Rules are evaluated top to bottom and the first match wins. One rule profile is active per firm.
+
+## Zip import
+On the **Import** tab, upload a \`.zip\` of a client's documents. The app matches the client from the zip's filename, you confirm or change the client and the destination folder, and a worker extracts the archive — preserving its internal folder structure and skipping (never overwriting) duplicates. The upload cap is large (hundreds of MB) to accommodate full exports.
+
+## History and undo
+The **History** tab lists each batch with counts of filed and reversed items. You can **undo an entire batch** (everything goes back to the inbox) or **undo a single file**. Undo is logged for the audit trail.
+
+## Tips
+- The Document Inbox is separate from the **Files** tab on a client — it's the bulk *routing* step that feeds those folders. For collecting documents *from* a client, see [[document-requests]] and [[intake-overview]].
+- Set a client's **External ID** / **AWS ID** so the matcher can recognize their documents automatically.
+- Executable file types are blocked on upload.
+`),
+  },
+  {
+    slug: 'folder-templates',
+    category: 'files',
+    title: 'Client folder templates',
+    summary: 'Give every client the same starting folder structure.',
+    tags: ['folders', 'templates', 'files', 'structure'],
+    sortOrder: 50,
+    body: md(`
+# Client folder templates
+
+A folder template defines the standard set of folders every client's file area starts with — for example *Correspondence*, *Income Tax*, *Payroll*, *Workpapers*, and *Signatures*. The folders appear in each client's file explorer even before any file is uploaded, so staff always file documents in a consistent place.
+
+## The firm default
+Your firm has a default template, seeded with a standard set of folders the first time it's used. Every client uses the firm default unless you assign a different template to that client.
+
+## Folder visibility hints
+Each folder in a template can carry a visibility hint — *private* or *client-visible*. When staff file a document into that folder, the file's visibility defaults to the folder's hint, which saves a step on folders that are always meant for the client (or always internal).
+
+## Assigning a template to a client
+On a client's **Files** tab, use the **Folder template** selector to pick the firm default or any custom template. The explorer immediately reflects the chosen template's folders. Custom files and subfolders the client already has are always shown alongside the template folders.
+
+## Managing templates (admin)
+Admins create, rename, and delete templates and set which one is the firm default. The default can't be deleted — reassign clients first. Deleting a template that clients still use simply falls those clients back to the firm default.
+
+## Tips
+- Template folders are a *skeleton* — they show even when empty, so nothing looks missing on a brand-new client.
+- The visibility hint only sets a default when a file is filed; it doesn't reach back and change files already in the folder.
+- Folder templates pair well with the [[document-inbox]], whose rules route documents into these same folders.
+`),
+  },
+  {
+    slug: 'gated-share-links',
+    category: 'files',
+    title: 'Access-code share links',
+    summary: 'Share files externally behind a one-time access code.',
+    tags: ['share', 'access code', 'otp', 'files', 'security'],
+    sortOrder: 60,
+    body: md(`
+# Access-code share links
+
+When you share a file (or several files) with someone outside the firm, the recipient gets a link to a landing page rather than a direct download. To open it they request a one-time **access code**, which is sent to the email or phone on the share, and enter it to view or download. This protects shared documents even if the link is forwarded.
+
+## Sharing a single file
+From a client's **Files** tab, click **Share** on a file. Set the recipient's email (and name/organization if you want them on the watermark), choose **view** or **download** access, set an expiry, and optionally turn on a PDF watermark. The recipient receives the landing-page link.
+
+## Sharing several files at once
+Select multiple files in the Files tab and use the toolbar **Share** action. All selected files go into **one** share with a single landing page that lists every file with its own view/download button — the recipient verifies once and sees them all.
+
+## What the recipient does
+1. Opens the link and clicks **Send code**.
+2. Receives a 6-digit code by email or text (the destination is shown masked).
+3. Enters the code. A successful code grants a short browser session to view or download the files.
+
+The code expires after a few minutes, allows a handful of attempts, and has a resend cool-down. Repeated failures lock the challenge and eventually revoke the share automatically.
+
+## Tips
+- Because the code goes to the recipient's own email/phone, a forwarded link is useless without it.
+- A bundle share uses one code for the whole set of files.
+- Watermarks apply to PDFs and carry the recipient's name and organization.
+- Clients can also create share links from their portal; see [[sharing-and-visibility]]. Older, pre-existing links that pre-date the access-code feature continue to work as before.
+`),
+  },
+
+  // =================================================================== Client Intake
+  {
+    slug: 'intake-overview',
+    category: 'intake',
+    title: 'Collecting documents with Intake',
+    summary: 'Send a secure link; clients and prospects upload without a login.',
+    tags: ['intake', 'upload', 'documents', 'prospects', 'secure'],
+    sortOrder: 10,
+    body: md(`
+# Collecting documents with Intake
+
+**Intake** lets someone send you documents through a secure link **without a portal account** — ideal for a prospect, a brand-new client, or a one-off drop-off. You send a link, they upload files on a simple public page, the files are scanned for malware, and the submission lands in your **Intake** inbox where you file it into a client's folders.
+
+How it differs from the others:
+- **Document Inbox (Filer)** routes documents *already* in your storage into folders. Intake is how documents *arrive* from outside.
+- **Document requests** ask an existing, signed-in portal client for specific items. Intake needs no login at all.
+
+## Send a link
+1. Open **Intake** (left nav) and use **Send a link**.
+2. Choose which staff member the link is on behalf of, enter the recipient's **email and/or phone**, and pick an expiry (e.g. 7, 14, or 30 days).
+3. The app emails/texts the link. You can also copy the link and send it yourself.
+
+## What the submitter sees
+The public page shows the staff member's name and a note that files are encrypted and scanned. The submitter enters their name (email/phone optional), an optional message, and uploads files — from their device or by using the on-screen **camera scanner** to photograph pages. They submit and get a thank-you confirmation. There are sensible per-file size and count limits, and executable file types are blocked.
+
+## Reviewing and filing a submission
+1. Open **Intake**. Received submissions appear in the list with the submitter's name and file count.
+2. Select one to see the contact details, message, and files (you can preview each).
+3. The app suggests matching clients based on the email, phone, and name. Click a suggestion or search for the right client.
+4. Choose a destination — folder/category and visibility — and **file** the submission. The clean files move into that client's file storage.
+5. Or **reject** a submission that isn't relevant; it's archived without filing.
+
+## Tips
+- Intake must be enabled for the firm, and each staff member can be set up with their own intake page — see [[intake-setup]].
+- Files are scanned before you can open them; an infected file is blocked from filing.
+- A link is a one-time credential — once a submission is created from it, it's spent.
+`),
+  },
+  {
+    slug: 'intake-setup',
+    category: 'intake',
+    title: 'Setting up Intake (admin)',
+    summary: 'Enable intake and configure each staff member’s intake page.',
+    tags: ['intake', 'admin', 'settings', 'setup'],
+    sortOrder: 20,
+    body: md(`
+# Setting up Intake (admin)
+
+Intake is off until an administrator turns it on. Configure it in **Admin → Intake settings**.
+
+## Turn it on
+Toggle the firm-level **Intake** switch on. While it's off, intake links and the public page return "not found" (it fails closed).
+
+## Per-staff intake pages
+For each active staff member you can set:
+- **Visibility** — whether they appear on the public intake listing.
+- **Accepting uploads** — whether their page accepts submissions.
+- **Display title** — e.g. "Tax Manager", shown to submitters.
+- **Display order** — sort position on the public page.
+- **Notifications** — email and/or SMS to that staff member when a new submission arrives for them.
+- **Headshot** — an optional photo shown on their page.
+
+## Tips
+- Submissions are encrypted at rest and only decrypted when a staff member opens them.
+- Day-to-day operation — sending links, reviewing, and filing — is covered in [[intake-overview]].
+- For getting those filed documents routed by rule, see the [[document-inbox]].
+`),
+  },
+
+  // =================================================================== E-Signatures (new operations)
+  {
+    slug: 'in-office-signing',
+    category: 'signatures',
+    title: 'In-office signing & QR sheets',
+    summary: 'Have signers sign on-site by scanning a QR code.',
+    tags: ['signatures', 'in-office', 'qr', 'opensign'],
+    sortOrder: 30,
+    body: md(`
+# In-office signing & QR sheets
+
+Once a signature request has been sent, you can have signers complete it **in your office** instead of waiting for email. The signature request detail page offers an in-office signing option that produces a QR code per signer.
+
+## How it works
+1. Create and send the signature request as usual.
+2. On the request's detail page, open the **in-office signing** section. It lists each signer and their status.
+3. Click **Print QR sheet** to get a printable PDF with one page per signer, each showing that signer's name and a QR code that opens their personal signing link. (You can also show a single signer's QR on screen.)
+4. The signer scans the QR with a phone or tablet, lands on their pre-authenticated signing page, and signs on the spot.
+5. Click **Refresh** on the detail page to pull the latest status immediately rather than waiting for the background sync. As each signer finishes, their status flips to signed; when all are done the request is complete and the signed PDF is available to download.
+
+## Tips
+- Each QR encodes that signer's private link — treat printed sheets accordingly.
+- In-office signing uses your firm's OpenSign connection; see [[esign-providers]] and [[opensign-setup]].
+- To pull signature pages straight out of a tax return, see [[collect-signatures-from-return]].
+`),
+  },
+  {
+    slug: 'collect-signatures-from-return',
+    category: 'signatures',
+    title: 'Collecting signatures from a tax return',
+    summary: 'Detect signature pages in a return and assemble a signing package.',
+    tags: ['signatures', 'tax returns', '8879', 'package'],
+    sortOrder: 40,
+    body: md(`
+# Collecting signatures from a tax return
+
+From a tax return you can assemble a signature package in one step — the app finds the signature pages in the return's PDF, lets you add templates and signers, and creates the signature request linked back to the return.
+
+## Steps
+1. Open the tax return's detail page and click **Collect signatures**.
+2. The app scans the return PDF's bookmarks and lists the **signature pages it detected** (for example, the federal and state e-file authorization forms) using your firm's signature-page rules.
+3. If nothing matched, expand **manual page selection** and check the pages you want from the full bookmark list.
+4. Optionally include **document templates** configured for this return's form type (engagement letter, consents) and upload any one-off PDFs.
+5. Add the **signers** (taxpayer, spouse, officers) with names and emails; signature fields are placed automatically based on each signer's role and the matched page layout.
+6. Click **Create package**. The selected pages, templates, and extra PDFs are merged into one document, the signature request is created in draft linked to the return, and you're taken to it to review placement and send.
+
+## Tips
+- The return needs a source PDF uploaded for automatic detection; without one, use manual page selection.
+- The return's PDF isn't modified — the package is built as a fresh document.
+- Signature-page rules and placement profiles are configured by an admin; once set, detection and field placement are automatic.
+- Track completion in the [[signed-forms-report]].
+`),
+  },
+
+  // =================================================================== Process Project (time-tracking)
+  {
+    slug: 'process-project-sheet',
+    category: 'time-tracking',
+    title: 'Printing a Process Project sheet',
+    summary: 'Print a per-engagement processing form from the Quick-log view.',
+    tags: ['process project', 'print', 'workflow', 'quick-log'],
+    sortOrder: 40,
+    body: md(`
+# Printing a Process Project sheet
+
+A **Process Project** sheet is a one-engagement processing form you can print from the Quick-log (time-entry) view to route a project through your office — it captures how the documents were delivered, their scan status, matching instructions, and the tax year.
+
+## Steps
+1. In the Quick-log / time-entry view, find the engagement and choose **Process project**.
+2. Fill in the form: **tax year** (pre-filled from the engagement's period), **delivery** method, **documents** status, **matching** instruction, and any **notes**.
+3. Click **Print**. A PDF opens with the client and engagement details plus your selections, ready to print or post at the project station.
+
+## Tips
+- Process Project sheets are not logged and have no reprint history — print as many as you need.
+- It covers one engagement at a time. To print a routing sheet for all of a client's open engagements (with status changes), use the [[route-sheet]] instead.
+`),
+  },
+
+  // =================================================================== Payment import (payments)
+  {
+    slug: 'payment-import',
+    category: 'payments',
+    title: 'Importing payroll-charge payments (CSV)',
+    summary: 'Turn a CSV of charges into invoices and recorded payments per client.',
+    tags: ['payments', 'import', 'csv', 'payroll', 'prepayment'],
+    sortOrder: 40,
+    body: md(`
+# Importing payroll-charge payments (CSV)
+
+The **Import** tab on **Payments** takes a CSV of charges (for example, a payroll service's monthly charges) and, per client, creates an invoice for the work and records the payment against it — or records a prepayment credit when there's nothing to bill. It's built for high-volume, repetitive billing where the amounts are already known.
+
+## The CSV
+Provide columns for a **client code**, **charge date**, and **amount**, plus optional **client name** and **description**. The client code is matched to a client's External ID (then AWS ID). Lines are de-duplicated on client + description + amount, so re-uploading the same file won't double-bill.
+
+## Steps
+1. Open **Payments → Import**, choose the CSV, and select the **engagement type** these charges bill against.
+2. Click **Preview**. Each client group shows the plan the app intends:
+   - **Bill & pay** — the client has unbilled work on a matching engagement: an invoice is created at the charge amount and the payment is recorded in full.
+   - **Prepayment** — no matching unbilled work: the amount is recorded as an unapplied credit.
+   - **Pick engagement / Unmatched** — the app needs you to choose the engagement or client.
+   - Duplicate lines already imported are shown struck-through and skipped.
+3. Resolve any rows that need a pick, and choose write-up / write-down reason codes if the charge amount differs from the work in progress.
+4. Click **Import**. The app creates the invoices, adjustments, and payments (or prepayment credits) and reports the result per client.
+
+## Tips
+- Engagements in a finished/terminal workflow state are excluded from matching even if still active, so closed work isn't billed.
+- If a needed adjustment would exceed your approval threshold, that client is reported as an error to handle from [[prebills-wip]].
+- The created invoices and payments appear normally on each client afterward.
+`),
+  },
+
+  // =================================================================== Route sheet (clients)
+  {
+    slug: 'route-sheet',
+    category: 'clients',
+    title: 'Printing a File Routing Sheet',
+    summary: 'Print a per-engagement routing sheet and update statuses in one step.',
+    tags: ['route sheet', 'print', 'engagements', 'status', 'workflow'],
+    sortOrder: 40,
+    body: md(`
+# Printing a File Routing Sheet
+
+A **File Routing Sheet** is a printed cover sheet for a client's open engagements — it lists the engagement, the assigned partner/manager/staff, and the current status, so a physical file can be routed through the office. You print it from the client list, and you can change engagement statuses at the same time.
+
+## Steps
+1. On the **Clients** list, choose **Print route sheet** for a client.
+2. The dialog lists the client's **uncompleted** engagements. Select the ones to print.
+3. Optionally change each selected engagement's **status** from the dropdown, and add a **note** that applies to the sheet.
+4. Click **Print**. Status changes are committed through the normal path — they're audited and will trigger any configured client notifications — and a PDF is produced (one per engagement) from a snapshot of the details.
+
+## Reprints
+Each print is logged. Open the client's **print history** to reprint any prior sheet; it re-renders from the saved snapshot, so it shows exactly what was printed even if the engagement has since changed.
+
+## Tips
+- Completed, cancelled, closed, and archived engagements are excluded from the sheet.
+- Because status changes here are real changes, they flow into [[staged-notifications]] if you've configured client notifications for those statuses.
+- For a single-engagement processing form printed from the time-entry view, see [[process-project-sheet]].
+`),
+  },
+
+  // =================================================================== Staged notifications (messaging)
+  {
+    slug: 'staged-notifications',
+    category: 'messaging',
+    title: 'Client status notifications & the approval queue',
+    summary: 'Notify clients on engagement status changes, with optional approval.',
+    tags: ['notifications', 'status', 'approvals', 'engagements', 'email', 'sms'],
+    sortOrder: 30,
+    body: md(`
+# Client status notifications & the approval queue
+
+You can have the firm notify a client automatically when an engagement reaches a particular status — for example, "your return is ready for review." Each status can be configured to send immediately or to wait for staff approval first, so high-stakes messages get a second look before they go out.
+
+## Configure which statuses notify
+In **Admin → Engagement statuses**, edit a status and open its **client notifications** section:
+- Turn on **notify the client when an engagement enters this status**.
+- Choose **require approval** (queued for review) or **send immediately**.
+- Pick the **channels** (email, text, portal notice) and **recipients** (billing contact, or all contacts).
+
+## Approve, schedule, or cancel
+When an engagement enters a configured status, the notification is created. Immediate ones are scheduled to send right away; approval ones wait in the queue.
+
+1. Open **Approvals** and find the **Client notifications** card.
+2. **Preview** any notification to see the rendered message per channel.
+3. For each one (or in bulk) choose **Send now**, **Schedule** for a later time, or **Cancel**.
+4. Sent, scheduled, cancelled, and failed notifications are visible for the audit trail; a failed one can be retried with **Send now**.
+
+## Tips
+- The recipients and message are **snapshotted when the notification is created**, so what you approve is exactly what sends — even if a template changes later.
+- Only one pending/scheduled notification is kept per engagement and trigger: a newer status change automatically supersedes an unsent earlier one.
+- Status changes made from the [[route-sheet]] feed this same pipeline.
+`),
+  },
+
+  // =================================================================== Signed Forms report (reporting)
+  {
+    slug: 'signed-forms-report',
+    category: 'reporting',
+    title: 'The Signed Forms report',
+    summary: 'Audit completed and in-progress signature requests with downloads.',
+    tags: ['reporting', 'signatures', 'signed forms', 'audit'],
+    sortOrder: 40,
+    body: md(`
+# The Signed Forms report
+
+**Reports → Signed Forms** lists signature requests over a date range so you can confirm what's been signed and pull the documents.
+
+## Using it
+1. Set a **date range** (defaults to the current month).
+2. Filter by status — **completed** (all signers done) or **partially signed** (some signers done).
+3. The table shows the title, client, form type, signing mode, the linked tax return (if the package came from one), and the signer progress (e.g. 2/3).
+4. Click a row's title to open the full request. Where available, download the **signed PDF** and the signing **certificate** directly from the row.
+5. **Export** the list to CSV.
+
+## Tips
+- Completed rows filter on completion date; partially-signed rows filter on when the request was sent.
+- Signed PDFs and certificates are available once a request completes.
+- This pairs with [[in-office-signing]] and [[collect-signatures-from-return]].
 `),
   },
 ];
