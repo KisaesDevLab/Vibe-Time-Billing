@@ -528,6 +528,7 @@ function SignaturesCard({
 }): JSX.Element {
   const canWrite = usePermission('proposal:write');
   const [requests, setRequests] = useState<LinkedSignatureRequest[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const loadRequests = useCallback(async (): Promise<void> => {
     try {
@@ -544,6 +545,32 @@ function SignaturesCard({
     void loadRequests();
   }, [loadRequests, refreshKey]);
 
+  // An outstanding (non-terminal) package blocks a new one — you'd otherwise
+  // pile up duplicate drafts for the same return. Discard/void it first.
+  const SIG_TERMINAL = new Set(['completed', 'declined', 'expired', 'voided']);
+  const outstanding = requests.filter((r) => !SIG_TERMINAL.has(r.status));
+  const hasOutstanding = outstanding.length > 0;
+
+  async function removeRequest(r: LinkedSignatureRequest): Promise<void> {
+    const isDraft = r.status === 'draft';
+    const msg = isDraft
+      ? 'Discard this draft signature package?'
+      : 'Void this signature package? Signers can no longer complete it.';
+    if (!window.confirm(msg)) return;
+    setBusyId(r.id);
+    try {
+      if (isDraft) {
+        await api(`/api/staff/signatures/${r.id}`, { method: 'DELETE' });
+      } else {
+        await api(`/api/staff/signatures/${r.id}/void`, { method: 'POST' });
+      }
+      await loadRequests();
+      onChanged();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <Card title="Signatures">
       <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
@@ -551,47 +578,76 @@ function SignaturesCard({
         and any ad-hoc attachments. Individual 1040s sign <strong>in office</strong> (no email,
         in-person photo-ID instead of KBA); entity returns can also be sent for signature.
       </p>
-      <Button disabled={!canWrite} onClick={onCollect}>
+      <Button disabled={!canWrite || hasOutstanding} onClick={onCollect}>
         Collect signatures
       </Button>
-      {!canWrite && (
+      {!canWrite ? (
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8, marginBottom: 0 }}>
           You need write access to collect signatures.
         </p>
-      )}
+      ) : hasOutstanding ? (
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8, marginBottom: 0 }}>
+          This return already has an outstanding signature package. Discard or void it below before
+          collecting a new one.
+        </p>
+      ) : null}
 
       {requests.length > 0 && (
         <div style={{ display: 'grid', gap: tokens.space.md, marginTop: tokens.space.md }}>
-          {requests.map((r) => (
-            <div
-              key={r.id}
-              style={{
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: 8,
-                padding: tokens.space.md,
-                display: 'grid',
-                gap: tokens.space.sm,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>{r.title}</span>
-                <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>
-                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                  {r.signedCount}/{r.signerCount} signed
-                </span>
-                <Link to={`/signatures/${r.id}`} style={{ marginLeft: 'auto', fontSize: 13 }}>
-                  Open ↗
-                </Link>
-              </div>
-              <InOfficeSigningPanel
-                requestId={r.id}
-                onChange={() => {
-                  void loadRequests();
-                  onChanged();
+          {requests.map((r) => {
+            const removable = canWrite && !SIG_TERMINAL.has(r.status);
+            return (
+              <div
+                key={r.id}
+                style={{
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: 8,
+                  padding: tokens.space.md,
+                  display: 'grid',
+                  gap: tokens.space.sm,
                 }}
-              />
-            </div>
-          ))}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>{r.title}</span>
+                  <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    {r.signedCount}/{r.signerCount} signed
+                  </span>
+                  <div
+                    style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}
+                  >
+                    {removable && (
+                      <button
+                        type="button"
+                        onClick={() => void removeRequest(r)}
+                        disabled={busyId === r.id}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: tokens.color.danger,
+                          fontSize: 13,
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                      >
+                        {busyId === r.id ? 'Removing…' : r.status === 'draft' ? 'Discard' : 'Void'}
+                      </button>
+                    )}
+                    <Link to={`/signatures/${r.id}`} style={{ fontSize: 13 }}>
+                      Open ↗
+                    </Link>
+                  </div>
+                </div>
+                <InOfficeSigningPanel
+                  requestId={r.id}
+                  onChange={() => {
+                    void loadRequests();
+                    onChanged();
+                  }}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </Card>

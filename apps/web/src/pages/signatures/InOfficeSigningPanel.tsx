@@ -124,6 +124,9 @@ export function InOfficeSigningPanel({
       setInOfficeOpen(false);
       await load();
       onChange?.();
+      // The signing document now exists, so the per-signer QR sheet can be
+      // rendered — open it right away as part of the collection flow.
+      window.open(`/api/staff/signatures/${requestId}/qr-sheet.pdf`, '_blank');
     } catch (err) {
       setError(messageFor(err as ApiError));
     } finally {
@@ -159,7 +162,8 @@ export function InOfficeSigningPanel({
           <>
             <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
               In-office signing has the signer(s) sign here in the office on a device — no email is
-              sent to the client.
+              sent to the client. Starting it generates a printable <strong>QR sheet</strong> (one
+              page per signer) that opens automatically; you can reprint it anytime from this card.
             </div>
             <div>
               <Button onClick={() => setInOfficeOpen(true)} disabled={busy}>
