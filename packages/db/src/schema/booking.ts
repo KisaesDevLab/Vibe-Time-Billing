@@ -159,6 +159,9 @@ export const staffAvailability = pgTable(
     locationOptionId: uuid('location_option_id').references(() => appointmentLocationOptions.id, {
       onDelete: 'set null',
     }),
+    // 0156 — allowed appointment types for this window (appointment_type
+    // ids). NULL/empty = all types allowed.
+    appointmentTypeIds: uuid('appointment_type_ids').array(),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

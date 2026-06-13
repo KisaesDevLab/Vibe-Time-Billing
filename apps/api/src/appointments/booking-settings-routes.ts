@@ -12,11 +12,16 @@
 //   PUT   /:staffId/availability  — full replace of availability rows
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { appUsers, staffAvailability, staffBookingSettings } from '@vibe/db/schema';
+import {
+  appointmentTypes,
+  appUsers,
+  staffAvailability,
+  staffBookingSettings,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { userHasPermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -55,6 +60,8 @@ const AvailabilitySchema = z.object({
         // 0144 — optional location preset for this window (bookings default
         // to it).
         locationId: z.string().uuid().nullable().optional(),
+        // 0156 — appointment types this window accepts; null/empty = all.
+        appointmentTypeIds: z.array(z.string().uuid()).max(100).nullable().optional(),
         isActive: z.boolean().optional(),
       }),
     )
@@ -193,6 +200,25 @@ export function createBookingSettingsRouter(deps: BookingSettingsRoutesDeps): Ro
         return;
       }
     }
+    // Window type restrictions must reference this firm's appointment types.
+    const requestedTypeIds = [
+      ...new Set(parsed.data.rows.flatMap((r) => r.appointmentTypeIds ?? [])),
+    ];
+    if (requestedTypeIds.length > 0) {
+      const known = await deps.db
+        .select({ id: appointmentTypes.id })
+        .from(appointmentTypes)
+        .where(
+          and(
+            inArray(appointmentTypes.id, requestedTypeIds),
+            eq(appointmentTypes.firmId, session.firmId),
+          ),
+        );
+      if (known.length !== requestedTypeIds.length) {
+        res.status(400).json({ error: 'unknown_appointment_type' });
+        return;
+      }
+    }
     const db = deps.db;
     await db.transaction(async (tx) => {
       await tx.delete(staffAvailability).where(eq(staffAvailability.staffId, staffId));
@@ -205,6 +231,8 @@ export function createBookingSettingsRouter(deps: BookingSettingsRoutesDeps): Ro
             endTime: r.endTime,
             locationTypes: r.locationTypes && r.locationTypes.length > 0 ? r.locationTypes : null,
             locationOptionId: r.locationId ?? null,
+            appointmentTypeIds:
+              r.appointmentTypeIds && r.appointmentTypeIds.length > 0 ? r.appointmentTypeIds : null,
             isActive: r.isActive ?? true,
           })),
         );

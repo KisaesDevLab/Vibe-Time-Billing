@@ -35,6 +35,11 @@ interface LocOption {
   locationType: LocationType;
 }
 
+interface ApptType {
+  id: string;
+  name: string;
+}
+
 interface Win {
   startTime: string;
   endTime: string;
@@ -42,6 +47,8 @@ interface Win {
   locationTypes: LocationType[];
   /** 0144 — preset location for bookings made in this window (null = none). */
   locationOptionId: string | null;
+  /** 0156 — appointment types this window accepts; empty = all types. */
+  appointmentTypeIds: string[];
 }
 
 const newWin = (): Win => ({
@@ -49,6 +56,7 @@ const newWin = (): Win => ({
   endTime: '17:00',
   locationTypes: [],
   locationOptionId: null,
+  appointmentTypeIds: [],
 });
 
 export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Element {
@@ -64,6 +72,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
     DOW.map((_, i) => (i >= 1 && i <= 5 ? [newWin()] : [])),
   );
   const [locations, setLocations] = useState<LocOption[]>([]);
+  const [apptTypes, setApptTypes] = useState<ApptType[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,6 +80,9 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
   useEffect(() => {
     void api<{ items: LocOption[] }>('/api/staff/appointments/locations')
       .then((r) => setLocations(r.items ?? []))
+      .catch(() => undefined);
+    void api<{ items: ApptType[] }>('/api/staff/appointments/appointment-types')
+      .then((r) => setApptTypes(r.items ?? []))
       .catch(() => undefined);
   }, []);
 
@@ -92,6 +104,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
           endTime: string;
           locationTypes: LocationType[] | null;
           locationOptionId: string | null;
+          appointmentTypeIds: string[] | null;
           isActive: boolean;
         }[];
       }>(`/api/staff/booking/${userId}/availability`);
@@ -104,6 +117,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
               endTime: r.endTime.slice(0, 5),
               locationTypes: r.locationTypes ?? [],
               locationOptionId: r.locationOptionId ?? null,
+              appointmentTypeIds: r.appointmentTypeIds ?? [],
             });
           }
         }
@@ -151,6 +165,24 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
       ),
     );
   }
+  function toggleType(dow: number, idx: number, typeId: string): void {
+    setWindows((prev) =>
+      prev.map((wins, i) =>
+        i === dow
+          ? wins.map((w, j) =>
+              j === idx
+                ? {
+                    ...w,
+                    appointmentTypeIds: w.appointmentTypeIds.includes(typeId)
+                      ? w.appointmentTypeIds.filter((t) => t !== typeId)
+                      : [...w.appointmentTypeIds, typeId],
+                  }
+                : w,
+            )
+          : wins,
+      ),
+    );
+  }
 
   async function saveAll(): Promise<void> {
     setBusy(true);
@@ -168,6 +200,7 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
           endTime: w.endTime,
           locationTypes: w.locationTypes.length > 0 ? w.locationTypes : null,
           locationId: w.locationOptionId,
+          appointmentTypeIds: w.appointmentTypeIds.length > 0 ? w.appointmentTypeIds : null,
           isActive: true,
         })),
       );
@@ -189,9 +222,9 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
       <Card title="Booking availability">
         <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
           Hours this staff member can be booked. Add multiple windows per day for split shifts (e.g.
-          a lunch break). For each window you can limit which meeting types it accepts — leave all
-          unchecked to allow any. Bookable slots are the intersection of these hours with the staff
-          member&apos;s connected-calendar free/busy.
+          a lunch break). For each window you can limit which meeting locations and appointment
+          types it accepts — leave all unchecked to allow any. Bookable slots are the intersection
+          of these hours with the staff member&apos;s connected-calendar free/busy.
         </p>
         <div style={{ display: 'grid', gap: 10 }}>
           {DOW.map((label, dow) => (
@@ -214,96 +247,136 @@ export function BookingSettingsEditor({ userId }: { userId: string }): JSX.Eleme
                   </span>
                 )}
                 {windows[dow]!.map((w, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: 8,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Input
-                      type="time"
-                      value={w.startTime}
-                      onChange={(e) => updateWindow(dow, idx, { startTime: e.target.value })}
-                      style={{ width: 110 }}
-                    />
-                    <span style={{ fontSize: 12, color: tokens.color.textMuted }}>to</span>
-                    <Input
-                      type="time"
-                      value={w.endTime}
-                      onChange={(e) => updateWindow(dow, idx, { endTime: e.target.value })}
-                      style={{ width: 110 }}
-                    />
-                    <div style={{ display: 'inline-flex', gap: 6 }}>
-                      {LOCATION_OPTS.map((opt) => {
-                        const on = w.locationTypes.includes(opt.key);
-                        return (
-                          <button
-                            key={opt.key}
-                            type="button"
-                            onClick={() => toggleLoc(dow, idx, opt.key)}
-                            title={
-                              w.locationTypes.length === 0
-                                ? 'All meeting types allowed'
-                                : `${opt.label} ${on ? 'allowed' : 'not allowed'}`
-                            }
-                            style={{
-                              padding: '5px 9px',
-                              borderRadius: tokens.radius.sm,
-                              fontSize: 12,
-                              cursor: 'pointer',
-                              border: `1px solid ${on ? tokens.color.accent : tokens.color.border}`,
-                              background: on ? tokens.color.accentMuted : tokens.color.surface,
-                              color: on ? tokens.color.accent : tokens.color.textMuted,
-                              fontWeight: on ? 600 : 400,
-                            }}
-                          >
-                            {opt.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {locations.length > 0 && (
-                      <select
-                        aria-label="Window location"
-                        value={w.locationOptionId ?? ''}
-                        onChange={(e) =>
-                          updateWindow(dow, idx, { locationOptionId: e.target.value || null })
-                        }
-                        title="Bookings in this window default to this location"
-                        style={{
-                          padding: '5px 8px',
-                          borderRadius: tokens.radius.sm,
-                          border: `1px solid ${tokens.color.border}`,
-                          background: tokens.color.surface,
-                          color: tokens.color.text,
-                          fontSize: 12,
-                        }}
-                      >
-                        <option value="">No location</option>
-                        {locations.map((l) => (
-                          <option key={l.id} value={l.id}>
-                            @ {l.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <button
-                      type="button"
-                      aria-label="Remove window"
-                      onClick={() => removeWindow(dow, idx)}
+                  <div key={idx} style={{ display: 'grid', gap: 6 }}>
+                    <div
                       style={{
-                        border: 'none',
-                        background: 'transparent',
-                        cursor: 'pointer',
-                        color: tokens.color.textMuted,
-                        fontSize: 14,
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                        alignItems: 'center',
                       }}
                     >
-                      ✕
-                    </button>
+                      <Input
+                        type="time"
+                        value={w.startTime}
+                        onChange={(e) => updateWindow(dow, idx, { startTime: e.target.value })}
+                        style={{ width: 110 }}
+                      />
+                      <span style={{ fontSize: 12, color: tokens.color.textMuted }}>to</span>
+                      <Input
+                        type="time"
+                        value={w.endTime}
+                        onChange={(e) => updateWindow(dow, idx, { endTime: e.target.value })}
+                        style={{ width: 110 }}
+                      />
+                      <div style={{ display: 'inline-flex', gap: 6 }}>
+                        {LOCATION_OPTS.map((opt) => {
+                          const on = w.locationTypes.includes(opt.key);
+                          return (
+                            <button
+                              key={opt.key}
+                              type="button"
+                              onClick={() => toggleLoc(dow, idx, opt.key)}
+                              title={
+                                w.locationTypes.length === 0
+                                  ? 'All meeting types allowed'
+                                  : `${opt.label} ${on ? 'allowed' : 'not allowed'}`
+                              }
+                              style={{
+                                padding: '5px 9px',
+                                borderRadius: tokens.radius.sm,
+                                fontSize: 12,
+                                cursor: 'pointer',
+                                border: `1px solid ${on ? tokens.color.accent : tokens.color.border}`,
+                                background: on ? tokens.color.accentMuted : tokens.color.surface,
+                                color: on ? tokens.color.accent : tokens.color.textMuted,
+                                fontWeight: on ? 600 : 400,
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {locations.length > 0 && (
+                        <select
+                          aria-label="Window location"
+                          value={w.locationOptionId ?? ''}
+                          onChange={(e) =>
+                            updateWindow(dow, idx, { locationOptionId: e.target.value || null })
+                          }
+                          title="Bookings in this window default to this location"
+                          style={{
+                            padding: '5px 8px',
+                            borderRadius: tokens.radius.sm,
+                            border: `1px solid ${tokens.color.border}`,
+                            background: tokens.color.surface,
+                            color: tokens.color.text,
+                            fontSize: 12,
+                          }}
+                        >
+                          <option value="">No location</option>
+                          {locations.map((l) => (
+                            <option key={l.id} value={l.id}>
+                              @ {l.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <button
+                        type="button"
+                        aria-label="Remove window"
+                        onClick={() => removeWindow(dow, idx)}
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          cursor: 'pointer',
+                          color: tokens.color.textMuted,
+                          fontSize: 14,
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {apptTypes.length > 0 && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 6,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Types:</span>
+                        {apptTypes.map((t) => {
+                          const on = w.appointmentTypeIds.includes(t.id);
+                          return (
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() => toggleType(dow, idx, t.id)}
+                              title={
+                                w.appointmentTypeIds.length === 0
+                                  ? 'All appointment types allowed'
+                                  : `${t.name} ${on ? 'allowed' : 'not allowed'}`
+                              }
+                              style={{
+                                padding: '4px 8px',
+                                borderRadius: tokens.radius.sm,
+                                fontSize: 11,
+                                cursor: 'pointer',
+                                border: `1px solid ${on ? tokens.color.accent : tokens.color.border}`,
+                                background: on ? tokens.color.accentMuted : tokens.color.surface,
+                                color: on ? tokens.color.accent : tokens.color.textMuted,
+                                fontWeight: on ? 600 : 400,
+                              }}
+                            >
+                              {t.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 ))}
                 <div>

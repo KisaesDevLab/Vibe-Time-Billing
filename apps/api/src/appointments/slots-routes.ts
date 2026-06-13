@@ -41,7 +41,7 @@ function parseLocation(raw: unknown): string | undefined {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function parseLocationId(raw: unknown): string | undefined {
+function parseUuidParam(raw: unknown): string | undefined {
   return typeof raw === 'string' && UUID_RE.test(raw) ? raw : undefined;
 }
 
@@ -114,8 +114,9 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
       }
 
       const location = parseLocation(req.query['location']);
-      const locationOptionId = parseLocationId(req.query['locationId']);
-      const cacheKey = `slots:${[...staffIds].sort().join(',')}:${date}:${durationMinutes}:${location ?? 'any'}:${locationOptionId ?? 'any'}`;
+      const locationOptionId = parseUuidParam(req.query['locationId']);
+      const appointmentTypeId = parseUuidParam(req.query['typeId']);
+      const cacheKey = `slots:${[...staffIds].sort().join(',')}:${date}:${durationMinutes}:${location ?? 'any'}:${locationOptionId ?? 'any'}:${appointmentTypeId ?? 'any'}`;
       if (deps.redis && !deps.busyProvider) {
         try {
           const hit = await deps.redis.get(cacheKey);
@@ -143,6 +144,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         excludeAppointmentId,
         location,
         locationOptionId,
+        appointmentTypeId,
       });
       if (deps.redis && !deps.busyProvider) {
         try {
@@ -189,13 +191,14 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
           ? req.query['excludeAppointmentId']
           : undefined;
       const location = parseLocation(req.query['location']);
-      const locationOptionId = parseLocationId(req.query['locationId']);
+      const locationOptionId = parseUuidParam(req.query['locationId']);
+      const appointmentTypeId = parseUuidParam(req.query['typeId']);
       // Month grids are ~31 day computations per request — cache like the
       // day endpoint. Key shares the `slots:` prefix so the BK-4 bust
       // (SCAN MATCH slots:*) invalidates it on booking create/sync.
       // Reschedule requests (excludeAppointmentId) skip the cache — the
       // exclusion changes the result per appointment.
-      const monthCacheKey = `slots:month:${[...staffIds].sort().join(',')}:${year}-${month}:${durationMinutes}:${location ?? 'any'}:${locationOptionId ?? 'any'}`;
+      const monthCacheKey = `slots:month:${[...staffIds].sort().join(',')}:${year}-${month}:${durationMinutes}:${location ?? 'any'}:${locationOptionId ?? 'any'}:${appointmentTypeId ?? 'any'}`;
       const cacheable = !excludeAppointmentId && deps.redis && !deps.busyProvider;
       if (cacheable) {
         try {
@@ -220,6 +223,7 @@ export function createSlotsRouter(deps: SlotsRoutesDeps): Router {
         excludeAppointmentId,
         location,
         locationOptionId,
+        appointmentTypeId,
       });
       if (cacheable) {
         try {

@@ -411,8 +411,8 @@ function ListTab(): JSX.Element {
               >
                 Date &amp; time {sort === 'desc' ? '↓' : '↑'}
               </button> // reason: Table types header as string but renders it as a node;
-            ) as // a JSX header is safe at runtime.
-            unknown as string,
+              // a JSX header is safe at runtime.
+            ) as unknown as string,
             render: (r) => (
               <div>
                 <div style={{ fontWeight: 600 }}>{new Date(r.startsAt).toLocaleDateString()}</div>
@@ -977,10 +977,12 @@ function SlotPicker({
 }): JSX.Element {
   const [staffIds, setStaffIds] = useState<string[]>([]);
   const [duration, setDuration] = useState(30);
-  // The appointment's meeting type + saved location preset — slots offered
-  // for a reschedule must satisfy the same location constraints as booking.
+  // The appointment's meeting type, saved location preset, and appointment
+  // type — slots offered for a reschedule must satisfy the same window
+  // constraints as the original booking.
   const [apptLocation, setApptLocation] = useState<string | null>(null);
   const [apptLocationId, setApptLocationId] = useState<string | null>(null);
+  const [apptTypeId, setApptTypeId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
@@ -1003,6 +1005,7 @@ function SlotPicker({
         endsAt: string;
         location: string | null;
         locationOptionId: string | null;
+        appointmentTypeId: string | null;
       };
       staff: { staffId: string }[];
     }>(`/api/staff/appointments/${appointmentId}/detail`)
@@ -1010,6 +1013,7 @@ function SlotPicker({
         setStaffIds(d.staff.map((s) => s.staffId));
         setApptLocation(d.appointment.location ?? null);
         setApptLocationId(d.appointment.locationOptionId ?? null);
+        setApptTypeId(d.appointment.appointmentTypeId ?? null);
         const dm =
           d.appointment.durationMinutes ??
           Math.round(
@@ -1036,6 +1040,7 @@ function SlotPicker({
     });
     if (apptLocation) p.set('location', apptLocation);
     if (apptLocationId) p.set('locationId', apptLocationId);
+    if (apptTypeId) p.set('typeId', apptTypeId);
     void api<{ days: Record<string, boolean> }>(`/api/staff/booking/slots/month?${p}`)
       .then((r) => alive && setMonthAvail(r.days ?? {}))
       .catch(() => alive && setMonthAvail({}))
@@ -1043,7 +1048,17 @@ function SlotPicker({
     return () => {
       alive = false;
     };
-  }, [ready, staffIds, duration, viewYear, viewMonth, appointmentId, apptLocation, apptLocationId]);
+  }, [
+    ready,
+    staffIds,
+    duration,
+    viewYear,
+    viewMonth,
+    appointmentId,
+    apptLocation,
+    apptLocationId,
+    apptTypeId,
+  ]);
 
   useEffect(() => {
     if (!date || staffIds.length === 0) return undefined;
@@ -1059,6 +1074,7 @@ function SlotPicker({
     });
     if (apptLocation) p.set('location', apptLocation);
     if (apptLocationId) p.set('locationId', apptLocationId);
+    if (apptTypeId) p.set('typeId', apptTypeId);
     void api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${p}`)
       .then((r) => {
         if (!alive) return;
@@ -1070,7 +1086,7 @@ function SlotPicker({
     return () => {
       alive = false;
     };
-  }, [date, staffIds, duration, appointmentId, apptLocation, apptLocationId]);
+  }, [date, staffIds, duration, appointmentId, apptLocation, apptLocationId, apptTypeId]);
 
   function navMonth(delta: number): void {
     let y = viewYear;
@@ -1282,13 +1298,13 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       .catch(() => setEngagements([]));
   }, [clientId]);
 
-  // Changing staff/duration/location invalidates a picked day/slot.
+  // Changing staff/type/duration/location invalidates a picked day/slot.
   useEffect(() => {
     setDate(null);
     setSlot(null);
     setSlots([]);
     setSlotMsg(null);
-  }, [selStaff, duration, location, appointmentLocationId]);
+  }, [selStaff, typeId, duration, location, appointmentLocationId]);
 
   // Month availability (which days have any open slot) auto-loads.
   useEffect(() => {
@@ -1306,6 +1322,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
       location,
     });
     if (appointmentLocationId) params.set('locationId', appointmentLocationId);
+    if (typeId) params.set('typeId', typeId);
     void api<{ days: Record<string, boolean> }>(`/api/staff/booking/slots/month?${params}`)
       .then((r) => {
         if (alive) setMonthAvail(r.days ?? {});
@@ -1319,7 +1336,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [selStaff, duration, viewYear, viewMonth, location, appointmentLocationId]);
+  }, [selStaff, typeId, duration, viewYear, viewMonth, location, appointmentLocationId]);
 
   const loadSlots = useCallback(
     (d: string) => {
@@ -1334,6 +1351,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
         location,
       });
       if (appointmentLocationId) params.set('locationId', appointmentLocationId);
+      if (typeId) params.set('typeId', typeId);
       void api<{ slots: Slot[]; reason?: string }>(`/api/staff/booking/slots?${params}`)
         .then((r) => {
           if (!alive) return;
@@ -1350,7 +1368,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
         alive = false;
       };
     },
-    [selStaff, duration, location, appointmentLocationId],
+    [selStaff, typeId, duration, location, appointmentLocationId],
   );
 
   // Slots auto-load when a day is selected.

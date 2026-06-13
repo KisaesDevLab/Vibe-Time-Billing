@@ -158,6 +158,45 @@ describe('booking settings + availability', () => {
     expect(still.body.rows).toHaveLength(2);
   });
 
+  it('round-trips per-window appointment types; rejects unknown type ids', async () => {
+    const app = buildApp();
+    const type = await request(app)
+      .post('/api/staff/admin/appointment-types')
+      .send({ name: 'Tax Prep', defaultDurationMinutes: 60, defaultLocationType: 'IN_PERSON' });
+    expect(type.status).toBe(201);
+    const typeId = type.body.id as string;
+
+    const put = await request(app)
+      .put(`/api/staff/booking/${seed.appUserId}/availability`)
+      .send({
+        rows: [
+          { dayOfWeek: 1, startTime: '09:00', endTime: '12:00', appointmentTypeIds: [typeId] },
+          { dayOfWeek: 1, startTime: '13:00', endTime: '17:00' },
+        ],
+      });
+    expect(put.status).toBe(200);
+    const get = await request(app).get(`/api/staff/booking/${seed.appUserId}/availability`);
+    expect(get.body.rows).toHaveLength(2);
+    expect(get.body.rows[0].appointmentTypeIds).toEqual([typeId]);
+    expect(get.body.rows[1].appointmentTypeIds).toBeNull();
+
+    // A type id that isn't in this firm's library is rejected.
+    const bad = await request(app)
+      .put(`/api/staff/booking/${seed.appUserId}/availability`)
+      .send({
+        rows: [
+          {
+            dayOfWeek: 2,
+            startTime: '09:00',
+            endTime: '12:00',
+            appointmentTypeIds: ['00000000-0000-4000-8000-000000000000'],
+          },
+        ],
+      });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('unknown_appointment_type');
+  });
+
   it('forbids editing another staff member without app_user:write', async () => {
     // Second staff user in the same firm.
     const other = await harness.db.execute(

@@ -75,6 +75,9 @@ export interface GetAvailableSlotsArgs {
   /** When set, only availability windows tied to this saved location preset
    *  (or windows with no preset, which are location-agnostic) are considered. */
   locationOptionId?: string;
+  /** When set, only availability windows that allow this appointment type
+   *  (or windows with no type restriction) are considered. */
+  appointmentTypeId?: string;
 }
 
 /** A window allows a location when it has no restriction (null/empty) or its
@@ -98,6 +101,18 @@ function windowAllowsLocationOption(
   if (!requestedOptionId) return true;
   if (!windowOptionId) return true;
   return windowOptionId === requestedOptionId;
+}
+
+/** A window allows an appointment type when it has no restriction
+ *  (null/empty) or its list includes the requested type. No requested
+ *  type → allow all. */
+function windowAllowsType(
+  windowTypeIds: string[] | null | undefined,
+  requestedTypeId: string | undefined,
+): boolean {
+  if (!requestedTypeId) return true;
+  if (!windowTypeIds || windowTypeIds.length === 0) return true;
+  return windowTypeIds.includes(requestedTypeId);
 }
 
 interface ResolvedSettings {
@@ -218,7 +233,8 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
         r.staffId === id &&
         r.isActive &&
         windowAllowsLocation(r.locationTypes, args.location) &&
-        windowAllowsLocationOption(r.locationOptionId, args.locationOptionId),
+        windowAllowsLocationOption(r.locationOptionId, args.locationOptionId) &&
+        windowAllowsType(r.appointmentTypeIds, args.appointmentTypeId),
     );
     if (rows.length === 0) return empty({ reason: 'staff_unavailable', staffId: id });
     windowsByStaff.set(
@@ -407,6 +423,7 @@ export async function getMonthAvailability(args: {
   excludeAppointmentId?: string;
   location?: string;
   locationOptionId?: string;
+  appointmentTypeId?: string;
 }): Promise<{ days: Record<string, boolean>; timezone: string }> {
   const { db, staffIds, year, month, durationMinutes, timezone, busyProvider } = args;
   const now = args.now ?? new Date();
@@ -425,6 +442,7 @@ export async function getMonthAvailability(args: {
       excludeAppointmentId: args.excludeAppointmentId,
       location: args.location,
       locationOptionId: args.locationOptionId,
+      appointmentTypeId: args.appointmentTypeId,
     });
     days[date] = res.slots.some((s) => s.available);
   }

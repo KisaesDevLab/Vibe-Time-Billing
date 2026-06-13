@@ -753,3 +753,169 @@ describe('getAvailableSlots — saved location preset filtering', () => {
     ]);
   });
 });
+
+describe('getAvailableSlots — appointment type filtering (0156)', () => {
+  async function addType(name: string): Promise<string> {
+    const { sql } = await import('drizzle-orm');
+    const r = await harness.db.execute(
+      sql`INSERT INTO appointment_type (firm_id, name) VALUES (${seed.firmId}, ${name}) RETURNING id`,
+    );
+    return (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+  }
+
+  async function setWinTypes(
+    staffId: string,
+    date: string,
+    start: string,
+    end: string,
+    appointmentTypeIds: string[] | null,
+  ): Promise<void> {
+    await harness.db.insert(staffAvailability).values({
+      staffId,
+      dayOfWeek: dow(date),
+      startTime: start,
+      endTime: end,
+      appointmentTypeIds,
+      isActive: true,
+    });
+  }
+
+  it('only windows allowing the requested type are offered', async () => {
+    const a = seed.appUserId;
+    const taxPrep = await addType('Tax Prep');
+    const advisory = await addType('Advisory');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinTypes(a, MONDAY, '09:00', '11:00', [taxPrep]);
+    await setWinTypes(a, MONDAY, '13:00', '15:00', [advisory]);
+    const tax = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      appointmentTypeId: taxPrep,
+    });
+    expect(tax.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+    const adv = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      appointmentTypeId: advisory,
+    });
+    expect(adv.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T13:00:00.000Z`,
+      `${MONDAY}T14:00:00.000Z`,
+    ]);
+  });
+
+  it('a window with no type restriction allows any type', async () => {
+    const a = seed.appUserId;
+    const taxPrep = await addType('Tax Prep');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinTypes(a, MONDAY, '09:00', '11:00', null);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      appointmentTypeId: taxPrep,
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+  });
+
+  it('no window allows the requested type → staff_unavailable', async () => {
+    const a = seed.appUserId;
+    const taxPrep = await addType('Tax Prep');
+    const advisory = await addType('Advisory');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinTypes(a, MONDAY, '09:00', '11:00', [taxPrep]);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      appointmentTypeId: advisory,
+    });
+    expect(res.slots).toHaveLength(0);
+    expect(res.reason).toBe('staff_unavailable');
+  });
+
+  it('no requested type → type-restricted windows still match (back-compat)', async () => {
+    const a = seed.appUserId;
+    const taxPrep = await addType('Tax Prep');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setWinTypes(a, MONDAY, '09:00', '11:00', [taxPrep]);
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      // no appointmentTypeId
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+    ]);
+  });
+
+  it('type + location filters combine (window must satisfy both)', async () => {
+    const a = seed.appUserId;
+    const taxPrep = await addType('Tax Prep');
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    // Morning: tax prep, in-person only. Afternoon: tax prep, video only.
+    await harness.db.insert(staffAvailability).values({
+      staffId: a,
+      dayOfWeek: dow(MONDAY),
+      startTime: '09:00',
+      endTime: '11:00',
+      locationTypes: ['IN_PERSON'],
+      appointmentTypeIds: [taxPrep],
+      isActive: true,
+    });
+    await harness.db.insert(staffAvailability).values({
+      staffId: a,
+      dayOfWeek: dow(MONDAY),
+      startTime: '13:00',
+      endTime: '15:00',
+      locationTypes: ['VIDEO'],
+      appointmentTypeIds: [taxPrep],
+      isActive: true,
+    });
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      location: 'VIDEO',
+      appointmentTypeId: taxPrep,
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T13:00:00.000Z`,
+      `${MONDAY}T14:00:00.000Z`,
+    ]);
+  });
+});
