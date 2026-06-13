@@ -25,7 +25,7 @@ import type { StorageClient } from '@vibe/storage';
 import type { OpenSignClient } from '../esign/opensign-client';
 import type { PageGeometry } from './geometry';
 import { createSignatureDocument } from './opensign-document';
-import { notifySigner, type SignerMailer } from './notify';
+import { notifySigner, signerSigningUrl, type SignerMailer } from './notify';
 import { formRequiresKba } from './profiles';
 import { validatePlacements, type PlacementInput, type ValidationError } from './validation';
 
@@ -275,4 +275,156 @@ export async function sendSignatureRequest(
   }
 
   return { kind: 'sent', opensignDocumentId: created.opensignDocumentId, expiresAt };
+}
+
+export type EnsureInOfficeOutcome =
+  | { kind: 'ready'; signingUrlBySignerId: Record<string, string> }
+  | { kind: 'not_found' }
+  | { kind: 'no_source' }
+  | { kind: 'terminal'; status: string }
+  | { kind: 'invalid'; errors: ValidationError[] };
+
+/**
+ * Ensure the in-person OpenSign document exists for a request, WITHOUT the
+ * all-signers attestation gate that sendSignatureRequest enforces. This backs
+ * the QR scan flow: the document is created once (in-person, no email), and
+ * per-signer photo-ID attestation is enforced separately at the public verify
+ * step before that signer's signing URL is handed out — so a KBA-gated 1040
+ * still can't be signed without in-person verification. Idempotent: a request
+ * already sent just returns the existing per-signer signing URLs.
+ */
+export async function ensureInOfficeDocument(
+  deps: SendDeps,
+  args: { requestId: string; firmId: string; actor: string },
+  now: Date = new Date(),
+): Promise<EnsureInOfficeOutcome> {
+  const { db } = deps;
+  const [request] = await db
+    .select()
+    .from(signatureRequests)
+    .where(eq(signatureRequests.id, args.requestId))
+    .limit(1);
+  if (!request || request.firmId !== args.firmId) return { kind: 'not_found' };
+
+  const signers = await db
+    .select()
+    .from(signatureSigners)
+    .where(eq(signatureSigners.requestId, request.id))
+    .orderBy(signatureSigners.order);
+
+  // Already live → return the existing per-signer signing URLs.
+  if (request.status === 'sent' || request.status === 'partially_signed') {
+    const map: Record<string, string> = {};
+    if (request.opensignDocumentId) {
+      for (const s of signers) {
+        if (s.opensignSignerId) {
+          map[s.id] = signerSigningUrl(
+            deps.client.publicUrl,
+            request.opensignDocumentId,
+            s.opensignSignerId,
+          );
+        }
+      }
+    }
+    return { kind: 'ready', signingUrlBySignerId: map };
+  }
+  if (request.status !== 'draft') return { kind: 'terminal', status: request.status };
+  if (!request.sourceFileKey) return { kind: 'no_source' };
+
+  const placements = await db
+    .select()
+    .from(signatureFieldPlacements)
+    .where(eq(signatureFieldPlacements.requestId, request.id));
+  const geometry = (request.pageGeometry as PageGeometry[] | null) ?? null;
+  const errors = validatePlacements(
+    signers.map((s) => s.id),
+    placements.map((p) => ({
+      signerId: p.signerId,
+      fieldType: p.fieldType as PlacementInput['fieldType'],
+      pageNumber: p.pageNumber,
+      nx: p.nx,
+      ny: p.ny,
+      nw: p.nw,
+      nh: p.nh,
+      required: p.required,
+    })),
+    geometry,
+  );
+  if (errors.length > 0) return { kind: 'invalid', errors };
+
+  const obj = await deps.storage.get(request.sourceFileKey);
+  const pdfBytes = await streamToBuffer(obj.body);
+  const created = await createSignatureDocument(deps.client, {
+    title: request.title,
+    pdfBytes,
+    signers: signers.map((s) => ({
+      signerId: s.id,
+      name: s.name,
+      email: s.email,
+      role: s.role,
+      order: s.order,
+    })),
+    placements: placements.map((p) => ({
+      signerId: p.signerId,
+      fieldType: p.fieldType as PlacementInput['fieldType'],
+      pageNumber: p.pageNumber,
+      nx: p.nx,
+      ny: p.ny,
+      nw: p.nw,
+      nh: p.nh,
+      required: p.required,
+    })),
+    geometry: geometry!,
+    sendInOrder: request.sendInOrder,
+  });
+
+  const expiresAt = new Date(
+    now.getTime() + (deps.expiresInDays ?? DEFAULT_EXPIRY_DAYS) * 24 * 60 * 60 * 1000,
+  );
+  const contactBySigner = new Map(created.signers.map((s) => [s.signerId, s.opensignContactId]));
+
+  await db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select({ status: signatureRequests.status })
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, request.id))
+      .for('update')
+      .limit(1);
+    if (!locked || locked.status !== 'draft') return; // a concurrent ensure/send won
+    await tx
+      .update(signatureRequests)
+      .set({
+        opensignDocumentId: created.opensignDocumentId,
+        status: 'sent',
+        signingMode: 'in_person',
+        sentAt: now,
+        expiresAt,
+        updatedAt: now,
+      })
+      .where(eq(signatureRequests.id, request.id));
+    for (const signer of signers) {
+      const contactId = contactBySigner.get(signer.id);
+      if (contactId) {
+        await tx
+          .update(signatureSigners)
+          .set({ opensignSignerId: contactId })
+          .where(eq(signatureSigners.id, signer.id));
+      }
+    }
+    await tx.insert(signatureEvents).values({
+      requestId: request.id,
+      actor: args.actor,
+      event: 'sent',
+      detail: {
+        opensignDocumentId: created.opensignDocumentId,
+        signers: signers.length,
+        signingMode: 'in_person',
+        via: 'qr_scan',
+      },
+    });
+  });
+
+  const map: Record<string, string> = {};
+  for (const s of created.signers) map[s.signerId] = s.signingUrl;
+  return { kind: 'ready', signingUrlBySignerId: map };
 }

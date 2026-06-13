@@ -81,6 +81,7 @@ import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
 import { createSignaturesRouter } from './signatures/routes';
+import { createInOfficePublicRouter } from './signatures/in-office-public-routes';
 import { createSignatureConfigRouter } from './signatures/admin-config-routes';
 import { createFolderTemplateRouter } from './clients/folder-template-routes';
 import { createCalendarAdminRouter } from './calendar/admin-routes';
@@ -596,6 +597,7 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendStaffMail
       ? (a) => deps.sendStaffMail!({ to: a.to, subject: a.subject, body: a.body, html: a.html })
       : undefined,
+    portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/signatures', auth.requireAuth, auth.requireCsrf, signaturesRouter);
 
@@ -1048,6 +1050,19 @@ export function createApp(deps: AppDeps): Express {
   app.get('/api/public/book/:slug', (_req, res) => {
     res.status(501).json({ error: 'not_implemented', feature: 'public_booking' });
   });
+
+  // In-office signing — public scan target for the per-signer QR. Token-only;
+  // no login/CSRF (like the other /api/public/* token surfaces).
+  app.use(
+    '/api/public/in-office',
+    createInOfficePublicRouter({
+      db: deps.db,
+      expiresInDays:
+        Number.isFinite(signatureExpiryDays) && signatureExpiryDays > 0
+          ? signatureExpiryDays
+          : undefined,
+    }),
+  );
 
   // CP12 — portal appointments (read-only).
   const portalAppointmentRouter = createPortalAppointmentRouter({

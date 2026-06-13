@@ -41,6 +41,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
 import { buildQrSheetHtml } from '../pdf-templates/signature-qr-sheet';
+import { mintInOfficeToken } from './in-office-token';
 import { renderHtmlToPdf } from '../pdf/render';
 import { signerSigningUrl, type SignerMailer } from './notify';
 import { reconcileSignatureRequestByDocument } from './reconcile';
@@ -64,6 +65,9 @@ export interface SignaturesDeps extends RbacDeps {
   expiresInDays?: number;
   /** Delivers each signer their signing link on send (OpenSign won't). */
   sendEmail?: SignerMailer;
+  /** Portal base URL — the QR sheet encodes `${portalBaseUrl}/in-office/<token>`
+   *  per signer so the printed QR works from the draft (before any send). */
+  portalBaseUrl?: string;
 }
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
@@ -1090,9 +1094,12 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
   );
 
   // GET /:id/qr-sheet.pdf — printable one-page-per-signer QR sheet for
-  // in-office signing. Each card carries a QR pointing at that signer's public
-  // OpenSign guest link, generated server-side and embedded as a data-URL so
-  // the sheet renders through the shared Puppeteer pipeline.
+  // in-office signing. Each card's QR points at the public in-office page
+  // (`${portalBaseUrl}/in-office/<per-signer-token>`), so the sheet is
+  // printable straight from the DRAFT — scanning it runs verify→sign and
+  // creates the signing document on demand. Available until the request is
+  // in a terminal state.
+  const QR_TERMINAL = new Set(['completed', 'declined', 'expired', 'voided']);
   router.get(
     '/:id/qr-sheet.pdf',
     requirePermission(deps, 'proposal:read'),
@@ -1107,13 +1114,13 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      if (request.status !== 'sent' && request.status !== 'partially_signed') {
-        res.status(409).json({ error: 'not_sent' });
+      if (QR_TERMINAL.has(request.status)) {
+        res.status(409).json({ error: 'request_terminal', status: request.status });
         return;
       }
-      const opensign = getOpenSign();
-      if (!opensign || !request.opensignDocumentId) {
-        res.status(409).json({ error: 'not_sent' });
+      const base = (deps.portalBaseUrl ?? '').replace(/\/$/, '');
+      if (!base) {
+        res.status(503).json({ error: 'portal_base_url_unset' });
         return;
       }
       const signers = await deps.db
@@ -1123,12 +1130,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         .orderBy(signatureSigners.order);
       const sheetSigners: Array<{ name: string; qrDataUrl: string }> = [];
       for (const s of signers) {
-        if (!s.opensignSignerId) continue;
-        const url = signerSigningUrl(
-          opensign.publicUrl,
-          request.opensignDocumentId,
-          s.opensignSignerId,
-        );
+        const url = `${base}/in-office/${mintInOfficeToken(request.id, s.id)}`;
         const qrDataUrl = await QRCode.toDataURL(url, { margin: 1, width: 256 });
         sheetSigners.push({ name: s.name, qrDataUrl });
       }

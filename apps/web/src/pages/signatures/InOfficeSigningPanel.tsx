@@ -161,13 +161,20 @@ export function InOfficeSigningPanel({
         ) : (
           <>
             <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
-              In-office signing has the signer(s) sign here in the office on a device — no email is
-              sent to the client. Starting it generates a printable <strong>QR sheet</strong> (one
-              page per signer) that opens automatically; you can reprint it anytime from this card.
+              In-office signing — no email is sent to the client. Print the{' '}
+              <strong>QR sheet</strong> (one page per signer); scanning a signer’s QR opens an
+              ID-verification step and then the signing screen. Or set it up on this device instead.
             </div>
-            <div>
-              <Button onClick={() => setInOfficeOpen(true)} disabled={busy}>
-                Set up in-office signing
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button
+                onClick={() =>
+                  window.open(`/api/staff/signatures/${requestId}/qr-sheet.pdf`, '_blank')
+                }
+              >
+                View / Print QR sheet
+              </Button>
+              <Button variant="secondary" onClick={() => setInOfficeOpen(true)} disabled={busy}>
+                Set up on this device
               </Button>
             </div>
           </>

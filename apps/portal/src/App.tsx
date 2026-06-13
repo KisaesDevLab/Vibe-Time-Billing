@@ -40,6 +40,7 @@ import { TaxReturnsPage } from './pages/TaxReturns';
 import { TaxReturnViewPage } from './pages/TaxReturnView';
 import { SharedTaxReturnPage } from './pages/SharedTaxReturn';
 import { SharedFilePage } from './pages/SharedFile';
+import { InOfficeSignPage } from './pages/InOfficeSign';
 
 export function App(): JSX.Element {
   // Phase 16 #27 — license + firm-toggle gate. Block all routes (login
@@ -90,6 +91,8 @@ function PortalRoutes(): JSX.Element {
         <Route path="/shared/tax/:token" element={<SharedTaxReturnPage />} />
         {/* 0150 — gated file-share landing page (public; token + access code). */}
         <Route path="/shared/file/:token" element={<SharedFilePage />} />
+        {/* Public in-office signing landing — per-signer QR target. */}
+        <Route path="/in-office/:token" element={<InOfficeSignPage />} />
         <Route
           path="*"
           element={
