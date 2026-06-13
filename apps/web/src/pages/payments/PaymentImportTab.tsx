@@ -86,6 +86,12 @@ export function PaymentImportTab(): JSX.Element {
   const [preview, setPreview] = useState<PreviewResp | null>(null);
   // Per-group engagement picks (for PICK_ENGAGEMENT groups).
   const [picks, setPicks] = useState<Record<string, string>>({});
+  // Manual overrides: client pick for UNMATCHED groups, and an optional
+  // engagement pick ('' = prepayment) once a client is known.
+  const [allClients, setAllClients] = useState<{ id: string; name: string }[]>([]);
+  const [clientPicks, setClientPicks] = useState<Record<string, string>>({});
+  const [engOptions, setEngOptions] = useState<Record<string, Group['engagements']>>({});
+  const [engPicks, setEngPicks] = useState<Record<string, string>>({});
   const [writeUpCode, setWriteUpCode] = useState('');
   const [writeDownCode, setWriteDownCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -126,6 +132,21 @@ export function PaymentImportTab(): JSX.Element {
       });
       setPreview(r);
       setPicks({});
+      setClientPicks({});
+      setEngPicks({});
+      setEngOptions({});
+      // Manual pickers: clients list (for unmatched codes) + each matched
+      // client's billable engagements when the type produced no match.
+      if (r.groups.some((g) => !g.client)) {
+        void api<{ items: { id: string; name: string }[] }>('/api/staff/clients')
+          .then((c) => setAllClients(c.items ?? []))
+          .catch(() => undefined);
+      }
+      for (const g of r.groups) {
+        if (g.client && g.plan === 'PREPAYMENT' && g.engagements.length === 0) {
+          void loadEngOptions(g.clientCode, g.client.id);
+        }
+      }
       const ups = (r.reasonCodes ?? []).filter((c) => c.category === 'WRITE_UP');
       const downs = (r.reasonCodes ?? []).filter((c) => c.category === 'WRITE_DOWN');
       setWriteUpCode(ups[0]?.id ?? '');
@@ -137,31 +158,70 @@ export function PaymentImportTab(): JSX.Element {
     }
   }
 
-  // Resolve a group's effective plan (and that engagement's WIP) after
-  // manual engagement picks.
+  async function loadEngOptions(code: string, clientId: string): Promise<void> {
+    try {
+      const r = await api<{ items: Group['engagements'] }>(
+        `/api/staff/payment-imports/client-engagements?clientId=${clientId}`,
+      );
+      setEngOptions((p) => ({ ...p, [code]: r.items ?? [] }));
+    } catch {
+      setEngOptions((p) => ({ ...p, [code]: [] }));
+    }
+  }
+
+  function pickClient(code: string, clientId: string): void {
+    setClientPicks((p) => ({ ...p, [code]: clientId }));
+    setEngPicks((p) => ({ ...p, [code]: '' }));
+    if (clientId) void loadEngOptions(code, clientId);
+  }
+
+  // Resolve a group's effective plan (client, engagement, WIP) after the
+  // manual client/engagement overrides.
   function effective(g: Group): {
     plan: Group['plan'];
+    client: { id: string; name: string } | null;
     engagementId: string | null;
     wipCents: number;
     wipEntryCount: number;
   } {
+    const none = { engagementId: null, wipCents: 0, wipEntryCount: 0 };
+    if (g.plan === 'ALL_DUPLICATE') return { plan: g.plan, client: g.client, ...none };
+    const pickedClient = clientPicks[g.clientCode]
+      ? (allClients.find((c) => c.id === clientPicks[g.clientCode]) ?? null)
+      : null;
+    const client = g.client ?? pickedClient;
+    if (!client) return { plan: 'UNMATCHED', client: null, ...none };
+
+    // Engagement: ambiguity pick → manual pick → auto match.
+    let eng: Group['engagements'][number] | null = null;
     if (g.plan === 'PICK_ENGAGEMENT') {
-      const pick = g.engagements.find((e) => e.id === picks[g.clientCode]);
-      if (pick) {
-        return {
-          plan: pick.wipCents > 0 ? 'BILL_AND_PAY' : 'PREPAYMENT',
-          engagementId: pick.id,
-          wipCents: pick.wipCents,
-          wipEntryCount: pick.wipEntryCount,
-        };
-      }
-      return { plan: 'PICK_ENGAGEMENT', engagementId: null, wipCents: 0, wipEntryCount: 0 };
+      eng = g.engagements.find((e) => e.id === picks[g.clientCode]) ?? null;
+      if (!eng) return { plan: 'PICK_ENGAGEMENT', client, ...none };
+    } else if (engPicks[g.clientCode]) {
+      eng = (engOptions[g.clientCode] ?? []).find((e) => e.id === engPicks[g.clientCode]) ?? null;
+    } else if (g.engagementId) {
+      eng = {
+        id: g.engagementId,
+        name: '',
+        wipCents: g.wipCents,
+        wipEntryCount: g.wipEntryCount,
+      };
+    }
+    if (eng && eng.wipCents > 0) {
+      return {
+        plan: 'BILL_AND_PAY',
+        client,
+        engagementId: eng.id,
+        wipCents: eng.wipCents,
+        wipEntryCount: eng.wipEntryCount,
+      };
     }
     return {
-      plan: g.plan,
-      engagementId: g.engagementId,
-      wipCents: g.wipCents,
-      wipEntryCount: g.wipEntryCount,
+      plan: 'PREPAYMENT',
+      client,
+      engagementId: eng?.id ?? null,
+      wipCents: 0,
+      wipEntryCount: 0,
     };
   }
 
@@ -203,7 +263,7 @@ export function PaymentImportTab(): JSX.Element {
                 chargeDate: r.chargeDate,
                 description: r.description || null,
                 amountCents: r.amountCents,
-                clientId: g.client?.id ?? null,
+                clientId: eff.client?.id ?? null,
                 engagementId: extra.engagementId ?? null,
                 invoiceId: extra.invoiceId ?? null,
                 paymentReceiptId: extra.paymentReceiptId ?? null,
@@ -220,7 +280,7 @@ export function PaymentImportTab(): JSX.Element {
             setResults({ ...out });
             continue;
           }
-          if (eff.plan === 'UNMATCHED' || eff.plan === 'PICK_ENGAGEMENT' || !g.client) {
+          if (eff.plan === 'UNMATCHED' || eff.plan === 'PICK_ENGAGEMENT' || !eff.client) {
             await logRows({
               outcome: 'SKIPPED',
               detail: eff.plan === 'UNMATCHED' ? 'no client match' : 'engagement not chosen',
@@ -229,8 +289,8 @@ export function PaymentImportTab(): JSX.Element {
               status: 'error',
               detail:
                 eff.plan === 'UNMATCHED'
-                  ? 'No client with this code — set the client’s External/AWS id and re-import.'
-                  : 'Pick an engagement, then re-run preview + import.',
+                  ? 'No client chosen — pick one, or set the client’s External/AWS id.'
+                  : 'Pick an engagement before importing.',
             };
             setResults({ ...out });
             continue;
@@ -303,7 +363,7 @@ export function PaymentImportTab(): JSX.Element {
               {
                 method: 'POST',
                 body: JSON.stringify({
-                  payerClientId: g.client.id,
+                  payerClientId: eff.client.id,
                   paymentDate: g.maxChargeDate,
                   paymentMethod: METHOD_KEY,
                   amountReceivedCents: g.targetCents,
@@ -331,7 +391,7 @@ export function PaymentImportTab(): JSX.Element {
               {
                 method: 'POST',
                 body: JSON.stringify({
-                  payerClientId: g.client.id,
+                  payerClientId: eff.client.id,
                   paymentDate: g.maxChargeDate,
                   paymentMethod: METHOD_KEY,
                   amountReceivedCents: g.targetCents,
@@ -479,7 +539,7 @@ export function PaymentImportTab(): JSX.Element {
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <strong style={{ fontSize: 13 }}>
-                      {g.client?.name ?? g.csvClientName}{' '}
+                      {eff.client?.name ?? g.csvClientName}{' '}
                       <span style={{ color: tokens.color.textMuted, fontWeight: 400 }}>
                         ({g.clientCode})
                       </span>
@@ -522,6 +582,42 @@ export function PaymentImportTab(): JSX.Element {
                         ))}
                       </select>
                     )}
+                    {!g.client && g.plan !== 'ALL_DUPLICATE' && (
+                      <select
+                        value={clientPicks[g.clientCode] ?? ''}
+                        onChange={(e) => pickClient(g.clientCode, e.target.value)}
+                        style={selStyle}
+                        aria-label="Choose client"
+                      >
+                        <option value="">Choose client…</option>
+                        {allClients.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {eff.client &&
+                      g.plan !== 'PICK_ENGAGEMENT' &&
+                      g.plan !== 'ALL_DUPLICATE' &&
+                      !g.engagementId &&
+                      (engOptions[g.clientCode]?.length ?? 0) > 0 && (
+                        <select
+                          value={engPicks[g.clientCode] ?? ''}
+                          onChange={(e) =>
+                            setEngPicks((p) => ({ ...p, [g.clientCode]: e.target.value }))
+                          }
+                          style={selStyle}
+                          aria-label="Choose engagement or prepay"
+                        >
+                          <option value="">Apply as prepayment</option>
+                          {(engOptions[g.clientCode] ?? []).map((en) => (
+                            <option key={en.id} value={en.id}>
+                              {en.name} — WIP {usd(en.wipCents)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     <div style={{ marginLeft: 'auto' }}>
                       {res &&
                         (res.status === 'done' ? (

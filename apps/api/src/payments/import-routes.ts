@@ -170,6 +170,65 @@ const RowsSchema = z.object({ rows: z.array(RowOutcomeSchema).min(1).max(2000) }
 export function createPaymentImportRouter(deps: PaymentImportRoutesDeps): Router {
   const router = express.Router();
 
+  // Billable engagements (ACTIVE, not workflow-terminal — any type) for a
+  // client, with unbilled WIP. Drives the manual client/engagement pickers
+  // on unmatched or engagement-less preview groups.
+  router.get(
+    '/client-engagements',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const clientId = String(req.query['clientId'] ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(clientId)) {
+        res.status(400).json({ error: 'invalid_client_id' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const [client] = await deps.db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.id, clientId), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const engs = await deps.db
+        .select({ id: engagements.id, name: engagements.name })
+        .from(engagements)
+        .where(
+          and(
+            eq(engagements.clientId, clientId),
+            eq(engagements.status, 'ACTIVE'),
+            notInArray(engagements.workflowState, TERMINAL_WORKFLOW),
+          ),
+        );
+      const ids = engs.map((e) => e.id);
+      const wip = ids.length
+        ? await deps.db
+            .select({
+              engagementId: timeEntries.engagementId,
+              wipCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)::bigint`,
+              entryCount: sql<number>`COUNT(*)::int`,
+            })
+            .from(timeEntries)
+            .where(and(inArray(timeEntries.engagementId, ids), isNull(timeEntries.billingBatchId)))
+            .groupBy(timeEntries.engagementId)
+        : [];
+      const byEng = new Map(wip.map((w) => [w.engagementId, w]));
+      res.json({
+        items: engs.map((e) => ({
+          ...e,
+          wipCents: Number(byEng.get(e.id)?.wipCents ?? 0),
+          wipEntryCount: Number(byEng.get(e.id)?.entryCount ?? 0),
+        })),
+      });
+    },
+  );
+
   router.post(
     '/preview',
     requirePermission(deps, 'payment:write'),
