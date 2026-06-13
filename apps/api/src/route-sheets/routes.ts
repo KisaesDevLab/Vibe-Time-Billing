@@ -41,8 +41,9 @@ import { stageStatusNotification } from '../notifications/staged/pipeline';
 import { renderHtmlToPdf } from '../pdf/render';
 import { renderRouteSheetHtml } from '../pdf-templates/route-sheet';
 
-// Terminal states excluded from the "uncompleted" list.
-const TERMINAL_WORKFLOW = ['COMPLETED', 'CANCELED'];
+// Terminal states excluded from the "uncompleted" list. Shared with the
+// payments CSV import, which must not bill a completed/cancelled engagement.
+export const TERMINAL_WORKFLOW = ['COMPLETED', 'CANCELED'];
 const TERMINAL_LIFECYCLE: Array<'CLOSED' | 'ARCHIVED'> = ['CLOSED', 'ARCHIVED'];
 
 export interface RouteSheetRoutesDeps extends RbacDeps {

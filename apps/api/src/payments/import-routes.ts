@@ -21,7 +21,7 @@
 // adds matching + audit.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -39,6 +39,7 @@ import {
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { parseCsv } from '../clients/import';
+import { TERMINAL_WORKFLOW } from '../route-sheets/routes';
 
 export interface PaymentImportRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -239,6 +240,9 @@ export function createPaymentImportRouter(deps: PaymentImportRoutesDeps): Router
                 inArray(engagements.clientId, clientIds),
                 eq(engagements.engagementTypeId, etype.id),
                 eq(engagements.status, 'ACTIVE'),
+                // Workflow-complete/cancelled engagements are not billing
+                // targets even while their lifecycle status is ACTIVE.
+                notInArray(engagements.workflowState, TERMINAL_WORKFLOW),
               ),
             )
         : [];

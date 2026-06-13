@@ -142,6 +142,25 @@ describe('payment import preview', () => {
     expect(amer.plan).toBe('PREPAYMENT');
   });
 
+  it('workflow-COMPLETED / CANCELED engagements are excluded from matching', async () => {
+    const { typeId } = await seedPayrollWorld();
+    await seedTime(5000);
+    await harness.db.execute(
+      sql.raw(
+        `UPDATE engagement SET workflow_state = 'COMPLETED' WHERE id = '${seed.engagementId}'`,
+      ),
+    );
+    const app = buildApp();
+    const res = await request(app)
+      .post('/api/staff/payment-imports/preview')
+      .send({ csv: CSV, engagementTypeId: typeId });
+    const amer = (
+      res.body.groups as { clientCode: string; plan: string; engagements: unknown[] }[]
+    ).find((g) => g.clientCode === 'AMER0667')!;
+    expect(amer.plan).toBe('PREPAYMENT'); // despite unbilled time existing
+    expect(amer.engagements).toHaveLength(0);
+  });
+
   it('two active engagements of the type → PICK_ENGAGEMENT with candidates', async () => {
     const { typeId } = await seedPayrollWorld();
     await one(
