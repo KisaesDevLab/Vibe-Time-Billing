@@ -13,6 +13,7 @@ import { files, taxReturnSections, taxReturns } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
+import { matchEngagementForReturn } from './engagement-match';
 
 export interface IntakeTaxReturnArgs {
   firmId: string;
@@ -80,13 +81,26 @@ export async function createTaxReturnFromFileCore(
   const title =
     args.title?.trim() || `${args.formCode} · ${args.taxYear} · ${file.originalFilename}`;
 
+  // Tie the return to the client's engagement when one is supplied; otherwise
+  // best-effort auto-match (unique ACTIVE engagement of the same returnType +
+  // taxYear). Ambiguous/none → null, staff link it manually on the return.
+  const engagementId =
+    args.engagementId ??
+    (file.clientId
+      ? await matchEngagementForReturn(db, {
+          clientId: file.clientId,
+          formCode: args.formCode,
+          taxYear: args.taxYear,
+        }).catch(() => null)
+      : null);
+
   const taxReturnId = await db.transaction(async (tx) => {
     const [row] = await tx
       .insert(taxReturns)
       .values({
         firmId: args.firmId,
         clientId: file.clientId,
-        engagementId: args.engagementId ?? null,
+        engagementId,
         taxYear: args.taxYear,
         formCode: args.formCode,
         jurisdiction,

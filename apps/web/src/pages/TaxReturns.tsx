@@ -17,12 +17,15 @@ import { Tabs, tokens } from '@vibe/ui';
 
 import { TaxPaymentsTab } from './tax/TaxPaymentsTab';
 import { TaxReturnsTab } from './tax/TaxReturnsTab';
+import { TaxSignatureCompletionsTab } from './tax/TaxSignatureCompletionsTab';
 
-type Tab = 'returns' | 'payments';
+type Tab = 'returns' | 'signatures' | 'payments';
 
 export function TaxReturnsStaffPage(): JSX.Element {
   const [search, setSearch] = useSearchParams();
-  const initial = (search.get('tab') as Tab) === 'payments' ? 'payments' : 'returns';
+  const tabParam = search.get('tab') as Tab;
+  const initial: Tab =
+    tabParam === 'payments' ? 'payments' : tabParam === 'signatures' ? 'signatures' : 'returns';
   const [tab, setTab] = useState<Tab>(initial);
 
   useEffect(() => {
@@ -38,12 +41,14 @@ export function TaxReturnsStaffPage(): JSX.Element {
       <Tabs
         tabs={[
           { key: 'returns', label: 'Returns' },
+          { key: 'signatures', label: 'Signatures' },
           { key: 'payments', label: 'Payments' },
         ]}
         active={tab}
         onChange={(k) => setTab(k as Tab)}
       />
       {tab === 'returns' && <TaxReturnsTab />}
+      {tab === 'signatures' && <TaxSignatureCompletionsTab />}
       {tab === 'payments' && <TaxPaymentsTab />}
     </div>
   );

@@ -16,7 +16,7 @@
 // add a finer-grained `tax:release` permission later.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, ne } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -24,8 +24,10 @@ import {
   appUsers,
   clientPortalAccess,
   clients,
+  engagements,
   files,
   portalIdentity,
+  signatureRequests,
   taxReturnReleases,
   taxReturnSections,
   taxReturns,
@@ -803,6 +805,65 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
     },
   );
 
+  // Link (or clear) the engagement this return belongs to. Validates the
+  // engagement is the same client's. Powers the manual override when the
+  // auto-match on intake left it null (or got it wrong).
+  router.patch(
+    '/:returnId/engagement',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = z.object({ engagementId: z.string().uuid().nullable() }).safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
+        return;
+      }
+      const [ret] = await deps.db
+        .select({ id: taxReturns.id, clientId: taxReturns.clientId })
+        .from(taxReturns)
+        .where(
+          and(eq(taxReturns.id, req.params['returnId']!), eq(taxReturns.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!ret) {
+        res.status(404).json({ error: 'return_not_found' });
+        return;
+      }
+      if (parsed.data.engagementId) {
+        const [eng] = await deps.db
+          .select({ id: engagements.id })
+          .from(engagements)
+          .where(
+            and(
+              eq(engagements.id, parsed.data.engagementId),
+              eq(engagements.clientId, ret.clientId),
+            ),
+          )
+          .limit(1);
+        if (!eng) {
+          res.status(400).json({ error: 'invalid_engagement' });
+          return;
+        }
+      }
+      await deps.db
+        .update(taxReturns)
+        .set({ engagementId: parsed.data.engagementId })
+        .where(eq(taxReturns.id, ret.id));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'tax_return.engagement',
+        entityId: ret.id,
+        actorAppUserId: session.appUserId,
+        after: { engagementId: parsed.data.engagementId },
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
   // Automated re-parse — re-derive sections from the source PDF's
   // bookmark outline (falling back to header detection). Replaces all
   // sections (manual edits included) and flips the return to PARSED.
@@ -992,6 +1053,52 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
     },
   );
 
+  // Signature-completion log for the Tax → Signatures tab: every non-draft
+  // signature request for the firm, joined to client + tax return +
+  // engagement (so the tab can show, filter, and drive an engagement-status
+  // change). Registered before '/:returnId' so the literal path wins.
+  router.get(
+    '/signature-completions',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: signatureRequests.id,
+          title: signatureRequests.title,
+          status: signatureRequests.status,
+          signingMode: signatureRequests.signingMode,
+          formType: signatureRequests.formType,
+          signerCount: signatureRequests.signerCount,
+          signedCount: signatureRequests.signedCount,
+          sentAt: signatureRequests.sentAt,
+          completedAt: signatureRequests.completedAt,
+          createdAt: signatureRequests.createdAt,
+          clientId: signatureRequests.clientId,
+          clientName: clients.name,
+          taxReturnId: signatureRequests.taxReturnId,
+          taxReturnTitle: taxReturns.title,
+          engagementId: signatureRequests.engagementId,
+          engagementName: engagements.name,
+          engagementWorkflowState: engagements.workflowState,
+        })
+        .from(signatureRequests)
+        .leftJoin(clients, eq(clients.id, signatureRequests.clientId))
+        .leftJoin(taxReturns, eq(taxReturns.id, signatureRequests.taxReturnId))
+        .leftJoin(engagements, eq(engagements.id, signatureRequests.engagementId))
+        .where(
+          and(eq(signatureRequests.firmId, session.firmId), ne(signatureRequests.status, 'draft')),
+        )
+        .orderBy(desc(signatureRequests.createdAt))
+        .limit(1000);
+      res.json({ items: rows });
+    },
+  );
+
   // Detail endpoint for the staff release dialog: return meta +
   // sections + every active release. The release-creation UI needs
   // sections to drive the SELECTED-scope picker.
@@ -1021,9 +1128,14 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
           createdAt: taxReturns.createdAt,
           // 0102 — backing PDF, so staff can share the return via the file flow.
           sourceFileId: taxReturns.sourceFileId,
+          // Linked engagement (auto-matched on intake or set manually) — powers
+          // the Signatures-tab status control + the manual-link selector here.
+          engagementId: taxReturns.engagementId,
+          engagementName: engagements.name,
         })
         .from(taxReturns)
         .innerJoin(clients, eq(clients.id, taxReturns.clientId))
+        .leftJoin(engagements, eq(engagements.id, taxReturns.engagementId))
         .where(and(eq(taxReturns.id, returnId), eq(taxReturns.firmId, session.firmId)))
         .limit(1);
       if (!ret) {

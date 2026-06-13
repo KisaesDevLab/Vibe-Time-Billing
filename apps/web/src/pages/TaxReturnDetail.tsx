@@ -83,6 +83,8 @@ interface ReturnDetail {
     releasedAt: string | null;
     createdAt: string;
     sourceFileId: string | null;
+    engagementId: string | null;
+    engagementName: string | null;
   };
   sections: SectionRow[];
   releases: ReleaseRow[];
@@ -294,6 +296,14 @@ export function TaxReturnDetailPage(): JSX.Element {
         taxYear={ret.taxYear}
       />
 
+      <EngagementLinkCard
+        returnId={ret.id}
+        clientId={ret.clientId}
+        engagementId={ret.engagementId}
+        engagementName={ret.engagementName}
+        onChanged={() => void load()}
+      />
+
       <SignaturesCard
         returnId={ret.id}
         onCollect={() => setSignaturesOpen(true)}
@@ -389,6 +399,103 @@ export function TaxReturnDetailPage(): JSX.Element {
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Engagement link card — show/set the engagement this return belongs to.
+// Auto-matched on intake; this is the manual override (and what the Tax →
+// Signatures tab needs in order to advance the engagement's status).
+// ---------------------------------------------------------------------------
+
+interface EngagementOption {
+  id: string;
+  name: string;
+}
+
+function EngagementLinkCard({
+  returnId,
+  clientId,
+  engagementId,
+  engagementName,
+  onChanged,
+}: {
+  returnId: string;
+  clientId: string;
+  engagementId: string | null;
+  engagementName: string | null;
+  onChanged: () => void;
+}): JSX.Element {
+  const canWrite = usePermission('engagement:write');
+  const [options, setOptions] = useState<EngagementOption[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api<{ items: EngagementOption[] }>(`/api/staff/engagements?clientId=${clientId}`)
+      .then((r) => {
+        if (!cancelled) setOptions(r.items ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  async function setEngagement(id: string | null): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/tax/returns/${returnId}/engagement`, {
+        method: 'PATCH',
+        body: JSON.stringify({ engagementId: id }),
+      });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update the engagement link.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Engagement">
+      <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>
+        The engagement this return belongs to. Set here when it wasn’t matched automatically — the
+        Tax → Signatures tab uses it to advance the engagement’s status on completion.
+      </p>
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      {canWrite ? (
+        <select
+          aria-label="Linked engagement"
+          value={engagementId ?? ''}
+          disabled={busy}
+          onChange={(e) => void setEngagement(e.target.value || null)}
+          style={{
+            fontSize: 13,
+            padding: '6px 8px',
+            borderRadius: tokens.radius.sm,
+            border: `1px solid ${tokens.color.border}`,
+            background: tokens.color.bg,
+            color: tokens.color.text,
+            minWidth: 280,
+          }}
+        >
+          <option value="">— Not linked —</option>
+          {engagementId && !options.some((o) => o.id === engagementId) && (
+            <option value={engagementId}>{engagementName ?? 'Current engagement'}</option>
+          )}
+          {options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <p style={{ fontSize: 13 }}>{engagementName ?? 'Not linked'}</p>
+      )}
+    </Card>
   );
 }
 
