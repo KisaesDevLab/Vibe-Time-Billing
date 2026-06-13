@@ -199,7 +199,9 @@ describe('payment import header + row log + dedupe', () => {
           {
             clientCode: 'AMER0667',
             clientName: 'American Western Bonding',
-            chargeDate: '2026-06-12',
+            // Different charge date than the CSV — dedupe keys on
+            // client + description + amount, not the date.
+            chargeDate: '2026-06-11',
             description: 'Payroll Number 25 (6/11/2026)',
             amountCents: 8265,
             clientId: seed.clientId,

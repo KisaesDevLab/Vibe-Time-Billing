@@ -284,8 +284,11 @@ export function createPaymentImportRouter(deps: PaymentImportRoutesDeps): Router
               ),
             )
         : [];
+      // The payroll system's description is unique per client payment, so
+      // client + description + amount is the dedupe identity (date-proof
+      // against re-exports). Blank descriptions fall back to the date.
       const dupKey = (c: string, d: string, desc: string, a: number): string =>
-        `${c}|${d}|${desc}|${a}`;
+        desc ? `${c}|${desc}|${a}` : `${c}|${d}|${a}`;
       const dupSet = new Set(
         dupRows.map((r) =>
           dupKey(r.clientCode, r.chargeDate, r.description ?? '', Number(r.amountCents)),
