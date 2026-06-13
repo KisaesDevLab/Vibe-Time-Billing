@@ -16,7 +16,7 @@
 // add a finer-grained `tax:release` permission later.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { desc, eq, ne } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -1090,9 +1090,9 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         .leftJoin(clients, eq(clients.id, signatureRequests.clientId))
         .leftJoin(taxReturns, eq(taxReturns.id, signatureRequests.taxReturnId))
         .leftJoin(engagements, eq(engagements.id, signatureRequests.engagementId))
-        .where(
-          and(eq(signatureRequests.firmId, session.firmId), ne(signatureRequests.status, 'draft')),
-        )
+        // Include drafts too — a just-collected package shows here immediately
+        // so staff can start in-office signing / print the QR from this tab.
+        .where(eq(signatureRequests.firmId, session.firmId))
         .orderBy(desc(signatureRequests.createdAt))
         .limit(1000);
       res.json({ items: rows });

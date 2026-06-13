@@ -51,9 +51,10 @@ const MODE_VALUES = [
 ];
 
 const STATUS_VALUES = [
-  { value: 'completed', label: 'Completed' },
-  { value: 'partially_signed', label: 'Partially signed' },
+  { value: 'draft', label: 'Draft' },
   { value: 'sent', label: 'Sent' },
+  { value: 'partially_signed', label: 'Partially signed' },
+  { value: 'completed', label: 'Completed' },
   { value: 'declined', label: 'Declined' },
   { value: 'expired', label: 'Expired' },
   { value: 'voided', label: 'Voided' },
@@ -63,7 +64,7 @@ const STATUS_VALUES = [
 // 409s for these); only in-progress (sent / partially signed) rows can.
 const SIG_TERMINAL = new Set(['completed', 'declined', 'expired', 'voided']);
 
-const STORAGE_KEY = 'vibe.tax-signatures.view';
+const STORAGE_KEY = 'vibe.tax-signatures.view.v2';
 
 interface PersistedView {
   sortCol: SortCol | '';
@@ -74,14 +75,15 @@ interface PersistedView {
   status: string[];
 }
 
-// Default to a completion log: status filtered to Completed, newest first.
+// Show all signature activity by default (drafts included), newest first, so a
+// just-collected package is visible and actionable here.
 const DEFAULT_VIEW: PersistedView = {
   sortCol: 'completed',
   sortDir: 'desc',
   client: [],
   form: [],
   mode: [],
-  status: ['completed'],
+  status: [],
 };
 
 function loadView(): PersistedView {
@@ -514,28 +516,29 @@ export function TaxSignatureCompletionsTab(): JSX.Element {
                         {SIG_TERMINAL.has(r.status) ? (
                           <span style={{ color: tokens.color.textMuted }}>—</span>
                         ) : (
-                          <button
-                            type="button"
-                            title="Start in-office signing — show the QR sheet"
-                            aria-label={`Show in-office QR sheet for ${r.title}`}
-                            onClick={() =>
-                              window.open(`/api/staff/signatures/${r.id}/qr-sheet.pdf`, '_blank')
-                            }
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              width: 30,
-                              height: 30,
-                              borderRadius: tokens.radius.sm,
-                              border: `1px solid ${tokens.color.border}`,
-                              background: tokens.color.surface,
-                              color: tokens.color.accent,
-                              cursor: 'pointer',
-                            }}
+                          <span
+                            style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}
                           >
-                            <QrGlyph />
-                          </button>
+                            <Link
+                              to={`/signatures/${r.id}`}
+                              title="Collect in-office signature — set up / sign on this device"
+                              aria-label={`Collect in-office signature for ${r.title}`}
+                              style={iconBtn}
+                            >
+                              <PenGlyph />
+                            </Link>
+                            <button
+                              type="button"
+                              title="View / print the in-office QR sheet"
+                              aria-label={`Show in-office QR sheet for ${r.title}`}
+                              onClick={() =>
+                                window.open(`/api/staff/signatures/${r.id}/qr-sheet.pdf`, '_blank')
+                              }
+                              style={{ ...iconBtn, cursor: 'pointer' }}
+                            >
+                              <QrGlyph />
+                            </button>
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -566,6 +569,28 @@ function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
 
 function td(): React.CSSProperties {
   return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
+}
+
+const iconBtn: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 30,
+  height: 30,
+  borderRadius: tokens.radius.sm,
+  border: `1px solid ${tokens.color.border}`,
+  background: tokens.color.surface,
+  color: tokens.color.accent,
+  textDecoration: 'none',
+};
+
+// Pen / signature glyph for "collect in-office signature".
+function PenGlyph(): JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M11.5 1.5l3 3L6 13l-3.5.5L3 10l8.5-8.5zm0 2.1L4.3 10.8l-.2 1.1 1.1-.2 7.2-7.2-.9-.9z" />
+    </svg>
+  );
 }
 
 // Minimal QR-code glyph.
