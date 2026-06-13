@@ -59,6 +59,10 @@ const STATUS_VALUES = [
   { value: 'voided', label: 'Voided' },
 ];
 
+// Rows in a terminal state can't start/show an in-office QR (the sheet route
+// 409s for these); only in-progress (sent / partially signed) rows can.
+const SIG_TERMINAL = new Set(['completed', 'declined', 'expired', 'voided']);
+
 const STORAGE_KEY = 'vibe.tax-signatures.view';
 
 interface PersistedView {
@@ -411,13 +415,14 @@ export function TaxSignatureCompletionsTab(): JSX.Element {
                   </th>
                   <th style={th()}>Engagement</th>
                   <th style={th()}>Engagement status</th>
+                  <th style={th('right')}>In-office</th>
                 </tr>
               </thead>
               <tbody>
                 {visible.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={10}
+                      colSpan={11}
                       style={{
                         textAlign: 'center',
                         padding: 40,
@@ -505,6 +510,34 @@ export function TaxSignatureCompletionsTab(): JSX.Element {
                           </span>
                         )}
                       </td>
+                      <td style={{ ...td(), textAlign: 'right' }}>
+                        {SIG_TERMINAL.has(r.status) ? (
+                          <span style={{ color: tokens.color.textMuted }}>—</span>
+                        ) : (
+                          <button
+                            type="button"
+                            title="Start in-office signing — show the QR sheet"
+                            aria-label={`Show in-office QR sheet for ${r.title}`}
+                            onClick={() =>
+                              window.open(`/api/staff/signatures/${r.id}/qr-sheet.pdf`, '_blank')
+                            }
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 30,
+                              height: 30,
+                              borderRadius: tokens.radius.sm,
+                              border: `1px solid ${tokens.color.border}`,
+                              background: tokens.color.surface,
+                              color: tokens.color.accent,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <QrGlyph />
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -533,4 +566,14 @@ function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
 
 function td(): React.CSSProperties {
   return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
+}
+
+// Minimal QR-code glyph.
+function QrGlyph(): JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M1 1h5v5H1V1zm1 1v3h3V2H2zm8-1h5v5h-5V1zm1 1v3h3V2h-3zM1 10h5v5H1v-5zm1 1v3h3v-3H2z" />
+      <path d="M3 3h1v1H3V3zm9 0h1v1h-1V3zM3 12h1v1H3v-1zm5-9h2v2H8V3zm3 5h2v2h-2V8zm-3 0h2v2H8V8zm0 3h2v2H8v-2zm3 0h2v2h-2v-2zm2-3h1v1h-1V8z" />
+    </svg>
+  );
 }
