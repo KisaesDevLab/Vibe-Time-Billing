@@ -551,6 +551,24 @@ export function SignatureDetailPage(): JSX.Element {
                   onSaved={() => void load()}
                 />
 
+                {requiresIdAttestation && (
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: tokens.color.textMuted,
+                      background: tokens.color.bg,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: 6,
+                      padding: tokens.space.sm,
+                    }}
+                  >
+                    Form 8879 for an individual <strong>1040</strong> can’t be e-signed remotely —
+                    the IRS requires Knowledge-Based Authentication, which this app doesn’t offer.
+                    Have the taxpayer sign <strong>in office</strong>: no email goes to the client,
+                    and recording in-person photo-ID verification satisfies the IRS in-person
+                    requirement (Pub 1345).
+                  </div>
+                )}
                 <div
                   style={{
                     display: 'flex',
@@ -563,15 +581,20 @@ export function SignatureDetailPage(): JSX.Element {
                   </Button>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <Button
-                      variant="secondary"
+                      variant={requiresIdAttestation ? 'primary' : 'secondary'}
                       onClick={() => setInOfficeOpen(true)}
                       disabled={busy || placements.length === 0}
                     >
                       Set up in-office signing
                     </Button>
-                    <Button onClick={() => void send()} disabled={busy || placements.length === 0}>
-                      {busy ? 'Sending…' : 'Send for signature'}
-                    </Button>
+                    {!requiresIdAttestation && (
+                      <Button
+                        onClick={() => void send()}
+                        disabled={busy || placements.length === 0}
+                      >
+                        {busy ? 'Sending…' : 'Send for signature'}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </>
@@ -843,7 +866,7 @@ function messageFor(e: ApiError): string {
     return `Cannot send: ${body.errors.map((x) => `${x.path} ${x.message}`).join('; ')}`;
   }
   if (body?.error === 'kba_required') {
-    return 'This form (1040 8879) requires Knowledge-Based Authentication and cannot be sent via the entity path.';
+    return 'Form 8879 (individual 1040) can’t be e-signed remotely — it requires Knowledge-Based Authentication, which this app doesn’t offer. Use “Set up in-office signing” instead.';
   }
   if (body?.error === 'no_source') return 'Upload a source PDF before sending.';
   return e.message || 'request_failed';

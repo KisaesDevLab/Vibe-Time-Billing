@@ -3661,19 +3661,23 @@ For each active staff member you can set:
     body: md(`
 # In-office signing & QR sheets
 
-Once a signature request has been sent, you can have signers complete it **in your office** instead of waiting for email. The signature request detail page offers an in-office signing option that produces a QR code per signer.
+In-office signing has the signer complete a request **on-site**, on a tablet or their phone, by scanning a QR code. It is a **distinct path from "Send for signature"** — it does **not** email the client, and it's the way to handle an **individual 1040 (Form 8879)**, which can't be e-signed remotely.
+
+## Why 1040s use this path
+Remotely e-signing an individual 1040 e-file authorization requires the IRS's Knowledge-Based Authentication (identity quiz), which this app doesn't offer — so **"Send for signature" is not available for a 1040**. Signing **in person** is the IRS-sanctioned alternative: the preparer verifies the taxpayer's government photo ID in person (Pub 1345), which replaces KBA. Business e-file authorizations (8879-S/C/PE) aren't KBA-gated and can be sent either way.
 
 ## How it works
-1. Create and send the signature request as usual.
-2. On the request's detail page, open the **in-office signing** section. It lists each signer and their status.
-3. Click **Print QR sheet** to get a printable PDF with one page per signer, each showing that signer's name and a QR code that opens their personal signing link. (You can also show a single signer's QR on screen.)
-4. The signer scans the QR with a phone or tablet, lands on their pre-authenticated signing page, and signs on the spot.
-5. Click **Refresh** on the detail page to pull the latest status immediately rather than waiting for the background sync. As each signer finishes, their status flips to signed; when all are done the request is complete and the signed PDF is available to download.
+1. Build the request (or assemble one from a return — see [[collect-signatures-from-return]]) and place the fields. You do **not** send it to the client.
+2. On the draft, click **Set up in-office signing**. For a 1040, this is the primary action — the screen explains that no email is sent.
+3. For a 1040 (Form 8879), record each signer's **government photo-ID type** and check **"I verified this person's photo ID in person."** This is required to satisfy the in-person IRS rule and is saved as an audit event (no ID numbers are stored).
+4. Click **Start in-office signing**. The request goes live with **no email to the client**, and the **in-office signing** card appears.
+5. **Print QR sheet** for a one-page-per-signer PDF (each shows the signer's name and a QR to their signing page), or hand a signer the device with **Sign now**, or **Show QR** on screen.
+6. The signer scans/opens their page and signs on the spot. Click **Refresh status** to pull the result immediately; once everyone has signed, the signed PDF is available to download (and a return-linked request files it to the client's Tax Returns folder automatically).
 
 ## Tips
-- Each QR encodes that signer's private link — treat printed sheets accordingly.
-- In-office signing uses your firm's OpenSign connection; see [[esign-providers]] and [[opensign-setup]].
-- To pull signature pages straight out of a tax return, see [[collect-signatures-from-return]].
+- Each QR encodes that signer's private signing link — treat printed sheets accordingly.
+- In-office signing still uses your firm's OpenSign connection to capture the e-signature; see [[esign-providers]] and [[opensign-setup]]. The difference is that nobody is emailed and identity is verified in person rather than by KBA.
+- Track completion across requests in the [[signed-forms-report]].
 `),
   },
   {
