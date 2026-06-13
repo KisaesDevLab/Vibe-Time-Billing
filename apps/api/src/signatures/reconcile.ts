@@ -23,8 +23,6 @@ import type { Database } from '@vibe/db';
 import { signatureEvents, signatureRequests, signatureSigners } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
-import { appendPdfPages } from '../lib/pdf-merge';
-
 import type { OpenSignClient, ParseDoc } from '../esign/opensign-client';
 import { fileExistingObjectIntoClientFolder } from '../clients/file-existing';
 import { notifySignatureCompleted, type CompletionMailer } from './completion-notify';
@@ -117,6 +115,7 @@ export async function reconcileSignatureRequestByDocument(
   let signedKey: string | null = null;
   let signedSize = 0;
   let certKey: string | null = null;
+  let certSize = 0;
   if (completed) {
     const url = doc.SignedUrl ?? doc.CertificateUrl;
     let signedBuf: Buffer | null = null;
@@ -144,17 +143,10 @@ export async function reconcileSignatureRequestByDocument(
         // certificate unavailable — store the signed doc alone.
       }
     }
-    // Single signed package: append the certificate pages to the signed PDF
-    // so the signed page (and the auto-filed client copy) is one document.
-    // A merge failure falls back to the legacy two-file shape.
-    if (signedBuf && certBuf) {
-      try {
-        signedBuf = await appendPdfPages(signedBuf, certBuf);
-        certBuf = null;
-      } catch {
-        // unmergeable bytes — keep both files separately.
-      }
-    }
+    // Store the signed document and the audit certificate as SEPARATE
+    // artifacts: the certificate is its own file so it's downloadable (the
+    // Signed Forms report's Certificate link) and gets filed alongside the
+    // return (see the auto-file block below). Each is captured best-effort.
     if (signedBuf) {
       signedKey = signedFileKey(request.firmId, request.id);
       signedSize = signedBuf.length;
@@ -162,6 +154,7 @@ export async function reconcileSignatureRequestByDocument(
     }
     if (certBuf) {
       certKey = certFileKey(request.firmId, request.id);
+      certSize = certBuf.length;
       await deps.storage.put(certKey, certBuf, { contentType: 'application/pdf' });
     }
   }
@@ -272,6 +265,29 @@ export async function reconcileSignatureRequestByDocument(
           ? { fileId: filed.fileId, taxReturnId: request.taxReturnId }
           : { reason: filed.code, taxReturnId: request.taxReturnId },
       });
+      // File the audit certificate alongside the signed return as its own
+      // document, so the signing certificate is stored with the tax return.
+      if (certKey) {
+        const filedCert = await fileExistingObjectIntoClientFolder(db, deps.storage, {
+          firmId: request.firmId,
+          clientId: request.clientId,
+          actorId: request.createdBy,
+          subfolderPath: SIGNED_RETURN_SUBFOLDER,
+          originalFilename: `${request.title} (certificate).pdf`,
+          sourceKey: certKey,
+          mimeType: 'application/pdf',
+          sizeBytes: certSize,
+          source: 'signature',
+        });
+        await db.insert(signatureEvents).values({
+          requestId: request.id,
+          actor: 'system',
+          event: filedCert.ok ? 'certificate_filed' : 'certificate_file_skipped',
+          detail: filedCert.ok
+            ? { fileId: filedCert.fileId, taxReturnId: request.taxReturnId }
+            : { reason: filedCert.code, taxReturnId: request.taxReturnId },
+        });
+      }
     } catch (err) {
       await db
         .insert(signatureEvents)

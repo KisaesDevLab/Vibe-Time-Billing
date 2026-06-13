@@ -319,7 +319,7 @@ describe('signatures send + reconcile (phase 6+7)', () => {
     expect(storage.objects.has(row!.signedFileUrl!)).toBe(true);
   });
 
-  it('merges the audit certificate into a single signed PDF', async () => {
+  it('stores the signed PDF and the audit certificate as separate artifacts', async () => {
     const storage = memStorage();
     const app = buildApp(mockClient(), storage);
     const { id } = await preparedRequest(app);
@@ -357,12 +357,14 @@ describe('signatures send + reconcile (phase 6+7)', () => {
       .from(signatureRequests)
       .where(eq(signatureRequests.id, id));
     expect(row!.status).toBe('completed');
-    // One stored artifact — signed pages + certificate pages appended; no
-    // separate certificate file for new completions.
-    expect(row!.certificateFileUrl).toBeNull();
-    const stored = storage.objects.get(row!.signedFileUrl!)!;
-    const merged = await PDFDocument.load(stored);
-    expect(merged.getPageCount()).toBe(3);
+    // Two stored artifacts — the signed return and a separate audit
+    // certificate (downloadable + filed with the return).
+    expect(row!.signedFileUrl).toBeTruthy();
+    expect(row!.certificateFileUrl).toBeTruthy();
+    const signed = await PDFDocument.load(storage.objects.get(row!.signedFileUrl!)!);
+    expect(signed.getPageCount()).toBe(2);
+    const cert = await PDFDocument.load(storage.objects.get(row!.certificateFileUrl!)!);
+    expect(cert.getPageCount()).toBe(1);
   });
 
   it('save-profile captures current placements as a role-keyed profile version', async () => {
