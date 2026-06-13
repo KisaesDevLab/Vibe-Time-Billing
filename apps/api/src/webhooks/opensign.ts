@@ -205,8 +205,9 @@ async function dispatch(
           client: deps.openSignClient,
           storage: deps.storage,
           // Reuse the configured mailer to hand off to the next sequential
-          // signer (best-effort).
+          // signer, and to send the client a completion confirmation.
           notify: deps.sendProposalEmail,
+          sendEmail: deps.sendProposalEmail,
         },
         envelopeId,
       );

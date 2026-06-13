@@ -546,7 +546,10 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'signatures-poll: no DB configured');
       return;
     }
-    const result = await runSignaturesPollTick(db, logger, { storage });
+    const result = await runSignaturesPollTick(db, logger, {
+      storage,
+      sendEmail: dunningSendEmail,
+    });
     logger.info({ jobId: job.id, ...result }, 'signatures-poll complete');
   },
   'calendar-sync': async (job) => {

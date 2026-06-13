@@ -24,6 +24,7 @@ import {
   reconcileSignatureRequestByDocument,
   expireSignatureRequestIfDue,
 } from '../../../api/src/signatures/reconcile';
+import type { CompletionMailer } from '../../../api/src/signatures/completion-notify';
 
 export interface SignaturesPollResult {
   scanned: number;
@@ -37,7 +38,7 @@ const BATCH = 50;
 export async function runSignaturesPollTick(
   db: Database,
   log: Logger,
-  args: { storage: StorageClient | null },
+  args: { storage: StorageClient | null; sendEmail?: CompletionMailer },
   now: Date = new Date(),
 ): Promise<SignaturesPollResult> {
   const result: SignaturesPollResult = { scanned: 0, updated: 0, expired: 0, errors: 0 };
@@ -71,7 +72,7 @@ export async function runSignaturesPollTick(
     const documentId = row.documentId!;
     try {
       const outcome = await reconcileSignatureRequestByDocument(
-        { db, client, storage: args.storage },
+        { db, client, storage: args.storage, sendEmail: args.sendEmail },
         documentId,
         now,
       );

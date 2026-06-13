@@ -27,6 +27,7 @@ import { appendPdfPages } from '../lib/pdf-merge';
 
 import type { OpenSignClient, ParseDoc } from '../esign/opensign-client';
 import { fileExistingObjectIntoClientFolder } from '../clients/file-existing';
+import { notifySignatureCompleted, type CompletionMailer } from './completion-notify';
 import { notifySigner, signerSigningUrl, type SignerMailer } from './notify';
 
 // Subfolder the signed package is auto-filed into when the request was
@@ -41,6 +42,10 @@ export interface ReconcileDeps {
    *  once the prior one signs. Best-effort; absent when mail isn't wired
    *  (the poll path passes none — the webhook is primary for this). */
   notify?: SignerMailer;
+  /** Sends the client a confirmation email on completion. Best-effort;
+   *  absent when mail isn't wired. Staff in-app notifications fire regardless
+   *  (they only need the db). */
+  sendEmail?: CompletionMailer;
 }
 
 export type ReconcileOutcome =
@@ -278,6 +283,25 @@ export async function reconcileSignatureRequestByDocument(
         })
         .catch(() => undefined);
     }
+  }
+
+  // Completion notifications — staff in-app + a client confirmation email.
+  // Best-effort, and only on the single transition to 'completed' (reconcile
+  // short-circuits on an already-terminal request), so it fires once.
+  if (advancedStatus === 'completed') {
+    await notifySignatureCompleted(
+      db,
+      {
+        id: request.id,
+        firmId: request.firmId,
+        clientId: request.clientId,
+        engagementId: request.engagementId,
+        createdBy: request.createdBy,
+        title: request.title,
+      },
+      signers.map((s) => s.email),
+      deps.sendEmail,
+    ).catch(() => undefined);
   }
 
   return advancedStatus
