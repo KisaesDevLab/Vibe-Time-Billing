@@ -110,8 +110,15 @@ async function toOutlineNode(
 
 /** Extract section structure from already-loaded PDF bytes. */
 export async function parseSectionsFromPdf(bytes: Uint8Array): Promise<ParsedSections> {
+  // pdfjs 4.x rejects a Node Buffer outright ("provide binary data as
+  // `Uint8Array`, rather than `Buffer`"). Some callers hand us a Buffer
+  // (it's a Uint8Array subclass, but pdfjs checks the constructor), so
+  // normalize to a plain Uint8Array view before handing it over.
+  const data = Buffer.isBuffer(bytes)
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    : bytes;
   const doc = await getDocument({
-    data: bytes,
+    data,
     isEvalSupported: false,
     useSystemFonts: false,
     disableFontFace: true,

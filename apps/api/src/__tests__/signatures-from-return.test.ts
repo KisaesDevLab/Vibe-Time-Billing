@@ -24,7 +24,10 @@ import {
 import type { StorageClient } from '@vibe/storage';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { createSignaturePackageFromReturn } from '../tax-returns/signature-package';
+import {
+  createSignaturePackageFromReturn,
+  detectSignaturePagesForReturn,
+} from '../tax-returns/signature-package';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
@@ -314,5 +317,49 @@ describe('createSignaturePackageFromReturn', () => {
       adHocKeys: [],
     });
     expect(result).toEqual({ ok: false, code: 'empty_package' });
+  });
+
+  // Regression: storage hands back a Node Buffer, and pdfjs 4.x rejects a
+  // Buffer ("provide Uint8Array, rather than Buffer"). The detect path used
+  // to swallow that into noSource=true and silently surface nothing. The
+  // parse must succeed and parseFailed must stay false.
+  it('detects from a Buffer-backed source PDF without a parse failure', async () => {
+    const storage = memStorage();
+    const [folder] = await harness.db
+      .insert(clientFolders)
+      .values({ firmId: seed.firmId, clientId: seed.clientId, storagePath: 'Test Client Co' })
+      .returning({ id: clientFolders.id });
+    const sourceKey = 'Test Client Co/return.pdf';
+    storage.objects.set(sourceKey, await pdfOf(2)); // memStorage.get yields a Buffer stream
+    const [srcFile] = await harness.db
+      .insert(files)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        clientFolderId: folder!.id,
+        originalFilename: 'return.pdf',
+        storageKey: sourceKey,
+        sizeBytes: 1,
+      })
+      .returning({ id: files.id });
+    const [ret] = await harness.db
+      .insert(taxReturns)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        taxYear: 2024,
+        formCode: '1040',
+        title: 'Smith 2024 1040',
+        sourceFileId: srcFile!.id,
+        totalPages: 2,
+      })
+      .returning({ id: taxReturns.id });
+
+    const detect = await detectSignaturePagesForReturn(harness.db, storage, seed.firmId, ret!.id);
+    expect(detect).not.toBeNull();
+    // The bug manifested as a swallowed parse error → no source / no bookmarks.
+    expect(detect!.parseFailed).toBe(false);
+    expect(detect!.noSource).toBe(false);
+    expect(detect!.allBookmarks.length).toBeGreaterThan(0);
   });
 });

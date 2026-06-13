@@ -521,6 +521,7 @@ interface SignatureDetect {
   templates: DetectTemplate[];
   noRulesConfigured: boolean;
   noSource: boolean;
+  parseFailed: boolean;
 }
 
 // Default field layout for a manually-picked bookmark page (no rule matched).
@@ -900,6 +901,20 @@ function CollectSignaturesDialog({
           </p>
         ) : (
           <div style={{ marginTop: tokens.space.md, display: 'grid', gap: 16 }}>
+            {detect.parseFailed && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: tokens.color.danger,
+                  border: `1px solid ${tokens.color.danger}`,
+                  borderRadius: tokens.radius.sm,
+                  padding: 8,
+                }}
+              >
+                Couldn’t read this return’s PDF, so no pages or bookmarks could be detected. Check
+                that the source file opens, or pick pages manually / proceed with documents below.
+              </div>
+            )}
             {/* Detected signature pages */}
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
