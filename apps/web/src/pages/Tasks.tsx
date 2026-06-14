@@ -644,7 +644,13 @@ function TaskTable(props: {
                   t.status !== 'DONE' &&
                   t.status !== 'CANCELED';
                 return (
-                  <tr key={t.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                  <tr
+                    key={t.id}
+                    style={{
+                      borderTop: `1px solid ${tokens.color.border}`,
+                      background: priorityRowBg(t.priority),
+                    }}
+                  >
                     <td style={td()}>
                       <button
                         onClick={() => onEdit(t)}
@@ -1180,4 +1186,13 @@ function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
 
 function td(): React.CSSProperties {
   return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
+}
+
+// A light tint of the priority pill color for the whole row — only the
+// attention-grabbing tiers (Urgent → danger, High → warning) get one; others
+// stay on the default surface. color-mix keeps the tint readable in both themes.
+function priorityRowBg(priority: TaskPriority): string {
+  if (priority === 'URGENT') return `color-mix(in srgb, ${tokens.color.danger} 12%, transparent)`;
+  if (priority === 'HIGH') return `color-mix(in srgb, ${tokens.color.warning} 12%, transparent)`;
+  return 'transparent';
 }
