@@ -984,6 +984,7 @@ function TaskDialog({
     borderRadius: tokens.radius.md,
     fontSize: 13,
     width: '100%',
+    boxSizing: 'border-box',
   };
 
   return (

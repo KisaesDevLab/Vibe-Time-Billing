@@ -50,6 +50,8 @@ const fieldStyle: React.CSSProperties = {
   border: `1px solid ${tokens.color.border}`,
   borderRadius: tokens.radius.md,
   fontSize: 13,
+  width: '100%',
+  boxSizing: 'border-box',
 };
 
 export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX.Element {
