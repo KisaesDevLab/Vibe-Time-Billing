@@ -856,7 +856,10 @@ function KanbanBoard(props: {
                     }
                   }}
                   style={{
-                    background: tokens.color.surface,
+                    background:
+                      t.priority === 'URGENT' || t.priority === 'HIGH'
+                        ? priorityRowBg(t.priority)
+                        : tokens.color.surface,
                     border: `1px solid ${tokens.color.border}`,
                     borderRadius: tokens.radius.sm,
                     padding: 8,
