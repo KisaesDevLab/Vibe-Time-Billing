@@ -9,6 +9,8 @@ import { BillingCard } from './clients/BillingCard';
 import { ClientInfoCard } from './clients/ClientInfoCard';
 import { PeopleCard } from './clients/PeopleCard';
 import { TaxPaymentsCard } from './clients/TaxPaymentsCard';
+import { ClientCredentialsCard } from './clients/ClientCredentialsCard';
+import { usePermission } from '../auth-context';
 import { ClientMessagesCard } from './messaging/ClientMessagesCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
@@ -81,7 +83,8 @@ type Tab =
   | 'engagements'
   | 'appointments'
   | 'billing'
-  | 'tax';
+  | 'tax'
+  | 'credentials';
 
 interface StaffUser {
   id: string;
@@ -97,6 +100,7 @@ export function ClientDetailPage(): JSX.Element {
   const [showMerge, setShowMerge] = useState(false);
   const [allClients, setAllClients] = useState<ClientLite[]>([]);
   const [tab, setTab] = useState<Tab>('home');
+  const canViewCredentials = usePermission('client:credential:read');
   const [staff, setStaff] = useState<StaffUser[]>([]);
 
   useEffect(() => {
@@ -253,6 +257,7 @@ export function ClientDetailPage(): JSX.Element {
           { key: 'appointments', label: 'Appointments' },
           { key: 'billing', label: 'Billing' },
           { key: 'tax', label: 'Tax' },
+          ...(canViewCredentials ? [{ key: 'credentials', label: 'Credentials' }] : []),
         ]}
         active={tab}
         onChange={(k) => setTab(k as Tab)}
@@ -423,6 +428,10 @@ export function ClientDetailPage(): JSX.Element {
           <ClientTaxReturnsCard clientId={client.id} />
           <TaxPaymentsCard clientId={client.id} />
         </>
+      )}
+
+      {tab === 'credentials' && canViewCredentials && (
+        <ClientCredentialsCard clientId={client.id} />
       )}
     </div>
   );

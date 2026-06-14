@@ -27,6 +27,7 @@ import { asc, desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { createClientCredentialRouter } from '../vault/routes';
 import type { StorageAdapter } from '../files/storage';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -143,6 +144,13 @@ const TaxIdSchema = z.union([
 export function createClientRouter(deps: ClientRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // 0159 — per-client credential vault (encrypted at rest; reveal gated by
+  // step-up + audit). Mounted as a sub-router so :id resolves to the client.
+  router.use(
+    '/:id/credentials',
+    createClientCredentialRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }),
+  );
 
   router.get('/', requirePermission(deps, 'client:read'), async (req: Request, res: Response) => {
     const firmId = req.staffSession?.firmId;

@@ -2695,6 +2695,50 @@ export const clientNotes = pgTable(
   }),
 );
 
+// 0159 — per-client credential vault. Each credential carries a per-record
+// DEK (random key) wrapped by the firm MFK; the *_enc columns are encrypted
+// with that DEK (mirrors intake/messaging/calendar). Only title/category/hint
+// are plaintext (for list display without decrypting). Encryption-at-rest, not
+// E2EE — the firm (appliance) holds the key. Reveal is gated by RBAC +
+// step-up + audit; never store plaintext secrets here.
+export const clientCredentials = pgTable(
+  'client_credential',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    // irs | state | bank | payroll | software | other
+    category: text('category').notNull().default('other'),
+    hint: text('hint'), // plaintext preview, e.g. masked username — never the secret
+    wrappedDek: bytea('wrapped_dek').notNull(),
+    usernameEnc: bytea('username_enc'),
+    passwordEnc: bytea('password_enc'),
+    urlEnc: bytea('url_enc'),
+    notesEnc: bytea('notes_enc'),
+    status: text('status').notNull().default('ACTIVE'), // ACTIVE | ARCHIVED
+    lastRevealedAt: timestamp('last_revealed_at', { withTimezone: true }),
+    lastRevealedBy: uuid('last_revealed_by').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    createdBy: uuid('created_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmIdx: index('client_credential_firm_idx').on(t.firmId),
+    clientIdx: index('client_credential_client_idx').on(t.clientId, t.status, t.createdAt),
+    statusCk: check(
+      'client_credential_status_ck',
+      sql`${t.status} IN ('ACTIVE', 'ARCHIVED')`,
+    ),
+  }),
+);
+
 export const engagementNotes = pgTable(
   'engagement_note',
   {

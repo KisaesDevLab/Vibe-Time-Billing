@@ -27,6 +27,12 @@ export const PERMISSION_KEYS = [
   'client:archive',
   'client:portal-access:manage',
 
+  // Client credential vault (0159) — read includes revealing a secret
+  // (gated additionally by a fresh step-up + audit at the route).
+  'client:credential:read',
+  'client:credential:write',
+  'client:credential:delete',
+
   // Engagements
   'engagement:read',
   'engagement:write',
@@ -191,6 +197,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'client:write',
     'client:archive',
     'client:portal-access:manage',
+    'client:credential:read',
+    'client:credential:write',
+    'client:credential:delete',
     'engagement:read',
     'engagement:write',
     'engagement:archive',
@@ -260,6 +269,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'taxonomy:read',
     'client:read',
     'client:write',
+    'client:credential:read',
+    'client:credential:write',
+    'client:credential:delete',
     'engagement:read',
     'engagement:write',
     'rate:read',
