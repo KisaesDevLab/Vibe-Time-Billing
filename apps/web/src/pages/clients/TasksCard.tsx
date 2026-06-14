@@ -64,6 +64,15 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState({
+    title: '',
+    description: '',
+    priority: 'MEDIUM' as Priority,
+    status: 'OPEN' as Status,
+    dueDate: '',
+    assigneeUserId: '',
+  });
 
   async function load(): Promise<void> {
     try {
@@ -99,6 +108,44 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'add_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit(t: Task): void {
+    setEditingId(t.id);
+    setEditDraft({
+      title: t.title,
+      description: t.description ?? '',
+      priority: t.priority,
+      status: t.status,
+      dueDate: t.dueDate ?? '',
+      assigneeUserId: t.assigneeUserId ?? '',
+    });
+    setError(null);
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (!editingId || !editDraft.title.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/clients/${clientId}/tasks/${editingId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: editDraft.title.trim(),
+          description: editDraft.description.trim() || null,
+          priority: editDraft.priority,
+          status: editDraft.status,
+          dueDate: editDraft.dueDate || null,
+          assigneeUserId: editDraft.assigneeUserId || null,
+        }),
+      });
+      setEditingId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'update_failed');
     } finally {
       setBusy(false);
     }
@@ -224,6 +271,93 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
         <div style={{ display: 'grid', gap: 6 }}>
           {visible.map((t) => {
             const assignee = users.find((u) => u.id === t.assigneeUserId)?.fullName;
+            if (editingId === t.id) {
+              return (
+                <div
+                  key={t.id}
+                  style={{
+                    display: 'grid',
+                    gap: 8,
+                    padding: 12,
+                    border: `1px solid ${tokens.color.accent}`,
+                    borderRadius: tokens.radius.md,
+                  }}
+                >
+                  <input
+                    value={editDraft.title}
+                    onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })}
+                    placeholder="Task title *"
+                    style={fieldStyle}
+                  />
+                  <textarea
+                    value={editDraft.description}
+                    onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
+                    placeholder="Description (optional)"
+                    rows={2}
+                    style={{ ...fieldStyle, resize: 'vertical' }}
+                  />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <Combobox
+                      ariaLabel="Priority"
+                      value={editDraft.priority}
+                      onChange={(val) => setEditDraft({ ...editDraft, priority: val as Priority })}
+                      options={[
+                        { value: 'LOW', label: 'Low' },
+                        { value: 'MEDIUM', label: 'Medium' },
+                        { value: 'HIGH', label: 'High' },
+                        { value: 'URGENT', label: 'Urgent' },
+                      ]}
+                    />
+                    <Combobox
+                      ariaLabel="Status"
+                      value={editDraft.status}
+                      onChange={(val) => setEditDraft({ ...editDraft, status: val as Status })}
+                      options={[
+                        { value: 'OPEN', label: 'Open' },
+                        { value: 'IN_PROGRESS', label: 'In progress' },
+                        { value: 'BLOCKED', label: 'Blocked' },
+                        { value: 'DONE', label: 'Done' },
+                        { value: 'CANCELED', label: 'Canceled' },
+                      ]}
+                    />
+                    <input
+                      type="date"
+                      value={editDraft.dueDate}
+                      onChange={(e) => setEditDraft({ ...editDraft, dueDate: e.target.value })}
+                      style={fieldStyle}
+                    />
+                    <Combobox
+                      ariaLabel="Assignee"
+                      clearable
+                      value={editDraft.assigneeUserId}
+                      onChange={(val) => setEditDraft({ ...editDraft, assigneeUserId: val })}
+                      options={users.map<ComboboxOption>((u) => ({
+                        value: u.id,
+                        label: u.fullName,
+                      }))}
+                      placeholder="Assignee…"
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button
+                      size="sm"
+                      onClick={() => void saveEdit()}
+                      disabled={busy || !editDraft.title.trim()}
+                    >
+                      Save changes
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditingId(null)}
+                      disabled={busy}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div
                 key={t.id}
@@ -268,6 +402,16 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
                         disabled={busy}
                       >
                         Start
+                      </Button>
+                    )}
+                    {!compact && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => startEdit(t)}
+                        disabled={busy}
+                      >
+                        Edit
                       </Button>
                     )}
                     {!compact && (
