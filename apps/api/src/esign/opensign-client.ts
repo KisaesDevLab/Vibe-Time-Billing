@@ -189,6 +189,30 @@ export function createOpenSignClient(opts: OpenSignClientOptions): OpenSignClien
     return { url: upload.url };
   }
 
+  // OpenSign's savecontact rejects a duplicate email ("Contact already
+  // exists.") rather than reusing it, so a signer's SECOND document would fail.
+  // Look the existing contact up and reuse its id (idempotent).
+  async function findContactByEmail(email: string): Promise<string | null> {
+    const s = await ensureSession();
+    const where = encodeURIComponent(JSON.stringify({ Email: email }));
+    try {
+      const res = await fetchImpl(`${base}/classes/contracts_Contactbook?where=${where}&limit=1`, {
+        method: 'GET',
+        headers: {
+          'X-Parse-Application-Id': opts.appId,
+          'X-Parse-Session-Token': s.sessionToken,
+        },
+      });
+      if (!res.ok) return null;
+      const json = (await res.json().catch(() => ({}))) as {
+        results?: Array<{ objectId?: string }>;
+      };
+      return json.results?.[0]?.objectId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async function saveContact(input: {
     name: string;
     email: string;
@@ -196,9 +220,17 @@ export function createOpenSignClient(opts: OpenSignClientOptions): OpenSignClien
   }): Promise<{ objectId: string }> {
     const params: Record<string, unknown> = { name: input.name, email: input.email };
     if (input.phone) params['phone'] = input.phone;
-    const contact = (await callFn('savecontact', params, 'session')) as { objectId?: string };
-    if (!contact?.objectId) throw new Error('opensign_savecontact_failed: no objectId');
-    return { objectId: contact.objectId };
+    try {
+      const contact = (await callFn('savecontact', params, 'session')) as { objectId?: string };
+      if (contact?.objectId) return { objectId: contact.objectId };
+      throw new Error('opensign_savecontact_failed: no objectId');
+    } catch (err) {
+      if (/already exists/i.test(String(err))) {
+        const existing = await findContactByEmail(input.email);
+        if (existing) return { objectId: existing };
+      }
+      throw err;
+    }
   }
 
   async function getDocument(docId: string): Promise<ParseDoc> {

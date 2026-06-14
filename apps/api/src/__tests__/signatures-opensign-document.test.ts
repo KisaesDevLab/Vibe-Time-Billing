@@ -123,6 +123,59 @@ describe('createSignatureDocument (phase 2)', () => {
     expect(placeholders[1]!.placeHolder[0]!.pos).toHaveLength(1);
   });
 
+  it('reuses an existing OpenSign contact when savecontact reports a duplicate', async () => {
+    const fetchImpl = (async (url: string) => {
+      const u = String(url);
+      if (u.includes('/functions/loginuser'))
+        return new Response(JSON.stringify({ result: { sessionToken: 'r:s', objectId: 'u1' } }));
+      if (u.includes('/functions/getUserDetails'))
+        return new Response(JSON.stringify({ result: { objectId: 'ext1' } }));
+      if (u.includes('/functions/savecontact'))
+        return new Response(JSON.stringify({ result: { error: 'Contact already exists.' } }));
+      if (u.includes('/classes/contracts_Contactbook'))
+        return new Response(JSON.stringify({ results: [{ objectId: 'existing_c1' }] }));
+      return new Response(JSON.stringify({ result: {} }));
+    }) as unknown as typeof fetch;
+    const c = createOpenSignClient({
+      baseUrl: 'http://opensign:8080/app',
+      appId: 'opensign',
+      masterKey: 'mk',
+      publicUrl: 'https://os.example',
+      apiEmail: 'api@firm.example',
+      apiPassword: 'pw',
+      fetchImpl,
+    });
+    await c.ensureSession();
+    const r = await c.saveContact({ name: 'Dave Allen', email: 'dave@x.example' });
+    expect(r.objectId).toBe('existing_c1');
+  });
+
+  it('still throws when savecontact fails for a non-duplicate reason', async () => {
+    const fetchImpl = (async (url: string) => {
+      const u = String(url);
+      if (u.includes('/functions/loginuser'))
+        return new Response(JSON.stringify({ result: { sessionToken: 'r:s', objectId: 'u1' } }));
+      if (u.includes('/functions/getUserDetails'))
+        return new Response(JSON.stringify({ result: { objectId: 'ext1' } }));
+      if (u.includes('/functions/savecontact'))
+        return new Response(JSON.stringify({ result: { error: 'boom' } }));
+      return new Response(JSON.stringify({ result: {} }));
+    }) as unknown as typeof fetch;
+    const c = createOpenSignClient({
+      baseUrl: 'http://opensign:8080/app',
+      appId: 'opensign',
+      masterKey: 'mk',
+      publicUrl: 'https://os.example',
+      apiEmail: 'api@firm.example',
+      apiPassword: 'pw',
+      fetchImpl,
+    });
+    await c.ensureSession();
+    await expect(c.saveContact({ name: 'x', email: 'x@x.example' })).rejects.toThrow(
+      /savecontact_failed/,
+    );
+  });
+
   it('rejects an empty signer list', async () => {
     const captured: Captured = {};
     await expect(
