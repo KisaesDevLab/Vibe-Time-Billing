@@ -1,16 +1,31 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
 // SPDX-License-Identifier: Elastic-2.0
 //
-// Top-level "Tasks" view. Lists tasks across all clients with a My/All
-// toggle plus status / priority / client / overdue filters and search, and
-// lets staff create a task directly (picking the client via a typeahead).
-// The per-client task UI still lives on the client detail page (TasksCard);
-// both read/write the same client_task table.
+// Top-level "Tasks" view. Two presentations over the same firm-wide task set:
+//   - Table: per-column filter/sort (the shared @vibe/ui ColumnFilter, like
+//     the Tax tables) + a title search, with inline edit.
+//   - Kanban: one column per status; drag a card to another column to change
+//     its status.
+// A My/All scope toggle + "show done/canceled" bound the server fetch; the
+// per-column filters + sort run client-side for instant response and persist
+// for the browser session. The per-client task UI still lives on the client
+// detail page (TasksCard); both read/write the same client_task table.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, Combobox, Input, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  ColumnFilter,
+  Combobox,
+  EmptyState,
+  Pill,
+  Tabs,
+  tokens,
+  type ComboboxOption,
+  type SortDir,
+} from '@vibe/ui';
 
 import { api } from '../api-client';
 import {
@@ -45,41 +60,96 @@ interface ClientHit {
   name: string;
 }
 
-const PRIORITY_OPTS: ComboboxOption[] = [
-  { value: '', label: 'Any priority' },
+const PRIORITY_VALUES = [
   { value: 'URGENT', label: 'Urgent' },
   { value: 'HIGH', label: 'High' },
   { value: 'MEDIUM', label: 'Medium' },
   { value: 'LOW', label: 'Low' },
 ];
+const PRIORITY_RANK: Record<TaskPriority, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+
+const STATUS_COLUMNS: Array<{ value: TaskStatus; label: string }> = [
+  { value: 'OPEN', label: 'Open' },
+  { value: 'IN_PROGRESS', label: 'In progress' },
+  { value: 'BLOCKED', label: 'Blocked' },
+  { value: 'DONE', label: 'Done' },
+  { value: 'CANCELED', label: 'Canceled' },
+];
+const STATUS_VALUES = STATUS_COLUMNS.map((s) => ({ value: s.value, label: s.label }));
+
+type SortCol = 'title' | 'client' | 'assignee' | 'priority' | 'status' | 'due';
+
+const STORAGE_KEY = 'vibe.tasks.view';
+
+interface PersistedView {
+  view: 'table' | 'kanban';
+  scope: 'mine' | 'all';
+  includeClosed: boolean;
+  sortCol: SortCol | '';
+  sortDir: SortDir;
+  client: string[];
+  assignee: string[];
+  priority: string[];
+  status: string[];
+}
+
+const DEFAULT_VIEW: PersistedView = {
+  view: 'table',
+  scope: 'mine',
+  includeClosed: false,
+  sortCol: 'due',
+  sortDir: 'asc',
+  client: [],
+  assignee: [],
+  priority: [],
+  status: [],
+};
+
+function loadView(): PersistedView {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_VIEW;
+    return { ...DEFAULT_VIEW, ...(JSON.parse(raw) as Partial<PersistedView>) };
+  } catch {
+    return DEFAULT_VIEW;
+  }
+}
 
 function todayIso(): string {
-  // Local date, YYYY-MM-DD — matches the server's CURRENT_DATE comparison
-  // closely enough for the overdue highlight.
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
+const UNASSIGNED = '__unassigned__';
+
 export function TasksPage(): JSX.Element {
   const navigate = useNavigate();
+  const initial = useMemo(() => loadView(), []);
+
   const [rows, setRows] = useState<TaskRow[]>([]);
-  const [total, setTotal] = useState(0);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // Filters
-  const [scope, setScope] = useState<'mine' | 'all'>('mine');
-  const [assigneeId, setAssigneeId] = useState('');
-  const [priority, setPriority] = useState('');
-  const [includeClosed, setIncludeClosed] = useState(false);
-  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [view, setView] = useState<'table' | 'kanban'>(initial.view);
+  const [scope, setScope] = useState<'mine' | 'all'>(initial.scope);
+  const [includeClosed, setIncludeClosed] = useState(initial.includeClosed);
   const [q, setQ] = useState('');
 
-  const [createOpen, setCreateOpen] = useState(false);
+  const [sortBy, setSortBy] = useState<{ col: SortCol | ''; dir: SortDir }>({
+    col: initial.sortCol,
+    dir: initial.sortDir,
+  });
+  const [clientFilter, setClientFilter] = useState<Set<string>>(new Set(initial.client));
+  const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set(initial.assignee));
+  const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set(initial.priority));
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(initial.status));
+
+  // dialog: undefined = closed; null = create; TaskRow = edit
+  const [dialog, setDialog] = useState<TaskRow | null | undefined>(undefined);
 
   const today = useMemo(() => todayIso(), []);
 
@@ -89,17 +159,13 @@ export function TasksPage(): JSX.Element {
     try {
       const params = new URLSearchParams();
       params.set('scope', scope);
-      if (assigneeId) params.set('assigneeId', assigneeId);
-      if (priority) params.set('priority', priority);
-      if (includeClosed) params.set('includeClosed', '1');
-      if (overdueOnly) params.set('overdue', '1');
+      // Load all statuses so client-side status filter + kanban columns work;
+      // gate done/canceled behind the toggle to keep the set bounded.
+      params.set('status', includeClosed ? 'ALL' : 'OPEN,IN_PROGRESS,BLOCKED');
       if (q.trim()) params.set('q', q.trim());
       params.set('pageSize', '200');
-      const r = await api<{ items: TaskRow[]; total: number }>(
-        `/api/staff/tasks?${params.toString()}`,
-      );
+      const r = await api<{ items: TaskRow[] }>(`/api/staff/tasks?${params.toString()}`);
       setRows(r.items ?? []);
-      setTotal(r.total ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
     } finally {
@@ -116,15 +182,46 @@ export function TasksPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, assigneeId, priority, includeClosed, overdueOnly]);
+  }, [scope, includeClosed]);
 
-  async function setStatus(id: string, status: TaskStatus): Promise<void> {
-    setBusyId(id);
+  useEffect(() => {
+    const v: PersistedView = {
+      view,
+      scope,
+      includeClosed,
+      sortCol: sortBy.col,
+      sortDir: sortBy.dir,
+      client: [...clientFilter],
+      assignee: [...assigneeFilter],
+      priority: [...priorityFilter],
+      status: [...statusFilter],
+    };
     try {
-      await api(`/api/staff/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(v));
+    } catch {
+      /* private mode — in-memory only */
+    }
+  }, [
+    view,
+    scope,
+    includeClosed,
+    sortBy,
+    clientFilter,
+    assigneeFilter,
+    priorityFilter,
+    statusFilter,
+  ]);
+
+  async function patch(id: string, body: Record<string, unknown>): Promise<void> {
+    setBusyId(id);
+    // Optimistic update for snappy drag/drop + quick actions.
+    setRows((prev) => prev.map((t) => (t.id === id ? { ...t, ...(body as Partial<TaskRow>) } : t)));
+    try {
+      await api(`/api/staff/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'update_failed');
+      await load();
     } finally {
       setBusyId(null);
     }
@@ -143,93 +240,167 @@ export function TasksPage(): JSX.Element {
     }
   }
 
-  const assigneeOpts: ComboboxOption[] = [
-    { value: '', label: scope === 'mine' ? 'Me' : 'Anyone' },
-    ...users.map((u) => ({ value: u.id, label: u.fullName })),
-  ];
+  // Distinct filter value lists from the loaded rows.
+  const clientValues = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of rows) if (r.clientId) m.set(r.clientId, r.clientName ?? r.clientId);
+    return [...m.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [rows]);
+  const assigneeValues = useMemo(() => {
+    const m = new Map<string, string>();
+    let anyUnassigned = false;
+    for (const r of rows) {
+      if (r.assigneeUserId) m.set(r.assigneeUserId, r.assigneeName ?? r.assigneeUserId);
+      else anyUnassigned = true;
+    }
+    const out = [...m.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    if (anyUnassigned) out.push({ value: UNASSIGNED, label: 'Unassigned' });
+    return out;
+  }, [rows]);
+
+  // Shared client-side filter (everything except status — kanban columns ARE
+  // the status, so the board ignores the status filter).
+  function passesNonStatus(t: TaskRow): boolean {
+    if (clientFilter.size > 0 && !clientFilter.has(t.clientId)) return false;
+    if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assigneeUserId ?? UNASSIGNED))
+      return false;
+    if (priorityFilter.size > 0 && !priorityFilter.has(t.priority)) return false;
+    return true;
+  }
+
+  const tableRows = useMemo(() => {
+    let r = rows.filter(
+      (t) => passesNonStatus(t) && (statusFilter.size === 0 || statusFilter.has(t.status)),
+    );
+    if (sortBy.col && sortBy.dir) {
+      const sign = sortBy.dir === 'asc' ? 1 : -1;
+      const col = sortBy.col;
+      r = [...r].sort((a, b) => {
+        let cmp = 0;
+        switch (col) {
+          case 'title':
+            cmp = a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+            break;
+          case 'client':
+            cmp = (a.clientName ?? '')
+              .toLowerCase()
+              .localeCompare((b.clientName ?? '').toLowerCase());
+            break;
+          case 'assignee':
+            cmp = (a.assigneeName ?? '')
+              .toLowerCase()
+              .localeCompare((b.assigneeName ?? '').toLowerCase());
+            break;
+          case 'priority':
+            cmp = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+            break;
+          case 'status':
+            cmp = a.status.localeCompare(b.status);
+            break;
+          case 'due':
+            cmp = (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999');
+            break;
+        }
+        if (cmp !== 0) return cmp * sign;
+        return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+      });
+    }
+    return r;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, clientFilter, assigneeFilter, priorityFilter, statusFilter, sortBy]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const kanbanRows = useMemo(
+    () => rows.filter(passesNonStatus),
+    [rows, clientFilter, assigneeFilter, priorityFilter],
+  );
+
+  const sortFor = (c: SortCol): SortDir => (sortBy.col === c ? sortBy.dir : null);
+  const filtersActive =
+    clientFilter.size + assigneeFilter.size + priorityFilter.size + statusFilter.size > 0 ||
+    q.trim().length > 0;
+
+  function clearFilters(): void {
+    setClientFilter(new Set());
+    setAssigneeFilter(new Set());
+    setPriorityFilter(new Set());
+    setStatusFilter(new Set());
+    setQ('');
+    void load();
+  }
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
-      <Card title="Tasks" action={<Button onClick={() => setCreateOpen(true)}>+ New task</Button>}>
+      <Card title="Tasks" action={<Button onClick={() => setDialog(null)}>+ New task</Button>}>
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
             {error}
           </p>
         )}
 
-        {/* Scope toggle */}
-        <div style={{ display: 'inline-flex', gap: 4, marginBottom: 12 }}>
-          {(['mine', 'all'] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => {
-                setScope(s);
-                setAssigneeId('');
-              }}
-              style={{
-                padding: '6px 14px',
-                fontSize: 13,
-                cursor: 'pointer',
-                border: `1px solid ${scope === s ? tokens.color.accent : tokens.color.border}`,
-                background: scope === s ? tokens.color.accent : 'transparent',
-                color: scope === s ? '#fff' : tokens.color.text,
-                borderRadius: tokens.radius.md,
-              }}
-            >
-              {s === 'mine' ? 'My tasks' : 'All tasks'}
-            </button>
-          ))}
-        </div>
-
-        {/* Filter bar */}
         <div
           style={{
             display: 'flex',
             gap: 12,
             flexWrap: 'wrap',
-            alignItems: 'end',
+            alignItems: 'center',
             marginBottom: 12,
           }}
         >
-          <div style={{ minWidth: 200, flex: 1 }}>
-            <Input
-              label="Search"
+          <Tabs
+            tabs={[
+              { key: 'table', label: 'Table' },
+              { key: 'kanban', label: 'Kanban' },
+            ]}
+            active={view}
+            onChange={(k) => setView(k as 'table' | 'kanban')}
+          />
+          <div style={{ display: 'inline-flex', gap: 4 }}>
+            {(['mine', 'all'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setScope(s)}
+                style={{
+                  padding: '6px 14px',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  border: `1px solid ${scope === s ? tokens.color.accent : tokens.color.border}`,
+                  background: scope === s ? tokens.color.accent : 'transparent',
+                  color: scope === s ? '#fff' : tokens.color.text,
+                  borderRadius: tokens.radius.md,
+                }}
+              >
+                {s === 'mine' ? 'My tasks' : 'All tasks'}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1, minWidth: 180, display: 'flex', gap: 6 }}>
+            <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void load();
               }}
               placeholder="Search title…"
+              aria-label="Search tasks"
+              style={{
+                flex: 1,
+                padding: '6px 10px',
+                background: tokens.color.surface,
+                color: tokens.color.text,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                fontSize: 13,
+              }}
             />
+            <Button size="sm" variant="secondary" onClick={() => void load()}>
+              Search
+            </Button>
           </div>
-          {scope === 'all' && (
-            <div style={{ minWidth: 180 }}>
-              <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Assignee</label>
-              <Combobox
-                ariaLabel="Assignee"
-                value={assigneeId}
-                onChange={setAssigneeId}
-                options={assigneeOpts}
-              />
-            </div>
-          )}
-          <div style={{ minWidth: 150 }}>
-            <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Priority</label>
-            <Combobox
-              ariaLabel="Priority"
-              value={priority}
-              onChange={setPriority}
-              options={PRIORITY_OPTS}
-            />
-          </div>
-          <label style={{ display: 'flex', gap: 6, fontSize: 13, alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              checked={overdueOnly}
-              onChange={(e) => setOverdueOnly(e.target.checked)}
-            />
-            Overdue only
-          </label>
           <label style={{ display: 'flex', gap: 6, fontSize: 13, alignItems: 'center' }}>
             <input
               type="checkbox"
@@ -238,152 +409,65 @@ export function TasksPage(): JSX.Element {
             />
             Show done / canceled
           </label>
+          {filtersActive && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          )}
         </div>
 
         {loading ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>
+        ) : view === 'table' ? (
+          <TaskTable
+            rows={tableRows}
+            total={rows.length}
+            today={today}
+            busyId={busyId}
+            clientValues={clientValues}
+            assigneeValues={assigneeValues}
+            clientFilter={clientFilter}
+            assigneeFilter={assigneeFilter}
+            priorityFilter={priorityFilter}
+            statusFilter={statusFilter}
+            setClientFilter={setClientFilter}
+            setAssigneeFilter={setAssigneeFilter}
+            setPriorityFilter={setPriorityFilter}
+            setStatusFilter={setStatusFilter}
+            sortFor={sortFor}
+            setSortBy={setSortBy}
+            onOpenClient={(id) => navigate(`/clients/${id}`)}
+            onEdit={(t) => setDialog(t)}
+            onSetStatus={(id, status) => void patch(id, { status })}
+            onRemove={(id) => void remove(id)}
+          />
         ) : (
-          <>
-            <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 6 }}>
-              {total} task{total === 1 ? '' : 's'}
-            </div>
-            <Table<TaskRow>
-              rows={rows}
-              rowKey={(t) => t.id}
-              empty={
-                <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
-                  No tasks match these filters.
-                </span>
-              }
-              columns={[
-                {
-                  key: 'title',
-                  header: 'Task',
-                  render: (t) => (
-                    <div style={{ display: 'grid', gap: 2 }}>
-                      <strong style={{ fontSize: 13 }}>{t.title}</strong>
-                      {t.description && (
-                        <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                          {t.description.length > 80
-                            ? `${t.description.slice(0, 80)}…`
-                            : t.description}
-                        </span>
-                      )}
-                    </div>
-                  ),
-                },
-                {
-                  key: 'client',
-                  header: 'Client',
-                  render: (t) => (
-                    <button
-                      onClick={() => navigate(`/clients/${t.clientId}`)}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: tokens.color.accent,
-                        cursor: 'pointer',
-                        fontSize: 13,
-                        padding: 0,
-                        textAlign: 'left',
-                      }}
-                    >
-                      {t.clientName ?? '—'}
-                    </button>
-                  ),
-                },
-                {
-                  key: 'assignee',
-                  header: 'Assignee',
-                  render: (t) => (
-                    <span style={{ fontSize: 13 }}>{t.assigneeName ?? 'Unassigned'}</span>
-                  ),
-                },
-                {
-                  key: 'priority',
-                  header: 'Priority',
-                  render: (t) => <Pill tone={PRIORITY_TONE[t.priority]}>{t.priority}</Pill>,
-                },
-                {
-                  key: 'status',
-                  header: 'Status',
-                  render: (t) => (
-                    <Pill tone={STATUS_TONE[t.status]}>{t.status.replace('_', ' ')}</Pill>
-                  ),
-                },
-                {
-                  key: 'due',
-                  header: 'Due',
-                  render: (t) =>
-                    t.dueDate ? (
-                      <span
-                        style={{
-                          fontSize: 12,
-                          color:
-                            t.dueDate < today && t.status !== 'DONE' && t.status !== 'CANCELED'
-                              ? tokens.color.danger
-                              : tokens.color.textMuted,
-                          fontWeight:
-                            t.dueDate < today && t.status !== 'DONE' && t.status !== 'CANCELED'
-                              ? 600
-                              : 400,
-                        }}
-                      >
-                        {t.dueDate}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 12, color: tokens.color.textMuted }}>—</span>
-                    ),
-                },
-                {
-                  key: 'actions',
-                  header: '',
-                  align: 'right',
-                  render: (t) => (
-                    <span style={{ display: 'inline-flex', gap: 4 }}>
-                      {t.status === 'OPEN' && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={busyId === t.id}
-                          onClick={() => void setStatus(t.id, 'IN_PROGRESS')}
-                        >
-                          Start
-                        </Button>
-                      )}
-                      {t.status !== 'DONE' && t.status !== 'CANCELED' && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={busyId === t.id}
-                          onClick={() => void setStatus(t.id, 'DONE')}
-                        >
-                          Done
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busyId === t.id}
-                        onClick={() => void remove(t.id)}
-                      >
-                        Remove
-                      </Button>
-                    </span>
-                  ),
-                },
-              ]}
-            />
-          </>
+          <KanbanBoard
+            rows={kanbanRows}
+            today={today}
+            onEdit={(t) => setDialog(t)}
+            onMove={(id, status) => void patch(id, { status })}
+          />
         )}
       </Card>
 
-      {createOpen && (
-        <NewTaskDialog
+      {dialog !== undefined && (
+        <TaskDialog
           users={users}
-          onClose={() => setCreateOpen(false)}
-          onCreated={() => {
-            setCreateOpen(false);
+          task={dialog}
+          onClose={() => setDialog(undefined)}
+          onSaved={() => {
+            setDialog(undefined);
             void load();
           }}
         />
@@ -392,30 +476,441 @@ export function TasksPage(): JSX.Element {
   );
 }
 
-function NewTaskDialog({
+// ---------------------------------------------------------------------------
+// Table view
+// ---------------------------------------------------------------------------
+
+function TaskTable(props: {
+  rows: TaskRow[];
+  total: number;
+  today: string;
+  busyId: string | null;
+  clientValues: Array<{ value: string; label: string }>;
+  assigneeValues: Array<{ value: string; label: string }>;
+  clientFilter: Set<string>;
+  assigneeFilter: Set<string>;
+  priorityFilter: Set<string>;
+  statusFilter: Set<string>;
+  setClientFilter: (s: Set<string>) => void;
+  setAssigneeFilter: (s: Set<string>) => void;
+  setPriorityFilter: (s: Set<string>) => void;
+  setStatusFilter: (s: Set<string>) => void;
+  sortFor: (c: SortCol) => SortDir;
+  setSortBy: (s: { col: SortCol; dir: SortDir }) => void;
+  onOpenClient: (id: string) => void;
+  onEdit: (t: TaskRow) => void;
+  onSetStatus: (id: string, status: TaskStatus) => void;
+  onRemove: (id: string) => void;
+}): JSX.Element {
+  const {
+    rows,
+    total,
+    today,
+    busyId,
+    clientValues,
+    assigneeValues,
+    clientFilter,
+    assigneeFilter,
+    priorityFilter,
+    statusFilter,
+    setClientFilter,
+    setAssigneeFilter,
+    setPriorityFilter,
+    setStatusFilter,
+    sortFor,
+    setSortBy,
+    onOpenClient,
+    onEdit,
+    onSetStatus,
+    onRemove,
+  } = props;
+
+  if (total === 0) {
+    return (
+      <EmptyState title="No tasks" body="Create a task or adjust the scope / filters above." />
+    );
+  }
+
+  return (
+    <>
+      <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 6 }}>
+        {rows.length === total ? `${total} tasks` : `${rows.length} of ${total}`}
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table
+          style={{
+            width: '100%',
+            borderCollapse: 'collapse',
+            fontSize: 13,
+            fontFamily: tokens.font.body,
+          }}
+        >
+          <thead>
+            <tr style={{ background: tokens.color.surface }}>
+              <th style={th()}>
+                Task{' '}
+                <ColumnFilter
+                  ariaLabel="Sort by task"
+                  values={[]}
+                  selected={new Set()}
+                  searchable={false}
+                  sort={sortFor('title')}
+                  onApply={(_, dir) => dir && setSortBy({ col: 'title', dir })}
+                />
+              </th>
+              <th style={th()}>
+                Client{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort client"
+                  values={clientValues}
+                  selected={clientFilter}
+                  sort={sortFor('client')}
+                  onApply={(sel, dir) => {
+                    setClientFilter(sel);
+                    if (dir) setSortBy({ col: 'client', dir });
+                  }}
+                />
+              </th>
+              <th style={th()}>
+                Assignee{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort assignee"
+                  values={assigneeValues}
+                  selected={assigneeFilter}
+                  sort={sortFor('assignee')}
+                  onApply={(sel, dir) => {
+                    setAssigneeFilter(sel);
+                    if (dir) setSortBy({ col: 'assignee', dir });
+                  }}
+                />
+              </th>
+              <th style={th()}>
+                Priority{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort priority"
+                  values={PRIORITY_VALUES}
+                  selected={priorityFilter}
+                  searchable={false}
+                  sort={sortFor('priority')}
+                  onApply={(sel, dir) => {
+                    setPriorityFilter(sel);
+                    if (dir) setSortBy({ col: 'priority', dir });
+                  }}
+                />
+              </th>
+              <th style={th()}>
+                Status{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort status"
+                  values={STATUS_VALUES}
+                  selected={statusFilter}
+                  searchable={false}
+                  sort={sortFor('status')}
+                  onApply={(sel, dir) => {
+                    setStatusFilter(sel);
+                    if (dir) setSortBy({ col: 'status', dir });
+                  }}
+                />
+              </th>
+              <th style={th()}>
+                Due{' '}
+                <ColumnFilter
+                  ariaLabel="Sort by due date"
+                  values={[]}
+                  selected={new Set()}
+                  searchable={false}
+                  sort={sortFor('due')}
+                  onApply={(_, dir) => dir && setSortBy({ col: 'due', dir })}
+                />
+              </th>
+              <th style={th('right')}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={7}
+                  style={{ textAlign: 'center', padding: 32, color: tokens.color.textMuted }}
+                >
+                  No tasks match these filters.
+                </td>
+              </tr>
+            ) : (
+              rows.map((t) => {
+                const overdue =
+                  t.dueDate != null &&
+                  t.dueDate < today &&
+                  t.status !== 'DONE' &&
+                  t.status !== 'CANCELED';
+                return (
+                  <tr key={t.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                    <td style={td()}>
+                      <button
+                        onClick={() => onEdit(t)}
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          padding: 0,
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <strong style={{ fontSize: 13, color: tokens.color.accent }}>
+                          {t.title}
+                        </strong>
+                        {t.description && (
+                          <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                            {t.description.length > 80
+                              ? `${t.description.slice(0, 80)}…`
+                              : t.description}
+                          </div>
+                        )}
+                      </button>
+                    </td>
+                    <td style={td()}>
+                      <button
+                        onClick={() => onOpenClient(t.clientId)}
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          color: tokens.color.accent,
+                          cursor: 'pointer',
+                          fontSize: 13,
+                          padding: 0,
+                        }}
+                      >
+                        {t.clientName ?? '—'}
+                      </button>
+                    </td>
+                    <td style={td()}>{t.assigneeName ?? 'Unassigned'}</td>
+                    <td style={td()}>
+                      <Pill tone={PRIORITY_TONE[t.priority]}>{t.priority}</Pill>
+                    </td>
+                    <td style={td()}>
+                      <Pill tone={STATUS_TONE[t.status]}>{t.status.replace('_', ' ')}</Pill>
+                    </td>
+                    <td style={td()}>
+                      {t.dueDate ? (
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: overdue ? tokens.color.danger : tokens.color.textMuted,
+                            fontWeight: overdue ? 600 : 400,
+                          }}
+                        >
+                          {t.dueDate}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 12, color: tokens.color.textMuted }}>—</span>
+                      )}
+                    </td>
+                    <td style={{ ...td(), textAlign: 'right' }}>
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        <Button size="sm" variant="ghost" onClick={() => onEdit(t)}>
+                          Edit
+                        </Button>
+                        {t.status !== 'DONE' && t.status !== 'CANCELED' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busyId === t.id}
+                            onClick={() => onSetStatus(t.id, 'DONE')}
+                          >
+                            Done
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busyId === t.id}
+                          onClick={() => onRemove(t.id)}
+                        >
+                          Remove
+                        </Button>
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Kanban view
+// ---------------------------------------------------------------------------
+
+function KanbanBoard(props: {
+  rows: TaskRow[];
+  today: string;
+  onEdit: (t: TaskRow) => void;
+  onMove: (id: string, status: TaskStatus) => void;
+}): JSX.Element {
+  const { rows, today, onEdit, onMove } = props;
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overCol, setOverCol] = useState<TaskStatus | null>(null);
+
+  const byStatus = useMemo(() => {
+    const m = new Map<TaskStatus, TaskRow[]>();
+    for (const c of STATUS_COLUMNS) m.set(c.value, []);
+    for (const t of rows) m.get(t.status)?.push(t);
+    return m;
+  }, [rows]);
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 12,
+        overflowX: 'auto',
+        alignItems: 'flex-start',
+        paddingBottom: 8,
+      }}
+    >
+      {STATUS_COLUMNS.map((col) => {
+        const list = byStatus.get(col.value) ?? [];
+        const isOver = overCol === col.value;
+        return (
+          <div
+            key={col.value}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setOverCol(col.value);
+            }}
+            onDragLeave={() => setOverCol((c) => (c === col.value ? null : c))}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = dragId ?? e.dataTransfer.getData('text/plain');
+              setOverCol(null);
+              setDragId(null);
+              if (id) onMove(id, col.value);
+            }}
+            style={{
+              flex: '0 0 260px',
+              minWidth: 260,
+              background: isOver ? tokens.color.surface : 'transparent',
+              border: `1px solid ${isOver ? tokens.color.accent : tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              padding: 8,
+              display: 'grid',
+              gap: 8,
+              alignContent: 'start',
+              minHeight: 120,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Pill tone={STATUS_TONE[col.value]}>{col.label}</Pill>
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{list.length}</span>
+            </div>
+            {list.map((t) => {
+              const overdue =
+                t.dueDate != null &&
+                t.dueDate < today &&
+                t.status !== 'DONE' &&
+                t.status !== 'CANCELED';
+              return (
+                <div
+                  key={t.id}
+                  role="button"
+                  tabIndex={0}
+                  draggable
+                  onDragStart={(e) => {
+                    setDragId(t.id);
+                    e.dataTransfer.setData('text/plain', t.id);
+                    e.dataTransfer.effectAllowed = 'move';
+                  }}
+                  onDragEnd={() => setDragId(null)}
+                  onClick={() => onEdit(t)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onEdit(t);
+                    }
+                  }}
+                  style={{
+                    background: tokens.color.surface,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    padding: 8,
+                    cursor: 'grab',
+                    display: 'grid',
+                    gap: 6,
+                    opacity: dragId === t.id ? 0.5 : 1,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</div>
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    {t.clientName ?? '—'}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Pill tone={PRIORITY_TONE[t.priority]}>{t.priority}</Pill>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      {t.assigneeName ?? 'Unassigned'}
+                    </span>
+                    {t.dueDate && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          marginLeft: 'auto',
+                          color: overdue ? tokens.color.danger : tokens.color.textMuted,
+                          fontWeight: overdue ? 600 : 400,
+                        }}
+                      >
+                        {t.dueDate}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {list.length === 0 && (
+              <div style={{ fontSize: 12, color: tokens.color.textMuted, padding: '8px 4px' }}>
+                Drop here
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Create / Edit dialog
+// ---------------------------------------------------------------------------
+
+function TaskDialog({
   users,
+  task,
   onClose,
-  onCreated,
+  onSaved,
 }: {
   users: AppUser[];
+  task: TaskRow | null; // null = create
   onClose: () => void;
-  onCreated: () => void;
+  onSaved: () => void;
 }): JSX.Element {
+  const editing = task != null;
   const [clientQuery, setClientQuery] = useState('');
   const [clientHits, setClientHits] = useState<ClientHit[]>([]);
-  const [clientId, setClientId] = useState('');
-  const [clientLabel, setClientLabel] = useState('');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<TaskPriority>('MEDIUM');
-  const [dueDate, setDueDate] = useState('');
-  const [assigneeUserId, setAssigneeUserId] = useState('');
+  const [clientId, setClientId] = useState(task?.clientId ?? '');
+  const [clientLabel, setClientLabel] = useState(task?.clientName ?? '');
+  const [title, setTitle] = useState(task?.title ?? '');
+  const [description, setDescription] = useState(task?.description ?? '');
+  const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? 'MEDIUM');
+  const [status, setStatus] = useState<TaskStatus>(task?.status ?? 'OPEN');
+  const [dueDate, setDueDate] = useState(task?.dueDate ?? '');
+  const [assigneeUserId, setAssigneeUserId] = useState(task?.assigneeUserId ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Debounced client typeahead against the existing clients search.
   useEffect(() => {
-    if (clientId) return; // already picked
+    if (editing || clientId) return;
     const term = clientQuery.trim();
     if (!term) {
       setClientHits([]);
@@ -435,27 +930,41 @@ function NewTaskDialog({
       alive = false;
       clearTimeout(t);
     };
-  }, [clientQuery, clientId]);
+  }, [clientQuery, clientId, editing]);
 
-  async function create(): Promise<void> {
-    if (!clientId || !title.trim()) return;
+  async function save(): Promise<void> {
+    if (!title.trim() || (!editing && !clientId)) return;
     setBusy(true);
     setError(null);
     try {
-      await api('/api/staff/tasks', {
-        method: 'POST',
-        body: JSON.stringify({
-          clientId,
-          title: title.trim(),
-          description: description.trim() || null,
-          priority,
-          dueDate: dueDate || null,
-          assigneeUserId: assigneeUserId || null,
-        }),
-      });
-      onCreated();
+      if (editing) {
+        await api(`/api/staff/tasks/${task!.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            title: title.trim(),
+            description: description.trim() || null,
+            priority,
+            status,
+            dueDate: dueDate || null,
+            assigneeUserId: assigneeUserId || null,
+          }),
+        });
+      } else {
+        await api('/api/staff/tasks', {
+          method: 'POST',
+          body: JSON.stringify({
+            clientId,
+            title: title.trim(),
+            description: description.trim() || null,
+            priority,
+            dueDate: dueDate || null,
+            assigneeUserId: assigneeUserId || null,
+          }),
+        });
+      }
+      onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'create_failed');
+      setError(e instanceof Error ? e.message : 'save_failed');
     } finally {
       setBusy(false);
     }
@@ -487,30 +996,31 @@ function NewTaskDialog({
       }}
     >
       <div style={{ minWidth: 480, maxWidth: 560, width: '90%' }}>
-        <Card title="New task">
+        <Card title={editing ? 'Edit task' : 'New task'}>
           {error && (
             <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
               {error}
             </p>
           )}
           <div style={{ display: 'grid', gap: 10 }}>
-            {/* Client picker */}
             <div>
               <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Client *</label>
-              {clientId ? (
+              {editing || clientId ? (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <Pill tone="accent">{clientLabel}</Pill>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setClientId('');
-                      setClientLabel('');
-                      setClientQuery('');
-                    }}
-                  >
-                    Change
-                  </Button>
+                  <Pill tone="accent">{clientLabel || '—'}</Pill>
+                  {!editing && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setClientId('');
+                        setClientLabel('');
+                        setClientQuery('');
+                      }}
+                    >
+                      Change
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -579,7 +1089,13 @@ function NewTaskDialog({
               />
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: editing ? '1fr 1fr 1fr 1fr' : '1fr 1fr 1fr',
+                gap: 8,
+              }}
+            >
               <div>
                 <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Priority</label>
                 <Combobox
@@ -594,6 +1110,20 @@ function NewTaskDialog({
                   ]}
                 />
               </div>
+              {editing && (
+                <div>
+                  <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Status</label>
+                  <Combobox
+                    ariaLabel="Status"
+                    value={status}
+                    onChange={(v) => setStatus(v as TaskStatus)}
+                    options={STATUS_COLUMNS.map<ComboboxOption>((s) => ({
+                      value: s.value,
+                      label: s.label,
+                    }))}
+                  />
+                </div>
+              )}
               <div>
                 <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Due date</label>
                 <input
@@ -620,8 +1150,11 @@ function NewTaskDialog({
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
-              <Button onClick={() => void create()} disabled={busy || !clientId || !title.trim()}>
-                {busy ? 'Creating…' : 'Create task'}
+              <Button
+                onClick={() => void save()}
+                disabled={busy || !title.trim() || (!editing && !clientId)}
+              >
+                {busy ? 'Saving…' : editing ? 'Save changes' : 'Create task'}
               </Button>
             </div>
           </div>
@@ -629,4 +1162,22 @@ function NewTaskDialog({
       </div>
     </div>
   );
+}
+
+function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
+  return {
+    textAlign: align,
+    padding: '10px 8px',
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: tokens.color.textMuted,
+    fontWeight: 600,
+    borderBottom: `1px solid ${tokens.color.border}`,
+    whiteSpace: 'nowrap',
+  };
+}
+
+function td(): React.CSSProperties {
+  return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
 }
