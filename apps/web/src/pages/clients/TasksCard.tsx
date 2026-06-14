@@ -15,8 +15,11 @@ import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe
 import { api } from '../../api-client';
 import {
   PRIORITY_TONE,
+  RECURRENCE_LABEL,
+  RECURRENCE_OPTIONS,
   STATUS_TONE,
   type TaskPriority as Priority,
+  type TaskRecurrence,
   type TaskStatus as Status,
 } from './task-tones';
 
@@ -27,6 +30,7 @@ interface Task {
   priority: Priority;
   status: Status;
   dueDate: string | null;
+  recurrence: TaskRecurrence | null;
   assigneeUserId: string | null;
   createdAt: string;
   completedAt: string | null;
@@ -63,6 +67,7 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
     priority: 'MEDIUM' as Priority,
     dueDate: '',
     assigneeUserId: '',
+    recurrence: '' as TaskRecurrence | '',
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +79,7 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
     status: 'OPEN' as Status,
     dueDate: '',
     assigneeUserId: '',
+    recurrence: '' as TaskRecurrence | '',
   });
 
   async function load(): Promise<void> {
@@ -103,9 +109,17 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
           priority: draft.priority,
           dueDate: draft.dueDate || null,
           assigneeUserId: draft.assigneeUserId || null,
+          recurrence: draft.recurrence || null,
         }),
       });
-      setDraft({ title: '', description: '', priority: 'MEDIUM', dueDate: '', assigneeUserId: '' });
+      setDraft({
+        title: '',
+        description: '',
+        priority: 'MEDIUM',
+        dueDate: '',
+        assigneeUserId: '',
+        recurrence: '',
+      });
       setAdding(false);
       await load();
     } catch (e) {
@@ -124,6 +138,7 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
       status: t.status,
       dueDate: t.dueDate ?? '',
       assigneeUserId: t.assigneeUserId ?? '',
+      recurrence: t.recurrence ?? '',
     });
     setError(null);
   }
@@ -142,6 +157,7 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
           status: editDraft.status,
           dueDate: editDraft.dueDate || null,
           assigneeUserId: editDraft.assigneeUserId || null,
+          recurrence: editDraft.recurrence || null,
         }),
       });
       setEditingId(null);
@@ -257,6 +273,21 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
               placeholder="Assignee…"
             />
           </div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Repeats</span>
+            <Combobox
+              ariaLabel="Repeats"
+              value={draft.recurrence}
+              onChange={(val) => setDraft({ ...draft, recurrence: val as TaskRecurrence | '' })}
+              options={RECURRENCE_OPTIONS.map<ComboboxOption>((o) => ({
+                value: o.value,
+                label: o.label,
+              }))}
+            />
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+              When completed, the next task opens automatically.
+            </span>
+          </div>
           <div>
             <Button size="sm" onClick={() => void add()} disabled={busy || !draft.title.trim()}>
               Add task
@@ -340,6 +371,20 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
                       placeholder="Assignee…"
                     />
                   </div>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Repeats</span>
+                    <Combobox
+                      ariaLabel="Repeats"
+                      value={editDraft.recurrence}
+                      onChange={(val) =>
+                        setEditDraft({ ...editDraft, recurrence: val as TaskRecurrence | '' })
+                      }
+                      options={RECURRENCE_OPTIONS.map<ComboboxOption>((o) => ({
+                        value: o.value,
+                        label: o.label,
+                      }))}
+                    />
+                  </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <Button
                       size="sm"
@@ -378,6 +423,11 @@ export function TasksCard({ clientId, compact = false, users = [] }: Props): JSX
                   {t.dueDate && (
                     <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
                       due {t.dueDate}
+                    </span>
+                  )}
+                  {t.recurrence && (
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      ↻ {RECURRENCE_LABEL[t.recurrence]}
                     </span>
                   )}
                   {assignee && (

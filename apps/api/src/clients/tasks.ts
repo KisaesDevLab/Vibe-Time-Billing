@@ -12,6 +12,7 @@ import { clientTasks, clients } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { spawnRecurringFollowUp } from '../tasks/spawn-recurrence';
 
 export interface TaskRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -27,6 +28,10 @@ const TaskCreateSchema = z.object({
   dueDate: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
+  recurrence: z
+    .enum(['WEEKLY', 'BIWEEKLY', 'SEMIMONTHLY', 'MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL'])
     .nullable()
     .optional(),
 });
@@ -102,6 +107,7 @@ export function mountTaskRoutes(router: Router, deps: TaskRoutesDeps): void {
           priority: data.priority ?? 'MEDIUM',
           status: data.status ?? 'OPEN',
           dueDate: data.dueDate ?? null,
+          recurrence: data.recurrence ?? null,
           createdById: req.staffSession!.appUserId,
         })
         .returning();
@@ -144,32 +150,74 @@ export function mountTaskRoutes(router: Router, deps: TaskRoutesDeps): void {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      const [existing] = await deps.db
+        .select()
+        .from(clientTasks)
+        .where(and(eq(clientTasks.id, taskId), eq(clientTasks.clientId, clientId)))
+        .limit(1);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const data = parsed.data;
       // If status flips to DONE, stamp completedAt.
       const completedAt = data.status === 'DONE' ? new Date() : data.status ? null : undefined;
-      const [row] = await deps.db
-        .update(clientTasks)
-        .set({
-          ...(data.title !== undefined ? { title: data.title } : {}),
-          ...(data.description !== undefined ? { description: data.description } : {}),
-          ...(data.engagementId !== undefined ? { engagementId: data.engagementId } : {}),
-          ...(data.assigneeUserId !== undefined ? { assigneeUserId: data.assigneeUserId } : {}),
-          ...(data.priority !== undefined ? { priority: data.priority } : {}),
-          ...(data.status !== undefined ? { status: data.status } : {}),
-          ...(data.dueDate !== undefined ? { dueDate: data.dueDate } : {}),
-          ...(completedAt !== undefined ? { completedAt } : {}),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(clientTasks.id, taskId), eq(clientTasks.clientId, clientId)))
-        .returning();
+      const actorId = req.staffSession!.appUserId;
+      const db = deps.db;
+      const { row, spawned } = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(clientTasks)
+          .set({
+            ...(data.title !== undefined ? { title: data.title } : {}),
+            ...(data.description !== undefined ? { description: data.description } : {}),
+            ...(data.engagementId !== undefined ? { engagementId: data.engagementId } : {}),
+            ...(data.assigneeUserId !== undefined ? { assigneeUserId: data.assigneeUserId } : {}),
+            ...(data.priority !== undefined ? { priority: data.priority } : {}),
+            ...(data.status !== undefined ? { status: data.status } : {}),
+            ...(data.dueDate !== undefined ? { dueDate: data.dueDate } : {}),
+            ...(data.recurrence !== undefined ? { recurrence: data.recurrence } : {}),
+            ...(completedAt !== undefined ? { completedAt } : {}),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(clientTasks.id, taskId), eq(clientTasks.clientId, clientId)))
+          .returning();
+        // Recurring tasks open their successor on the transition INTO DONE.
+        const effectiveRecurrence =
+          data.recurrence !== undefined ? data.recurrence : existing.recurrence;
+        let spawnedId: string | null = null;
+        if (
+          data.status === 'DONE' &&
+          existing.status !== 'DONE' &&
+          effectiveRecurrence != null &&
+          updated
+        ) {
+          spawnedId = await spawnRecurringFollowUp(
+            tx,
+            {
+              id: updated.id,
+              firmId: updated.firmId,
+              clientId: updated.clientId,
+              engagementId: updated.engagementId,
+              assigneeUserId: updated.assigneeUserId,
+              title: updated.title,
+              description: updated.description,
+              priority: updated.priority,
+              recurrence: effectiveRecurrence,
+              dueDate: updated.dueDate,
+            },
+            actorId,
+          );
+        }
+        return { row: updated, spawned: spawnedId };
+      });
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'client_task',
         entityId: taskId,
-        actorAppUserId: req.staffSession!.appUserId,
+        actorAppUserId: actorId,
         after: row ? { status: row.status, priority: row.priority } : null,
       }).catch(() => undefined);
-      res.json({ task: row });
+      res.json({ task: row, spawned });
     },
   );
 

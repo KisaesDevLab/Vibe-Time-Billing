@@ -30,8 +30,11 @@ import {
 import { api } from '../api-client';
 import {
   PRIORITY_TONE,
+  RECURRENCE_LABEL,
+  RECURRENCE_OPTIONS,
   STATUS_TONE,
   type TaskPriority,
+  type TaskRecurrence,
   type TaskStatus,
 } from './clients/task-tones';
 
@@ -46,6 +49,7 @@ interface TaskRow {
   priority: TaskPriority;
   status: TaskStatus;
   dueDate: string | null;
+  recurrence: TaskRecurrence | null;
   createdAt: string;
   completedAt: string | null;
 }
@@ -664,6 +668,19 @@ function TaskTable(props: {
                       >
                         <strong style={{ fontSize: 13, color: tokens.color.accent }}>
                           {t.title}
+                          {t.recurrence && (
+                            <span
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 400,
+                                color: tokens.color.textMuted,
+                                marginLeft: 6,
+                              }}
+                              title={`Repeats ${RECURRENCE_LABEL[t.recurrence]}`}
+                            >
+                              ↻ {RECURRENCE_LABEL[t.recurrence]}
+                            </span>
+                          )}
                         </strong>
                         {t.description && (
                           <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
@@ -849,7 +866,22 @@ function KanbanBoard(props: {
                     opacity: dragId === t.id ? 0.5 : 1,
                   }}
                 >
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>
+                    {t.title}
+                    {t.recurrence && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 400,
+                          color: tokens.color.textMuted,
+                          marginLeft: 6,
+                        }}
+                        title={`Repeats ${RECURRENCE_LABEL[t.recurrence]}`}
+                      >
+                        ↻ {RECURRENCE_LABEL[t.recurrence]}
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                     {t.clientName ?? '—'}
                   </div>
@@ -912,6 +944,7 @@ function TaskDialog({
   const [status, setStatus] = useState<TaskStatus>(task?.status ?? 'OPEN');
   const [dueDate, setDueDate] = useState(task?.dueDate ?? '');
   const [assigneeUserId, setAssigneeUserId] = useState(task?.assigneeUserId ?? '');
+  const [recurrence, setRecurrence] = useState<TaskRecurrence | ''>(task?.recurrence ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -953,6 +986,7 @@ function TaskDialog({
             status,
             dueDate: dueDate || null,
             assigneeUserId: assigneeUserId || null,
+            recurrence: recurrence || null,
           }),
         });
       } else {
@@ -965,6 +999,7 @@ function TaskDialog({
             priority,
             dueDate: dueDate || null,
             assigneeUserId: assigneeUserId || null,
+            recurrence: recurrence || null,
           }),
         });
       }
@@ -1151,7 +1186,24 @@ function TaskDialog({
                   placeholder="Unassigned"
                 />
               </div>
+              <div>
+                <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Repeats</label>
+                <Combobox
+                  ariaLabel="Repeats"
+                  value={recurrence}
+                  onChange={(v) => setRecurrence(v as TaskRecurrence | '')}
+                  options={RECURRENCE_OPTIONS.map<ComboboxOption>((o) => ({
+                    value: o.value,
+                    label: o.label,
+                  }))}
+                />
+              </div>
             </div>
+            {recurrence && (
+              <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+                When this task is completed, the next one opens automatically.
+              </p>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
               <Button variant="ghost" onClick={onClose} disabled={busy}>

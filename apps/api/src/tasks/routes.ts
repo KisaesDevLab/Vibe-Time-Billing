@@ -17,6 +17,7 @@ import { appUsers, clientTasks, clients } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { spawnRecurringFollowUp } from './spawn-recurrence';
 
 export interface TaskListRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -24,6 +25,15 @@ export interface TaskListRoutesDeps extends RbacDeps {
 
 const STATUSES = ['OPEN', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCELED'] as const;
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const;
+const RECURRENCES = [
+  'WEEKLY',
+  'BIWEEKLY',
+  'SEMIMONTHLY',
+  'MONTHLY',
+  'QUARTERLY',
+  'SEMIANNUAL',
+  'ANNUAL',
+] as const;
 type Status = (typeof STATUSES)[number];
 
 const CreateSchema = z.object({
@@ -39,6 +49,7 @@ const CreateSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .nullable()
     .optional(),
+  recurrence: z.enum(RECURRENCES).nullable().optional(),
 });
 
 const PatchSchema = CreateSchema.omit({ clientId: true }).partial();
@@ -154,6 +165,7 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
         priority: clientTasks.priority,
         status: clientTasks.status,
         dueDate: clientTasks.dueDate,
+        recurrence: clientTasks.recurrence,
         createdAt: clientTasks.createdAt,
         completedAt: clientTasks.completedAt,
       })
@@ -222,6 +234,7 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
         priority: data.priority ?? 'MEDIUM',
         status: data.status ?? 'OPEN',
         dueDate: data.dueDate ?? null,
+        recurrence: data.recurrence ?? null,
         createdById: req.staffSession!.appUserId,
       })
       .returning();
@@ -260,7 +273,7 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
       }
       const taskId = req.params['taskId']!;
       const [existing] = await deps.db
-        .select({ id: clientTasks.id })
+        .select()
         .from(clientTasks)
         .where(and(eq(clientTasks.id, taskId), eq(clientTasks.firmId, firmId)))
         .limit(1);
@@ -271,29 +284,62 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
       const data = parsed.data;
       // If status flips to DONE, stamp completedAt; clear it otherwise.
       const completedAt = data.status === 'DONE' ? new Date() : data.status ? null : undefined;
-      const [row] = await deps.db
-        .update(clientTasks)
-        .set({
-          ...(data.title !== undefined ? { title: data.title } : {}),
-          ...(data.description !== undefined ? { description: data.description } : {}),
-          ...(data.engagementId !== undefined ? { engagementId: data.engagementId } : {}),
-          ...(data.assigneeUserId !== undefined ? { assigneeUserId: data.assigneeUserId } : {}),
-          ...(data.priority !== undefined ? { priority: data.priority } : {}),
-          ...(data.status !== undefined ? { status: data.status } : {}),
-          ...(data.dueDate !== undefined ? { dueDate: data.dueDate } : {}),
-          ...(completedAt !== undefined ? { completedAt } : {}),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(clientTasks.id, taskId), eq(clientTasks.firmId, firmId)))
-        .returning();
+      const actorId = req.staffSession!.appUserId;
+      const db = deps.db;
+      const { row, spawned } = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(clientTasks)
+          .set({
+            ...(data.title !== undefined ? { title: data.title } : {}),
+            ...(data.description !== undefined ? { description: data.description } : {}),
+            ...(data.engagementId !== undefined ? { engagementId: data.engagementId } : {}),
+            ...(data.assigneeUserId !== undefined ? { assigneeUserId: data.assigneeUserId } : {}),
+            ...(data.priority !== undefined ? { priority: data.priority } : {}),
+            ...(data.status !== undefined ? { status: data.status } : {}),
+            ...(data.dueDate !== undefined ? { dueDate: data.dueDate } : {}),
+            ...(data.recurrence !== undefined ? { recurrence: data.recurrence } : {}),
+            ...(completedAt !== undefined ? { completedAt } : {}),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(clientTasks.id, taskId), eq(clientTasks.firmId, firmId)))
+          .returning();
+        // Recurring tasks open their successor on the transition INTO DONE.
+        const effectiveRecurrence =
+          data.recurrence !== undefined ? data.recurrence : existing.recurrence;
+        let spawnedId: string | null = null;
+        if (
+          data.status === 'DONE' &&
+          existing.status !== 'DONE' &&
+          effectiveRecurrence != null &&
+          updated
+        ) {
+          spawnedId = await spawnRecurringFollowUp(
+            tx,
+            {
+              id: updated.id,
+              firmId: updated.firmId,
+              clientId: updated.clientId,
+              engagementId: updated.engagementId,
+              assigneeUserId: updated.assigneeUserId,
+              title: updated.title,
+              description: updated.description,
+              priority: updated.priority,
+              recurrence: effectiveRecurrence,
+              dueDate: updated.dueDate,
+            },
+            actorId,
+          );
+        }
+        return { row: updated, spawned: spawnedId };
+      });
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'client_task',
         entityId: taskId,
-        actorAppUserId: req.staffSession!.appUserId,
+        actorAppUserId: actorId,
         after: row ? { status: row.status, priority: row.priority } : null,
       }).catch(() => undefined);
-      res.json({ task: row });
+      res.json({ task: row, spawned });
     },
   );
 

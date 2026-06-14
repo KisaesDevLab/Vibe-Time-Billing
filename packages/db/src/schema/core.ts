@@ -1457,6 +1457,18 @@ export const clientTaskStatus = pgEnum('client_task_status', [
   'DONE',
   'CANCELED',
 ]);
+// Recurrence cadence for a task. NULL on the column means a one-off task; a
+// value means "when this is completed, open the next one this far out". Mirrors
+// the recurring-billing frequencies but adds SEMIMONTHLY (twice a month).
+export const clientTaskRecurrence = pgEnum('client_task_recurrence', [
+  'WEEKLY',
+  'BIWEEKLY',
+  'SEMIMONTHLY',
+  'MONTHLY',
+  'QUARTERLY',
+  'SEMIANNUAL',
+  'ANNUAL',
+]);
 
 export const clientTasks = pgTable(
   'client_task',
@@ -1480,6 +1492,8 @@ export const clientTasks = pgTable(
     priority: clientTaskPriority('priority').notNull().default('MEDIUM'),
     status: clientTaskStatus('status').notNull().default('OPEN'),
     dueDate: date('due_date'),
+    // NULL = one-off; a cadence means completing this task opens the next one.
+    recurrence: clientTaskRecurrence('recurrence'),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
