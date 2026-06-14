@@ -313,9 +313,9 @@ export function TasksPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, clientFilter, assigneeFilter, priorityFilter, statusFilter, sortBy]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const kanbanRows = useMemo(
     () => rows.filter(passesNonStatus),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, clientFilter, assigneeFilter, priorityFilter],
   );
 
@@ -1092,7 +1092,7 @@ function TaskDialog({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: editing ? '1fr 1fr 1fr 1fr' : '1fr 1fr 1fr',
+                gridTemplateColumns: '1fr 1fr',
                 gap: 8,
               }}
             >
