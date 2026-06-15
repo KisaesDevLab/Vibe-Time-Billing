@@ -29,9 +29,9 @@ const LOGO_KEY = 'branding/logo';
 const ICON_SOURCE_KEY = 'branding/icon-source';
 const iconKey = (name: string): string => `branding/${name}`;
 
-const PRESIGN_TTL_SECONDS = 15 * 60;
 const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp'];
 const ICON_TYPES = ['image/png', 'image/jpeg', 'image/webp']; // raster only — canvas can't decode SVG
+const MAX_BYTES = 5 * 1024 * 1024; // 5MB — plenty for a logo/icon
 
 export interface BrandingAdminDeps extends RbacDeps {
   db: Database | null;
@@ -66,48 +66,58 @@ async function streamBody(body: NodeJS.ReadableStream, res: Response): Promise<v
 // Admin: upload + remove
 // ---------------------------------------------------------------------------
 
-const UploadUrlSchema = z.object({
-  kind: z.enum(['logo', 'icon']),
+const UploadSchema = z.object({
   contentType: z.string().min(1).max(120),
+  // data URL or bare base64 of the image bytes.
+  dataBase64: z.string().min(1),
 });
-const CompleteSchema = z.object({ kind: z.enum(['logo', 'icon']) });
+
+function decodeImage(dataBase64: string): Buffer {
+  const comma = dataBase64.indexOf(',');
+  const b64 =
+    dataBase64.startsWith('data:') && comma >= 0 ? dataBase64.slice(comma + 1) : dataBase64;
+  return Buffer.from(b64, 'base64');
+}
+
+async function bumpVersion(db: Database, firmId: string): Promise<number> {
+  const [s] = await db
+    .select({ v: firmSettings.brandAssetsVersion })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firmId))
+    .limit(1);
+  return (s?.v ?? 0) + 1;
+}
+
+async function audit(db: Database, req: Request, kind: string): Promise<void> {
+  await emitAudit(db, {
+    action: 'UPDATE',
+    entityType: 'firm_settings',
+    entityId: req.staffSession!.firmId,
+    actorAppUserId: req.staffSession!.appUserId,
+    after: { brandingAsset: kind, uploaded: true },
+  }).catch(() => undefined);
+}
 
 export function createBrandingAdminRouter(deps: BrandingAdminDeps): Router {
   const router = express.Router();
 
+  // Upload the wide logo: stored as-is and served from the public endpoint.
   router.post(
-    '/upload-url',
+    '/logo',
     requirePermission(deps, 'firm:settings:write'),
     async (req: Request, res: Response) => {
-      const parsed = UploadUrlSchema.safeParse(req.body);
+      const parsed = UploadSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
-      const { kind, contentType } = parsed.data;
-      const allowed = kind === 'logo' ? LOGO_TYPES : ICON_TYPES;
-      if (!allowed.includes(contentType)) {
-        res.status(400).json({ error: 'unsupported_type', allowed });
+      if (!LOGO_TYPES.includes(parsed.data.contentType)) {
+        res.status(400).json({ error: 'unsupported_type', allowed: LOGO_TYPES });
         return;
       }
-      const storage = getStorage(deps.storageClient);
-      if (!storage) {
-        res.status(503).json({ error: 'storage_unavailable' });
-        return;
-      }
-      const key = kind === 'logo' ? LOGO_KEY : ICON_SOURCE_KEY;
-      const url = await storage.presignPut(key, { contentType }, PRESIGN_TTL_SECONDS);
-      res.json({ url, key });
-    },
-  );
-
-  router.post(
-    '/complete',
-    requirePermission(deps, 'firm:settings:write'),
-    async (req: Request, res: Response) => {
-      const parsed = CompleteSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      const buf = decodeImage(parsed.data.dataBase64);
+      if (buf.length === 0 || buf.length > MAX_BYTES) {
+        res.status(400).json({ error: 'invalid_size' });
         return;
       }
       const firmId = req.staffSession!.firmId;
@@ -120,65 +130,78 @@ export function createBrandingAdminRouter(deps: BrandingAdminDeps): Router {
         res.status(503).json({ error: 'storage_unavailable' });
         return;
       }
-      const [settings] = await deps.db
-        .select({
-          version: firmSettings.brandAssetsVersion,
-          accent: firmSettings.brandAccentColor,
+      await storage.put(LOGO_KEY, buf, { contentType: parsed.data.contentType });
+      const version = await bumpVersion(deps.db, firmId);
+      await deps.db
+        .update(firmSettings)
+        .set({
+          brandLogoStorageKey: LOGO_KEY,
+          brandLogoUrl: `${deps.appBaseUrl}/api/portal/branding/logo?v=${version}`,
+          brandAssetsVersion: version,
+          updatedAt: new Date(),
         })
+        .where(eq(firmSettings.firmId, firmId));
+      await audit(deps.db, req, 'logo');
+      res.json({ ok: true, version });
+    },
+  );
+
+  // Upload the square icon source: resized into the PWA/Apple icon set.
+  router.post(
+    '/icon',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const parsed = UploadSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      if (!ICON_TYPES.includes(parsed.data.contentType)) {
+        res.status(400).json({ error: 'unsupported_type', allowed: ICON_TYPES });
+        return;
+      }
+      const source = decodeImage(parsed.data.dataBase64);
+      if (source.length === 0 || source.length > MAX_BYTES) {
+        res.status(400).json({ error: 'invalid_size' });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const storage = getStorage(deps.storageClient);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const [s] = await deps.db
+        .select({ accent: firmSettings.brandAccentColor })
         .from(firmSettings)
         .where(eq(firmSettings.firmId, firmId))
         .limit(1);
-      const version = (settings?.version ?? 0) + 1;
-
-      if (parsed.data.kind === 'logo') {
-        const meta = await storage.head(LOGO_KEY);
-        if (!meta) {
-          res.status(400).json({ error: 'upload_not_found' });
+      const accent = s?.accent ?? undefined;
+      for (const [name, spec] of Object.entries(ICON_SPECS)) {
+        let png: Buffer;
+        try {
+          png = await renderIconFromSource(source, spec, accent ?? undefined);
+        } catch {
+          res.status(400).json({ error: 'icon_decode_failed' });
           return;
         }
-        await deps.db
-          .update(firmSettings)
-          .set({
-            brandLogoStorageKey: LOGO_KEY,
-            brandLogoUrl: `${deps.appBaseUrl}/api/portal/branding/logo?v=${version}`,
-            brandAssetsVersion: version,
-            updatedAt: new Date(),
-          })
-          .where(eq(firmSettings.firmId, firmId));
-      } else {
-        // Read the uploaded square source and resize into the icon set.
-        const { body } = await storage.get(ICON_SOURCE_KEY);
-        const chunks: Buffer[] = [];
-        for await (const chunk of body) chunks.push(chunk as Buffer);
-        const source = Buffer.concat(chunks);
-        const accent = settings?.accent ?? undefined;
-        for (const [name, spec] of Object.entries(ICON_SPECS)) {
-          let png: Buffer;
-          try {
-            png = await renderIconFromSource(source, spec, accent ?? undefined);
-          } catch {
-            res.status(400).json({ error: 'icon_decode_failed' });
-            return;
-          }
-          await storage.put(iconKey(name), png, { contentType: 'image/png' });
-        }
-        await deps.db
-          .update(firmSettings)
-          .set({
-            brandIconStorageKey: ICON_SOURCE_KEY,
-            brandAssetsVersion: version,
-            updatedAt: new Date(),
-          })
-          .where(eq(firmSettings.firmId, firmId));
+        await storage.put(iconKey(name), png, { contentType: 'image/png' });
       }
-
-      await emitAudit(deps.db, {
-        action: 'UPDATE',
-        entityType: 'firm_settings',
-        entityId: firmId,
-        actorAppUserId: req.staffSession!.appUserId,
-        after: { brandingAsset: parsed.data.kind, uploaded: true },
-      }).catch(() => undefined);
+      await storage.put(ICON_SOURCE_KEY, source, { contentType: parsed.data.contentType });
+      const version = await bumpVersion(deps.db, firmId);
+      await deps.db
+        .update(firmSettings)
+        .set({
+          brandIconStorageKey: ICON_SOURCE_KEY,
+          brandAssetsVersion: version,
+          updatedAt: new Date(),
+        })
+        .where(eq(firmSettings.firmId, firmId));
+      await audit(deps.db, req, 'icon');
       res.json({ ok: true, version });
     },
   );
@@ -252,9 +275,7 @@ export function createBrandingAdminRouter(deps: BrandingAdminDeps): Router {
 // Public: serve logo + icons (no auth — single-firm appliance)
 // ---------------------------------------------------------------------------
 
-async function firstFirmBranding(
-  db: Database,
-): Promise<{
+async function firstFirmBranding(db: Database): Promise<{
   logoKey: string | null;
   logoUrl: string | null;
   iconKey: string | null;

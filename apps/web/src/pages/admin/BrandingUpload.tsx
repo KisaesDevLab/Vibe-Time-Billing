@@ -22,6 +22,15 @@ const PREVIEW_PATH: Record<'logo' | 'icon', string> = {
   icon: '/api/portal/branding/icon-192.png',
 };
 
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function BrandingUpload({
   kind,
   label,
@@ -46,19 +55,13 @@ export function BrandingUpload({
     setBusy(true);
     setError(null);
     try {
-      const { url } = await api<{ url: string; key: string }>(
-        '/api/staff/admin/branding/upload-url',
-        { method: 'POST', body: JSON.stringify({ kind, contentType: file.type }) },
-      );
-      const put = await fetch(url, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': file.type },
-      });
-      if (!put.ok) throw new Error(`upload failed (${put.status})`);
-      await api('/api/staff/admin/branding/complete', {
+      if (file.size > 5 * 1024 * 1024) throw new Error('File is too large (max 5MB).');
+      const dataBase64 = await readAsDataUrl(file);
+      // Bytes go through the API (server stores them) — small images, and it
+      // avoids any cross-origin upload constraints.
+      await api(`/api/staff/admin/branding/${kind}`, {
         method: 'POST',
-        body: JSON.stringify({ kind }),
+        body: JSON.stringify({ contentType: file.type, dataBase64 }),
       });
       setHasAsset(true);
       setNonce(Date.now());

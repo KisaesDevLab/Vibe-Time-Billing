@@ -108,12 +108,12 @@ describe('branding icon generation', () => {
 });
 
 describe('branding admin + public', () => {
-  it('logo complete points brand_logo_url at the public endpoint', async () => {
-    storage.store.set('branding/logo', { buf: Buffer.from('PNGDATA'), ct: 'image/png' });
+  it('logo upload stores the file and points brand_logo_url at the public endpoint', async () => {
     const res = await request(adminApp())
-      .post('/api/staff/admin/branding/complete')
-      .send({ kind: 'logo' });
+      .post('/api/staff/admin/branding/logo')
+      .send({ contentType: 'image/png', dataBase64: Buffer.from('PNGDATA').toString('base64') });
     expect(res.status).toBe(200);
+    expect(storage.store.has('branding/logo')).toBe(true);
     const [s] = await harness.db
       .select()
       .from(firmSettings)
@@ -123,15 +123,14 @@ describe('branding admin + public', () => {
     expect(s!.brandAssetsVersion).toBe(1);
   });
 
-  it('icon complete resizes the source into the icon set', async () => {
-    // A valid square PNG source the canvas can decode.
-    storage.store.set('branding/icon-source', {
-      buf: renderDefaultIcon(ICON_SPECS['icon-512.png']!),
-      ct: 'image/png',
-    });
+  it('icon upload resizes the source into the icon set', async () => {
     const res = await request(adminApp())
-      .post('/api/staff/admin/branding/complete')
-      .send({ kind: 'icon' });
+      .post('/api/staff/admin/branding/icon')
+      .send({
+        contentType: 'image/png',
+        // A valid square PNG source the canvas can decode.
+        dataBase64: renderDefaultIcon(ICON_SPECS['icon-512.png']!).toString('base64'),
+      });
     expect(res.status).toBe(200);
     for (const name of Object.keys(ICON_SPECS)) {
       expect(storage.store.has(`branding/${name}`)).toBe(true);

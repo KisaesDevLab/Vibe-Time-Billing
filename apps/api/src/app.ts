@@ -282,6 +282,10 @@ export function createApp(deps: AppDeps): Express {
     );
   }
 
+  // Logo/icon uploads carry image bytes (base64) through the API; allow a
+  // larger body on just that path. express.json no-ops once a body is parsed,
+  // so the global 1mb parser below skips these already-parsed requests.
+  app.use('/api/staff/admin/branding', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
   app.use(pinoHttp({ logger }));
 
