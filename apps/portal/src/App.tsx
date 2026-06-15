@@ -25,6 +25,7 @@ import { LoginPage } from './pages/Login';
 import { RequestAccessPage } from './pages/RequestAccess';
 import { MessagesPage } from './pages/Messages';
 import { NotificationPrefsPage } from './pages/NotificationPrefs';
+import { InstallBanner } from './components/InstallBanner';
 import { UpdatesPage } from './pages/Updates';
 import { PaymentMethodsPage } from './pages/PaymentMethods';
 import { ProfilePage } from './pages/Profile';
@@ -378,6 +379,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       }
     >
       {me?.isImpersonation && <ImpersonationBanner email={me.impersonatedByEmail} />}
+      <InstallBanner />
       {children}
     </AppShell>
   );

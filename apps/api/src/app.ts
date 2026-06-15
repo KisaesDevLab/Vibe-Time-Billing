@@ -69,6 +69,7 @@ import { createPortalProfileRouter } from './portal/profile';
 import { createPortalRetainerOfferRouter } from './portal/retainer-offers';
 import { createPortalActivityRouter } from './portal/activity';
 import { createPortalNotificationRouter } from './portal/notifications';
+import { createPortalPushRouter } from './portal/push';
 import { createPortalAppointmentRouter } from './portal/appointments';
 import { createPortalCalendarRouter } from './portal/calendar';
 import { createPortalEngagementAutopayRouter } from './portal/engagement-autopay';
@@ -895,6 +896,59 @@ export function createApp(deps: AppDeps): Express {
     sessionStore: deps.sessionStore,
   });
   app.use('/api/portal/profile', portalProfileRouter);
+
+  // Phase 26 — Web Push subscription endpoints for the installable PWA.
+  const portalPushRouter = createPortalPushRouter({
+    db: deps.db,
+    requireAuth: portal.requireAuth,
+    vapidPublicKey: config.VAPID_PUBLIC_KEY,
+    pushEnabled: Boolean(config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY),
+  });
+  app.use('/api/portal/push', portalPushRouter);
+
+  // Phase 26 — firm-branded PWA manifest, served dynamically so the installed
+  // app carries the firm's name + accent color (single-firm appliance). Public
+  // (no auth) — the browser fetches it before login.
+  app.get('/api/portal/manifest.webmanifest', async (_req: Request, res: Response) => {
+    let name = 'Client Portal';
+    let themeColor = '#0f6cbd';
+    if (deps.db) {
+      try {
+        const { firmSettings, firms } = await import('@vibe/db/schema');
+        const [first] = await deps.db.select({ id: firms.id }).from(firms).limit(1);
+        if (first) {
+          const [b] = await deps.db
+            .select({
+              displayName: firmSettings.brandDisplayName,
+              accentColor: firmSettings.brandAccentColor,
+            })
+            .from(firmSettings)
+            .where(eq(firmSettings.firmId, first.id))
+            .limit(1);
+          if (b?.displayName) name = b.displayName;
+          if (b?.accentColor) themeColor = b.accentColor;
+        }
+      } catch {
+        /* fall back to defaults */
+      }
+    }
+    res.type('application/manifest+json').json({
+      name,
+      short_name: name.length > 12 ? 'Portal' : name,
+      description: 'Securely view invoices, documents, and statements from your accounting firm.',
+      start_url: '/',
+      scope: '/',
+      display: 'standalone',
+      orientation: 'portrait',
+      background_color: '#0f1419',
+      theme_color: themeColor,
+      icons: [
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      ],
+    });
+  });
 
   // R3 — portal retainer offer flow (get / select / decline).
   const portalRetainerOfferRouter = createPortalRetainerOfferRouter({

@@ -36,6 +36,7 @@ import {
 import type { Logger } from 'pino';
 
 import type { MailDispatch, SmsDispatch } from '../dispatchers';
+import { sendWebPushToIdentity } from '../web-push';
 
 export interface StagedNotificationSendDeps {
   sendEmail?: MailDispatch;
@@ -275,6 +276,8 @@ async function sendPortalChannel(
   const sentTo: string[] = [];
   for (const ident of identities) {
     try {
+      const title = content.subject ?? 'Update from your accounting firm';
+      const actionUrl = row.entityType === 'engagement' ? '/engagements' : null;
       await db.insert(portalNotifications).values({
         firmId: row.firmId,
         clientId: row.clientId,
@@ -282,11 +285,21 @@ async function sendPortalChannel(
         type: row.triggerKind.toUpperCase(),
         entityType: row.entityType,
         entityId: row.entityId,
-        title: content.subject ?? 'Update from your accounting firm',
+        title,
         body: content.body || null,
-        actionUrl: row.entityType === 'engagement' ? '/engagements' : null,
+        actionUrl,
         metadata: { stagedNotificationId: row.id },
       });
+      // Phase 26 — mirror the in-portal notification to the identity's
+      // installed-PWA devices via Web Push (no-op when VAPID is unconfigured
+      // or the identity has no subscriptions).
+      await sendWebPushToIdentity(db, ident.portalIdentityId, {
+        title,
+        body: content.body || null,
+        url: actionUrl,
+      }).catch((err: unknown) =>
+        log.error({ err, portalIdentityId: ident.portalIdentityId }, 'web push send failed'),
+      );
       sentTo.push(ident.portalIdentityId);
     } catch (err) {
       log.error(

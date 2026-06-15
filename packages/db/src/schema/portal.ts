@@ -705,6 +705,35 @@ export const portalNotifications = pgTable(
   }),
 );
 
+// Web Push subscriptions for the installable portal PWA. Bound to a
+// portal_identity (the person, not a single client — one identity may span
+// multiple clients), one row per browser/device endpoint. The worker sends
+// pushes to these whenever a portal_notification is created; dead endpoints
+// (HTTP 404/410 from the push service) are pruned on send.
+export const portalPushSubscription = pgTable(
+  'portal_push_subscription',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    portalIdentityId: uuid('portal_identity_id')
+      .notNull()
+      .references(() => portalIdentity.id, { onDelete: 'cascade' }),
+    endpoint: text('endpoint').notNull().unique(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    userAgent: text('user_agent'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    failureCount: integer('failure_count').notNull().default(0),
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  },
+  (t) => ({
+    identityIdx: index('portal_push_subscription_identity_idx').on(t.portalIdentityId),
+  }),
+);
+
 // =====================================================================
 // RELATIONS
 //

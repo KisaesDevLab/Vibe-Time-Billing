@@ -7,6 +7,7 @@ import { ErrorBoundary } from '@vibe/ui';
 import '@vibe/ui/theme.css';
 
 import { App } from './App';
+import { registerServiceWorker } from './pwa';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
@@ -22,3 +23,5 @@ createRoot(rootEl).render(
     </ErrorBoundary>
   </StrictMode>,
 );
+
+registerServiceWorker();

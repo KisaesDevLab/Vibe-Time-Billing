@@ -4,6 +4,14 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import {
+  disablePush,
+  enablePush,
+  isIos,
+  isPushSubscribed,
+  isStandalone,
+  pushSupported,
+} from '../pwa';
 
 type Channel = 'EMAIL' | 'SMS';
 type Event =
@@ -34,6 +42,116 @@ const EVENT_LABELS: Record<Event, string> = {
   statementMonthly: 'Monthly statement',
   deliverableUnlocked: 'Files released after payment',
 };
+
+function PushNotificationCard(): JSX.Element {
+  const [state, setState] = useState<'loading' | 'unsupported' | 'disabled' | 'ready'>('loading');
+  const [subscribed, setSubscribed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      if (!pushSupported()) {
+        setState('unsupported');
+        return;
+      }
+      try {
+        const cfg = await api<{ enabled: boolean }>('/api/portal/push/key');
+        if (!cfg.enabled) {
+          setState('disabled');
+          return;
+        }
+        setSubscribed(await isPushSubscribed());
+        setState('ready');
+      } catch {
+        setState('disabled');
+      }
+    })();
+  }, []);
+
+  async function enable(): Promise<void> {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await enablePush();
+      if (r === 'enabled') {
+        setSubscribed(true);
+        setMsg('Push notifications are on for this device.');
+      } else if (r === 'denied') {
+        setMsg('Notifications are blocked in your browser settings — allow them, then try again.');
+      } else if (r === 'unsupported') {
+        setMsg('This browser does not support push notifications.');
+      } else {
+        setMsg('Push notifications are not available right now.');
+      }
+    } catch {
+      setMsg('Could not enable push notifications.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable(): Promise<void> {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await disablePush();
+      setSubscribed(false);
+      setMsg('Push notifications are off for this device.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Push notifications (this device)">
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+        Get a notification on this device whenever your firm posts something new — even when the
+        portal isn’t open. Push is per-device, so enable it on each phone or computer you use.
+      </p>
+      {state === 'loading' && (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Checking…</p>
+      )}
+      {state === 'unsupported' && (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+          This browser doesn’t support push notifications.
+        </p>
+      )}
+      {state === 'disabled' && (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+          Push notifications aren’t configured for this portal.
+        </p>
+      )}
+      {state === 'ready' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          {subscribed ? (
+            <>
+              <Pill tone="success">On for this device</Pill>
+              <Button variant="secondary" size="sm" onClick={() => void disable()} disabled={busy}>
+                Turn off
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" onClick={() => void enable()} disabled={busy}>
+              Enable on this device
+            </Button>
+          )}
+        </div>
+      )}
+      {state === 'ready' && isIos() && !isStandalone() && (
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 10 }}>
+          On iPhone/iPad, first add this portal to your Home Screen (Share → “Add to Home Screen”),
+          then open it from there to enable notifications.
+        </p>
+      )}
+      {msg && (
+        <p style={{ fontSize: 12, color: tokens.color.text, marginTop: 10 }} role="status">
+          {msg}
+        </p>
+      )}
+    </Card>
+  );
+}
 
 export function NotificationPrefsPage(): JSX.Element {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
@@ -87,6 +205,7 @@ export function NotificationPrefsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 700 }}>
+      <PushNotificationCard />
       <Card title="Notification preferences (active client)">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
           Pick the channel(s) you want for each event type. Empty means no notification will be sent

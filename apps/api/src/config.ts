@@ -144,6 +144,14 @@ const Schema = z.object({
   VOICE_TWILIO_ACCOUNT_SID: z.string().optional(),
   VOICE_TWILIO_AUTH_TOKEN: z.string().optional(),
   VOICE_TWILIO_FROM: z.string().optional(),
+  // Web Push (VAPID) for the installable client portal PWA. All optional —
+  // presence of both keys is what enables push (the portal hides the toggle
+  // and the worker no-ops otherwise). Generate once with
+  // `npx web-push generate-vapid-keys`; the public key is exposed to the
+  // portal SPA, the private key signs pushes on the worker.
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default('mailto:[email protected]'),
 });
 
 export type AppConfig = z.infer<typeof Schema>;
