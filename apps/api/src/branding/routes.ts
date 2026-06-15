@@ -2,11 +2,10 @@
 //
 // Firm logo upload + public branding asset serving.
 //
-//  - Admin (firm:settings:write): a two-leg presigned-PUT upload (mirrors the
-//    client-file pattern) for the wide logo and a square icon source. On
-//    "complete" the wide logo's effective URL (brand_logo_url) is pointed at
-//    the public endpoint; the square source is resized into the PWA/Apple
-//    icons. Firms can still paste an external URL instead.
+//  - Admin (firm:settings:write): the wide logo and a square icon source are
+//    POSTed as bytes through the API (small images), which stores them and sets
+//    the wide logo's effective URL (brand_logo_url) to the public endpoint; the
+//    square source is resized into the PWA/Apple icons. External URL still works.
 //  - Public (no auth): serves the wide logo and the generated icons so the
 //    portal login screen, shared pages, PDFs (Puppeteer), and the PWA manifest
 //    can all fetch them without a session. Single-firm appliance → first firm.
