@@ -127,6 +127,11 @@ services:
       OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
       OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
       OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
+      # Web Push (VAPID) for the installable portal PWA. Empty → push disabled.
+      # Generate once with `npx web-push generate-vapid-keys`.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@example.com}
     volumes:
       - cloudflared-run:/run/cloudflared
     entrypoint: ['/usr/bin/tini', '--', '/app/ops/docker/entrypoint-api.sh']
@@ -178,6 +183,10 @@ services:
       OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
       PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET}
+      # Web Push (VAPID) — the worker signs/sends portal pushes.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@example.com}
       # Mail/SMS for worker-originated notifications (dunning, alerts,
       # document-intake emails). Mirrors the api provider selection; the
       # provider's own secret env vars are supplied via the deployment's
