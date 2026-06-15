@@ -399,11 +399,21 @@ export const firmSettings = pgTable('firm_settings', {
 
   // Branding (Phase 4 #13)
   brandDisplayName: text('brand_display_name'),
+  // brandLogoUrl is the *effective* wide-logo URL used everywhere (portal
+  // header, PDFs, shared pages). An uploaded logo sets it to the public
+  // branding endpoint; firms can also paste an external URL here.
   brandLogoUrl: text('brand_logo_url'),
   brandAccentColor: text('brand_accent_color'),
   brandSupportEmail: text('brand_support_email'),
   brandSupportPhone: text('brand_support_phone'),
   brandFooterHtml: text('brand_footer_html'),
+  // Logo-upload bookkeeping (firm logo upload). Storage keys present ⇒ an
+  // asset was uploaded (vs. an external URL); the square icon source is
+  // resized into the PWA/Apple icons on upload. Version bumps on any change
+  // to bust caches on the public branding endpoints.
+  brandLogoStorageKey: text('brand_logo_storage_key'),
+  brandIconStorageKey: text('brand_icon_storage_key'),
+  brandAssetsVersion: integer('brand_assets_version').notNull().default(0),
 
   // 0053 — Billing + A/R block (legacy "Firm — Billing and A/R" tab).
   brandSupportFax: text('brand_support_fax'),

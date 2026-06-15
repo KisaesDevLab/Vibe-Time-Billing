@@ -21,6 +21,7 @@ import { staffAuthDeps } from './auth/middleware';
 import type { SessionStore } from './auth/session-store';
 import type { Database } from '@vibe/db';
 import { createAdminRouter } from './admin/routes';
+import { createBrandingAdminRouter, createBrandingPublicRouter } from './branding/routes';
 import { createAdminDataRouter } from './admin/data';
 import { createPaymentMethodTypeRouter } from './admin/payment-method-types';
 import { createTaxJurisdictionRouter, createTaxPaymentTypeRouter } from './admin/tax-catalog';
@@ -493,6 +494,14 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/admin/templates', auth.requireAuth, auth.requireCsrf, templateRouter);
 
+  // Firm logo upload (wide logo + square icon source → generated PWA icons).
+  const brandingAdminRouter = createBrandingAdminRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    appBaseUrl: config.APP_BASE_URL,
+  });
+  app.use('/api/staff/admin/branding', auth.requireAuth, auth.requireCsrf, brandingAdminRouter);
+
   // 0084 — request templates (sibling to engagement/letter/client
   // templates above; lives under its own subpath to keep the router
   // small + cleanly testable).
@@ -912,6 +921,7 @@ export function createApp(deps: AppDeps): Express {
   app.get('/api/portal/manifest.webmanifest', async (_req: Request, res: Response) => {
     let name = 'Client Portal';
     let themeColor = '#0f6cbd';
+    let version = 0;
     if (deps.db) {
       try {
         const { firmSettings, firms } = await import('@vibe/db/schema');
@@ -921,17 +931,22 @@ export function createApp(deps: AppDeps): Express {
             .select({
               displayName: firmSettings.brandDisplayName,
               accentColor: firmSettings.brandAccentColor,
+              assetsVersion: firmSettings.brandAssetsVersion,
             })
             .from(firmSettings)
             .where(eq(firmSettings.firmId, first.id))
             .limit(1);
           if (b?.displayName) name = b.displayName;
           if (b?.accentColor) themeColor = b.accentColor;
+          if (b?.assetsVersion) version = b.assetsVersion;
         }
       } catch {
         /* fall back to defaults */
       }
     }
+    // Icons resolve through the dynamic branding endpoint (firm mark if
+    // uploaded, accent-color default otherwise); ?v busts the cache on change.
+    const v = `?v=${version}`;
     res.type('application/manifest+json').json({
       name,
       short_name: name.length > 12 ? 'Portal' : name,
@@ -943,12 +958,30 @@ export function createApp(deps: AppDeps): Express {
       background_color: '#0f1419',
       theme_color: themeColor,
       icons: [
-        { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-        { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-        { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        {
+          src: `/api/portal/branding/icon-192.png${v}`,
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: `/api/portal/branding/icon-512.png${v}`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: `/api/portal/branding/icon-maskable-512.png${v}`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable',
+        },
       ],
     });
   });
+
+  // Public branding assets (no auth): wide logo + generated PWA icons.
+  app.use('/api/portal/branding', createBrandingPublicRouter({ db: deps.db }));
 
   // R3 — portal retainer offer flow (get / select / decline).
   const portalRetainerOfferRouter = createPortalRetainerOfferRouter({

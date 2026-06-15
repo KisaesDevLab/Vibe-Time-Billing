@@ -5,6 +5,7 @@ import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
+import { BrandingUpload } from './BrandingUpload';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -111,19 +112,23 @@ export function FirmSettingsPage(): JSX.Element {
     'unknown',
   );
 
+  async function refreshSettings(): Promise<void> {
+    const r = await api<{
+      firm: Firm;
+      settings: Settings;
+      esignProvider?: EsignProvider;
+      openSignAvailable?: boolean;
+    }>('/api/staff/admin/firm-settings');
+    setS(r.settings);
+    setF(r.firm);
+    setEsignProvider(r.esignProvider ?? 'native');
+    setOpenSignAvailable(Boolean(r.openSignAvailable));
+  }
+
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{
-          firm: Firm;
-          settings: Settings;
-          esignProvider?: EsignProvider;
-          openSignAvailable?: boolean;
-        }>('/api/staff/admin/firm-settings');
-        setS(r.settings);
-        setF(r.firm);
-        setEsignProvider(r.esignProvider ?? 'native');
-        setOpenSignAvailable(Boolean(r.openSignAvailable));
+        await refreshSettings();
         try {
           const status = await api<{
             locked: boolean;
@@ -477,12 +482,24 @@ export function FirmSettingsPage(): JSX.Element {
             onChange={(e) => setS({ ...s, brandDisplayName: e.target.value })}
             placeholder="Smith & Associates, CPA"
           />
+          <BrandingUpload
+            kind="logo"
+            label="Logo (wide)"
+            help="Shown on the portal header, shared pages, and invoice/statement PDFs. Use a transparent PNG or SVG ~600px+ wide; it scales down automatically."
+            onChanged={() => void refreshSettings()}
+          />
           <Input
-            label="Logo URL"
+            label="…or paste a logo URL"
             type="url"
             value={s.brandLogoUrl ?? ''}
             onChange={(e) => setS({ ...s, brandLogoUrl: e.target.value })}
             placeholder="https://cdn.example.com/logo.png"
+          />
+          <BrandingUpload
+            kind="icon"
+            label="App icon (square)"
+            help="Used for the installable portal app icon (home screen + notifications). Upload a square PNG ≥512×512; we generate the required sizes. Optional — falls back to a generated accent-color icon."
+            onChanged={() => void refreshSettings()}
           />
           <Input
             label="Accent color (hex)"

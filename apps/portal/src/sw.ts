@@ -100,8 +100,8 @@ sw.addEventListener('push', (event) => {
   event.waitUntil(
     sw.registration.showNotification(data.title, {
       body: data.body,
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
+      icon: '/api/portal/branding/icon-192.png',
+      badge: '/api/portal/branding/icon-192.png',
       data: { url: data.url },
     }),
   );
