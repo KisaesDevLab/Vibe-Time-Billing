@@ -95,6 +95,7 @@ interface PersistedView {
   assignee: string[];
   priority: string[];
   status: string[];
+  dueRange: DueRange;
 }
 
 const DEFAULT_VIEW: PersistedView = {
@@ -107,6 +108,7 @@ const DEFAULT_VIEW: PersistedView = {
   assignee: [],
   priority: [],
   status: [],
+  dueRange: 'all',
 };
 
 function loadView(): PersistedView {
@@ -127,6 +129,46 @@ function todayIso(): string {
 }
 
 const UNASSIGNED = '__unassigned__';
+
+type DueRange = 'all' | 'week' | 'month' | 'quarter' | 'year';
+const DUE_RANGE_OPTIONS: Array<{ value: DueRange; label: string }> = [
+  { value: 'all', label: 'All due dates' },
+  { value: 'week', label: 'Due this week' },
+  { value: 'month', label: 'Due this month' },
+  { value: 'quarter', label: 'Due this quarter' },
+  { value: 'year', label: 'Due this year' },
+];
+
+// True when a task's due date falls in the calendar period containing today.
+// Undated tasks are excluded once a range is chosen (nothing to match on).
+function dueInRange(dueIso: string | null, range: DueRange): boolean {
+  if (range === 'all') return true;
+  if (!dueIso) return false;
+  const [y, m, d] = dueIso.split('-').map(Number);
+  if (!y || !m || !d) return false;
+  const due = new Date(y, m - 1, d);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  let start: Date;
+  let end: Date;
+  if (range === 'week') {
+    start = new Date(now);
+    start.setDate(now.getDate() - now.getDay()); // Sunday
+    end = new Date(start);
+    end.setDate(start.getDate() + 7);
+  } else if (range === 'month') {
+    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  } else if (range === 'quarter') {
+    const q = Math.floor(now.getMonth() / 3);
+    start = new Date(now.getFullYear(), q * 3, 1);
+    end = new Date(now.getFullYear(), q * 3 + 3, 1);
+  } else {
+    start = new Date(now.getFullYear(), 0, 1);
+    end = new Date(now.getFullYear() + 1, 0, 1);
+  }
+  return due >= start && due < end;
+}
 
 export function TasksPage(): JSX.Element {
   const navigate = useNavigate();
@@ -151,6 +193,7 @@ export function TasksPage(): JSX.Element {
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set(initial.assignee));
   const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set(initial.priority));
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(initial.status));
+  const [dueRange, setDueRange] = useState<DueRange>(initial.dueRange);
 
   // dialog: undefined = closed; null = create; TaskRow = edit
   const [dialog, setDialog] = useState<TaskRow | null | undefined>(undefined);
@@ -199,6 +242,7 @@ export function TasksPage(): JSX.Element {
       assignee: [...assigneeFilter],
       priority: [...priorityFilter],
       status: [...statusFilter],
+      dueRange,
     };
     try {
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(v));
@@ -214,6 +258,7 @@ export function TasksPage(): JSX.Element {
     assigneeFilter,
     priorityFilter,
     statusFilter,
+    dueRange,
   ]);
 
   async function patch(id: string, body: Record<string, unknown>): Promise<void> {
@@ -273,6 +318,7 @@ export function TasksPage(): JSX.Element {
     if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assigneeUserId ?? UNASSIGNED))
       return false;
     if (priorityFilter.size > 0 && !priorityFilter.has(t.priority)) return false;
+    if (!dueInRange(t.dueDate, dueRange)) return false;
     return true;
   }
 
@@ -315,17 +361,18 @@ export function TasksPage(): JSX.Element {
     }
     return r;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, clientFilter, assigneeFilter, priorityFilter, statusFilter, sortBy]);
+  }, [rows, clientFilter, assigneeFilter, priorityFilter, statusFilter, dueRange, sortBy]);
 
   const kanbanRows = useMemo(
     () => rows.filter(passesNonStatus),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, clientFilter, assigneeFilter, priorityFilter],
+    [rows, clientFilter, assigneeFilter, priorityFilter, dueRange],
   );
 
   const sortFor = (c: SortCol): SortDir => (sortBy.col === c ? sortBy.dir : null);
   const filtersActive =
     clientFilter.size + assigneeFilter.size + priorityFilter.size + statusFilter.size > 0 ||
+    dueRange !== 'all' ||
     q.trim().length > 0;
 
   function clearFilters(): void {
@@ -333,6 +380,7 @@ export function TasksPage(): JSX.Element {
     setAssigneeFilter(new Set());
     setPriorityFilter(new Set());
     setStatusFilter(new Set());
+    setDueRange('all');
     setQ('');
     void load();
   }
@@ -413,6 +461,25 @@ export function TasksPage(): JSX.Element {
             />
             Show done / canceled
           </label>
+          <select
+            aria-label="Filter by due date"
+            value={dueRange}
+            onChange={(e) => setDueRange(e.target.value as DueRange)}
+            style={{
+              padding: '6px 10px',
+              fontSize: 13,
+              background: tokens.color.surface,
+              color: tokens.color.text,
+              border: `1px solid ${dueRange === 'all' ? tokens.color.border : tokens.color.accent}`,
+              borderRadius: tokens.radius.md,
+            }}
+          >
+            {DUE_RANGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
           {filtersActive && (
             <button
               type="button"
