@@ -9,6 +9,8 @@ export interface AuthLayoutProps {
   subtitle?: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Optional firm logo shown above the brand label (e.g. on the portal). */
+  logo?: ReactNode;
 }
 
 /**
@@ -51,6 +53,7 @@ export function AuthLayout({
   subtitle,
   children,
   footer,
+  logo,
 }: AuthLayoutProps): JSX.Element {
   useLightAuthTheme();
   return (
@@ -76,6 +79,7 @@ export function AuthLayout({
           padding: tokens.space.xxl,
         }}
       >
+        {logo && <div style={{ marginBottom: tokens.space.md }}>{logo}</div>}
         <div
           style={{
             fontSize: 12,

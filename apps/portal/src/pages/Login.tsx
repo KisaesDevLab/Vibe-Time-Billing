@@ -9,6 +9,21 @@ import { useAuth } from '../auth-context';
 
 const AT = '@';
 
+// Firm logo on the auth screens. Reads the public branding endpoint (no auth);
+// renders nothing when no logo is uploaded (the endpoint 404s).
+function BrandLogo(): JSX.Element | null {
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  return (
+    <img
+      src="/api/portal/branding/logo"
+      alt=""
+      onError={() => setOk(false)}
+      style={{ maxHeight: 48, maxWidth: 200, objectFit: 'contain', display: 'block' }}
+    />
+  );
+}
+
 export function LoginPage(): JSX.Element {
   const [searchParams] = useSearchParams();
   const tokenFromUrl = searchParams.get('token');
@@ -54,7 +69,7 @@ function CombinedLogin(): JSX.Element {
 
   if (status === 'sent_email') {
     return (
-      <AuthLayout brand="Client Portal" title="Check your email">
+      <AuthLayout brand="Client Portal" logo={<BrandLogo />} title="Check your email">
         <p style={{ fontSize: 14 }}>
           If your account exists, a sign-in link has been sent. The link is valid for 15 minutes.
         </p>
@@ -69,6 +84,7 @@ function CombinedLogin(): JSX.Element {
   return (
     <AuthLayout
       brand="Client Portal"
+      logo={<BrandLogo />}
       title="Sign in"
       subtitle="Enter your email or mobile phone — we'll detect which."
       footer="One person, multiple entities — your accesses live behind a single sign-in."
@@ -127,7 +143,12 @@ function SmsOtpForm({ phone }: { phone: string }): JSX.Element {
   }
 
   return (
-    <AuthLayout brand="Client Portal" title="Enter your code" subtitle={`Sent to ${phone}`}>
+    <AuthLayout
+      brand="Client Portal"
+      logo={<BrandLogo />}
+      title="Enter your code"
+      subtitle={`Sent to ${phone}`}
+    >
       <form onSubmit={submit} style={{ display: 'grid', gap: 12 }}>
         <Input
           label="6-digit code"
@@ -186,7 +207,7 @@ function VerifyMagic({ token }: { token: string }): JSX.Element {
   }
 
   return (
-    <AuthLayout brand="Client Portal" title="Confirm sign-in">
+    <AuthLayout brand="Client Portal" logo={<BrandLogo />} title="Confirm sign-in">
       <p style={{ fontSize: 14 }}>Tap continue to complete sign-in.</p>
       <Button onClick={verify} disabled={submitting}>
         {submitting ? 'Verifying…' : 'Continue'}
@@ -232,6 +253,7 @@ function DeviceOtpForm({
   return (
     <AuthLayout
       brand="Client Portal"
+      logo={<BrandLogo />}
       title="Verify this device"
       subtitle={`For your security, enter the code we texted to the number ending in ${phoneHint}.`}
     >
