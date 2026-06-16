@@ -414,6 +414,11 @@ export const firmSettings = pgTable('firm_settings', {
   brandLogoStorageKey: text('brand_logo_storage_key'),
   brandIconStorageKey: text('brand_icon_storage_key'),
   brandAssetsVersion: integer('brand_assets_version').notNull().default(0),
+  // Cloudflare Turnstile CAPTCHA for the public intake form. Site key is
+  // public; the secret is stored as a KMS-encrypted envelope. CAPTCHA is
+  // active only when both are set.
+  turnstileSiteKey: text('turnstile_site_key'),
+  turnstileSecretEnc: text('turnstile_secret_enc'),
 
   // 0053 — Billing + A/R block (legacy "Firm — Billing and A/R" tab).
   brandSupportFax: text('brand_support_fax'),
@@ -4918,6 +4923,9 @@ export const intakeSessions = pgTable(
     clientEmailEnc: bytea('client_email_enc'),
     clientPhoneEnc: bytea('client_phone_enc'),
     messageEnc: bytea('message_enc'),
+    // Plaintext flag (no PII): lets the anonymous "complete" step accept a
+    // message-only submission (no files) without decrypting message_enc.
+    hasMessage: boolean('has_message').notNull().default(false),
     source: text('source').notNull().default('public'),
     linkTokenId: uuid('link_token_id').references(() => intakeLinks.id, { onDelete: 'set null' }),
     status: text('status').notNull().default('pending_scan'),

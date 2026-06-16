@@ -40,6 +40,7 @@ import { seedNotificationTemplates, NOTIFICATION_TEMPLATE_DEFAULTS } from '@vibe
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { encryptTurnstileSecret } from '../intake/turnstile-config';
 
 export interface AdminRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -134,6 +135,11 @@ const FirmSettingsPatchSchema = z.object({
   // v2 — firm-default surcharge label inherited by engagements
   // whose surcharge_label is null. Engagement can still override.
   defaultSurchargeLabel: z.string().min(1).max(80).optional(),
+  // Cloudflare Turnstile (public intake CAPTCHA). Site key is public; the
+  // secret is write-only here (encrypted before storage, never returned).
+  // Empty string / null clears the value.
+  turnstileSiteKey: z.string().max(200).nullable().optional(),
+  turnstileSecret: z.string().max(500).nullable().optional(),
 });
 // NOT .strict(): the PATCH handler validates the SAME combined body against
 // both this schema and FirmPatchSchema. Zod's default STRIP behavior drops the
@@ -176,9 +182,17 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .from(firmSettingsProposals)
         .where(eq(firmSettingsProposals.firmId, firmId))
         .limit(1);
+      // Never return the encrypted Turnstile secret envelope — expose only
+      // whether one is set so the UI can show "(saved)".
+      const safeSettings = settings
+        ? (() => {
+            const { turnstileSecretEnc, ...rest } = settings;
+            return { ...rest, turnstileSecretSet: Boolean(turnstileSecretEnc) };
+          })()
+        : settings;
       res.json({
         firm,
-        settings,
+        settings: safeSettings,
         esignProvider: proposalSettings?.esignProvider ?? 'native',
         openSignAvailable: Boolean(deps.openSignAvailable),
       });
@@ -213,10 +227,16 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       const firmData =
         firmParsed.success && Object.keys(firmParsed.data).length > 0 ? firmParsed.data : null;
       if (settingsData) {
-        await deps.db
-          .update(firmSettings)
-          .set({ ...settingsData, updatedAt: new Date() })
-          .where(eq(firmSettings.firmId, firmId));
+        // turnstileSecret isn't a column — encrypt it into turnstile_secret_enc
+        // (or clear it). Everything else maps to columns directly.
+        const { turnstileSecret, ...columns } = settingsData;
+        const set: Record<string, unknown> = { ...columns, updatedAt: new Date() };
+        if (turnstileSecret !== undefined) {
+          set['turnstileSecretEnc'] = turnstileSecret
+            ? encryptTurnstileSecret(turnstileSecret)
+            : null;
+        }
+        await deps.db.update(firmSettings).set(set).where(eq(firmSettings.firmId, firmId));
       }
       if (firmData) {
         await deps.db

@@ -23,7 +23,13 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, intakeFiles, intakeSessions, intakeStaffCards } from '@vibe/db/schema';
+import {
+  appUsers,
+  firmSettings,
+  intakeFiles,
+  intakeSessions,
+  intakeStaffCards,
+} from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 import { checkAndIncrement } from '@vibe/core/auth';
 
@@ -34,6 +40,7 @@ import { resolveApplianceFirmId } from './firm';
 import { newIntakeRecordKey, unwrapIntakeRecordKey, encField } from './crypto';
 import { enqueueIntakeProcess, type IntakeProcessJob } from './queue';
 import { resolveIntakeLink, markLinkUsed } from './links';
+import { decryptTurnstileSecret } from './turnstile-config';
 
 export interface IntakePublicDeps {
   db: Database | null;
@@ -41,6 +48,27 @@ export interface IntakePublicDeps {
   storageClient?: StorageClient;
   /** Override the worker enqueue (tests stub this to avoid a live queue). */
   enqueue?: (job: IntakeProcessJob) => Promise<void>;
+  /** Override Turnstile token verification in tests (default: live siteverify).
+   *  Receives the firm's decrypted secret + the submitted token. */
+  verifyCaptcha?: (secret: string, token: string, ip: string) => Promise<boolean>;
+}
+
+// Cloudflare Turnstile server-side verification. Fail-closed: any error or a
+// falsey result rejects (a CAPTCHA that fails open is no CAPTCHA).
+async function verifyTurnstile(secret: string, token: string, ip: string): Promise<boolean> {
+  try {
+    const body = new URLSearchParams({ secret, response: token });
+    if (ip) body.set('remoteip', ip);
+    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const data = (await r.json()) as { success?: boolean };
+    return data.success === true;
+  } catch {
+    return false;
+  }
 }
 
 // ── limits ──────────────────────────────────────────────────────────────
@@ -87,6 +115,28 @@ function getStorage(deps: IntakePublicDeps): StorageClient | null {
   }
 }
 
+// Resolve the firm's Turnstile config (admin-managed). Returns null when not
+// fully configured (CAPTCHA off) or the secret can't be decrypted.
+async function loadTurnstile(
+  db: Database,
+  firmId: string,
+): Promise<{ siteKey: string; secret: string } | null> {
+  const [s] = await db
+    .select({
+      siteKey: firmSettings.turnstileSiteKey,
+      secretEnc: firmSettings.turnstileSecretEnc,
+    })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firmId))
+    .limit(1);
+  if (!s?.siteKey || !s.secretEnc) return null;
+  try {
+    return { siteKey: s.siteKey, secret: decryptTurnstileSecret(s.secretEnc) };
+  } catch {
+    return null;
+  }
+}
+
 // ── validation ──────────────────────────────────────────────────────────
 const SessionSchema = z
   .object({
@@ -96,6 +146,7 @@ const SessionSchema = z
     clientPhone: z.string().trim().min(7).max(40).optional(),
     message: z.string().trim().max(2000).optional(),
     linkToken: z.string().max(200).optional(),
+    captchaToken: z.string().max(4000).optional(),
   })
   .refine((d) => Boolean(d.clientEmail || d.clientPhone), {
     message: 'an email or phone is required',
@@ -164,6 +215,14 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
     const lock = getApplianceLockState();
     return lock.kind === 'unlocked' && lock.firmId === firmId;
   }
+
+  // ── GET /config — public form config (Turnstile site key when enabled) ─
+  router.get('/config', async (_req: Request, res: Response) => {
+    const firmId = await requireEnabledFirm(res);
+    if (!firmId || !deps.db) return;
+    const ts = await loadTurnstile(deps.db, firmId);
+    res.json({ turnstileSiteKey: ts?.siteKey ?? null });
+  });
 
   // ── GET /staff — visible, upload-accepting cards ──────────────────────
   router.get('/staff', async (_req: Request, res: Response) => {
@@ -256,6 +315,18 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
       return;
     }
 
+    // CAPTCHA — only enforced when the firm has configured Turnstile.
+    const turnstile = await loadTurnstile(deps.db, firmId);
+    if (turnstile) {
+      const token = parsed.data.captchaToken;
+      const verify = deps.verifyCaptcha ?? verifyTurnstile;
+      const ok = token ? await verify(turnstile.secret, token, clientIp(req)) : false;
+      if (!ok) {
+        res.status(400).json({ error: 'captcha_failed' });
+        return;
+      }
+    }
+
     // Resolve the target. A valid tokenized link binds the staff member
     // (and works even if their public card is hidden); otherwise the
     // chosen staff member must have a visible, upload-accepting card.
@@ -308,6 +379,7 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
           clientEmailEnc: encField(dek, parsed.data.clientEmail ?? null),
           clientPhoneEnc: encField(dek, parsed.data.clientPhone ?? null),
           messageEnc: encField(dek, parsed.data.message ?? null),
+          hasMessage: Boolean(parsed.data.message?.trim()),
           source,
           linkTokenId,
           status: 'pending_scan',
@@ -346,10 +418,14 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
     db: Database,
     firmId: string,
     sessionId: string,
-  ): Promise<{ id: string; wrappedDek: Uint8Array } | null> {
+  ): Promise<{ id: string; wrappedDek: Uint8Array; hasMessage: boolean } | null> {
     if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return null;
     const [row] = await db
-      .select({ id: intakeSessions.id, wrappedDek: intakeSessions.wrappedDek })
+      .select({
+        id: intakeSessions.id,
+        wrappedDek: intakeSessions.wrappedDek,
+        hasMessage: intakeSessions.hasMessage,
+      })
       .from(intakeSessions)
       .where(
         and(
@@ -467,7 +543,8 @@ export function createIntakePublicRouter(deps: IntakePublicDeps): Router {
       .select({ n: sql<number>`count(*)::int` })
       .from(intakeFiles)
       .where(eq(intakeFiles.sessionId, session.id));
-    if (Number(fileCountRows[0]?.n ?? 0) === 0) {
+    // Require at least a file OR a message — a message-only submission is fine.
+    if (Number(fileCountRows[0]?.n ?? 0) === 0 && !session.hasMessage) {
       res.status(400).json({ error: 'no_files' });
       return;
     }

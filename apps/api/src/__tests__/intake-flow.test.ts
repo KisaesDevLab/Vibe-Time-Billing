@@ -16,7 +16,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { firmConfig, intakeFiles, intakeSessions, intakeStaffCards } from '@vibe/db/schema';
+import {
+  firmConfig,
+  firmSettings,
+  intakeFiles,
+  intakeSessions,
+  intakeStaffCards,
+} from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -26,6 +32,7 @@ import { createIntakePublicRouter } from '../intake/public-routes';
 import { intakeJobId } from '../intake/queue';
 import { resetApplianceFirmIdForTests } from '../intake/firm';
 import { unwrapIntakeRecordKey, decField } from '../intake/crypto';
+import { encryptTurnstileSecret } from '../intake/turnstile-config';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
@@ -163,13 +170,15 @@ describe('intake flow — session + upload + complete', () => {
     await enableIntake(true);
   });
 
-  async function createSession(): Promise<string> {
-    const res = await request(buildApp()).post('/api/public/intake/session').send({
-      targetStaffId: seed.appUserId,
-      clientName: 'Jane Client',
-      clientEmail: 'jane@example.com',
-      message: 'Here are my W-2s',
-    });
+  async function createSession(message?: string): Promise<string> {
+    const res = await request(buildApp())
+      .post('/api/public/intake/session')
+      .send({
+        targetStaffId: seed.appUserId,
+        clientName: 'Jane Client',
+        clientEmail: 'jane@example.com',
+        ...(message ? { message } : {}),
+      });
     expect(res.status).toBe(201);
     return res.body.sessionId as string;
   }
@@ -246,11 +255,18 @@ describe('intake flow — session + upload + complete', () => {
     expect(res.status).toBe(400);
   });
 
-  it('complete requires at least one file', async () => {
-    const sessionId = await createSession();
+  it('complete requires at least a file or a message', async () => {
+    const sessionId = await createSession(); // no message, no files
     const res = await request(buildApp()).post(`/api/public/intake/session/${sessionId}/complete`);
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('no_files');
+  });
+
+  it('complete succeeds with a message and no files', async () => {
+    const sessionId = await createSession('Just a question — no documents to attach.');
+    const res = await request(buildApp()).post(`/api/public/intake/session/${sessionId}/complete`);
+    expect(res.status).toBe(200);
+    expect(enqueued).toEqual([{ sessionId, firmId: seed.firmId }]);
   });
 
   it('complete enqueues the worker job after an upload', async () => {
@@ -304,5 +320,83 @@ describe('intake flow — session + upload + complete', () => {
       .set('Content-Type', 'application/pdf')
       .send(Buffer.from('%PDF more'));
     expect(res.status).toBe(409);
+  });
+});
+
+describe('intake flow — CAPTCHA + config', () => {
+  function appWithCaptcha(
+    verify: (secret: string, token: string, ip: string) => Promise<boolean>,
+  ): express.Express {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/public/intake',
+      createIntakePublicRouter({
+        db: harness.db,
+        redis,
+        storageClient: storage,
+        enqueue: async (job) => {
+          enqueued.push(job);
+        },
+        verifyCaptcha: verify,
+      }),
+    );
+    return app;
+  }
+
+  async function enableTurnstile(): Promise<void> {
+    await harness.db.insert(firmConfig).values({ firmId: seed.firmId, intakeEnabled: true });
+    await harness.db.insert(intakeStaffCards).values({
+      firmId: seed.firmId,
+      userId: seed.appUserId,
+      isVisible: true,
+      acceptingUploads: true,
+      displayTitle: 'Tax Manager',
+    });
+    await harness.db.insert(firmSettings).values({
+      firmId: seed.firmId,
+      turnstileSiteKey: '0xSITE',
+      turnstileSecretEnc: encryptTurnstileSecret('s3cret'),
+    });
+  }
+
+  const base = {
+    targetStaffId: '',
+    clientName: 'Jane',
+    clientEmail: 'j@e.com',
+    message: 'hi',
+  };
+
+  it('GET /config exposes the site key when Turnstile is configured', async () => {
+    await enableTurnstile();
+    const res = await request(appWithCaptcha(async () => true)).get('/api/public/intake/config');
+    expect(res.status).toBe(200);
+    expect(res.body.turnstileSiteKey).toBe('0xSITE');
+  });
+
+  it('rejects a session with no captcha token when configured', async () => {
+    await enableTurnstile();
+    const res = await request(appWithCaptcha(async () => true))
+      .post('/api/public/intake/session')
+      .send({ ...base, targetStaffId: seed.appUserId });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('captcha_failed');
+  });
+
+  it('rejects when the captcha token fails verification', async () => {
+    await enableTurnstile();
+    const res = await request(appWithCaptcha(async () => false))
+      .post('/api/public/intake/session')
+      .send({ ...base, targetStaffId: seed.appUserId, captchaToken: 'bad' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('captcha_failed');
+  });
+
+  it('creates a session when the captcha token verifies', async () => {
+    await enableTurnstile();
+    const res = await request(appWithCaptcha(async () => true))
+      .post('/api/public/intake/session')
+      .send({ ...base, targetStaffId: seed.appUserId, captchaToken: 'good' });
+    expect(res.status).toBe(201);
   });
 });

@@ -57,6 +57,10 @@ interface Settings {
   billableTargetHoursPerMonth: number;
   aiProvider: 'local' | 'cloud' | null;
   invoiceTemplateStyle: 'modern' | 'classic' | 'minimal';
+  // Cloudflare Turnstile (public intake CAPTCHA). Secret is write-only; the
+  // API returns only whether one is saved.
+  turnstileSiteKey: string | null;
+  turnstileSecretSet?: boolean;
   // v2 — firm-wide default for the surcharge line label.
   defaultSurchargeLabel: string;
   // 0053 — Billing + A/R
@@ -108,6 +112,8 @@ export function FirmSettingsPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  // Write-only Turnstile secret entry (the API never returns the stored one).
+  const [turnstileSecret, setTurnstileSecret] = useState('');
   const [unlockMode, setUnlockMode] = useState<'sealed-on-disk' | 'admin-passphrase' | 'unknown'>(
     'unknown',
   );
@@ -170,6 +176,9 @@ export function FirmSettingsPage(): JSX.Element {
           aiProvider: s.aiProvider,
           invoiceTemplateStyle: s.invoiceTemplateStyle,
           defaultSurchargeLabel: s.defaultSurchargeLabel,
+          turnstileSiteKey: s.turnstileSiteKey || null,
+          // Only send the secret when the admin typed a new one (write-only).
+          ...(turnstileSecret.trim() ? { turnstileSecret: turnstileSecret.trim() } : {}),
           brandDisplayName: s.brandDisplayName || null,
           brandLogoUrl: s.brandLogoUrl || null,
           brandAccentColor: s.brandAccentColor || null,
@@ -200,6 +209,10 @@ export function FirmSettingsPage(): JSX.Element {
         }),
       });
       setSavedAt(Date.now());
+      if (turnstileSecret.trim()) {
+        setTurnstileSecret('');
+        await refreshSettings(); // pick up turnstileSecretSet
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'save failed');
     } finally {
@@ -551,6 +564,44 @@ export function FirmSettingsPage(): JSX.Element {
               }}
             />
           </label>
+        </div>
+      </Card>
+
+      <Card title="Document intake — CAPTCHA">
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+          Protect the public document-intake form with Cloudflare Turnstile. Create a widget at{' '}
+          <a
+            href="https://dash.cloudflare.com/?to=/:account/turnstile"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: tokens.color.accent }}
+          >
+            Cloudflare → Turnstile
+          </a>{' '}
+          and paste the site key + secret here. Leave both blank to disable.
+        </p>
+        <div style={{ display: 'grid', gap: 12, maxWidth: 560 }}>
+          <Input
+            label="Turnstile site key"
+            value={s.turnstileSiteKey ?? ''}
+            onChange={(e) => setS({ ...s, turnstileSiteKey: e.target.value })}
+            placeholder="0x4AAAAAAA…"
+          />
+          <Input
+            label={
+              s.turnstileSecretSet
+                ? 'Turnstile secret (saved · enter to replace)'
+                : 'Turnstile secret'
+            }
+            type="password"
+            value={turnstileSecret}
+            onChange={(e) => setTurnstileSecret(e.target.value)}
+            placeholder={s.turnstileSecretSet ? '••••••••' : '0x4AAAAAAA…'}
+          />
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+            The secret is encrypted at rest and never shown again. CAPTCHA activates once both the
+            site key and secret are saved.
+          </p>
         </div>
       </Card>
 
