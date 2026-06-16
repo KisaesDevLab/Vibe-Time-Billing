@@ -31,10 +31,19 @@ describe('wrapMailWithBranding', () => {
     expect(sent[0]!.body).toBe('Your invoice is ready.'); // text preserved
   });
 
-  it('leaves an email that already has HTML untouched', async () => {
+  it('wraps an HTML snippet in the branded shell', async () => {
     const { provider, sent } = captureProvider();
     const mailer = wrapMailWithBranding(provider, { db: null });
     await mailer.send({ to: 'c@x.example', subject: 'Hi', body: 'text', html: '<p>custom</p>' });
-    expect(sent[0]!.html).toBe('<p>custom</p>');
+    expect(sent[0]!.html).toContain('<p>custom</p>'); // snippet kept
+    expect(sent[0]!.html).toContain('<!doctype html>'); // …inside the branded shell
+  });
+
+  it('leaves a full HTML document untouched', async () => {
+    const { provider, sent } = captureProvider();
+    const mailer = wrapMailWithBranding(provider, { db: null });
+    const full = '<!doctype html><html><body>invoice</body></html>';
+    await mailer.send({ to: 'c@x.example', subject: 'Hi', body: 'text', html: full });
+    expect(sent[0]!.html).toBe(full);
   });
 });

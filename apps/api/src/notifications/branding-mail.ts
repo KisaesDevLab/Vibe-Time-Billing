@@ -9,7 +9,12 @@ import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { firmSettings, firms } from '@vibe/db/schema';
-import { wrapPlainTextEmail, type EmailBranding } from '@vibe/core/notifications';
+import {
+  wrapPlainTextEmail,
+  wrapHtmlSnippet,
+  isFullHtmlDocument,
+  type EmailBranding,
+} from '@vibe/core/notifications';
 
 import type { MailProvider } from '../mail/provider';
 
@@ -61,8 +66,13 @@ export function wrapMailWithBranding(
   return {
     id: inner.id,
     async send(msg) {
-      if (msg.html) return inner.send(msg);
-      const html = wrapPlainTextEmail({ text: msg.body, branding: await branding() });
+      // Full HTML documents are already complete (e.g. invoice emails) — leave
+      // them. Plain-text and HTML snippets get wrapped in the branded shell.
+      if (msg.html && isFullHtmlDocument(msg.html)) return inner.send(msg);
+      const b = await branding();
+      const html = msg.html
+        ? wrapHtmlSnippet({ html: msg.html, branding: b })
+        : wrapPlainTextEmail({ text: msg.body, branding: b });
       return inner.send({ ...msg, html });
     },
   };

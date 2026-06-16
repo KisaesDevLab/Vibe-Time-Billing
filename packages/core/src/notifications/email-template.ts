@@ -42,8 +42,7 @@ function textToHtml(text: string, accent: string): string {
  * (email clients strip <style>/external CSS). Safe to send as the `html`
  * alternative alongside the original text body.
  */
-export function wrapPlainTextEmail(opts: { text: string; branding: EmailBranding }): string {
-  const { text, branding } = opts;
+function brandedShell(innerHtml: string, branding: EmailBranding): string {
   const accent = branding.accentColor || '#0f6cbd';
   const firmName = branding.firmName || 'Your accounting firm';
 
@@ -72,8 +71,8 @@ export function wrapPlainTextEmail(opts: { text: string; branding: EmailBranding
     <div style="max-width:560px;margin:0 auto;padding:24px;">
       <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;color:#111827;">
         <div style="margin-bottom:20px;">${header}</div>
-        <div style="font-size:14px;line-height:1.55;color:#111827;white-space:normal;">
-          ${textToHtml(text, accent)}
+        <div style="font-size:14px;line-height:1.55;color:#111827;">
+          ${innerHtml}
         </div>
         ${footer}
       </div>
@@ -83,4 +82,20 @@ export function wrapPlainTextEmail(opts: { text: string; branding: EmailBranding
     </div>
   </body>
 </html>`;
+}
+
+/** Wrap a plain-text email body in the branded HTML shell. */
+export function wrapPlainTextEmail(opts: { text: string; branding: EmailBranding }): string {
+  const accent = opts.branding.accentColor || '#0f6cbd';
+  return brandedShell(textToHtml(opts.text, accent), opts.branding);
+}
+
+/** Wrap an HTML *snippet* (e.g. a few <p> tags) in the branded shell. */
+export function wrapHtmlSnippet(opts: { html: string; branding: EmailBranding }): string {
+  return brandedShell(opts.html, opts.branding);
+}
+
+/** True when the HTML is already a complete document (don't re-wrap these). */
+export function isFullHtmlDocument(html: string): boolean {
+  return /<!doctype|<html[\s>]/i.test(html);
 }

@@ -12,7 +12,12 @@ import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { firmSettings, firms } from '@vibe/db/schema';
-import { wrapPlainTextEmail, type EmailBranding } from '@vibe/core/notifications';
+import {
+  wrapPlainTextEmail,
+  wrapHtmlSnippet,
+  isFullHtmlDocument,
+  type EmailBranding,
+} from '@vibe/core/notifications';
 
 export interface MailArgs {
   to: string;
@@ -70,8 +75,11 @@ export function withEmailBranding(
     }
   }
   return async (args) => {
-    if (args.html) return dispatch(args);
-    const html = wrapPlainTextEmail({ text: args.body, branding: await branding() });
+    if (args.html && isFullHtmlDocument(args.html)) return dispatch(args);
+    const b = await branding();
+    const html = args.html
+      ? wrapHtmlSnippet({ html: args.html, branding: b })
+      : wrapPlainTextEmail({ text: args.body, branding: b });
     return dispatch({ ...args, html });
   };
 }
