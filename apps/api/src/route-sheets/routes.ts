@@ -204,6 +204,66 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
     };
   }
 
+  // A client-only snapshot with the engagement section left blank — used when
+  // there's no engagement selected/available, so staff get a fillable sheet.
+  async function buildBlankSnapshot(
+    db: Database,
+    firmId: string,
+    clientId: string,
+    note: string,
+  ): Promise<RouteSheetItemSnapshot | null> {
+    const [c] = await db
+      .select({
+        name: clients.name,
+        mailingStreet1: clients.mailingStreet1,
+        mailingStreet2: clients.mailingStreet2,
+        mailingCity: clients.mailingCity,
+        mailingState: clients.mailingState,
+        mailingPostal: clients.mailingPostal,
+        billingAddress: clients.billingAddress,
+      })
+      .from(clients)
+      .where(and(eq(clients.id, clientId), eq(clients.firmId, firmId)))
+      .limit(1);
+    if (!c) return null;
+
+    const contactRows = await db
+      .select({
+        cName: clientContacts.fullName,
+        cEmail: clientContacts.email,
+        cPhone: clientContacts.phone,
+        cMobile: clientContacts.mobile,
+        pName: persons.fullName,
+        pEmail: persons.email,
+        pPhone: persons.phone,
+        pMobile: persons.mobile,
+      })
+      .from(clientContacts)
+      .leftJoin(persons, eq(persons.id, clientContacts.personId))
+      .where(eq(clientContacts.clientId, clientId))
+      .orderBy(desc(clientContacts.isPrimary))
+      .limit(2);
+    const contacts = contactRows.map((r) => ({
+      name: r.pName ?? r.cName ?? '',
+      email: r.pEmail ?? r.cEmail ?? null,
+      home: r.pPhone ?? r.cPhone ?? null,
+      mobile: r.pMobile ?? r.cMobile ?? null,
+    }));
+
+    return {
+      engagementId: '',
+      engagementName: '',
+      workflowStateLabel: '',
+      periodLabel: null,
+      dueDate: null,
+      partnerName: null,
+      managerName: null,
+      assignees: [],
+      client: { name: c.name, address: clientAddress(c), contacts },
+      note,
+    };
+  }
+
   // ── GET uncompleted engagements for the route-sheet dialog ───────────
   router.get(
     '/client/:clientId/engagements',
@@ -264,6 +324,7 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
   const PrintSchema = z.object({
     clientId: z.string().uuid(),
     note: z.string().max(4000).optional(),
+    // Empty items ⇒ a blank route sheet (no engagement selected/available).
     items: z
       .array(
         z.object({
@@ -271,7 +332,6 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
           workflowState: z.string().min(1).max(120),
         }),
       )
-      .min(1)
       .max(50),
   });
 
@@ -290,21 +350,6 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
     const note = parsed.data.note?.trim() ?? '';
     const ids = parsed.data.items.map((i) => i.engagementId);
 
-    // Load the engagements (firm-scoped, on this client) + their current state.
-    const rows = await deps.db
-      .select({
-        id: engagements.id,
-        clientId: engagements.clientId,
-        workflowState: engagements.workflowState,
-      })
-      .from(engagements)
-      .where(and(eq(engagements.clientId, parsed.data.clientId), inArray(engagements.id, ids)));
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    // Every requested engagement must belong to this client.
-    if (rows.length !== new Set(ids).size) {
-      res.status(400).json({ error: 'engagement_not_on_client' });
-      return;
-    }
     // Confirm the client is in this firm.
     const [client] = await deps.db
       .select({ id: clients.id })
@@ -315,67 +360,95 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
       res.status(404).json({ error: 'client_not_found' });
       return;
     }
-    // Validate every target workflowState against the firm catalog.
-    const validStates = new Set(
-      (
-        await deps.db
-          .select({ ws: engagementStatusConfig.workflowState })
-          .from(engagementStatusConfig)
-          .where(eq(engagementStatusConfig.firmId, firmId))
-      ).map((r) => r.ws),
-    );
-    for (const it of parsed.data.items) {
-      if (!validStates.has(it.workflowState)) {
-        res.status(400).json({ error: 'invalid_workflow_state', detail: it.workflowState });
-        return;
-      }
-    }
 
-    // Commit each changed workflow_state via the canonical path: update,
-    // audit, stage the configured client notification. Build a snapshot
-    // per engagement for the print record / reprint.
+    // One record per page: an engagement snapshot, or — when no engagement is
+    // selected/available — a single client-only "blank" snapshot.
     const itemRecords: Array<{
-      engagementId: string;
-      before: string;
-      after: string;
+      engagementId: string | null;
+      before: string | null;
+      after: string | null;
       snapshot: RouteSheetItemSnapshot;
     }> = [];
-    for (const it of parsed.data.items) {
-      const cur = byId.get(it.engagementId)!;
-      const before = cur.workflowState;
-      const after = it.workflowState;
-      if (before !== after) {
-        await deps.db
-          .update(engagements)
-          .set({ workflowState: after, updatedAt: new Date() })
-          .where(eq(engagements.id, it.engagementId));
-        await emitAudit(deps.db, {
-          action: 'UPDATE',
-          entityType: 'engagement_workflow_state',
-          entityId: it.engagementId,
-          actorAppUserId: session.appUserId,
-          before: { workflowState: before },
-          after: { workflowState: after },
-          ip: clientIp(req),
-          userAgent: req.header('user-agent') ?? null,
-        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-        void stageStatusNotification(deps.db, {
-          firmId,
-          engagementId: it.engagementId,
-          clientId: parsed.data.clientId,
-          fromState: before,
-          toState: after,
-          actorAppUserId: session.appUserId,
-          ip: clientIp(req),
-          userAgent: req.header('user-agent') ?? null,
-        }).catch((err: unknown) => logger.error({ err }, 'status notification staging failed'));
-      }
-      const snapshot = await buildSnapshot(deps.db, firmId, it.engagementId, after, note);
+
+    if (ids.length === 0) {
+      const snapshot = await buildBlankSnapshot(deps.db, firmId, parsed.data.clientId, note);
       if (!snapshot) {
         res.status(500).json({ error: 'snapshot_failed' });
         return;
       }
-      itemRecords.push({ engagementId: it.engagementId, before, after, snapshot });
+      itemRecords.push({ engagementId: null, before: null, after: null, snapshot });
+    } else {
+      // Load the engagements (firm-scoped, on this client) + their current state.
+      const rows = await deps.db
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          workflowState: engagements.workflowState,
+        })
+        .from(engagements)
+        .where(and(eq(engagements.clientId, parsed.data.clientId), inArray(engagements.id, ids)));
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      // Every requested engagement must belong to this client.
+      if (rows.length !== new Set(ids).size) {
+        res.status(400).json({ error: 'engagement_not_on_client' });
+        return;
+      }
+      // Validate every target workflowState against the firm catalog.
+      const validStates = new Set(
+        (
+          await deps.db
+            .select({ ws: engagementStatusConfig.workflowState })
+            .from(engagementStatusConfig)
+            .where(eq(engagementStatusConfig.firmId, firmId))
+        ).map((r) => r.ws),
+      );
+      for (const it of parsed.data.items) {
+        if (!validStates.has(it.workflowState)) {
+          res.status(400).json({ error: 'invalid_workflow_state', detail: it.workflowState });
+          return;
+        }
+      }
+
+      // Commit each changed workflow_state via the canonical path: update,
+      // audit, stage the configured client notification. Build a snapshot
+      // per engagement for the print record / reprint.
+      for (const it of parsed.data.items) {
+        const cur = byId.get(it.engagementId)!;
+        const before = cur.workflowState;
+        const after = it.workflowState;
+        if (before !== after) {
+          await deps.db
+            .update(engagements)
+            .set({ workflowState: after, updatedAt: new Date() })
+            .where(eq(engagements.id, it.engagementId));
+          await emitAudit(deps.db, {
+            action: 'UPDATE',
+            entityType: 'engagement_workflow_state',
+            entityId: it.engagementId,
+            actorAppUserId: session.appUserId,
+            before: { workflowState: before },
+            after: { workflowState: after },
+            ip: clientIp(req),
+            userAgent: req.header('user-agent') ?? null,
+          }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+          void stageStatusNotification(deps.db, {
+            firmId,
+            engagementId: it.engagementId,
+            clientId: parsed.data.clientId,
+            fromState: before,
+            toState: after,
+            actorAppUserId: session.appUserId,
+            ip: clientIp(req),
+            userAgent: req.header('user-agent') ?? null,
+          }).catch((err: unknown) => logger.error({ err }, 'status notification staging failed'));
+        }
+        const snapshot = await buildSnapshot(deps.db, firmId, it.engagementId, after, note);
+        if (!snapshot) {
+          res.status(500).json({ error: 'snapshot_failed' });
+          return;
+        }
+        itemRecords.push({ engagementId: it.engagementId, before, after, snapshot });
+      }
     }
 
     // Render once to validate the template/Puppeteer path succeeds before
@@ -500,7 +573,10 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
       const counts = new Map<string, number>();
       if (rows.length > 0) {
         const itemRows = await deps.db
-          .select({ printId: routeSheetPrintItems.routeSheetPrintId })
+          .select({
+            printId: routeSheetPrintItems.routeSheetPrintId,
+            engagementId: routeSheetPrintItems.engagementId,
+          })
           .from(routeSheetPrintItems)
           .where(
             inArray(
@@ -508,7 +584,11 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
               rows.map((r) => r.id),
             ),
           );
-        for (const ir of itemRows) counts.set(ir.printId, (counts.get(ir.printId) ?? 0) + 1);
+        // Count only real engagements — a blank sheet's null-engagement row
+        // shouldn't read as "1 engagement".
+        for (const ir of itemRows) {
+          if (ir.engagementId) counts.set(ir.printId, (counts.get(ir.printId) ?? 0) + 1);
+        }
       }
       res.json({
         items: rows.map((r) => ({ ...r, engagementCount: counts.get(r.id) ?? 0 })),

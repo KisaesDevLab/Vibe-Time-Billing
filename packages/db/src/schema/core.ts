@@ -4298,9 +4298,11 @@ export const routeSheetPrintItems = pgTable(
     routeSheetPrintId: uuid('route_sheet_print_id')
       .notNull()
       .references(() => routeSheetPrints.id, { onDelete: 'cascade' }),
-    engagementId: uuid('engagement_id')
-      .notNull()
-      .references(() => engagements.id, { onDelete: 'cascade' }),
+    // Nullable: a "blank" route sheet (no engagement selected/available) stores
+    // one item row with a client-only snapshot and no engagement.
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'cascade',
+    }),
     workflowStateBefore: text('workflow_state_before'),
     workflowStateAfter: text('workflow_state_after'),
     snapshotJson: jsonb('snapshot_json').$type<RouteSheetItemSnapshot>(),

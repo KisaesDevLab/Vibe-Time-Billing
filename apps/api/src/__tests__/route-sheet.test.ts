@@ -163,6 +163,43 @@ describe('POST /print', () => {
     expect(audits).toHaveLength(1);
   });
 
+  it('prints a blank sheet (no engagements) — one client-only item, no status changes', async () => {
+    const res = await request(app())
+      .post('/api/staff/route-sheets/print')
+      .send({ clientId: seed.clientId, note: 'Walk-in drop-off', items: [] });
+    expect(res.status).toBe(201);
+    expect(res.body.pages).toBe(1);
+    const printId = res.body.printId as string;
+
+    const items = await harness.db
+      .select()
+      .from(routeSheetPrintItems)
+      .where(eq(routeSheetPrintItems.routeSheetPrintId, printId));
+    expect(items).toHaveLength(1);
+    expect(items[0]!.engagementId).toBeNull();
+    expect(items[0]!.workflowStateAfter).toBeNull();
+    expect(items[0]!.snapshotJson?.engagementName).toBe('');
+    expect(items[0]!.snapshotJson?.client.name).toBe('Test Client Co');
+    expect(items[0]!.snapshotJson?.note).toBe('Walk-in drop-off');
+
+    // History counts zero real engagements for a blank sheet.
+    const hist = await request(app()).get(
+      `/api/staff/route-sheets/client/${seed.clientId}/history`,
+    );
+    const entry = (hist.body.items as { id: string; engagementCount: number }[]).find(
+      (e) => e.id === printId,
+    )!;
+    expect(entry.engagementCount).toBe(0);
+
+    // Reprint renders the client-only sheet.
+    lastHtml = '';
+    const pdf = await request(app()).get(`/api/staff/route-sheets/${printId}/pdf`);
+    expect(pdf.status).toBe(200);
+    expect(lastHtml).toContain('FILE ROUTING SHEET');
+    expect(lastHtml).toContain('Test Client Co');
+    expect(lastHtml).toContain('Walk-in drop-off');
+  });
+
   it('rejects an engagement that is not on the client', async () => {
     const other = await seedMinimalFirm(harness.db); // different client/engagement
     const res = await request(app())

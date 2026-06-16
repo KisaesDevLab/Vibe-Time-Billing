@@ -88,13 +88,10 @@ export function RouteSheetDialog({
   }
 
   async function printSheet(): Promise<void> {
+    // No selection ⇒ print a blank sheet (no engagement selected/available).
     const items = engagements
       .filter((e) => selected.has(e.id))
       .map((e) => ({ engagementId: e.id, workflowState: stateById[e.id] ?? e.workflowState }));
-    if (items.length === 0) {
-      setError('Select at least one engagement.');
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
@@ -156,7 +153,9 @@ export function RouteSheetDialog({
                 </div>
                 {engagements.length === 0 ? (
                   <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
-                    No uncompleted engagements for this client.
+                    No uncompleted engagements for this client. You can still print a blank routing
+                    sheet (client info filled in, engagement section left blank to complete by
+                    hand).
                   </p>
                 ) : (
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -237,8 +236,12 @@ export function RouteSheetDialog({
                 <Button variant="ghost" onClick={onClose} disabled={busy}>
                   Close
                 </Button>
-                <Button onClick={() => void printSheet()} disabled={busy || selected.size === 0}>
-                  {busy ? 'Printing…' : `Print & Log (${selected.size})`}
+                <Button onClick={() => void printSheet()} disabled={busy}>
+                  {busy
+                    ? 'Printing…'
+                    : selected.size === 0
+                      ? 'Print blank sheet'
+                      : `Print & Log (${selected.size})`}
                 </Button>
               </div>
 
