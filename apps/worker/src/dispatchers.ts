@@ -8,6 +8,11 @@
 // dispatcher is undefined and runDunningSweep silently no-ops the send.
 
 import type { Logger } from 'pino';
+import { eq } from 'drizzle-orm';
+
+import type { Database } from '@vibe/db';
+import { firmSettings, firms } from '@vibe/db/schema';
+import { wrapPlainTextEmail, type EmailBranding } from '@vibe/core/notifications';
 
 export interface MailArgs {
   to: string;
@@ -27,6 +32,49 @@ export type VoiceDispatch = (args: {
 
 const ICS_FILENAME = 'appointment.ics';
 const ICS_CONTENT_TYPE = 'text/calendar; charset=utf-8; method=REQUEST';
+
+// Give worker-originated emails (dunning, reminders, staged notifications) the
+// same branded HTML header as the API's. Wraps a dispatch so it fills in `html`
+// from firm branding when a caller didn't supply its own. Branding is cached
+// briefly to avoid a DB hit per message.
+export function withEmailBranding(
+  dispatch: MailDispatch | undefined,
+  db: Database | null,
+): MailDispatch | undefined {
+  if (!dispatch) return undefined;
+  let cache: EmailBranding | null = null;
+  let cachedAt = 0;
+  async function branding(): Promise<EmailBranding> {
+    const now = Date.now();
+    if (cache && now - cachedAt < 60_000) return cache;
+    if (!db) return ((cache = {}), (cachedAt = now), cache);
+    try {
+      const [firm] = await db.select({ id: firms.id }).from(firms).limit(1);
+      if (!firm) return ((cache = {}), (cachedAt = now), cache);
+      const [s] = await db
+        .select({
+          firmName: firmSettings.brandDisplayName,
+          logoUrl: firmSettings.brandLogoUrl,
+          accentColor: firmSettings.brandAccentColor,
+          supportEmail: firmSettings.brandSupportEmail,
+          supportPhone: firmSettings.brandSupportPhone,
+        })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, firm.id))
+        .limit(1);
+      cache = s ?? {};
+      cachedAt = now;
+      return cache;
+    } catch {
+      return cache ?? {};
+    }
+  }
+  return async (args) => {
+    if (args.html) return dispatch(args);
+    const html = wrapPlainTextEmail({ text: args.body, branding: await branding() });
+    return dispatch({ ...args, html });
+  };
+}
 
 export async function buildMailDispatch(log: Logger): Promise<MailDispatch | undefined> {
   const provider = process.env['MAIL_PROVIDER'] ?? 'console';

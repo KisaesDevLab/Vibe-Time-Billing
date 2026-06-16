@@ -99,7 +99,12 @@ import { runFilerRoute, type FilerRouteJob } from './jobs/filer-route';
 import { runZipImport, type ZipImportJob } from './jobs/zip-import';
 import { runInternalMessageNotify } from './jobs/internal-message-notify';
 import { incCounter, observeDurationSeconds, renderPrometheusText } from './metrics';
-import { buildMailDispatch, buildSmsDispatch, buildVoiceDispatch } from './dispatchers';
+import {
+  buildMailDispatch,
+  buildSmsDispatch,
+  buildVoiceDispatch,
+  withEmailBranding,
+} from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
 import type { SmsProvider } from '../../api/src/sms/provider';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
@@ -167,7 +172,7 @@ const chargeInvoice = stripe
     }
   : undefined;
 
-const dunningSendEmail = await buildMailDispatch(logger);
+const dunningSendEmail = withEmailBranding(await buildMailDispatch(logger), db);
 const dunningSendSms = buildSmsDispatch(logger);
 const voiceDispatch = buildVoiceDispatch(logger);
 

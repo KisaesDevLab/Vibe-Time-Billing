@@ -32,6 +32,7 @@ import {
   type SmsProvider,
 } from './sms/provider';
 import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
+import { wrapMailWithBranding } from './notifications/branding-mail';
 import type { AiProvider } from '@vibe/core/ai';
 
 const config = loadConfig();
@@ -128,7 +129,10 @@ const baseMailer: MailProvider = (() => {
   }
 })();
 
-const mailer: MailProvider = wrapMailWithAudit(baseMailer, { db, log: logger });
+const mailer: MailProvider = wrapMailWithBranding(
+  wrapMailWithAudit(baseMailer, { db, log: logger }),
+  { db },
+);
 
 // SMS provider — Q16. Console fallback in dev. Same audit wrap as mail.
 const baseSmsProvider: SmsProvider = (() => {
