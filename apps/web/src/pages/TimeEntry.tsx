@@ -359,6 +359,29 @@ function LogView({
   });
   const [engagementId, setEngagementId] = useState(initialEngagementId);
   const [workCodeId, setWorkCodeId] = useState('');
+  // Selected client's outstanding A/R (cents) — shown in the log-time box so
+  // staff see the balance while working. Same figure as the client header.
+  const [outstandingCents, setOutstandingCents] = useState<number | null>(null);
+  useEffect(() => {
+    if (!clientId) {
+      setOutstandingCents(null);
+      return;
+    }
+    let alive = true;
+    setOutstandingCents(null);
+    void api<{ summary: { outstandingCents: number } | null }>(
+      `/api/staff/stats/client/${clientId}`,
+    )
+      .then((r) => {
+        if (alive) setOutstandingCents(r.summary?.outstandingCents ?? 0);
+      })
+      .catch(() => {
+        if (alive) setOutstandingCents(-1); // sentinel: unavailable → render "—"
+      });
+    return () => {
+      alive = false;
+    };
+  }, [clientId]);
   // 0148 — only offer codes applicable to the engagement's service line.
   // Codes with no service line are universal; engagements without a
   // service line (no engagement type) see every code.
@@ -773,6 +796,45 @@ function LogView({
             </label>
           </div>
           <div style={{ gridColumn: 4, display: 'grid', gap: 8, alignContent: 'end' }}>
+            <div
+              style={{
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                padding: '8px 12px',
+                background: tokens.color.surface,
+              }}
+              title="Open invoice balance for this client (SENT / partially paid / overdue)"
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: tokens.color.textMuted,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                Outstanding A/R
+              </div>
+              <strong
+                style={{
+                  fontSize: 18,
+                  color:
+                    outstandingCents && outstandingCents > 0
+                      ? tokens.color.danger
+                      : tokens.color.text,
+                }}
+              >
+                {!clientId
+                  ? '—'
+                  : outstandingCents == null
+                    ? '…'
+                    : outstandingCents < 0
+                      ? '—'
+                      : `$${(outstandingCents / 100).toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                        })}`}
+              </strong>
+            </div>
             <Button
               type="button"
               variant="secondary"
