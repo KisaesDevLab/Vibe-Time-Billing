@@ -7,6 +7,26 @@ import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@v
 import { BRAND } from './brand';
 import { api } from './api-client';
 
+// Firm logo + product name in the shell header. The logo comes from the public
+// branding endpoint (same one the portal/PDFs use); it renders nothing when no
+// logo is uploaded, leaving just the product name.
+function BrandMark(): JSX.Element {
+  const [hasLogo, setHasLogo] = useState(true);
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {hasLogo && (
+        <img
+          src="/api/portal/branding/logo"
+          alt=""
+          onError={() => setHasLogo(false)}
+          style={{ height: 24, maxWidth: 140, objectFit: 'contain' }}
+        />
+      )}
+      <span>{BRAND}</span>
+    </span>
+  );
+}
+
 import { QuickFind } from './QuickFind';
 
 import { AccountPage } from './pages/Account';
@@ -248,7 +268,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   }, [location.pathname]);
   return (
     <AppShell
-      brand={BRAND}
+      brand={<BrandMark />}
       collapseStorageKey="__vibe_staff_sidebar_collapsed"
       collapsibleSections
       realmBadge={<Pill tone="accent">staff</Pill>}
