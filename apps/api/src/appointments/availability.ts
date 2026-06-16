@@ -12,7 +12,7 @@
 // timezone; we convert (date, HH:MM) → UTC instants via Intl so DST is
 // handled without a tz library.
 
-import { and, eq, gte, inArray, lt, ne } from 'drizzle-orm';
+import { and, eq, gt, gte, inArray, lt, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -359,6 +359,40 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     return empty({ reason: 'within_notice' });
   }
   return { slots, timezone, date };
+}
+
+// A db handle or an open transaction — the final conflict check runs inside the
+// booking transaction.
+type DbOrTx = Database | Parameters<Parameters<Database['transaction']>[0]>[0];
+
+/**
+ * Final booking-conflict check: is there a non-cancelled appointment that
+ * overlaps [startsAt, endsAt) for ANY of these staff? Strict half-open overlap
+ * (existing.startsAt < endsAt AND existing.endsAt > startsAt) so back-to-back
+ * slots (one ends exactly when the next starts) do NOT conflict. Run inside the
+ * booking transaction to catch a booking saved since the availability check.
+ */
+export async function findBookingConflict(
+  db: DbOrTx,
+  staffIds: string[],
+  startsAt: Date,
+  endsAt: Date,
+  excludeAppointmentId?: string,
+): Promise<boolean> {
+  const conds = [
+    inArray(appointmentStaff.staffId, staffIds),
+    ne(appointments.status, 'CANCELLED'),
+    lt(appointments.startsAt, endsAt),
+    gt(appointments.endsAt, startsAt),
+  ];
+  if (excludeAppointmentId) conds.push(ne(appointments.id, excludeAppointmentId));
+  const rows = await db
+    .select({ id: appointments.id })
+    .from(appointmentStaff)
+    .innerJoin(appointments, eq(appointments.id, appointmentStaff.appointmentId))
+    .where(and(...conds))
+    .limit(1);
+  return rows.length > 0;
 }
 
 /** TB bookings (scheduled appointments) per staff in the window count as busy. */

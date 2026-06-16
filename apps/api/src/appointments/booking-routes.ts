@@ -51,7 +51,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { createFreeBusyProvider } from '../calendar/freebusy';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
-import { getAvailableSlots, type StaffBusyProvider } from './availability';
+import { findBookingConflict, getAvailableSlots, type StaffBusyProvider } from './availability';
 import { bullBookingQueue, type BookingQueue } from './queue';
 import { ReminderScheduleSchema } from './reminders-validation';
 
@@ -92,6 +92,11 @@ async function bustSlotCache(redis: Redis | null | undefined, staffIds: string[]
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?/;
 const TOKEN_TTL_MS = 7 * 24 * 3600 * 1000;
+
+// Thrown inside the booking transaction when the final overlap re-check finds
+// a conflicting appointment saved since the pre-flight availability check.
+// Caught by the handler and surfaced as the same 409 `slot_taken` the UI knows.
+class SlotTakenError extends Error {}
 
 const BookSchema = z.object({
   staffIds: z.array(z.string().uuid()).min(1).max(10),
@@ -599,61 +604,85 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       const rescheduleToken = crypto.randomUUID();
       const tokenExpiresAt = new Date(endsAt.getTime() + TOKEN_TTL_MS);
 
-      const appointmentId = await db.transaction(async (tx) => {
-        const [row] = await tx
-          .insert(appointments)
-          .values({
-            firmId: session.firmId,
-            clientId: data.clientId ?? null,
-            engagementId: data.engagementId ?? null,
-            appointmentTypeId: data.appointmentTypeId ?? null,
-            title: data.subject,
-            startsAt,
-            endsAt,
-            durationMinutes,
-            location: resolvedLocation,
-            locationDetail: resolvedDetail,
-            locationOptionId,
-            internalNotes: data.internalNotes ?? null,
-            reminderSchedule:
-              data.reminderSchedule && data.reminderSchedule.length > 0
-                ? data.reminderSchedule
-                : null,
-            leadAppUserId: staffIds[0]!,
-            status: 'SCHEDULED',
-            cancelToken,
-            rescheduleToken,
-            tokenExpiresAt,
-            createdById: session.appUserId,
-          })
-          .returning({ id: appointments.id });
-        const apptId = row!.id;
-        await tx
-          .insert(appointmentStaff)
-          .values(staffIds.map((staffId) => ({ appointmentId: apptId, staffId })));
-        if (participantIds.length > 0) {
-          await tx
-            .insert(appointmentParticipants)
-            .values(participantIds.map((cid) => ({ appointmentId: apptId, clientContactId: cid })));
-        }
-        if (data.engagementId) {
-          const noteBody = `Appointment scheduled: ${data.subject} on ${startsAt.toISOString()}. Location: ${data.locationDetail ?? data.location ?? 'VIDEO'}.`;
-          const [note] = await tx
-            .insert(engagementNotes)
+      let appointmentId: string;
+      try {
+        appointmentId = await db.transaction(async (tx) => {
+          // Final conflict guard. The availability check above runs before this
+          // transaction, so another request could have committed an overlapping
+          // booking in between. Take a per-staff advisory lock (serializes
+          // concurrent bookings for the same staff), then re-check for any
+          // non-cancelled appointment overlapping [startsAt, endsAt) for any of
+          // these staff. Locks release automatically at commit/rollback.
+          for (const sid of [...staffIds].sort()) {
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${sid}::text, 0))`);
+          }
+          if (await findBookingConflict(tx, staffIds, startsAt, endsAt)) {
+            throw new SlotTakenError();
+          }
+
+          const [row] = await tx
+            .insert(appointments)
             .values({
-              engagementId: data.engagementId,
-              authorId: session.appUserId,
-              body: noteBody,
+              firmId: session.firmId,
+              clientId: data.clientId ?? null,
+              engagementId: data.engagementId ?? null,
+              appointmentTypeId: data.appointmentTypeId ?? null,
+              title: data.subject,
+              startsAt,
+              endsAt,
+              durationMinutes,
+              location: resolvedLocation,
+              locationDetail: resolvedDetail,
+              locationOptionId,
+              internalNotes: data.internalNotes ?? null,
+              reminderSchedule:
+                data.reminderSchedule && data.reminderSchedule.length > 0
+                  ? data.reminderSchedule
+                  : null,
+              leadAppUserId: staffIds[0]!,
+              status: 'SCHEDULED',
+              cancelToken,
+              rescheduleToken,
+              tokenExpiresAt,
+              createdById: session.appUserId,
             })
-            .returning({ id: engagementNotes.id });
-          await tx.insert(appointmentEngagementNotes).values({
-            appointmentId: apptId,
-            engagementId: data.engagementId,
-            noteId: note!.id,
-          });
+            .returning({ id: appointments.id });
+          const apptId = row!.id;
+          await tx
+            .insert(appointmentStaff)
+            .values(staffIds.map((staffId) => ({ appointmentId: apptId, staffId })));
+          if (participantIds.length > 0) {
+            await tx
+              .insert(appointmentParticipants)
+              .values(
+                participantIds.map((cid) => ({ appointmentId: apptId, clientContactId: cid })),
+              );
+          }
+          if (data.engagementId) {
+            const noteBody = `Appointment scheduled: ${data.subject} on ${startsAt.toISOString()}. Location: ${data.locationDetail ?? data.location ?? 'VIDEO'}.`;
+            const [note] = await tx
+              .insert(engagementNotes)
+              .values({
+                engagementId: data.engagementId,
+                authorId: session.appUserId,
+                body: noteBody,
+              })
+              .returning({ id: engagementNotes.id });
+            await tx.insert(appointmentEngagementNotes).values({
+              appointmentId: apptId,
+              engagementId: data.engagementId,
+              noteId: note!.id,
+            });
+          }
+          return apptId;
+        });
+      } catch (e) {
+        if (e instanceof SlotTakenError) {
+          res.status(409).json({ error: 'slot_taken', code: 'slot_taken', staffId: null });
+          return;
         }
-        return apptId;
-      });
+        throw e;
+      }
 
       // Fan-out: per-staff calendar write + one confirmation email.
       for (const staffId of staffIds) {

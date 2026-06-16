@@ -37,7 +37,7 @@ import { newCalendarRecordKey, encField } from '../calendar/crypto';
 import { createBookingRouter } from '../appointments/booking-routes';
 import { createAppointmentRouter } from '../appointments/routes';
 import type { BookingQueue } from '../appointments/queue';
-import type { StaffBusyProvider } from '../appointments/availability';
+import { findBookingConflict, type StaffBusyProvider } from '../appointments/availability';
 import {
   runAppointmentProviderWrite,
   runAppointmentProviderDelete,
@@ -249,5 +249,65 @@ describe('booking integration (book → write + email → cancel)', () => {
       .where(eq(calendarEvents.id, staffRow!.calendarEventId!));
     expect(m2!.softDeletedAt).not.toBeNull();
     expect(mails.some((m) => m.ics?.includes('METHOD:CANCEL'))).toBe(true);
+  });
+});
+
+describe('final double-booking guard', () => {
+  function book(start: string, end: string) {
+    return request(app())
+      .post('/api/staff/appointments/book')
+      .send({
+        staffIds: [seed.appUserId],
+        subject: 'X',
+        startsAt: `${MONDAY}T${start}:00.000Z`,
+        endsAt: `${MONDAY}T${end}:00.000Z`,
+        durationMinutes: 60,
+      });
+  }
+  const at = (t: string): Date => new Date(`${MONDAY}T${t}:00.000Z`);
+
+  it('findBookingConflict: overlap yes, back-to-back no, cancelled/other-staff/self ignored', async () => {
+    const created = await book('09:00', '10:00');
+    expect(created.status).toBe(201);
+    const apptId = created.body.id as string;
+
+    expect(await findBookingConflict(harness.db, [seed.appUserId], at('09:30'), at('10:30'))).toBe(
+      true,
+    );
+    // Back-to-back (ends exactly when the next starts) must NOT conflict.
+    expect(await findBookingConflict(harness.db, [seed.appUserId], at('10:00'), at('11:00'))).toBe(
+      false,
+    );
+    expect(await findBookingConflict(harness.db, [seed.appUserId], at('08:00'), at('09:00'))).toBe(
+      false,
+    );
+    // Excluding the appointment itself (reschedule case) → no conflict.
+    expect(
+      await findBookingConflict(harness.db, [seed.appUserId], at('09:00'), at('10:00'), apptId),
+    ).toBe(false);
+    // A different staff member is free.
+    expect(
+      await findBookingConflict(
+        harness.db,
+        ['00000000-0000-0000-0000-000000000000'],
+        at('09:30'),
+        at('10:30'),
+      ),
+    ).toBe(false);
+    // Cancelling clears the conflict.
+    await harness.db
+      .update(appointments)
+      .set({ status: 'CANCELLED' })
+      .where(eq(appointments.id, apptId));
+    expect(await findBookingConflict(harness.db, [seed.appUserId], at('09:30'), at('10:30'))).toBe(
+      false,
+    );
+  });
+
+  it('POST /book refuses to double-book a taken slot (409 slot_taken)', async () => {
+    expect((await book('09:00', '10:00')).status).toBe(201);
+    const dup = await book('09:00', '10:00');
+    expect(dup.status).toBe(409);
+    expect(dup.body.error).toBe('slot_taken');
   });
 });
