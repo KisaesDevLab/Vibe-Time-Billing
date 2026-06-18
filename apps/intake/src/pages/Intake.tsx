@@ -4,12 +4,11 @@
 // the public card list, then renders the shared upload form.
 
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-
-import { tokens } from '@vibe/ui';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { api } from '../api-client';
 import { UploadForm } from '../components/UploadForm';
+import { palette } from '../ui';
 
 interface StaffCard {
   id: string;
@@ -20,6 +19,7 @@ interface StaffCard {
 
 export function Intake(): JSX.Element {
   const { staffId } = useParams<{ staffId: string }>();
+  const navigate = useNavigate();
   const [staff, setStaff] = useState<StaffCard | null | 'missing'>(null);
 
   useEffect(() => {
@@ -38,13 +38,15 @@ export function Intake(): JSX.Element {
   }, [staffId]);
 
   if (staff === null) {
-    return <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>;
+    return <p style={{ fontSize: 14, color: palette.muted }}>Loading…</p>;
   }
   if (staff === 'missing') {
     return (
       <div style={{ display: 'grid', gap: 12 }}>
-        <p style={{ fontSize: 14 }}>That contact isn&apos;t available for document intake.</p>
-        <Link to="/" style={{ fontSize: 13, color: tokens.color.accent }}>
+        <p style={{ fontSize: 15, color: palette.text }}>
+          That contact isn&apos;t available for document intake.
+        </p>
+        <Link to="/" style={{ fontSize: 14, color: palette.accent, textDecoration: 'none' }}>
           ← Choose a contact
         </Link>
       </div>
@@ -52,11 +54,10 @@ export function Intake(): JSX.Element {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 12 }}>
-      <Link to="/" style={{ fontSize: 12, color: tokens.color.accent }}>
-        ← Choose a different contact
-      </Link>
-      <UploadForm targetStaffId={staff.id} staffName={staff.name} />
-    </div>
+    <UploadForm
+      targetStaffId={staff.id}
+      staffName={staff.name}
+      onChangeContact={() => navigate('/')}
+    />
   );
 }

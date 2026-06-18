@@ -56,3 +56,10 @@ ollama-models/
 STOPPED_BECAUSE.md
 .eslintcache
 ops/docker/opensign/.env.prod
+
+# design-sync artifacts
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules

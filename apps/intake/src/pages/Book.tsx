@@ -13,9 +13,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { tokens } from '@vibe/ui';
-
 import { Turnstile } from '../components/Turnstile';
+import {
+  Check,
+  SecureBadge,
+  TrustFooter,
+  cardStyle,
+  fieldLabelStyle,
+  fieldStyle,
+  headFont,
+  headingStyle,
+  palette,
+  primaryButtonStyle,
+  subheadStyle,
+} from '../ui';
 
 const BASE = '/api/public/book';
 
@@ -73,38 +84,24 @@ interface FetchError {
 }
 
 const labelStyle: React.CSSProperties = {
+  ...fieldLabelStyle,
   display: 'block',
-  fontSize: 12,
-  color: tokens.color.textMuted,
-  marginBottom: tokens.space.xs,
+  marginBottom: 6,
 };
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: 10,
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.sm,
-  fontSize: 15,
-  background: tokens.color.bg,
-  color: tokens.color.text,
-  boxSizing: 'border-box',
-};
-const cardStyle: React.CSSProperties = {
-  background: tokens.color.surface,
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.md,
-  padding: 24,
-  boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-};
-// A choice "chip" used for type / location / time selectors.
+// A selectable pill "chip" used for the type / location selectors. Selected
+// chips get the accent border + soft fill + accent ring.
 function chipStyle(active: boolean): React.CSSProperties {
   return {
-    padding: '9px 13px',
-    border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
-    borderRadius: tokens.radius.sm,
+    padding: '10px 14px',
+    border: active ? `1px solid ${palette.accent}` : `1px solid ${palette.borderStrong}`,
+    borderRadius: 12,
+    fontFamily: headFont,
+    fontWeight: 600,
     fontSize: 14,
-    background: active ? tokens.color.accentMuted : tokens.color.surface,
-    color: tokens.color.text,
+    background: active ? palette.accentSoft : '#fff',
+    color: palette.ink,
     cursor: 'pointer',
+    boxShadow: active ? `0 0 0 1px ${palette.accent}` : 'none',
   };
 }
 
@@ -192,7 +189,7 @@ function MonthCalendar({
     border: 'none',
     background: 'transparent',
     cursor: disabled ? 'default' : 'pointer',
-    color: disabled ? tokens.color.textMuted : tokens.color.text,
+    color: disabled ? palette.faint : palette.text,
     fontSize: 18,
     padding: '0 8px',
   });
@@ -215,7 +212,7 @@ function MonthCalendar({
         >
           ‹
         </button>
-        <strong style={{ fontSize: 14 }}>
+        <strong style={{ fontFamily: headFont, fontSize: 14, color: palette.ink }}>
           {MONTH_NAMES[month - 1]} {year}
         </strong>
         <button
@@ -234,7 +231,8 @@ function MonthCalendar({
             style={{
               textAlign: 'center',
               fontSize: 10,
-              color: tokens.color.textMuted,
+              fontWeight: 600,
+              color: palette.muted,
               paddingBottom: 2,
             }}
           >
@@ -250,9 +248,9 @@ function MonthCalendar({
           const isToday = c === today;
           const clickable = open && !isPast;
           const border = isSel
-            ? `1.5px solid ${tokens.color.accent}`
+            ? `1.5px solid ${palette.accent}`
             : isToday
-              ? `1px solid ${tokens.color.accent}`
+              ? `1px solid ${palette.accent}`
               : '1px solid transparent';
           return (
             <button
@@ -262,18 +260,19 @@ function MonthCalendar({
               onClick={() => onSelect(c)}
               style={{
                 aspectRatio: '1',
-                borderRadius: tokens.radius.sm,
+                borderRadius: 10,
+                fontFamily: headFont,
                 fontSize: 13,
                 cursor: clickable ? 'pointer' : 'default',
                 border,
-                background: isSel ? tokens.color.accent : 'transparent',
+                background: isSel ? palette.accent : 'transparent',
                 color: isSel
                   ? '#fff'
                   : isToday
-                    ? tokens.color.accent
+                    ? palette.accent
                     : clickable
-                      ? tokens.color.text
-                      : tokens.color.textMuted,
+                      ? palette.ink
+                      : palette.faint,
                 fontWeight: clickable && !isSel ? 600 : 400,
                 opacity: isPast ? 0.35 : 1,
               }}
@@ -284,7 +283,7 @@ function MonthCalendar({
         })}
       </div>
       {loading && (
-        <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 6 }}>
+        <div style={{ fontSize: 11, color: palette.muted, marginTop: 6 }}>
           Loading availability…
         </div>
       )}
@@ -529,21 +528,20 @@ export function Book(): JSX.Element {
   }
 
   if (config === null) {
-    return <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>;
+    return (
+      <div style={cardStyle}>
+        <p style={{ ...subheadStyle, margin: 0 }}>Loading…</p>
+      </div>
+    );
   }
 
   if (config === 'missing') {
     return (
-      <div
-        style={{
-          padding: 16,
-          background: tokens.color.surface,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.md,
-        }}
-      >
-        <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>This booking link isn&apos;t available</h2>
-        <p style={{ margin: 0, fontSize: 13, color: tokens.color.textMuted }}>
+      <div style={cardStyle}>
+        <h2 style={{ ...headingStyle(), fontSize: 'clamp(20px, 2.6vw, 24px)' }}>
+          This booking link isn&apos;t available
+        </h2>
+        <p style={{ ...subheadStyle, margin: 0 }}>
           The link may have expired or been turned off. Please ask the firm for a new one.
         </p>
       </div>
@@ -552,16 +550,28 @@ export function Book(): JSX.Element {
 
   if (success) {
     return (
-      <div
-        style={{
-          padding: 16,
-          background: tokens.color.surface,
-          border: `1px solid ${tokens.color.success}`,
-          borderRadius: tokens.radius.md,
-        }}
-      >
-        <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Request received</h2>
-        <p style={{ margin: 0, fontSize: 13, color: tokens.color.textMuted }}>{success}</p>
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <span
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: '50%',
+              background: palette.success,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flex: 'none',
+            }}
+          >
+            <Check size={18} stroke="#fff" />
+          </span>
+          <h2 style={{ ...headingStyle(), margin: 0, fontSize: 'clamp(20px, 2.6vw, 24px)' }}>
+            Request received
+          </h2>
+        </div>
+        <p style={{ ...subheadStyle, margin: 0 }}>{success}</p>
+        <TrustFooter />
       </div>
     );
   }
@@ -572,13 +582,27 @@ export function Book(): JSX.Element {
   const durationLabel = selectedType ? `${selectedType.durationMinutes} min` : null;
 
   return (
-    <div style={{ ...cardStyle, display: 'grid', gap: tokens.space.lg }}>
+    <div style={{ ...cardStyle, display: 'grid', gap: 24 }}>
       <div>
-        <h2 style={{ fontSize: 18, margin: 0 }}>Book time with {config.staffName}</h2>
-        {(durationLabel || config.customMessage) && (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: '6px 0 0' }}>
-            {[durationLabel, config.customMessage].filter(Boolean).join(' · ')}
-          </p>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '12px 16px',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+          }}
+        >
+          <h2 style={{ ...headingStyle(), fontSize: 'clamp(21px, 2.8vw, 27px)' }}>
+            Book time with {config.staffName}
+          </h2>
+          <SecureBadge />
+        </div>
+        {config.customMessage && (
+          <p style={{ ...subheadStyle, marginTop: 6 }}>{config.customMessage}</p>
+        )}
+        {durationLabel && (
+          <p style={{ fontSize: 13, color: palette.muted, margin: '6px 0 0' }}>{durationLabel}</p>
         )}
       </div>
 
@@ -602,7 +626,10 @@ export function Book(): JSX.Element {
                   style={chipStyle(active)}
                 >
                   {t.name}
-                  <span style={{ color: tokens.color.textMuted }}> · {t.durationMinutes} min</span>
+                  <span style={{ color: palette.muted, fontWeight: 500 }}>
+                    {' '}
+                    · {t.durationMinutes} min
+                  </span>
                 </button>
               );
             })}
@@ -635,7 +662,7 @@ export function Book(): JSX.Element {
             })}
           </div>
           {selectedLocation?.detail && (
-            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
+            <p style={{ fontSize: 12, color: palette.muted, margin: '8px 0 0' }}>
               {selectedLocation.detail}
             </p>
           )}
@@ -645,9 +672,9 @@ export function Book(): JSX.Element {
       {locations.length === 1 && selectedLocation?.detail && (
         <div>
           <span style={labelStyle}>Where</span>
-          <p style={{ fontSize: 13, color: tokens.color.text, margin: 0 }}>
+          <p style={{ fontSize: 13, color: palette.text, margin: 0 }}>
             {selectedLocation.label}
-            <span style={{ color: tokens.color.textMuted }}> · {selectedLocation.detail}</span>
+            <span style={{ color: palette.muted }}> · {selectedLocation.detail}</span>
           </p>
         </div>
       )}
@@ -680,20 +707,20 @@ export function Book(): JSX.Element {
             {date ? dayFmt.format(new Date(`${date}T12:00:00`)) : 'Available times'}
           </span>
           {!date && (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            <p style={{ fontSize: 13, color: palette.muted, margin: 0 }}>
               Pick a highlighted day to see open times.
             </p>
           )}
           {slotsState === 'loading' && (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading times…</p>
+            <p style={{ fontSize: 13, color: palette.muted, margin: 0 }}>Loading times…</p>
           )}
           {slotsState === 'error' && (
-            <p style={{ fontSize: 13, color: tokens.color.danger, margin: 0 }}>
+            <p style={{ fontSize: 13, color: palette.danger, margin: 0 }}>
               Couldn&apos;t load times for this day. Try another day.
             </p>
           )}
           {slotsState === 'idle' && date && slotsResp && slotsResp.slots.length === 0 && (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            <p style={{ fontSize: 13, color: palette.muted, margin: 0 }}>
               No open times this day. Try another.
             </p>
           )}
@@ -716,15 +743,18 @@ export function Book(): JSX.Element {
                     aria-pressed={active}
                     onClick={() => setSelectedSlot(slot)}
                     style={{
-                      padding: '10px 12px',
+                      padding: '11px 12px',
                       width: '100%',
                       textAlign: 'center',
-                      border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
-                      borderRadius: tokens.radius.sm,
+                      border: active
+                        ? `1px solid ${palette.accent}`
+                        : `1px solid ${palette.borderStrong}`,
+                      borderRadius: 12,
+                      fontFamily: headFont,
                       fontSize: 14,
-                      fontWeight: active ? 600 : 400,
-                      background: active ? tokens.color.accentMuted : tokens.color.surface,
-                      color: tokens.color.text,
+                      fontWeight: active ? 600 : 500,
+                      background: active ? palette.accentSoft : '#fff',
+                      color: active ? palette.accent : palette.ink,
                       cursor: 'pointer',
                     }}
                   >
@@ -735,7 +765,7 @@ export function Book(): JSX.Element {
             </div>
           )}
           {slotsResp && timezone && (
-            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
+            <p style={{ fontSize: 12, color: palette.muted, margin: '8px 0 0' }}>
               Times shown in {timezone}.
             </p>
           )}
@@ -744,14 +774,14 @@ export function Book(): JSX.Element {
 
       <div>
         <span style={labelStyle}>Your name *</span>
-        <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} />
+        <input style={fieldStyle()} value={name} onChange={(e) => setName(e.target.value)} />
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 200px' }}>
           <span style={labelStyle}>Email *</span>
           <input
-            style={inputStyle}
+            style={fieldStyle()}
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -760,7 +790,7 @@ export function Book(): JSX.Element {
         <div style={{ flex: '1 1 200px' }}>
           <span style={labelStyle}>Phone</span>
           <input
-            style={inputStyle}
+            style={fieldStyle()}
             type="tel"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
@@ -771,7 +801,7 @@ export function Book(): JSX.Element {
       <div>
         <span style={labelStyle}>Notes</span>
         <textarea
-          style={{ ...inputStyle, minHeight: 72, resize: 'vertical' }}
+          style={{ ...fieldStyle(), minHeight: 72, resize: 'vertical' }}
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Anything the firm should know ahead of time (optional)."
@@ -782,29 +812,23 @@ export function Book(): JSX.Element {
         <Turnstile key={captchaNonce} siteKey={captchaSiteKey} onToken={setCaptchaToken} />
       )}
 
-      {error && <div style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ color: palette.danger, fontSize: 13 }}>{error}</div>}
 
       <button
         type="button"
         onClick={() => void submit()}
         disabled={!canSubmit}
-        style={{
-          padding: '12px 16px',
-          background: canSubmit ? tokens.color.accent : tokens.color.border,
-          color: '#fff',
-          border: 'none',
-          borderRadius: tokens.radius.sm,
-          fontSize: 15,
-          cursor: canSubmit ? 'pointer' : 'not-allowed',
-        }}
+        style={primaryButtonStyle(canSubmit)}
       >
         {busy ? 'Sending…' : 'Request this time'}
       </button>
       {!selectedSlot && (
-        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '-8px 0 0' }}>
+        <p style={{ fontSize: 12, color: palette.muted, margin: '-8px 0 0' }}>
           Pick a time above to continue.
         </p>
       )}
+
+      <TrustFooter />
     </div>
   );
 }

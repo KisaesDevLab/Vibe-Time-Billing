@@ -1,0 +1,8 @@
+{
+  "projectId": "e9e9cedd-8127-4747-9e7c-14db0f80d1b5",
+  "shape": "package",
+  "pkg": "@vibe/ui",
+  "globalName": "VibeUI",
+  "buildCmd": "pnpm --filter @vibe/ui build",
+  "cssEntry": "src/theme.css"
+}
