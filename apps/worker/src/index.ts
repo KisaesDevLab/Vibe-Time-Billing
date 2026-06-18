@@ -21,6 +21,7 @@ import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
+import { runBookingHoldExpiryTick } from './jobs/booking-hold-expiry';
 import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
@@ -254,6 +255,8 @@ const QUEUES = [
   'calendar-time-suggestion',
   // BK gap fix — pre-meeting reminders for booked appointments (D-BK-06).
   'appointment-reminders',
+  // 0168 — expire stale public booking-request holds (frees the slot).
+  'booking-hold-expiry',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -640,6 +643,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     });
     logger.info({ jobId: job.id, ...result }, 'appointment-reminders complete');
   },
+  'booking-hold-expiry': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'booking-hold-expiry: no DB configured');
+      return;
+    }
+    const result = await runBookingHoldExpiryTick(db, logger, { sendEmail: dunningSendEmail });
+    logger.info({ jobId: job.id, ...result }, 'booking-hold-expiry complete');
+  },
 };
 
 // Phase 13 — retainer addendum observability. Wraps a job handler so
@@ -739,6 +750,8 @@ const CRON: Record<QueueName, string> = {
   'calendar-time-suggestion': '*/5 * * * *',
   // Appointment reminders every 5 min (offsets gated in-job).
   'appointment-reminders': '*/5 * * * *',
+  // 0168 — public booking-request hold expiry sweep (holds are hours-long).
+  'booking-hold-expiry': '*/15 * * * *',
 };
 
 function storageSyncCron(): string {
