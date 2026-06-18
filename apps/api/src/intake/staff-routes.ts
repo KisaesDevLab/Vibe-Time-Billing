@@ -10,10 +10,10 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, ne, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, intakeActions, intakeFiles, intakeSessions } from '@vibe/db/schema';
+import { appUsers, intakeActions, intakeFiles, intakeSessions, persons } from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 import { normalizePhone } from '@vibe/core/auth';
 
@@ -110,6 +110,57 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
         .where(and(eq(appUsers.firmId, firmId), eq(appUsers.status, 'ACTIVE')))
         .orderBy(appUsers.fullName);
       res.json({ staff: rows });
+    },
+  );
+
+  // GET /people-search?q= — typeahead over the firm directory so staff can
+  // pick a recipient and prefill their email/phone on the send-a-link form.
+  router.get(
+    '/people-search',
+    requirePermission(deps, 'storage:folder:view'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ people: [] });
+        return;
+      }
+      const q = (typeof req.query['q'] === 'string' ? req.query['q'] : '').trim();
+      if (q.length < 2) {
+        res.json({ people: [] });
+        return;
+      }
+      const like = `%${q}%`;
+      const rows = await deps.db
+        .select({
+          id: persons.id,
+          name: persons.fullName,
+          email: persons.email,
+          phone: persons.phone,
+          mobile: persons.mobile,
+        })
+        .from(persons)
+        .where(
+          and(
+            eq(persons.firmId, firmId),
+            ne(persons.status, 'ARCHIVED'),
+            or(
+              ilike(persons.fullName, like),
+              ilike(persons.email, like),
+              ilike(persons.phone, like),
+              ilike(persons.mobile, like),
+            ),
+          ),
+        )
+        .orderBy(persons.fullName)
+        .limit(10);
+      res.json({
+        people: rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          email: r.email ?? '',
+          phone: r.phone ?? r.mobile ?? '',
+        })),
+      });
     },
   );
 

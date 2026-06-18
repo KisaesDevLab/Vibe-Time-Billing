@@ -4,7 +4,7 @@
 // member, optionally emailing/texting it to a recipient. Shows the URL so
 // staff can copy it regardless of delivery.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button, tokens } from '@vibe/ui';
 
@@ -13,6 +13,13 @@ import { api, type ApiError } from '../../api-client';
 interface StaffOpt {
   id: string;
   name: string;
+}
+
+interface PersonHit {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
 }
 
 interface ChannelResult {
@@ -63,6 +70,13 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LinkResult | null>(null);
 
+  // People typeahead — pick a directory person to prefill email/phone.
+  const [personQuery, setPersonQuery] = useState('');
+  const [hits, setHits] = useState<PersonHit[]>([]);
+  const [hitsOpen, setHitsOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     void api<{ staff: StaffOpt[] }>('/api/staff/intake/staff-options')
       .then((r) => {
@@ -71,6 +85,44 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
       })
       .catch((err: ApiError) => setError(err.message));
   }, []);
+
+  // Debounced directory search (min 2 chars), with cancellation.
+  useEffect(() => {
+    const q = personQuery.trim();
+    if (q.length < 2) {
+      setHits([]);
+      setSearching(false);
+      return;
+    }
+    let alive = true;
+    setSearching(true);
+    const t = setTimeout(() => {
+      api<{ people: PersonHit[] }>(`/api/staff/intake/people-search?q=${encodeURIComponent(q)}`)
+        .then((r) => {
+          if (!alive) return;
+          setHits(r.people ?? []);
+          setHitsOpen(true);
+        })
+        .catch(() => {
+          if (alive) setHits([]);
+        })
+        .finally(() => {
+          if (alive) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [personQuery]);
+
+  function pickPerson(p: PersonHit): void {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+    setPersonQuery(p.name);
+    if (p.email) setEmail(p.email);
+    if (p.phone) setPhone(p.phone);
+    setHitsOpen(false);
+  }
 
   async function submit(): Promise<void> {
     if (!targetStaffId) return;
@@ -167,6 +219,78 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
                   </option>
                 ))}
               </select>
+            </div>
+            <div style={{ position: 'relative' }}>
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                Find a person (optional)
+              </span>
+              <input
+                style={inputStyle}
+                value={personQuery}
+                placeholder="Search name, email, or phone…"
+                autoComplete="off"
+                onChange={(e) => setPersonQuery(e.target.value)}
+                onFocus={() => {
+                  if (hits.length) setHitsOpen(true);
+                }}
+                onBlur={() => {
+                  blurTimer.current = setTimeout(() => setHitsOpen(false), 150);
+                }}
+              />
+              {hitsOpen && (searching || hits.length > 0) && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    zIndex: 70,
+                    marginTop: 2,
+                    maxHeight: 220,
+                    overflowY: 'auto',
+                    background: tokens.color.bg,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    boxShadow: '0 6px 20px rgba(0,0,0,0.18)',
+                  }}
+                >
+                  {searching && hits.length === 0 && (
+                    <div
+                      style={{ padding: '8px 10px', fontSize: 12, color: tokens.color.textMuted }}
+                    >
+                      Searching…
+                    </div>
+                  )}
+                  {hits.map((p) => (
+                    <button
+                      type="button"
+                      key={p.id}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        pickPerson(p);
+                      }}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        textAlign: 'left',
+                        padding: '8px 10px',
+                        border: 'none',
+                        borderBottom: `1px solid ${tokens.color.border}`,
+                        background: 'transparent',
+                        color: tokens.color.text,
+                        cursor: 'pointer',
+                        font: 'inherit',
+                      }}
+                    >
+                      <div style={{ fontSize: 13 }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {[p.email, p.phone].filter(Boolean).join(' · ') ||
+                          'No email or phone on file'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div>
               <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Recipient email</span>
