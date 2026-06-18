@@ -19,6 +19,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   time,
   timestamp,
@@ -31,11 +32,13 @@ import {
   appUsers,
   appointmentLocationOptions,
   appointmentRsvpStatus,
+  appointmentTypes,
   appointments,
   clientContacts,
   engagementNotes,
   engagements,
   firms,
+  persons,
   providerWriteStatus,
   rescheduleRequestStatus,
 } from './core';
@@ -269,11 +272,143 @@ export const staffPublicBookingLinks = pgTable(
     isActive: boolean('is_active').notNull().default(true),
     allowedAppointmentTypeIds: jsonb('allowed_appointment_type_ids'),
     customMessage: text('custom_message'),
+    // 0168 — request→confirm settings. Page-level booking rules (mirror
+    // staff_booking_settings) + the slot-hold window + abuse controls.
+    holdExpiryHours: integer('hold_expiry_hours').notNull().default(72),
+    slotIncrementMinutes: integer('slot_increment_minutes').notNull().default(30),
+    minNoticeHours: integer('min_notice_hours').notNull().default(1),
+    bufferBeforeMinutes: integer('buffer_before_minutes').notNull().default(0),
+    bufferAfterMinutes: integer('buffer_after_minutes').notNull().default(0),
+    defaultDurationMinutes: integer('default_duration_minutes').notNull().default(30),
+    requireCaptcha: boolean('require_captcha').notNull().default(true),
+    dailyCap: integer('daily_cap'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     slugUk: uniqueIndex('staff_public_booking_link_slug_uk').on(t.slug),
     staffIdx: index('staff_public_booking_link_staff_idx').on(t.staffId),
+  }),
+);
+
+// 0168 — the page's OWN weekly availability windows (mirrors
+// staffAvailability but scoped to a booking link, not a staff member).
+export const publicBookingAvailability = pgTable(
+  'public_booking_availability',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    bookingLinkId: uuid('booking_link_id')
+      .notNull()
+      .references(() => staffPublicBookingLinks.id, { onDelete: 'cascade' }),
+    dayOfWeek: integer('day_of_week').notNull(),
+    startTime: time('start_time').notNull(),
+    endTime: time('end_time').notNull(),
+    locationOptionId: uuid('location_option_id').references(() => appointmentLocationOptions.id, {
+      onDelete: 'set null',
+    }),
+    appointmentTypeIds: uuid('appointment_type_ids').array(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    linkDowIdx: index('public_booking_availability_link_dow_idx').on(t.bookingLinkId, t.dayOfWeek),
+    dowCk: check('public_booking_availability_dow_ck', sql`${t.dayOfWeek} BETWEEN 0 AND 6`),
+  }),
+);
+
+// 0168 — staff who may approve a request for this page.
+export const publicBookingLinkApprovers = pgTable(
+  'public_booking_link_approver',
+  {
+    bookingLinkId: uuid('booking_link_id')
+      .notNull()
+      .references(() => staffPublicBookingLinks.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.bookingLinkId, t.appUserId] }),
+  }),
+);
+
+// 0168 — staff to notify of a new request (separate from approvers).
+export const publicBookingLinkNotify = pgTable(
+  'public_booking_link_notify',
+  {
+    bookingLinkId: uuid('booking_link_id')
+      .notNull()
+      .references(() => staffPublicBookingLinks.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    channels: text('channels')
+      .array()
+      .notNull()
+      .default(sql`'{EMAIL}'`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.bookingLinkId, t.appUserId] }),
+  }),
+);
+
+// 0168 — the pending booking request. A PENDING, non-expired row is the
+// slot HOLD (counted as busy by the availability engine). The appointment
+// is only created when a staff approver confirms.
+export const bookingRequests = pgTable(
+  'booking_request',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    bookingLinkId: uuid('booking_link_id').references(() => staffPublicBookingLinks.id, {
+      onDelete: 'set null',
+    }),
+    staffId: uuid('staff_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    appointmentTypeId: uuid('appointment_type_id').references(() => appointmentTypes.id, {
+      onDelete: 'set null',
+    }),
+    startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+    endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
+    durationMinutes: integer('duration_minutes').notNull(),
+    visitorName: text('visitor_name').notNull(),
+    visitorEmail: text('visitor_email').notNull(),
+    visitorPhone: text('visitor_phone'),
+    notes: text('notes'),
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
+    clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
+      onDelete: 'set null',
+    }),
+    status: text('status', {
+      enum: ['PENDING', 'APPROVED', 'DECLINED', 'EXPIRED', 'CANCELLED'],
+    })
+      .notNull()
+      .default('PENDING'),
+    holdExpiresAt: timestamp('hold_expires_at', { withTimezone: true }).notNull(),
+    decidedByAppUserId: uuid('decided_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    declineReason: text('decline_reason'),
+    createdAppointmentId: uuid('created_appointment_id').references(() => appointments.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    staffStatusStartsIdx: index('booking_request_staff_status_starts_idx').on(
+      t.staffId,
+      t.status,
+      t.startsAt,
+    ),
+    firmStatusIdx: index('booking_request_firm_status_idx').on(t.firmId, t.status),
+    holdExpiryIdx: index('booking_request_hold_expiry_idx').on(t.status, t.holdExpiresAt),
   }),
 );
 
@@ -283,3 +418,7 @@ export type AppointmentParticipant = typeof appointmentParticipants.$inferSelect
 export type AppointmentRescheduleRequest = typeof appointmentRescheduleRequests.$inferSelect;
 export type StaffAvailability = typeof staffAvailability.$inferSelect;
 export type StaffBookingSettings = typeof staffBookingSettings.$inferSelect;
+export type StaffPublicBookingLink = typeof staffPublicBookingLinks.$inferSelect;
+export type PublicBookingAvailability = typeof publicBookingAvailability.$inferSelect;
+export type BookingRequest = typeof bookingRequests.$inferSelect;
+export type NewBookingRequest = typeof bookingRequests.$inferInsert;

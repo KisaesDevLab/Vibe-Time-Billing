@@ -75,6 +75,12 @@ const KINDS: ReadonlyArray<KindEntry> = [
   { key: 'share_link', label: 'Secure file share', channels: ['EMAIL', 'SMS'] },
   { key: 'calendar_reminder', label: 'Calendar reminder', channels: ['EMAIL'] },
   { key: 'email_otp', label: 'Email verification code', channels: ['EMAIL'] },
+  {
+    key: 'booking_request_submitted',
+    label: 'Booking request received',
+    channels: ['EMAIL', 'SMS'],
+  },
+  { key: 'booking_request_declined', label: 'Booking request declined', channels: ['EMAIL'] },
 ];
 
 const SAMPLE_VARIABLES = [

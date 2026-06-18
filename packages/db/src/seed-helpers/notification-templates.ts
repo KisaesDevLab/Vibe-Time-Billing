@@ -471,6 +471,36 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
       'If you did not request it, you can safely ignore this email.\n\n' +
       '{{ firm.displayName }}',
   },
+
+  // Public booking — request received / declined -------------------
+  {
+    kind: 'booking_request_submitted',
+    channel: 'EMAIL',
+    subject: 'We received your booking request — {{ firm.displayName }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      'Thanks for requesting an appointment with {{ staff.names }} at {{ firm.displayName }}:\n\n' +
+      '{{ appointment.date }} at {{ appointment.time }}\n\n' +
+      "Your request is pending confirmation — we'll email you as soon as it's approved. " +
+      'If the time no longer works, just reply to this email.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'booking_request_submitted',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: we received your booking request for {{ appointment.date }} at {{ appointment.time }}. It is pending confirmation — we will text you once it is approved.',
+  },
+  {
+    kind: 'booking_request_declined',
+    channel: 'EMAIL',
+    subject: 'Update on your booking request — {{ firm.displayName }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      "Thank you for your interest in booking with {{ firm.displayName }}. Unfortunately we weren't able to " +
+      'confirm your requested time of {{ appointment.date }} at {{ appointment.time }}.\n\n' +
+      'Please feel free to request another time, or contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
 ];
 
 /**
