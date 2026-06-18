@@ -355,15 +355,6 @@ export function NotificationTemplatesPage(): JSX.Element {
                   />
                 )}
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button onClick={() => void save()}>Save</Button>
-                <Button variant="secondary" onClick={() => void reset()}>
-                  Revert to default
-                </Button>
-                <Button variant="ghost" onClick={() => setActive(null)}>
-                  Cancel
-                </Button>
-              </div>
             </div>
             {!isEmail && (
               <div>
@@ -394,6 +385,15 @@ export function NotificationTemplatesPage(): JSX.Element {
                 </div>
               </div>
             )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <Button onClick={() => void save()}>Save</Button>
+            <Button variant="secondary" onClick={() => void reset()}>
+              Revert to default
+            </Button>
+            <Button variant="ghost" onClick={() => setActive(null)}>
+              Cancel
+            </Button>
           </div>
         </Card>
       </div>
