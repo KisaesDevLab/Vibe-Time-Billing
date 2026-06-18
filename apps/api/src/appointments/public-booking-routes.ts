@@ -16,6 +16,7 @@ import { renderNotification } from '@vibe/core/notifications';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  appointmentLocationOptions,
   appointmentTypes,
   bookingRequests,
   firmSettings,
@@ -178,7 +179,7 @@ async function windowsByDow(
       startTime: r.startTime,
       endTime: r.endTime,
       isActive: true,
-      locationTypes: null,
+      locationTypes: r.locationTypes,
       locationOptionId: r.locationOptionId,
       appointmentTypeIds: r.appointmentTypeIds,
     });
@@ -194,6 +195,87 @@ async function windowsForDay(
   date: string,
 ): Promise<AvailabilityWindowRow[]> {
   return (await windowsByDow(db, link)).get(dow(date)) ?? [];
+}
+
+const LOCATION_TYPES = ['IN_PERSON', 'PHONE', 'VIDEO'] as const;
+const LOC_LABEL: Record<string, string> = {
+  IN_PERSON: 'In person',
+  PHONE: 'Phone',
+  VIDEO: 'Video',
+};
+
+export interface MeetingOption {
+  key: string; // 'opt:<id>' or 'type:<TYPE>'
+  label: string;
+  locationType: string; // VIDEO | PHONE | IN_PERSON
+  locationOptionId: string | null;
+  detail: string | null;
+}
+
+/** The "how would you like to meet?" options a page offers, derived from its
+ *  windows: each referenced location preset, plus the bare contact types of
+ *  windows that have no preset (an unrestricted window offers all three). */
+async function loadLocations(db: Database, link: ResolvedLink): Promise<MeetingOption[]> {
+  const wins = await db
+    .select({
+      locationTypes: publicBookingAvailability.locationTypes,
+      locationOptionId: publicBookingAvailability.locationOptionId,
+      isActive: publicBookingAvailability.isActive,
+    })
+    .from(publicBookingAvailability)
+    .where(eq(publicBookingAvailability.bookingLinkId, link.id));
+  const active = wins.filter((w) => w.isActive);
+  const optIds = [
+    ...new Set(active.map((w) => w.locationOptionId).filter((x): x is string => !!x)),
+  ];
+  const opts = optIds.length
+    ? await db
+        .select({
+          id: appointmentLocationOptions.id,
+          name: appointmentLocationOptions.name,
+          locationType: appointmentLocationOptions.locationType,
+          detail: appointmentLocationOptions.detail,
+        })
+        .from(appointmentLocationOptions)
+        .where(inArray(appointmentLocationOptions.id, optIds))
+    : [];
+  const out = new Map<string, MeetingOption>();
+  for (const o of opts) {
+    out.set(`opt:${o.id}`, {
+      key: `opt:${o.id}`,
+      label: `${o.name} (${LOC_LABEL[o.locationType] ?? o.locationType})`,
+      locationType: o.locationType,
+      locationOptionId: o.id,
+      detail: o.detail,
+    });
+  }
+  for (const w of active) {
+    if (w.locationOptionId) continue;
+    const types = w.locationTypes && w.locationTypes.length ? w.locationTypes : [...LOCATION_TYPES];
+    for (const t of types) {
+      if (!(LOCATION_TYPES as readonly string[]).includes(t)) continue;
+      out.set(`type:${t}`, {
+        key: `type:${t}`,
+        label: LOC_LABEL[t] ?? t,
+        locationType: t,
+        locationOptionId: null,
+        detail: null,
+      });
+    }
+  }
+  return [...out.values()];
+}
+
+function parseLocationParams(
+  loc: unknown,
+  locId: unknown,
+): { location: string | undefined; locationOptionId: string | undefined } {
+  const location =
+    typeof loc === 'string' && (LOCATION_TYPES as readonly string[]).includes(loc)
+      ? loc
+      : undefined;
+  const locationOptionId = typeof locId === 'string' && UUID_RE.test(locId) ? locId : undefined;
+  return { location, locationOptionId };
 }
 
 function durationFor(
@@ -316,11 +398,13 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       return;
     }
     const types = await loadTypes(d, link);
+    const locations = await loadLocations(d, link);
     const turnstile = link.requireCaptcha ? await loadTurnstile(d, link.firmId) : null;
     res.json({
       staffName: link.staffName,
       customMessage: link.customMessage,
       types,
+      locations,
       captchaSiteKey: turnstile?.siteKey ?? null,
     });
   });
@@ -343,6 +427,7 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       typeof req.query['typeId'] === 'string' && UUID_RE.test(req.query['typeId'])
         ? req.query['typeId']
         : undefined;
+    const loc = parseLocationParams(req.query['location'], req.query['locationId']);
     const types = await loadTypes(d, link);
     if (typeId && !types.some((t) => t.id === typeId)) {
       res.status(400).json({ error: 'unknown_type' });
@@ -358,6 +443,8 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       now: now(),
       busyProvider: providerFor(link.firmId),
       appointmentTypeId: typeId,
+      location: loc.location,
+      locationOptionId: loc.locationOptionId,
       settingsOverride: settingsOverrideFor(link),
       availabilityRowsOverride: await windowsForDay(d, link, date),
     });
@@ -394,6 +481,7 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       res.status(400).json({ error: 'unknown_type' });
       return;
     }
+    const loc = parseLocationParams(req.query['location'], req.query['locationId']);
     const tz = await firmTimezone(d, link.firmId);
     const durationMinutes = durationFor(link, types, typeId);
     const settings = settingsOverrideFor(link);
@@ -418,6 +506,8 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
         now: at,
         busyProvider: provider,
         appointmentTypeId: typeId,
+        location: loc.location,
+        locationOptionId: loc.locationOptionId,
         settingsOverride: settings,
         availabilityRowsOverride: wins,
       });
@@ -447,10 +537,31 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
         ? body['typeId']
         : undefined;
     const captchaToken = typeof body['captchaToken'] === 'string' ? body['captchaToken'] : '';
+    const reqLoc = parseLocationParams(body['location'], body['locationId']);
 
     if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !startsAtRaw) {
       res.status(400).json({ error: 'invalid_payload' });
       return;
+    }
+
+    // Resolve the chosen meeting location against what the page offers, so we
+    // store a legit location type + detail on the request.
+    const offeredLocations = await loadLocations(d, link);
+    let chosenLocation: MeetingOption | null = null;
+    if (offeredLocations.length > 0) {
+      chosenLocation =
+        offeredLocations.find(
+          (o) =>
+            (reqLoc.locationOptionId
+              ? o.locationOptionId === reqLoc.locationOptionId
+              : o.locationOptionId === null) && o.locationType === reqLoc.location,
+        ) ??
+        // Fall back to the sole option when the page offers exactly one.
+        (offeredLocations.length === 1 ? offeredLocations[0]! : null);
+      if (!chosenLocation) {
+        res.status(400).json({ error: 'location_required' });
+        return;
+      }
     }
     const startsAt = new Date(startsAtRaw);
     if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() <= now().getTime()) {
@@ -521,7 +632,8 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       }
     }
 
-    // Verify the requested slot is genuinely offered + free.
+    // Verify the requested slot is genuinely offered + free for the chosen
+    // type + location.
     const avail = await getAvailableSlots({
       db: d,
       staffIds: [link.staffId],
@@ -531,6 +643,8 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       now: now(),
       busyProvider: providerFor(link.firmId),
       appointmentTypeId: typeId,
+      location: chosenLocation?.locationType,
+      locationOptionId: chosenLocation?.locationOptionId ?? undefined,
       settingsOverride: settingsOverrideFor(link),
       availabilityRowsOverride: await windowsForDay(d, link, date),
     });
@@ -587,6 +701,9 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
             visitorPhone: phone || null,
             notes: notes || null,
             personId: personId ?? null,
+            location: chosenLocation?.locationType ?? null,
+            locationOptionId: chosenLocation?.locationOptionId ?? null,
+            locationDetail: chosenLocation?.detail ?? null,
             status: 'PENDING',
             holdExpiresAt: new Date(now().getTime() + link.holdExpiryHours * 3600_000),
           })

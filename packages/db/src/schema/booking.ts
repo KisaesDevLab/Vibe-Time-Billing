@@ -302,6 +302,9 @@ export const publicBookingAvailability = pgTable(
     dayOfWeek: integer('day_of_week').notNull(),
     startTime: time('start_time').notNull(),
     endTime: time('end_time').notNull(),
+    // 0169 — allowed contact types for this window (VIDEO/PHONE/IN_PERSON).
+    // NULL/empty = all allowed (mirrors staff_availability.location_types).
+    locationTypes: text('location_types').array(),
     locationOptionId: uuid('location_option_id').references(() => appointmentLocationOptions.id, {
       onDelete: 'set null',
     }),
@@ -380,6 +383,13 @@ export const bookingRequests = pgTable(
     visitorEmail: text('visitor_email').notNull(),
     visitorPhone: text('visitor_phone'),
     notes: text('notes'),
+    // 0169 — the visitor's chosen meeting location (type + optional preset),
+    // carried onto the appointment on approval.
+    location: text('location'),
+    locationOptionId: uuid('location_option_id').references(() => appointmentLocationOptions.id, {
+      onDelete: 'set null',
+    }),
+    locationDetail: text('location_detail'),
     personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
     clientContactId: uuid('client_contact_id').references(() => clientContacts.id, {
       onDelete: 'set null',

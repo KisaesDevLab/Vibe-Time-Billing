@@ -51,6 +51,10 @@ const WindowSchema = z.object({
   dayOfWeek: z.number().int().min(0).max(6),
   startTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
   endTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
+  locationTypes: z
+    .array(z.enum(['VIDEO', 'PHONE', 'IN_PERSON']))
+    .nullable()
+    .optional(),
   locationOptionId: z.string().uuid().nullable().optional(),
   appointmentTypeIds: z.array(z.string().uuid()).nullable().optional(),
 });
@@ -128,6 +132,7 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
             dayOfWeek: w.dayOfWeek,
             startTime: w.startTime,
             endTime: w.endTime,
+            locationTypes: w.locationTypes ?? null,
             locationOptionId: w.locationOptionId ?? null,
             appointmentTypeIds: w.appointmentTypeIds ?? null,
           })),
@@ -480,7 +485,9 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
               startsAt: reqRow.startsAt,
               endsAt: reqRow.endsAt,
               durationMinutes: reqRow.durationMinutes,
-              location: 'VIDEO',
+              location: (reqRow.location as 'VIDEO' | 'PHONE' | 'IN_PERSON' | null) ?? 'VIDEO',
+              locationDetail: reqRow.locationDetail,
+              locationOptionId: reqRow.locationOptionId,
               leadAppUserId: reqRow.staffId,
               status: 'SCHEDULED',
               cancelToken,
