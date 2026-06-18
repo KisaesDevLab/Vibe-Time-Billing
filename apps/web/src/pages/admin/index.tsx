@@ -21,7 +21,6 @@ import { KnowledgeBaseAdminPage } from './KnowledgeBase';
 import { CompliancePage } from './Compliance';
 import { DataPage } from './Data';
 import { ApprovalRulesPage } from './ApprovalRules';
-import { EngagementLettersPage } from './EngagementLetters';
 import { FolderTemplatesPage } from './FolderTemplates';
 import { EngagementStatusesPage } from './EngagementStatuses';
 import { IntakeSettingsPage } from './IntakeSettings';
@@ -41,7 +40,6 @@ import { OfficesPage } from './Offices';
 import { PermissionMatrixPage } from './PermissionMatrix';
 import { RateCodesPage } from './RateCodes';
 import { RatesPage } from './Rates';
-import { RecurringPlansPage } from './RecurringPlans';
 import { RetainerTierSettingsPage } from './RetainerTierSettings';
 import { RequiredFieldRulesPage } from './RequiredFieldRules';
 import { RolesPage } from './Roles';
@@ -119,7 +117,6 @@ const GROUPS: Group[] = [
       { key: 'tax-payments', label: 'Tax payments', href: '/admin/tax-payments' },
       { key: 'terms', label: 'Terms templates', href: '/admin/terms-templates' },
       { key: 'milestones', label: 'Milestones', href: '/admin/milestones' },
-      { key: 'letters', label: 'Engagement letters', href: '/admin/letters' },
     ],
   },
   {
@@ -129,7 +126,6 @@ const GROUPS: Group[] = [
     tabs: [
       { key: 'rate-codes', label: 'Rate codes', href: '/admin/rate-codes' },
       { key: 'rates', label: 'Rates', href: '/admin/rates' },
-      { key: 'plans', label: 'Recurring plans', href: '/admin/recurring-plans' },
       { key: 'banks', label: 'Hour banks', href: '/admin/hour-banks' },
       { key: 'banks-tx', label: 'Hour-bank tx', href: '/admin/hour-bank-tx' },
       { key: 'retainer-tiers', label: 'Retainer tiers', href: '/admin/retainer-tiers' },
@@ -339,7 +335,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="appointment-types" element={<AppointmentTypesPage />} />
         <Route path="appointment-locations" element={<AppointmentLocationsPage />} />
         <Route path="rates" element={<RatesPage />} />
-        <Route path="recurring-plans" element={<RecurringPlansPage />} />
+        <Route path="recurring-plans" element={<Navigate to="/recurring-plans" replace />} />
         <Route path="hour-banks" element={<HourBanksPage />} />
         <Route path="hour-bank-tx" element={<HourBankTxPage />} />
         <Route path="retainer-tiers" element={<RetainerTierSettingsPage />} />
@@ -351,7 +347,7 @@ export function AdminLayout(): JSX.Element {
         {/* Moved to a tab under /payments. */}
         <Route path="ach-returns" element={<Navigate to="/payments#ach-returns" replace />} />
         <Route path="holidays" element={<HolidaysPage />} />
-        <Route path="letters" element={<EngagementLettersPage />} />
+        <Route path="letters" element={<Navigate to="/engagement-letters" replace />} />
         <Route path="approval-rules" element={<ApprovalRulesPage />} />
         <Route path="required-fields" element={<RequiredFieldRulesPage />} />
         <Route path="milestones" element={<MilestonesPage />} />

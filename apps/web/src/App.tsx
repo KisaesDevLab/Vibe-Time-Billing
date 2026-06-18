@@ -27,6 +27,7 @@ import {
   ListTodo,
   MessageSquare,
   Receipt,
+  Repeat,
   ScrollText,
   Settings,
   Signature,
@@ -101,6 +102,8 @@ import { ReportsPage } from './pages/Reports';
 import { PaymentsReceivedReportPage } from './pages/reports/PaymentsReceivedReport';
 import { SignedFormsReportPage } from './pages/reports/SignedFormsReport';
 import { ReportViewerPage } from './pages/reports/ReportViewer';
+import { EngagementLettersPage } from './pages/admin/EngagementLetters';
+import { RecurringPlansPage } from './pages/admin/RecurringPlans';
 import { RetainerDashboardPage } from './pages/admin/RetainerDashboard';
 import { RetainerDetailPage } from './pages/admin/RetainerDetail';
 import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
@@ -187,6 +190,8 @@ export function App(): JSX.Element {
                   <Route path="/reports/signed-forms" element={<SignedFormsReportPage />} />
                   <Route path="/reports/profitability" element={<ProfitabilityPage />} />
                   <Route path="/reports/view/:kind" element={<ReportViewerPage />} />
+                  <Route path="/engagement-letters" element={<EngagementLettersPage />} />
+                  <Route path="/recurring-plans" element={<RecurringPlansPage />} />
                   <Route path="/retainers" element={<RetainersGate />} />
                   <Route path="/retainers/:id" element={<RetainerDetailPage />} />
                   <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
@@ -480,6 +485,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname.startsWith('/ar'),
           show: can.ar,
         },
+        {
+          section: 'Billing',
+          label: 'Recurring plans',
+          href: '/recurring-plans',
+          icon: <Repeat size={16} />,
+          active: location.pathname.startsWith('/recurring-plans'),
+          show: can.engagements,
+        },
 
         // ---- Oversight: review + insight ----
         {
@@ -513,6 +526,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: <ScrollText size={16} />,
           active: location.pathname.startsWith('/audit'),
           show: can.audit,
+        },
+        {
+          section: 'Oversight',
+          label: 'Engagement letters',
+          href: '/engagement-letters',
+          icon: <FileText size={16} />,
+          active: location.pathname.startsWith('/engagement-letters'),
+          show: can.engagements,
         },
 
         // ---- Utility footer (divider, no header) ----
