@@ -82,17 +82,22 @@ export function createTextLinkSmsProvider(opts: TextLinkOptions, log: Logger): S
     id: 'textlink',
     async send(msg) {
       try {
-        const res = await fetchImpl('https://api.textlink.com/v1/messages', {
+        // TextLink REST API — https://docs.textlinksms.com/api
+        const res = await fetchImpl('https://textlinksms.com/api/send-sms', {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${opts.apiKey}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ to: toE164(msg.to), body: msg.body }),
+          body: JSON.stringify({ phone_number: toE164(msg.to), text: msg.body }),
         });
-        const json = (await res.json()) as { id?: string; error?: string };
-        if (!res.ok) return { ok: false, error: json.error ?? `textlink ${res.status}` };
-        return { ok: true, providerMessageId: json.id };
+        const json = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string };
+        // TextLink returns HTTP 200 with { ok: false, message } on logical
+        // failures (e.g. bad key), so check the body, not just res.ok.
+        if (!res.ok || json.ok === false) {
+          return { ok: false, error: json.message ?? `textlink ${res.status}` };
+        }
+        return { ok: true };
       } catch (err) {
         log.error({ err }, 'textlink send failed');
         return { ok: false, error: err instanceof Error ? err.message : 'textlink_failed' };

@@ -210,12 +210,16 @@ export function buildSmsDispatch(log: Logger): SmsDispatch | undefined {
   if (provider === 'textlink' && process.env['SMS_TEXTLINK_API_KEY']) {
     const key = process.env['SMS_TEXTLINK_API_KEY']!;
     return async (args) => {
-      const r = await fetch('https://api.textlink.io/v1/send', {
+      // TextLink REST API — https://docs.textlinksms.com/api
+      const r = await fetch('https://textlinksms.com/api/send-sms', {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: toE164(args.to), body: args.body }),
+        body: JSON.stringify({ phone_number: toE164(args.to), text: args.body }),
       });
-      if (!r.ok) throw new Error(`textlink_${r.status}`);
+      const json = (await r.json().catch(() => ({}))) as { ok?: boolean; message?: string };
+      if (!r.ok || json.ok === false) {
+        throw new Error(json.message ?? `textlink_${r.status}`);
+      }
     };
   }
   log.info({ provider }, 'worker sms dispatcher disabled (no provider configured)');

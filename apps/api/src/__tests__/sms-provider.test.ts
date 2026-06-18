@@ -18,7 +18,7 @@ function okFetch(capture: { url?: string; body?: string }): typeof fetch {
     return {
       ok: true,
       status: 200,
-      json: async () => ({ sid: 'SM1', id: 'TL1' }),
+      json: async () => ({ sid: 'SM1', ok: true }),
     } as Response;
   }) as unknown as typeof fetch;
 }
@@ -34,24 +34,41 @@ describe('SMS provider phone normalization', () => {
     expect(cap.body).toContain('To=%2B13125550148'); // %2B === '+'
   });
 
-  it('textlink: prefixes +1 for a bare 10-digit US number', async () => {
-    const cap: { body?: string } = {};
+  it('textlink: posts to the correct endpoint with phone_number/text and +1', async () => {
+    const cap: { url?: string; body?: string } = {};
     const p = createTextLinkSmsProvider({ apiKey: 'k', fetchImpl: okFetch(cap) }, log);
-    await p.send({ to: '3125550148', body: 'hi' });
-    expect(JSON.parse(cap.body ?? '{}').to).toBe('+13125550148');
+    const r = await p.send({ to: '3125550148', body: 'hi' });
+    expect(cap.url).toBe('https://textlinksms.com/api/send-sms');
+    const sent = JSON.parse(cap.body ?? '{}');
+    expect(sent.phone_number).toBe('+13125550148');
+    expect(sent.text).toBe('hi');
+    expect(r.ok).toBe(true);
   });
 
   it('leaves an already-E.164 number unchanged', async () => {
     const cap: { body?: string } = {};
     const p = createTextLinkSmsProvider({ apiKey: 'k', fetchImpl: okFetch(cap) }, log);
     await p.send({ to: '+13125550148', body: 'hi' });
-    expect(JSON.parse(cap.body ?? '{}').to).toBe('+13125550148');
+    expect(JSON.parse(cap.body ?? '{}').phone_number).toBe('+13125550148');
   });
 
   it('falls back to the raw string when it is not a parseable US number', async () => {
     const cap: { body?: string } = {};
     const p = createTextLinkSmsProvider({ apiKey: 'k', fetchImpl: okFetch(cap) }, log);
     await p.send({ to: 'not-a-phone', body: 'hi' });
-    expect(JSON.parse(cap.body ?? '{}').to).toBe('not-a-phone');
+    expect(JSON.parse(cap.body ?? '{}').phone_number).toBe('not-a-phone');
+  });
+
+  it('reports a logical failure (HTTP 200, ok:false) as an error', async () => {
+    const failFetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: false, message: 'Invalid API key' }),
+      }) as Response) as unknown as typeof fetch;
+    const p = createTextLinkSmsProvider({ apiKey: 'bad', fetchImpl: failFetch }, log);
+    const r = await p.send({ to: '+13125550148', body: 'hi' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('Invalid API key');
   });
 });
