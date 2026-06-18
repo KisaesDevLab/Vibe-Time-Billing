@@ -108,7 +108,6 @@ import { RequestDetailPage } from './pages/RequestDetail';
 import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
 import { TaxReturnsStaffPage } from './pages/TaxReturns';
 import { AppointmentsPage } from './pages/Appointments';
-import { BookingRequestsPage } from './pages/BookingRequests';
 import { NotificationsPage as StaffNotificationsPage } from './pages/Notifications';
 import { TasksPage } from './pages/Tasks';
 import { TimeEntryPage } from './pages/TimeEntry';
@@ -192,7 +191,6 @@ export function App(): JSX.Element {
                   <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
                   <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
                   <Route path="/appointments" element={<AppointmentsPage />} />
-                  <Route path="/booking-requests" element={<BookingRequestsPage />} />
                   <Route path="/notifications" element={<StaffNotificationsPage />} />
                   <Route path="/intake" element={<IntakeInboxPage />} />
                   <Route path="/filer" element={<FilerPage />} />
@@ -278,7 +276,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   };
   const [teamUnread, setTeamUnread] = useState(0);
   const [notifUnread, setNotifUnread] = useState(0);
-  const [bookingPending, setBookingPending] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = (): void => {
@@ -292,13 +289,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           if (alive) setNotifUnread(r.count);
         })
         .catch(() => undefined);
-      if (can.appointments) {
-        void api<{ count: number }>('/api/staff/appointments/booking-requests/count')
-          .then((r) => {
-            if (alive) setBookingPending(r.count);
-          })
-          .catch(() => undefined);
-      }
     };
     poll();
     const t = setInterval(poll, 30000);
@@ -369,14 +359,6 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/appointments',
           icon: <CalendarCheck size={16} />,
           active: location.pathname.startsWith('/appointments'),
-          show: can.appointments,
-        },
-        {
-          section: 'Work',
-          label: bookingPending > 0 ? `Booking requests (${bookingPending})` : 'Booking requests',
-          href: '/booking-requests',
-          icon: <Inbox size={16} />,
-          active: location.pathname.startsWith('/booking-requests'),
           show: can.appointments,
         },
         {

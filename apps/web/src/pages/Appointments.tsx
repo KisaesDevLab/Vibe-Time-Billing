@@ -18,6 +18,8 @@ import {
   type ReminderStep,
 } from '../components/ReminderScheduleEditor';
 import { BookingSettingsEditor } from './BookingSettingsEditor';
+import { BookingRequestsPage } from './BookingRequests';
+import { BookingPagesPage } from './admin/BookingPages';
 import { CalendarUnmatchedPage } from './CalendarUnmatched';
 
 type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
@@ -199,7 +201,15 @@ function StaffAvatarStack({ staff }: { staff: { id: string; name: string }[] }):
   );
 }
 
-const TABS = ['list', 'book', 'inbox', 'availability', 'review'] as const;
+const TABS = [
+  'list',
+  'book',
+  'inbox',
+  'requests',
+  'booking-page',
+  'availability',
+  'review',
+] as const;
 type TabKey = (typeof TABS)[number];
 
 function hashTab(): TabKey {
@@ -211,6 +221,7 @@ export function AppointmentsPage(): JSX.Element {
   const [tab, setTab] = useState<TabKey>(hashTab());
   const [inboxCount, setInboxCount] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
+  const [bookingReqCount, setBookingReqCount] = useState(0);
 
   useEffect(() => {
     const onHash = (): void => setTab(hashTab());
@@ -225,6 +236,9 @@ export function AppointmentsPage(): JSX.Element {
         .catch(() => undefined);
       void api<{ count: number }>('/api/staff/calendar/unmatched/count')
         .then((r) => alive && setReviewCount(r.count))
+        .catch(() => undefined);
+      void api<{ count: number }>('/api/staff/appointments/booking-requests/count')
+        .then((r) => alive && setBookingReqCount(r.count))
         .catch(() => undefined);
     };
     poll();
@@ -255,6 +269,12 @@ export function AppointmentsPage(): JSX.Element {
             label: 'Reschedule inbox',
             badge: inboxCount > 0 ? <Pill tone="danger">{inboxCount}</Pill> : undefined,
           },
+          {
+            key: 'requests',
+            label: 'Booking requests',
+            badge: bookingReqCount > 0 ? <Pill tone="warning">{bookingReqCount}</Pill> : undefined,
+          },
+          { key: 'booking-page', label: 'Booking page' },
           { key: 'availability', label: 'Availability' },
           {
             key: 'review',
@@ -268,6 +288,8 @@ export function AppointmentsPage(): JSX.Element {
       {tab === 'list' && <ListTab />}
       {tab === 'book' && <BookTab onBooked={() => go('list')} />}
       {tab === 'inbox' && <InboxTab onResolved={() => setInboxCount((c) => Math.max(0, c - 1))} />}
+      {tab === 'requests' && <BookingRequestsPage />}
+      {tab === 'booking-page' && <BookingPagesPage />}
       {tab === 'availability' && <AvailabilityTab />}
       {tab === 'review' && <CalendarUnmatchedPage />}
     </div>
