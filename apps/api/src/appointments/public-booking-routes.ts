@@ -159,24 +159,21 @@ function settingsOverrideFor(link: ResolvedLink): {
   };
 }
 
-/** Page windows for a given weekday, shaped for the slot engine. */
-async function windowsForDay(
+/** All of a page's active windows, grouped by weekday (0-6) and shaped for
+ *  the slot engine — loaded once so the month view doesn't re-query per day. */
+async function windowsByDow(
   db: Database,
   link: ResolvedLink,
-  date: string,
-): Promise<AvailabilityWindowRow[]> {
+): Promise<Map<number, AvailabilityWindowRow[]>> {
   const rows = await db
     .select()
     .from(publicBookingAvailability)
-    .where(
-      and(
-        eq(publicBookingAvailability.bookingLinkId, link.id),
-        eq(publicBookingAvailability.dayOfWeek, dow(date)),
-      ),
-    );
-  return rows
-    .filter((r) => r.isActive)
-    .map((r) => ({
+    .where(eq(publicBookingAvailability.bookingLinkId, link.id));
+  const out = new Map<number, AvailabilityWindowRow[]>();
+  for (const r of rows) {
+    if (!r.isActive) continue;
+    const list = out.get(r.dayOfWeek) ?? [];
+    list.push({
       staffId: link.staffId,
       startTime: r.startTime,
       endTime: r.endTime,
@@ -184,7 +181,19 @@ async function windowsForDay(
       locationTypes: null,
       locationOptionId: r.locationOptionId,
       appointmentTypeIds: r.appointmentTypeIds,
-    }));
+    });
+    out.set(r.dayOfWeek, list);
+  }
+  return out;
+}
+
+/** Page windows for a given weekday, shaped for the slot engine. */
+async function windowsForDay(
+  db: Database,
+  link: ResolvedLink,
+  date: string,
+): Promise<AvailabilityWindowRow[]> {
+  return (await windowsByDow(db, link)).get(dow(date)) ?? [];
 }
 
 function durationFor(
@@ -358,6 +367,63 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       timezone: tz,
       slots: result.slots.filter((s) => s.available).map((s) => ({ start: s.start, end: s.end })),
     });
+  });
+
+  // GET /:slug/month?year=&month=&typeId= — which days have any open slot
+  // (drives the calendar's bookable-day highlighting, like the staff wizard).
+  router.get('/:slug/month', async (req: Request, res: Response) => {
+    const d = db(res);
+    if (!d) return;
+    const link = await resolveLink(d, String(req.params['slug'] ?? ''));
+    if (!link) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const year = Number(req.query['year']);
+    const month = Number(req.query['month']); // 1-12
+    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+      res.status(400).json({ error: 'invalid_month' });
+      return;
+    }
+    const typeId =
+      typeof req.query['typeId'] === 'string' && UUID_RE.test(req.query['typeId'])
+        ? req.query['typeId']
+        : undefined;
+    const types = await loadTypes(d, link);
+    if (typeId && !types.some((t) => t.id === typeId)) {
+      res.status(400).json({ error: 'unknown_type' });
+      return;
+    }
+    const tz = await firmTimezone(d, link.firmId);
+    const durationMinutes = durationFor(link, types, typeId);
+    const settings = settingsOverrideFor(link);
+    const byDow = await windowsByDow(d, link);
+    const provider = providerFor(link.firmId);
+    const at = now();
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const days: Record<string, boolean> = {};
+    for (let dd = 1; dd <= daysInMonth; dd++) {
+      const date = `${year}-${String(month).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+      const wins = byDow.get(dow(date)) ?? [];
+      if (wins.length === 0) {
+        days[date] = false;
+        continue;
+      }
+      const result = await getAvailableSlots({
+        db: d,
+        staffIds: [link.staffId],
+        date,
+        durationMinutes,
+        timezone: tz,
+        now: at,
+        busyProvider: provider,
+        appointmentTypeId: typeId,
+        settingsOverride: settings,
+        availabilityRowsOverride: wins,
+      });
+      days[date] = result.slots.some((s) => s.available);
+    }
+    res.json({ days, timezone: tz });
   });
 
   // POST /:slug/request — submit a booking request (creates a PENDING hold).
