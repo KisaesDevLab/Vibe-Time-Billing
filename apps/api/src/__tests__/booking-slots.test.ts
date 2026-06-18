@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  bookingRequests,
   calendarEvents,
   calendarProviderConfig,
   staffAvailability,
@@ -359,6 +360,127 @@ describe('getAvailableSlots — multi-staff intersection', () => {
     });
     const first = res.slots.find((s) => s.start === `${MONDAY}T09:00:00.000Z`)!;
     expect(first.available).toBe(false); // blocked by the existing booking
+  });
+});
+
+describe('getAvailableSlots — public booking (page windows + holds, 0168)', () => {
+  const PAGE_SETTINGS = {
+    bufferBeforeMinutes: 0,
+    bufferAfterMinutes: 0,
+    minNoticeHours: 0,
+    slotIncrementMinutes: 60,
+    bookingEnabled: true,
+  };
+
+  it('uses page windows (override) instead of staff_availability', async () => {
+    const a = seed.appUserId;
+    // No staff_availability rows at all — the page supplies its own windows.
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      settingsOverride: PAGE_SETTINGS,
+      availabilityRowsOverride: [
+        {
+          staffId: a,
+          startTime: '09:00',
+          endTime: '12:00',
+          isActive: true,
+          locationTypes: null,
+          locationOptionId: null,
+          appointmentTypeIds: null,
+        },
+      ],
+    });
+    expect(res.slots.filter((s) => s.available).map((s) => s.start)).toEqual([
+      `${MONDAY}T09:00:00.000Z`,
+      `${MONDAY}T10:00:00.000Z`,
+      `${MONDAY}T11:00:00.000Z`,
+    ]);
+  });
+
+  it('a PENDING, non-expired booking-request hold blocks that slot', async () => {
+    const a = seed.appUserId;
+    await harness.db.insert(bookingRequests).values({
+      firmId: seed.firmId,
+      staffId: a,
+      startsAt: new Date(`${MONDAY}T09:00:00Z`),
+      endsAt: new Date(`${MONDAY}T10:00:00Z`),
+      durationMinutes: 60,
+      visitorName: 'Jane',
+      visitorEmail: 'jane@example.com',
+      status: 'PENDING',
+      holdExpiresAt: new Date('2030-02-01T00:00:00Z'), // future
+    });
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: FAR_BEFORE,
+      busyProvider: fakeBusy({}),
+      settingsOverride: PAGE_SETTINGS,
+      availabilityRowsOverride: [
+        {
+          staffId: a,
+          startTime: '09:00',
+          endTime: '12:00',
+          isActive: true,
+          locationTypes: null,
+          locationOptionId: null,
+          appointmentTypeIds: null,
+        },
+      ],
+    });
+    const nine = res.slots.find((s) => s.start === `${MONDAY}T09:00:00.000Z`)!;
+    expect(nine.available).toBe(false); // held
+    const ten = res.slots.find((s) => s.start === `${MONDAY}T10:00:00.000Z`)!;
+    expect(ten.available).toBe(true);
+  });
+
+  it('an expired or non-PENDING hold does NOT block the slot', async () => {
+    const a = seed.appUserId;
+    await setSettings(a, { slotIncrementMinutes: 60 });
+    await setAvail(a, MONDAY, '09:00', '12:00');
+    // Expired PENDING hold + a DECLINED hold on 09:00 — neither should block.
+    await harness.db.insert(bookingRequests).values({
+      firmId: seed.firmId,
+      staffId: a,
+      startsAt: new Date(`${MONDAY}T09:00:00Z`),
+      endsAt: new Date(`${MONDAY}T10:00:00Z`),
+      durationMinutes: 60,
+      visitorName: 'Expired',
+      visitorEmail: 'e@example.com',
+      status: 'PENDING',
+      holdExpiresAt: new Date('2029-01-01T00:00:00Z'), // already expired vs MONDAY 2030
+    });
+    await harness.db.insert(bookingRequests).values({
+      firmId: seed.firmId,
+      staffId: a,
+      startsAt: new Date(`${MONDAY}T10:00:00Z`),
+      endsAt: new Date(`${MONDAY}T11:00:00Z`),
+      durationMinutes: 60,
+      visitorName: 'Declined',
+      visitorEmail: 'd@example.com',
+      status: 'DECLINED',
+      holdExpiresAt: new Date('2030-02-01T00:00:00Z'),
+    });
+    const res = await getAvailableSlots({
+      db: harness.db,
+      staffIds: [a],
+      date: MONDAY,
+      durationMinutes: 60,
+      timezone: 'UTC',
+      now: new Date(`${MONDAY}T00:00:00Z`),
+      busyProvider: fakeBusy({}),
+    });
+    expect(res.slots.find((s) => s.start === `${MONDAY}T09:00:00.000Z`)!.available).toBe(true);
+    expect(res.slots.find((s) => s.start === `${MONDAY}T10:00:00.000Z`)!.available).toBe(true);
   });
 });
 

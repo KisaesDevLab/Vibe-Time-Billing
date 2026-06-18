@@ -18,6 +18,7 @@ import type { Database } from '@vibe/db';
 import {
   appointmentStaff,
   appointments,
+  bookingRequests,
   staffAvailability,
   staffBookingSettings,
 } from '@vibe/db/schema';
@@ -78,6 +79,24 @@ export interface GetAvailableSlotsArgs {
   /** When set, only availability windows that allow this appointment type
    *  (or windows with no type restriction) are considered. */
   appointmentTypeId?: string;
+  /** Public-booking override: use these day-filtered windows instead of the
+   *  staff's `staff_availability` rows (the booking PAGE defines its own
+   *  hours). Same shape/filtering as staff_availability. */
+  availabilityRowsOverride?: AvailabilityWindowRow[];
+  /** Public-booking override: use these booking rules (increment, buffers,
+   *  notice) for every staff member instead of `staff_booking_settings`. */
+  settingsOverride?: ResolvedSettings;
+}
+
+/** Minimal shape the slot engine needs from an availability window. */
+export interface AvailabilityWindowRow {
+  staffId: string;
+  startTime: string; // 'HH:MM' or 'HH:MM:SS'
+  endTime: string;
+  isActive: boolean;
+  locationTypes: string[] | null;
+  locationOptionId: string | null;
+  appointmentTypeIds: string[] | null;
 }
 
 /** A window allows a location when it has no restriction (null/empty) or its
@@ -204,18 +223,31 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
 
   const dow = dayOfWeek(date);
 
-  // Load settings + availability per staff.
-  const settingsRows = await db
-    .select()
-    .from(staffBookingSettings)
-    .where(inArray(staffBookingSettings.staffId, staffIds));
-  const availRows = await db
-    .select()
-    .from(staffAvailability)
-    .where(and(inArray(staffAvailability.staffId, staffIds), eq(staffAvailability.dayOfWeek, dow)));
+  // Load settings + availability per staff. The public booking page passes
+  // its own windows (availabilityRowsOverride) + rules (settingsOverride),
+  // so we only hit staff_availability / staff_booking_settings for the
+  // staff-initiated wizard path.
+  const availRows: AvailabilityWindowRow[] =
+    args.availabilityRowsOverride ??
+    (await db
+      .select()
+      .from(staffAvailability)
+      .where(
+        and(inArray(staffAvailability.staffId, staffIds), eq(staffAvailability.dayOfWeek, dow)),
+      ));
+  const settingsRows = args.settingsOverride
+    ? []
+    : await db
+        .select()
+        .from(staffBookingSettings)
+        .where(inArray(staffBookingSettings.staffId, staffIds));
 
   const settingsByStaff = new Map<string, ResolvedSettings>();
   for (const id of staffIds) {
+    if (args.settingsOverride) {
+      settingsByStaff.set(id, args.settingsOverride);
+      continue;
+    }
     const row = settingsRows.find((r) => r.staffId === id);
     settingsByStaff.set(id, row ? { ...DEFAULT_SETTINGS, ...stripNulls(row) } : DEFAULT_SETTINGS);
   }
@@ -283,6 +315,10 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     windowEnd,
     args.excludeAppointmentId,
   );
+  // Pending (non-expired) public booking-request holds also block a slot —
+  // for BOTH the public page and the staff wizard, so neither double-books a
+  // time a visitor is waiting on confirmation for.
+  const holdBusy = await loadBookingHoldBusy(db, staffIds, windowStart, windowEnd, now);
   // On reschedule, the appointment's OWN provider/mirror event still shows
   // up in free/busy (getSchedule returns no ids to filter by); drop busy
   // intervals that exactly match the appointment's current window so it
@@ -310,10 +346,10 @@ export async function getAvailableSlots(args: GetAvailableSlotsArgs): Promise<Av
     } catch {
       busy = [];
     }
-    busyByStaff.set(
-      id,
-      [...busy, ...(bookingBusy.get(id) ?? [])].filter((b) => !isSelfEvent(b)),
-    );
+    busyByStaff.set(id, [
+      ...[...busy, ...(bookingBusy.get(id) ?? [])].filter((b) => !isSelfEvent(b)),
+      ...(holdBusy.get(id) ?? []),
+    ]);
   }
 
   const durMs = durationMinutes * MIN;
@@ -393,6 +429,40 @@ export async function findBookingConflict(
     .where(and(...conds))
     .limit(1);
   return rows.length > 0;
+}
+
+/** Pending, non-expired public booking-request holds per staff count as busy
+ *  (the slot is reserved until a staff approver decides or the hold expires). */
+async function loadBookingHoldBusy(
+  db: Database,
+  staffIds: string[],
+  windowStart: Date,
+  windowEnd: Date,
+  now: Date,
+): Promise<Map<string, BusyInterval[]>> {
+  const rows = await db
+    .select({
+      staffId: bookingRequests.staffId,
+      start: bookingRequests.startsAt,
+      end: bookingRequests.endsAt,
+    })
+    .from(bookingRequests)
+    .where(
+      and(
+        inArray(bookingRequests.staffId, staffIds),
+        eq(bookingRequests.status, 'PENDING'),
+        gt(bookingRequests.holdExpiresAt, now),
+        lt(bookingRequests.startsAt, windowEnd),
+        gte(bookingRequests.endsAt, windowStart),
+      ),
+    );
+  const out = new Map<string, BusyInterval[]>();
+  for (const r of rows) {
+    const list = out.get(r.staffId) ?? [];
+    list.push({ start: r.start, end: r.end });
+    out.set(r.staffId, list);
+  }
+  return out;
 }
 
 /** TB bookings (scheduled appointments) per staff in the window count as busy. */
