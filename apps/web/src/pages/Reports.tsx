@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Input, Pill, Sparkline, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { VIEWER_REPORTS } from './reports/ReportViewer';
 
 type Dimension = 'firm' | 'timekeeper' | 'engagement' | 'client';
 
@@ -80,29 +81,40 @@ export function ReportsPage(): JSX.Element {
         drillActive={drillActive}
         onClearDrill={clearDrill}
       />
-      <RevenueOpsCard />
-      <SubscriptionProfitabilityCard />
+      {/* id wrappers are the scroll targets for the Report-library cards. */}
+      <div id="revenue-ops-card">
+        <RevenueOpsCard />
+      </div>
+      <div id="subscription-profitability-card">
+        <SubscriptionProfitabilityCard />
+      </div>
       <PlainEnglishCard />
-      <BillableTargetsCard />
-      <CapacityForecastCard />
-      <RealizationCard
-        dim={dim}
-        onDimChange={(d) => setParam('dim', d)}
-        start={start}
-        end={end}
-        drillUser={drillUser}
-        drillEng={drillEng}
-        drillClient={drillClient}
-        onDrill={(d, key) => {
-          // Drill from firm → timekeeper / engagement / client view.
-          const next = new URLSearchParams(search);
-          if (d === 'timekeeper') next.set('userId', key);
-          else if (d === 'engagement') next.set('engagementId', key);
-          else if (d === 'client') next.set('clientId', key);
-          next.set('dim', 'firm');
-          setSearch(next);
-        }}
-      />
+      <div id="billable-targets-card">
+        <BillableTargetsCard />
+      </div>
+      <div id="capacity-forecast-card">
+        <CapacityForecastCard />
+      </div>
+      <div id="realization-card">
+        <RealizationCard
+          dim={dim}
+          onDimChange={(d) => setParam('dim', d)}
+          start={start}
+          end={end}
+          drillUser={drillUser}
+          drillEng={drillEng}
+          drillClient={drillClient}
+          onDrill={(d, key) => {
+            // Drill from firm → timekeeper / engagement / client view.
+            const next = new URLSearchParams(search);
+            if (d === 'timekeeper') next.set('userId', key);
+            else if (d === 'engagement') next.set('engagementId', key);
+            else if (d === 'client') next.set('clientId', key);
+            next.set('dim', 'firm');
+            setSearch(next);
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -985,6 +997,13 @@ const REPORT_CARDS: CardSpec[] = [
     blurb: 'Every state change, append-only.',
     href: '/audit',
   },
+  // Reports with no bespoke UI — opened in the generic viewer (table + CSV).
+  ...VIEWER_REPORTS.map((r) => ({
+    key: `view-${r.kind}`,
+    title: r.label,
+    blurb: r.description,
+    href: `/reports/view/${r.kind}`,
+  })),
 ];
 
 function ReportLibraryCards(): JSX.Element {

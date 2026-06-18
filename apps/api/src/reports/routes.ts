@@ -7,7 +7,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, notInArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -20,6 +20,7 @@ import {
   engagementTypes,
   engagements,
   firmSettings,
+  invoiceLineItems,
   invoices,
   payments,
   recurringBillingPlans,
@@ -67,6 +68,76 @@ const QuerySchema = z.object({
 
 function csvCell(s: string | number | null | undefined): string {
   return csvField(s);
+}
+
+// Attribute invoice revenue to engagements. A CONSOLIDATED invoice (one
+// invoice spanning several engagements via line items) is split by each
+// engagement's share of the engagement-tagged line-item amounts; a simple
+// invoice (0–1 tagged engagement) falls back to the header total on the
+// primary-engagement pointer, preserving the fee-inclusive single case.
+// Excludes DRAFT (not yet real revenue) and VOIDED (reversed) invoices.
+async function billedByEngagement(
+  db: Database,
+  firmId: string,
+  engIdSet: Set<string>,
+): Promise<Map<string, { billed: number; paid: number }>> {
+  const billedBy = new Map<string, { billed: number; paid: number }>();
+  if (engIdSet.size === 0) return billedBy;
+  const firmInvoices = await db
+    .select({
+      id: invoices.id,
+      primaryEngagementId: invoices.primaryEngagementId,
+      totalCents: invoices.totalCents,
+      paidCents: invoices.paidCents,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.firmId, firmId), notInArray(invoices.status, ['DRAFT', 'VOIDED'])));
+  const invIds = firmInvoices.map((i) => i.id);
+  const liRows = invIds.length
+    ? await db
+        .select({
+          invoiceId: invoiceLineItems.invoiceId,
+          engagementId: invoiceLineItems.engagementId,
+          amountCents: invoiceLineItems.amountCents,
+        })
+        .from(invoiceLineItems)
+        .where(inArray(invoiceLineItems.invoiceId, invIds))
+    : [];
+  const linesByInvoice = new Map<string, Map<string, number>>();
+  for (const li of liRows) {
+    if (!li.engagementId || !engIdSet.has(li.engagementId)) continue;
+    const byEng = linesByInvoice.get(li.invoiceId) ?? new Map<string, number>();
+    byEng.set(li.engagementId, (byEng.get(li.engagementId) ?? 0) + Number(li.amountCents));
+    linesByInvoice.set(li.invoiceId, byEng);
+  }
+  const add = (engId: string, billed: number, paid: number) => {
+    const cur = billedBy.get(engId) ?? { billed: 0, paid: 0 };
+    cur.billed += billed;
+    cur.paid += paid;
+    billedBy.set(engId, cur);
+  };
+  for (const invRow of firmInvoices) {
+    const total = Number(invRow.totalCents);
+    const paid = Number(invRow.paidCents);
+    const byEng = linesByInvoice.get(invRow.id);
+    if (!byEng || byEng.size <= 1) {
+      const [onlyEng] = byEng ? Array.from(byEng.keys()) : [];
+      const targetEng = onlyEng ?? invRow.primaryEngagementId;
+      if (targetEng && engIdSet.has(targetEng)) add(targetEng, total, paid);
+      continue;
+    }
+    const attributed = Array.from(byEng.values()).reduce((a, b) => a + b, 0);
+    if (attributed <= 0) {
+      if (invRow.primaryEngagementId && engIdSet.has(invRow.primaryEngagementId))
+        add(invRow.primaryEngagementId, total, paid);
+      continue;
+    }
+    for (const [engId, amt] of byEng) {
+      const share = amt / attributed;
+      add(engId, Math.round(total * share), Math.round(paid * share));
+    }
+  }
+  return billedBy;
 }
 
 export function createReportRouter(deps: ReportRoutesDeps): Router {
@@ -137,7 +208,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       // Date filter (#28) + drill filters (#20): always join to
       // time_entries so we can scope on entry date and drill into
       // specific timekeepers/engagements/clients.
-      const conds = [];
+      // Scope to this firm's billing batches in SQL (not merely via the JS
+      // filter below), and count only APPLIED adjustments. Allocation rows
+      // are written while an adjustment is still PENDING_APPROVAL, and a
+      // reversal flips status to REVERSED without deleting allocations — so
+      // both would otherwise pollute realization with non-realized billing.
+      const conds = [
+        inArray(
+          adjustments.billingBatchId,
+          firmBatches.map((b) => b.id),
+        ),
+        eq(adjustments.status, 'APPLIED'),
+      ];
       if (parsed.data.start)
         conds.push(drz`${timeEntries.entryDate} >= ${parsed.data.start}::date`);
       if (parsed.data.end) conds.push(drz`${timeEntries.entryDate} <= ${parsed.data.end}::date`);
@@ -145,7 +227,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         conds.push(eq(adjustmentAllocations.appUserId, parsed.data.appUserId));
       if (parsed.data.engagementId)
         conds.push(eq(billingBatches.engagementId, parsed.data.engagementId));
-      const baseQuery = deps.db
+      const rows = await deps.db
         .select({
           appUserId: adjustmentAllocations.appUserId,
           timeEntryId: adjustmentAllocations.timeEntryId,
@@ -160,8 +242,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // adjustments table to reach the batch and its engagement.
         .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
         .innerJoin(billingBatches, eq(billingBatches.id, adjustments.billingBatchId))
-        .innerJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId));
-      const rows = await (conds.length > 0 ? baseQuery.where(and(...conds)) : baseQuery);
+        .innerJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
+        .where(and(...conds));
 
       const enginToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
       // Service-line lookup map — populated for engagements that have an
@@ -347,7 +429,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .from(billingBatches)
         .where(inArray(billingBatches.engagementId, Array.from(partnerByEng.keys())));
       const engByBatch = new Map(batches.map((b) => [b.id, b.engagementId]));
-      const rows = batches.length
+      const batchIds = batches.map((b) => b.id);
+      const rows = batchIds.length
         ? await deps.db
             .select({
               // The batch id lives on the adjustment, not the allocation — join
@@ -358,6 +441,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             })
             .from(adjustmentAllocations)
             .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+            // Scope to this firm's batches in SQL, and only realized (APPLIED)
+            // adjustments — mirrors /realization.
+            .where(
+              and(inArray(adjustments.billingBatchId, batchIds), eq(adjustments.status, 'APPLIED')),
+            )
         : [];
       const byPartner = new Map<string, { originalCents: number; adjustedCents: number }>();
       for (const r of rows) {
@@ -375,7 +463,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           partnerId,
           originalCents: v.originalCents,
           adjustedCents: v.adjustedCents,
-          realizationPct: v.originalCents > 0 ? (v.adjustedCents / v.originalCents) * 100 : 0,
+          // 0–1 ratio, consistent with /realization (was 0–100 here).
+          realizationPct: v.originalCents > 0 ? v.adjustedCents / v.originalCents : 0,
         })),
       });
     },
@@ -414,35 +503,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { invoices: inv } = await import('@vibe/db/schema');
-      const { sql: drz } = await import('drizzle-orm');
-      const [billed, cost] = await Promise.all([
-        deps.db
-          .select({
-            engagementId: inv.primaryEngagementId,
-            billedCents: drz<number>`COALESCE(SUM(${inv.totalCents}), 0)`,
-            paidCents: drz<number>`COALESCE(SUM(${inv.paidCents}), 0)`,
-          })
-          .from(inv)
-          .where(inArray(inv.primaryEngagementId, engIds))
-          .groupBy(inv.primaryEngagementId),
+      const engIdSet = new Set(engIds);
+      const [billedBy, cost] = await Promise.all([
+        billedByEngagement(deps.db, session.firmId, engIdSet),
         deps.db
           .select({
             engagementId: timeEntries.engagementId,
             costCents: drz<number>`COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)), 0)::bigint`,
           })
           .from(timeEntries)
-          .where(inArray(timeEntries.engagementId, engIds))
+          // Exclude soft-deleted (ARCHIVED) entries from the cost base.
+          .where(and(inArray(timeEntries.engagementId, engIds), ne(timeEntries.status, 'ARCHIVED')))
           .groupBy(timeEntries.engagementId),
       ]);
-      const billedBy = new Map<string, { billed: number; paid: number }>();
-      for (const r of billed) {
-        if (!r.engagementId) continue;
-        billedBy.set(r.engagementId, {
-          billed: Number(r.billedCents),
-          paid: Number(r.paidCents),
-        });
-      }
       const costBy = new Map<string, number>();
       for (const r of cost) {
         costBy.set(r.engagementId, Number(r.costCents));
@@ -484,7 +557,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           count: drz<number>`COUNT(*)`.as('count'),
         })
         .from(inv)
-        .where(eq(inv.firmId, session.firmId))
+        // Exclude DRAFT (not yet real revenue) and VOIDED (reversed) invoices.
+        .where(and(eq(inv.firmId, session.firmId), notInArray(inv.status, ['DRAFT', 'VOIDED'])))
         .groupBy(drz`to_char(${inv.issueDate}, 'YYYY-MM')`)
         .orderBy(drz`to_char(${inv.issueDate}, 'YYYY-MM') DESC`)
         .limit(24);
@@ -517,22 +591,41 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           fullName: au.fullName,
           billableHours: drz<string>`COALESCE(SUM(${te.hours}) FILTER (WHERE ${te.billableFlag}), 0)`,
           totalHours: drz<string>`COALESCE(SUM(${te.hours}), 0)`,
+          standardHoursPerWeek: au.standardHoursPerWeek,
         })
         .from(te)
         .innerJoin(au, eq(au.id, te.appUserId))
-        .where(and(eq(au.firmId, session.firmId), drz`${te.entryDate} >= ${since}::date`))
-        .groupBy(te.appUserId, au.fullName);
+        .where(
+          and(
+            eq(au.firmId, session.firmId),
+            // Exclude soft-deleted (ARCHIVED) entries.
+            ne(te.status, 'ARCHIVED'),
+            drz`${te.entryDate} >= ${since}::date`,
+          ),
+        )
+        .groupBy(te.appUserId, au.fullName, au.standardHoursPerWeek);
       res.json({
         asOf: new Date().toISOString().slice(0, 10),
         windowDays: 30,
-        items: rows.map((r) => ({
-          appUserId: r.appUserId,
-          fullName: r.fullName,
-          billableHours: Number(r.billableHours),
-          totalHours: Number(r.totalHours),
-          utilizationPct:
-            Number(r.totalHours) > 0 ? (Number(r.billableHours) / Number(r.totalHours)) * 100 : 0,
-        })),
+        items: rows.map((r) => {
+          const billable = Number(r.billableHours);
+          const total = Number(r.totalHours);
+          // Capacity over the 30-day window = standard weekly hours × 30/7.
+          const availableHours =
+            Math.round(((Number(r.standardHoursPerWeek) * 30) / 7) * 100) / 100;
+          return {
+            appUserId: r.appUserId,
+            fullName: r.fullName,
+            billableHours: billable,
+            totalHours: total,
+            // Share of LOGGED time that is billable (billable / total).
+            utilizationPct: total > 0 ? (billable / total) * 100 : 0,
+            // Billable hours against available CAPACITY (billable / available)
+            // — the truer "utilization" for a timekeeper who under-logs.
+            availableHours,
+            capacityUtilizationPct: availableHours > 0 ? (billable / availableHours) * 100 : 0,
+          };
+        }),
       });
     },
   );
@@ -573,7 +666,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`.as('amount'),
         })
         .from(te)
-        .where(inArray(te.engagementId, engIds))
+        // Exclude soft-deleted (ARCHIVED) entries.
+        .where(and(inArray(te.engagementId, engIds), ne(te.status, 'ARCHIVED')))
         .groupBy(te.engagementId);
       res.json({
         items: rows.map((r) => ({
@@ -614,7 +708,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`.as('amount'),
         })
         .from(te)
-        .where(inArray(te.engagementId, engIds))
+        // Exclude soft-deleted (ARCHIVED) entries.
+        .where(and(inArray(te.engagementId, engIds), ne(te.status, 'ARCHIVED')))
         .groupBy(te.engagementId);
       const byClient = new Map<string, { hours: number; amountCents: number }>();
       for (const r of rows) {
@@ -682,6 +777,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             })
             .from(adjustmentAllocations)
             .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+            // SECURITY: scope to THIS firm's batches in SQL. Without this the
+            // query read every firm's allocations and emitted the unmatched
+            // ones (blank engagement/client but real appUserId + dollar
+            // amounts) — a cross-firm data leak. Also restrict to APPLIED.
+            .where(
+              and(inArray(adjustments.billingBatchId, batchIds), eq(adjustments.status, 'APPLIED')),
+            )
         : [];
       const header = [
         'appUserId',
@@ -693,12 +795,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       ];
       const lines = [header.join(',')];
       for (const r of rows) {
-        const engId = batchToEng.get(r.billingBatchId) ?? '';
-        const cliId = engId ? (engToClient.get(engId) ?? '') : '';
+        const engId = batchToEng.get(r.billingBatchId);
+        // Defense-in-depth: skip any row whose batch isn't in this firm's set
+        // (the SQL scope above already guarantees this, but never emit a row
+        // we can't attribute to a firm engagement/client).
+        if (!engId) continue;
+        const cliId = engToClient.get(engId) ?? '';
         const orig = Number(r.originalValueCents);
         const adj = Number(r.adjustedValueCents);
-        const pct = orig > 0 ? ((adj / orig) * 100).toFixed(2) : '0';
-        lines.push([r.appUserId, engId, cliId, orig, adj, pct].join(','));
+        // 0–1 ratio to match the JSON /realization endpoint.
+        const pct = orig > 0 ? (adj / orig).toFixed(4) : '0';
+        lines.push(
+          [csvField(r.appUserId), csvField(engId), csvField(cliId), orig, adj, pct].join(','),
+        );
       }
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader(
@@ -730,7 +839,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .select({ t: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)` })
         .from(invoices)
         .where(
-          and(eq(invoices.firmId, session.firmId), drz`${invoices.issueDate} >= ${since}::date`),
+          and(
+            eq(invoices.firmId, session.firmId),
+            // Sales basis must exclude DRAFT (not billed) + VOIDED (reversed)
+            // so it stays consistent with the AR (outstanding) basis below.
+            notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+            drz`${invoices.issueDate} >= ${since}::date`,
+          ),
         );
       const [paid] = await deps.db
         .select({
@@ -742,6 +857,9 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           and(
             eq(invoices.firmId, session.firmId),
             eq(payments.status, 'SUCCEEDED'),
+            // Exclude voided payments (a voided manual payment can still be
+            // SUCCEEDED) from the collected total.
+            isNull(payments.voidedAt),
             drz`${payments.receivedAt} >= ${since}::timestamptz`,
           ),
         );
@@ -776,6 +894,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .where(
           and(
             eq(invoices.firmId, session.firmId),
+            notInArray(invoices.status, ['DRAFT', 'VOIDED']),
             drz`${invoices.issueDate} >= ${priorStartStr}::date`,
             drz`${invoices.issueDate} < ${priorEndStr}::date`,
           ),
@@ -790,6 +909,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           and(
             eq(invoices.firmId, session.firmId),
             eq(payments.status, 'SUCCEEDED'),
+            isNull(payments.voidedAt),
             drz`${payments.receivedAt} >= ${priorStartStr}::timestamptz`,
             drz`${payments.receivedAt} < ${priorEndStr}::timestamptz`,
           ),
@@ -837,7 +957,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .from(invoices)
         .innerJoin(clients, eq(clients.id, invoices.clientId))
         .where(
-          and(eq(invoices.firmId, session.firmId), drz`${invoices.issueDate} >= ${since}::date`),
+          and(
+            eq(invoices.firmId, session.firmId),
+            notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+            drz`${invoices.issueDate} >= ${since}::date`,
+          ),
         )
         .groupBy(clients.partnerInChargeId);
       res.json({
@@ -869,23 +993,48 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      // Billed (post-write-down) value per time entry: the APPLIED adjusted
+      // value where the entry was adjusted, otherwise its standard amount. A
+      // time entry belongs to a single billing batch/adjustment, so the SUM
+      // collapses to that one applied allocation.
+      const appliedAdjusted = deps.db
+        .select({
+          timeEntryId: adjustmentAllocations.timeEntryId,
+          adjustedCents: drz<number>`SUM(${adjustmentAllocations.adjustedValueCents})`.as(
+            'adjusted_cents',
+          ),
+        })
+        .from(adjustmentAllocations)
+        .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+        .where(eq(adjustments.status, 'APPLIED'))
+        .groupBy(adjustmentAllocations.timeEntryId)
+        .as('applied_adjusted');
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
           fullName: appUsers.fullName,
-          hours: drz<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
-          amountCents: drz<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`,
+          // Effective rate = billed value / billable hours. Both numerator and
+          // denominator filter to billable so the rate isn't deflated by
+          // non-billable time (was: standard value over ALL hours).
+          hours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.billableFlag}), 0)`,
+          amountCents: drz<number>`COALESCE(SUM(COALESCE(${appliedAdjusted.adjustedCents}, ${timeEntries.standardAmountCents})) FILTER (WHERE ${timeEntries.billableFlag}), 0)`,
         })
         .from(timeEntries)
         .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .leftJoin(appliedAdjusted, eq(appliedAdjusted.timeEntryId, timeEntries.id))
         .where(
-          and(eq(appUsers.firmId, session.firmId), drz`${timeEntries.entryDate} >= ${since}::date`),
+          and(
+            eq(appUsers.firmId, session.firmId),
+            ne(timeEntries.status, 'ARCHIVED'),
+            drz`${timeEntries.entryDate} >= ${since}::date`,
+          ),
         )
         .groupBy(timeEntries.appUserId, appUsers.fullName);
       res.json({
         windowDays: 90,
         items: rows.map((r) => {
           const h = Number(r.hours);
+          // Billed (post-adjustment) value of billable work for this user.
           const a = Number(r.amountCents);
           return {
             appUserId: r.appUserId,
@@ -919,7 +1068,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           paid: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
         })
         .from(invoices)
-        .where(eq(invoices.firmId, session.firmId))
+        // Exclude DRAFT (not yet real revenue) and VOIDED (reversed) invoices.
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+          ),
+        )
         .groupBy(monthCol)
         .orderBy(monthCol);
       const items = rows.map((r, i) => {
@@ -972,10 +1127,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             return amount;
           case 'QUARTERLY':
             return Math.round(amount / 3);
+          case 'SEMIANNUAL':
+            return Math.round(amount / 6);
           case 'ANNUAL':
             return Math.round(amount / 12);
           default:
-            return amount;
+            // Unknown cadence: don't assume monthly (that masked the missing
+            // SEMIANNUAL case and overstated semiannual plans 6×).
+            return 0;
         }
       };
       const items = rows.map((r) => ({
@@ -1013,9 +1172,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .from(clients)
         .leftJoin(
           invoices,
-          and(eq(invoices.clientId, clients.id), drz`${invoices.issueDate} >= ${since}::date`),
+          and(
+            eq(invoices.clientId, clients.id),
+            notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+            drz`${invoices.issueDate} >= ${since}::date`,
+          ),
         )
-        .where(eq(clients.firmId, session.firmId))
+        // A partner's "book" is their ACTIVE clients — exclude archived.
+        .where(and(eq(clients.firmId, session.firmId), ne(clients.status, 'ARCHIVED')))
         .groupBy(clients.partnerInChargeId);
       res.json({
         windowDays: 365,
@@ -1050,7 +1214,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           lastInvoiceAt: drz<string>`MAX(${invoices.issueDate})`,
         })
         .from(invoices)
-        .where(eq(invoices.firmId, session.firmId))
+        // Exclude DRAFT (not yet real revenue) and VOIDED (reversed) invoices.
+        .where(
+          and(
+            eq(invoices.firmId, session.firmId),
+            notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+          ),
+        )
         .groupBy(invoices.clientId)
         .orderBy(drz`COALESCE(SUM(${invoices.paidCents}), 0) DESC`)
         .limit(200);
@@ -1092,24 +1262,25 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))
-        .leftJoin(timeEntries, eq(timeEntries.engagementId, engagements.id))
+        // Exclude soft-deleted (ARCHIVED) entries from the cost base.
+        .leftJoin(
+          timeEntries,
+          and(eq(timeEntries.engagementId, engagements.id), ne(timeEntries.status, 'ARCHIVED')),
+        )
         .where(and(eq(clients.firmId, session.firmId)))
         .groupBy(engagements.id, engagements.name, clients.name);
-      const invRows = await deps.db
-        .select({
-          engagementId: invoices.primaryEngagementId,
-          billedCents: drz<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
-          paidCents: drz<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
-        })
-        .from(invoices)
-        .where(eq(invoices.firmId, session.firmId))
-        .groupBy(invoices.primaryEngagementId);
-      const billMap = new Map(invRows.map((r) => [r.engagementId, r]));
+      // Attribute revenue per engagement (consolidated invoices split by line
+      // item; DRAFT/VOIDED excluded) — same helper as /profitability.
+      const billMap = await billedByEngagement(
+        deps.db,
+        session.firmId,
+        new Set(rows.map((r) => r.engagementId)),
+      );
       const items = rows
         .map((r) => {
           const inv = billMap.get(r.engagementId);
-          const billedCents = inv ? Number(inv.billedCents) : 0;
-          const paidCents = inv ? Number(inv.paidCents) : 0;
+          const billedCents = inv ? inv.billed : 0;
+          const paidCents = inv ? inv.paid : 0;
           const costCents = Number(r.costCents);
           return {
             engagementId: r.engagementId,
@@ -1157,14 +1328,20 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .select({
           appUserId: timeEntries.appUserId,
           fullName: appUsers.fullName,
+          standardHoursPerWeek: appUsers.standardHoursPerWeek,
           totalBillableHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.billableFlag} = true), 0)`,
         })
         .from(timeEntries)
         .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
         .where(
-          and(eq(appUsers.firmId, session.firmId), drz`${timeEntries.entryDate} >= ${since}::date`),
+          and(
+            eq(appUsers.firmId, session.firmId),
+            // Exclude soft-deleted (ARCHIVED) entries.
+            ne(timeEntries.status, 'ARCHIVED'),
+            drz`${timeEntries.entryDate} >= ${since}::date`,
+          ),
         )
-        .groupBy(timeEntries.appUserId, appUsers.fullName);
+        .groupBy(timeEntries.appUserId, appUsers.fullName, appUsers.standardHoursPerWeek);
       // 90 days ≈ 13 weeks; weekly average × 4 weeks = projection.
       res.json({
         weeklyTargetHours: weeklyTarget,
@@ -1173,6 +1350,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           const billable = Number(r.totalBillableHours);
           const weeklyAvg = billable / 13;
           const projectedNext4Weeks = weeklyAvg * 4;
+          // Per-user capacity basis (their standard work week) alongside the
+          // flat firm-wide weeklyTarget — a more honest variance than a single
+          // global number for everyone.
+          const standardWeeklyHours = Number(r.standardHoursPerWeek);
           return {
             appUserId: r.appUserId,
             fullName: r.fullName,
@@ -1180,6 +1361,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             weeklyAvgHours: weeklyAvg,
             projectedNext4Weeks,
             varianceVsTarget: projectedNext4Weeks - weeklyTarget * 4,
+            standardWeeklyHours,
+            varianceVsCapacity: projectedNext4Weeks - standardWeeklyHours * 4,
+            capacityUtilizationPct:
+              standardWeeklyHours > 0 ? (weeklyAvg / standardWeeklyHours) * 100 : 0,
           };
         }),
       });
@@ -1217,7 +1402,12 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
         .leftJoin(offices, eq(offices.id, appUsers.defaultOfficeId))
         .where(
-          and(eq(appUsers.firmId, session.firmId), drz`${timeEntries.entryDate} >= ${since}::date`),
+          and(
+            eq(appUsers.firmId, session.firmId),
+            // Exclude soft-deleted (ARCHIVED) entries.
+            ne(timeEntries.status, 'ARCHIVED'),
+            drz`${timeEntries.entryDate} >= ${since}::date`,
+          ),
         )
         .groupBy(appUsers.defaultOfficeId, offices.name);
       res.json({
@@ -1268,6 +1458,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
         .toISOString()
         .slice(0, 10);
+      // Fraction of the current month elapsed (inclusive of today), used to
+      // prorate the full-month target so month-to-date hours aren't compared
+      // against a whole-month figure (which reads ~0% early in the month).
+      const daysInMonth = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0),
+      ).getUTCDate();
+      const monthElapsedFraction = now.getUTCDate() / daysInMonth;
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -1280,6 +1477,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .where(
           and(
             eq(appUsers.firmId, session.firmId),
+            // Exclude soft-deleted (ARCHIVED) entries.
+            ne(timeEntries.status, 'ARCHIVED'),
             drz`${timeEntries.entryDate} >= ${monthStart}::date`,
           ),
         )
@@ -1287,9 +1486,12 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       res.json({
         targetHours: fallbackTarget,
         monthStart,
+        monthElapsedPct: Math.round(monthElapsedFraction * 1000) / 10,
         items: rows.map((r) => {
           const billable = Number(r.billableHours);
           const target = r.userTarget ?? fallbackTarget;
+          // Prorated target = full-month target × fraction of month elapsed.
+          const proratedTarget = Math.round(target * monthElapsedFraction * 100) / 100;
           return {
             appUserId: r.appUserId,
             fullName: r.fullName,
@@ -1297,6 +1499,9 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             targetHours: target,
             varianceHours: billable - target,
             attainmentPct: target > 0 ? (billable / target) * 100 : 0,
+            // Month-to-date view: hours vs the prorated target.
+            proratedTargetHours: proratedTarget,
+            proratedAttainmentPct: proratedTarget > 0 ? (billable / proratedTarget) * 100 : 0,
           };
         }),
       });
@@ -1320,11 +1525,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .select({
           engagementId: engagements.id,
           totalHours: drz<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
-          outOfScopeHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.inScopeFlag} = false), 0)`,
+          // Effective out-of-scope (schema rule) = NOT(inScopeFlag AND NOT
+          // outOfScopeOverride) = NOT inScopeFlag OR outOfScopeOverride. The
+          // user veto (outOfScopeOverride) was previously ignored.
+          outOfScopeHours: drz<string>`COALESCE(SUM(${timeEntries.hours}) FILTER (WHERE ${timeEntries.inScopeFlag} = false OR ${timeEntries.outOfScopeOverride} = true), 0)`,
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))
-        .leftJoin(timeEntries, eq(timeEntries.engagementId, engagements.id))
+        // Exclude soft-deleted (ARCHIVED) entries.
+        .leftJoin(
+          timeEntries,
+          and(eq(timeEntries.engagementId, engagements.id), ne(timeEntries.status, 'ARCHIVED')),
+        )
         .where(and(eq(clients.firmId, session.firmId), eq(engagements.mixedModeEnabled, true)))
         .groupBy(engagements.id);
       res.json({
@@ -1524,12 +1736,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             return Math.round((amount * 52) / 12);
           case 'BIWEEKLY':
             return Math.round((amount * 26) / 12);
+          case 'MONTHLY':
+            return amount;
           case 'QUARTERLY':
             return Math.round(amount / 3);
+          case 'SEMIANNUAL':
+            return Math.round(amount / 6);
           case 'ANNUAL':
             return Math.round(amount / 12);
           default:
-            return amount;
+            // Unknown cadence: don't assume monthly (masked the missing
+            // SEMIANNUAL case and overstated semiannual plans 6×).
+            return 0;
         }
       };
 
@@ -1537,15 +1755,20 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const usage = await deps.db
         .select({
           engagementId: timeEntries.engagementId,
-          inScopeHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.hours} ELSE 0 END), 0)`,
-          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
-          oosHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.hours} END), 0)`,
-          oosBilledCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
+          // Effective scope (schema rule) = inScopeFlag AND NOT
+          // outOfScopeOverride. The user veto was previously ignored, so
+          // vetoed entries were mis-counted as in-scope retainer cost.
+          inScopeHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN ${timeEntries.hours} ELSE 0 END), 0)`,
+          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
+          oosHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN 0 ELSE ${timeEntries.hours} END), 0)`,
+          oosBilledCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
         })
         .from(timeEntries)
         .where(
           and(
             inArray(timeEntries.engagementId, engIds),
+            // Exclude soft-deleted (ARCHIVED) entries.
+            ne(timeEntries.status, 'ARCHIVED'),
             drz`${timeEntries.entryDate} >= ${since}::date`,
           ),
         )
@@ -1717,7 +1940,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           p.provider                                                       AS provider,
           COALESCE(pr.mode, 'RECORD')                                      AS mode,
           pr.reference                                                     AS reference,
-          p.amount_cents                                                   AS total_cents,
+          (p.amount_cents - COALESCE(p.refunded_amount_cents, 0))          AS total_cents,
           p.status::text                                                   AS status
         FROM vibetb.payment p
         INNER JOIN vibetb.invoice  i ON i.id = p.invoice_id
@@ -1725,7 +1948,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         LEFT  JOIN vibetb.office   o ON o.id = c.office_id
         LEFT  JOIN vibetb.payment_receipt pr ON pr.id = p.receipt_id
         WHERE c.firm_id = ${session.firmId}
-          AND p.status = 'SUCCEEDED'
+          -- Net money received: SUCCEEDED plus PARTIALLY_REFUNDED (a partial
+          -- refund still leaves net cash received). Voided payments excluded.
+          AND p.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')
+          AND p.voided_at IS NULL
           AND COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date)
               BETWEEN ${from} AND ${to}
           ${officeId ? drz`AND c.office_id = ${officeId}` : drz``}
@@ -1737,8 +1963,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           CASE WHEN ${sortBy} = 'office'  AND ${dir} = 'desc' THEN o.name END DESC,
           CASE WHEN ${sortBy} = 'method'  AND ${dir} = 'asc'  THEN COALESCE(pr.payment_method, p.provider) END ASC,
           CASE WHEN ${sortBy} = 'method'  AND ${dir} = 'desc' THEN COALESCE(pr.payment_method, p.provider) END DESC,
-          CASE WHEN ${sortBy} = 'amount'  AND ${dir} = 'asc'  THEN p.amount_cents END ASC,
-          CASE WHEN ${sortBy} = 'amount'  AND ${dir} = 'desc' THEN p.amount_cents END DESC,
+          CASE WHEN ${sortBy} = 'amount'  AND ${dir} = 'asc'  THEN (p.amount_cents - COALESCE(p.refunded_amount_cents, 0)) END ASC,
+          CASE WHEN ${sortBy} = 'amount'  AND ${dir} = 'desc' THEN (p.amount_cents - COALESCE(p.refunded_amount_cents, 0)) END DESC,
           CASE WHEN ${sortBy} = 'date'    AND ${dir} = 'asc'
                THEN COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date) END ASC,
           COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date) DESC

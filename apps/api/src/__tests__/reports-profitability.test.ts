@@ -165,6 +165,105 @@ describe('Reports — GET /profitability', () => {
     expect(row.marginPct).toBeNull();
   });
 
+  it('excludes DRAFT and VOIDED invoices from billed revenue', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const base = {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      primaryEngagementId: seed.engagementId,
+      issueDate: '2026-04-15',
+      dueDate: '2026-05-15',
+    };
+    await harness.db.insert(invoices).values([
+      {
+        ...base,
+        invoiceNumber: 'INV-SENT',
+        subtotalCents: 150000,
+        totalCents: 150000,
+        paidCents: 100000,
+        status: 'SENT',
+      },
+      {
+        ...base,
+        invoiceNumber: 'INV-DRAFT',
+        subtotalCents: 999900,
+        totalCents: 999900,
+        paidCents: 0,
+        status: 'DRAFT',
+      },
+      {
+        ...base,
+        invoiceNumber: 'INV-VOID',
+        subtotalCents: 888800,
+        totalCents: 888800,
+        paidCents: 0,
+        status: 'VOIDED',
+      },
+    ]);
+    const router = createReportRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, '/profitability', {
+      body: {},
+      params: {},
+      query: {},
+      staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    const body = r.jsonBody as { items: Array<{ engagementId: string; billedCents: number }> };
+    const row = body.items.find((i) => i.engagementId === seed.engagementId)!;
+    // Only the SENT invoice counts — the $9,999 draft + $8,888 void are excluded.
+    expect(row.billedCents).toBe(150000);
+  });
+
+  it('splits a consolidated invoice across engagements by line-item share', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    // Second engagement under the same client.
+    const eng2 = await harness.db.execute(
+      sql`INSERT INTO engagement (client_id, name, fee_structure)
+          VALUES (${seed.clientId}, 'Engagement 2', 'HOURLY') RETURNING id`,
+    );
+    const eng2Id = (eng2 as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    // One consolidated invoice: $1,000 billed / $600 paid, split 75/25 by line items.
+    const inv = await harness.db.execute(
+      sql`INSERT INTO invoice (firm_id, client_id, primary_engagement_id, invoice_number,
+            issue_date, due_date, subtotal_cents, total_cents, paid_cents, status)
+          VALUES (${seed.firmId}, ${seed.clientId}, ${seed.engagementId}, 'INV-CONS',
+            '2026-04-15', '2026-05-15', 100000, 100000, 60000, 'SENT') RETURNING id`,
+    );
+    const invId = (inv as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    await harness.db.execute(
+      sql`INSERT INTO invoice_line_item (invoice_id, kind, description, amount_cents, engagement_id)
+          VALUES (${invId}, 'TIME_AGGREGATE', 'Eng 1 work', 75000, ${seed.engagementId}),
+                 (${invId}, 'TIME_AGGREGATE', 'Eng 2 work', 25000, ${eng2Id})`,
+    );
+    const router = createReportRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, '/profitability', {
+      body: {},
+      params: {},
+      query: {},
+      staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    const body = r.jsonBody as {
+      items: Array<{ engagementId: string; billedCents: number; paidCents: number }>;
+    };
+    const e1 = body.items.find((i) => i.engagementId === seed.engagementId)!;
+    const e2 = body.items.find((i) => i.engagementId === eng2Id)!;
+    // 75% / 25% of the $1,000 total and the $600 paid — not all dumped on the
+    // primary engagement.
+    expect(e1.billedCents).toBe(75000);
+    expect(e1.paidCents).toBe(45000);
+    expect(e2.billedCents).toBe(25000);
+    expect(e2.paidCents).toBe(15000);
+  });
+
   it('cross-firm engagement excluded', async () => {
     // Seed the original firm so its engagement/invoice exist in the DB.
     // The endpoint should NOT return them when scoped to a different firm.

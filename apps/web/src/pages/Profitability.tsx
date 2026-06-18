@@ -74,20 +74,34 @@ export function ProfitabilityPage(): JSX.Element {
     setLoading(true);
     setError(null);
     try {
-      const r = await api<{ items: Eng[] }>('/api/staff/engagements?status=ACTIVE&limit=500');
-      const list = r.items ?? [];
-      const results = await Promise.all(
-        list.map(async (e) => {
-          try {
-            const s = await api<{ summary: Summary | null }>(
-              `/api/staff/engagements/${e.id}/cost-vs-revenue`,
-            );
-            return { eng: e, summary: s.summary };
-          } catch {
-            return { eng: e, summary: null };
-          }
-        }),
-      );
+      // One aggregate query instead of N per-engagement calls (was up to 500
+      // requests on load). The engagement list supplies names + filter
+      // metadata; /reports/profitability supplies cost/billed/paid per
+      // engagement — firm-scoped, DRAFT/VOIDED excluded, ARCHIVED time
+      // excluded, and consolidated invoices split across engagements.
+      const [engRes, profRes] = await Promise.all([
+        api<{ items: Eng[] }>('/api/staff/engagements?status=ACTIVE&limit=500'),
+        api<{ items: Summary[] }>('/api/staff/reports/profitability'),
+      ]);
+      const byEng = new Map((profRes.items ?? []).map((s) => [s.engagementId, s]));
+      const results = (engRes.items ?? []).map((e) => {
+        const agg = byEng.get(e.id);
+        // Margin stays paid-based (collected revenue − cost) to match this
+        // page's "Revenue is the paid amount on invoices" framing; the
+        // aggregate's own marginCents is billed-based, so we recompute.
+        const summary: Summary | null = agg
+          ? {
+              engagementId: e.id,
+              costCents: agg.costCents,
+              billedCents: agg.billedCents,
+              paidCents: agg.paidCents,
+              marginCents: agg.paidCents - agg.costCents,
+              marginPct:
+                agg.paidCents > 0 ? ((agg.paidCents - agg.costCents) / agg.paidCents) * 100 : null,
+            }
+          : null;
+        return { eng: e, summary };
+      });
       setRows(results);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');

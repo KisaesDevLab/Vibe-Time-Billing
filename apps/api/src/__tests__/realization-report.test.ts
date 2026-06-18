@@ -149,6 +149,41 @@ describe('GET /realization', () => {
     expect(body.summary.realizationPct).toBeCloseTo(0.6);
   });
 
+  it('excludes allocations from non-APPLIED (reversed/pending) adjustments', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    // Reversing an adjustment only flips its status to REVERSED — the
+    // allocation rows persist. A second, never-applied (PENDING_APPROVAL)
+    // adjustment also writes allocations before approval. Neither should be
+    // counted by the report.
+    const batchId = rows(await harness.db.execute(sql`SELECT id FROM billing_batch LIMIT 1`))[0]!
+      .id;
+    const teId = rows(await harness.db.execute(sql`SELECT id FROM time_entry LIMIT 1`))[0]!.id;
+    const reasonId = rows(await harness.db.execute(sql`SELECT id FROM reason_code LIMIT 1`))[0]!.id;
+    for (const status of ['REVERSED', 'PENDING_APPROVAL']) {
+      const adjId = rows(
+        await harness.db.execute(sql`
+          INSERT INTO adjustment (billing_batch_id, method, allocation_method, total_amount_cents,
+            reason_code_id, status, created_by_id)
+          VALUES (${batchId}, 'TIME', 'HIERARCHICAL_CASCADE', -90000, ${reasonId}, ${status}, ${appUserId})
+          RETURNING id`),
+      )[0]!.id;
+      await harness.db.execute(sql`
+        INSERT INTO adjustment_allocation (adjustment_id, time_entry_id, app_user_id,
+          original_value_cents, adjusted_value_cents, adjustment_amount_cents)
+        VALUES (${adjId}, ${teId}, ${appUserId}, 100000, 10000, -90000)`);
+    }
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/realization', makeReq(firmId, appUserId, {}));
+    const body = res.jsonBody as {
+      summary: { originalValueCents: number; adjustedValueCents: number; realizationPct: number };
+    };
+    // Only the APPLIED write-down counts: still $1,000 → $600 (60%). If the
+    // status filter regressed, the extra allocations would drag this down.
+    expect(body.summary.originalValueCents).toBe(100000);
+    expect(body.summary.adjustedValueCents).toBe(60000);
+    expect(body.summary.realizationPct).toBeCloseTo(0.6);
+  });
+
   it('returns per-timekeeper items (non-empty) for the timekeeper dimension', async () => {
     const { firmId, appUserId } = await seedRealization();
     const router = createReportRouter({ db: harness.db });
@@ -165,5 +200,62 @@ describe('GET /realization', () => {
     expect(body.items[0]!.key).toBe(appUserId);
     expect(body.items[0]!.originalValueCents).toBe(100000);
     expect(body.items[0]!.adjustedValueCents).toBe(60000);
+  });
+});
+
+describe('GET /effective-rate', () => {
+  it('uses billed (post-write-down) value over billable hours', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    // The endpoint windows to the trailing 90 days, so seed a recent entry
+    // (relative to now, not a fixed past date) to stay in-window.
+    const recent = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
+    const batchId = rows(
+      await harness.db.execute(sql`
+        INSERT INTO billing_batch (engagement_id, period_start, period_end, status, created_by_id, approved_by_id)
+        VALUES (${seed.engagementId}, ${recent}, ${recent}, 'APPROVED', ${seed.appUserId}, ${seed.appUserId})
+        RETURNING id`),
+    )[0]!.id;
+    const teId = rows(
+      await harness.db.execute(sql`
+        INSERT INTO time_entry (engagement_id, app_user_id, work_code_id, entry_date, hours,
+          standard_rate_snapshot_cents, standard_amount_cents, billing_batch_id)
+        VALUES (${seed.engagementId}, ${seed.appUserId}, ${seed.workCodeId}, ${recent}, 2.0,
+          50000, 100000, ${batchId})
+        RETURNING id`),
+    )[0]!.id;
+    const reasonId = rows(
+      await harness.db.execute(sql`
+        INSERT INTO reason_code (firm_id, category, label)
+        VALUES (${seed.firmId}, 'WRITE_DOWN', 'Scope creep') RETURNING id`),
+    )[0]!.id;
+    const adjId = rows(
+      await harness.db.execute(sql`
+        INSERT INTO adjustment (billing_batch_id, method, allocation_method, total_amount_cents,
+          reason_code_id, status, created_by_id)
+        VALUES (${batchId}, 'TIME', 'HIERARCHICAL_CASCADE', -40000, ${reasonId}, 'APPLIED', ${seed.appUserId})
+        RETURNING id`),
+    )[0]!.id;
+    await harness.db.execute(sql`
+      INSERT INTO adjustment_allocation (adjustment_id, time_entry_id, app_user_id,
+        original_value_cents, adjusted_value_cents, adjustment_amount_cents)
+      VALUES (${adjId}, ${teId}, ${seed.appUserId}, 100000, 60000, -40000)`);
+
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/effective-rate', makeReq(seed.firmId, seed.appUserId, {}));
+    expect(res.statusCode).toBe(200);
+    const body = res.jsonBody as {
+      items: Array<{
+        appUserId: string;
+        hours: number;
+        amountCents: number;
+        effectiveRateCents: number | null;
+      }>;
+    };
+    const row = body.items.find((i) => i.appUserId === seed.appUserId)!;
+    // $1,000 standard written down (APPLIED) to $600, over 2 billable hours:
+    // billed $600 / 2h = $300/h. The old bug used standard $1,000 → $500/h.
+    expect(row.hours).toBe(2);
+    expect(row.amountCents).toBe(60000);
+    expect(row.effectiveRateCents).toBe(30000);
   });
 });

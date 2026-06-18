@@ -4,6 +4,27 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { VIEWER_REPORTS } from '../reports/ReportViewer';
+
+const VIEWER_KINDS = new Set(VIEWER_REPORTS.map((r) => r.kind));
+
+// Turn a saved report's kind + params into a destination URL: a dedicated page
+// where one exists, the generic viewer for API-only reports, else the Reports
+// page (where dso / mrr / revenue-pop are rendered inline).
+function openHref(kind: string, params: Record<string, unknown>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params ?? {})) {
+    if (v == null || typeof v === 'object') continue;
+    // The realization card reads its dimension from `dim`.
+    const key = kind === 'realization' && k === 'dimension' ? 'dim' : k;
+    qs.set(key, String(v));
+  }
+  const q = qs.toString() ? `?${qs.toString()}` : '';
+  if (kind === 'profitability') return '/reports/profitability';
+  if (kind === 'realization') return `/reports${q}`;
+  if (VIEWER_KINDS.has(kind)) return `/reports/view/${kind}${q}`;
+  return '/reports';
+}
 
 interface SavedReport {
   id: string;
@@ -35,6 +56,28 @@ export function SavedReportsPage(): JSX.Element {
   const [shared, setShared] = useState(false);
   const [params, setParams] = useState('{}');
   const [error, setError] = useState<string | null>(null);
+  // When set, the form edits an existing saved report (PATCH) instead of
+  // creating a new one. Report kind is immutable once saved, so the select
+  // is disabled while editing.
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  function resetForm(): void {
+    setEditingId(null);
+    setName('');
+    setKind(KINDS[0]!);
+    setParams('{}');
+    setShared(false);
+    setError(null);
+  }
+
+  function startEdit(r: SavedReport): void {
+    setEditingId(r.id);
+    setName(r.name);
+    setKind(r.reportKind);
+    setParams(JSON.stringify(r.paramsJson ?? {}, null, 2));
+    setShared(r.sharedFlag);
+    setError(null);
+  }
 
   async function load(): Promise<void> {
     try {
@@ -48,7 +91,7 @@ export function SavedReportsPage(): JSX.Element {
     void load();
   }, []);
 
-  async function create(e: FormEvent): Promise<void> {
+  async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
     let parsed: Record<string, unknown>;
@@ -59,13 +102,19 @@ export function SavedReportsPage(): JSX.Element {
       return;
     }
     try {
-      await api('/api/staff/saved-reports', {
-        method: 'POST',
-        body: JSON.stringify({ name, reportKind: kind, paramsJson: parsed, shared }),
-      });
-      setName('');
-      setParams('{}');
-      setShared(false);
+      if (editingId) {
+        // reportKind is immutable; PATCH only the editable fields.
+        await api(`/api/staff/saved-reports/${editingId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name, paramsJson: parsed, shared }),
+        });
+      } else {
+        await api('/api/staff/saved-reports', {
+          method: 'POST',
+          body: JSON.stringify({ name, reportKind: kind, paramsJson: parsed, shared }),
+        });
+      }
+      resetForm();
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
@@ -83,13 +132,14 @@ export function SavedReportsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <Card title="Save a report definition">
-        <form onSubmit={create} style={{ display: 'grid', gap: 12, maxWidth: 600 }}>
+      <Card title={editingId ? 'Edit saved report' : 'Save a report definition'}>
+        <form onSubmit={submit} style={{ display: 'grid', gap: 12, maxWidth: 600 }}>
           <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} required />
           <label style={{ fontSize: 13 }}>
-            Report kind
+            Report kind{editingId ? ' (cannot be changed)' : ''}
             <select
               value={kind}
+              disabled={editingId !== null}
               onChange={(e) => setKind(e.target.value)}
               style={{
                 marginTop: 4,
@@ -128,8 +178,13 @@ export function SavedReportsPage(): JSX.Element {
             <input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />
             Shared firm-wide
           </label>
-          <div>
-            <Button type="submit">Save</Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button type="submit">{editingId ? 'Update' : 'Save'}</Button>
+            {editingId && (
+              <Button type="button" variant="secondary" onClick={resetForm}>
+                Cancel
+              </Button>
+            )}
           </div>
         </form>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
@@ -158,9 +213,22 @@ export function SavedReportsPage(): JSX.Element {
               key: 'actions',
               header: '',
               render: (r) => (
-                <Button size="sm" variant="secondary" onClick={() => void remove(r.id)}>
-                  Delete
-                </Button>
+                <span style={{ display: 'inline-flex', gap: 6 }}>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      window.location.href = openHref(r.reportKind, r.paramsJson);
+                    }}
+                  >
+                    Open
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => startEdit(r)}>
+                    Edit
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => void remove(r.id)}>
+                    Delete
+                  </Button>
+                </span>
               ),
             },
           ]}

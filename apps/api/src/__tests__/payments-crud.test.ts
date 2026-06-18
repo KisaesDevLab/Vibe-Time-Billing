@@ -150,11 +150,16 @@ describe('payment edit + void', () => {
 
   it('returns a fully-paid invoice to the unpaid list when its only payment is voided', async () => {
     const seedFs = await seedMinimalFirm(harness.db);
+    // Dates relative to "now" so the invoice is current (not past-due)
+    // whenever the suite runs — a fixed 2026-06-15 due date made this test
+    // flip to OVERDUE once the wall-clock passed it.
+    const issueDate = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
+    const dueDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
     const invRows = await harness.db.execute(
       sql`INSERT INTO invoice (firm_id, client_id, primary_engagement_id, invoice_number,
                                issue_date, due_date, subtotal_cents, total_cents, paid_cents, status)
           VALUES (${seedFs.firmId}, ${seedFs.clientId}, ${seedFs.engagementId}, 'INV-Z',
-                  '2026-06-01', '2026-06-15', 100000, 100000, 100000, 'PAID') RETURNING id`,
+                  ${issueDate}, ${dueDate}, 100000, 100000, 100000, 'PAID') RETURNING id`,
     );
     const invoiceId = (invRows as unknown as { rows: { id: string }[] }).rows[0]!.id;
     const p = await harness.db.execute(

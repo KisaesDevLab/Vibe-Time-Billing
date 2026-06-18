@@ -8,11 +8,14 @@ export interface CardProps {
   action?: ReactNode;
   children: ReactNode;
   style?: CSSProperties;
+  /** DOM id, e.g. so in-page anchors / scrollIntoView can target the card. */
+  id?: string;
 }
 
-export function Card({ title, action, children, style }: CardProps): JSX.Element {
+export function Card({ title, action, children, style, id }: CardProps): JSX.Element {
   return (
     <section
+      id={id}
       style={{
         background: tokens.color.surface,
         border: `1px solid ${tokens.color.border}`,
