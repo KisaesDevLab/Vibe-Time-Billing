@@ -18,6 +18,7 @@ import {
 } from '@vibe/db/schema';
 
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 /** Minimal mailer the caller wires from its provider (audit-wrapped). */
 export type CompletionMailer = (args: {
@@ -97,10 +98,23 @@ export async function notifySignatureCompleted(
     try {
       const to = (await resolveClientEmail(db, request.clientId)) ?? signerEmails[0] ?? null;
       if (to) {
+        const fallbackSubject = `Signed: ${request.title}`;
+        const fallbackBody = `Your documents for "${request.title}" have been signed and received by your firm. No further action is needed — thank you.`;
+        const rendered = await renderTemplate({
+          db,
+          firmId: request.firmId,
+          kind: 'signature_complete',
+          channel: 'EMAIL',
+          fallback: { subject: fallbackSubject, body: fallbackBody },
+          context: {
+            firm: await firmScope(db, request.firmId),
+            document: { name: request.title },
+          },
+        });
         await sendEmail({
           to,
-          subject: `Signed: ${request.title}`,
-          body: `Your documents for "${request.title}" have been signed and received by your firm. No further action is needed — thank you.`,
+          subject: rendered.subject ?? fallbackSubject,
+          body: rendered.body,
         });
       }
     } catch (err) {

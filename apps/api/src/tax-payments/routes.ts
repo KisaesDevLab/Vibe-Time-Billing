@@ -33,6 +33,7 @@ import {
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
@@ -609,13 +610,51 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
           )
           .join('\n');
         const totalCents = group.items.reduce((acc, p) => acc + p.amountCents, 0);
-        const subject = `Upcoming tax payment reminder — ${group.name}`;
-        const body = `Hi from your CPA — this is a quick reminder of the following scheduled tax payments:\n\n${lines}\n\nTotal: ${fmtCents(
+        const fallbackSubject = `Upcoming tax payment reminder — ${group.name}`;
+        const fallbackBody = `Hi from your CPA — this is a quick reminder of the following scheduled tax payments:\n\n${lines}\n\nTotal: ${fmtCents(
           totalCents,
         )}${noteBlock}\nIf you have already submitted any of these, please ignore this notice.`;
-        const smsBody = `Tax payment reminder: ${group.items.length} due (${fmtCents(
+        const fallbackSmsBody = `Tax payment reminder: ${group.items.length} due (${fmtCents(
           totalCents,
         )}). See email or your portal for details.`;
+        // Template context: aggregate reminders use the first payment's
+        // authority/due date with the group total as the amount.
+        const firstItem = group.items[0]!;
+        const paymentCtx = {
+          client: { name: group.name },
+          firm: await firmScope(deps.db, session.firmId),
+          payment: {
+            authority: firstItem.jurisdiction,
+            amount: fmtCents(totalCents),
+            due_date: fmtDate(firstItem.dueDate),
+          },
+        };
+        let subject = fallbackSubject;
+        let body = fallbackBody;
+        if (wantsEmail) {
+          const rendered = await renderTemplate({
+            db: deps.db,
+            firmId: session.firmId,
+            kind: 'tax_payment_reminder',
+            channel: 'EMAIL',
+            fallback: { subject: fallbackSubject, body: fallbackBody },
+            context: paymentCtx,
+          });
+          subject = rendered.subject ?? fallbackSubject;
+          body = rendered.body;
+        }
+        let smsBody = fallbackSmsBody;
+        if (wantsSms) {
+          const rendered = await renderTemplate({
+            db: deps.db,
+            firmId: session.firmId,
+            kind: 'tax_payment_reminder',
+            channel: 'SMS',
+            fallback: { body: fallbackSmsBody },
+            context: paymentCtx,
+          });
+          smsBody = rendered.body;
+        }
 
         for (const c of contacts) {
           if (wantsEmail) {

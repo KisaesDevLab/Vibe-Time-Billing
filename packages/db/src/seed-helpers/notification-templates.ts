@@ -279,8 +279,6 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     body:
       'Dear {{ client.name }},\n\n' +
       'Your account statement is attached. The current balance is {{ statement.balance }}.\n\n' +
-      'You can review your invoices and pay securely online any time:\n' +
-      '{{ statement.portal_url }}\n\n' +
       'If you have any questions about your account, contact us at {{ firm.support_email }} or {{ firm.support_phone }}.\n\n' +
       'Sincerely,\n{{ firm.displayName }}',
   },
@@ -289,10 +287,10 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
   {
     kind: 'engagement_letter_sent',
     channel: 'EMAIL',
-    subject: 'Please review and sign: {{ engagement.name }}',
+    subject: 'Please review and sign your engagement letter',
     body:
-      'Dear {{ client.name }},\n\n' +
-      'Your engagement letter for {{ engagement.name }} is ready for your review and signature:\n\n' +
+      'Hello,\n\n' +
+      'Your engagement letter from {{ firm.displayName }} is ready for your review and signature:\n\n' +
       '{{ link.url }}\n\n' +
       'Please review it carefully and sign at your earliest convenience so we can begin work. ' +
       'If you have any questions, reply to this email or contact us at {{ firm.support_email }}.\n\n' +
@@ -315,11 +313,11 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
   {
     kind: 'signature_complete',
     channel: 'EMAIL',
-    subject: 'Completed: {{ document.name }}',
+    subject: 'Your document has been fully signed',
     body:
-      'Dear {{ client.name }},\n\n' +
-      'Thank you — {{ document.name }} has been fully signed. A copy is available for your records:\n\n' +
-      '{{ link.url }}\n\n' +
+      'Hello,\n\n' +
+      'Thank you — your document with {{ firm.displayName }} has been fully signed and is complete. ' +
+      'A copy is available for your records.\n\n' +
       'We appreciate your business.\n\n' +
       '{{ firm.displayName }}',
   },
@@ -332,7 +330,6 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     body:
       'Dear {{ client.name }},\n\n' +
       'Your retainer {{ retainer.name }} is now active with a balance of {{ retainer.balance }}.\n\n' +
-      'You can review activity any time in your portal:\n{{ retainer.portal_url }}\n\n' +
       'Thank you for your business.\n\n' +
       '{{ firm.displayName }}',
   },
@@ -419,10 +416,10 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
   {
     kind: 'deliverable_unlocked',
     channel: 'EMAIL',
-    subject: 'Your documents for {{ engagement.name }} are ready',
+    subject: 'Your documents are ready to download',
     body:
-      'Dear {{ client.name }},\n\n' +
-      'Thank you for your payment. Your completed documents for {{ engagement.name }} are now available to download in your portal:\n\n' +
+      'Hello,\n\n' +
+      'Thank you for your payment. Your completed documents from {{ firm.displayName }} are now available to download in your portal:\n\n' +
       '{{ link.url }}\n\n' +
       'We appreciate your business.\n\n' +
       '{{ firm.displayName }}',
@@ -432,12 +429,13 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
   {
     kind: 'share_link',
     channel: 'EMAIL',
-    subject: '{{ firm.displayName }} shared a file with you',
+    subject: '{{ firm.displayName }} shared a document with you',
     body:
       'Hello,\n\n' +
-      '{{ firm.displayName }} has securely shared the following with you:\n\n' +
+      '{{ firm.displayName }} has securely shared a document with you.\n\n' +
       '{{ share.description }}\n\n' +
-      'Access it here:\n{{ link.url }}\n\n' +
+      'View it here:\n{{ link.url }}\n\n' +
+      "When you open the page, you'll receive a one-time access code to unlock it.\n\n" +
       'If you have any questions, contact us at {{ firm.support_email }}.\n\n' +
       '{{ firm.displayName }}',
   },

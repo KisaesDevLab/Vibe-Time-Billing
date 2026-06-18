@@ -22,6 +22,7 @@ import {
 } from '@vibe/db/schema';
 
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 type TxOrDb = Database | Parameters<Parameters<Database['transaction']>[0]>[0];
 
@@ -156,11 +157,24 @@ export async function sendDeliverableUnlockedNotifications(
   const recipients = identities
     .map((r) => r.email)
     .filter((e): e is string => Boolean(e && e.trim()));
-  const subject = `New files available from ${firmName}`;
+  const fallbackSubject = `New files available from ${firmName}`;
   const portalLink = args.portalBaseUrl ? `${args.portalBaseUrl}/files` : 'your client portal';
-  const body =
+  const fallbackBody =
     `${firmName} has released ${args.promotedFileCount} file${args.promotedFileCount === 1 ? '' : 's'} ` +
     `tied to invoice ${inv.invoiceNumber}. Sign in to ${portalLink} to view ${args.promotedFileCount === 1 ? 'it' : 'them'}.`;
+  const rendered = await renderTemplate({
+    db,
+    firmId: inv.firmId,
+    kind: 'deliverable_unlocked',
+    channel: 'EMAIL',
+    fallback: { subject: fallbackSubject, body: fallbackBody },
+    context: {
+      firm: await firmScope(db, inv.firmId),
+      link: { url: portalLink },
+    },
+  });
+  const subject = rendered.subject ?? fallbackSubject;
+  const body = rendered.body;
   let sent = 0;
   for (const to of recipients) {
     try {

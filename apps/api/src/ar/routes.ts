@@ -18,6 +18,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 export interface ArRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -382,16 +383,33 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         `Account statement for ${client.name} as of ${today}:\n\n` +
         rows.map((r) => r.line).join('\n') +
         `\n\nTotal balance: $${(balance / 100).toFixed(2)}`;
-      const subject = `Statement of account — ${client.name}`;
+      const balanceStr = `$${(balance / 100).toFixed(2)}`;
+      const firm = await firmScope(deps.db, session.firmId);
+      const rendered = await renderTemplate({
+        db: deps.db,
+        firmId: session.firmId,
+        kind: 'statement_sent',
+        channel: 'EMAIL',
+        fallback: {
+          subject: `Statement of account — ${client.name}`,
+          body,
+        },
+        context: {
+          client: { name: client.name },
+          firm,
+          statement: { balance: balanceStr },
+        },
+      });
+      const subject = rendered.subject ?? `Statement of account — ${client.name}`;
       try {
-        await deps.sendEmail({ to: billingEmail, subject, body });
+        await deps.sendEmail({ to: billingEmail, subject, body: rendered.body });
         await recordOutbound({
           db: deps.db,
           firmId: session.firmId,
           clientId: client.id,
           channel: 'EMAIL',
           subject,
-          body,
+          body: rendered.body,
           relatedEntityType: 'statement',
         }).catch(() => undefined);
       } catch (err) {

@@ -133,6 +133,9 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
           senderLabel: firm?.name ?? 'Your accountant',
           link,
           expiresAt: result.expiresAt,
+          db: deps.db,
+          firmId: session.firmId,
+          shareDescription: d.personalMessage ?? null,
         });
         if (delivered.emailed || delivered.smsed) {
           await deps.db
@@ -252,6 +255,9 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
           senderLabel: firm?.name ?? 'Your accountant',
           link,
           expiresAt: result.expiresAt,
+          db: deps.db,
+          firmId: session.firmId,
+          shareDescription: d.personalMessage ?? null,
         });
         if (delivered.emailed || delivered.smsed) {
           await deps.db

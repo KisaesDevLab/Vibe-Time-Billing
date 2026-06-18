@@ -27,6 +27,7 @@ import { normalizePhone } from '@vibe/core/auth';
 import { emitAudit } from '../auth/audit';
 import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 type PortalRole = 'FULL' | 'VIEW_ONLY' | 'PAY_ONLY';
 
@@ -222,10 +223,23 @@ export async function grantOrInvitePortalAccess(
     .returning({ id: portalInvitation.id });
 
   const link = `${deps.portalBaseUrl}/auth/accept?token=${encodeURIComponent(rawToken)}`;
-  const message = `${args.fullName}, you've been invited to the ${args.client.name} client portal.\n\nAccept: ${link}\n\nLink expires in 7 days.`;
+
+  const firm = await firmScope(db, args.firmId);
 
   if (args.deliveryChannel === 'EMAIL' && email && deps.sendEmail) {
-    const subject = `Client portal invitation — ${args.client.name}`;
+    const rendered = await renderTemplate({
+      db,
+      firmId: args.firmId,
+      kind: 'portal_invite',
+      channel: 'EMAIL',
+      fallback: {
+        subject: `Client portal invitation — ${args.client.name}`,
+        body: `${args.fullName}, you've been invited to the ${args.client.name} client portal.\n\nAccept: ${link}\n\nLink expires in 7 days.`,
+      },
+      context: { firm, link: { url: link } },
+    });
+    const subject = rendered.subject ?? `Client portal invitation — ${args.client.name}`;
+    const message = rendered.body;
     await deps
       .sendEmail({ to: email, subject, body: message })
       .catch((err: unknown) => logger.error({ err }, 'portal invite email failed'));
@@ -240,7 +254,15 @@ export async function grantOrInvitePortalAccess(
       relatedEntityId: invitation?.id,
     }).catch(() => undefined);
   } else if (args.deliveryChannel === 'SMS' && normPhone && deps.sendSms) {
-    const smsBody = `Portal invite from ${args.client.name}: ${link}`;
+    const rendered = await renderTemplate({
+      db,
+      firmId: args.firmId,
+      kind: 'portal_invite',
+      channel: 'SMS',
+      fallback: { body: `Portal invite from ${args.client.name}: ${link}` },
+      context: { firm, link: { url: link } },
+    });
+    const smsBody = rendered.body;
     await deps
       .sendSms({ to: normPhone, body: smsBody })
       .catch((err: unknown) => logger.error({ err }, 'portal invite sms failed'));
@@ -269,21 +291,44 @@ export async function grantOrInvitePortalAccess(
 }
 
 async function notifyExisting(deps: GrantDeps, args: GrantArgs): Promise<void> {
-  const subject = `You've been added to ${args.client.name} in your portal`;
-  const body = `You now have access to ${args.client.name}. Sign in to the portal to view and pay invoices.`;
+  const firm = await firmScope(deps.db, args.firmId);
+  const link = { url: deps.portalBaseUrl };
   if (args.deliveryChannel === 'EMAIL' && args.email && deps.sendEmail) {
+    const rendered = await renderTemplate({
+      db: deps.db,
+      firmId: args.firmId,
+      kind: 'portal_invite',
+      channel: 'EMAIL',
+      fallback: {
+        subject: `You've been added to ${args.client.name} in your portal`,
+        body: `You now have access to ${args.client.name}. Sign in to the portal to view and pay invoices.`,
+      },
+      context: { firm, link },
+    });
+    const subject = rendered.subject ?? `You've been added to ${args.client.name} in your portal`;
     await deps
-      .sendEmail({ to: args.email, subject, body })
+      .sendEmail({ to: args.email, subject, body: rendered.body })
       .catch((err: unknown) =>
         logger.warn({ err, channel: 'EMAIL' }, 'portal grant notify failed'),
       );
   } else if (args.deliveryChannel === 'SMS' && args.phone && deps.sendSms) {
     const normPhone = normalizePhone(args.phone);
-    if (normPhone)
+    if (normPhone) {
+      const rendered = await renderTemplate({
+        db: deps.db,
+        firmId: args.firmId,
+        kind: 'portal_invite',
+        channel: 'SMS',
+        fallback: {
+          body: `You now have access to ${args.client.name}. Sign in to the portal to view and pay invoices.`,
+        },
+        context: { firm, link },
+      });
       await deps
-        .sendSms({ to: normPhone, body })
+        .sendSms({ to: normPhone, body: rendered.body })
         .catch((err: unknown) =>
           logger.warn({ err, channel: 'SMS' }, 'portal grant notify failed'),
         );
+    }
   }
 }

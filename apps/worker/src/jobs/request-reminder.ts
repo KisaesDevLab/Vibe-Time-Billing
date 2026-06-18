@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import { clientContacts, clientRequests, clients, engagements, persons } from '@vibe/db/schema';
 
 import type { MailDispatch, SmsDispatch } from '../dispatchers';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 export interface RequestReminderResult {
   scanned: number;
@@ -148,7 +149,7 @@ export async function runRequestReminderTick(
     const isDropOff = req.kind === 'DROP_OFF';
     const link = `${portalBase.replace(/\/$/, '')}/requests/${req.id}`;
     const noun = isDropOff ? 'drop-off' : 'request';
-    const body = [
+    const fallbackBody = [
       `Hello${client ? ` ${client.name}` : ''},`,
       '',
       isDropOff
@@ -159,11 +160,34 @@ export async function runRequestReminderTick(
       '',
       `Please upload here: ${link}`,
     ].join('\n');
+    const firm = await firmScope(db, req.firmId);
+    const emailKind = isDropOff ? 'dropoff_reminder' : 'document_request';
+    const emailContext = isDropOff
+      ? {
+          client: { name: client?.name ?? '' },
+          firm,
+          engagement: { name: eng.name },
+          link: { url: link },
+        }
+      : {
+          client: { name: client?.name ?? '' },
+          firm,
+          request: { title: req.title },
+          link: { url: link },
+        };
+    const rendered = await renderTemplate({
+      db,
+      firmId: req.firmId,
+      kind: emailKind,
+      channel: 'EMAIL',
+      fallback: { subject: `Reminder: ${req.title} — due ${req.dueDate}`, body: fallbackBody },
+      context: emailContext,
+    });
     try {
       await args.sendEmail({
         to: email,
-        subject: `Reminder: ${req.title} — due ${req.dueDate}`,
-        body,
+        subject: rendered.subject ?? `Reminder: ${req.title} — due ${req.dueDate}`,
+        body: rendered.body,
       });
       result.sent += 1;
 
@@ -174,9 +198,25 @@ export async function runRequestReminderTick(
           billingPhoneByClient.get(eng.clientId) ?? primaryPhoneByClient.get(eng.clientId);
         if (phone) {
           try {
+            const renderedSms = await renderTemplate({
+              db,
+              firmId: req.firmId,
+              kind: 'dropoff_reminder',
+              channel: 'SMS',
+              fallback: {
+                subject: null,
+                body: `Reminder: please drop off / upload "${req.title}" by ${req.dueDate}. ${link}`,
+              },
+              context: {
+                client: { name: client?.name ?? '' },
+                firm,
+                engagement: { name: eng.name },
+                link: { url: link },
+              },
+            });
             await args.sendSms({
               to: phone,
-              body: `Reminder: please drop off / upload "${req.title}" by ${req.dueDate}. ${link}`,
+              body: renderedSms.body,
             });
             result.smsSent += 1;
           } catch (smsErr) {

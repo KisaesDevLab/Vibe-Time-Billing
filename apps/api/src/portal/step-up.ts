@@ -33,6 +33,7 @@ import { clients, portalIdentity, portalStepUpChallenge } from '@vibe/db/schema'
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { emitAudit } from '../auth/audit';
 
 const CHALLENGE_TTL_SEC = 5 * 60;
@@ -199,10 +200,21 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
           res.status(400).json({ error: 'email_unavailable' });
           return;
         }
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'email_otp',
+          channel: 'EMAIL',
+          fallback: {
+            subject: 'Verification code',
+            body: `Your verification code is ${code}. Expires in 5 minutes.`,
+          },
+          context: { firm: await firmScope(deps.db, session.firmId), auth: { code } },
+        });
         await deps.sendEmail({
           to: identity.email,
-          subject: 'Verification code',
-          body: `Your verification code is ${code}. Expires in 5 minutes.`,
+          subject: rendered.subject ?? 'Verification code',
+          body: rendered.body,
         });
         sentTo = identity.email;
         channel = 'EMAIL';
@@ -217,9 +229,17 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
           res.status(409).json({ error: 'sms_consent_required' });
           return;
         }
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'sms_otp',
+          channel: 'SMS',
+          fallback: { body: `Verification code: ${code} (expires 5 min)` },
+          context: { firm: await firmScope(deps.db, session.firmId), auth: { code } },
+        });
         await deps.sendSms({
           to: identity.phone,
-          body: `Verification code: ${code} (expires 5 min)`,
+          body: rendered.body,
         });
         sentTo = identity.phone;
         channel = 'SMS';

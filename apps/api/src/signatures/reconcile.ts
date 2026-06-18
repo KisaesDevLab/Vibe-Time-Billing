@@ -229,6 +229,8 @@ export async function reconcileSignatureRequestByDocument(
           opensignDocumentId,
           next.opensignSignerId,
         ),
+        db,
+        firmId: request.firmId,
       });
     }
   }

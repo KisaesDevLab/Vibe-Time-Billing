@@ -23,11 +23,19 @@ import {
   clients,
   engagementAssignments,
   engagements,
+  firms,
   persons,
   retainers,
 } from '@vibe/db/schema';
 
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
+
+/** Resolve the single firm for this appliance (single firm per appliance). */
+async function resolveFirmId(db: Database): Promise<string | null> {
+  const [firm] = await db.select({ id: firms.id }).from(firms).limit(1);
+  return firm?.id ?? null;
+}
 
 export type RetainerMailDispatch = (args: {
   to: string;
@@ -166,8 +174,8 @@ export async function notifyRetainerActivated(
 
     // Client-facing copy.
     if (clientEmail) {
-      const subject = `Your TY${summary.taxYear} ${summary.returnType} retainer is active`;
-      const body = [
+      const fallbackSubject = `Your TY${summary.taxYear} ${summary.returnType} retainer is active`;
+      const fallbackBody = [
         `Hello ${summary.clientName},`,
         '',
         `Thank you — your ${tierLabel(summary.tier)} retainer for your TY${summary.taxYear} ${summary.returnType} engagement is now active.`,
@@ -177,6 +185,28 @@ export async function notifyRetainerActivated(
         '',
         'You can review your retainer balance any time from the client portal.',
       ].join('\n');
+      let subject = fallbackSubject;
+      let body = fallbackBody;
+      const firmId = await resolveFirmId(db);
+      if (firmId) {
+        const rendered = await renderTemplate({
+          db,
+          firmId,
+          kind: 'retainer_activated',
+          channel: 'EMAIL',
+          fallback: { subject: fallbackSubject, body: fallbackBody },
+          context: {
+            client: { name: summary.clientName },
+            firm: await firmScope(db, firmId),
+            retainer: {
+              name: summary.name,
+              balance: (summary.hoursPurchased - summary.hoursConsumed).toFixed(2),
+            },
+          },
+        });
+        subject = rendered.subject ?? fallbackSubject;
+        body = rendered.body;
+      }
       try {
         await send({ to: clientEmail, subject, body });
       } catch (err) {
@@ -228,8 +258,8 @@ export async function notifyRetainerExhausted(
     const staffEmails = await staffRecipientEmails(db, summary.engagementId, summary.clientId);
 
     if (clientEmail) {
-      const subject = `Your TY${summary.taxYear} ${summary.returnType} retainer is fully consumed`;
-      const body = [
+      const fallbackSubject = `Your TY${summary.taxYear} ${summary.returnType} retainer is fully consumed`;
+      const fallbackBody = [
         `Hello ${summary.clientName},`,
         '',
         `Your ${tierLabel(summary.tier)} retainer for your TY${summary.taxYear} ${summary.returnType} engagement has now been fully consumed.`,
@@ -238,6 +268,28 @@ export async function notifyRetainerExhausted(
         '',
         'Any additional work on this engagement will be billed at standard rates. We will reach out before logging significant additional time so you have visibility.',
       ].join('\n');
+      let subject = fallbackSubject;
+      let body = fallbackBody;
+      const firmId = await resolveFirmId(db);
+      if (firmId) {
+        const rendered = await renderTemplate({
+          db,
+          firmId,
+          kind: 'retainer_exhausted',
+          channel: 'EMAIL',
+          fallback: { subject: fallbackSubject, body: fallbackBody },
+          context: {
+            client: { name: summary.clientName },
+            firm: await firmScope(db, firmId),
+            retainer: {
+              name: summary.name,
+              balance: (summary.hoursPurchased - summary.hoursConsumed).toFixed(2),
+            },
+          },
+        });
+        subject = rendered.subject ?? fallbackSubject;
+        body = rendered.body;
+      }
       try {
         await send({ to: clientEmail, subject, body });
       } catch (err) {

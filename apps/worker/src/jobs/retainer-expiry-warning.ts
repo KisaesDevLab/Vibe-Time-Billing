@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import { clientContacts, clients, persons, retainers } from '@vibe/db/schema';
 
 import type { MailDispatch } from '../dispatchers';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 export interface ExpiryWarningJobPayload {
   retainerId: string;
@@ -32,6 +33,7 @@ export async function runRetainerExpiryWarning(
   const [r] = await db
     .select({
       id: retainers.id,
+      firmId: retainers.firmId,
       clientId: retainers.clientId,
       status: retainers.status,
       name: retainers.name,
@@ -82,7 +84,27 @@ export async function runRetainerExpiryWarning(
     taxYear: r.taxYear,
     link,
   });
-  await args.sendEmail({ to: contactEmail, subject, body });
+  const rendered = await renderTemplate({
+    db,
+    firmId: r.firmId,
+    kind: 'retainer_expiring',
+    channel: 'EMAIL',
+    fallback: { subject, body },
+    context: {
+      client: { name: client?.name ?? 'Client' },
+      firm: await firmScope(db, r.firmId),
+      retainer: {
+        name: r.name,
+        balance: hoursRemaining.toFixed(2),
+        expires_date: expiryIso,
+      },
+    },
+  });
+  await args.sendEmail({
+    to: contactEmail,
+    subject: rendered.subject ?? subject,
+    body: rendered.body,
+  });
   log.info(
     { retainerId: payload.retainerId, kind: payload.kind, to: contactEmail },
     'warning: sent',

@@ -11,8 +11,10 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, count, eq, gte, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { fileShares, fileShareItems } from '@vibe/db/schema';
+import { fileShares, fileShareItems, firms } from '@vibe/db/schema';
 import { hashPassword, verifyPassword } from '@vibe/crypto';
+
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 export const MAX_SHARE_DAYS = 90;
 const DEFAULT_SHARE_DAYS = 30;
@@ -228,6 +230,12 @@ export interface DeliverShareArgs {
   senderLabel: string; // firm or client name
   link: string;
   expiresAt: Date;
+  /** When supplied, the email/SMS copy honors the firm's `share_link`
+   *  template override; otherwise the inline copy is used. */
+  db?: Database | null;
+  firmId?: string;
+  /** What's being shared (e.g. a file/bundle description). */
+  shareDescription?: string | null;
 }
 
 /** Email (and optionally SMS) the share link to the recipient. Best-effort
@@ -239,9 +247,23 @@ export async function deliverShare(
   let emailed = false;
   let smsed = false;
   const expiry = args.expiresAt.toISOString().slice(0, 10);
+
+  // Resolve the single firm once so both channels can honor template overrides.
+  let firmId = args.firmId;
+  if (args.db && !firmId) {
+    const [firm] = await args.db.select({ id: firms.id }).from(firms).limit(1);
+    firmId = firm?.id;
+  }
+  const firmMerge = args.db && firmId ? await firmScope(args.db, firmId) : undefined;
+  const shareCtx = {
+    ...(firmMerge ? { firm: firmMerge } : {}),
+    share: { description: args.shareDescription ?? '' },
+    link: { url: args.link },
+  };
+
   if (args.sendEmail && args.recipientEmail) {
-    const subject = `${args.senderLabel} shared a secure document with you`;
-    const body = [
+    const fallbackSubject = `${args.senderLabel} shared a secure document with you`;
+    const fallbackBody = [
       args.recipientName ? `Hi ${args.recipientName},` : 'Hello,',
       '',
       `${args.senderLabel} has shared a document with you securely.`,
@@ -255,13 +277,40 @@ export async function deliverShare(
     ]
       .filter((l) => l !== '')
       .join('\n');
+    let subject = fallbackSubject;
+    let body = fallbackBody;
+    if (args.db && firmId) {
+      const rendered = await renderTemplate({
+        db: args.db,
+        firmId,
+        kind: 'share_link',
+        channel: 'EMAIL',
+        fallback: { subject: fallbackSubject, body: fallbackBody },
+        context: shareCtx,
+      });
+      subject = rendered.subject ?? fallbackSubject;
+      body = rendered.body;
+    }
     await args.sendEmail({ to: args.recipientEmail, subject, body });
     emailed = true;
   }
   if (args.sendSms && args.recipientPhone && args.verifyChannel === 'SMS') {
+    const fallbackSmsBody = `${args.senderLabel} shared a secure document: ${args.link} (expires ${expiry}). You'll get an access code when you open it.`;
+    let smsBody = fallbackSmsBody;
+    if (args.db && firmId) {
+      const rendered = await renderTemplate({
+        db: args.db,
+        firmId,
+        kind: 'share_link',
+        channel: 'SMS',
+        fallback: { body: fallbackSmsBody },
+        context: shareCtx,
+      });
+      smsBody = rendered.body;
+    }
     await args.sendSms({
       to: args.recipientPhone,
-      body: `${args.senderLabel} shared a secure document: ${args.link} (expires ${expiry}). You'll get an access code when you open it.`,
+      body: smsBody,
     });
     smsed = true;
   }

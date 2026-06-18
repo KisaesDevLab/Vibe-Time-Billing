@@ -31,6 +31,7 @@ import {
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { renderHtmlToPdf } from '../pdf/render';
 import { logger } from '../logger';
 
@@ -429,6 +430,7 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
         .limit(1);
       const branding = await loadBranding(deps.db, session.firmId);
       const asOf = new Date().toISOString().slice(0, 10);
+      const firm = await firmScope(deps.db, session.firmId);
 
       const sent: Array<{ clientId: string; to: string }> = [];
       const skipped: Array<{ clientId: string; reason: string }> = [];
@@ -464,10 +466,26 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
           const html = renderStatementHtml(input);
           const pdf = await renderHtmlToPdf(html);
           const fileSafeName = input.client.name.replace(/[^a-z0-9-]+/gi, '_');
+          const balanceStr = `$${(input.totalAmountDueCents / 100).toFixed(2)}`;
+          const rendered = await renderTemplate({
+            db: deps.db,
+            firmId: session.firmId,
+            kind: 'statement_sent',
+            channel: 'EMAIL',
+            fallback: {
+              subject: `Statement of Account — ${input.client.name} — ${asOf}`,
+              body: `Hello,\n\nPlease find attached your statement of account as of ${asOf}.\nTotal amount due: ${balanceStr}.\n\nReply to this message with any questions.`,
+            },
+            context: {
+              client: { name: input.client.name },
+              firm,
+              statement: { balance: balanceStr },
+            },
+          });
           await deps.sendStaffMail({
             to: billing.email,
-            subject: `Statement of Account — ${input.client.name} — ${asOf}`,
-            body: `Hello,\n\nPlease find attached your statement of account as of ${asOf}.\nTotal amount due: $${(input.totalAmountDueCents / 100).toFixed(2)}.\n\nReply to this message with any questions.`,
+            subject: rendered.subject ?? `Statement of Account — ${input.client.name} — ${asOf}`,
+            body: rendered.body,
             attachments: [
               {
                 filename: `statement-${fileSafeName}-${asOf}.pdf`,

@@ -259,6 +259,8 @@ export async function sendSignatureRequest(
           name: s.name,
           title: request.title,
           signingUrl: url,
+          db,
+          firmId: request.firmId,
         })
       )
         notified += 1;

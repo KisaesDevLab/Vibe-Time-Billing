@@ -10,6 +10,11 @@
 // completes. All sends are best-effort (a mail failure never rolls back a
 // committed send — the link is also visible to staff on the detail page).
 
+import type { Database } from '@vibe/db';
+import { firms } from '@vibe/db/schema';
+
+import { firmScope, renderTemplate } from '../notifications/templating';
+
 export type SignerMailer = (args: {
   to: string;
   subject: string;
@@ -22,6 +27,10 @@ export interface SignerNotice {
   name: string;
   title: string;
   signingUrl: string;
+  /** When supplied, the email subject/body honor the firm's
+   *  `signature_request` template override; otherwise the inline copy is used. */
+  db?: Database | null;
+  firmId?: string;
 }
 
 function escapeHtml(s: string): string {
@@ -33,13 +42,41 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export function buildSignerEmail(n: SignerNotice): { subject: string; body: string; html: string } {
-  const subject = `Signature requested: ${n.title}`;
-  const body =
+export async function buildSignerEmail(
+  n: SignerNotice,
+): Promise<{ subject: string; body: string; html: string }> {
+  const fallbackSubject = `Signature requested: ${n.title}`;
+  const fallbackBody =
     `Hello ${n.name},\n\n` +
     `You have a document to review and sign: "${n.title}".\n\n` +
     `Open it here to sign:\n${n.signingUrl}\n\n` +
     `If you did not expect this, you can ignore this message.`;
+  let subject = fallbackSubject;
+  let body = fallbackBody;
+  if (n.db) {
+    let firmId = n.firmId;
+    if (!firmId) {
+      const [firm] = await n.db.select({ id: firms.id }).from(firms).limit(1);
+      firmId = firm?.id;
+    }
+    if (firmId) {
+      const rendered = await renderTemplate({
+        db: n.db,
+        firmId,
+        kind: 'signature_request',
+        channel: 'EMAIL',
+        fallback: { subject: fallbackSubject, body: fallbackBody },
+        context: {
+          client: { name: n.name },
+          firm: await firmScope(n.db, firmId),
+          document: { name: n.title },
+          link: { url: n.signingUrl },
+        },
+      });
+      subject = rendered.subject ?? fallbackSubject;
+      body = rendered.body;
+    }
+  }
   const html =
     `<p>Hello ${escapeHtml(n.name)},</p>` +
     `<p>You have a document to review and sign: <strong>${escapeHtml(n.title)}</strong>.</p>` +
@@ -50,7 +87,7 @@ export function buildSignerEmail(n: SignerNotice): { subject: string; body: stri
 
 /** Best-effort: email one signer; never throws. Returns true on success. */
 export async function notifySigner(mailer: SignerMailer, notice: SignerNotice): Promise<boolean> {
-  const mail = buildSignerEmail(notice);
+  const mail = await buildSignerEmail(notice);
   try {
     await mailer({ to: notice.to, subject: mail.subject, body: mail.body, html: mail.html });
     return true;

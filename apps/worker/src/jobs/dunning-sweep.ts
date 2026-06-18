@@ -24,6 +24,17 @@ import { stepsDueOn, type DunningStepKind } from '@vibe/core/dunning';
 
 import type { Logger } from 'pino';
 
+import { firmScope, renderTemplate } from '../notifications/templating';
+
+// Client-facing dunning steps mapped to their firm-editable template kind.
+// Staff-facing steps (PARTNER_NOTIFY, AUTO_PAUSE) are intentionally absent —
+// they keep their hardcoded copy.
+const TEMPLATE_KIND_BY_STEP: Partial<Record<DunningStepKind, string>> = {
+  REMINDER_FRIENDLY: 'dunning_first',
+  REMINDER_FIRM: 'dunning_second',
+  REMINDER_ESCALATED: 'invoice_overdue',
+};
+
 export interface DunningSweepDeps {
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   sendSms?: (args: { to: string; body: string }) => Promise<void>;
@@ -92,15 +103,42 @@ export async function runDunningSweep(
       stepsFired++;
       const balance = Number(inv.totalCents) - Number(inv.paidCents);
       const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
-      const body =
+      const fallbackBody =
         `Invoice ${inv.invoiceNumber} (balance $${(balance / 100).toFixed(2)}) ` +
         `was due ${inv.dueDate}.` +
         (link ? `\n\nView/pay: ${link}` : '');
+      const fallbackSubject = SUBJECT_BY_KIND[step.kind];
       let outcome = 'SENT';
       let errorMessage: string | null = null;
       let channel: 'EMAIL' | 'SMS' | null = null;
       let recipient: string | null = null;
-      const subject = SUBJECT_BY_KIND[step.kind];
+
+      // Template-back only the client-facing steps; staff-facing steps keep
+      // their hardcoded copy.
+      const templateKind = TEMPLATE_KIND_BY_STEP[step.kind];
+      const dunningContext = {
+        client: { name: inv.clientName },
+        firm: await firmScope(db, inv.firmId),
+        invoice: {
+          number: inv.invoiceNumber,
+          total: (Number(inv.totalCents) / 100).toFixed(2),
+          balance: (balance / 100).toFixed(2),
+          due_date: inv.dueDate,
+          portal_url: link,
+        },
+      };
+      const renderedEmail = templateKind
+        ? await renderTemplate({
+            db,
+            firmId: inv.firmId,
+            kind: templateKind,
+            channel: 'EMAIL',
+            fallback: { subject: fallbackSubject, body: fallbackBody },
+            context: dunningContext,
+          })
+        : null;
+      const subject = renderedEmail?.subject ?? fallbackSubject;
+      const body = renderedEmail?.body ?? fallbackBody;
       if (deps.sendEmail && inv.billingContactEmail) {
         channel = 'EMAIL';
         recipient = inv.billingContactEmail;
@@ -130,9 +168,20 @@ export async function runDunningSweep(
       } else if (deps.sendSms && inv.billingContactPhone) {
         channel = 'SMS';
         recipient = inv.billingContactPhone;
-        const smsBody = `${subject}: ${inv.invoiceNumber} ($${(balance / 100).toFixed(
+        const fallbackSmsBody = `${subject}: ${inv.invoiceNumber} ($${(balance / 100).toFixed(
           2,
         )}) due ${inv.dueDate}.${link ? ` ${link}` : ''}`;
+        const renderedSms = templateKind
+          ? await renderTemplate({
+              db,
+              firmId: inv.firmId,
+              kind: templateKind,
+              channel: 'SMS',
+              fallback: { subject: null, body: fallbackSmsBody },
+              context: dunningContext,
+            })
+          : null;
+        const smsBody = renderedSms?.body ?? fallbackSmsBody;
         try {
           await deps.sendSms({ to: inv.billingContactPhone, body: smsBody });
           sentSms++;

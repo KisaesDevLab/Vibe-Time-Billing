@@ -24,6 +24,7 @@ import type { AnySession } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 // Phase 19 #22 — alt-contact OTP timing constants.
 const OTP_TTL_MS = 10 * 60_000;
@@ -638,16 +639,35 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
     let dispatchSkipped = false;
     try {
       if (parsed.data.channel === 'EMAIL' && deps.sendEmail) {
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'email_otp',
+          channel: 'EMAIL',
+          fallback: {
+            subject: 'Verify your contact',
+            body: `Your Vibe verification code: ${code}`,
+          },
+          context: { firm: await firmScope(deps.db, session.firmId), auth: { code } },
+        });
         await deps.sendEmail({
           to: parsed.data.value,
-          subject: 'Verify your contact',
-          body: `Your Vibe verification code: ${code}`,
+          subject: rendered.subject ?? 'Verify your contact',
+          body: rendered.body,
         });
         dispatched = true;
       } else if (parsed.data.channel === 'SMS' && deps.sendSms) {
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'sms_otp',
+          channel: 'SMS',
+          fallback: { body: `Your Vibe verification code: ${code}` },
+          context: { firm: await firmScope(deps.db, session.firmId), auth: { code } },
+        });
         await deps.sendSms({
           to: parsed.data.value,
-          body: `Your Vibe verification code: ${code}`,
+          body: rendered.body,
         });
         dispatched = true;
       } else {

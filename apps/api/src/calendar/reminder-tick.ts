@@ -18,6 +18,7 @@ import {
   persons,
 } from '@vibe/db/schema';
 
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { getCalendarSettings } from './settings';
 
 export type CalendarMailer = (args: {
@@ -147,13 +148,35 @@ export async function runCalendarReminderTick(
 
           const rsvpUrl = `${deps.rsvpBaseUrl.replace(/\/$/, '')}/api/calendar/rsvp/${tok!.token}`;
           if (deps.sendEmail) {
-            const subject = `Reminder: ${ev.subject ?? 'your appointment'}`;
-            const body =
+            const fallbackSubject = `Reminder: ${ev.subject ?? 'your appointment'}`;
+            const fallbackBody =
               `Hello ${contact.name},\n\n` +
               `This is a reminder for "${ev.subject ?? 'your appointment'}" on ${fmtWhen(ev.startAt)}.\n` +
               (ev.location ? `Location: ${ev.location}\n` : '') +
               `\nPlease confirm or decline:\n${rsvpUrl}\n\n` +
               `— ${deps.firmName ?? 'Your firm'}`;
+            const rendered = await renderTemplate({
+              db,
+              firmId: ev.firmId,
+              kind: 'calendar_reminder',
+              channel: 'EMAIL',
+              fallback: { subject: fallbackSubject, body: fallbackBody },
+              context: {
+                client: { name: contact.name },
+                firm: await firmScope(db, ev.firmId),
+                event: {
+                  subject: ev.subject ?? 'your appointment',
+                  date: ev.startAt
+                    ? ev.startAt.toLocaleDateString('en-US', { dateStyle: 'full' })
+                    : '',
+                  time: ev.startAt
+                    ? ev.startAt.toLocaleTimeString('en-US', { timeStyle: 'short' })
+                    : '',
+                },
+              },
+            });
+            const subject = rendered.subject ?? fallbackSubject;
+            const body = rendered.body;
             const html =
               `<p>Hello ${contact.name},</p>` +
               `<p>This is a reminder for <strong>${ev.subject ?? 'your appointment'}</strong> on ${fmtWhen(ev.startAt)}.</p>` +

@@ -30,6 +30,7 @@ import { clientPortalAccess, portalIdentity, portalInvitation } from '@vibe/db/s
 
 import { loadConfig } from '../config';
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { ImpersonationTokenError, verifyImpersonationToken } from '../tax-returns/impersonation';
 import { emitAudit } from './audit';
 import { clearSessionCookie, writeSessionCookie } from './cookies';
@@ -163,8 +164,20 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
           cfg.MAGIC_LINK_TTL_MINUTES * 60,
         );
         const link = `${cfg.PORTAL_BASE_URL}/auth/verify?token=${encodeURIComponent(token)}`;
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: id.firmId,
+          kind: 'magic_link',
+          channel: 'EMAIL',
+          fallback: { subject: 'Your sign-in link', body: link },
+          context: { firm: await firmScope(deps.db, id.firmId), auth: { magic_url: link } },
+        });
         await deps
-          .sendEmail({ to: email, subject: 'Your sign-in link', body: link })
+          .sendEmail({
+            to: email,
+            subject: rendered.subject ?? 'Your sign-in link',
+            body: rendered.body,
+          })
           .catch((err: unknown) => logger.error({ err }, 'portal magic-link delivery'));
       }
       res.status(200).json({ ...GENERIC_RESPONSE, access });
@@ -196,8 +209,16 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
           'EX',
           cfg.SMS_OTP_TTL_MINUTES * 60,
         );
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: id.firmId,
+          kind: 'sms_otp',
+          channel: 'SMS',
+          fallback: { body: `Your Vibe sign-in code: ${code}` },
+          context: { firm: await firmScope(deps.db, id.firmId), auth: { code } },
+        });
         await deps
-          .sendSms({ to: phone, body: `Your Vibe sign-in code: ${code}` })
+          .sendSms({ to: phone, body: rendered.body })
           .catch((err: unknown) => logger.error({ err }, 'portal sms delivery'));
       }
       res.status(200).json({ ...GENERIC_RESPONSE, access });
@@ -261,8 +282,16 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
           'EX',
           cfg2.SMS_OTP_TTL_MINUTES * 60,
         );
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: payload.fid,
+          kind: 'sms_otp',
+          channel: 'SMS',
+          fallback: { body: `Your Vibe device-verification code: ${code}` },
+          context: { firm: await firmScope(deps.db, payload.fid), auth: { code } },
+        });
         await deps
-          .sendSms({ to: idn.phone, body: `Your Vibe device-verification code: ${code}` })
+          .sendSms({ to: idn.phone, body: rendered.body })
           .catch((err: unknown) => logger.error({ err }, 'portal device otp delivery'));
         res.status(200).json({
           deviceChallenge: true,

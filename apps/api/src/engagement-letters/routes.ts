@@ -16,6 +16,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { logger } from '../logger';
 
 export interface EngagementLetterDeps extends RbacDeps {
@@ -196,11 +197,25 @@ export function createEngagementLetterRouter(deps: EngagementLetterDeps): Router
       }
       if (deps.sendEmail) {
         const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/letters/${letter.id}` : '';
-        const subject = `Engagement letter (v${letter.version}) — ${billingContact?.fullName ?? ''}`;
-        const body =
-          `Please review and accept the engagement letter.\n\n` +
-          (link ? `View online: ${link}\n\n` : '') +
-          `Thank you.`;
+        const firm = await firmScope(deps.db, session.firmId);
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'engagement_letter_sent',
+          channel: 'EMAIL',
+          fallback: {
+            subject: `Engagement letter (v${letter.version}) — ${billingContact?.fullName ?? ''}`,
+            body:
+              `Please review and accept the engagement letter.\n\n` +
+              (link ? `View online: ${link}\n\n` : '') +
+              `Thank you.`,
+          },
+          context: { firm, link: { url: link } },
+        });
+        const subject =
+          rendered.subject ??
+          `Engagement letter (v${letter.version}) — ${billingContact?.fullName ?? ''}`;
+        const body = rendered.body;
         await deps
           .sendEmail({ to, subject, body })
           .catch((err: unknown) => logger.error({ err }, 'engagement letter send failed'));

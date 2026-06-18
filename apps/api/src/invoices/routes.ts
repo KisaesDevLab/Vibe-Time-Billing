@@ -48,6 +48,7 @@ import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -2027,15 +2028,40 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     }
     const balance = Number(inv.totalCents) - Number(inv.paidCents);
     const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
-    const body =
+    const fallbackBody =
       `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
       `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
       (link ? `View/pay: ${link}\n\n` : '') +
       `Please reach out if you have any questions.`;
+    const fallbackSubject = `Reminder: invoice ${inv.invoiceNumber}`;
+    const [client] = await deps.db
+      .select({ name: clients.name })
+      .from(clients)
+      .where(eq(clients.id, inv.clientId))
+      .limit(1);
+    const rendered = await renderTemplate({
+      db: deps.db,
+      firmId: session.firmId,
+      kind: 'invoice_overdue',
+      channel: 'EMAIL',
+      fallback: { subject: fallbackSubject, body: fallbackBody },
+      context: {
+        client: { name: client?.name ?? '' },
+        firm: await firmScope(deps.db, session.firmId),
+        invoice: {
+          number: inv.invoiceNumber,
+          total: '$' + (Number(inv.totalCents) / 100).toFixed(2),
+          balance: '$' + (balance / 100).toFixed(2),
+          due_date: String(inv.dueDate),
+          portal_url: link,
+        },
+      },
+    });
+    const body = rendered.body;
     try {
       await deps.sendEmail({
         to: billingContact.email,
-        subject: `Reminder: invoice ${inv.invoiceNumber}`,
+        subject: rendered.subject ?? fallbackSubject,
         body,
       });
     } catch (err) {
@@ -2448,13 +2474,32 @@ async function sendInvoiceEmail(
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
   const total = (Number(inv.totalCents) / 100).toFixed(2);
-  const body =
+  const fallbackBody =
     `Dear ${client.name},\n\n` +
     `Invoice ${inv.invoiceNumber} for $${total} is available. ` +
     `It is due ${inv.dueDate}.\n\n` +
     (link ? `View and pay online: ${link}\n\n` : '') +
     `Thank you.`;
-  const subject = `Invoice ${inv.invoiceNumber}`;
+  const fallbackSubject = `Invoice ${inv.invoiceNumber}`;
+  const rendered = await renderTemplate({
+    db: deps.db,
+    firmId,
+    kind: 'invoice_sent',
+    channel: 'EMAIL',
+    fallback: { subject: fallbackSubject, body: fallbackBody },
+    context: {
+      client: { name: client.name },
+      firm: await firmScope(deps.db, firmId),
+      invoice: {
+        number: inv.invoiceNumber,
+        total: '$' + total,
+        due_date: String(inv.dueDate),
+        portal_url: link,
+      },
+    },
+  });
+  const subject = rendered.subject ?? fallbackSubject;
+  const body = rendered.body;
   try {
     await deps.sendEmail({ to: billingContact.email, subject, body });
     await recordOutbound({

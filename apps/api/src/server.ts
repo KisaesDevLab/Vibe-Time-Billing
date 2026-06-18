@@ -33,6 +33,7 @@ import {
 } from './sms/provider';
 import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
 import { wrapMailWithBranding } from './notifications/branding-mail';
+import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
 
 const config = loadConfig();
@@ -173,10 +174,21 @@ const sendMagicLink = async (args: {
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+  const rendered = await renderTemplate({
+    db,
+    firmId: args.firmId,
+    kind: 'magic_link',
+    channel: 'EMAIL',
+    fallback: {
+      subject: 'Your sign-in link',
+      body: `Click here to sign in: ${args.link}\n\nThis link expires in ${config.MAGIC_LINK_TTL_MINUTES} minutes.`,
+    },
+    context: { firm: await firmScope(db, args.firmId), auth: { magic_url: args.link } },
+  });
   await mailer.send({
     to: args.email,
-    subject: 'Your sign-in link',
-    body: `Click here to sign in: ${args.link}\n\nThis link expires in ${config.MAGIC_LINK_TTL_MINUTES} minutes.`,
+    subject: rendered.subject ?? 'Your sign-in link',
+    body: rendered.body,
     html:
       `<p>Click here to sign in:</p>` +
       `<p><a href="${escaped}">${escaped}</a></p>` +
@@ -221,10 +233,21 @@ const sendEmailOtp = async (args: {
   firmId: string;
   code: string;
 }): Promise<void> => {
+  const rendered = await renderTemplate({
+    db,
+    firmId: args.firmId,
+    kind: 'email_otp',
+    channel: 'EMAIL',
+    fallback: {
+      subject: 'Your sign-in code',
+      body: `Your sign-in code is ${args.code}. It expires in ${config.SMS_OTP_TTL_MINUTES} minutes.`,
+    },
+    context: { firm: await firmScope(db, args.firmId), auth: { code: args.code } },
+  });
   await mailer.send({
     to: args.email,
-    subject: 'Your sign-in code',
-    body: `Your sign-in code is ${args.code}. It expires in ${config.SMS_OTP_TTL_MINUTES} minutes.`,
+    subject: rendered.subject ?? 'Your sign-in code',
+    body: rendered.body,
     html:
       `<p>Your sign-in code is <strong style="font-size:18px">${args.code}</strong></p>` +
       `<p style="color:#666;font-size:13px">It expires in ${config.SMS_OTP_TTL_MINUTES} minutes.</p>`,
@@ -232,7 +255,15 @@ const sendEmailOtp = async (args: {
 };
 
 const sendSmsOtp = async (args: { phone: string; firmId: string; code: string }): Promise<void> => {
-  await smsProvider.send({ to: args.phone, body: `Your sign-in code is ${args.code}.` });
+  const rendered = await renderTemplate({
+    db,
+    firmId: args.firmId,
+    kind: 'sms_otp',
+    channel: 'SMS',
+    fallback: { body: `Your sign-in code is ${args.code}.` },
+    context: { firm: await firmScope(db, args.firmId), auth: { code: args.code } },
+  });
+  await smsProvider.send({ to: args.phone, body: rendered.body });
 };
 
 // P4.6 — I.6 — step-up lockout alert to firm admins. Resolves the

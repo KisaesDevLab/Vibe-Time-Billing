@@ -28,6 +28,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { findOrCreatePerson } from '../clients/person-helpers';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { grantOrInvitePortalAccess } from './grant';
 
 export interface PortalInviteDeps extends RbacDeps {
@@ -163,22 +164,42 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
         .where(eq(clients.id, inv.clientId))
         .limit(1);
       const link = `${deps.portalBaseUrl}/auth/accept?token=${encodeURIComponent(rawToken)}`;
-      const message = `${inv.proposedFullName}, here is your new invitation link to ${
-        client?.name ?? 'the client portal'
-      }.\n\nAccept: ${link}\n\nLink expires in 7 days.`;
+      const firm = await firmScope(deps.db, session.firmId);
       if (inv.deliveryChannel === 'EMAIL' && inv.invitedEmail && deps.sendEmail) {
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'portal_invite',
+          channel: 'EMAIL',
+          fallback: {
+            subject: `Client portal invitation (resent) — ${client?.name ?? ''}`,
+            body: `${inv.proposedFullName}, here is your new invitation link to ${
+              client?.name ?? 'the client portal'
+            }.\n\nAccept: ${link}\n\nLink expires in 7 days.`,
+          },
+          context: { firm, link: { url: link } },
+        });
         await deps
           .sendEmail({
             to: inv.invitedEmail,
-            subject: `Client portal invitation (resent) — ${client?.name ?? ''}`,
-            body: message,
+            subject:
+              rendered.subject ?? `Client portal invitation (resent) — ${client?.name ?? ''}`,
+            body: rendered.body,
           })
           .catch((err: unknown) => logger.error({ err }, 'portal invite resend email failed'));
       } else if (inv.deliveryChannel === 'SMS' && inv.invitedPhone && deps.sendSms) {
+        const rendered = await renderTemplate({
+          db: deps.db,
+          firmId: session.firmId,
+          kind: 'portal_invite',
+          channel: 'SMS',
+          fallback: { body: `Portal invite (resent) from ${client?.name ?? 'firm'}: ${link}` },
+          context: { firm, link: { url: link } },
+        });
         await deps
           .sendSms({
             to: inv.invitedPhone,
-            body: `Portal invite (resent) from ${client?.name ?? 'firm'}: ${link}`,
+            body: rendered.body,
           })
           .catch((err: unknown) => logger.error({ err }, 'portal invite resend sms failed'));
       }

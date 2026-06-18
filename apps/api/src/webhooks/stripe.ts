@@ -31,6 +31,7 @@ import {
   sendDeliverableUnlockedNotifications,
 } from '../files/promote-on-paid';
 import { publishWebhookEvent } from './publish';
+import { firmScope, renderTemplate } from '../notifications/templating';
 
 export interface StripeWebhookDeps {
   db: Database | null;
@@ -222,8 +223,8 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
             const billingContact = await getBillingContact(deps.db, inv.clientId);
             if (client && billingContact?.email) {
               const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
-              const subject = `Payment received — ${inv.invoiceNumber}`;
-              const body = [
+              const fallbackSubject = `Payment received — ${inv.invoiceNumber}`;
+              const fallbackBody = [
                 `Hi ${client.name},`,
                 ``,
                 `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
@@ -232,6 +233,25 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
                   : `Remaining balance: $${((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2)}.`,
                 link ? `\nView receipt: ${link}` : '',
               ].join('\n');
+              const rendered = await renderTemplate({
+                db: deps.db,
+                firmId: inv.firmId,
+                kind: 'payment_received',
+                channel: 'EMAIL',
+                fallback: { subject: fallbackSubject, body: fallbackBody },
+                context: {
+                  client: { name: client.name },
+                  firm: await firmScope(deps.db, inv.firmId),
+                  invoice: {
+                    number: inv.invoiceNumber,
+                    balance:
+                      '$' + ((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2),
+                    portal_url: link,
+                  },
+                },
+              });
+              const subject = rendered.subject ?? fallbackSubject;
+              const body = rendered.body;
               await deps.sendEmail({ to: billingContact.email, subject, body });
               // v2 Sprint C — auto-record outbound in client timeline.
               await recordOutbound({

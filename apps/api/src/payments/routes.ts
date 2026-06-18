@@ -1722,6 +1722,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       } catch (err) {
         logger.warn({ err }, 'receipt PDF for email failed; sending HTML body only');
       }
+      // Multi-invoice PDF receipt — distinct from the single-invoice
+      // `payment_received` confirmation template, so this keeps its own copy.
       const subject = `Payment receipt — ${loaded.doc.firmName}`;
       const body = `Thank you for your payment of $${(loaded.doc.totalCents / 100).toFixed(2)} received ${loaded.doc.paymentDate}. Your receipt is ${attachments ? 'attached' : 'below'}.`;
       try {
