@@ -12,6 +12,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 
 import {
+  clientContacts,
   engagementStatusConfig,
   notificationTemplates,
   stagedNotifications,
@@ -178,6 +179,55 @@ describe('stageStatusNotification', () => {
     const rendered = row!.rendered as Record<string, { subject: string | null; body: string }>;
     expect(rendered['EMAIL']!.subject).toBe('Custom for Test Client Co');
     expect(rendered['EMAIL']!.body).toBe('Body Test Engagement');
+  });
+
+  it('0166 — excludes a contact opted out of status notifications', async () => {
+    await configureStatus({ workflowState: 'OPTOUT', notifyRecipients: 'ALL_CONTACTS' });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Opted In',
+      email: 'in@example.com',
+    });
+    const { contactId } = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Opted Out',
+      email: 'out@example.com',
+    });
+    await harness.db
+      .update(clientContacts)
+      .set({ receiveStatusNotifications: false })
+      .where(eq(clientContacts.id, contactId));
+
+    const { stagedNotificationId } = await stage('OPTOUT');
+    const [row] = await harness.db
+      .select()
+      .from(stagedNotifications)
+      .where(eq(stagedNotifications.id, stagedNotificationId!));
+    const recipients = row!.recipients as Array<{ email: string | null }>;
+    expect(recipients.map((r) => r.email)).toEqual(['in@example.com']);
+  });
+
+  it('0166 — forceStaged queues PENDING_APPROVAL even for an IMMEDIATE status', async () => {
+    await configureStatus({ workflowState: 'IMM_FORCE', notifyMode: 'IMMEDIATE' });
+    const { stagedNotificationId } = await stageStatusNotification(harness.db, {
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      clientId: seed.clientId,
+      fromState: null,
+      toState: 'IMM_FORCE',
+      actorAppUserId: seed.appUserId,
+      ip: '127.0.0.1',
+      userAgent: 'vitest',
+      forceStaged: true,
+    });
+    const [row] = await harness.db
+      .select()
+      .from(stagedNotifications)
+      .where(eq(stagedNotifications.id, stagedNotificationId!));
+    expect(row!.status).toBe('PENDING_APPROVAL');
+    expect(row!.scheduledAt).toBeNull();
   });
 
   it('falls back to all contacts when no billing contact exists', async () => {

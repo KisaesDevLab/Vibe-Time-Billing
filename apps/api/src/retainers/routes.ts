@@ -7,7 +7,7 @@
 // minimum needed for partner visibility into auto-created offers.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -29,6 +29,7 @@ import { computeExpiryDate, computeSplit, isEligibleEntry } from '@vibe/core/ret
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBlockedClientIdsCached } from '../clients/access';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -69,6 +70,15 @@ export function createRetainerRouter(deps: RetainerRoutesDeps): Router {
       const conds = [eq(retainerOffers.firmId, session.firmId)];
       const invoiceFilter = uuidQueryParam(req.query['invoiceId']);
       if (invoiceFilter) conds.push(eq(retainerOffers.invoiceId, invoiceFilter));
+      // 0165 — hide restricted clients' retainer offers.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length)
+        conds.push(notInArray(retainerOffers.clientId, blockedClientIds));
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       if (status) {
         conds.push(

@@ -5,7 +5,7 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { csvField } from '../lib/csv';
 import { z } from 'zod';
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -31,6 +31,7 @@ import { queryStatusHistory } from './status-history';
 import { emitAudit } from '../auth/audit';
 import { stageStatusNotification } from '../notifications/staged/pipeline';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import {
@@ -183,6 +184,15 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       // Scope via inner join on client so we don't have to pre-fetch
       // firm clients separately for big firms.
       const conds = [eq(clients.firmId, firmId)];
+
+      // 0165 — hide engagements of restricted clients the caller can't access.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        req.staffSession!.appUserId,
+        firmId,
+      );
+      if (blockedClientIds.length) conds.push(notInArray(engagements.clientId, blockedClientIds));
 
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       const allowed = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'];
@@ -620,6 +630,8 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
+      // 0165 — block restricted-client engagement detail for non-authorized staff.
+      if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
       const [client] = await deps.db
         .select({
           id: clients.id,
@@ -1030,6 +1042,64 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'status notification staging failed'));
       res.json({ ok: true });
+    },
+  );
+
+  // 0166 — manually reprocess the engagement's CURRENT workflow status to
+  // re-initiate its client notification. Always queues for approval
+  // (forceStaged), supersedes any unsent prior, and snapshots the currently
+  // opted-in recipients. Re-staging a *past* status is intentionally not
+  // supported: the worker cancels a send whose snapshot no longer matches
+  // the engagement's live status, so only the current status can deliver.
+  router.post(
+    '/:id/restage-status-notification',
+    requirePermission(deps, 'notification:approve'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [eng] = await deps.db
+        .select({
+          id: engagements.id,
+          clientId: engagements.clientId,
+          workflowState: engagements.workflowState,
+          status: engagements.status,
+        })
+        .from(engagements)
+        .where(eq(engagements.id, req.params['id']!))
+        .limit(1);
+      if (!eng || !(await clientBelongsToFirm(deps.db, session.firmId, eng.clientId))) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (!eng.workflowState) {
+        res.status(400).json({ error: 'no_workflow_state' });
+        return;
+      }
+      if (eng.status === 'ARCHIVED') {
+        res.status(409).json({ error: 'engagement_archived' });
+        return;
+      }
+      const result = await stageStatusNotification(deps.db, {
+        firmId: session.firmId,
+        engagementId: eng.id,
+        clientId: eng.clientId,
+        fromState: null,
+        toState: eng.workflowState,
+        actorAppUserId: session.appUserId,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+        forceStaged: true,
+      });
+      if (!result.stagedNotificationId) {
+        // Status isn't configured to notify clients (triggers_client_comm
+        // off, or no channels) — nothing was queued.
+        res.status(409).json({ error: 'status_not_configured_for_notify' });
+        return;
+      }
+      res.json({ ok: true, stagedNotificationId: result.stagedNotificationId });
     },
   );
 

@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, notInArray, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
@@ -36,6 +36,7 @@ import { captureRateSnapshot, resolveRate, type RateCandidate } from '@vibe/core
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -1024,7 +1025,7 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
       // Scope: engagement must belong to firm.
       const [scope] = await deps.db
-        .select({ id: engagements.id })
+        .select({ id: engagements.id, clientId: engagements.clientId })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))
         .where(
@@ -1035,6 +1036,8 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
+      // 0165 — block restricted-client time entries for non-authorized staff.
+      if (await blockIfClientRestricted(deps, req, res, scope.clientId)) return;
       const start = (req.query['start'] ?? '').toString();
       const end = (req.query['end'] ?? '').toString();
       const conds = [eq(timeEntries.engagementId, req.params['engagementId']!)];
@@ -1096,6 +1099,8 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(404).json({ error: 'client_not_found' });
         return;
       }
+      // 0165 — block restricted-client time entries for non-authorized staff.
+      if (await blockIfClientRestricted(deps, req, res, req.params['clientId']!)) return;
       const engIds = await deps.db
         .select({ id: engagements.id })
         .from(engagements)
@@ -1211,6 +1216,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         eq(timeEntries.appUserId, session.appUserId),
         sql`${timeEntries.status} <> 'ARCHIVED'`,
       ];
+      // 0165 — exclude entries on restricted clients the caller can't access.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) conds.push(notInArray(engagements.clientId, blockedClientIds));
       const start = typeof q['startDate'] === 'string' ? q['startDate'] : '';
       const end = typeof q['endDate'] === 'string' ? q['endDate'] : '';
       if (/^\d{4}-\d{2}-\d{2}$/.test(start)) conds.push(gte(timeEntries.entryDate, start));

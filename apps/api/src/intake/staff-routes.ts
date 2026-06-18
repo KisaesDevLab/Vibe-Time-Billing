@@ -15,8 +15,10 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { appUsers, intakeActions, intakeFiles, intakeSessions } from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
+import { normalizePhone } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
+import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
 import { createFileInClientFolder } from '../clients/create-file';
@@ -395,40 +397,69 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
       const base = (deps.intakeBaseUrl ?? '').replace(/\/$/, '');
       const url = base ? `${base}/t/${token}` : `/t/${token}`;
 
-      let delivered = false;
-      if (parsed.data.recipientEmail && deps.sendEmail) {
-        await deps
-          .sendEmail({
-            to: parsed.data.recipientEmail,
-            subject: 'Securely send your documents',
-            body: `You've been invited to securely upload documents:\n\n${url}\n\nThis link expires in ${parsed.data.expiresInDays ?? 14} days.`,
-          })
-          .then(() => {
-            delivered = true;
-          })
-          .catch(() => undefined);
+      // Deliver per channel, reporting each outcome instead of swallowing
+      // failures — so the staff user knows whether it actually went out.
+      const expiresInDays = parsed.data.expiresInDays ?? 14;
+      const email: { attempted: boolean; ok: boolean; error?: string } = {
+        attempted: false,
+        ok: false,
+      };
+      const sms: { attempted: boolean; ok: boolean; error?: string } = {
+        attempted: false,
+        ok: false,
+      };
+
+      if (parsed.data.recipientEmail) {
+        email.attempted = true;
+        if (!deps.sendEmail) {
+          email.error = 'email_not_configured';
+        } else {
+          try {
+            await deps.sendEmail({
+              to: parsed.data.recipientEmail,
+              subject: 'Securely send your documents',
+              body: `You've been invited to securely upload documents:\n\n${url}\n\nThis link expires in ${expiresInDays} days.`,
+            });
+            email.ok = true;
+          } catch (err) {
+            email.error = 'send_failed';
+            logger.warn({ err }, 'intake link email send failed');
+          }
+        }
       }
-      if (parsed.data.recipientPhone && deps.sendSms) {
-        await deps
-          .sendSms({
-            to: parsed.data.recipientPhone,
-            body: `Securely upload your documents: ${url}`,
-          })
-          .then(() => {
-            delivered = true;
-          })
-          .catch(() => undefined);
+
+      if (parsed.data.recipientPhone) {
+        sms.attempted = true;
+        const normalized = normalizePhone(parsed.data.recipientPhone);
+        if (!normalized) {
+          sms.error = 'invalid_phone';
+        } else if (!deps.sendSms) {
+          sms.error = 'sms_not_configured';
+        } else {
+          try {
+            await deps.sendSms({
+              to: normalized,
+              body: `Securely upload your documents: ${url}`,
+            });
+            sms.ok = true;
+          } catch (err) {
+            sms.error = 'send_failed';
+            logger.warn({ err }, 'intake link sms send failed');
+          }
+        }
       }
+
+      const delivered = email.ok || sms.ok;
 
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'intake_link',
         entityId: null,
         actorAppUserId: actorId,
-        after: { targetStaffId: parsed.data.targetStaffId, delivered },
+        after: { targetStaffId: parsed.data.targetStaffId, emailOk: email.ok, smsOk: sms.ok },
       }).catch(() => undefined);
 
-      res.status(201).json({ url, delivered });
+      res.status(201).json({ url, delivered, email, sms });
     },
   );
 

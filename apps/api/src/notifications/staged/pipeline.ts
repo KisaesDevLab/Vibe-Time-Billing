@@ -37,6 +37,7 @@ import {
 
 import { emitAudit } from '../../auth/audit';
 import { logger } from '../../logger';
+import { firmScope } from '../templating';
 import { cancelStagedSend, enqueueStagedSend } from './queue';
 
 export interface RecipientSnapshot {
@@ -55,6 +56,9 @@ export interface StageStatusNotificationArgs {
   actorAppUserId: string;
   ip: string;
   userAgent: string | null;
+  // 0166 — manual reprocess: always queue for approval (PENDING_APPROVAL)
+  // even when the status is configured to send IMMEDIATE.
+  forceStaged?: boolean;
 }
 
 export function statusSupersedeKey(engagementId: string): string {
@@ -111,13 +115,17 @@ export async function stageStatusNotification(
       email: persons.email,
       phone: persons.phone,
       isBilling: clientContacts.isBilling,
+      receiveStatusNotifications: clientContacts.receiveStatusNotifications,
     })
     .from(clientContacts)
     .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, args.clientId), eq(clientContacts.status, 'ACTIVE')));
-  const billing = allContacts.filter((c) => c.isBilling);
+  // 0166 — a contact opted out of status notifications is never eligible,
+  // regardless of the status config's BILLING_CONTACT/ALL_CONTACTS rule.
+  const eligible = allContacts.filter((c) => c.receiveStatusNotifications !== false);
+  const billing = eligible.filter((c) => c.isBilling);
   const picked =
-    cfg.notifyRecipients === 'ALL_CONTACTS' ? allContacts : billing.length ? billing : allContacts;
+    cfg.notifyRecipients === 'ALL_CONTACTS' ? eligible : billing.length ? billing : eligible;
   const recipients: RecipientSnapshot[] = picked.map((c) => ({
     personId: c.personId,
     name: c.name,
@@ -138,9 +146,10 @@ export async function stageStatusNotification(
         eq(notificationTemplates.enabled, true),
       ),
     );
+  const firmTokens = await firmScope(db, args.firmId);
   const context: StatusNotificationContext = {
     client: { name: row.clientName },
-    firm: { name: row.firmName },
+    firm: { ...firmTokens, name: row.firmName },
     engagement: { name: row.engagementName },
     status: {
       label: cfg.label,
@@ -159,7 +168,7 @@ export async function stageStatusNotification(
     });
   }
 
-  const isImmediate = cfg.notifyMode === 'IMMEDIATE';
+  const isImmediate = cfg.notifyMode === 'IMMEDIATE' && !args.forceStaged;
   const now = new Date();
   const supersedeKey = statusSupersedeKey(args.engagementId);
 

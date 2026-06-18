@@ -97,6 +97,10 @@ function tidy(s: string): string {
 export const STATUS_NOTIFICATION_TOKENS: TokenEntry[] = [
   { token: 'client.name', scope: 'client', description: "Client's legal name" },
   { token: 'firm.name', scope: 'firm', description: 'Firm name' },
+  { token: 'firm.displayName', scope: 'firm', description: 'Firm display/brand name' },
+  { token: 'firm.logo_url', scope: 'firm', description: 'Firm logo image URL' },
+  { token: 'firm.support_email', scope: 'firm', description: 'Support email address' },
+  { token: 'firm.support_phone', scope: 'firm', description: 'Support phone number' },
   { token: 'engagement.name', scope: 'engagement', description: 'Engagement name' },
   { token: 'status.label', scope: 'meta', description: 'Status label (staff-facing)' },
   {

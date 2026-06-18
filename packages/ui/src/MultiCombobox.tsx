@@ -244,6 +244,7 @@ export function MultiCombobox({
               top: popoverPos.top,
               left: popoverPos.left,
               width: popoverPos.width,
+              boxSizing: 'border-box',
               background: tokens.color.surface,
               border: `1px solid ${tokens.color.border}`,
               borderRadius: tokens.radius.md,

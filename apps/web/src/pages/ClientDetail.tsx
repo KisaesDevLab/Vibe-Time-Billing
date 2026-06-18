@@ -38,6 +38,11 @@ interface Client {
   filingStatus?: 'SINGLE' | 'MFJ' | 'MFS' | 'HOH' | 'QW' | null;
   pipelineStage?: 'PROSPECT' | 'CLIENT' | 'OTHER';
   active?: boolean;
+  // 0165 — per-client visibility restriction.
+  restricted?: boolean;
+  accessRestricted?: boolean;
+  canManageRestriction?: boolean;
+  designatedUserIds?: string[];
 }
 
 interface ClientLite {
@@ -102,6 +107,13 @@ export function ClientDetailPage(): JSX.Element {
   const [tab, setTab] = useState<Tab>('home');
   const canViewCredentials = usePermission('client:credential:read');
   const [staff, setStaff] = useState<StaffUser[]>([]);
+
+  // 0165 — if the client is restricted for this caller, the only visible
+  // tabs are Home + Billing; snap back to Home if a now-hidden tab is active.
+  const restrictedView = Boolean(client?.accessRestricted);
+  useEffect(() => {
+    if (restrictedView && tab !== 'home' && tab !== 'billing') setTab('home');
+  }, [restrictedView, tab]);
 
   useEffect(() => {
     void (async () => {
@@ -207,6 +219,10 @@ export function ClientDetailPage(): JSX.Element {
               ✉ Log email
             </Button>
             {client.active === false && <Pill tone="warning">Inactive</Pill>}
+            {client.accessRestricted && <Pill tone="warning">Restricted — limited access</Pill>}
+            {client.restricted && !client.accessRestricted && (
+              <Pill tone="warning">Restricted</Pill>
+            )}
             <Pill tone={client.status === 'ACTIVE' ? 'success' : 'neutral'}>{client.status}</Pill>
           </span>
         }
@@ -247,17 +263,25 @@ export function ClientDetailPage(): JSX.Element {
       <Tabs
         tabs={[
           { key: 'home', label: 'Home' },
-          { key: 'messages', label: 'Messages' },
-          { key: 'requests', label: 'Requests' },
-          { key: 'communications', label: 'Communications' },
-          { key: 'notes', label: 'Notes' },
-          { key: 'files', label: 'Files' },
-          { key: 'tasks', label: 'Tasks' },
-          { key: 'engagements', label: 'Engagements', badge: engagements.length },
-          { key: 'appointments', label: 'Appointments' },
+          // 0165 — when the client is restricted and the caller isn't
+          // authorized, only the basic surfaces (Home + Billing/A-R) show.
+          ...(client.accessRestricted
+            ? []
+            : [
+                { key: 'messages', label: 'Messages' },
+                { key: 'requests', label: 'Requests' },
+                { key: 'communications', label: 'Communications' },
+                { key: 'notes', label: 'Notes' },
+                { key: 'files', label: 'Files' },
+                { key: 'tasks', label: 'Tasks' },
+                { key: 'engagements', label: 'Engagements', badge: engagements.length },
+                { key: 'appointments', label: 'Appointments' },
+              ]),
           { key: 'billing', label: 'Billing' },
-          { key: 'tax', label: 'Tax' },
-          ...(canViewCredentials ? [{ key: 'credentials', label: 'Credentials' }] : []),
+          ...(client.accessRestricted ? [] : [{ key: 'tax', label: 'Tax' }]),
+          ...(canViewCredentials && !client.accessRestricted
+            ? [{ key: 'credentials', label: 'Credentials' }]
+            : []),
         ]}
         active={tab}
         onChange={(k) => setTab(k as Tab)}

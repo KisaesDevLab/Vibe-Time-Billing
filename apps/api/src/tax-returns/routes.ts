@@ -33,11 +33,12 @@ import {
   taxReturns,
   taxReturnShares,
 } from '@vibe/db/schema';
-import { and, inArray, isNull } from 'drizzle-orm';
+import { and, inArray, isNull, notInArray } from 'drizzle-orm';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { createRelease, revokeRelease, ReleaseError } from './release-helper';
@@ -715,6 +716,14 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
       const clientId = typeof req.query['clientId'] === 'string' ? req.query['clientId'] : null;
       const conds = [eq(taxReturns.firmId, session.firmId)];
       if (clientId) conds.push(eq(taxReturns.clientId, clientId));
+      // 0165 — hide restricted clients' tax returns.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) conds.push(notInArray(taxReturns.clientId, blockedClientIds));
       const rows = await deps.db
         .select({
           id: taxReturns.id,
@@ -1095,7 +1104,14 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         .where(eq(signatureRequests.firmId, session.firmId))
         .orderBy(desc(signatureRequests.createdAt))
         .limit(1000);
-      res.json({ items: rows });
+      // 0165 — drop rows for restricted clients the caller can't access.
+      const blockedClientIds = new Set(
+        await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId),
+      );
+      const items = blockedClientIds.size
+        ? rows.filter((r) => !r.clientId || !blockedClientIds.has(r.clientId))
+        : rows;
+      res.json({ items });
     },
   );
 
@@ -1142,6 +1158,8 @@ export function createTaxReturnRouter(deps: TaxReturnRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // 0165 — block restricted-client tax return detail for non-authorized staff.
+      if (await blockIfClientRestricted(deps, req, res, ret.clientId)) return;
       const sectionsRows = await deps.db
         .select({
           id: taxReturnSections.id,

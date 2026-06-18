@@ -17,7 +17,7 @@
 //                                       to reschedule)
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, lte, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -25,6 +25,7 @@ import { appointments, clients, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { CalendarWriteService, isCalendarWriteEnabled } from '../calendar/write-service';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -91,6 +92,20 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
       if (clientFilter && clientFilter !== 'invalid') {
         conds.push(eq(appointments.clientId, clientFilter));
       }
+      // 0165 — hide restricted clients' appointments; keep client-less ones.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) {
+        const expr = or(
+          isNull(appointments.clientId),
+          notInArray(appointments.clientId, blockedClientIds),
+        );
+        if (expr) conds.push(expr);
+      }
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       if (status === 'SCHEDULED' || status === 'COMPLETED' || status === 'CANCELLED') {
         conds.push(eq(appointments.status, status));
@@ -131,6 +146,8 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // 0165 — block restricted-client appointment detail for non-authorized staff.
+      if (row.clientId && (await blockIfClientRestricted(deps, req, res, row.clientId))) return;
       res.json({ appointment: row });
     },
   );
@@ -149,6 +166,8 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
+      // 0165 — can't book a restricted client you can't access.
+      if (await blockIfClientRestricted(deps, req, res, parsed.data.clientId)) return;
       if (new Date(parsed.data.endsAt).getTime() <= new Date(parsed.data.startsAt).getTime()) {
         res.status(400).json({ error: 'ends_before_starts' });
         return;

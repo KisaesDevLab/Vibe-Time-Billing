@@ -23,7 +23,7 @@
 // Every mutation emits an audit_log row.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, asc, desc, eq, ilike, inArray, or } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -41,6 +41,7 @@ import { contentHash } from '@vibe/core/proposals/server';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -150,6 +151,14 @@ export function createProposalRouter(deps: ProposalRoutesDeps): Router {
     if (clientId && /^[0-9a-f-]{36}$/i.test(clientId)) {
       conds.push(eq(proposals.clientId, clientId));
     }
+    // 0165 — hide restricted clients' proposals.
+    const blockedClientIds = await getBlockedClientIdsCached(
+      deps,
+      req,
+      session.appUserId,
+      session.firmId,
+    );
+    if (blockedClientIds.length) conds.push(notInArray(proposals.clientId, blockedClientIds));
     // Free-text search across proposal title + client name.
     const q = (req.query['q'] ?? '').toString().trim();
     if (q) {

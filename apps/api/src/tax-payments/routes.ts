@@ -19,7 +19,7 @@
 //   PAID      → (terminal — use credit-memo via AR flow to refund)
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, asc, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, notInArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -34,6 +34,7 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -107,6 +108,14 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
       if (clientFilter && clientFilter !== 'invalid') {
         conds.push(eq(taxPayments.clientId, clientFilter));
       }
+      // 0165 — hide restricted clients' tax payments.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) conds.push(notInArray(taxPayments.clientId, blockedClientIds));
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
       if (status === 'SCHEDULED' || status === 'PAID' || status === 'VOIDED') {
         conds.push(eq(taxPayments.status, status));

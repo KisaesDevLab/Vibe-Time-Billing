@@ -5,12 +5,13 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   appUsers,
   engagementStatusConfig,
+  engagementStatusServiceLine,
   firms,
   firmSettings,
   notificationTemplates,
@@ -20,6 +21,7 @@ import {
   rolePermissionOverrides,
   rolePermissions,
   roles,
+  serviceLines,
   staffRateSnapshotEntries,
   staffRateSnapshots,
   staffSkills,
@@ -1652,7 +1654,36 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           .where(eq(engagementStatusConfig.firmId, firmId))
           .orderBy(engagementStatusConfig.sortOrder);
       }
-      res.json({ items });
+      // 0167 — attach the service-line mapping per status (empty ⇒ all),
+      // and return the firm's active service lines so the editor can offer
+      // them without a separate taxonomy:read fetch.
+      const [mappings, lines] = await Promise.all([
+        deps.db
+          .select({
+            workflowState: engagementStatusServiceLine.workflowState,
+            serviceLineId: engagementStatusServiceLine.serviceLineId,
+          })
+          .from(engagementStatusServiceLine)
+          .where(eq(engagementStatusServiceLine.firmId, firmId)),
+        deps.db
+          .select({ id: serviceLines.id, name: serviceLines.name })
+          .from(serviceLines)
+          .where(and(eq(serviceLines.firmId, firmId), ne(serviceLines.status, 'ARCHIVED')))
+          .orderBy(serviceLines.name),
+      ]);
+      const byState = new Map<string, string[]>();
+      for (const m of mappings) {
+        const list = byState.get(m.workflowState);
+        if (list) list.push(m.serviceLineId);
+        else byState.set(m.workflowState, [m.serviceLineId]);
+      }
+      res.json({
+        items: items.map((it) => ({
+          ...it,
+          serviceLineIds: (byState.get(it.workflowState) ?? []).sort(),
+        })),
+        serviceLines: lines,
+      });
     },
   );
 
@@ -1661,6 +1692,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
   const StatusConfigPatchSchema = z
     .object({
       label: z.string().min(1).max(60).optional(),
+      // 0167 — service lines this status applies to (empty ⇒ all). When
+      // omitted the mapping is left unchanged; when present it is replaced.
+      serviceLineIds: z.array(z.string().uuid()).max(100).optional(),
       color: z
         .string()
         .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
@@ -1695,6 +1729,8 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
   const StatusCreateSchema = z
     .object({
       label: z.string().min(1).max(60),
+      // 0167 — service lines this status applies to (empty/omitted ⇒ all).
+      serviceLineIds: z.array(z.string().uuid()).max(100).optional(),
       color: z
         .string()
         .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
@@ -1714,6 +1750,57 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       clientVisible: z.boolean().optional(),
     })
     .strict();
+
+  // 0167 — assert the given service-line ids all belong to the firm and
+  // aren't archived; returns the de-duplicated list. Throws
+  // 'invalid_service_line' so callers can map it to a 400.
+  async function assertServiceLinesValid(
+    db: Database,
+    firmId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    const unique = Array.from(new Set(ids));
+    if (unique.length > 0) {
+      const found = await db
+        .select({ id: serviceLines.id })
+        .from(serviceLines)
+        .where(
+          and(
+            eq(serviceLines.firmId, firmId),
+            inArray(serviceLines.id, unique),
+            ne(serviceLines.status, 'ARCHIVED'),
+          ),
+        );
+      if (found.length !== unique.length) throw new Error('invalid_service_line');
+    }
+    return unique;
+  }
+
+  // 0167 — replace the service-line mapping rows for one status. Empty ids
+  // ⇒ status is unrestricted (no rows).
+  async function replaceStatusServiceLines(
+    db: Database,
+    firmId: string,
+    workflowState: string,
+    ids: string[],
+  ): Promise<void> {
+    const unique = await assertServiceLinesValid(db, firmId, ids);
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(engagementStatusServiceLine)
+        .where(
+          and(
+            eq(engagementStatusServiceLine.firmId, firmId),
+            eq(engagementStatusServiceLine.workflowState, workflowState),
+          ),
+        );
+      if (unique.length > 0) {
+        await tx
+          .insert(engagementStatusServiceLine)
+          .values(unique.map((serviceLineId) => ({ firmId, workflowState, serviceLineId })));
+      }
+    });
+  }
 
   // POST /engagement-statuses — create a firm-custom progress status.
   router.post(
@@ -1745,6 +1832,20 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       let n = 2;
       while (existingKeys.has(key)) key = `${baseKey}_${n++}`;
 
+      // 0167 — validate the service-line mapping before creating anything.
+      let serviceLineIds: string[] = [];
+      if (d.serviceLineIds !== undefined) {
+        try {
+          serviceLineIds = await assertServiceLinesValid(deps.db, firmId, d.serviceLineIds);
+        } catch (err) {
+          if (err instanceof Error && err.message === 'invalid_service_line') {
+            res.status(400).json({ error: 'invalid_service_line' });
+            return;
+          }
+          throw err;
+        }
+      }
+
       await deps.db.insert(engagementStatusConfig).values({
         firmId,
         workflowState: key,
@@ -1761,12 +1862,19 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         clientDescription: d.clientDescription ?? null,
         clientVisible: d.clientVisible ?? true,
       });
+      if (serviceLineIds.length > 0) {
+        await deps.db
+          .insert(engagementStatusServiceLine)
+          .values(
+            serviceLineIds.map((serviceLineId) => ({ firmId, workflowState: key, serviceLineId })),
+          );
+      }
       await emitAudit(deps.db, {
         action: 'CREATE',
         entityType: 'engagement_status_config',
         entityId: key,
         actorAppUserId: req.staffSession!.appUserId,
-        after: { workflowState: key, label: d.label },
+        after: { workflowState: key, label: d.label, serviceLineIds },
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch(() => undefined);
@@ -1803,9 +1911,24 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.status(404).json({ error: 'unknown_state' });
         return;
       }
+      // 0167 — serviceLineIds is not a column; pull it out and, when
+      // present, replace the mapping rows. Validated first so an invalid
+      // id leaves the status row untouched.
+      const { serviceLineIds, ...columnFields } = parsed.data;
+      if (serviceLineIds !== undefined) {
+        try {
+          await replaceStatusServiceLines(deps.db, firmId, state, serviceLineIds);
+        } catch (err) {
+          if (err instanceof Error && err.message === 'invalid_service_line') {
+            res.status(400).json({ error: 'invalid_service_line' });
+            return;
+          }
+          throw err;
+        }
+      }
       await deps.db
         .update(engagementStatusConfig)
-        .set({ ...parsed.data, updatedAt: new Date() })
+        .set({ ...columnFields, updatedAt: new Date() })
         .where(
           and(
             eq(engagementStatusConfig.firmId, firmId),

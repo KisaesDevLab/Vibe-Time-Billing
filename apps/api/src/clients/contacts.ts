@@ -34,6 +34,8 @@ const ContactBaseSchema = z.object({
   isPortalIdentity: z.boolean().optional(),
   // CAL-7 — per-contact appointment-reminder opt-out.
   receiveAppointmentReminders: z.boolean().optional(),
+  // 0166 — per-contact engagement status-notification opt-out.
+  receiveStatusNotifications: z.boolean().optional(),
   // Link an EXISTING firm person instead of creating one from the typed
   // name/email. When set, name/email/phone are ignored (canonical values
   // come from the person) and we skip findOrCreatePerson — this is how the
@@ -103,6 +105,7 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
           isBilling: clientContacts.isBilling,
           isPortalIdentity: clientContacts.isPortalIdentity,
           receiveAppointmentReminders: clientContacts.receiveAppointmentReminders,
+          receiveStatusNotifications: clientContacts.receiveStatusNotifications,
           status: clientContacts.status,
           createdAt: clientContacts.createdAt,
           updatedAt: clientContacts.updatedAt,
@@ -292,6 +295,9 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
                 : {}),
               ...(data.receiveAppointmentReminders !== undefined
                 ? { receiveAppointmentReminders: data.receiveAppointmentReminders }
+                : {}),
+              ...(data.receiveStatusNotifications !== undefined
+                ? { receiveStatusNotifications: data.receiveStatusNotifications }
                 : {}),
               updatedAt: new Date(),
             })

@@ -26,6 +26,8 @@ import {
   clients,
   engagementAssignments,
   engagementStatusConfig,
+  engagementStatusServiceLine,
+  engagementTypes,
   engagements,
   persons,
   routeSheetPrintItems,
@@ -290,12 +292,15 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
           name: engagements.name,
           status: engagements.status,
           workflowState: engagements.workflowState,
+          // 0167 — an engagement's service line is resolved via its type.
+          serviceLineId: engagementTypes.serviceLineId,
           dueDate: engagements.dueDate,
           periodLabel: engagements.periodLabel,
           periodYear: engagements.periodYear,
           periodMonth: engagements.periodMonth,
         })
         .from(engagements)
+        .leftJoin(engagementTypes, eq(engagements.engagementTypeId, engagementTypes.id))
         .where(
           and(
             eq(engagements.clientId, clientId),
@@ -304,15 +309,34 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
           ),
         )
         .orderBy(desc(engagements.createdAt));
-      const statusOptions = await deps.db
-        .select({
-          workflowState: engagementStatusConfig.workflowState,
-          label: engagementStatusConfig.label,
-          sortOrder: engagementStatusConfig.sortOrder,
-        })
-        .from(engagementStatusConfig)
-        .where(eq(engagementStatusConfig.firmId, firmId))
-        .orderBy(engagementStatusConfig.sortOrder);
+      const [statusRows, mappings] = await Promise.all([
+        deps.db
+          .select({
+            workflowState: engagementStatusConfig.workflowState,
+            label: engagementStatusConfig.label,
+            sortOrder: engagementStatusConfig.sortOrder,
+          })
+          .from(engagementStatusConfig)
+          .where(eq(engagementStatusConfig.firmId, firmId))
+          .orderBy(engagementStatusConfig.sortOrder),
+        deps.db
+          .select({
+            workflowState: engagementStatusServiceLine.workflowState,
+            serviceLineId: engagementStatusServiceLine.serviceLineId,
+          })
+          .from(engagementStatusServiceLine)
+          .where(eq(engagementStatusServiceLine.firmId, firmId)),
+      ]);
+      const byState = new Map<string, string[]>();
+      for (const m of mappings) {
+        const list = byState.get(m.workflowState);
+        if (list) list.push(m.serviceLineId);
+        else byState.set(m.workflowState, [m.serviceLineId]);
+      }
+      const statusOptions = statusRows.map((s) => ({
+        ...s,
+        serviceLineIds: (byState.get(s.workflowState) ?? []).sort(),
+      }));
       res.json({
         items: items.map((e) => ({ ...e, period: periodLabel(e) })),
         statusOptions,

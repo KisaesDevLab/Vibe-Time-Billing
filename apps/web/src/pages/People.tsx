@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
-// Firm-wide People directory (0115 follow-up). One searchable table of
-// every human in the firm — directory contacts plus standalone portal
-// logins — with a Portal column showing whether they have any active
-// portal access. Click through to a person to edit them and manage their
-// per-client portal access.
+// Firm-wide People directory (0115 follow-up). One table of every human in
+// the firm — directory contacts plus standalone portal logins — with a
+// Portal column showing whether they have any active portal access. Click
+// through to a person to edit them and manage their per-client portal
+// access.
 //
-// Backed by GET /api/staff/people.
+// Standard table view: loads the full firm set once, then filter / sort /
+// search run client-side via useColumnView + ColumnFilter headers +
+// TableSearch (see apps/web/src/lib/column-view.ts). Backed by
+// GET /api/staff/people.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
+import { TableSearch } from '../components/TableSearch';
+import { selectRows, useColumnView } from '../lib/column-view';
 
 interface PersonRow {
   key: string;
@@ -29,17 +34,24 @@ interface PersonRow {
   clientCount: number;
 }
 
+const PORTAL_VALUES = [
+  { value: 'yes', label: 'Enabled' },
+  { value: 'no', label: 'None' },
+];
+const KIND_VALUES = [
+  { value: 'person', label: 'Directory contact' },
+  { value: 'portal_identity', label: 'Portal-only' },
+];
+
 export function PeopleDirectoryPage(): JSX.Element {
   const navigate = useNavigate();
   const [rows, setRows] = useState<PersonRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [q, setQ] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(true);
   const [viewAsBusy, setViewAsBusy] = useState<string | null>(null);
   // Mirrors the impersonate endpoint's gate (engagement:read).
   const canViewAs = usePermission('engagement:read');
+
+  const view = useColumnView('vibe.people.view', { sortCol: 'name', sortDir: 'asc' });
 
   // The list row doesn't carry access ids, so resolve them on demand:
   // exactly one ACTIVE access → open the portal directly; several →
@@ -69,94 +81,73 @@ export function PeopleDirectoryPage(): JSX.Element {
     }
   }
 
-  async function load(): Promise<void> {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (q.trim()) params.set('q', q.trim());
-      params.set('page', String(page));
-      params.set('pageSize', String(pageSize));
-      const r = await api<{ rows: PersonRow[]; total: number }>(
-        `/api/staff/people?${params.toString()}`,
-      );
-      setRows(r.rows ?? []);
-      setTotal(r.total ?? 0);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize]);
+    void (async () => {
+      setLoading(true);
+      try {
+        const r = await api<{ rows: PersonRow[] }>('/api/staff/people?pageSize=1000');
+        setRows(r.rows ?? []);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const visible = useMemo(
+    () =>
+      selectRows(rows, view, {
+        searchText: (p) => `${p.fullName} ${p.email ?? ''} ${p.phone ?? ''} ${p.mobile ?? ''}`,
+        filters: {
+          portal: (p) => (p.hasPortalAccess ? 'yes' : 'no'),
+          kind: (p) => p.kind,
+        },
+        sortValues: {
+          name: (p) => p.fullName,
+          email: (p) => p.email ?? '',
+          phone: (p) => p.phone ?? '',
+          clients: (p) => p.clientCount,
+        },
+        tieBreak: (a, b) => a.fullName.localeCompare(b.fullName),
+      }),
+    [rows, view],
+  );
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
-      <Card title="People">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setPage(1);
-            void load();
-          }}
-          style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr auto' }}
-        >
-          <Input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by name, email or phone"
-          />
-          <Button type="submit" variant="secondary">
-            Search
-          </Button>
-        </form>
-      </Card>
-
       <Card
-        title={`Results — ${total.toLocaleString()} ${total === 1 ? 'person' : 'people'}`}
-        action={
-          <span style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-            <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              Page size
-              <select
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setPage(1);
-                }}
-                aria-label="Page size"
-                style={{ padding: '4px 6px', borderRadius: tokens.radius.sm }}
-              >
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-            </label>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </Button>
-            <span style={{ color: tokens.color.textMuted }}>
-              Page {page} / {pageCount}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page >= pageCount}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            >
-              Next →
-            </Button>
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>People</span>
+            {rows.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === rows.length
+                  ? `${rows.length} ${rows.length === 1 ? 'person' : 'people'}`
+                  : `${visible.length} of ${rows.length}`}
+              </span>
+            )}
           </span>
         }
+        action={
+          view.anyFilterActive ? (
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          ) : undefined
+        }
       >
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search by name, email or phone…" />
+        </div>
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
@@ -164,7 +155,19 @@ export function PeopleDirectoryPage(): JSX.Element {
             columns={[
               {
                 key: 'name',
-                header: 'Name',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Name{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by name"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('name')}
+                      onApply={(_, dir) => view.apply('name', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (p) => (
                   <a
                     href={`/people/${p.id}`}
@@ -177,17 +180,73 @@ export function PeopleDirectoryPage(): JSX.Element {
                   </a>
                 ),
               },
-              { key: 'email', header: 'Email', render: (p) => p.email ?? '—' },
-              { key: 'phone', header: 'Phone', render: (p) => p.phone ?? '—' },
+              {
+                key: 'email',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Email{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by email"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('email')}
+                      onApply={(_, dir) => view.apply('email', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (p) => p.email ?? '—',
+              },
+              {
+                key: 'phone',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Phone{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by phone"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('phone')}
+                      onApply={(_, dir) => view.apply('phone', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (p) => p.phone ?? '—',
+              },
               {
                 key: 'clients',
-                header: 'Clients',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Clients{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by client count"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('clients')}
+                      onApply={(_, dir) => view.apply('clients', new Set(), dir)}
+                    />
+                  </span>
+                ) as unknown as string,
                 align: 'right',
                 render: (p) => p.clientCount,
               },
               {
                 key: 'portal',
-                header: 'Portal',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Portal{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter by portal access"
+                      values={PORTAL_VALUES}
+                      selected={view.filterFor('portal')}
+                      searchable={false}
+                      sort={null}
+                      onApply={(sel) => view.apply('portal', sel, view.sortFor('portal'))}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (p) =>
                   p.hasPortalAccess ? (
                     <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
@@ -210,14 +269,26 @@ export function PeopleDirectoryPage(): JSX.Element {
               },
               {
                 key: 'kind',
-                header: '',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Kind{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter by kind"
+                      values={KIND_VALUES}
+                      selected={view.filterFor('kind')}
+                      searchable={false}
+                      sort={null}
+                      onApply={(sel) => view.apply('kind', sel, view.sortFor('kind'))}
+                    />
+                  </span>
+                ) as unknown as string,
                 render: (p) =>
                   p.kind === 'portal_identity' ? <Pill tone="warning">Portal-only</Pill> : null,
               },
             ]}
-            rows={rows}
+            rows={visible}
             rowKey={(p) => p.key}
-            empty="No people match the current search."
+            empty="No people match the current filters."
           />
         )}
       </Card>

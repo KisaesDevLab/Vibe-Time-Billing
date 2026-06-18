@@ -9,23 +9,30 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
-import { StatusEditorModal, type StatusConfigRow } from './StatusEditorModal';
+import { StatusEditorModal, type StatusConfigRow, type ServiceLineLite } from './StatusEditorModal';
 
 export function EngagementStatusesPage(): JSX.Element {
   const [rows, setRows] = useState<StatusConfigRow[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLineLite[]>([]);
   const [err, setErr] = useState<string | null>(null);
   // editing: a row to edit, or 'new' to create, or null = modal closed.
   const [editing, setEditing] = useState<StatusConfigRow | 'new' | null>(null);
 
   async function load(): Promise<void> {
     try {
-      const r = await api<{ items: StatusConfigRow[] }>('/api/staff/admin/engagement-statuses');
+      const r = await api<{ items: StatusConfigRow[]; serviceLines?: ServiceLineLite[] }>(
+        '/api/staff/admin/engagement-statuses',
+      );
       setRows(r.items ?? []);
+      setServiceLines(r.serviceLines ?? []);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'load_failed');
     }
   }
+
+  const serviceLineName = (id: string): string =>
+    serviceLines.find((s) => s.id === id)?.name ?? '—';
 
   // Inline toggle for the on-table checkboxes (optimistic, reverts on error).
   async function toggle(row: StatusConfigRow, change: Partial<StatusConfigRow>): Promise<void> {
@@ -128,6 +135,22 @@ export function EngagementStatusesPage(): JSX.Element {
               ),
             },
             {
+              key: 'serviceLines',
+              header: 'Service lines',
+              render: (r) =>
+                r.serviceLineIds.length === 0 ? (
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>All</span>
+                ) : (
+                  <span style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {r.serviceLineIds.map((id) => (
+                      <Pill key={id} tone="neutral">
+                        {serviceLineName(id)}
+                      </Pill>
+                    ))}
+                  </span>
+                ),
+            },
+            {
               key: 'notifies',
               header: 'Notifies',
               render: (r) =>
@@ -173,6 +196,7 @@ export function EngagementStatusesPage(): JSX.Element {
       {editing !== null && (
         <StatusEditorModal
           status={editing === 'new' ? null : editing}
+          serviceLines={serviceLines}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);

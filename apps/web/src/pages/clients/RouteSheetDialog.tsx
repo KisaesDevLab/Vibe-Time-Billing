@@ -12,11 +12,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { filterStatuses } from '../../status-filter';
 
 interface EngagementRow {
   id: string;
   name: string;
   workflowState: string;
+  // 0167 — resolved via the engagement's type; gates the status dropdown.
+  serviceLineId: string | null;
   period: string | null;
   dueDate: string | null;
 }
@@ -24,6 +27,8 @@ interface StatusOption {
   workflowState: string;
   label: string;
   sortOrder: number;
+  // 0167 — service lines this status applies to (empty ⇒ all).
+  serviceLineIds: string[];
 }
 interface HistoryRow {
   id: string;
@@ -191,7 +196,11 @@ export function RouteSheetDialog({
                               }
                               style={selectStyle}
                             >
-                              {statusOptions.map((s) => (
+                              {filterStatuses(
+                                statusOptions,
+                                e.serviceLineId,
+                                stateById[e.id] ?? e.workflowState,
+                              ).map((s) => (
                                 <option key={s.workflowState} value={s.workflowState}>
                                   {s.label}
                                 </option>

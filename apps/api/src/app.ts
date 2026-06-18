@@ -587,6 +587,9 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendStaffMail
       ? (a) => deps.sendStaffMail!({ to: a.to, subject: a.subject, body: a.body })
       : undefined,
+    sendSms: deps.sendPortalSms
+      ? (a) => deps.sendPortalSms!({ to: a.to, body: a.body })
+      : undefined,
   });
   app.use('/api/staff/intake', auth.requireAuth, auth.requireCsrf, intakeStaffRouter);
 

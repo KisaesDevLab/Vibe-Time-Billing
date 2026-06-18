@@ -17,7 +17,7 @@
 import express, { type Request, type Response, type Router } from 'express';
 import QRCode from 'qrcode';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull, notInArray, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -38,6 +38,7 @@ import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBlockedClientIdsCached } from '../clients/access';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
 import { buildQrSheetHtml } from '../pdf-templates/signature-qr-sheet';
@@ -259,6 +260,20 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
     const conds = [eq(signatureRequests.firmId, firmId)];
     if (status) conds.push(eq(signatureRequests.status, status));
     if (taxReturnId) conds.push(eq(signatureRequests.taxReturnId, taxReturnId));
+    // 0165 — hide restricted clients' signature requests; keep client-less ones.
+    const blockedClientIds = await getBlockedClientIdsCached(
+      deps,
+      req,
+      req.staffSession!.appUserId,
+      firmId,
+    );
+    if (blockedClientIds.length) {
+      const expr = or(
+        isNull(signatureRequests.clientId),
+        notInArray(signatureRequests.clientId, blockedClientIds),
+      );
+      if (expr) conds.push(expr);
+    }
     const where = conds.length === 1 ? conds[0] : and(...conds);
     const rows = await deps.db
       .select({

@@ -15,6 +15,36 @@ interface StaffOpt {
   name: string;
 }
 
+interface ChannelResult {
+  attempted: boolean;
+  ok: boolean;
+  error?: string;
+}
+interface LinkResult {
+  url: string;
+  delivered: boolean;
+  email?: ChannelResult;
+  sms?: ChannelResult;
+}
+
+const CHANNEL_ERROR_LABEL: Record<string, string> = {
+  send_failed: 'could not be sent — please share the link below instead',
+  email_not_configured: 'email isn’t configured on this server',
+  sms_not_configured: 'text messaging isn’t configured on this server',
+  invalid_phone: 'that phone number looks invalid',
+};
+
+function channelLine(label: string, r: ChannelResult | undefined): JSX.Element | null {
+  if (!r || !r.attempted) return null;
+  const ok = r.ok;
+  return (
+    <div style={{ fontSize: 13, color: ok ? tokens.color.success : tokens.color.danger }}>
+      {ok ? '✓' : '⚠'} {label}{' '}
+      {ok ? 'sent' : (r.error && CHANNEL_ERROR_LABEL[r.error]) || 'could not be sent'}
+    </div>
+  );
+}
+
 const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: 8,
@@ -31,7 +61,7 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
   const [expiresInDays, setExpiresInDays] = useState(14);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ url: string; delivered: boolean } | null>(null);
+  const [result, setResult] = useState<LinkResult | null>(null);
 
   useEffect(() => {
     void api<{ staff: StaffOpt[] }>('/api/staff/intake/staff-options')
@@ -47,7 +77,7 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
     setBusy(true);
     setError(null);
     try {
-      const r = await api<{ url: string; delivered: boolean }>('/api/staff/intake/links', {
+      const r = await api<LinkResult>('/api/staff/intake/links', {
         method: 'POST',
         body: JSON.stringify({
           targetStaffId,
@@ -91,8 +121,15 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
         {result ? (
           <div style={{ display: 'grid', gap: 12 }}>
             <p style={{ fontSize: 13, margin: 0 }}>
-              {result.delivered ? 'Link sent.' : 'Link created.'} Share this URL:
+              {result.delivered ? 'Link sent.' : 'Link created.'} You can also share this URL
+              directly:
             </p>
+            {(channelLine('Email', result.email) || channelLine('Text', result.sms)) && (
+              <div style={{ display: 'grid', gap: 4 }}>
+                {channelLine('Email', result.email)}
+                {channelLine('Text', result.sms)}
+              </div>
+            )}
             <code
               style={{
                 display: 'block',
@@ -105,7 +142,13 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
             >
               {result.url}
             </code>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <Button
+                variant="ghost"
+                onClick={() => void navigator.clipboard?.writeText(result.url)}
+              >
+                Copy link
+              </Button>
               <Button onClick={onClose}>Done</Button>
             </div>
           </div>

@@ -18,6 +18,13 @@ import {
   isFullHtmlDocument,
   type EmailBranding,
 } from '@vibe/core/notifications';
+import { normalizePhone } from '@vibe/core/auth';
+
+// Best-effort E.164 at the send boundary — most stored numbers omit the
+// "+1" country code. Falls back to the raw string for non-US numbers.
+function toE164(raw: string): string {
+  return normalizePhone(raw) ?? raw;
+}
 
 export interface MailArgs {
   to: string;
@@ -188,7 +195,7 @@ export function buildSmsDispatch(log: Logger): SmsDispatch | undefined {
     const from = process.env['SMS_TWILIO_FROM']!;
     return async (args) => {
       const auth = Buffer.from(`${sid}:${token}`).toString('base64');
-      const body = new URLSearchParams({ From: from, To: args.to, Body: args.body });
+      const body = new URLSearchParams({ From: from, To: toE164(args.to), Body: args.body });
       const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
         method: 'POST',
         headers: {
@@ -206,7 +213,7 @@ export function buildSmsDispatch(log: Logger): SmsDispatch | undefined {
       const r = await fetch('https://api.textlink.io/v1/send', {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: args.to, body: args.body }),
+        body: JSON.stringify({ to: toE164(args.to), body: args.body }),
       });
       if (!r.ok) throw new Error(`textlink_${r.status}`);
     };

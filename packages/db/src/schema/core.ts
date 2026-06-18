@@ -38,6 +38,7 @@ import {
   uniqueIndex,
   check,
   primaryKey,
+  foreignKey,
   customType,
 } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
@@ -1053,6 +1054,12 @@ export const clients = pgTable(
     legalHoldReason: text('legal_hold_reason'),
     legalHoldSetAt: timestamp('legal_hold_set_at', { withTimezone: true }),
 
+    // 0165 — per-client visibility restriction. When true, only an admin,
+    // the partner-in-charge, or a user with a client_access_grant row may
+    // see the client's non-billing data; everyone else is limited to the
+    // basic info + people + billing/A-R surfaces.
+    restricted: boolean('restricted').notNull().default(false),
+
     // File-manager v2 (0043) — opaque identifiers from the firm's tax
     // software used for onboarding fuzzy-match against existing B2
     // folder names. See FILE_MANAGER_ADDENDUM.md §3.1.
@@ -1439,6 +1446,9 @@ export const clientContacts = pgTable(
     isPortalIdentity: boolean('is_portal_identity').notNull().default(false),
     // CAL-7 — appointment reminder opt-out (default on).
     receiveAppointmentReminders: boolean('receive_appointment_reminders').notNull().default(true),
+    // 0166 — engagement status-notification opt-out (default on). Honored by
+    // the staged status-notification recipient resolution.
+    receiveStatusNotifications: boolean('receive_status_notifications').notNull().default(true),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3343,6 +3353,30 @@ export const engagementAssignments = pgTable(
   }),
 );
 
+// 0165 — client_access_grant. Designated users for a restricted client
+// (client.restricted = true). Membership grants full access to the
+// client's otherwise-hidden surfaces; admins + the partner-in-charge are
+// always allowed and need no row here.
+export const clientAccessGrants = pgTable(
+  'client_access_grant',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+    grantedById: uuid('granted_by_id').references(() => appUsers.id),
+  },
+  (t) => ({
+    naturalKey: uniqueIndex('client_access_grant_uk').on(t.clientId, t.appUserId),
+    clientIdx: index('client_access_grant_client_idx').on(t.clientId),
+    userIdx: index('client_access_grant_user_idx').on(t.appUserId),
+  }),
+);
+
 // =====================================================================
 // 0083 — engagement_recurrence. Subscribes a (client × template) to a
 // cadence. Worker spawns the next engagement either on schedule
@@ -3443,6 +3477,33 @@ export const engagementStatusConfig = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.firmId, t.workflowState] }),
     firmSortIdx: index('engagement_status_config_firm_sort_idx').on(t.firmId, t.sortOrder),
+  }),
+);
+
+// 0167 — engagement_status_service_line. Maps a firm's workflow statuses
+// to the service lines they apply to. A status with zero rows here is
+// unrestricted (offered for every engagement); rows restrict it to only
+// the listed service lines. Mirrors the work_code → service_line scoping
+// pattern. Filtering of status pickers is done client-side from the
+// catalog response; this table is the source of truth.
+export const engagementStatusServiceLine = pgTable(
+  'engagement_status_service_line',
+  {
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    workflowState: text('workflow_state').notNull(),
+    serviceLineId: uuid('service_line_id')
+      .notNull()
+      .references(() => serviceLines.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.firmId, t.workflowState, t.serviceLineId] }),
+    statusFk: foreignKey({
+      columns: [t.firmId, t.workflowState],
+      foreignColumns: [engagementStatusConfig.firmId, engagementStatusConfig.workflowState],
+    }).onDelete('cascade'),
+    serviceLineIdx: index('engagement_status_service_line_sl_idx').on(t.firmId, t.serviceLineId),
   }),
 );
 
@@ -4102,8 +4163,12 @@ export type AiRequestLogRow = typeof aiRequestLog.$inferSelect;
 // 0050 — tier 1-3 sweep
 export type EngagementAssignment = typeof engagementAssignments.$inferSelect;
 export type NewEngagementAssignment = typeof engagementAssignments.$inferInsert;
+export type ClientAccessGrant = typeof clientAccessGrants.$inferSelect;
+export type NewClientAccessGrant = typeof clientAccessGrants.$inferInsert;
 export type EngagementStatusConfig = typeof engagementStatusConfig.$inferSelect;
 export type NewEngagementStatusConfig = typeof engagementStatusConfig.$inferInsert;
+export type EngagementStatusServiceLine = typeof engagementStatusServiceLine.$inferSelect;
+export type NewEngagementStatusServiceLine = typeof engagementStatusServiceLine.$inferInsert;
 export type InvoiceReminderLogRow = typeof invoiceReminderLog.$inferSelect;
 export type NewInvoiceReminderLogRow = typeof invoiceReminderLog.$inferInsert;
 

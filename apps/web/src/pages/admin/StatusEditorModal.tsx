@@ -26,10 +26,18 @@ export interface StatusConfigRow {
   clientLabel: string | null;
   clientDescription: string | null;
   clientVisible: boolean;
+  // 0167 — service lines this status applies to (empty ⇒ all).
+  serviceLineIds: string[];
+}
+
+export interface ServiceLineLite {
+  id: string;
+  name: string;
 }
 
 interface Props {
   status: StatusConfigRow | null; // null = create
+  serviceLines: ServiceLineLite[];
   onClose: () => void;
   onSaved: () => void;
 }
@@ -48,7 +56,7 @@ const inputStyle: React.CSSProperties = {
   fontSize: 14,
 };
 
-export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Element {
+export function StatusEditorModal({ status, serviceLines, onClose, onSaved }: Props): JSX.Element {
   const creating = status === null;
   const [label, setLabel] = useState(status?.label ?? '');
   const [color, setColor] = useState(status?.color ?? '#6b7280');
@@ -57,6 +65,7 @@ export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Elem
   const [clientLabel, setClientLabel] = useState(status?.clientLabel ?? '');
   const [clientDescription, setClientDescription] = useState(status?.clientDescription ?? '');
   const [clientVisible, setClientVisible] = useState(status?.clientVisible ?? true);
+  const [serviceLineIds, setServiceLineIds] = useState<string[]>(status?.serviceLineIds ?? []);
   const [notifyEnabled, setNotifyEnabled] = useState(status?.triggersClientComm ?? false);
   const [notifyMode, setNotifyMode] = useState<'IMMEDIATE' | 'STAGED'>(
     status?.notifyMode ?? 'STAGED',
@@ -88,6 +97,7 @@ export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Elem
       clientLabel: clientLabel.trim() || null,
       clientDescription: clientDescription.trim() || null,
       clientVisible,
+      serviceLineIds,
       triggersClientComm: notifyEnabled,
       notifyMode,
       notifyChannels,
@@ -240,6 +250,50 @@ export function StatusEditorModal({ status, onClose, onSaved }: Props): JSX.Elem
               />
               Show on board
             </label>
+          </div>
+
+          {/* 0167 — service-line scoping */}
+          <div>
+            <span style={labelStyle}>Service lines</span>
+            {serviceLines.length === 0 ? (
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                No service lines defined yet — this status applies to all engagements.
+              </span>
+            ) : (
+              <>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {serviceLines.map((sl) => (
+                    <label
+                      key={sl.id}
+                      style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={serviceLineIds.includes(sl.id)}
+                        onChange={(e) =>
+                          setServiceLineIds((prev) =>
+                            e.target.checked ? [...prev, sl.id] : prev.filter((id) => id !== sl.id),
+                          )
+                        }
+                      />
+                      {sl.name}
+                    </label>
+                  ))}
+                </div>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: tokens.color.textMuted,
+                    display: 'block',
+                    marginTop: 4,
+                  }}
+                >
+                  {serviceLineIds.length === 0
+                    ? 'None selected — this status is available for every engagement.'
+                    : 'Only engagements in the selected service lines will offer this status.'}
+                </span>
+              </>
+            )}
           </div>
 
           <hr

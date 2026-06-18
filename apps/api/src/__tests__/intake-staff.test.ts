@@ -197,6 +197,89 @@ describe('send-a-link', () => {
     expect(resolved?.targetStaffId).toBe(seed.appUserId);
     expect(await resolveIntakeLink(harness.db, seed.firmId, 'bogus-token-value')).toBeNull();
   });
+
+  function buildSendApp(hooks: {
+    sendEmail?: (a: { to: string; subject: string; body: string }) => Promise<void>;
+    sendSms?: (a: { to: string; body: string }) => Promise<void>;
+  }): express.Express {
+    const app = express();
+    app.use(express.json());
+    const router = createIntakeStaffRouter({
+      db: harness.db,
+      storageClient: storage,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin']]]),
+      intakeBaseUrl: 'https://intake.test',
+      sendEmail: hooks.sendEmail,
+      sendSms: hooks.sendSms,
+    });
+    app.use((req, _res, next) => {
+      (req as unknown as { staffSession: unknown }).staffSession = {
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+      };
+      next();
+    });
+    app.use('/api/staff/intake', router);
+    return app;
+  }
+
+  it('emails and texts the link, reporting per-channel success', async () => {
+    const emails: Array<{ to: string; body: string }> = [];
+    const texts: Array<{ to: string; body: string }> = [];
+    const res = await request(
+      buildSendApp({
+        sendEmail: async (a) => {
+          emails.push({ to: a.to, body: a.body });
+        },
+        sendSms: async (a) => {
+          texts.push(a);
+        },
+      }),
+    )
+      .post('/api/staff/intake/links')
+      .send({
+        targetStaffId: seed.appUserId,
+        recipientEmail: 'client@example.com',
+        recipientPhone: '(555) 123-4567',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.delivered).toBe(true);
+    expect(res.body.email).toMatchObject({ attempted: true, ok: true });
+    expect(res.body.sms).toMatchObject({ attempted: true, ok: true });
+    expect(emails[0]?.to).toBe('client@example.com');
+    expect(emails[0]?.body).toContain('https://intake.test/t/');
+    // Phone normalized to E.164 before sending.
+    expect(texts[0]?.to).toBe('+15551234567');
+    expect(texts[0]?.body).toContain('https://intake.test/t/');
+  });
+
+  it('reports an invalid phone without blocking the email', async () => {
+    const res = await request(
+      buildSendApp({
+        sendEmail: async () => undefined,
+        sendSms: async () => undefined,
+      }),
+    )
+      .post('/api/staff/intake/links')
+      .send({
+        targetStaffId: seed.appUserId,
+        recipientEmail: 'client@example.com',
+        recipientPhone: 'not-a-phone',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.email).toMatchObject({ ok: true });
+    expect(res.body.sms).toMatchObject({ attempted: true, ok: false, error: 'invalid_phone' });
+    expect(res.body.delivered).toBe(true);
+  });
+
+  it('reports when the SMS channel is not configured', async () => {
+    const res = await request(buildSendApp({ sendEmail: async () => undefined }))
+      .post('/api/staff/intake/links')
+      .send({ targetStaffId: seed.appUserId, recipientPhone: '(555) 123-4567' });
+    expect(res.status).toBe(201);
+    expect(res.body.sms).toMatchObject({ attempted: true, ok: false, error: 'sms_not_configured' });
+    expect(res.body.delivered).toBe(false);
+  });
 });
 
 describe('inbox + disposition', () => {

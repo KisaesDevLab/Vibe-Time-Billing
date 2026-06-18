@@ -20,7 +20,20 @@
 import crypto from 'node:crypto';
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
-import { and, asc, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
@@ -39,6 +52,7 @@ import {
   clients,
   engagementNotes,
   engagements,
+  firms,
   offices,
   persons,
   staffAvailability,
@@ -47,7 +61,13 @@ import {
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
+import {
+  renderAppointmentsListHtml,
+  type AppointmentsListPdfRow,
+} from '../pdf-templates/appointments-list';
+import { renderHtmlToPdf } from '../pdf/render';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { createFreeBusyProvider } from '../calendar/freebusy';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -63,6 +83,8 @@ export interface BookingRoutesDeps extends RbacDeps {
   busyProvider?: StaffBusyProvider;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  /** Test seam — HTML→PDF renderer for the table export. */
+  renderPdf?: (html: string) => Promise<Buffer>;
 }
 
 /**
@@ -323,6 +345,20 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
       if (clientId && /^[0-9a-fA-F-]{36}$/.test(clientId)) {
         conds.push(eq(appointments.clientId, clientId));
       }
+      // 0165 — hide restricted clients' appointments; keep client-less ones.
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) {
+        const expr = or(
+          isNull(appointments.clientId),
+          notInArray(appointments.clientId, blockedClientIds),
+        );
+        if (expr) conds.push(expr);
+      }
       const typeId = typeof req.query['typeId'] === 'string' ? req.query['typeId'] : null;
       if (typeId && /^[0-9a-fA-F-]{36}$/.test(typeId)) {
         conds.push(eq(appointments.appointmentTypeId, typeId));
@@ -351,7 +387,9 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
 
       const sortDir = req.query['sort'] === 'asc' ? asc : desc;
       const page = Math.max(1, Number(req.query['page']) || 1);
-      const pageSize = Math.min(100, Math.max(1, Number(req.query['pageSize']) || 25));
+      // Cap lifted to 1000 so the staff Appointments list can load the
+      // (date-bounded) set and run filter/sort/search client-side.
+      const pageSize = Math.min(1000, Math.max(1, Number(req.query['pageSize']) || 25));
 
       const [{ n: total } = { n: 0 }] = await db
         .select({ n: sql<number>`count(*)::int` })
@@ -366,6 +404,8 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
           endsAt: appointments.endsAt,
           status: appointments.status,
           location: appointments.location,
+          locationOptionId: appointments.locationOptionId,
+          locationName: appointmentLocationOptions.name,
           clientId: appointments.clientId,
           clientName: clients.name,
           engagementId: appointments.engagementId,
@@ -377,6 +417,10 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         .leftJoin(clients, eq(clients.id, appointments.clientId))
         .leftJoin(engagements, eq(engagements.id, appointments.engagementId))
         .leftJoin(appointmentTypes, eq(appointmentTypes.id, appointments.appointmentTypeId))
+        .leftJoin(
+          appointmentLocationOptions,
+          eq(appointmentLocationOptions.id, appointments.locationOptionId),
+        )
         .where(and(...conds))
         .orderBy(sortDir(appointments.startsAt))
         .limit(pageSize)
@@ -418,6 +462,68 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
         hasPendingReschedule: pending.has(r.id),
       }));
       res.json({ items, total, page, pageSize });
+    },
+  );
+
+  // ---- export the current table to PDF -------------------------------
+  // Renders the rows the client sends (already filtered/sorted/formatted
+  // in the browser) so the PDF matches the on-screen table exactly. Safe
+  // on a single-firm appliance: the data is the user's own firm's, and the
+  // export is gated on appointment:read.
+  const PdfRowSchema = z.object({
+    date: z.string().max(40),
+    time: z.string().max(40),
+    title: z.string().max(300),
+    staff: z.string().max(500),
+    client: z.string().max(300),
+    engagement: z.string().max(300),
+    location: z.string().max(300),
+    status: z.string().max(40),
+  });
+  const PdfExportSchema = z.object({
+    rows: z.array(PdfRowSchema).max(2000),
+    filterSummary: z.array(z.string().max(200)).max(20).optional(),
+  });
+
+  router.post(
+    '/list/pdf',
+    requirePermission(deps, 'appointment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = PdfExportSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+        return;
+      }
+      const [firm] = await deps.db
+        .select({ name: firms.name })
+        .from(firms)
+        .where(eq(firms.id, session.firmId))
+        .limit(1);
+      const now = (deps.now ?? ((): Date => new Date()))();
+      const renderPdf = deps.renderPdf ?? renderHtmlToPdf;
+      try {
+        const html = renderAppointmentsListHtml({
+          firmName: firm?.name ?? 'Appointments',
+          generatedAt: now.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+          filterSummary: parsed.data.filterSummary ?? [],
+          rows: parsed.data.rows as AppointmentsListPdfRow[],
+        });
+        const pdf = await renderPdf(html);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `inline; filename="appointments-${now.toISOString().slice(0, 10)}.pdf"`,
+        );
+        res.send(pdf);
+      } catch (err) {
+        logger.error({ err }, 'appointments table PDF render failed');
+        res.status(502).json({ error: 'render_failed' });
+      }
     },
   );
 
@@ -480,6 +586,8 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
           res.status(404).json({ error: 'client_not_found' });
           return;
         }
+        // 0165 — can't book a restricted client you can't access.
+        if (await blockIfClientRestricted(deps, req, res, data.clientId)) return;
         if (data.engagementId) {
           const [e] = await db
             .select({ id: engagements.id })

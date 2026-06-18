@@ -128,6 +128,37 @@ function buildSmsBody(draft: SmsDraft): unknown {
   return { ...draft };
 }
 
+// For the "Test" buttons: only send the typed draft when its secret is
+// actually filled in. After a save + reload the draft is reset to empty
+// (the API only returns a masked config, never the secret), so sending it
+// would fail validation — instead omit `config` so the server tests the
+// saved/encrypted config it already has.
+function smsTestConfig(draft: SmsDraft): unknown | undefined {
+  switch (draft.provider) {
+    case 'textlink':
+      return draft.apiKey ? { ...draft } : undefined;
+    case 'twilio':
+      return draft.authToken ? { ...draft } : undefined;
+    case 'sns':
+      return draft.secretAccessKey ? { ...draft } : undefined;
+  }
+}
+
+function emailTestConfig(draft: EmailDraft): unknown | undefined {
+  switch (draft.provider) {
+    case 'smtp':
+      // SMTP may legitimately have no auth; treat host as the signal that
+      // the user actually filled the draft in.
+      return draft.host ? buildEmailBody(draft) : undefined;
+    case 'postmark':
+      return draft.token ? { ...draft } : undefined;
+    case 'resend':
+      return draft.apiKey ? { ...draft } : undefined;
+    case 'ses':
+      return draft.secretAccessKey ? { ...draft } : undefined;
+  }
+}
+
 const fieldStyle: React.CSSProperties = {
   padding: '8px 10px',
   background: tokens.color.surface,
@@ -228,9 +259,10 @@ export function MessagingPage(): JSX.Element {
     }
     setEmailStatus('Sending…');
     try {
+      const config = emailTestConfig(emailDraft);
       const r = await api<SendResult>('/api/staff/admin/messaging/email/test', {
         method: 'POST',
-        body: JSON.stringify({ to: emailTo, config: buildEmailBody(emailDraft) }),
+        body: JSON.stringify(config ? { to: emailTo, config } : { to: emailTo }),
       });
       setEmailStatus(
         r.ok ? `OK · messageId=${r.messageId ?? '(none)'}` : `Failed: ${r.error ?? 'unknown'}`,
@@ -247,9 +279,10 @@ export function MessagingPage(): JSX.Element {
     }
     setSmsStatus('Sending…');
     try {
+      const config = smsTestConfig(smsDraft);
       const r = await api<SendResult>('/api/staff/admin/messaging/sms/test', {
         method: 'POST',
-        body: JSON.stringify({ to: smsTo, config: buildSmsBody(smsDraft) }),
+        body: JSON.stringify(config ? { to: smsTo, config } : { to: smsTo }),
       });
       setSmsStatus(
         r.ok

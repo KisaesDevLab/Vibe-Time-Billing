@@ -36,6 +36,21 @@ export interface UsePopoverPositionInput {
 
 const SSR = typeof window === 'undefined';
 
+/**
+ * The accessibility font-size control applies `body { zoom: N }` (see
+ * FontSizeControl), and these popovers portal into `document.body` — so a
+ * fixed child is rendered at `cssLeft * zoom`. getBoundingClientRect() and
+ * window.innerWidth report visual (post-zoom) pixels, so we compute in
+ * visual space then divide the final CSS coords by the zoom to cancel the
+ * body's re-scaling. Returns 1 when no body zoom is active.
+ */
+function bodyZoom(): number {
+  if (SSR) return 1;
+  const raw = getComputedStyle(document.body).zoom;
+  const z = parseFloat(raw || '1');
+  return Number.isFinite(z) && z > 0 ? z : 1;
+}
+
 export function usePopoverPosition({
   triggerRef,
   open,
@@ -82,7 +97,11 @@ export function usePopoverPosition({
           ? rect.bottom + 4
           : Math.max(viewportMargin, rect.top - popoverMaxHeight - 4);
 
-      setPos({ top, left, width, placement });
+      // Cancel the body zoom: the popover is a fixed child of the zoomed
+      // <body>, so its CSS left/top/width are multiplied by the zoom on
+      // paint. Dividing here lands it at the intended visual coordinates.
+      const z = bodyZoom();
+      setPos({ top: top / z, left: left / z, width: width / z, placement });
     }
     compute();
     // capture:true so scrolls inside scrollable ancestors (tables,

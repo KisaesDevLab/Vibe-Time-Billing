@@ -69,7 +69,7 @@ export async function userHasPermission(
   return hasPermission(await resolveUserPermissions(deps, appUserId), key);
 }
 
-async function loadRoleSlugs(deps: RbacDeps, appUserId: string): Promise<RoleSlug[]> {
+export async function loadRoleSlugs(deps: RbacDeps, appUserId: string): Promise<RoleSlug[]> {
   if (deps.fakeUserRoles) {
     return deps.fakeUserRoles.get(appUserId) ?? [];
   }

@@ -20,6 +20,10 @@ export interface ApiTokenClaims {
   tokenId: string;
   firmId: string;
   allowedTools: string[];
+  // 0165 — the staff user who created the token. Governs per-client
+  // restriction for MCP calls (null → treated as no special access, so
+  // all restricted clients are hidden).
+  createdById: string | null;
 }
 
 declare global {
@@ -75,6 +79,7 @@ export function requireApiToken(db: Database | null) {
       tokenId: row.id,
       firmId: row.firmId,
       allowedTools: row.allowedTools,
+      createdById: row.createdById ?? null,
     };
     next();
   };

@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
+import { Button, Card, Combobox, MultiCombobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -36,6 +36,11 @@ interface Client {
   mailingState?: string | null;
   mailingPostal?: string | null;
   mailingCountry?: string | null;
+  // 0165 — per-client visibility restriction.
+  restricted?: boolean;
+  accessRestricted?: boolean;
+  canManageRestriction?: boolean;
+  designatedUserIds?: string[];
 }
 
 interface Partner {
@@ -412,7 +417,165 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
           )}
         </dl>
       )}
+      {client.canManageRestriction && <RestrictionPanel client={client} onSaved={onSaved} />}
     </Card>
+  );
+}
+
+// 0165 — admin/partner-only panel to mark a client restricted and pick the
+// designated users who keep full access. Saves to the dedicated restriction
+// endpoint (separate permission from client:write).
+function RestrictionPanel({
+  client,
+  onSaved,
+}: {
+  client: Client;
+  onSaved: (patch: Partial<Client>) => void;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [restricted, setRestricted] = useState(Boolean(client.restricted));
+  const [userIds, setUserIds] = useState<string[]>(client.designatedUserIds ?? []);
+  const [users, setUsers] = useState<Partner[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editing || users.length > 0) return;
+    void (async () => {
+      try {
+        const u = await api<{ users: Partner[] }>('/api/staff/admin/users');
+        setUsers(u.users ?? []);
+      } catch {
+        // Non-fatal: the picker stays empty.
+      }
+    })();
+  }, [editing, users.length]);
+
+  function begin(): void {
+    setRestricted(Boolean(client.restricted));
+    setUserIds(client.designatedUserIds ?? []);
+    setError(null);
+    setEditing(true);
+  }
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<{ restricted: boolean; designatedUserIds: string[] }>(
+        `/api/staff/clients/${client.id}/restriction`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            restricted,
+            designatedUserIds: restricted ? userIds : [],
+          }),
+        },
+      );
+      onSaved({
+        restricted: res.restricted,
+        designatedUserIds: res.designatedUserIds,
+        // The manager always retains access, so the local view is never restricted.
+        accessRestricted: false,
+      });
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const designatedNames = (client.designatedUserIds ?? [])
+    .map((id) => users.find((u) => u.id === id)?.fullName)
+    .filter(Boolean) as string[];
+
+  return (
+    <div
+      style={{
+        marginTop: 14,
+        paddingTop: 12,
+        borderTop: `1px solid ${tokens.color.border}`,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: tokens.color.textMuted,
+            textTransform: 'uppercase',
+            letterSpacing: 0.5,
+          }}
+        >
+          Restricted access
+        </div>
+        {editing ? (
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button size="sm" onClick={() => void save()} disabled={busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+          </span>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={begin}>
+            Edit
+          </Button>
+        )}
+      </div>
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 6 }} role="alert">
+          {error}
+        </p>
+      )}
+      {editing ? (
+        <div style={{ marginTop: 8 }}>
+          <label
+            style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginBottom: 8 }}
+          >
+            <input
+              type="checkbox"
+              checked={restricted}
+              onChange={(e) => setRestricted(e.target.checked)}
+            />
+            Restrict this client to designated users
+          </label>
+          {restricted && (
+            <Field label="Designated users (full access)">
+              <MultiCombobox
+                ariaLabel="Designated users"
+                options={users.map<ComboboxOption>((u) => ({ value: u.id, label: u.fullName }))}
+                selected={userIds}
+                onChange={setUserIds}
+                placeholder="— add users —"
+              />
+            </Field>
+          )}
+          <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
+            All staff keep access to client info, people, and billing / A-R. Designated users,
+            admins, and the client owner additionally see everything else.
+          </p>
+        </div>
+      ) : (
+        <div style={{ marginTop: 6, fontSize: 13 }}>
+          {client.restricted ? (
+            <>
+              <Pill tone="warning">Restricted</Pill>
+              <span style={{ color: tokens.color.textMuted, marginLeft: 8 }}>
+                {designatedNames.length
+                  ? `Designated: ${designatedNames.join(', ')}`
+                  : `${(client.designatedUserIds ?? []).length} designated user(s)`}
+              </span>
+            </>
+          ) : (
+            <span style={{ color: tokens.color.textMuted }}>
+              Visible to all staff (not restricted)
+            </span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

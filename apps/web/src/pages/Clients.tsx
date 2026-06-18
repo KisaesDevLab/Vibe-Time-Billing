@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { useEffect, useMemo, useState } from 'react';
 
-import { Button, Card, Combobox, Input, Pill, Printer, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Pill, Printer, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { TableSearch } from '../components/TableSearch';
+import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
@@ -26,6 +28,8 @@ interface ClientRow {
   outstandingBalanceCents: number;
   mailingCity: string | null;
   mailingState: string | null;
+  // 0165 — per-client visibility restriction badge.
+  restricted?: boolean;
   // 0092 — when set, the client has at least one ACTIVE portal contact
   // and clicking the Status pill opens a view-as session against this
   // access row. NULL when no active portal access exists.
@@ -37,48 +41,6 @@ interface AppUser {
   fullName: string;
 }
 
-type SortCol =
-  | 'name'
-  | 'externalId'
-  | 'clientType'
-  | 'status'
-  | 'partnerName'
-  | 'officeName'
-  | 'createdAt'
-  | 'outstandingBalanceCents';
-
-// Session-persisted filters/sort — survives refresh + navigation, same
-// lifetime as the other table views.
-const STORAGE_KEY = 'vibe.clients.view';
-
-interface PersistedView {
-  q: string;
-  clientOwnerId: string;
-  clientType: string;
-  status: string;
-  officeId: string;
-  sort: { col: SortCol; dir: 'asc' | 'desc' };
-}
-
-const DEFAULT_VIEW: PersistedView = {
-  q: '',
-  clientOwnerId: '',
-  clientType: '',
-  status: '',
-  officeId: '',
-  sort: { col: 'name', dir: 'asc' },
-};
-
-function loadView(): PersistedView {
-  try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_VIEW;
-    return { ...DEFAULT_VIEW, ...(JSON.parse(raw) as Partial<PersistedView>) };
-  } catch {
-    return DEFAULT_VIEW;
-  }
-}
-
 export function ClientsPage(): JSX.Element {
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -88,74 +50,32 @@ export function ClientsPage(): JSX.Element {
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
   // Route-sheet printing — the client whose dialog is open (or null).
   const [routeSheetClient, setRouteSheetClient] = useState<ClientRow | null>(null);
-  const initial = useMemo(() => loadView(), []);
-  const [q, setQ] = useState(initial.q);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rollOpen, setRollOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-
-  // 0050 — filters (hydrated from sessionStorage)
-  const [clientOwnerId, setClientOwnerId] = useState<string>(initial.clientOwnerId);
-  const [clientType, setClientType] = useState<string>(initial.clientType);
-  const [statusFilter, setStatusFilter] = useState<string>(initial.status);
-  // 0092 — office filter chip. Multi-office firms can scope the list
-  // to a single office; '' = all offices.
-  const [officeFilter, setOfficeFilter] = useState<string>(initial.officeId);
   const [officeOptions, setOfficeOptions] = useState<
     Array<{ id: string; name: string; isDefault: boolean }>
   >([]);
 
-  // 0050 — pagination + sort
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [total, setTotal] = useState(0);
-  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>(initial.sort);
-
-  // Persist the view for the session whenever a filter/sort changes.
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          q,
-          clientOwnerId,
-          clientType,
-          status: statusFilter,
-          officeId: officeFilter,
-          sort,
-        } satisfies PersistedView),
-      );
-    } catch {
-      /* storage unavailable — in-memory only */
-    }
-  }, [q, clientOwnerId, clientType, statusFilter, officeFilter, sort]);
+  // Standard table view: load the full firm set once, then filter / sort /
+  // search run client-side (sessionStorage-persisted) via useColumnView.
+  const view = useColumnView('vibe.clients.view', { sortCol: 'name', sortDir: 'asc' });
 
   async function load(): Promise<void> {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (q) params.set('q', q);
-      if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
-      if (clientType) params.set('clientType', clientType);
-      if (statusFilter) params.set('status', statusFilter);
-      if (officeFilter) params.set('officeId', officeFilter);
-      params.set('page', String(page));
-      params.set('pageSize', String(pageSize));
-      params.set('sort', sort.col);
-      params.set('dir', sort.dir);
       // Fetch in parallel; tolerate the secondary calls failing (e.g.
       // a staff user without app_user:read perm) so the client list
-      // still renders even if the filter dropdowns are empty.
+      // still renders even if the create/import wizards lack their data.
       const [r, u, o] = await Promise.all([
-        api<{ rows: ClientRow[]; total: number }>(`/api/staff/clients?${params.toString()}`),
+        api<{ rows?: ClientRow[]; items?: ClientRow[] }>('/api/staff/clients'),
         api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
         api<{ offices: Array<{ id: string; name: string; isDefault: boolean }> }>(
           '/api/staff/admin/offices',
         ).catch(() => ({ offices: [] })),
       ]);
-      setClients(r.rows ?? []);
-      setTotal(r.total ?? 0);
+      setClients(r.rows ?? r.items ?? []);
       setUsers(u.users ?? []);
       setOfficeOptions(o.offices ?? []);
     } finally {
@@ -165,7 +85,43 @@ export function ClientsPage(): JSX.Element {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize, sort, clientOwnerId, clientType, statusFilter, officeFilter]);
+  }, []);
+
+  const visible = useMemo(
+    () =>
+      selectRows(clients, view, {
+        searchText: (c) =>
+          `${c.name} ${c.externalId ?? ''} ${c.partnerName ?? ''} ${c.officeName ?? ''}`,
+        filters: {
+          owner: (c) => c.partnerName ?? '—',
+          type: (c) => c.clientType,
+          office: (c) => c.officeName ?? '—',
+          status: (c) => c.status,
+        },
+        sortValues: {
+          name: (c) => c.name,
+          owner: (c) => c.partnerName ?? '',
+          externalId: (c) => c.externalId ?? '',
+          type: (c) => c.clientType,
+          outstanding: (c) => c.outstandingBalanceCents ?? 0,
+          office: (c) => c.officeName ?? '',
+          status: (c) => c.status,
+        },
+        tieBreak: (a, b) => a.name.localeCompare(b.name),
+      }),
+    [clients, view],
+  );
+
+  const ownerValues = useMemo(
+    () => distinctOptions(clients.map((c) => c.partnerName ?? '—')),
+    [clients],
+  );
+  const officeValues = useMemo(
+    () => distinctOptions(clients.map((c) => c.officeName ?? '—')),
+    [clients],
+  );
+  const typeValues = useMemo(() => distinctOptions(clients.map((c) => c.clientType)), [clients]);
+  const statusValues = useMemo(() => distinctOptions(clients.map((c) => c.status)), [clients]);
 
   function toggleSelect(id: string): void {
     setSelectedIds((prev) => {
@@ -177,7 +133,9 @@ export function ClientsPage(): JSX.Element {
   }
   function toggleSelectAll(): void {
     setSelectedIds((prev) =>
-      prev.size === clients.length ? new Set() : new Set(clients.map((c) => c.id)),
+      prev.size === visible.length && visible.length > 0
+        ? new Set()
+        : new Set(visible.map((c) => c.id)),
     );
   }
 
@@ -193,20 +151,6 @@ export function ClientsPage(): JSX.Element {
       // Non-fatal; user can retry from the client detail page.
     }
   }
-
-  function toggleSort(col: SortCol): void {
-    setSort((prev) =>
-      prev.col === col ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' },
-    );
-    setPage(1);
-  }
-
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const sortIcon = (col: SortCol): string =>
-    sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
-
-  // Server sorts the data — we render rows as returned.
-  const sortedDisplay = clients;
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
@@ -236,78 +180,11 @@ export function ClientsPage(): JSX.Element {
           </div>
         }
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setPage(1);
-            void load();
-          }}
-          style={{ display: 'grid', gap: 8, gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr auto' }}
-        >
-          <Input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search name, external ID, email, phone, custom fields"
-          />
-          <Combobox
-            ariaLabel="Client owner"
-            clearable
-            value={clientOwnerId}
-            onChange={(v) => {
-              setPage(1);
-              setClientOwnerId(v);
-            }}
-            options={users.map((u) => ({ value: u.id, label: u.fullName }))}
-            placeholder="Any owner"
-          />
-          <Combobox
-            ariaLabel="Office"
-            clearable
-            value={officeFilter}
-            onChange={(v) => {
-              setPage(1);
-              setOfficeFilter(v);
-            }}
-            options={officeOptions.map((o) => ({
-              value: o.id,
-              label: o.isDefault ? `${o.name} (default)` : o.name,
-            }))}
-            placeholder="Any office"
-          />
-          <Combobox
-            ariaLabel="Client type"
-            clearable
-            value={clientType}
-            onChange={(v) => {
-              setPage(1);
-              setClientType(v);
-            }}
-            options={[
-              { value: 'INDIVIDUAL', label: 'Individual' },
-              { value: 'BUSINESS', label: 'Business' },
-            ]}
-            placeholder="Any type"
-          />
-          <Combobox
-            ariaLabel="Status"
-            clearable
-            value={statusFilter}
-            onChange={(v) => {
-              setPage(1);
-              setStatusFilter(v);
-            }}
-            options={[
-              { value: 'ACTIVE', label: 'Active' },
-              { value: 'INACTIVE', label: 'Inactive' },
-              { value: 'ARCHIVED', label: 'Archived' },
-              { value: 'PROSPECT', label: 'Prospect' },
-            ]}
-            placeholder="Any status"
-          />
-          <Button type="submit" variant="secondary">
-            Search
-          </Button>
-        </form>
+        <TableSearch
+          view={view}
+          placeholder="Search name, external ID, owner, office…"
+          width={420}
+        />
       </Card>
 
       <CreateClientWizard
@@ -347,45 +224,34 @@ export function ClientsPage(): JSX.Element {
       )}
 
       <Card
-        title={`Results — ${total.toLocaleString()} client${total === 1 ? '' : 's'}`}
-        action={
-          <span style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-            <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              Page size
-              <select
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setPage(1);
-                }}
-                aria-label="Page size"
-                style={{ padding: '4px 6px', borderRadius: tokens.radius.sm }}
-              >
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-            </label>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </Button>
-            <span style={{ color: tokens.color.textMuted }}>
-              Page {page} / {pageCount}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page >= pageCount}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            >
-              Next →
-            </Button>
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>Results</span>
+            {clients.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === clients.length
+                  ? `${clients.length} client${clients.length === 1 ? '' : 's'}`
+                  : `${visible.length} of ${clients.length}`}
+              </span>
+            )}
           </span>
+        }
+        action={
+          view.anyFilterActive ? (
+            <button
+              type="button"
+              onClick={view.clearFilters}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          ) : undefined
         }
       >
         {loading ? (
@@ -399,11 +265,11 @@ export function ClientsPage(): JSX.Element {
                   <input
                     type="checkbox"
                     aria-label="Select all visible clients"
-                    checked={selectedIds.size === clients.length && clients.length > 0}
+                    checked={selectedIds.size === visible.length && visible.length > 0}
                     ref={(el) => {
                       if (el) {
                         el.indeterminate =
-                          selectedIds.size > 0 && selectedIds.size < clients.length;
+                          selectedIds.size > 0 && selectedIds.size < visible.length;
                       }
                     }}
                     onChange={toggleSelectAll}
@@ -421,49 +287,84 @@ export function ClientsPage(): JSX.Element {
               {
                 key: 'name',
                 header: (
-                  <button type="button" onClick={() => toggleSort('name')} style={headerBtn}>
-                    Name{sortIcon('name')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Name{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by name"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('name')}
+                      onApply={(_, dir) => view.apply('name', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (c) => <a href={`/clients/${c.id}`}>{c.name}</a>,
               },
               {
                 key: 'owner',
                 header: (
-                  <button type="button" onClick={() => toggleSort('partnerName')} style={headerBtn}>
-                    Owner{sortIcon('partnerName')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Owner{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort owner"
+                      values={ownerValues}
+                      selected={view.filterFor('owner')}
+                      sort={view.sortFor('owner')}
+                      onApply={(sel, dir) => view.apply('owner', sel, dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (c) => c.partnerName ?? '—',
               },
               {
                 key: 'externalId',
                 header: (
-                  <button type="button" onClick={() => toggleSort('externalId')} style={headerBtn}>
-                    External ID{sortIcon('externalId')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    External ID{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by external ID"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('externalId')}
+                      onApply={(_, dir) => view.apply('externalId', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (c) => c.externalId ?? '—',
               },
               {
                 key: 'type',
                 header: (
-                  <button type="button" onClick={() => toggleSort('clientType')} style={headerBtn}>
-                    Type{sortIcon('clientType')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Type{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort type"
+                      values={typeValues}
+                      selected={view.filterFor('type')}
+                      searchable={false}
+                      sort={view.sortFor('type')}
+                      onApply={(sel, dir) => view.apply('type', sel, dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (c) => <Pill>{c.clientType}</Pill>,
               },
               {
                 key: 'outstanding',
                 header: (
-                  <button
-                    type="button"
-                    onClick={() => toggleSort('outstandingBalanceCents')}
-                    style={headerBtn}
-                  >
-                    Outstanding Bal.{sortIcon('outstandingBalanceCents')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Outstanding Bal.{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by outstanding balance"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('outstanding')}
+                      onApply={(_, dir) => view.apply('outstanding', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 align: 'right',
                 render: (c) => (
@@ -483,18 +384,33 @@ export function ClientsPage(): JSX.Element {
               {
                 key: 'office',
                 header: (
-                  <button type="button" onClick={() => toggleSort('officeName')} style={headerBtn}>
-                    Office{sortIcon('officeName')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Office{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort office"
+                      values={officeValues}
+                      selected={view.filterFor('office')}
+                      sort={view.sortFor('office')}
+                      onApply={(sel, dir) => view.apply('office', sel, dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (c) => c.officeName ?? '—',
               },
               {
                 key: 'status',
                 header: (
-                  <button type="button" onClick={() => toggleSort('status')} style={headerBtn}>
-                    Status{sortIcon('status')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Status{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort status"
+                      values={statusValues}
+                      selected={view.filterFor('status')}
+                      searchable={false}
+                      sort={view.sortFor('status')}
+                      onApply={(sel, dir) => view.apply('status', sel, dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (c) => {
                   // 0092 — when an active portal access exists, the pill
@@ -502,32 +418,42 @@ export function ClientsPage(): JSX.Element {
                   // a "view as client" button. Without an active access it
                   // stays plain.
                   const hasPortal = c.activePortalAccessId != null;
+                  // 0165 — restricted-client badge sits next to the status.
+                  const restrictedBadge = c.restricted ? (
+                    <Pill tone="warning">Restricted</Pill>
+                  ) : null;
                   if (hasPortal) {
                     return (
-                      <button
-                        type="button"
-                        onClick={() => void viewAsClient(c)}
-                        title="Open portal as this client (impersonation, 5-min token)"
-                        style={{
-                          display: 'inline-flex',
-                          padding: '2px 8px',
-                          fontSize: 11,
-                          fontWeight: 600,
-                          borderRadius: 999,
-                          background: tokens.color.accent,
-                          color: '#fff',
-                          border: 'none',
-                          cursor: 'pointer',
-                          textTransform: 'uppercase',
-                          letterSpacing: 0.4,
-                        }}
-                      >
-                        {c.status} · view as ↗
-                      </button>
+                      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => void viewAsClient(c)}
+                          title="Open portal as this client (impersonation, 5-min token)"
+                          style={{
+                            display: 'inline-flex',
+                            padding: '2px 8px',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            borderRadius: 999,
+                            background: tokens.color.accent,
+                            color: '#fff',
+                            border: 'none',
+                            cursor: 'pointer',
+                            textTransform: 'uppercase',
+                            letterSpacing: 0.4,
+                          }}
+                        >
+                          {c.status} · view as ↗
+                        </button>
+                        {restrictedBadge}
+                      </span>
                     );
                   }
                   return (
-                    <Pill tone={c.status === 'ACTIVE' ? 'success' : 'neutral'}>{c.status}</Pill>
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <Pill tone={c.status === 'ACTIVE' ? 'success' : 'neutral'}>{c.status}</Pill>
+                      {restrictedBadge}
+                    </span>
                   );
                 },
               },
@@ -560,7 +486,7 @@ export function ClientsPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={sortedDisplay}
+            rows={visible}
             rowKey={(c) => c.id}
             empty="No clients match the current filters."
           />
@@ -569,17 +495,6 @@ export function ClientsPage(): JSX.Element {
     </div>
   );
 }
-
-const headerBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  fontFamily: 'inherit',
-  fontWeight: 'inherit',
-  fontSize: 'inherit',
-  color: 'inherit',
-  cursor: 'pointer',
-};
 
 // ---------------------------------------------------------------------
 // BulkEmailDialog — compose a single subject/body and POST to

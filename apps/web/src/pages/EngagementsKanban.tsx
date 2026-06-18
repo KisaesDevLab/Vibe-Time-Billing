@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import { Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { allowedForServiceLine } from '../status-filter';
 
 type WorkflowState =
   | 'NO_STATUS'
@@ -38,6 +39,9 @@ export interface EngagementKanbanRow {
   workflowState: WorkflowState;
   priority: Priority;
   clientName: string;
+  // 0167 — the engagement's service line (resolved via its type), used to
+  // gate which columns it may be dropped into. Null ⇒ no restriction.
+  serviceLineId: string | null;
 }
 
 export interface StatusColumn {
@@ -45,6 +49,8 @@ export interface StatusColumn {
   label: string;
   color: string;
   sortOrder: number;
+  // 0167 — service lines this status applies to (empty ⇒ all).
+  serviceLineIds: string[];
 }
 
 const PRIORITY_TONE: Record<Priority, 'neutral' | 'accent' | 'warning' | 'danger'> = {
@@ -91,6 +97,13 @@ export function EngagementsKanban({
     setDraggingId(null);
     setOverCol(null);
     if (from === target) return;
+    // 0167 — block drops onto a status not mapped to this engagement's
+    // service line (the column is also dimmed during drag).
+    const targetCol = columns.find((c) => c.workflowState === target);
+    if (targetCol && !allowedForServiceLine(targetCol, row.serviceLineId, from)) {
+      onError('That status isn’t available for this engagement’s service line.');
+      return;
+    }
     setOptimistic((p) => ({ ...p, [row.id]: target }));
     try {
       await api(`/api/staff/engagements/${row.id}/workflow-state`, {
@@ -108,6 +121,16 @@ export function EngagementsKanban({
       onError(err instanceof Error ? err.message : 'workflow_update_failed');
     }
   }
+
+  // 0167 — while a card is dragging, gate columns by its service line.
+  const draggingRow = draggingId ? (rows.find((r) => r.id === draggingId) ?? null) : null;
+  const colAllowed = (col: StatusColumn): boolean =>
+    !draggingRow ||
+    allowedForServiceLine(
+      col,
+      draggingRow.serviceLineId,
+      optimistic[draggingRow.id] ?? draggingRow.workflowState,
+    );
 
   if (columns.length === 0) {
     return (
@@ -137,12 +160,14 @@ export function EngagementsKanban({
       >
         {columns.map((col) => {
           const list = grouped.get(col.workflowState) ?? [];
-          const isOver = overCol === col.workflowState;
+          const allowed = colAllowed(col);
+          const isOver = overCol === col.workflowState && allowed;
           return (
             <div
               key={col.workflowState}
+              aria-disabled={!allowed}
               onDragOver={(e) => {
-                if (!draggingId) return;
+                if (!draggingId || !allowed) return;
                 e.preventDefault();
                 if (overCol !== col.workflowState) setOverCol(col.workflowState);
               }}
@@ -151,6 +176,7 @@ export function EngagementsKanban({
               }}
               onDrop={(e) => {
                 e.preventDefault();
+                if (!allowed) return;
                 void handleDrop(col.workflowState);
               }}
               style={{
@@ -165,6 +191,8 @@ export function EngagementsKanban({
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 8,
+                // Dim columns the dragging card can't move into.
+                opacity: allowed ? 1 : 0.4,
               }}
             >
               <div

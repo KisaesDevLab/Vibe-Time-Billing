@@ -14,7 +14,7 @@
 
 import express, { type Request, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, notInArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -33,6 +33,7 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -91,6 +92,25 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
       res.json({ items: [] });
       return;
     }
+    // 0165 — hide restricted clients' threads even if the caller is a member.
+    const blockedClientIds = await getBlockedClientIdsCached(
+      deps,
+      req,
+      session.appUserId,
+      session.firmId,
+    );
+    const conds = [
+      eq(threadMembers.appUserId, session.appUserId),
+      isNull(threadMembers.removedAt),
+      eq(threads.firmId, session.firmId),
+      // 0105 — client messaging lists only client threads; staff-to-staff
+      // (kind='internal') belongs to the Team tab, not here.
+      eq(threads.kind, 'client'),
+    ];
+    if (blockedClientIds.length) {
+      const expr = or(isNull(threads.clientId), notInArray(threads.clientId, blockedClientIds));
+      if (expr) conds.push(expr);
+    }
     const rows = await deps.db
       .select({
         threadId: threads.id,
@@ -102,16 +122,7 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
       .from(threadMembers)
       .innerJoin(threads, eq(threads.id, threadMembers.threadId))
       .leftJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
-      .where(
-        and(
-          eq(threadMembers.appUserId, session.appUserId),
-          isNull(threadMembers.removedAt),
-          eq(threads.firmId, session.firmId),
-          // 0105 — client messaging lists only client threads; staff-to-staff
-          // (kind='internal') belongs to the Team tab, not here.
-          eq(threads.kind, 'client'),
-        ),
-      )
+      .where(and(...conds))
       .orderBy(desc(threads.updatedAt));
     res.json({ items: rows });
   });
@@ -146,6 +157,8 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
       res.status(404).json({ error: 'not_found' });
       return;
     }
+    // 0165 — block restricted-client thread detail for non-authorized staff.
+    if (thread.clientId && (await blockIfClientRestricted(deps, req, res, thread.clientId))) return;
     const members = await deps.db
       .select({
         id: threadMembers.id,

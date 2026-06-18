@@ -14,6 +14,8 @@ export interface EmailBranding {
   accentColor?: string | null;
   supportEmail?: string | null;
   supportPhone?: string | null;
+  supportFax?: string | null;
+  supportWeb?: string | null;
 }
 
 function esc(s: string): string {
@@ -59,6 +61,12 @@ function brandedShell(innerHtml: string, branding: EmailBranding): string {
     );
   }
   if (branding.supportPhone) support.push(esc(branding.supportPhone));
+  if (branding.supportFax) support.push(`Fax ${esc(branding.supportFax)}`);
+  if (branding.supportWeb) {
+    const web = branding.supportWeb;
+    const href = /^https?:\/\//i.test(web) ? web : `https://${web}`;
+    support.push(`<a href="${esc(href)}" style="color:${accent};">${esc(web)}</a>`);
+  }
   const footer = support.length
     ? `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">
          Questions? ${support.join(' &middot; ')}

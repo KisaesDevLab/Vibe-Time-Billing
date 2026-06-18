@@ -4,11 +4,13 @@
 // booking wizard, the appointments list with a detail drawer, the
 // reschedule inbox, and per-staff availability. Hash-routed tabs.
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { Button, Card, Combobox, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
-import { api } from '../api-client';
+import { api, getCsrfToken } from '../api-client';
+import { TableSearch } from '../components/TableSearch';
+import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
 import { useAuth } from '../auth-context';
 import {
   ReminderScheduleEditor,
@@ -80,6 +82,8 @@ interface ApptListRow {
   endsAt: string;
   status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
   location: LocationType;
+  locationOptionId: string | null;
+  locationName: string | null;
   clientId: string | null;
   clientName: string | null;
   engagementId: string | null;
@@ -271,24 +275,56 @@ export function AppointmentsPage(): JSX.Element {
 }
 
 // ---------------------------------------------------------------- List
-const PAGE_SIZE = 25;
+type DatePreset = 'today' | 'week' | 'month';
+
+function dateYmd(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// Outlook-style quick ranges. Week starts Sunday (US default).
+function presetRange(preset: DatePreset): { from: string; to: string } {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (preset === 'today') return { from: dateYmd(today), to: dateYmd(today) };
+  if (preset === 'week') {
+    const start = new Date(today);
+    start.setDate(today.getDate() - today.getDay());
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return { from: dateYmd(start), to: dateYmd(end) };
+  }
+  const start = new Date(today.getFullYear(), today.getMonth(), 1);
+  const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  return { from: dateYmd(start), to: dateYmd(end) };
+}
+
 function ListTab(): JSX.Element {
   const [rows, setRows] = useState<ApptListRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // filters
-  const [status, setStatus] = useState('');
+  // Broad server-side pre-filters that bound the loaded set. Staff is
+  // multi-valued per appointment and Type has no column, so both stay as
+  // toolbar dropdowns; the date range bounds volume. Everything else
+  // (search, client/engagement/status filter + sort) runs client-side.
   const [staffId, setStaffId] = useState('');
   const [typeId, setTypeId] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [q, setQ] = useState('');
-  const [sort, setSort] = useState<'asc' | 'desc'>('desc');
+  const [activePreset, setActivePreset] = useState<DatePreset | ''>('');
   // filter option sources
   const [staffOpts, setStaffOpts] = useState<BookableStaff[]>([]);
   const [typeOpts, setTypeOpts] = useState<ApptType[]>([]);
+
+  function applyPreset(p: DatePreset): void {
+    const r = presetRange(p);
+    setFrom(r.from);
+    setTo(r.to);
+    setActivePreset(p);
+  }
+
+  const view = useColumnView('vibe.appointments.view', { sortCol: 'when', sortDir: 'desc' });
 
   useEffect(() => {
     void api<{ items: BookableStaff[] }>('/api/staff/appointments/bookable-staff')
@@ -302,37 +338,162 @@ function ListTab(): JSX.Element {
   const load = useCallback(async (): Promise<void> => {
     try {
       const params = new URLSearchParams();
-      if (status) params.set('status', status);
       if (staffId) params.set('staffId', staffId);
       if (typeId) params.set('typeId', typeId);
       if (from) params.set('from', new Date(from).toISOString());
       if (to) params.set('to', new Date(to + 'T23:59:59').toISOString());
-      if (q.trim()) params.set('q', q.trim());
-      params.set('sort', sort);
-      params.set('page', String(page));
-      params.set('pageSize', String(PAGE_SIZE));
-      const r = await api<{ items: ApptListRow[]; total: number }>(
+      params.set('pageSize', '1000');
+      const r = await api<{ items: ApptListRow[] }>(
         `/api/staff/appointments/list?${params.toString()}`,
       );
       setRows(r.items ?? []);
-      setTotal(r.total ?? 0);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed');
     }
-  }, [status, staffId, typeId, from, to, q, sort, page]);
+  }, [staffId, typeId, from, to]);
   useEffect(() => {
     void load();
   }, [load]);
-  // Reset to page 1 whenever a filter changes.
-  useEffect(() => {
-    setPage(1);
-  }, [status, staffId, typeId, from, to, q, sort]);
 
-  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const visible = useMemo(
+    () =>
+      selectRows(rows, view, {
+        searchText: (r) => `${r.title} ${r.clientName ?? ''} ${r.engagementName ?? ''}`,
+        filters: {
+          client: (r) => r.clientName ?? '—',
+          engagement: (r) => r.engagementName ?? '—',
+          location: (r) => r.locationName ?? '—',
+          status: (r) => r.status,
+        },
+        sortValues: {
+          when: (r) => r.startsAt,
+          title: (r) => r.title,
+          client: (r) => r.clientName ?? '',
+          engagement: (r) => r.engagementName ?? '',
+          location: (r) => r.locationName ?? '',
+          status: (r) => r.status,
+        },
+        tieBreak: (a, b) => b.startsAt.localeCompare(a.startsAt),
+      }),
+    [rows, view],
+  );
+  const clientValues = useMemo(() => distinctOptions(rows.map((r) => r.clientName ?? '—')), [rows]);
+  const engagementValues = useMemo(
+    () => distinctOptions(rows.map((r) => r.engagementName ?? '—')),
+    [rows],
+  );
+  const statusValues = useMemo(() => distinctOptions(rows.map((r) => r.status)), [rows]);
+  const locationValues = useMemo(
+    () => distinctOptions(rows.map((r) => r.locationName ?? '—')),
+    [rows],
+  );
+
+  const anyServerFilter = Boolean(staffId || typeId || from || to);
+
+  function buildFilterSummary(): string[] {
+    const out: string[] = [];
+    const presetLabel: Record<DatePreset, string> = {
+      today: 'Today',
+      week: 'This week',
+      month: 'This month',
+    };
+    if (activePreset) out.push(`Range: ${presetLabel[activePreset]} (${from} – ${to})`);
+    else if (from || to) out.push(`Range: ${from || '…'} – ${to || '…'}`);
+    if (staffId) out.push(`Staff: ${staffOpts.find((s) => s.id === staffId)?.name ?? staffId}`);
+    if (typeId) out.push(`Type: ${typeOpts.find((t) => t.id === typeId)?.name ?? typeId}`);
+    (
+      [
+        ['client', 'Client'],
+        ['engagement', 'Engagement'],
+        ['location', 'Location'],
+        ['status', 'Status'],
+      ] as const
+    ).forEach(([col, label]) => {
+      const sel = Array.from(view.filterFor(col));
+      if (sel.length) out.push(`${label}: ${sel.join(', ')}`);
+    });
+    if (view.search.trim()) out.push(`Search: "${view.search.trim()}"`);
+    return out;
+  }
+
+  // Project a row to the PDF payload, formatting date/time the same way the
+  // table renders them so the PDF matches what the user sees.
+  function toPdfRow(r: ApptListRow): Record<string, string> {
+    const d = new Date(r.startsAt);
+    return {
+      date: d.toLocaleDateString(),
+      time: d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+      title: r.title,
+      staff: r.staff.map((s) => s.name).join(', '),
+      client: r.clientName ?? '',
+      engagement: r.engagementName ?? '',
+      location: r.locationName ?? '',
+      status: r.status.toLowerCase(),
+    };
+  }
+
+  async function exportPdf(): Promise<void> {
+    // Download the PDF via an anchor (same pattern as the Statements/AR
+    // exports). We used to open a blank tab and point it at the blob URL,
+    // but the staff app's CSP (`object-src 'none'`, inherited by the
+    // about:blank tab) blocks Chrome's PDF embed there, so the tab rendered
+    // blank. A download sidesteps the inline-render path entirely.
+    setErr(null);
+    try {
+      const res = await fetch('/api/staff/appointments/list/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() ?? '' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          rows: visible.map(toPdfRow),
+          filterSummary: buildFilterSummary(),
+        }),
+      });
+      if (!res.ok) throw new Error('export_failed');
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `appointments-${new Date().toISOString().slice(0, 10)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setErr('Could not generate the PDF.');
+    }
+  }
 
   return (
-    <Card title={`Appointments (${total})`}>
+    <Card
+      title={
+        <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <span>Appointments</span>
+          {rows.length > 0 && (
+            <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+              {visible.length === rows.length
+                ? `${rows.length}`
+                : `${visible.length} of ${rows.length}`}
+            </span>
+          )}
+        </span>
+      }
+      action={
+        view.anyFilterActive ? (
+          <button
+            type="button"
+            onClick={view.clearFilters}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: tokens.color.accent,
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            Clear filters
+          </button>
+        ) : undefined
+      }
+    >
       <div
         style={{
           display: 'flex',
@@ -342,19 +503,6 @@ function ListTab(): JSX.Element {
           marginBottom: 12,
         }}
       >
-        <Input
-          label="Search subject"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Subject…"
-          style={{ minWidth: 160 }}
-        />
-        <FilterSelect label="Status" value={status} onChange={setStatus}>
-          <option value="">All</option>
-          <option value="SCHEDULED">Scheduled</option>
-          <option value="COMPLETED">Completed</option>
-          <option value="CANCELLED">Cancelled</option>
-        </FilterSelect>
         <FilterSelect label="Staff" value={staffId} onChange={setStaffId}>
           <option value="">All staff</option>
           {staffOpts.map((s) => (
@@ -371,24 +519,68 @@ function ListTab(): JSX.Element {
             </option>
           ))}
         </FilterSelect>
-        <Input label="From" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-        <Input label="To" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-        {(status || staffId || typeId || from || to || q) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Quick range</span>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {(
+              [
+                ['today', 'Today'],
+                ['week', 'This week'],
+                ['month', 'This month'],
+              ] as const
+            ).map(([p, label]) => (
+              <Button
+                key={p}
+                size="sm"
+                variant={activePreset === p ? 'primary' : 'secondary'}
+                onClick={() => applyPreset(p)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <Input
+          label="From"
+          type="date"
+          value={from}
+          onChange={(e) => {
+            setFrom(e.target.value);
+            setActivePreset('');
+          }}
+        />
+        <Input
+          label="To"
+          type="date"
+          value={to}
+          onChange={(e) => {
+            setTo(e.target.value);
+            setActivePreset('');
+          }}
+        />
+        {anyServerFilter && (
           <Button
             size="sm"
             variant="secondary"
             onClick={() => {
-              setStatus('');
               setStaffId('');
               setTypeId('');
               setFrom('');
               setTo('');
-              setQ('');
+              setActivePreset('');
             }}
           >
             Clear
           </Button>
         )}
+        <div style={{ marginLeft: 'auto' }}>
+          <Button size="sm" variant="secondary" onClick={() => void exportPdf()}>
+            ↓ Export PDF
+          </Button>
+        </div>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <TableSearch view={view} placeholder="Search subject, client, engagement…" />
       </div>
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
       <Table<ApptListRow>
@@ -396,22 +588,17 @@ function ListTab(): JSX.Element {
           {
             key: 'when',
             header: (
-              <button
-                type="button"
-                onClick={() => setSort((s) => (s === 'desc' ? 'asc' : 'desc'))}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  font: 'inherit',
-                  fontWeight: 600,
-                  color: tokens.color.text,
-                  padding: 0,
-                }}
-              >
-                Date &amp; time {sort === 'desc' ? '↓' : '↑'}
-              </button> // reason: Table types header as string but renders it as a node;
-              // a JSX header is safe at runtime.
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Date &amp; time{' '}
+                <ColumnFilter
+                  ariaLabel="Sort by date"
+                  values={[]}
+                  selected={new Set()}
+                  searchable={false}
+                  sort={view.sortFor('when')}
+                  onApply={(_, dir) => view.apply('when', new Set(), dir)}
+                />
+              </span>
             ) as unknown as string,
             render: (r) => (
               <div>
@@ -427,7 +614,19 @@ function ListTab(): JSX.Element {
           },
           {
             key: 'title',
-            header: 'Subject',
+            header: (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Subject{' '}
+                <ColumnFilter
+                  ariaLabel="Sort by subject"
+                  values={[]}
+                  selected={new Set()}
+                  searchable={false}
+                  sort={view.sortFor('title')}
+                  onApply={(_, dir) => view.apply('title', new Set(), dir)}
+                />
+              </span>
+            ) as unknown as string,
             render: (r) => (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {r.typeColor && (
@@ -449,18 +648,69 @@ function ListTab(): JSX.Element {
           { key: 'staff', header: 'Staff', render: (r) => <StaffAvatarStack staff={r.staff} /> },
           {
             key: 'client',
-            header: 'Client',
+            header: (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Client{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort client"
+                  values={clientValues}
+                  selected={view.filterFor('client')}
+                  sort={view.sortFor('client')}
+                  onApply={(sel, dir) => view.apply('client', sel, dir)}
+                />
+              </span>
+            ) as unknown as string,
             render: (r) => r.clientName ?? <span style={{ color: tokens.color.textMuted }}>—</span>,
           },
           {
             key: 'engagement',
-            header: 'Engagement',
+            header: (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Engagement{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort engagement"
+                  values={engagementValues}
+                  selected={view.filterFor('engagement')}
+                  sort={view.sortFor('engagement')}
+                  onApply={(sel, dir) => view.apply('engagement', sel, dir)}
+                />
+              </span>
+            ) as unknown as string,
             render: (r) =>
               r.engagementName ?? <span style={{ color: tokens.color.textMuted }}>—</span>,
           },
           {
+            key: 'location',
+            header: (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Location{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort location"
+                  values={locationValues}
+                  selected={view.filterFor('location')}
+                  sort={view.sortFor('location')}
+                  onApply={(sel, dir) => view.apply('location', sel, dir)}
+                />
+              </span>
+            ) as unknown as string,
+            render: (r) =>
+              r.locationName ?? <span style={{ color: tokens.color.textMuted }}>—</span>,
+          },
+          {
             key: 'status',
-            header: 'Status',
+            header: (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Status{' '}
+                <ColumnFilter
+                  ariaLabel="Filter / sort status"
+                  values={statusValues}
+                  selected={view.filterFor('status')}
+                  searchable={false}
+                  sort={view.sortFor('status')}
+                  onApply={(sel, dir) => view.apply('status', sel, dir)}
+                />
+              </span>
+            ) as unknown as string,
             render: (r) => (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Pill
@@ -498,44 +748,10 @@ function ListTab(): JSX.Element {
             ),
           },
         ]}
-        rows={rows}
+        rows={visible}
         rowKey={(r) => r.id}
         empty="No appointments match these filters."
       />
-      {total > PAGE_SIZE && (
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginTop: 12,
-            fontSize: 13,
-            color: tokens.color.textMuted,
-          }}
-        >
-          <span>
-            Page {page} of {lastPage} · {total} total
-          </span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              Previous
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={page >= lastPage}
-              onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
       {detailId && (
         <DetailDrawer
           id={detailId}

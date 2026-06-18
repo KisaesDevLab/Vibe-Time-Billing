@@ -45,6 +45,8 @@ export function loadEmailBranding(db: Database | null): () => Promise<EmailBrand
           accentColor: firmSettings.brandAccentColor,
           supportEmail: firmSettings.brandSupportEmail,
           supportPhone: firmSettings.brandSupportPhone,
+          supportFax: firmSettings.brandSupportFax,
+          supportWeb: firmSettings.brandSupportWeb,
         })
         .from(firmSettings)
         .where(eq(firmSettings.firmId, firm.id))

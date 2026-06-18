@@ -111,6 +111,17 @@ export function useColumnView(
   );
 }
 
+/**
+ * Distinct, sorted {value,label} options for a ColumnFilter's checkbox list,
+ * derived from the raw row values of a column. Stable module-level helper so
+ * callers can wrap it in useMemo without an exhaustive-deps warning.
+ */
+export function distinctOptions(values: string[]): { value: string; label: string }[] {
+  return Array.from(new Set(values))
+    .sort((a, b) => a.localeCompare(b))
+    .map((v) => ({ value: v, label: v }));
+}
+
 export interface SelectRowsConfig<T> {
   /** col key → the row value matched against that column's selected filter set. */
   filters?: Record<string, (row: T) => string>;

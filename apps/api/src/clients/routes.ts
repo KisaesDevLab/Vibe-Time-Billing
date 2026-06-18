@@ -10,6 +10,7 @@ import { and, eq, ilike, inArray, ne, or, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  clientAccessGrants,
   clientContacts,
   clientNotes,
   clientPortalAccess,
@@ -26,7 +27,8 @@ import {
 import { asc, desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
-import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { requirePermission, userHasPermission, type RbacDeps } from '../auth/rbac-middleware';
+import { canAccessClient, requireFullClientAccessForSection } from './access';
 import { createClientCredentialRouter } from '../vault/routes';
 import type { StorageAdapter } from '../files/storage';
 import { addUuidIdGuard } from '../lib/uuid-guard';
@@ -103,6 +105,12 @@ const MergeSchema = z.object({
   reason: z.string().max(2000).optional(),
 });
 
+// 0165 — per-client visibility restriction payload.
+const RestrictionSchema = z.object({
+  restricted: z.boolean(),
+  designatedUserIds: z.array(z.string().uuid()).max(200).default([]),
+});
+
 // Client `name` is unique within a firm among non-archived clients
 // (case-insensitive, trimmed). Two genuinely-different clients that
 // share a name are distinguished by editing the internal name; the
@@ -144,6 +152,12 @@ const TaxIdSchema = z.union([
 export function createClientRouter(deps: ClientRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // 0165 — Layer-1 per-client restriction guard. Gates only the
+  // RESTRICTED sub-routes under /:id/<section> (notes/tasks/files/folder/
+  // communications/credentials); basic sections + the detail GET pass
+  // through. Mounted before the credentials sub-router so it covers it too.
+  router.use('/:id/:section', requireFullClientAccessForSection(deps));
 
   // 0159 — per-client credential vault (encrypted at rest; reveal gated by
   // step-up + audit). Mounted as a sub-router so :id resolves to the client.
@@ -277,6 +291,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         createdAt: clients.createdAt,
         mailingCity: clients.mailingCity,
         mailingState: clients.mailingState,
+        restricted: clients.restricted,
         outstandingBalanceCents: outstandingExpr,
         activePortalAccessId: portalAccessExpr,
       })
@@ -333,7 +348,36 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         .from(offices)
         .where(eq(offices.id, client.officeId))
         .limit(1);
-      res.json({ client: { ...client, officeName: office?.name ?? null } });
+
+      // 0165 — restriction state for the caller. accessRestricted drives
+      // the UI tab hiding (defense-in-depth; the sub-routes enforce too).
+      const session = req.staffSession!;
+      const accessRestricted =
+        client.restricted && !(await canAccessClient(deps, session.appUserId, firmId, client.id));
+      // Designated users are only exposed to callers who may manage the
+      // restriction (admins + partners).
+      let designatedUserIds: string[] | undefined;
+      const canManageRestriction = await userHasPermission(
+        deps,
+        session.appUserId,
+        'client:restrict:manage',
+      );
+      if (canManageRestriction) {
+        const grants = await deps.db
+          .select({ appUserId: clientAccessGrants.appUserId })
+          .from(clientAccessGrants)
+          .where(eq(clientAccessGrants.clientId, client.id));
+        designatedUserIds = grants.map((g) => g.appUserId);
+      }
+      res.json({
+        client: {
+          ...client,
+          officeName: office?.name ?? null,
+          accessRestricted,
+          canManageRestriction,
+          ...(designatedUserIds ? { designatedUserIds } : {}),
+        },
+      });
     },
   );
 
@@ -459,6 +503,86 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
       res.json({ ok: true });
+    },
+  );
+
+  // 0165 — per-client visibility restriction. Admin + partner only
+  // (client:restrict:manage). Sets the restricted flag and replaces the
+  // designated-user grant set in one transaction. Kept off the generic
+  // client:write PATCH so managers can't change restriction.
+  router.put(
+    '/:id/restriction',
+    requirePermission(deps, 'client:restrict:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const parsed = RestrictionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const clientId = req.params['id']!;
+      const [client] = await deps.db
+        .select({ id: clients.id, restricted: clients.restricted })
+        .from(clients)
+        .where(and(eq(clients.id, clientId), eq(clients.firmId, firmId)))
+        .limit(1);
+      if (!client) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Validate the designated users belong to this firm (ignore unknown
+      // / cross-firm ids rather than 400 — keeps the UI resilient).
+      const requested = Array.from(new Set(parsed.data.designatedUserIds));
+      const validUsers = requested.length
+        ? await deps.db
+            .select({ id: appUsers.id })
+            .from(appUsers)
+            .where(and(eq(appUsers.firmId, firmId), inArray(appUsers.id, requested)))
+        : [];
+      const validUserIds = validUsers.map((u) => u.id);
+
+      const before = await deps.db
+        .select({ appUserId: clientAccessGrants.appUserId })
+        .from(clientAccessGrants)
+        .where(eq(clientAccessGrants.clientId, clientId));
+
+      await deps.db.transaction(async (tx) => {
+        await tx
+          .update(clients)
+          .set({ restricted: parsed.data.restricted })
+          .where(eq(clients.id, clientId));
+        await tx.delete(clientAccessGrants).where(eq(clientAccessGrants.clientId, clientId));
+        if (validUserIds.length) {
+          await tx.insert(clientAccessGrants).values(
+            validUserIds.map((appUserId) => ({
+              clientId,
+              appUserId,
+              grantedById: session.appUserId,
+            })),
+          );
+        }
+      });
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        entityId: clientId,
+        actorAppUserId: session.appUserId,
+        before: {
+          restricted: client.restricted,
+          designatedUserIds: before.map((b) => b.appUserId),
+        },
+        after: { restricted: parsed.data.restricted, designatedUserIds: validUserIds },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      res.json({ ok: true, restricted: parsed.data.restricted, designatedUserIds: validUserIds });
     },
   );
 

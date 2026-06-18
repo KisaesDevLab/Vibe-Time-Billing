@@ -10,7 +10,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type express from 'express';
 
-import { engagementStatusConfig, engagements } from '@vibe/db/schema';
+import { engagementStatusConfig, engagementStatusServiceLine, engagements } from '@vibe/db/schema';
 import type { RoleSlug } from '@vibe/core/rbac';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -201,5 +201,101 @@ describe('engagement status catalog', () => {
       ...req({ body: { label: 'Nope' } }),
     });
     expect(a.statusCode).toBe(403);
+  });
+});
+
+// 0167 — per-status service-line mapping.
+describe('engagement status ↔ service line mapping', () => {
+  it('GET returns empty serviceLineIds and the firm service lines', async () => {
+    const g = await invoke(router(), 'get', '/engagement-statuses', { ...req() });
+    const body = g.jsonBody as {
+      items: Array<{ workflowState: string; serviceLineIds: string[] }>;
+      serviceLines: Array<{ id: string; name: string }>;
+    };
+    expect(
+      body.items.every((i) => Array.isArray(i.serviceLineIds) && i.serviceLineIds.length === 0),
+    ).toBe(true);
+    expect(body.serviceLines.map((s) => s.id)).toContain(seed.serviceLineId);
+  });
+
+  it('POST persists the service-line mapping and GET reflects it', async () => {
+    const r = router();
+    const a = await invoke(r, 'post', '/engagement-statuses', {
+      ...req({ body: { label: 'Tax only', serviceLineIds: [seed.serviceLineId] } }),
+    });
+    expect(a.statusCode).toBe(200);
+    const key = (a.jsonBody as { workflowState: string }).workflowState;
+    const rows = await harness.db
+      .select()
+      .from(engagementStatusServiceLine)
+      .where(eq(engagementStatusServiceLine.workflowState, key));
+    expect(rows.map((m) => m.serviceLineId)).toEqual([seed.serviceLineId]);
+    const g = await invoke(r, 'get', '/engagement-statuses', { ...req() });
+    const item = (
+      g.jsonBody as { items: Array<{ workflowState: string; serviceLineIds: string[] }> }
+    ).items.find((i) => i.workflowState === key);
+    expect(item?.serviceLineIds).toEqual([seed.serviceLineId]);
+  });
+
+  it('POST with an unknown service line is rejected and creates nothing', async () => {
+    const r = router();
+    const a = await invoke(r, 'post', '/engagement-statuses', {
+      ...req({
+        body: { label: 'Bad map', serviceLineIds: ['00000000-0000-0000-0000-000000000000'] },
+      }),
+    });
+    expect(a.statusCode).toBe(400);
+    expect((a.jsonBody as { error: string }).error).toBe('invalid_service_line');
+    const rows = await harness.db
+      .select()
+      .from(engagementStatusConfig)
+      .where(eq(engagementStatusConfig.workflowState, 'BAD_MAP'));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('PATCH replaces, leaves intact when omitted, and clears with []', async () => {
+    const r = router();
+    await invoke(r, 'get', '/engagement-statuses', { ...req() }); // seed built-ins
+    const count = async (): Promise<number> =>
+      (
+        await harness.db
+          .select()
+          .from(engagementStatusServiceLine)
+          .where(eq(engagementStatusServiceLine.workflowState, 'IN_PROGRESS'))
+      ).length;
+
+    await invoke(r, 'patch', '/engagement-statuses/:state', {
+      ...req({ params: { state: 'IN_PROGRESS' }, body: { serviceLineIds: [seed.serviceLineId] } }),
+    });
+    expect(await count()).toBe(1);
+
+    // Omitting serviceLineIds must not touch the mapping.
+    await invoke(r, 'patch', '/engagement-statuses/:state', {
+      ...req({ params: { state: 'IN_PROGRESS' }, body: { label: 'In progress!' } }),
+    });
+    expect(await count()).toBe(1);
+
+    // Empty array clears it.
+    await invoke(r, 'patch', '/engagement-statuses/:state', {
+      ...req({ params: { state: 'IN_PROGRESS' }, body: { serviceLineIds: [] } }),
+    });
+    expect(await count()).toBe(0);
+  });
+
+  it('deleting a custom status cascades its mappings', async () => {
+    const r = router();
+    const a = await invoke(r, 'post', '/engagement-statuses', {
+      ...req({ body: { label: 'Map me', serviceLineIds: [seed.serviceLineId] } }),
+    });
+    const key = (a.jsonBody as { workflowState: string }).workflowState;
+    const d = await invoke(r, 'delete', '/engagement-statuses/:state', {
+      ...req({ params: { state: key } }),
+    });
+    expect(d.statusCode).toBe(200);
+    const rows = await harness.db
+      .select()
+      .from(engagementStatusServiceLine)
+      .where(eq(engagementStatusServiceLine.workflowState, key));
+    expect(rows).toHaveLength(0);
   });
 });

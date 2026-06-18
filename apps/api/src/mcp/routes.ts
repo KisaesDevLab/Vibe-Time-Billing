@@ -33,6 +33,7 @@ import { rollup, rollupBy, type AllocationRow } from '@vibe/core/reporting';
 
 import { emitAudit } from '../auth/audit';
 import { requireApiToken } from '../auth/api-token';
+import { getBlockedClientIds } from '../clients/access';
 import { batchDecryptForThread } from '../engagement-messaging/thread-crypto';
 import { linkTimeEntryMessages } from '../time-entries/routes';
 import { logger } from '../logger';
@@ -107,7 +108,11 @@ export function createMcpRouter(deps: McpRoutesDeps): Router {
 
     const args = parsed.data.args ?? {};
     try {
-      const result = await dispatch(deps, tool, args, token);
+      const result = await dispatch(deps, tool, args, {
+        firmId: token.firmId,
+        tokenId: token.tokenId,
+        createdById: token.createdById,
+      });
       // P5.4 — J.13 — every MCP call audit-logs the token actor, the
       // tool, the inputs (sans sensitive args), and the egress
       // destination so an operator can reconstruct who-asked-what.
@@ -140,30 +145,42 @@ export function createMcpRouter(deps: McpRoutesDeps): Router {
 }
 
 /** Engagement ids whose client belongs to the firm — the firm's full set of
- *  engagements, used to scope time-entry reads/writes for MCP tokens. */
-async function firmEngagementIdSet(db: Database, firmId: string): Promise<string[]> {
+ *  engagements, used to scope time-entry reads/writes for MCP tokens. The
+ *  blocked set (0165) removes engagements of restricted clients the token's
+ *  creator can't access. */
+async function firmEngagementIdSet(
+  db: Database,
+  firmId: string,
+  blocked: ReadonlySet<string>,
+): Promise<string[]> {
   const rows = await db
-    .select({ id: engagements.id })
+    .select({ id: engagements.id, clientId: engagements.clientId })
     .from(engagements)
     .innerJoin(clients, eq(clients.id, engagements.clientId))
     .where(eq(clients.firmId, firmId));
-  return rows.map((r) => r.id);
+  return rows.filter((r) => !blocked.has(r.clientId)).map((r) => r.id);
 }
 
 async function dispatch(
   deps: McpRoutesDeps,
   tool: McpToolKey,
   args: Record<string, unknown>,
-  token: { firmId: string; tokenId: string },
+  token: { firmId: string; tokenId: string; createdById: string | null },
 ): Promise<unknown> {
   if (!deps.db) throw new Error('db_unavailable');
+  // 0165 — restricted clients the token's creating user can't access.
+  // A null creator is treated as having no special access, so every
+  // restricted client is blocked.
+  const blocked = new Set(
+    await getBlockedClientIds({ db: deps.db }, token.createdById ?? '', token.firmId),
+  );
   switch (tool) {
     case 'list_engagements': {
       const firmClientRows = await deps.db
         .select({ id: clients.id })
         .from(clients)
         .where(eq(clients.firmId, token.firmId));
-      const ids = firmClientRows.map((c) => c.id);
+      const ids = firmClientRows.map((c) => c.id).filter((id) => !blocked.has(id));
       if (ids.length === 0) return { items: [] };
       const items = await deps.db
         .select({
@@ -181,7 +198,7 @@ async function dispatch(
       // Scope to the firm's engagements — never disclose time entries
       // outside the token's firm (the no-engagementId case previously
       // returned the whole appliance).
-      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId);
+      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId, blocked);
       if (firmEngagementIds.length === 0) return { items: [] };
       const engagementId = String(args['engagementId'] ?? '');
       if (engagementId && !firmEngagementIds.includes(engagementId)) return { items: [] };
@@ -208,8 +225,10 @@ async function dispatch(
         standardRateSnapshotCents: z.number().int().nonnegative(),
       });
       const parsed = Schema.parse(args);
-      // The target engagement must belong to the token's firm.
-      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId);
+      // The target engagement must belong to the token's firm and not be a
+      // restricted client the token's creator can't access (0165 — a blocked
+      // engagement is absent from this set so it reads as not-in-firm).
+      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId, blocked);
       if (!firmEngagementIds.includes(parsed.engagementId)) {
         throw new Error('engagement_not_in_firm');
       }
@@ -258,6 +277,7 @@ async function dispatch(
         .where(eq(engagements.id, parsed.engagementId))
         .limit(1);
       if (!eng) throw new Error('engagement_not_found');
+      if (blocked.has(eng.clientId)) throw new Error('client_restricted');
       const [client] = await deps.db
         .select({ firmId: clients.firmId })
         .from(clients)
@@ -331,6 +351,7 @@ async function dispatch(
         .where(eq(engagements.id, parsed.engagementId))
         .limit(1);
       if (!scope) throw new Error('engagement_not_found');
+      if (blocked.has(scope.clientId)) throw new Error('client_restricted');
       const [client] = await deps.db
         .select({ firmId: clients.firmId })
         .from(clients)
@@ -361,10 +382,12 @@ async function dispatch(
         dimension: z.enum(['firm', 'timekeeper', 'engagement', 'client']).default('firm'),
       });
       const parsed = Schema.parse(args);
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, token.firmId));
+      const firmClients = (
+        await deps.db
+          .select({ id: clients.id })
+          .from(clients)
+          .where(eq(clients.firmId, token.firmId))
+      ).filter((c) => !blocked.has(c.id));
       if (firmClients.length === 0) return { dimension: parsed.dimension, items: [] };
       const firmEngs = await deps.db
         .select({ id: engagements.id, clientId: engagements.clientId })
@@ -447,6 +470,7 @@ async function dispatch(
         .select({
           engagementId: engagementThreadLinks.engagementId,
           threadId: engagementThreadLinks.threadId,
+          clientId: engagements.clientId,
         })
         .from(engagementThreadLinks)
         .innerJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
@@ -459,6 +483,7 @@ async function dispatch(
         )
         .limit(1);
       if (!link) throw new Error('engagement_thread_not_found_or_cross_firm');
+      if (blocked.has(link.clientId)) throw new Error('client_restricted');
       const sinceClause = parsed.since ? drz`AND ${messages.createdAt} >= ${parsed.since}` : drz``;
       const rows = await deps.db.execute<{
         id: string;
@@ -520,10 +545,13 @@ async function dispatch(
       const parsed = Schema.parse(args);
       const conds = [eq(clientRequests.firmId, token.firmId), eq(clientRequests.status, 'OPEN')];
       if (parsed.engagementId) conds.push(eq(clientRequests.engagementId, parsed.engagementId));
-      const items = await deps.db
+      // 0165 — every client_request has a NOT NULL engagement; exclude
+      // requests whose engagement belongs to a blocked (restricted) client.
+      const rows = await deps.db
         .select({
           id: clientRequests.id,
           engagementId: clientRequests.engagementId,
+          clientId: engagements.clientId,
           title: clientRequests.title,
           body: clientRequests.body,
           assignedAppUserId: clientRequests.assignedAppUserId,
@@ -531,9 +559,13 @@ async function dispatch(
           createdAt: clientRequests.createdAt,
         })
         .from(clientRequests)
+        .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
         .where(and(...conds))
         .orderBy(desc(clientRequests.createdAt))
         .limit(200);
+      const items = rows
+        .filter((r) => !blocked.has(r.clientId))
+        .map(({ clientId: _clientId, ...rest }) => rest);
       return { items };
     }
 
@@ -549,6 +581,7 @@ async function dispatch(
           id: timeEntries.id,
           engagementId: timeEntries.engagementId,
           appUserId: timeEntries.appUserId,
+          clientId: engagements.clientId,
         })
         .from(timeEntries)
         .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
@@ -556,6 +589,7 @@ async function dispatch(
         .where(and(eq(timeEntries.id, parsed.timeEntryId), eq(clients.firmId, token.firmId)))
         .limit(1);
       if (!te) throw new Error('time_entry_not_found_or_cross_firm');
+      if (blocked.has(te.clientId)) throw new Error('client_restricted');
       await linkTimeEntryMessages(deps.db, {
         engagementId: te.engagementId,
         timeEntryId: te.id,
@@ -578,7 +612,7 @@ async function dispatch(
       });
       const parsed = Schema.parse(args);
       const [link] = await deps.db
-        .select({ threadId: engagementThreadLinks.threadId })
+        .select({ threadId: engagementThreadLinks.threadId, clientId: engagements.clientId })
         .from(engagementThreadLinks)
         .innerJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
         .innerJoin(clients, eq(clients.id, engagements.clientId))
@@ -590,6 +624,7 @@ async function dispatch(
         )
         .limit(1);
       if (!link) throw new Error('engagement_thread_not_found_or_cross_firm');
+      if (blocked.has(link.clientId)) throw new Error('client_restricted');
       // Pull messages in window not yet linked to a time entry. Anti-
       // join via NOT EXISTS is the cleanest expression in raw SQL.
       const rows = await deps.db.execute<{
@@ -660,6 +695,7 @@ async function dispatch(
           invoiceNumber: invoices.invoiceNumber,
           totalCents: invoices.totalCents,
           firmId: invoices.firmId,
+          clientId: invoices.clientId,
           primaryEngagementId: invoices.primaryEngagementId,
         })
         .from(invoices)
@@ -667,6 +703,7 @@ async function dispatch(
         .limit(1);
       if (!inv) throw new Error('invoice_not_found');
       if (inv.firmId !== token.firmId) throw new Error('cross_firm_denied');
+      if (blocked.has(inv.clientId)) throw new Error('client_restricted');
       // Pull WIP context. For a single-engagement invoice we resolve
       // via primary_engagement_id; the multi-engagement consolidated
       // case (line_items) is left for a future tool refinement.

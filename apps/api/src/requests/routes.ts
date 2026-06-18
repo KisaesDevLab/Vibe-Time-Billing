@@ -22,7 +22,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -42,6 +42,7 @@ import { spawnFromTemplate, type Priority } from './template-spawn';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -214,6 +215,28 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
     const offset = Math.max(0, Number(req.query['offset'] ?? 0));
 
     const conds = [eq(clientRequests.firmId, session.firmId)];
+    // 0165 — hide requests whose engagement belongs to a restricted client
+    // the caller can't access. engagement_id is NOT NULL on client_request.
+    const blockedClientIds = await getBlockedClientIdsCached(
+      deps,
+      req,
+      session.appUserId,
+      session.firmId,
+    );
+    if (blockedClientIds.length) {
+      const blockedEngs = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .where(inArray(engagements.clientId, blockedClientIds));
+      if (blockedEngs.length) {
+        conds.push(
+          notInArray(
+            clientRequests.engagementId,
+            blockedEngs.map((e) => e.id),
+          ),
+        );
+      }
+    }
     if (status) conds.push(eq(clientRequests.status, status));
     if (engagementIdParam) conds.push(eq(clientRequests.engagementId, engagementIdParam));
     if (assignedParam) conds.push(eq(clientRequests.assignedAppUserId, assignedParam));

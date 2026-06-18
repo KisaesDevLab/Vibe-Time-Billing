@@ -27,6 +27,11 @@ export const PERMISSION_KEYS = [
   'client:archive',
   'client:portal-access:manage',
 
+  // 0165 — per-client visibility restriction. Gates marking a client
+  // "restricted" and editing its designated-user list. Admin (all keys)
+  // + partner; managers do NOT get it.
+  'client:restrict:manage',
+
   // Client credential vault (0159) — read includes revealing a secret
   // (gated additionally by a fresh step-up + audit at the route).
   'client:credential:read',
@@ -197,6 +202,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'client:write',
     'client:archive',
     'client:portal-access:manage',
+    'client:restrict:manage',
     'client:credential:read',
     'client:credential:write',
     'client:credential:delete',

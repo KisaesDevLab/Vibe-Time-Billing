@@ -29,6 +29,7 @@ import {
 import { buildIcs, type IcsAttendee } from '../calendar/ics';
 import { getCalendarSettings } from '../calendar/settings';
 import { logger } from '../logger';
+import { firmScope } from '../notifications/templating';
 import { resolveSchedule } from './reminders';
 
 export type AppointmentEmailEvent =
@@ -259,6 +260,7 @@ interface Loaded {
   clientName: string;
   engagementName: string | null;
   firmName: string;
+  firmTokens: Record<string, string>;
   tz: string;
 }
 
@@ -308,6 +310,7 @@ async function load(db: Database, appointmentId: string): Promise<Loaded | null>
     .where(eq(firms.id, appt.firmId))
     .limit(1);
   const tz = await firmTimezone(db, appt.firmId);
+  const firmTokens = await firmScope(db, appt.firmId);
   const attendees: IcsAttendee[] = [];
   for (const s of staff) if (s.email) attendees.push({ email: s.email, name: s.name });
   for (const p of participants) if (p.email) attendees.push({ email: p.email, name: p.name });
@@ -319,6 +322,7 @@ async function load(db: Database, appointmentId: string): Promise<Loaded | null>
     clientName,
     engagementName,
     firmName: firm?.name ?? 'Your firm',
+    firmTokens,
     tz,
   };
 }
@@ -327,7 +331,7 @@ function buildCtx(l: Loaded, appBaseUrl: string, cancelledBy?: string): MergeCon
   const { appt, tz } = l;
   return {
     client: { name: l.clientName || 'there' },
-    firm: { name: l.firmName },
+    firm: { ...l.firmTokens, name: l.firmName },
     engagement: { name: l.engagementName ?? '' },
     staff: { names: l.staffNames },
     appointment: {

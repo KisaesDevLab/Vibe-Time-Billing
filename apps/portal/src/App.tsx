@@ -5,6 +5,26 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { api } from './api-client';
 
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
+import {
+  ArrowLeftRight,
+  Bell,
+  BellRing,
+  CalendarCheck,
+  CircleHelp,
+  CircleUser,
+  Coins,
+  CreditCard,
+  FileQuestion,
+  FileText,
+  Files,
+  History,
+  Landmark,
+  Layers,
+  LayoutDashboard,
+  Mail,
+  MessageSquare,
+  Receipt,
+} from 'lucide-react';
 
 import { AuthProvider, useAuth } from './auth-context';
 import { ScopeProvider, useScope } from './scope-context';
@@ -232,17 +252,22 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       realmBadge={<Pill tone="success">portal</Pill>}
       nav={[
         // Quick access, pinned at top.
-        { label: 'Overview', href: '/', icon: '⌂', active: location.pathname === '/' },
+        {
+          label: 'Overview',
+          href: '/',
+          icon: <LayoutDashboard size={16} />,
+          active: location.pathname === '/',
+        },
         {
           label: 'Messages',
           href: '/messages',
-          icon: '💬',
+          icon: <MessageSquare size={16} />,
           active: location.pathname.startsWith('/messages'),
         },
         {
           label: unreadUpdates > 0 ? `Updates (${unreadUpdates})` : 'Updates',
           href: '/updates',
-          icon: '🔔',
+          icon: <Bell size={16} />,
           active: location.pathname.startsWith('/updates'),
         },
 
@@ -251,28 +276,28 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           section: 'Billing & payments',
           label: 'Invoices',
           href: '/invoices',
-          icon: '⎙',
+          icon: <Receipt size={16} />,
           active: location.pathname.startsWith('/invoices'),
         },
         {
           section: 'Billing & payments',
           label: 'Statement',
           href: '/statement',
-          icon: '▦',
+          icon: <FileText size={16} />,
           active: location.pathname.startsWith('/statement'),
         },
         {
           section: 'Billing & payments',
           label: 'Payment methods',
           href: '/payment-methods',
-          icon: '$',
+          icon: <CreditCard size={16} />,
           active: location.pathname.startsWith('/payment-methods'),
         },
         {
           section: 'Billing & payments',
           label: 'Tax payments',
           href: '/tax-payments',
-          icon: '📅',
+          icon: <Coins size={16} />,
           active: location.pathname.startsWith('/tax-payments'),
         },
 
@@ -281,21 +306,21 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           section: 'Documents',
           label: 'Requests',
           href: '/requests',
-          icon: '☑',
+          icon: <FileQuestion size={16} />,
           active: location.pathname.startsWith('/requests'),
         },
         {
           section: 'Documents',
           label: 'Files',
           href: '/files',
-          icon: '▥',
+          icon: <Files size={16} />,
           active: location.pathname.startsWith('/files'),
         },
         {
           section: 'Documents',
           label: 'Letters',
           href: '/letters',
-          icon: '✉',
+          icon: <Mail size={16} />,
           active: location.pathname.startsWith('/letters'),
         },
 
@@ -304,21 +329,21 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           section: 'Your work',
           label: 'Engagements',
           href: '/engagements',
-          icon: '◉',
+          icon: <Layers size={16} />,
           active: location.pathname.startsWith('/engagements'),
         },
         {
           section: 'Your work',
           label: 'Appointments',
           href: '/appointments',
-          icon: '📅',
+          icon: <CalendarCheck size={16} />,
           active: location.pathname.startsWith('/appointments'),
         },
         {
           section: 'Your work',
           label: 'Tax returns',
           href: '/tax/returns',
-          icon: '⎚',
+          icon: <Landmark size={16} />,
           active: location.pathname.startsWith('/tax/returns'),
         },
 
@@ -327,7 +352,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           section: '',
           label: 'Profile',
           href: '/profile',
-          icon: '☏',
+          icon: <CircleUser size={16} />,
           active:
             location.pathname.startsWith('/profile') ||
             location.pathname.startsWith('/alt-contacts'),
@@ -336,28 +361,28 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           section: '',
           label: 'Notifications',
           href: '/notifications',
-          icon: '⚠︎',
+          icon: <BellRing size={16} />,
           active: location.pathname.startsWith('/notifications'),
         },
         {
           section: '',
           label: 'Activity',
           href: '/activity',
-          icon: '📜',
+          icon: <History size={16} />,
           active: location.pathname.startsWith('/activity'),
         },
         {
           section: '',
           label: 'Help',
           href: '/help',
-          icon: '❔',
+          icon: <CircleHelp size={16} />,
           active: location.pathname.startsWith('/help'),
         },
         {
           section: '',
           label: 'Switch client',
           href: '/switch',
-          icon: '⇄',
+          icon: <ArrowLeftRight size={16} />,
           active: location.pathname.startsWith('/switch'),
         },
       ]}

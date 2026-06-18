@@ -8,7 +8,7 @@
 // firm via req.staffSession.firmId.
 
 import { z } from 'zod';
-import { and, asc, eq, ilike, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, ilike, inArray, notInArray, sql } from 'drizzle-orm';
 import { type Request, type Response, type Router } from 'express';
 import express from 'express';
 
@@ -17,6 +17,7 @@ import { appUsers, clientTasks, clients } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { spawnRecurringFollowUp } from './spawn-recurrence';
 
 export interface TaskListRoutesDeps extends RbacDeps {
@@ -123,6 +124,10 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
     if (clientId) conds.push(eq(clientTasks.clientId, clientId));
     if (priority) conds.push(eq(clientTasks.priority, priority as (typeof PRIORITIES)[number]));
 
+    // 0165 — hide tasks of restricted clients the caller can't access.
+    const blockedClientIds = await getBlockedClientIdsCached(deps, req, meId!, firmId);
+    if (blockedClientIds.length) conds.push(notInArray(clientTasks.clientId, blockedClientIds));
+
     // Status: explicit list/ALL overrides; else default to active only
     // unless includeClosed is set.
     if (statusFilter === 'all') {
@@ -222,6 +227,8 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
       res.status(404).json({ error: 'not_found' });
       return;
     }
+    // 0165 — can't create a task on a restricted client you can't access.
+    if (await blockIfClientRestricted(deps, req, res, data.clientId)) return;
     const [row] = await deps.db
       .insert(clientTasks)
       .values({

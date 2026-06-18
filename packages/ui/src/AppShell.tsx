@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 
+import { ChevronRight } from './icons';
 import { tokens } from './tokens';
 
 export interface NavItem {
@@ -237,17 +238,30 @@ export function AppShell({
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             aria-expanded={!collapsed}
             style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               background: 'transparent',
               border: 'none',
               cursor: 'pointer',
               padding: 4,
               color: tokens.color.textMuted,
-              fontSize: 16,
               lineHeight: 1,
               borderRadius: tokens.radius.sm,
             }}
           >
-            {collapsed ? '▶' : '◀'}
+            {/* Chevron points right to expand (collapsed) and left to collapse
+                (expanded); reuses the line-icon family via a CSS rotation. */}
+            <span
+              aria-hidden
+              style={{
+                display: 'inline-flex',
+                transition: 'transform 120ms ease',
+                transform: collapsed ? 'none' : 'rotate(180deg)',
+              }}
+            >
+              <ChevronRight size={16} />
+            </span>
           </button>
           {!collapsed && (
             <div
@@ -329,13 +343,12 @@ export function AppShell({
                       aria-hidden
                       style={{
                         display: 'inline-flex',
-                        width: 10,
-                        fontSize: 9,
+                        alignItems: 'center',
                         transition: 'transform 120ms ease',
                         transform: expanded ? 'rotate(90deg)' : 'none',
                       }}
                     >
-                      ▶
+                      <ChevronRight size={13} />
                     </span>
                     {n.section}
                   </button>

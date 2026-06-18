@@ -12,6 +12,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Tabs, tokens, type SortDir 
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
+import { filterStatuses, filterStatusesForMany } from '../status-filter';
 import { EngagementsKanban, type StatusColumn } from './EngagementsKanban';
 import { KanbanViewsMenu } from './engagements/KanbanViewsMenu';
 
@@ -178,6 +179,18 @@ export function EngagementsPage(): JSX.Element {
     }
   });
   const [statusCols, setStatusCols] = useState<StatusColumn[]>([]);
+  // 0167 — full status catalog (incl. non-board statuses + service-line
+  // mapping) used to populate and filter the inline/bulk status pickers.
+  const [statuses, setStatuses] = useState<
+    Array<{
+      workflowState: WorkflowState;
+      label: string;
+      color: string;
+      sortOrder: number;
+      kanbanVisible: boolean;
+      serviceLineIds: string[];
+    }>
+  >([]);
   // Per-user kanban column hides. Persisted to localStorage so each
   // staff member's column filter survives reloads — independent of the
   // firm-wide kanbanVisible toggle in admin → Engagement Statuses.
@@ -328,8 +341,11 @@ export function EngagementsPage(): JSX.Element {
               color: string;
               sortOrder: number;
               kanbanVisible: boolean;
+              serviceLineIds: string[];
             }>;
-          }>('/api/staff/admin/engagement-statuses').catch(() => ({ items: [] })),
+            // engagement:read endpoint (every timekeeper can read it);
+            // also the source of the per-status service-line mapping.
+          }>('/api/staff/engagement-statuses').catch(() => ({ items: [] })),
           api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines').catch(() => ({
             items: [],
           })),
@@ -337,6 +353,7 @@ export function EngagementsPage(): JSX.Element {
         setUsers(u.users ?? []);
         setTypes(t.items ?? []);
         setServiceLines(sl.items ?? []);
+        setStatuses(s.items ?? []);
         setStatusCols(
           (s.items ?? [])
             .filter((row) => row.kanbanVisible)
@@ -346,6 +363,7 @@ export function EngagementsPage(): JSX.Element {
               label: row.label,
               color: row.color,
               sortOrder: row.sortOrder,
+              serviceLineIds: row.serviceLineIds,
             })),
         );
       } catch {
@@ -448,6 +466,28 @@ export function EngagementsPage(): JSX.Element {
     if (selectedIds.size === visible.length) setSelectedIds(new Set());
     else setSelectedIds(new Set(visible.map((r) => r.id)));
   }
+
+  // 0167 — status picker options filtered to an engagement's service line.
+  // The current value is always kept so an out-of-scope status never hides.
+  function statusOptionsFor(
+    serviceLineId: string | null,
+    current: string,
+  ): Array<{ value: string; label: string }> {
+    return filterStatuses(statuses, serviceLineId, current).map((s) => ({
+      value: s.workflowState,
+      label: s.label,
+    }));
+  }
+
+  // Bulk picker: only statuses valid for every selected engagement.
+  const bulkStatusOptions = useMemo(() => {
+    const sel = rows.filter((r) => selectedIds.has(r.id));
+    return filterStatusesForMany(
+      statuses,
+      sel.map((r) => r.serviceLineId),
+      sel.map((r) => r.workflowState),
+    ).map((s) => ({ value: s.workflowState, label: s.label }));
+  }, [statuses, rows, selectedIds]);
 
   // QA fix — every mutation handler was a bare `await api(...)` with no
   // try/catch. Callers used `void bulkSetWorkflow(...)` so any non-2xx
@@ -721,7 +761,10 @@ export function EngagementsPage(): JSX.Element {
               {selectedIds.size} selected
             </span>
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <BulkWorkflowButton onPick={(w) => void bulkSetWorkflow(w)} />
+              <BulkWorkflowButton
+                options={bulkStatusOptions}
+                onPick={(w) => void bulkSetWorkflow(w)}
+              />
               <BulkPriorityButton onPick={(p) => void bulkSetPriority(p)} />
               <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
                 Cancel
@@ -741,6 +784,7 @@ export function EngagementsPage(): JSX.Element {
               workflowState: r.workflowState,
               priority: r.priority,
               clientName: r.clientName,
+              serviceLineId: r.serviceLineId,
             }))}
             columns={statusCols.filter((c) => !hiddenKanbanCols.has(c.workflowState))}
             onMoved={() => void load()}
@@ -925,6 +969,7 @@ export function EngagementsPage(): JSX.Element {
                         <td style={td()}>
                           <InlineWorkflowEdit
                             value={r.workflowState}
+                            options={statusOptionsFor(r.serviceLineId, r.workflowState)}
                             onChange={(v) => void setRowWorkflow(r.id, v)}
                           />
                         </td>
@@ -985,15 +1030,13 @@ function td(): React.CSSProperties {
 
 function InlineWorkflowEdit({
   value,
+  options,
   onChange,
 }: {
   value: WorkflowState;
+  options: Array<{ value: string; label: string }>;
   onChange: (v: WorkflowState) => void;
 }): JSX.Element {
-  const options = (Object.keys(WORKFLOW_LABELS) as WorkflowState[]).map((w) => ({
-    value: w,
-    label: WORKFLOW_LABELS[w],
-  }));
   // Use a tiny Combobox-as-pill: read renders a Pill, click opens picker.
   // To keep this self-contained, render the Combobox in trigger-as-pill mode
   // via plain CSS (the combobox already shows as button).
@@ -1007,7 +1050,7 @@ function InlineWorkflowEdit({
         options={options}
         renderOption={(o) => (
           <span style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1 }}>
-            <Pill tone={WORKFLOW_TONE[o.value as WorkflowState]}>{o.label}</Pill>
+            <Pill tone={WORKFLOW_TONE[o.value as WorkflowState] ?? 'neutral'}>{o.label}</Pill>
           </span>
         )}
       />
@@ -1041,7 +1084,13 @@ function InlinePriorityEdit({
   );
 }
 
-function BulkWorkflowButton({ onPick }: { onPick: (w: WorkflowState) => void }): JSX.Element {
+function BulkWorkflowButton({
+  options,
+  onPick,
+}: {
+  options: Array<{ value: string; label: string }>;
+  onPick: (w: WorkflowState) => void;
+}): JSX.Element {
   const [v, setV] = useState<string>('');
   useEffect(() => {
     if (v) {
@@ -1057,10 +1106,7 @@ function BulkWorkflowButton({ onPick }: { onPick: (w: WorkflowState) => void }):
         size="sm"
         value={v}
         onChange={setV}
-        options={(Object.keys(WORKFLOW_LABELS) as WorkflowState[]).map((w) => ({
-          value: w,
-          label: WORKFLOW_LABELS[w],
-        }))}
+        options={options}
         placeholder="Set status…"
       />
     </div>

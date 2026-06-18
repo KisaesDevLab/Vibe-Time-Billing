@@ -70,7 +70,9 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         ? req.query['clientId']
         : null;
     const page = Math.max(1, Number(req.query['page']) || 1);
-    const pageSize = Math.min(100, Math.max(1, Number(req.query['pageSize']) || 25));
+    // Cap lifted to 1000 so the staff People directory can load the full
+    // firm set and run filter/sort/search client-side (standard table view).
+    const pageSize = Math.min(1000, Math.max(1, Number(req.query['pageSize']) || 25));
 
     // Load firm-scoped sources once, reconcile in memory. Single-firm
     // appliance, so the working set is bounded.

@@ -6,6 +6,7 @@ import {
   AiPanel,
   Button,
   Card,
+  ColumnFilter,
   Combobox,
   Input,
   Pill,
@@ -15,6 +16,9 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { TableSearch } from '../components/TableSearch';
+import { filterStatuses } from '../status-filter';
+import { selectRows, useColumnView } from '../lib/column-view';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
 import { ProcessProjectDialog } from './clients/ProcessProjectDialog';
 
@@ -34,6 +38,8 @@ interface Engagement {
 interface StatusOption {
   workflowState: string;
   label: string;
+  // 0167 — service lines this status applies to (empty ⇒ all).
+  serviceLineIds: string[];
 }
 
 interface Client {
@@ -248,17 +254,6 @@ const inlineInputStyle: React.CSSProperties = {
 
 // 0050 — sortable column-header button style. Looks like a plain header
 // label but is keyboard-focusable and triggers toggleSort.
-const tableHeaderBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  fontFamily: 'inherit',
-  fontWeight: 'inherit',
-  fontSize: 'inherit',
-  color: 'inherit',
-  cursor: 'pointer',
-};
-
 function ViewTabs({
   view,
   onChange,
@@ -392,6 +387,13 @@ function LogView({
       !selectedEngagement?.serviceLineId ||
       w.serviceLineId === selectedEngagement.serviceLineId,
   );
+  // 0167 — only offer statuses mapped to the engagement's service line.
+  // The engagement's current state is always kept so it never disappears.
+  const applicableStatusOptions = filterStatuses(
+    statusOptions,
+    selectedEngagement?.serviceLineId ?? null,
+    selectedEngagement?.workflowState,
+  );
   // Progress status to set on save; preselected to the engagement's current.
   const [workflowState, setWorkflowState] = useState('');
   // Process-project print dialog (opened from the green-box button).
@@ -417,31 +419,16 @@ function LogView({
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
 
-  // 0050 — filter/sort/pagination state for "My entries". Mirrors the
-  // pattern on the Engagements list (URL-synced via component state).
-  type SortCol = 'entryDate' | 'hours' | 'amount' | 'client' | 'engagement' | 'billable';
+  // 0050 — broad server-side pre-filters for "My entries" (bound the loaded
+  // set). Sort + free-text search run client-side via useColumnView, the
+  // standard table view shared with Invoices / Engagements / etc.
   const [filterClientId, setFilterClientId] = useState('');
   const [filterEngagementId, setFilterEngagementId] = useState('');
   const [filterStart, setFilterStart] = useState('');
   const [filterEnd, setFilterEnd] = useState('');
   const [filterBillable, setFilterBillable] = useState<'' | 'true' | 'false'>('');
   const [filterOOS, setFilterOOS] = useState<'' | 'true' | 'false'>('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [total, setTotal] = useState(0);
-  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({
-    col: 'entryDate',
-    dir: 'desc',
-  });
-
-  function toggleSort(col: SortCol): void {
-    setSort((p) =>
-      p.col === col ? { col, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' },
-    );
-    setPage(1);
-  }
-  const sortIcon = (col: SortCol): string =>
-    sort.col === col ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  const view = useColumnView('vibe.time.view', { sortCol: 'entryDate', sortDir: 'desc' });
 
   function beginEdit(e: TimeEntry): void {
     setEditingId(e.id);
@@ -547,15 +534,11 @@ function LogView({
       if (filterEnd) params.set('endDate', filterEnd);
       if (filterBillable) params.set('billable', filterBillable);
       if (filterOOS) params.set('outOfScope', filterOOS);
-      params.set('page', String(page));
-      params.set('pageSize', String(pageSize));
-      params.set('sort', sort.col);
-      params.set('dir', sort.dir);
-      const t = await api<{ rows: TimeEntry[]; total: number }>(
+      params.set('pageSize', '500');
+      const t = await api<{ rows: TimeEntry[] }>(
         `/api/staff/time-entries/list?${params.toString()}`,
       );
       setEntries(t.rows ?? []);
-      setTotal(t.total ?? 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'load_failed');
     } finally {
@@ -565,17 +548,7 @@ function LogView({
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    filterClientId,
-    filterEngagementId,
-    filterStart,
-    filterEnd,
-    filterBillable,
-    filterOOS,
-    page,
-    pageSize,
-    sort,
-  ]);
+  }, [filterClientId, filterEngagementId, filterStart, filterEnd, filterBillable, filterOOS]);
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -616,8 +589,25 @@ function LogView({
     }
   }
 
-  const totalHours = entries.reduce((s, e) => s + Number(e.hours), 0);
-  const totalAmount = entries.reduce((s, e) => s + e.standardAmountCents, 0);
+  const visible = useMemo(
+    () =>
+      selectRows(entries, view, {
+        searchText: (e) => `${e.description ?? ''} ${e.clientName ?? ''} ${e.engagementName ?? ''}`,
+        sortValues: {
+          entryDate: (e) => e.entryDate,
+          client: (e) => e.clientName ?? '',
+          engagement: (e) => e.engagementName ?? '',
+          hours: (e) => Number(e.hours),
+          amount: (e) => e.standardAmountCents,
+          billable: (e) => (e.billableFlag ? '1' : '0'),
+          description: (e) => e.description ?? '',
+        },
+        tieBreak: (a, b) => b.entryDate.localeCompare(a.entryDate),
+      }),
+    [entries, view],
+  );
+  const totalHours = visible.reduce((s, e) => s + Number(e.hours), 0);
+  const totalAmount = visible.reduce((s, e) => s + e.standardAmountCents, 0);
 
   const clientHasNoActive = clientId && filteredEngagements.length === 0;
   const activeClients = clients.filter((c) => c.status !== 'ARCHIVED');
@@ -744,7 +734,7 @@ function LogView({
                 placeholder="— none —"
               />
             </div>
-            {engagementId && statusOptions.length > 0 && (
+            {engagementId && applicableStatusOptions.length > 0 && (
               <div>
                 <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
                   Engagement status
@@ -753,7 +743,7 @@ function LogView({
                   ariaLabel="Engagement status"
                   value={workflowState}
                   onChange={setWorkflowState}
-                  options={statusOptions.map<ComboboxOption>((s) => ({
+                  options={applicableStatusOptions.map<ComboboxOption>((s) => ({
                     value: s.workflowState,
                     label: s.label,
                   }))}
@@ -919,49 +909,38 @@ function LogView({
       </Card>
 
       <Card
-        title={`My entries — ${total.toLocaleString()}`}
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>My entries</span>
+            {entries.length > 0 && (
+              <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
+                {visible.length === entries.length
+                  ? `${entries.length}`
+                  : `${visible.length} of ${entries.length}`}
+              </span>
+            )}
+          </span>
+        }
         action={
-          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+          <span style={{ display: 'inline-flex', gap: 12, alignItems: 'center', fontSize: 12 }}>
             <span style={{ color: tokens.color.textMuted }}>
-              {totalHours.toFixed(2)}h • ${(totalAmount / 100).toLocaleString()} (page)
+              {totalHours.toFixed(2)}h • ${(totalAmount / 100).toLocaleString()}
             </span>
-            <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-              Page size
-              <select
-                aria-label="Page size"
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setPage(1);
+            {view.anyFilterActive && (
+              <button
+                type="button"
+                onClick={view.clearFilters}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: tokens.color.accent,
+                  fontSize: 12,
+                  cursor: 'pointer',
                 }}
-                style={{ padding: '4px 6px' }}
               >
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-            </label>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </Button>
-            <span style={{ color: tokens.color.textMuted }}>
-              Page {page} / {Math.max(1, Math.ceil(total / pageSize))}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={page >= Math.ceil(total / pageSize)}
-              onClick={() =>
-                setPage((p) => Math.min(Math.max(1, Math.ceil(total / pageSize)), p + 1))
-              }
-            >
-              Next →
-            </Button>
+                Clear filters
+              </button>
+            )}
           </span>
         }
       >
@@ -981,7 +960,6 @@ function LogView({
             onChange={(v) => {
               setFilterClientId(v);
               setFilterEngagementId('');
-              setPage(1);
             }}
             options={clients.map((c) => ({ value: c.id, label: c.name }))}
             placeholder="Any client"
@@ -993,7 +971,6 @@ function LogView({
             value={filterEngagementId}
             onChange={(v) => {
               setFilterEngagementId(v);
-              setPage(1);
             }}
             options={engagements
               .filter((e) => !filterClientId || e.clientId === filterClientId)
@@ -1007,7 +984,6 @@ function LogView({
             value={filterStart}
             onChange={(e) => {
               setFilterStart(e.target.value);
-              setPage(1);
             }}
             style={inlineInputStyle}
           />
@@ -1017,7 +993,6 @@ function LogView({
             value={filterEnd}
             onChange={(e) => {
               setFilterEnd(e.target.value);
-              setPage(1);
             }}
             style={inlineInputStyle}
           />
@@ -1027,7 +1002,6 @@ function LogView({
             value={filterBillable}
             onChange={(v) => {
               setFilterBillable(v as '' | 'true' | 'false');
-              setPage(1);
             }}
             options={[
               { value: 'true', label: 'Billable only' },
@@ -1042,7 +1016,6 @@ function LogView({
             value={filterOOS}
             onChange={(v) => {
               setFilterOOS(v as '' | 'true' | 'false');
-              setPage(1);
             }}
             options={[
               { value: 'true', label: 'OOS only' },
@@ -1052,6 +1025,9 @@ function LogView({
             size="sm"
           />
         </div>
+        <div style={{ marginBottom: 12 }}>
+          <TableSearch view={view} placeholder="Search description, client, engagement…" />
+        </div>
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
@@ -1060,22 +1036,34 @@ function LogView({
               {
                 key: 'date',
                 header: (
-                  <button
-                    type="button"
-                    style={tableHeaderBtn}
-                    onClick={() => toggleSort('entryDate')}
-                  >
-                    Date{sortIcon('entryDate')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Date{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by date"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('entryDate')}
+                      onApply={(_, dir) => view.apply('entryDate', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (e) => e.entryDate,
               },
               {
                 key: 'client',
                 header: (
-                  <button type="button" style={tableHeaderBtn} onClick={() => toggleSort('client')}>
-                    Client{sortIcon('client')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Client{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by client"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('client')}
+                      onApply={(_, dir) => view.apply('client', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (e) =>
                   e.clientId && e.clientName ? (
@@ -1087,13 +1075,17 @@ function LogView({
               {
                 key: 'engagement',
                 header: (
-                  <button
-                    type="button"
-                    style={tableHeaderBtn}
-                    onClick={() => toggleSort('engagement')}
-                  >
-                    Engagement{sortIcon('engagement')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Engagement{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by engagement"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('engagement')}
+                      onApply={(_, dir) => view.apply('engagement', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (e) =>
                   e.engagementName ? (
@@ -1105,9 +1097,17 @@ function LogView({
               {
                 key: 'hours',
                 header: (
-                  <button type="button" style={tableHeaderBtn} onClick={() => toggleSort('hours')}>
-                    Hours{sortIcon('hours')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Hours{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by hours"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('hours')}
+                      onApply={(_, dir) => view.apply('hours', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 align: 'right',
                 render: (e) => {
@@ -1131,9 +1131,17 @@ function LogView({
               {
                 key: 'amount',
                 header: (
-                  <button type="button" style={tableHeaderBtn} onClick={() => toggleSort('amount')}>
-                    Amount{sortIcon('amount')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Amount{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by amount"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('amount')}
+                      onApply={(_, dir) => view.apply('amount', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 align: 'right',
                 render: (e) => `$${(e.standardAmountCents / 100).toLocaleString()}`,
@@ -1141,13 +1149,17 @@ function LogView({
               {
                 key: 'flags',
                 header: (
-                  <button
-                    type="button"
-                    style={tableHeaderBtn}
-                    onClick={() => toggleSort('billable')}
-                  >
-                    Flags{sortIcon('billable')}
-                  </button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Flags{' '}
+                    <ColumnFilter
+                      ariaLabel="Sort by billable"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
+                      sort={view.sortFor('billable')}
+                      onApply={(_, dir) => view.apply('billable', new Set(), dir)}
+                    />
+                  </span>
                 ) as unknown as string,
                 render: (e) => {
                   if (editingId === e.id && editDraft) {
@@ -1265,7 +1277,7 @@ function LogView({
                 },
               },
             ]}
-            rows={entries}
+            rows={visible}
             rowKey={(e) => e.id}
             empty="No time logged yet."
           />
