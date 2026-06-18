@@ -1495,6 +1495,7 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
     sendEmail: deps.sendPortalEmail,
     staffBaseUrl: config.APP_BASE_URL,
+    intakeBaseUrl: process.env['INTAKE_BASE_URL'],
   });
   app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, bookingAdminRouter);
 

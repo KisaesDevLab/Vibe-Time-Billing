@@ -40,6 +40,8 @@ export interface BookingAdminRoutesDeps extends RbacDeps {
   queue?: BookingQueue;
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   staffBaseUrl?: string;
+  /** Public base for building the shareable booking URL shown to staff. */
+  intakeBaseUrl?: string;
   now?: () => Date;
 }
 
@@ -78,6 +80,8 @@ const LinkSchema = z.object({
 export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
   const router = express.Router();
   const now = (): Date => (deps.now ? deps.now() : new Date());
+  const publicUrl = (slug: string): string =>
+    `${(deps.intakeBaseUrl ?? '').replace(/\/$/, '')}/book/${slug}`;
 
   // ---- booking pages CRUD -------------------------------------------
 
@@ -145,15 +149,13 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
         .delete(publicBookingLinkNotify)
         .where(eq(publicBookingLinkNotify.bookingLinkId, linkId));
       if (data.notify.length > 0) {
-        await tx
-          .insert(publicBookingLinkNotify)
-          .values(
-            data.notify.map((n) => ({
-              bookingLinkId: linkId,
-              appUserId: n.appUserId,
-              channels: n.channels,
-            })),
-          );
+        await tx.insert(publicBookingLinkNotify).values(
+          data.notify.map((n) => ({
+            bookingLinkId: linkId,
+            appUserId: n.appUserId,
+            channels: n.channels,
+          })),
+        );
       }
     }
   }
@@ -174,7 +176,7 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
       .innerJoin(appUsers, eq(appUsers.id, staffPublicBookingLinks.staffId))
       .where(eq(staffPublicBookingLinks.firmId, firmId))
       .orderBy(desc(staffPublicBookingLinks.createdAt));
-    res.json({ items: rows });
+    res.json({ items: rows.map((r) => ({ ...r, publicUrl: publicUrl(r.slug) })) });
   });
 
   router.get(
@@ -205,7 +207,13 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
         })
         .from(publicBookingLinkNotify)
         .where(eq(publicBookingLinkNotify.bookingLinkId, id));
-      res.json({ link, windows, approverIds: approvers.map((a) => a.appUserId), notify });
+      res.json({
+        link,
+        publicUrl: publicUrl(link.slug),
+        windows,
+        approverIds: approvers.map((a) => a.appUserId),
+        notify,
+      });
     },
   );
 
@@ -258,7 +266,7 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
       actorAppUserId: session.appUserId,
       after: { slug, staffId: data.staffId },
     }).catch(() => undefined);
-    res.status(201).json({ id: linkId, slug });
+    res.status(201).json({ id: linkId, slug, publicUrl: publicUrl(slug) });
   });
 
   router.patch(
