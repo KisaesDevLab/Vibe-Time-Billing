@@ -1625,6 +1625,22 @@ export const engagementTemplates = pgTable(
     inScopeWorkCodeIds: jsonb('in_scope_work_code_ids').$type<string[]>().notNull().default([]),
     // 0054 — NULL means resolver falls back to firm's StandardRate.
     defaultRateCodeId: uuid('default_rate_code_id'),
+    // 0170 — defaults for the engagement create form's green toggles +
+    // sub-config, so a template streamlines more of the New Engagement screen.
+    defaultMixedModeEnabled: boolean('default_mixed_mode_enabled').notNull().default(false),
+    defaultFeePassthroughEnabled: boolean('default_fee_passthrough_enabled')
+      .notNull()
+      .default(false),
+    defaultTaxEnabled: boolean('default_tax_enabled').notNull().default(false),
+    defaultTaxRateBps: integer('default_tax_rate_bps'),
+    defaultTaxLabel: text('default_tax_label'),
+    defaultSurchargeEnabled: boolean('default_surcharge_enabled').notNull().default(false),
+    defaultSurchargeType: text('default_surcharge_type'),
+    defaultSurchargeValueBps: integer('default_surcharge_value_bps'),
+    defaultSurchargeAmountCents: bigint('default_surcharge_amount_cents', { mode: 'number' }),
+    defaultSurchargeLabel: text('default_surcharge_label'),
+    // 0170 — when set, "Make recurring" on the create form prefills this frequency.
+    defaultRecurrenceFrequency: text('default_recurrence_frequency'),
     // FK added in 0033 after the letter table exists; declared here as
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),

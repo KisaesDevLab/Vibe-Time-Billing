@@ -23,10 +23,28 @@ const FEE_OPTIONS = [
 ];
 
 import { api } from '../../api-client';
-import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
+import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../../lib/money';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
 type Kind = 'engagement' | 'letter' | 'client' | 'request';
+
+type SurchargeType = 'PERCENT' | 'FLAT_AMOUNT';
+type RecurrenceFrequency =
+  | 'WEEKLY'
+  | 'BIWEEKLY'
+  | 'MONTHLY'
+  | 'QUARTERLY'
+  | 'SEMIANNUAL'
+  | 'ANNUAL';
+
+const RECURRENCE_OPTIONS: { value: RecurrenceFrequency; label: string }[] = [
+  { value: 'WEEKLY', label: 'Weekly' },
+  { value: 'BIWEEKLY', label: 'Biweekly' },
+  { value: 'MONTHLY', label: 'Monthly' },
+  { value: 'QUARTERLY', label: 'Quarterly' },
+  { value: 'SEMIANNUAL', label: 'Semiannual' },
+  { value: 'ANNUAL', label: 'Annual' },
+];
 
 interface EngagementTpl {
   id: string;
@@ -40,8 +58,28 @@ interface EngagementTpl {
   engagementTypeId: string | null;
   // 0083 — Mustache name pattern resolved at engagement-creation time.
   namePattern: string | null;
+  // New template defaults — inherited onto engagements created from this
+  // template (mirrors the per-engagement controls on EngagementCreate).
+  defaultMixedModeEnabled: boolean;
+  inScopeWorkCodeIds: string[];
+  defaultFeePassthroughEnabled: boolean;
+  defaultTaxEnabled: boolean;
+  defaultTaxRateBps: number | null;
+  defaultTaxLabel: string | null;
+  defaultSurchargeEnabled: boolean;
+  defaultSurchargeType: SurchargeType | null;
+  defaultSurchargeValueBps: number | null;
+  defaultSurchargeAmountCents: number | null;
+  defaultSurchargeLabel: string | null;
+  defaultRecurrenceFrequency: RecurrenceFrequency | null;
   isSystem: boolean;
   status: string;
+}
+
+interface WorkCode {
+  id: string;
+  key: string;
+  name: string;
 }
 
 interface EngagementType {
@@ -96,6 +134,77 @@ function formatCents(c: number | null): string {
   return `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+// Shared shape for the engagement create/edit drafts. Holds the string
+// representations typed in the inputs (dollars, percent) plus the
+// new template-default toggles; converted to the API's cents/bps/null
+// shape on submit.
+interface EngagementDraftFields {
+  name: string;
+  defaultFeeStructure: string;
+  defaultFeeAmountDollars: string;
+  defaultBudgetHours: string;
+  defaultRateCodeId: string;
+  engagementTypeId: string;
+  namePattern: string;
+  defaultMixedModeEnabled: boolean;
+  inScopeWorkCodeIds: string[];
+  defaultFeePassthroughEnabled: boolean;
+  defaultTaxEnabled: boolean;
+  defaultTaxRatePercent: string;
+  defaultTaxLabel: string;
+  defaultSurchargeEnabled: boolean;
+  defaultSurchargeType: SurchargeType;
+  defaultSurchargePercent: string;
+  defaultSurchargeFlatDollars: string;
+  defaultSurchargeLabel: string;
+  defaultRecurrenceFrequency: '' | RecurrenceFrequency;
+}
+
+const EMPTY_DEFAULTS = {
+  defaultMixedModeEnabled: false,
+  inScopeWorkCodeIds: [] as string[],
+  defaultFeePassthroughEnabled: false,
+  defaultTaxEnabled: false,
+  defaultTaxRatePercent: '',
+  defaultTaxLabel: '',
+  defaultSurchargeEnabled: false,
+  defaultSurchargeType: 'PERCENT' as SurchargeType,
+  defaultSurchargePercent: '',
+  defaultSurchargeFlatDollars: '',
+  defaultSurchargeLabel: '',
+  defaultRecurrenceFrequency: '' as '' | RecurrenceFrequency,
+};
+
+// Translate a draft's new-defaults fields into the API payload shape
+// (cents/bps/null). Shared by both the create POST and edit PATCH so the
+// two paths can't drift.
+function draftDefaultsToPayload(d: EngagementDraftFields): Record<string, unknown> {
+  return {
+    defaultMixedModeEnabled: d.defaultMixedModeEnabled,
+    inScopeWorkCodeIds: d.defaultMixedModeEnabled ? d.inScopeWorkCodeIds : [],
+    defaultFeePassthroughEnabled: d.defaultFeePassthroughEnabled,
+    defaultTaxEnabled: d.defaultTaxEnabled,
+    defaultTaxRateBps: d.defaultTaxEnabled
+      ? (percentInputToBps(d.defaultTaxRatePercent) ?? 0)
+      : null,
+    defaultTaxLabel: d.defaultTaxEnabled ? d.defaultTaxLabel.trim() || null : null,
+    defaultSurchargeEnabled: d.defaultSurchargeEnabled,
+    defaultSurchargeType: d.defaultSurchargeEnabled ? d.defaultSurchargeType : null,
+    defaultSurchargeValueBps:
+      d.defaultSurchargeEnabled && d.defaultSurchargeType === 'PERCENT'
+        ? (percentInputToBps(d.defaultSurchargePercent) ?? 0)
+        : null,
+    defaultSurchargeAmountCents:
+      d.defaultSurchargeEnabled && d.defaultSurchargeType === 'FLAT_AMOUNT'
+        ? (dollarsInputToCents(d.defaultSurchargeFlatDollars) ?? 0)
+        : null,
+    defaultSurchargeLabel: d.defaultSurchargeEnabled
+      ? d.defaultSurchargeLabel.trim() || null
+      : null,
+    defaultRecurrenceFrequency: d.defaultRecurrenceFrequency || null,
+  };
+}
+
 export function TemplatesPage(): JSX.Element {
   const [kind, setKind] = useState<Kind>('engagement');
   return (
@@ -131,15 +240,9 @@ function EngagementTab(): JSX.Element {
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [engagementTypes, setEngagementTypes] = useState<EngagementType[]>([]);
   const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
-  const [editDraft, setEditDraft] = useState<{
-    name: string;
-    defaultFeeStructure: string;
-    defaultFeeAmountDollars: string;
-    defaultBudgetHours: string;
-    defaultRateCodeId: string;
-    engagementTypeId: string;
-    namePattern: string;
-  }>({
+  const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
+  const [editDraft, setEditDraft] = useState<EngagementDraftFields>({
+    ...EMPTY_DEFAULTS,
     name: '',
     defaultFeeStructure: 'FIXED_FEE',
     defaultFeeAmountDollars: '',
@@ -148,7 +251,8 @@ function EngagementTab(): JSX.Element {
     engagementTypeId: '',
     namePattern: '',
   });
-  const [draft, setDraft] = useState({
+  const [draft, setDraft] = useState<EngagementDraftFields & { key: string }>({
+    ...EMPTY_DEFAULTS,
     key: '',
     name: '',
     defaultFeeStructure: 'FIXED_FEE',
@@ -161,7 +265,7 @@ function EngagementTab(): JSX.Element {
 
   async function load(): Promise<void> {
     try {
-      const [r, rc, et, sl] = await Promise.all([
+      const [r, rc, et, sl, wc] = await Promise.all([
         api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement'),
         api<{ items: RateCode[] }>('/api/staff/admin/rate-codes').catch(() => ({ items: [] })),
         api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
@@ -170,11 +274,15 @@ function EngagementTab(): JSX.Element {
         api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines').catch(() => ({
           items: [],
         })),
+        api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes').catch(() => ({
+          items: [],
+        })),
       ]);
       setItems(r.items ?? []);
       setRateCodes((rc.items ?? []).filter((c) => c.active));
       setEngagementTypes(et.items ?? []);
       setServiceLines(sl.items ?? []);
+      setWorkCodes(wc.items ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
     }
@@ -197,9 +305,11 @@ function EngagementTab(): JSX.Element {
           defaultRateCodeId: draft.defaultRateCodeId || null,
           engagementTypeId: draft.engagementTypeId || null,
           namePattern: draft.namePattern.trim() || null,
+          ...draftDefaultsToPayload(draft),
         }),
       });
       setDraft({
+        ...EMPTY_DEFAULTS,
         key: '',
         name: '',
         defaultFeeStructure: 'FIXED_FEE',
@@ -245,6 +355,20 @@ function EngagementTab(): JSX.Element {
       defaultRateCodeId: t.defaultRateCodeId ?? '',
       engagementTypeId: t.engagementTypeId ?? '',
       namePattern: t.namePattern ?? '',
+      defaultMixedModeEnabled: t.defaultMixedModeEnabled,
+      inScopeWorkCodeIds: t.inScopeWorkCodeIds ?? [],
+      defaultFeePassthroughEnabled: t.defaultFeePassthroughEnabled,
+      defaultTaxEnabled: t.defaultTaxEnabled,
+      // bps → percent string for the input (e.g. 425 → "4.25").
+      defaultTaxRatePercent: t.defaultTaxRateBps != null ? String(t.defaultTaxRateBps / 100) : '',
+      defaultTaxLabel: t.defaultTaxLabel ?? '',
+      defaultSurchargeEnabled: t.defaultSurchargeEnabled,
+      defaultSurchargeType: t.defaultSurchargeType ?? 'PERCENT',
+      defaultSurchargePercent:
+        t.defaultSurchargeValueBps != null ? String(t.defaultSurchargeValueBps / 100) : '',
+      defaultSurchargeFlatDollars: centsToDollarsInput(t.defaultSurchargeAmountCents),
+      defaultSurchargeLabel: t.defaultSurchargeLabel ?? '',
+      defaultRecurrenceFrequency: t.defaultRecurrenceFrequency ?? '',
     });
   }
 
@@ -263,6 +387,7 @@ function EngagementTab(): JSX.Element {
           defaultRateCodeId: editDraft.defaultRateCodeId || null,
           engagementTypeId: editDraft.engagementTypeId || null,
           namePattern: editDraft.namePattern.trim() || null,
+          ...draftDefaultsToPayload(editDraft),
         }),
       });
       setEditingId(null);
@@ -270,6 +395,273 @@ function EngagementTab(): JSX.Element {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'save_failed');
     }
+  }
+
+  // Shared editor for the new template-default toggles (mixed mode +
+  // work codes, fee passthrough, sales tax, surcharge, recurrence).
+  // Rendered identically in the create form and each edit row; `update`
+  // merges a partial into whichever draft is in play. `idPrefix` keeps
+  // the checkbox label `htmlFor`/`id` pairs unique across rows.
+  function renderDefaultsEditor(
+    d: EngagementDraftFields,
+    update: (patch: Partial<EngagementDraftFields>) => void,
+    idPrefix: string,
+  ): JSX.Element {
+    return (
+      <div style={{ display: 'grid', gap: 8 }}>
+        <label
+          htmlFor={`${idPrefix}-mixed-mode`}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            padding: 10,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+          }}
+        >
+          <input
+            id={`${idPrefix}-mixed-mode`}
+            type="checkbox"
+            aria-label="Default mixed-mode in-scope per entry"
+            checked={d.defaultMixedModeEnabled}
+            onChange={(e) => update({ defaultMixedModeEnabled: e.target.checked })}
+          />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+              Mixed-mode (in-scope per entry)
+            </span>
+            <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+              Time entries get flagged in_scope when their work code is in the list below.
+            </span>
+          </span>
+        </label>
+        {d.defaultMixedModeEnabled && (
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                color: tokens.color.textMuted,
+                marginBottom: 4,
+                textTransform: 'uppercase',
+              }}
+            >
+              In-scope work codes ({d.inScopeWorkCodeIds.length})
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {workCodes.length === 0 ? (
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  No work codes defined.
+                </span>
+              ) : (
+                workCodes.map((w) => {
+                  const on = d.inScopeWorkCodeIds.includes(w.id);
+                  return (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() =>
+                        update({
+                          inScopeWorkCodeIds: on
+                            ? d.inScopeWorkCodeIds.filter((x) => x !== w.id)
+                            : [...d.inScopeWorkCodeIds, w.id],
+                        })
+                      }
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: 999,
+                        border: `1px solid ${on ? tokens.color.accent : tokens.color.border}`,
+                        background: on ? tokens.color.accentMuted : 'transparent',
+                        color: on ? tokens.color.accent : tokens.color.text,
+                        fontSize: 12,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {w.name}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        <label
+          htmlFor={`${idPrefix}-fee-passthrough`}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            padding: 10,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+          }}
+        >
+          <input
+            id={`${idPrefix}-fee-passthrough`}
+            type="checkbox"
+            aria-label="Default fee passthrough"
+            checked={d.defaultFeePassthroughEnabled}
+            onChange={(e) => update({ defaultFeePassthroughEnabled: e.target.checked })}
+          />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>Fee passthrough</span>
+            <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+              Adds a processing-fee line item to invoices for engagements from this template.
+            </span>
+          </span>
+        </label>
+
+        <label
+          htmlFor={`${idPrefix}-tax-enabled`}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            padding: 10,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+          }}
+        >
+          <input
+            id={`${idPrefix}-tax-enabled`}
+            type="checkbox"
+            aria-label="Default charge sales tax"
+            checked={d.defaultTaxEnabled}
+            onChange={(e) => update({ defaultTaxEnabled: e.target.checked })}
+          />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+              Charge sales tax
+            </span>
+            <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+              Adds a tax line on invoices (applied to subtotal + surcharge).
+            </span>
+          </span>
+        </label>
+        {d.defaultTaxEnabled && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={d.defaultTaxRatePercent}
+              onChange={(e) => update({ defaultTaxRatePercent: e.target.value })}
+              placeholder="Tax rate (%)"
+              aria-label="Default tax rate percent"
+              style={fieldStyle}
+            />
+            <input
+              type="text"
+              value={d.defaultTaxLabel}
+              onChange={(e) => update({ defaultTaxLabel: e.target.value })}
+              placeholder="Tax label (e.g. GET, GRT, Sales tax)"
+              aria-label="Default tax label"
+              style={fieldStyle}
+            />
+          </div>
+        )}
+
+        <label
+          htmlFor={`${idPrefix}-surcharge-enabled`}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            padding: 10,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+          }}
+        >
+          <input
+            id={`${idPrefix}-surcharge-enabled`}
+            type="checkbox"
+            aria-label="Default add surcharge"
+            checked={d.defaultSurchargeEnabled}
+            onChange={(e) => update({ defaultSurchargeEnabled: e.target.checked })}
+          />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>
+              Add invoice surcharge
+            </span>
+            <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+              Firm-defined fee (e.g. technology fee, filing fee). Computed against the subtotal.
+            </span>
+          </span>
+        </label>
+        {d.defaultSurchargeEnabled && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: 8 }}>
+            <select
+              value={d.defaultSurchargeType}
+              onChange={(e) => update({ defaultSurchargeType: e.target.value as SurchargeType })}
+              aria-label="Default surcharge type"
+              style={fieldStyle}
+            >
+              <option value="PERCENT">Percent of subtotal</option>
+              <option value="FLAT_AMOUNT">Flat dollar amount</option>
+            </select>
+            {d.defaultSurchargeType === 'PERCENT' ? (
+              <input
+                type="text"
+                inputMode="decimal"
+                value={d.defaultSurchargePercent}
+                onChange={(e) => update({ defaultSurchargePercent: e.target.value })}
+                placeholder="Surcharge %"
+                aria-label="Default surcharge percent"
+                style={fieldStyle}
+              />
+            ) : (
+              <input
+                type="text"
+                inputMode="decimal"
+                value={d.defaultSurchargeFlatDollars}
+                onChange={(e) => update({ defaultSurchargeFlatDollars: e.target.value })}
+                placeholder="Surcharge ($)"
+                aria-label="Default surcharge dollars"
+                style={fieldStyle}
+              />
+            )}
+            <input
+              type="text"
+              value={d.defaultSurchargeLabel}
+              onChange={(e) => update({ defaultSurchargeLabel: e.target.value })}
+              placeholder="Surcharge label"
+              aria-label="Default surcharge label"
+              style={fieldStyle}
+            />
+          </div>
+        )}
+
+        <div>
+          <label
+            htmlFor={`${idPrefix}-recurrence`}
+            style={{
+              fontSize: 11,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Default recurrence
+          </label>
+          <select
+            id={`${idPrefix}-recurrence`}
+            value={d.defaultRecurrenceFrequency}
+            onChange={(e) =>
+              update({ defaultRecurrenceFrequency: e.target.value as '' | RecurrenceFrequency })
+            }
+            aria-label="Default recurrence frequency"
+            style={{ ...fieldStyle, width: '100%' }}
+          >
+            <option value="">— none —</option>
+            {RECURRENCE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -409,6 +801,7 @@ function EngagementTab(): JSX.Element {
                 <code>{'{{today}}'}</code>. Left blank → engagement name comes from the create form.
               </p>
             </div>
+            {renderDefaultsEditor(draft, (patch) => setDraft({ ...draft, ...patch }), 'new-tpl')}
             <div>
               <Button size="sm" onClick={() => void add()}>
                 Create
@@ -608,6 +1001,12 @@ function EngagementTab(): JSX.Element {
                       </p>
                     </div>
                   )}
+                  {isEditing &&
+                    renderDefaultsEditor(
+                      editDraft,
+                      (patch) => setEditDraft({ ...editDraft, ...patch }),
+                      `edit-tpl-${t.id}`,
+                    )}
                 </div>
               );
             })}

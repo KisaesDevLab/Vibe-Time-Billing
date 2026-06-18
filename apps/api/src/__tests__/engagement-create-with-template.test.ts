@@ -10,8 +10,9 @@ import { eq, sql } from 'drizzle-orm';
 import type express from 'express';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { engagementTemplates, engagements } from '@vibe/db/schema';
+import { engagementRecurrences, engagementTemplates, engagements } from '@vibe/db/schema';
 import { createEngagementRouter } from '../engagements/routes';
+import { spawnNextEngagement } from '../engagements/recurrence-spawn';
 
 let harness: PgliteHarness;
 
@@ -235,6 +236,59 @@ describe('POST /api/staff/engagements with templateId + period', () => {
     expect((r.jsonBody as { error: string }).error).toBe('name_required');
   });
 
+  it('defaults partner to the client owner when partnerId is omitted', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const router = createEngagementRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'post', '/', {
+      ...req({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: { clientId: seed.clientId, name: 'No Partner Set', feeStructure: 'HOURLY' },
+      }),
+    });
+    expect(r.statusCode).toBe(201);
+    const [row] = await harness.db
+      .select()
+      .from(engagements)
+      .where(eq(engagements.id, (r.jsonBody as { id: string }).id));
+    // seedMinimalFirm sets the client's partner_in_charge_id = appUserId.
+    expect(row!.partnerId).toBe(seed.appUserId);
+  });
+
+  it('respects an explicit partnerId over the client owner', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const u = await harness.db.execute(
+      sql`INSERT INTO app_user (firm_id, email, full_name, first_name, last_name)
+          VALUES (${seed.firmId}, 'p2@test.example', 'Partner Two', 'P', 'T') RETURNING id`,
+    );
+    const otherId = (u as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const router = createEngagementRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'post', '/', {
+      ...req({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          clientId: seed.clientId,
+          name: 'Explicit Partner',
+          feeStructure: 'HOURLY',
+          partnerId: otherId,
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(201);
+    const [row] = await harness.db
+      .select()
+      .from(engagements)
+      .where(eq(engagements.id, (r.jsonBody as { id: string }).id));
+    expect(row!.partnerId).toBe(otherId);
+  });
+
   it('persists period fields without a template', async () => {
     const seed = await seedMinimalFirm(harness.db);
     const router = createEngagementRouter({
@@ -261,5 +315,64 @@ describe('POST /api/staff/engagements with templateId + period', () => {
     expect(row!.periodYear).toBe(2026);
     expect(row!.periodMonth).toBe(6);
     expect(row!.periodLabel).toBe('Q2 2026');
+  });
+});
+
+describe('recurrence spawn inherits template defaults + client owner', () => {
+  it('applies the template toggles and sets partner to the client owner', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const [tpl] = await harness.db
+      .insert(engagementTemplates)
+      .values({
+        firmId: seed.firmId,
+        key: `rec-${Math.random().toString(36).slice(2, 8)}`,
+        name: 'Recurring BK',
+        defaultFeeStructure: 'FIXED_FEE',
+        defaultFeeAmountCents: 50000,
+        defaultMixedModeEnabled: true,
+        defaultFeePassthroughEnabled: true,
+        defaultTaxEnabled: true,
+        defaultTaxRateBps: 425,
+        defaultTaxLabel: 'GET',
+        defaultSurchargeEnabled: true,
+        defaultSurchargeType: 'PERCENT',
+        defaultSurchargeValueBps: 300,
+        defaultSurchargeLabel: 'Tech fee',
+      })
+      .returning({ id: engagementTemplates.id });
+    const [rec] = await harness.db
+      .insert(engagementRecurrences)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        templateId: tpl!.id,
+        frequency: 'MONTHLY',
+        triggerMode: 'ON_COMPLETION',
+        seedPeriodYear: 2026,
+        seedPeriodMonth: 1,
+      })
+      .returning({ id: engagementRecurrences.id });
+
+    const result = await spawnNextEngagement({
+      db: harness.db,
+      recurrenceId: rec!.id,
+      firmId: seed.firmId,
+      actorAppUserId: seed.appUserId,
+      now: new Date('2026-01-15T00:00:00Z'),
+    });
+    expect(result.kind).toBe('spawned');
+    const engagementId = (result as { engagementId: string }).engagementId;
+    const [eng] = await harness.db
+      .select()
+      .from(engagements)
+      .where(eq(engagements.id, engagementId));
+    expect(eng!.partnerId).toBe(seed.appUserId);
+    expect(eng!.mixedModeEnabled).toBe(true);
+    expect(eng!.feePassthroughEnabled).toBe(true);
+    expect(eng!.taxEnabled).toBe(true);
+    expect(eng!.taxRateBps).toBe(425);
+    expect(eng!.taxLabel).toBe('GET');
+    expect(eng!.surchargeEnabled).toBe(true);
+    expect(eng!.surchargeValueBps).toBe(300);
   });
 });

@@ -146,7 +146,7 @@ export async function spawnNextEngagement(args: SpawnArgs): Promise<SpawnResult>
   if (!tpl) return { kind: 'error', reason: 'template_missing' };
 
   const [client] = await args.db
-    .select({ name: clients.name })
+    .select({ name: clients.name, partnerId: clients.partnerInChargeId })
     .from(clients)
     .where(eq(clients.id, rec.clientId))
     .limit(1);
@@ -176,6 +176,21 @@ export async function spawnNextEngagement(args: SpawnArgs): Promise<SpawnResult>
         feeAmountCents: tpl.defaultFeeAmountCents ?? null,
         budgetHours: tpl.defaultBudgetHours ?? null,
         defaultRateCodeId: tpl.defaultRateCodeId ?? null,
+        engagementTypeId: tpl.engagementTypeId ?? null,
+        // 0170 — recurring engagements inherit the template's toggle defaults +
+        // the client's owning partner, matching a fresh template-based create.
+        partnerId: client.partnerId ?? null,
+        mixedModeEnabled: tpl.defaultMixedModeEnabled,
+        inScopeWorkCodeIds: tpl.inScopeWorkCodeIds,
+        feePassthroughEnabled: tpl.defaultFeePassthroughEnabled,
+        taxEnabled: tpl.defaultTaxEnabled,
+        taxRateBps: tpl.defaultTaxRateBps ?? 0,
+        taxLabel: tpl.defaultTaxLabel ?? 'Sales tax',
+        surchargeEnabled: tpl.defaultSurchargeEnabled,
+        surchargeType: tpl.defaultSurchargeType ?? 'PERCENT',
+        surchargeValueBps: tpl.defaultSurchargeValueBps ?? 0,
+        surchargeAmountCents: tpl.defaultSurchargeAmountCents ?? 0,
+        surchargeLabel: tpl.defaultSurchargeLabel ?? null,
         periodYear: period.year ?? null,
         periodMonth: period.month ?? null,
         periodLabel: period.label ?? null,

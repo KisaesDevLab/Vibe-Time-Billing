@@ -22,11 +22,15 @@ import {
   makeDefaultRecurrenceDraft,
   recurrenceDraftToPayload,
   type RecurrenceDraft,
+  type RecurrenceFrequency,
 } from './engagements/RecurrenceComposer';
 
 interface Client {
   id: string;
   name: string;
+  // The clients list already returns the client's owning partner; the
+  // form defaults the Partner field to it when a client is selected.
+  partnerInChargeId: string | null;
 }
 
 interface EngagementTpl {
@@ -47,6 +51,20 @@ interface EngagementTpl {
   // Inherited onto the engagement at create time so list/report views
   // can roll up by type → service line.
   engagementTypeId: string | null;
+  // v2 — additional defaults the template carries onto the form when
+  // picked (mixed-mode, fee passthrough, sales tax, surcharge, and the
+  // recurrence frequency to prefill).
+  defaultMixedModeEnabled: boolean;
+  defaultFeePassthroughEnabled: boolean;
+  defaultTaxEnabled: boolean;
+  defaultTaxRateBps: number | null;
+  defaultTaxLabel: string | null;
+  defaultSurchargeEnabled: boolean;
+  defaultSurchargeType: 'PERCENT' | 'FLAT_AMOUNT';
+  defaultSurchargeValueBps: number | null;
+  defaultSurchargeAmountCents: number | null;
+  defaultSurchargeLabel: string | null;
+  defaultRecurrenceFrequency: RecurrenceFrequency | null;
   isSystem: boolean;
   status: string;
 }
@@ -204,6 +222,20 @@ export function EngagementCreatePage(): JSX.Element {
     })();
   }, []);
 
+  // Default the Partner to the selected client's owning partner. Keyed
+  // on clientId + the loaded clients list so it also runs once the list
+  // resolves for the ?clientId= deep-link case. Re-defaults whenever the
+  // user changes the Client; a manual Partner change after that sticks
+  // until the Client changes again (this effect only fires on clientId).
+  useEffect(() => {
+    if (!clientId) return;
+    const client = clients.find((c) => c.id === clientId);
+    if (client?.partnerInChargeId) setPartnerId(client.partnerInChargeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
+    // omit setPartnerId (stable) and depend only on clientId/clients so a
+    // later manual partner edit isn't overwritten.
+  }, [clientId, clients]);
+
   function applyTemplate(id: string): void {
     setPickedTemplateId(id);
     const tpl = templates.find((t) => t.id === id);
@@ -218,6 +250,26 @@ export function EngagementCreatePage(): JSX.Element {
     // report that rolls up by type → service line) gets categorized
     // without the user having to pick a second time.
     if (tpl.engagementTypeId) setEngagementTypeId(tpl.engagementTypeId);
+    // v2 — additional fee/billing defaults carried by the template.
+    setMixedModeEnabled(tpl.defaultMixedModeEnabled);
+    setFeePassthroughEnabled(tpl.defaultFeePassthroughEnabled);
+    setTaxEnabled(tpl.defaultTaxEnabled);
+    setTaxRatePercent(tpl.defaultTaxRateBps != null ? String(tpl.defaultTaxRateBps / 100) : '');
+    setTaxLabel(tpl.defaultTaxLabel ?? '');
+    setSurchargeEnabled(tpl.defaultSurchargeEnabled);
+    setSurchargeType(tpl.defaultSurchargeType);
+    setSurchargePercent(
+      tpl.defaultSurchargeValueBps != null ? String(tpl.defaultSurchargeValueBps / 100) : '',
+    );
+    setSurchargeFlatDollars(centsToDollarsInput(tpl.defaultSurchargeAmountCents));
+    setSurchargeLabel(tpl.defaultSurchargeLabel ?? '');
+    // Prefill the recurrence frequency without enabling recurring — the
+    // user still opts in via the checkbox, but the frequency is set when
+    // they do.
+    const freq = tpl.defaultRecurrenceFrequency;
+    if (freq) {
+      setRecurrenceDraft((d) => ({ ...d, frequency: freq }));
+    }
   }
 
   // 0083 — pick a template that uses a name_pattern + the user left

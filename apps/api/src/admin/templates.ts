@@ -52,6 +52,21 @@ const EngagementSchema = z.object({
   // {{period.year/month/label}}, {{today}}, {{engagement.*}}. NULL =
   // use static `name` field as the engagement name.
   namePattern: z.string().max(200).nullable().optional(),
+  // 0170 — defaults for the create form's green toggles + sub-config.
+  defaultMixedModeEnabled: z.boolean().optional(),
+  defaultFeePassthroughEnabled: z.boolean().optional(),
+  defaultTaxEnabled: z.boolean().optional(),
+  defaultTaxRateBps: z.number().int().min(0).max(10_000).nullable().optional(),
+  defaultTaxLabel: z.string().min(1).max(80).nullable().optional(),
+  defaultSurchargeEnabled: z.boolean().optional(),
+  defaultSurchargeType: z.enum(['PERCENT', 'FLAT_AMOUNT']).nullable().optional(),
+  defaultSurchargeValueBps: z.number().int().min(0).max(10_000).nullable().optional(),
+  defaultSurchargeAmountCents: z.number().int().nonnegative().nullable().optional(),
+  defaultSurchargeLabel: z.string().min(1).max(80).nullable().optional(),
+  defaultRecurrenceFrequency: z
+    .enum(['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL'])
+    .nullable()
+    .optional(),
 });
 
 const LetterSchema = z.object({
@@ -138,6 +153,17 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultRateCodeId: d.defaultRateCodeId ?? null,
           customFieldsSchema: d.customFieldsSchema ?? {},
           namePattern: d.namePattern ?? null,
+          defaultMixedModeEnabled: d.defaultMixedModeEnabled ?? false,
+          defaultFeePassthroughEnabled: d.defaultFeePassthroughEnabled ?? false,
+          defaultTaxEnabled: d.defaultTaxEnabled ?? false,
+          defaultTaxRateBps: d.defaultTaxRateBps ?? null,
+          defaultTaxLabel: d.defaultTaxLabel ?? null,
+          defaultSurchargeEnabled: d.defaultSurchargeEnabled ?? false,
+          defaultSurchargeType: d.defaultSurchargeType ?? null,
+          defaultSurchargeValueBps: d.defaultSurchargeValueBps ?? null,
+          defaultSurchargeAmountCents: d.defaultSurchargeAmountCents ?? null,
+          defaultSurchargeLabel: d.defaultSurchargeLabel ?? null,
+          defaultRecurrenceFrequency: d.defaultRecurrenceFrequency ?? null,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -183,6 +209,25 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
       if (d.defaultRateCodeId !== undefined) updates.defaultRateCodeId = d.defaultRateCodeId;
       if (d.customFieldsSchema !== undefined) updates.customFieldsSchema = d.customFieldsSchema;
       if (d.namePattern !== undefined) updates.namePattern = d.namePattern;
+      if (d.defaultMixedModeEnabled !== undefined)
+        updates.defaultMixedModeEnabled = d.defaultMixedModeEnabled;
+      if (d.defaultFeePassthroughEnabled !== undefined)
+        updates.defaultFeePassthroughEnabled = d.defaultFeePassthroughEnabled;
+      if (d.defaultTaxEnabled !== undefined) updates.defaultTaxEnabled = d.defaultTaxEnabled;
+      if (d.defaultTaxRateBps !== undefined) updates.defaultTaxRateBps = d.defaultTaxRateBps;
+      if (d.defaultTaxLabel !== undefined) updates.defaultTaxLabel = d.defaultTaxLabel;
+      if (d.defaultSurchargeEnabled !== undefined)
+        updates.defaultSurchargeEnabled = d.defaultSurchargeEnabled;
+      if (d.defaultSurchargeType !== undefined)
+        updates.defaultSurchargeType = d.defaultSurchargeType;
+      if (d.defaultSurchargeValueBps !== undefined)
+        updates.defaultSurchargeValueBps = d.defaultSurchargeValueBps;
+      if (d.defaultSurchargeAmountCents !== undefined)
+        updates.defaultSurchargeAmountCents = d.defaultSurchargeAmountCents;
+      if (d.defaultSurchargeLabel !== undefined)
+        updates.defaultSurchargeLabel = d.defaultSurchargeLabel;
+      if (d.defaultRecurrenceFrequency !== undefined)
+        updates.defaultRecurrenceFrequency = d.defaultRecurrenceFrequency;
       await deps.db
         .update(engagementTemplates)
         .set(updates)
@@ -269,6 +314,18 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultLetterTemplateId: src.defaultLetterTemplateId,
           defaultRateCodeId: src.defaultRateCodeId,
           customFieldsSchema: src.customFieldsSchema,
+          namePattern: src.namePattern,
+          defaultMixedModeEnabled: src.defaultMixedModeEnabled,
+          defaultFeePassthroughEnabled: src.defaultFeePassthroughEnabled,
+          defaultTaxEnabled: src.defaultTaxEnabled,
+          defaultTaxRateBps: src.defaultTaxRateBps,
+          defaultTaxLabel: src.defaultTaxLabel,
+          defaultSurchargeEnabled: src.defaultSurchargeEnabled,
+          defaultSurchargeType: src.defaultSurchargeType,
+          defaultSurchargeValueBps: src.defaultSurchargeValueBps,
+          defaultSurchargeAmountCents: src.defaultSurchargeAmountCents,
+          defaultSurchargeLabel: src.defaultSurchargeLabel,
+          defaultRecurrenceFrequency: src.defaultRecurrenceFrequency,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });

@@ -517,8 +517,20 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       // they don't bleed into the engagements insert; period is mapped
       // to the explicit period_year/month/label columns below.
       void templateId;
+      // Default the engagement's partner to the client's owner (partner-in-
+      // charge) when the request didn't specify one — streamlines creation.
+      let partnerId = engagementFields.partnerId ?? null;
+      if (partnerId == null) {
+        const [owner] = await deps.db
+          .select({ id: clients.partnerInChargeId })
+          .from(clients)
+          .where(eq(clients.id, parsed.data.clientId))
+          .limit(1);
+        partnerId = owner?.id ?? null;
+      }
       const insertVals = {
         ...engagementFields,
+        partnerId,
         name: resolvedName,
         budgetHours: engagementFields.budgetHours?.toString(),
         periodYear: period?.year ?? null,
