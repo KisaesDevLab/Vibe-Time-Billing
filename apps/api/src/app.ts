@@ -139,6 +139,7 @@ import { createAppointmentLocationRouter } from './appointments/locations-routes
 import { createBookingSettingsRouter } from './appointments/booking-settings-routes';
 import { createSlotsRouter } from './appointments/slots-routes';
 import { createBookingRouter } from './appointments/booking-routes';
+import { createBookingAdminRouter } from './appointments/booking-admin-routes';
 import { createAppointmentPublicRouter } from './appointments/public-routes';
 import { createPublicBookingRouter } from './appointments/public-booking-routes';
 import { createAppointmentTwilioRouter } from './appointments/twilio-routes';
@@ -1486,6 +1487,16 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, bookingRouter);
+
+  // 0168 — public booking page management + the booking-request approval queue.
+  const bookingAdminRouter = createBookingAdminRouter({
+    db: deps.db,
+    redis: deps.redis,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+    staffBaseUrl: config.APP_BASE_URL,
+  });
+  app.use('/api/staff/appointments', auth.requireAuth, auth.requireCsrf, bookingAdminRouter);
 
   const appointmentRouter = createAppointmentRouter({
     db: deps.db,
