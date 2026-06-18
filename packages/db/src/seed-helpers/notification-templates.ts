@@ -231,6 +231,248 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
       'Review and propose a new time in the reschedule inbox.\n\n' +
       '— {{ firm.name }}',
   },
+
+  // Intake — secure document-upload link ---------------------------
+  {
+    kind: 'intake_link',
+    channel: 'EMAIL',
+    subject: 'Securely send your documents to {{ firm.displayName }}',
+    body:
+      "You've been invited to securely upload your documents to {{ firm.displayName }}. " +
+      'Use the private link below — no account or password needed:\n\n' +
+      '{{ link.url }}\n\n' +
+      'For your security, this link expires in {{ link.expires_days }} days.\n\n' +
+      'If you have any questions, simply reply to this email or contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'intake_link',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: securely upload your documents here (link expires in {{ link.expires_days }} days): {{ link.url }}',
+  },
+
+  // Portal access — invite / approval ------------------------------
+  {
+    kind: 'portal_invite',
+    channel: 'EMAIL',
+    subject: 'Your secure client portal with {{ firm.displayName }}',
+    body:
+      'Hello,\n\n' +
+      '{{ firm.displayName }} has invited you to a secure online portal where you can view invoices, ' +
+      'make payments, and exchange documents. Get started here:\n\n' +
+      '{{ link.url }}\n\n' +
+      "You'll confirm your identity with a one-time code — there's no password to remember.\n\n" +
+      'If you have any questions, contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'portal_invite',
+    channel: 'SMS',
+    body: '{{ firm.displayName }} invited you to your secure client portal: {{ link.url }}',
+  },
+
+  // Statement of account -------------------------------------------
+  {
+    kind: 'statement_sent',
+    channel: 'EMAIL',
+    subject: 'Your account statement from {{ firm.displayName }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Your account statement is attached. The current balance is {{ statement.balance }}.\n\n' +
+      'You can review your invoices and pay securely online any time:\n' +
+      '{{ statement.portal_url }}\n\n' +
+      'If you have any questions about your account, contact us at {{ firm.support_email }} or {{ firm.support_phone }}.\n\n' +
+      'Sincerely,\n{{ firm.displayName }}',
+  },
+
+  // Engagement letter ----------------------------------------------
+  {
+    kind: 'engagement_letter_sent',
+    channel: 'EMAIL',
+    subject: 'Please review and sign: {{ engagement.name }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Your engagement letter for {{ engagement.name }} is ready for your review and signature:\n\n' +
+      '{{ link.url }}\n\n' +
+      'Please review it carefully and sign at your earliest convenience so we can begin work. ' +
+      'If you have any questions, reply to this email or contact us at {{ firm.support_email }}.\n\n' +
+      'Thank you,\n{{ firm.displayName }}',
+  },
+
+  // E-signature ----------------------------------------------------
+  {
+    kind: 'signature_request',
+    channel: 'EMAIL',
+    subject: 'Your signature is requested: {{ document.name }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      '{{ firm.displayName }} has sent you a document that needs your signature:\n\n' +
+      '{{ document.name }}\n\n' +
+      'Review and sign securely here:\n{{ link.url }}\n\n' +
+      'If you have any questions, contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'signature_complete',
+    channel: 'EMAIL',
+    subject: 'Completed: {{ document.name }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Thank you — {{ document.name }} has been fully signed. A copy is available for your records:\n\n' +
+      '{{ link.url }}\n\n' +
+      'We appreciate your business.\n\n' +
+      '{{ firm.displayName }}',
+  },
+
+  // Retainers ------------------------------------------------------
+  {
+    kind: 'retainer_activated',
+    channel: 'EMAIL',
+    subject: 'Your retainer with {{ firm.displayName }} is active',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Your retainer {{ retainer.name }} is now active with a balance of {{ retainer.balance }}.\n\n' +
+      'You can review activity any time in your portal:\n{{ retainer.portal_url }}\n\n' +
+      'Thank you for your business.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'retainer_exhausted',
+    channel: 'EMAIL',
+    subject: 'Your retainer balance needs attention',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Your retainer {{ retainer.name }} has been fully applied (remaining balance {{ retainer.balance }}). ' +
+      'To avoid any interruption in service, please contact us to replenish it:\n\n' +
+      '{{ firm.support_email }} or {{ firm.support_phone }}\n\n' +
+      'Thank you,\n{{ firm.displayName }}',
+  },
+  {
+    kind: 'retainer_expiring',
+    channel: 'EMAIL',
+    subject: 'Your retainer expires {{ retainer.expires_date }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'A reminder that your retainer {{ retainer.name }} expires on {{ retainer.expires_date }} ' +
+      '(remaining balance {{ retainer.balance }}).\n\n' +
+      'If you would like to renew or have any questions, contact us at {{ firm.support_email }}.\n\n' +
+      'Thank you,\n{{ firm.displayName }}',
+  },
+
+  // Requests — drop-off & document requests ------------------------
+  {
+    kind: 'dropoff_reminder',
+    channel: 'EMAIL',
+    subject: 'Reminder: documents for {{ engagement.name }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      "This is a friendly reminder that we're still waiting on documents for {{ engagement.name }}. " +
+      'You can drop them off securely here:\n\n' +
+      '{{ link.url }}\n\n' +
+      'If you have already sent them, thank you and please disregard this note.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'dropoff_reminder',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: a reminder to drop off your documents for {{ engagement.name }}: {{ link.url }}',
+  },
+  {
+    kind: 'document_request',
+    channel: 'EMAIL',
+    subject: 'Action needed: {{ request.title }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'To keep your work moving, we need the following from you:\n\n' +
+      '{{ request.title }}\n\n' +
+      'Please respond securely here:\n{{ link.url }}\n\n' +
+      'Questions? Contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'document_request',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: we need a few items from you — {{ request.title }}. Respond here: {{ link.url }}',
+  },
+
+  // Tax payment reminder -------------------------------------------
+  {
+    kind: 'tax_payment_reminder',
+    channel: 'EMAIL',
+    subject: 'Upcoming tax payment due {{ payment.due_date }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'This is a reminder of an upcoming tax payment:\n\n' +
+      'Authority: {{ payment.authority }}\n' +
+      'Amount: {{ payment.amount }}\n' +
+      'Due: {{ payment.due_date }}\n\n' +
+      'If you have any questions, contact us at {{ firm.support_email }} or {{ firm.support_phone }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'tax_payment_reminder',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: reminder — {{ payment.authority }} payment of {{ payment.amount }} is due {{ payment.due_date }}.',
+  },
+
+  // Deliverable unlocked (paid → files available) ------------------
+  {
+    kind: 'deliverable_unlocked',
+    channel: 'EMAIL',
+    subject: 'Your documents for {{ engagement.name }} are ready',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'Thank you for your payment. Your completed documents for {{ engagement.name }} are now available to download in your portal:\n\n' +
+      '{{ link.url }}\n\n' +
+      'We appreciate your business.\n\n' +
+      '{{ firm.displayName }}',
+  },
+
+  // Secure file share ----------------------------------------------
+  {
+    kind: 'share_link',
+    channel: 'EMAIL',
+    subject: '{{ firm.displayName }} shared a file with you',
+    body:
+      'Hello,\n\n' +
+      '{{ firm.displayName }} has securely shared the following with you:\n\n' +
+      '{{ share.description }}\n\n' +
+      'Access it here:\n{{ link.url }}\n\n' +
+      'If you have any questions, contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'share_link',
+    channel: 'SMS',
+    body: '{{ firm.displayName }} shared a file with you: {{ link.url }}',
+  },
+
+  // Calendar reminder (non-appointment events) ---------------------
+  {
+    kind: 'calendar_reminder',
+    channel: 'EMAIL',
+    subject: 'Reminder: {{ event.subject }} on {{ event.date }}',
+    body:
+      'Hi {{ client.name }},\n\n' +
+      'A reminder of your upcoming event with {{ firm.displayName }}:\n\n' +
+      '{{ event.subject }}\n' +
+      '{{ event.date }} at {{ event.time }}\n\n' +
+      '— {{ firm.displayName }}',
+  },
+
+  // Authentication — email OTP -------------------------------------
+  {
+    kind: 'email_otp',
+    channel: 'EMAIL',
+    subject: 'Your verification code for {{ firm.displayName }}',
+    body:
+      'Hello,\n\n' +
+      'Your {{ firm.displayName }} verification code is:\n\n' +
+      '{{ auth.code }}\n\n' +
+      'It expires in 10 minutes. For your security, do not share this code with anyone. ' +
+      'If you did not request it, you can safely ignore this email.\n\n' +
+      '{{ firm.displayName }}',
+  },
 ];
 
 /**

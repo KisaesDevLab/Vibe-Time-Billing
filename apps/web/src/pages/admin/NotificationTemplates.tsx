@@ -58,6 +58,23 @@ const KINDS: ReadonlyArray<KindEntry> = [
     label: 'Reschedule requested (staff alert)',
     channels: ['EMAIL'],
   },
+  // Intake, portal, documents & client comms.
+  { key: 'intake_link', label: 'Intake link (document upload)', channels: ['EMAIL', 'SMS'] },
+  { key: 'portal_invite', label: 'Portal invite / access granted', channels: ['EMAIL', 'SMS'] },
+  { key: 'statement_sent', label: 'Account statement', channels: ['EMAIL'] },
+  { key: 'engagement_letter_sent', label: 'Engagement letter sent', channels: ['EMAIL'] },
+  { key: 'signature_request', label: 'Signature requested', channels: ['EMAIL'] },
+  { key: 'signature_complete', label: 'Signature completed', channels: ['EMAIL'] },
+  { key: 'retainer_activated', label: 'Retainer activated', channels: ['EMAIL'] },
+  { key: 'retainer_exhausted', label: 'Retainer exhausted', channels: ['EMAIL'] },
+  { key: 'retainer_expiring', label: 'Retainer expiring', channels: ['EMAIL'] },
+  { key: 'dropoff_reminder', label: 'Drop-off reminder', channels: ['EMAIL', 'SMS'] },
+  { key: 'document_request', label: 'Document request', channels: ['EMAIL', 'SMS'] },
+  { key: 'tax_payment_reminder', label: 'Tax payment reminder', channels: ['EMAIL', 'SMS'] },
+  { key: 'deliverable_unlocked', label: 'Documents ready (paid)', channels: ['EMAIL'] },
+  { key: 'share_link', label: 'Secure file share', channels: ['EMAIL', 'SMS'] },
+  { key: 'calendar_reminder', label: 'Calendar reminder', channels: ['EMAIL'] },
+  { key: 'email_otp', label: 'Email verification code', channels: ['EMAIL'] },
 ];
 
 const SAMPLE_VARIABLES = [
@@ -68,10 +85,16 @@ const SAMPLE_VARIABLES = [
   'invoice.due_date',
   'invoice.balance',
   'invoice.portal_url',
+  // Firm + branding tokens (resolve from Admin → Branding).
   'firm.name',
   'firm.displayName',
+  'firm.logo_url',
+  'firm.support_email',
+  'firm.support_phone',
   'firm.supportEmail',
   'firm.supportPhone',
+  'firm.fax',
+  'firm.web',
   // Authentication tokens.
   'auth.magic_url',
   'auth.code',
@@ -87,6 +110,26 @@ const SAMPLE_VARIABLES = [
   'appointment.cancelled_by',
   'staff.names',
   'request.message',
+  // Generic action link (intake, portal invite, signing, drop-off, share…).
+  'link.url',
+  'link.expires_days',
+  // Documents, statements, retainers, payments, events.
+  'document.name',
+  'statement.balance',
+  'statement.portal_url',
+  'engagement.name',
+  'retainer.name',
+  'retainer.balance',
+  'retainer.expires_date',
+  'retainer.portal_url',
+  'request.title',
+  'payment.authority',
+  'payment.amount',
+  'payment.due_date',
+  'share.description',
+  'event.subject',
+  'event.date',
+  'event.time',
 ];
 
 // 0146 — tokens available to engagement_status:* templates (mirrors
