@@ -19,6 +19,7 @@ import { normalizePhone } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
+import { firmScope, renderTemplate } from '../notifications/templating';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
 import { createFileInClientFolder } from '../clients/create-file';
@@ -409,16 +410,32 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
         ok: false,
       };
 
+      // Firm-editable copy (Admin → Notification templates, kind
+      // `intake_link`); falls back to the seeded default when untouched.
+      const firm = await firmScope(deps.db, firmId);
+      const tplContext = { firm, link: { url, expires_days: String(expiresInDays) } };
+
       if (parsed.data.recipientEmail) {
         email.attempted = true;
         if (!deps.sendEmail) {
           email.error = 'email_not_configured';
         } else {
           try {
+            const { subject, body } = await renderTemplate({
+              db: deps.db,
+              firmId,
+              kind: 'intake_link',
+              channel: 'EMAIL',
+              fallback: {
+                subject: 'Securely send your documents',
+                body: `You've been invited to securely upload documents:\n\n${url}\n\nThis link expires in ${expiresInDays} days.`,
+              },
+              context: tplContext,
+            });
             await deps.sendEmail({
               to: parsed.data.recipientEmail,
-              subject: 'Securely send your documents',
-              body: `You've been invited to securely upload documents:\n\n${url}\n\nThis link expires in ${expiresInDays} days.`,
+              subject: subject ?? 'Securely send your documents',
+              body,
             });
             email.ok = true;
           } catch (err) {
@@ -437,9 +454,17 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           sms.error = 'sms_not_configured';
         } else {
           try {
+            const { body } = await renderTemplate({
+              db: deps.db,
+              firmId,
+              kind: 'intake_link',
+              channel: 'SMS',
+              fallback: { body: `Securely upload your documents: ${url}` },
+              context: tplContext,
+            });
             await deps.sendSms({
               to: normalized,
-              body: `Securely upload your documents: ${url}`,
+              body,
             });
             sms.ok = true;
           } catch (err) {
