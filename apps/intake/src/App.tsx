@@ -14,6 +14,7 @@ import { IntakeLayout } from './pages/IntakeLayout';
 import { StaffLookup } from './pages/StaffLookup';
 import { Intake } from './pages/Intake';
 import { Token } from './pages/Token';
+import { Book } from './pages/Book';
 
 export function App(): JSX.Element {
   return (
@@ -22,6 +23,7 @@ export function App(): JSX.Element {
         <Route path="/" element={<StaffLookup />} />
         <Route path="/:staffId" element={<Intake />} />
         <Route path="/t/:token" element={<Token />} />
+        <Route path="/book/:slug" element={<Book />} />
         <Route path="*" element={<StaffLookup />} />
       </Routes>
     </IntakeLayout>

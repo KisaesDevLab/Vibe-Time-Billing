@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: Elastic-2.0
+//
+// 0168 — the booking-request approval inbox. Each pending public-booking
+// request renders as a card with the requested time, the staff member,
+// the visitor's contact details and notes, and Approve / Decline actions.
+// Approving creates the appointment; declining records a reason and emails
+// the visitor. Backs onto /api/staff/appointments/booking-requests.
+
+import { useEffect, useState } from 'react';
+
+import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
+
+import { api } from '../api-client';
+
+interface BookingRequest {
+  id: string;
+  bookingLinkId: string | null;
+  staffId: string;
+  staffName: string;
+  startsAt: string;
+  endsAt: string;
+  visitorName: string;
+  visitorEmail: string;
+  visitorPhone: string | null;
+  notes: string | null;
+  holdExpiresAt: string;
+  createdAt: string;
+}
+
+function fmtRange(startsAt: string, endsAt: string): string {
+  const s = new Date(startsAt);
+  const e = new Date(endsAt);
+  const date = s.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+  const t = (d: Date): string => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `${date} · ${t(s)} – ${t(e)}`;
+}
+
+export function BookingRequestsPage(): JSX.Element {
+  const [items, setItems] = useState<BookingRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [decliningId, setDecliningId] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+
+  async function load(): Promise<void> {
+    setLoading(true);
+    try {
+      const r = await api<{ items: BookingRequest[] }>('/api/staff/appointments/booking-requests');
+      setItems(r.items ?? []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function approve(id: string): Promise<void> {
+    setBusyId(id);
+    setError(null);
+    try {
+      await api<{ ok: boolean; appointmentId: string }>(
+        `/api/staff/appointments/booking-requests/${id}/approve`,
+        { method: 'POST' },
+      );
+      await load();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'failed';
+      setError(
+        msg === 'slot_taken'
+          ? 'That time is no longer available — the slot was taken.'
+          : msg === 'not_an_approver'
+            ? 'You are not an approver for this booking page.'
+            : msg,
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function decline(id: string): Promise<void> {
+    setBusyId(id);
+    setError(null);
+    try {
+      await api(`/api/staff/appointments/booking-requests/${id}/decline`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason.trim() || undefined }),
+      });
+      setDecliningId(null);
+      setReason('');
+      await load();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'failed';
+      setError(msg === 'not_an_approver' ? 'You are not an approver for this booking page.' : msg);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1 style={{ margin: 0, fontSize: 22 }}>Booking requests</h1>
+        {items.length > 0 && <Pill tone="danger">{items.length} pending</Pill>}
+      </div>
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12 }} role="alert">
+          {error}
+        </p>
+      )}
+      {loading ? (
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
+      ) : items.length === 0 ? (
+        <Card title="No pending requests">
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            New requests from your public booking pages will appear here for approval.
+          </p>
+        </Card>
+      ) : (
+        items.map((r) => (
+          <Card key={r.id} title={fmtRange(r.startsAt, r.endsAt)}>
+            <div style={{ display: 'grid', gap: 6, fontSize: 13 }}>
+              <div>
+                <span style={{ color: tokens.color.textMuted }}>Staff: </span>
+                {r.staffName}
+              </div>
+              <div>
+                <span style={{ color: tokens.color.textMuted }}>Visitor: </span>
+                {r.visitorName} · <a href={`mailto:${r.visitorEmail}`}>{r.visitorEmail}</a>
+                {r.visitorPhone ? ` · ${r.visitorPhone}` : ''}
+              </div>
+              {r.notes && (
+                <div>
+                  <span style={{ color: tokens.color.textMuted }}>Notes: </span>
+                  {r.notes}
+                </div>
+              )}
+              <div style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+                Hold expires {new Date(r.holdExpiresAt).toLocaleString()}
+              </div>
+            </div>
+
+            {decliningId === r.id ? (
+              <div style={{ display: 'grid', gap: 8, marginTop: 12, maxWidth: 480 }}>
+                <Input
+                  placeholder="Optional reason (emailed to the visitor)"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={busyId === r.id}
+                    onClick={() => void decline(r.id)}
+                  >
+                    Confirm decline
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busyId === r.id}
+                    onClick={() => {
+                      setDecliningId(null);
+                      setReason('');
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <Button size="sm" disabled={busyId === r.id} onClick={() => void approve(r.id)}>
+                  Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busyId === r.id}
+                  onClick={() => {
+                    setDecliningId(r.id);
+                    setReason('');
+                  }}
+                >
+                  Decline
+                </Button>
+              </div>
+            )}
+          </Card>
+        ))
+      )}
+    </div>
+  );
+}
