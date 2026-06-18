@@ -88,6 +88,16 @@ https://{$VIBE_HOST:localhost}:5197 {
     }
   }
 
+  handle /api/public/book/* {
+    reverse_proxy api:3001 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Vibe-Realm intake
+      transport http {
+        read_timeout 120s
+      }
+    }
+  }
+
   handle /api/* {
     respond 404
   }
@@ -133,6 +143,15 @@ https://{$VIBE_HOST:localhost}:5197 {
   @intake header_regexp Host (?i)^intake\.
   handle @intake {
     handle /api/public/intake/* {
+      reverse_proxy api:3001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Vibe-Realm intake
+        transport http {
+          read_timeout 120s
+        }
+      }
+    }
+    handle /api/public/book/* {
       reverse_proxy api:3001 {
         header_up X-Real-IP {remote_host}
         header_up X-Vibe-Realm intake
