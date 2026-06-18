@@ -238,7 +238,7 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     channel: 'EMAIL',
     subject: 'Securely send your documents to {{ firm.displayName }}',
     body:
-      "You've been invited to securely upload your documents to {{ firm.displayName }}. " +
+      '{{ staff.name }} at {{ firm.displayName }} has invited you to securely upload your documents. ' +
       'Use the private link below — no account or password needed:\n\n' +
       '{{ link.url }}\n\n' +
       'For your security, this link expires in {{ link.expires_days }} days.\n\n' +
@@ -248,7 +248,7 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
   {
     kind: 'intake_link',
     channel: 'SMS',
-    body: '{{ firm.displayName }}: securely upload your documents here (link expires in {{ link.expires_days }} days): {{ link.url }}',
+    body: '{{ staff.name }} at {{ firm.displayName }}: securely upload your documents here (link expires in {{ link.expires_days }} days): {{ link.url }}',
   },
 
   // Portal access — invite / approval ------------------------------

@@ -412,8 +412,18 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
 
       // Firm-editable copy (Admin → Notification templates, kind
       // `intake_link`); falls back to the seeded default when untouched.
+      // Resolve the chosen staff member so templates can use {{ staff.name }}.
+      const [staff] = await deps.db
+        .select({ name: appUsers.fullName })
+        .from(appUsers)
+        .where(eq(appUsers.id, parsed.data.targetStaffId))
+        .limit(1);
       const firm = await firmScope(deps.db, firmId);
-      const tplContext = { firm, link: { url, expires_days: String(expiresInDays) } };
+      const tplContext = {
+        firm,
+        link: { url, expires_days: String(expiresInDays) },
+        staff: { name: staff?.name ?? '' },
+      };
 
       if (parsed.data.recipientEmail) {
         email.attempted = true;

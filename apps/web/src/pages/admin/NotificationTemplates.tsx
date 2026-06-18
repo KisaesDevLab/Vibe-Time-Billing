@@ -109,6 +109,7 @@ const SAMPLE_VARIABLES = [
   'appointment.reschedule_request_url',
   'appointment.cancelled_by',
   'staff.names',
+  'staff.name',
   'request.message',
   // Generic action link (intake, portal invite, signing, drop-off, share…).
   'link.url',
