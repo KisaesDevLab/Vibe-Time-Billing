@@ -465,23 +465,12 @@ function TierEditor({
             (optional — shown on the portal offer card + the admin tier view)
           </span>
         </span>
-        <textarea
+        <RichTextEditor
+          key={`tier-desc-${title}`}
           value={tier.description}
-          onChange={(e) => onChange({ ...tier, description: e.target.value })}
-          rows={3}
-          placeholder="E.g. Includes federal + one state, mid-year check-in call, and unlimited Q&A by email."
-          style={{
-            padding: '8px 10px',
-            fontSize: 13,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.sm,
-            background: tokens.color.surface,
-            color: tokens.color.text,
-            resize: 'vertical',
-            fontFamily: tokens.font.body,
-            boxSizing: 'border-box',
-            width: '100%',
-          }}
+          onChange={(md) => onChange({ ...tier, description: md })}
+          variables={OFFER_VARIABLES}
+          placeholder="E.g. Includes federal + one state, a mid-year check-in call, and unlimited Q&A by email."
         />
       </label>
       <Input
