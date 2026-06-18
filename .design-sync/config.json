@@ -4,5 +4,13 @@
   "pkg": "@vibe/ui",
   "globalName": "VibeUI",
   "buildCmd": "pnpm --filter @vibe/ui build",
-  "cssEntry": "src/theme.css"
+  "cssEntry": "src/theme.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "Combobox": { "cardMode": "column" },
+    "MultiCombobox": { "cardMode": "column" },
+    "Table": { "cardMode": "column" },
+    "Tabs": { "cardMode": "column" },
+    "Wizard": { "cardMode": "single", "primaryStory": "CreateClient" }
+  }
 }
