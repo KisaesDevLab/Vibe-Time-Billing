@@ -33,6 +33,7 @@ import {
 } from './sms/provider';
 import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
 import { wrapMailWithBranding } from './notifications/branding-mail';
+import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
 
@@ -158,7 +159,14 @@ const baseSmsProvider: SmsProvider = (() => {
   }
 })();
 
-const smsProvider: SmsProvider = wrapSmsWithAudit(baseSmsProvider, { db, log: logger });
+// Resolve the firm's DB-saved provider (Admin → Messaging) per send, with
+// the env-configured provider as fallback — so every API SMS send uses the
+// same provider as the admin "test SMS" / the worker. Audit wraps the
+// outside so each send is logged regardless of which provider handled it.
+const smsProvider: SmsProvider = wrapSmsWithAudit(
+  wrapSmsWithFirmConfig(baseSmsProvider, { db, log: logger }),
+  { db, log: logger },
+);
 
 // Wrap the providers into the shapes the auth routes expect.
 const sendMagicLink = async (args: {

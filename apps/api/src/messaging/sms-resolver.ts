@@ -15,9 +15,12 @@ import { crypto as core } from '@vibe/core';
 import type { Database } from '@vibe/db';
 import { firmSettings } from '@vibe/db/schema';
 
+import { firms } from '@vibe/db/schema';
+
 import {
   createTextLinkSmsProvider,
   createTwilioSmsProvider,
+  type SmsMessage,
   type SmsProvider,
 } from '../sms/provider';
 
@@ -68,4 +71,43 @@ export async function loadFirmSmsProvider(
     log.warn({ err, firmId }, 'sms provider build failed');
     return null;
   }
+}
+
+const FIRM_SMS_TTL_MS = 60_000;
+
+/**
+ * Wrap a base (env-configured) SMS provider so every send first tries the
+ * firm's DB-saved provider (Admin → Messaging) — the same config the
+ * "test SMS" button and the worker use — and falls back to the base
+ * provider only when no usable DB config exists. Single-firm appliance:
+ * resolves the lone firm (mirrors loadEmailBranding). Resolution is cached
+ * briefly so high-volume sends don't decrypt per message; an admin config
+ * change takes effect within the TTL.
+ */
+export function wrapSmsWithFirmConfig(
+  base: SmsProvider,
+  deps: { db: Database | null; log: Logger },
+): SmsProvider {
+  let cached: SmsProvider | null = null;
+  let cachedAt = 0;
+  async function resolve(): Promise<SmsProvider> {
+    if (!deps.db) return base;
+    const now = Date.now();
+    if (now - cachedAt < FIRM_SMS_TTL_MS) return cached ?? base;
+    try {
+      const [firm] = await deps.db.select({ id: firms.id }).from(firms).limit(1);
+      cached = firm ? await loadFirmSmsProvider(deps.db, firm.id, deps.log) : null;
+    } catch (err) {
+      deps.log.warn({ err }, 'firm sms provider resolve failed; using env fallback');
+      cached = null;
+    }
+    cachedAt = now;
+    return cached ?? base;
+  }
+  return {
+    id: base.id,
+    async send(msg: SmsMessage) {
+      return (await resolve()).send(msg);
+    },
+  };
 }
