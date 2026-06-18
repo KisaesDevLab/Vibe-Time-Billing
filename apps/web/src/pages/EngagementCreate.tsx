@@ -23,6 +23,7 @@ import {
   recurrenceDraftToPayload,
   type RecurrenceDraft,
   type RecurrenceFrequency,
+  type RecurrenceTriggerMode,
 } from './engagements/RecurrenceComposer';
 
 interface Client {
@@ -65,6 +66,7 @@ interface EngagementTpl {
   defaultSurchargeAmountCents: number | null;
   defaultSurchargeLabel: string | null;
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
+  defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
   isSystem: boolean;
   status: string;
 }
@@ -239,7 +241,11 @@ export function EngagementCreatePage(): JSX.Element {
   function applyTemplate(id: string): void {
     setPickedTemplateId(id);
     const tpl = templates.find((t) => t.id === id);
-    if (!tpl) return;
+    if (!tpl) {
+      // Back to "— blank —": drop the template-driven recurrence.
+      setMakeRecurring(false);
+      return;
+    }
     if (!name.trim()) setName(tpl.name);
     setFeeStructure(tpl.defaultFeeStructure);
     setFeeAmountDollars(centsToDollarsInput(tpl.defaultFeeAmountCents));
@@ -263,12 +269,19 @@ export function EngagementCreatePage(): JSX.Element {
     );
     setSurchargeFlatDollars(centsToDollarsInput(tpl.defaultSurchargeAmountCents));
     setSurchargeLabel(tpl.defaultSurchargeLabel ?? '');
-    // Prefill the recurrence frequency without enabling recurring — the
-    // user still opts in via the checkbox, but the frequency is set when
-    // they do.
+    // When the template carries a recurrence default, turn "Make recurring"
+    // ON and fully populate the composer (frequency + trigger) so it
+    // actually applies; clear it when the template has no default.
     const freq = tpl.defaultRecurrenceFrequency;
     if (freq) {
-      setRecurrenceDraft((d) => ({ ...d, frequency: freq }));
+      setMakeRecurring(true);
+      setRecurrenceDraft((d) => ({
+        ...d,
+        frequency: freq,
+        triggerMode: tpl.defaultRecurrenceTriggerMode ?? d.triggerMode,
+      }));
+    } else {
+      setMakeRecurring(false);
     }
   }
 

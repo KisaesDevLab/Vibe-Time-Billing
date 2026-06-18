@@ -37,6 +37,12 @@ type RecurrenceFrequency =
   | 'SEMIANNUAL'
   | 'ANNUAL';
 
+type RecurrenceTriggerMode = 'SCHEDULE' | 'ON_COMPLETION';
+const TRIGGER_OPTIONS: { value: RecurrenceTriggerMode; label: string }[] = [
+  { value: 'ON_COMPLETION', label: 'When the current one closes' },
+  { value: 'SCHEDULE', label: 'On a schedule' },
+];
+
 const RECURRENCE_OPTIONS: { value: RecurrenceFrequency; label: string }[] = [
   { value: 'WEEKLY', label: 'Weekly' },
   { value: 'BIWEEKLY', label: 'Biweekly' },
@@ -72,6 +78,7 @@ interface EngagementTpl {
   defaultSurchargeAmountCents: number | null;
   defaultSurchargeLabel: string | null;
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
+  defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
   isSystem: boolean;
   status: string;
 }
@@ -158,6 +165,7 @@ interface EngagementDraftFields {
   defaultSurchargeFlatDollars: string;
   defaultSurchargeLabel: string;
   defaultRecurrenceFrequency: '' | RecurrenceFrequency;
+  defaultRecurrenceTriggerMode: '' | RecurrenceTriggerMode;
 }
 
 const EMPTY_DEFAULTS = {
@@ -173,6 +181,7 @@ const EMPTY_DEFAULTS = {
   defaultSurchargeFlatDollars: '',
   defaultSurchargeLabel: '',
   defaultRecurrenceFrequency: '' as '' | RecurrenceFrequency,
+  defaultRecurrenceTriggerMode: '' as '' | RecurrenceTriggerMode,
 };
 
 // Translate a draft's new-defaults fields into the API payload shape
@@ -202,6 +211,11 @@ function draftDefaultsToPayload(d: EngagementDraftFields): Record<string, unknow
       ? d.defaultSurchargeLabel.trim() || null
       : null,
     defaultRecurrenceFrequency: d.defaultRecurrenceFrequency || null,
+    // Trigger only matters when a frequency is set; default to ON_COMPLETION
+    // (no next-run date needed) so the recurrence is complete on apply.
+    defaultRecurrenceTriggerMode: d.defaultRecurrenceFrequency
+      ? d.defaultRecurrenceTriggerMode || 'ON_COMPLETION'
+      : null,
   };
 }
 
@@ -369,6 +383,7 @@ function EngagementTab(): JSX.Element {
       defaultSurchargeFlatDollars: centsToDollarsInput(t.defaultSurchargeAmountCents),
       defaultSurchargeLabel: t.defaultSurchargeLabel ?? '',
       defaultRecurrenceFrequency: t.defaultRecurrenceFrequency ?? '',
+      defaultRecurrenceTriggerMode: t.defaultRecurrenceTriggerMode ?? '',
     });
   }
 
@@ -659,6 +674,25 @@ function EngagementTab(): JSX.Element {
               </option>
             ))}
           </select>
+          {d.defaultRecurrenceFrequency && (
+            <select
+              id={`${idPrefix}-recurrence-trigger`}
+              value={d.defaultRecurrenceTriggerMode || 'ON_COMPLETION'}
+              onChange={(e) =>
+                update({
+                  defaultRecurrenceTriggerMode: e.target.value as RecurrenceTriggerMode,
+                })
+              }
+              aria-label="Default recurrence trigger"
+              style={{ ...fieldStyle, width: '100%', marginTop: 6 }}
+            >
+              {TRIGGER_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
     );

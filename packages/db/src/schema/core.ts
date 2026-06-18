@@ -1641,6 +1641,8 @@ export const engagementTemplates = pgTable(
     defaultSurchargeLabel: text('default_surcharge_label'),
     // 0170 — when set, "Make recurring" on the create form prefills this frequency.
     defaultRecurrenceFrequency: text('default_recurrence_frequency'),
+    // 0171 — trigger mode that pairs with the frequency ('SCHEDULE' | 'ON_COMPLETION').
+    defaultRecurrenceTriggerMode: text('default_recurrence_trigger_mode'),
     // FK added in 0033 after the letter table exists; declared here as
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),

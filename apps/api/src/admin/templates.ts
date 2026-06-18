@@ -67,6 +67,7 @@ const EngagementSchema = z.object({
     .enum(['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL'])
     .nullable()
     .optional(),
+  defaultRecurrenceTriggerMode: z.enum(['SCHEDULE', 'ON_COMPLETION']).nullable().optional(),
 });
 
 const LetterSchema = z.object({
@@ -164,6 +165,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultSurchargeAmountCents: d.defaultSurchargeAmountCents ?? null,
           defaultSurchargeLabel: d.defaultSurchargeLabel ?? null,
           defaultRecurrenceFrequency: d.defaultRecurrenceFrequency ?? null,
+          defaultRecurrenceTriggerMode: d.defaultRecurrenceTriggerMode ?? null,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -228,6 +230,8 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.defaultSurchargeLabel = d.defaultSurchargeLabel;
       if (d.defaultRecurrenceFrequency !== undefined)
         updates.defaultRecurrenceFrequency = d.defaultRecurrenceFrequency;
+      if (d.defaultRecurrenceTriggerMode !== undefined)
+        updates.defaultRecurrenceTriggerMode = d.defaultRecurrenceTriggerMode;
       await deps.db
         .update(engagementTemplates)
         .set(updates)
@@ -326,6 +330,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultSurchargeAmountCents: src.defaultSurchargeAmountCents,
           defaultSurchargeLabel: src.defaultSurchargeLabel,
           defaultRecurrenceFrequency: src.defaultRecurrenceFrequency,
+          defaultRecurrenceTriggerMode: src.defaultRecurrenceTriggerMode,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
