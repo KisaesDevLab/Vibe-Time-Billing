@@ -18,14 +18,49 @@ import { Book } from './pages/Book';
 
 export function App(): JSX.Element {
   return (
-    <IntakeLayout>
-      <Routes>
-        <Route path="/" element={<StaffLookup />} />
-        <Route path="/:staffId" element={<Intake />} />
-        <Route path="/t/:token" element={<Token />} />
-        <Route path="/book/:slug" element={<Book />} />
-        <Route path="*" element={<StaffLookup />} />
-      </Routes>
-    </IntakeLayout>
+    <Routes>
+      {/* The booking page supplies its own heading and isn't about document
+          upload, so it omits the intake header/footer chrome. */}
+      <Route
+        path="/book/:slug"
+        element={
+          <IntakeLayout bare>
+            <Book />
+          </IntakeLayout>
+        }
+      />
+      <Route
+        path="/"
+        element={
+          <IntakeLayout>
+            <StaffLookup />
+          </IntakeLayout>
+        }
+      />
+      <Route
+        path="/:staffId"
+        element={
+          <IntakeLayout>
+            <Intake />
+          </IntakeLayout>
+        }
+      />
+      <Route
+        path="/t/:token"
+        element={
+          <IntakeLayout>
+            <Token />
+          </IntakeLayout>
+        }
+      />
+      <Route
+        path="*"
+        element={
+          <IntakeLayout>
+            <StaffLookup />
+          </IntakeLayout>
+        }
+      />
+    </Routes>
   );
 }

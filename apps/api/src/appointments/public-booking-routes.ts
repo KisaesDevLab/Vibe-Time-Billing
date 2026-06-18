@@ -251,8 +251,11 @@ async function loadLocations(db: Database, link: ResolvedLink): Promise<MeetingO
   }
   for (const w of active) {
     if (w.locationOptionId) continue;
-    const types = w.locationTypes && w.locationTypes.length ? w.locationTypes : [...LOCATION_TYPES];
-    for (const t of types) {
+    // Only windows that EXPLICITLY restrict contact types surface a choice.
+    // A fully-unrestricted window (null/empty location_types, no preset) keeps
+    // the page location-agnostic, so the visitor isn't forced to pick one.
+    if (!w.locationTypes || w.locationTypes.length === 0) continue;
+    for (const t of w.locationTypes) {
       if (!(LOCATION_TYPES as readonly string[]).includes(t)) continue;
       out.set(`type:${t}`, {
         key: `type:${t}`,

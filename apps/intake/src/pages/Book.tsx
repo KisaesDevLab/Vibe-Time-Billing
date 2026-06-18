@@ -19,16 +19,30 @@ import { Turnstile } from '../components/Turnstile';
 
 const BASE = '/api/public/book';
 
+type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
+
 interface BookType {
   id: string;
   name: string;
   durationMinutes: number;
 }
 
+// A way the firm offers to meet (video link, phone call, or a physical
+// location). `locationOptionId` is non-null only for saved in-person presets;
+// availability + the request body pass it through when present.
+interface BookLocation {
+  key: string;
+  label: string;
+  locationType: LocationType;
+  locationOptionId: string | null;
+  detail: string | null;
+}
+
 interface BookConfig {
   staffName: string;
   customMessage: string | null;
   types: BookType[];
+  locations: BookLocation[];
   captchaSiteKey: string | null;
 }
 
@@ -41,6 +55,11 @@ interface SlotsResponse {
   date: string;
   timezone: string;
   slots: Slot[];
+}
+
+interface MonthResponse {
+  days: Record<string, boolean>;
+  timezone: string;
 }
 
 interface RequestOk {
@@ -95,24 +114,155 @@ function isFetchError(e: unknown): e is FetchError {
   return typeof e === 'object' && e !== null && 'status' in e && 'error' in e;
 }
 
-// Today in the visitor's local timezone, as YYYY-MM-DD for the date input.
-function todayLocalISO(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+// --- Month-calendar helpers (replicated from the staff booking wizard so the
+// public page matches its look; the intake app can't import from apps/web). ---
+
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+const ymd = (y: number, m: number, d: number): string => `${y}-${pad2(m)}-${pad2(d)}`;
+
+// Today in the visitor's local timezone, as YYYY-MM-DD.
+function todayYmd(): string {
+  const n = new Date();
+  return ymd(n.getFullYear(), n.getMonth() + 1, n.getDate());
 }
 
-function addDays(iso: string, delta: number): string {
-  // Parse as a local calendar date (avoid UTC shift) and re-format.
-  const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
-  dt.setDate(dt.getDate() + delta);
-  const yy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getDate()).padStart(2, '0');
-  return `${yy}-${mm}-${dd}`;
+// A month calendar with bookable days bolded/clickable, past/unavailable days
+// dimmed, the selected day filled with the accent color, and today outlined.
+function MonthCalendar({
+  year,
+  month,
+  availability,
+  selected,
+  loading,
+  canPrev,
+  onSelect,
+  onNav,
+}: {
+  year: number;
+  month: number;
+  availability: Record<string, boolean>;
+  selected: string | null;
+  loading: boolean;
+  canPrev: boolean;
+  onSelect: (d: string) => void;
+  onNav: (delta: number) => void;
+}): JSX.Element {
+  const firstDow = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const today = todayYmd();
+  const cells: (string | null)[] = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(ymd(year, month, d));
+  const navBtn = (disabled: boolean): React.CSSProperties => ({
+    border: 'none',
+    background: 'transparent',
+    cursor: disabled ? 'default' : 'pointer',
+    color: disabled ? tokens.color.textMuted : tokens.color.text,
+    fontSize: 18,
+    padding: '0 8px',
+  });
+  return (
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 8,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => onNav(-1)}
+          disabled={!canPrev}
+          aria-label="Previous month"
+          style={navBtn(!canPrev)}
+        >
+          ‹
+        </button>
+        <strong style={{ fontSize: 14 }}>
+          {MONTH_NAMES[month - 1]} {year}
+        </strong>
+        <button
+          type="button"
+          onClick={() => onNav(1)}
+          aria-label="Next month"
+          style={navBtn(false)}
+        >
+          ›
+        </button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+        {WEEKDAYS.map((w) => (
+          <div key={w} style={{ textAlign: 'center', fontSize: 10, color: tokens.color.textMuted }}>
+            {w}
+          </div>
+        ))}
+        {cells.map((c, i) => {
+          if (!c) return <div key={`e${i}`} />;
+          const day = Number(c.slice(-2));
+          const open = availability[c] === true;
+          const isPast = c < today;
+          const isSel = c === selected;
+          const isToday = c === today;
+          const clickable = open && !isPast;
+          const border = isSel
+            ? `1.5px solid ${tokens.color.accent}`
+            : isToday
+              ? `1px solid ${tokens.color.accent}`
+              : '1px solid transparent';
+          return (
+            <button
+              key={c}
+              type="button"
+              disabled={!clickable}
+              onClick={() => onSelect(c)}
+              style={{
+                aspectRatio: '1',
+                borderRadius: tokens.radius.sm,
+                fontSize: 13,
+                cursor: clickable ? 'pointer' : 'default',
+                border,
+                background: isSel ? tokens.color.accent : 'transparent',
+                color: isSel
+                  ? '#fff'
+                  : isToday
+                    ? tokens.color.accent
+                    : clickable
+                      ? tokens.color.text
+                      : tokens.color.textMuted,
+                fontWeight: clickable && !isSel ? 600 : 400,
+                opacity: isPast ? 0.35 : 1,
+              }}
+            >
+              {day}
+            </button>
+          );
+        })}
+      </div>
+      {loading && (
+        <div style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 6 }}>
+          Loading availability…
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Book(): JSX.Element {
@@ -120,7 +270,20 @@ export function Book(): JSX.Element {
 
   const [config, setConfig] = useState<BookConfig | null | 'missing'>(null);
   const [typeId, setTypeId] = useState<string | null>(null);
-  const [date, setDate] = useState<string>(todayLocalISO());
+  // The chosen way to meet (BookLocation.key), or null until picked. When the
+  // page offers exactly one location it's auto-selected on load.
+  const [selectedLocationKey, setSelectedLocationKey] = useState<string | null>(null);
+
+  // Month being viewed in the calendar (1-based month). Default: current month.
+  const [view, setView] = useState<{ year: number; month: number }>(() => {
+    const n = new Date();
+    return { year: n.getFullYear(), month: n.getMonth() + 1 };
+  });
+  const [availability, setAvailability] = useState<Record<string, boolean>>({});
+  const [monthLoading, setMonthLoading] = useState(false);
+
+  // Currently selected day (YYYY-MM-DD), or null until the visitor picks one.
+  const [date, setDate] = useState<string | null>(null);
 
   const [slotsState, setSlotsState] = useState<'idle' | 'loading' | 'error'>('idle');
   const [slotsResp, setSlotsResp] = useState<SlotsResponse | null>(null);
@@ -138,6 +301,15 @@ export function Book(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // The currently chosen location object (or null). Availability + the request
+  // body filter by its type, and by its id when the option carries one.
+  const locations: BookLocation[] = config && config !== 'missing' ? config.locations : [];
+  const selectedLocation = selectedLocationKey
+    ? (locations.find((l) => l.key === selectedLocationKey) ?? null)
+    : null;
+  const locationType = selectedLocation?.locationType ?? null;
+  const locationOptionId = selectedLocation?.locationOptionId ?? null;
+
   // Load the booking config on mount / slug change.
   useEffect(() => {
     if (!slug) {
@@ -152,6 +324,9 @@ export function Book(): JSX.Element {
         // Auto-select the only type, if there's exactly one.
         const only = cfg.types.length === 1 ? cfg.types[0] : undefined;
         if (only) setTypeId(only.id);
+        // Likewise, auto-select the only way to meet, if there's exactly one.
+        const onlyLoc = cfg.locations.length === 1 ? cfg.locations[0] : undefined;
+        if (onlyLoc) setSelectedLocationKey(onlyLoc.key);
       })
       .catch(() => {
         if (alive) setConfig('missing');
@@ -161,14 +336,47 @@ export function Book(): JSX.Element {
     };
   }, [slug]);
 
-  // (Re)load slots whenever the chosen date or type changes.
+  // (Re)load the month availability grid on load, when the visitor navigates
+  // months, and whenever the appointment type changes (openings differ by
+  // type). Clears any selected day whose availability may no longer hold.
   useEffect(() => {
     if (!slug || config === null || config === 'missing') return;
+    let alive = true;
+    setMonthLoading(true);
+    const qs = new URLSearchParams({ year: String(view.year), month: String(view.month) });
+    if (typeId) qs.set('typeId', typeId);
+    if (locationType) qs.set('location', locationType);
+    if (locationOptionId) qs.set('locationId', locationOptionId);
+    call<MonthResponse>(`/${encodeURIComponent(slug)}/month?${qs.toString()}`)
+      .then((r) => {
+        if (!alive) return;
+        setAvailability(r.days);
+        setMonthLoading(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setAvailability({});
+        setMonthLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [slug, config, view.year, view.month, typeId, locationType, locationOptionId]);
+
+  // (Re)load slots whenever the chosen day or type changes.
+  useEffect(() => {
+    if (!slug || config === null || config === 'missing' || !date) {
+      setSlotsResp(null);
+      setSlotsState('idle');
+      return;
+    }
     let alive = true;
     setSlotsState('loading');
     setSelectedSlot(null);
     const qs = new URLSearchParams({ date });
     if (typeId) qs.set('typeId', typeId);
+    if (locationType) qs.set('location', locationType);
+    if (locationOptionId) qs.set('locationId', locationOptionId);
     call<SlotsResponse>(`/${encodeURIComponent(slug)}/slots?${qs.toString()}`)
       .then((r) => {
         if (!alive) return;
@@ -183,7 +391,7 @@ export function Book(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [slug, config, date, typeId]);
+  }, [slug, config, date, typeId, locationType, locationOptionId]);
 
   const timezone = slotsResp?.timezone ?? undefined;
   const timeFmt = useMemo(
@@ -206,9 +414,19 @@ export function Book(): JSX.Element {
     [timezone],
   );
 
+  // Disable the calendar's ‹ button at (or before) the current month so the
+  // visitor can't navigate into past months.
+  const now = new Date();
+  const isCurrentOrEarlierMonth =
+    view.year < now.getFullYear() ||
+    (view.year === now.getFullYear() && view.month <= now.getMonth() + 1);
+
   const captchaSiteKey = config && config !== 'missing' ? config.captchaSiteKey : null;
+  // When the page offers a choice of locations, one must be picked.
+  const locationOk = locations.length <= 1 || selectedLocation !== null;
   const canSubmit =
     Boolean(selectedSlot) &&
+    locationOk &&
     name.trim().length > 0 &&
     email.trim().length > 0 &&
     (!captchaSiteKey || Boolean(captchaToken)) &&
@@ -228,6 +446,8 @@ export function Book(): JSX.Element {
           notes: notes.trim() || undefined,
           startsAt: selectedSlot.start,
           typeId: typeId ?? undefined,
+          location: locationType ?? undefined,
+          locationId: locationOptionId ?? undefined,
           captchaToken: captchaToken ?? undefined,
         }),
       });
@@ -242,15 +462,25 @@ export function Book(): JSX.Element {
         // Refresh availability so the visitor sees current openings.
         setSelectedSlot(null);
         setSlotsState('loading');
-        if (slug) {
+        if (slug && date) {
           const qs = new URLSearchParams({ date });
           if (typeId) qs.set('typeId', typeId);
+          if (locationType) qs.set('location', locationType);
+          if (locationOptionId) qs.set('locationId', locationOptionId);
           void call<SlotsResponse>(`/${encodeURIComponent(slug)}/slots?${qs.toString()}`)
             .then((res) => {
               setSlotsResp(res);
               setSlotsState('idle');
             })
             .catch(() => setSlotsState('error'));
+          // Also refresh the month grid: the day may have lost its last slot.
+          const mq = new URLSearchParams({ year: String(view.year), month: String(view.month) });
+          if (typeId) mq.set('typeId', typeId);
+          if (locationType) mq.set('location', locationType);
+          if (locationOptionId) mq.set('locationId', locationOptionId);
+          void call<MonthResponse>(`/${encodeURIComponent(slug)}/month?${mq.toString()}`)
+            .then((res) => setAvailability(res.days))
+            .catch(() => {});
         }
       } else if (status === 429) {
         setError('Too many attempts. Please wait a moment and try again.');
@@ -332,7 +562,11 @@ export function Book(): JSX.Element {
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  onClick={() => setTypeId(t.id)}
+                  onClick={() => {
+                    setTypeId(t.id);
+                    // Availability differs by type — drop any picked day.
+                    setDate(null);
+                  }}
                   style={{
                     padding: '10px 14px',
                     border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
@@ -352,54 +586,85 @@ export function Book(): JSX.Element {
         </div>
       )}
 
+      {locations.length > 1 && (
+        <div>
+          <span style={labelStyle}>How would you like to meet?</span>
+          <div role="radiogroup" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {locations.map((loc) => {
+              const active = loc.key === selectedLocationKey;
+              return (
+                <button
+                  key={loc.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => {
+                    setSelectedLocationKey(loc.key);
+                    // Availability differs by location — drop any picked day.
+                    setDate(null);
+                  }}
+                  style={{
+                    padding: '10px 14px',
+                    border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    fontSize: 14,
+                    background: active ? tokens.color.accentMuted : tokens.color.surface,
+                    color: tokens.color.text,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {loc.label}
+                </button>
+              );
+            })}
+          </div>
+          {selectedLocation?.detail && (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
+              {selectedLocation.detail}
+            </p>
+          )}
+        </div>
+      )}
+
+      {locations.length === 1 && selectedLocation?.detail && (
+        <div>
+          <span style={labelStyle}>Where</span>
+          <p style={{ fontSize: 13, color: tokens.color.text, margin: 0 }}>
+            {selectedLocation.label}
+            <span style={{ color: tokens.color.textMuted }}> · {selectedLocation.detail}</span>
+          </p>
+        </div>
+      )}
+
       <div>
         <span style={labelStyle}>Pick a day</span>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            onClick={() => setDate((d) => addDays(d, -1))}
-            disabled={date <= todayLocalISO()}
-            aria-label="Previous day"
-            style={{
-              padding: '8px 12px',
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.sm,
-              background: tokens.color.surface,
-              color: tokens.color.text,
-              cursor: date <= todayLocalISO() ? 'not-allowed' : 'pointer',
-              opacity: date <= todayLocalISO() ? 0.5 : 1,
-            }}
-          >
-            ←
-          </button>
-          <input
-            type="date"
-            value={date}
-            min={todayLocalISO()}
-            onChange={(e) => setDate(e.target.value || todayLocalISO())}
-            style={{ ...inputStyle, width: 'auto', flex: '1 1 160px' }}
-            aria-label="Booking date"
-          />
-          <button
-            type="button"
-            onClick={() => setDate((d) => addDays(d, 1))}
-            aria-label="Next day"
-            style={{
-              padding: '8px 12px',
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.sm,
-              background: tokens.color.surface,
-              color: tokens.color.text,
-              cursor: 'pointer',
-            }}
-          >
-            →
-          </button>
-        </div>
+        <MonthCalendar
+          year={view.year}
+          month={view.month}
+          availability={availability}
+          selected={date}
+          loading={monthLoading}
+          canPrev={!isCurrentOrEarlierMonth}
+          onSelect={(d) => setDate(d)}
+          onNav={(delta) => {
+            setDate(null);
+            setView((v) => {
+              const idx0 = v.month - 1 + delta; // 0-based month index, can go ±
+              const year = v.year + Math.floor(idx0 / 12);
+              const month = (((idx0 % 12) + 12) % 12) + 1; // wrap to 1..12
+              return { year, month };
+            });
+          }}
+        />
       </div>
 
       <div>
         <span style={labelStyle}>Available times</span>
+        {!date && (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+            Pick a highlighted day above to see open times.
+          </p>
+        )}
         {slotsState === 'loading' && (
           <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading times…</p>
         )}
@@ -408,7 +673,7 @@ export function Book(): JSX.Element {
             Couldn&apos;t load times for this day. Try another day.
           </p>
         )}
-        {slotsState === 'idle' && slotsResp && slotsResp.slots.length === 0 && (
+        {slotsState === 'idle' && date && slotsResp && slotsResp.slots.length === 0 && (
           <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
             No open times on {dayFmt.format(new Date(`${date}T12:00:00`))}. Try another day.
           </p>

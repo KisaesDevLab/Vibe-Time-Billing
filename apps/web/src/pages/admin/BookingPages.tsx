@@ -35,10 +35,20 @@ interface ApptType {
 
 type NotifyChannel = 'EMAIL' | 'SMS';
 
+type LocationType = 'IN_PERSON' | 'PHONE' | 'VIDEO';
+
+const LOCATION_TYPES: LocationType[] = ['IN_PERSON', 'PHONE', 'VIDEO'];
+const LOCATION_LABELS: Record<LocationType, string> = {
+  IN_PERSON: 'In-person',
+  PHONE: 'Phone',
+  VIDEO: 'Video',
+};
+
 interface WindowRow {
   dayOfWeek: number;
   startTime: string;
   endTime: string;
+  locationTypes: LocationType[]; // empty = all contact types allowed
 }
 
 interface NotifyRow {
@@ -71,6 +81,7 @@ interface LinkDetail {
     startTime: string;
     endTime: string;
     locationOptionId: string | null;
+    locationTypes: string[] | null;
     appointmentTypeIds: string[] | null;
     isActive: boolean;
   }[];
@@ -203,6 +214,9 @@ export function BookingPagesPage(): JSX.Element {
           dayOfWeek: w.dayOfWeek,
           startTime: hhmm(w.startTime),
           endTime: hhmm(w.endTime),
+          locationTypes: (w.locationTypes ?? []).filter((t): t is LocationType =>
+            (LOCATION_TYPES as string[]).includes(t),
+          ),
         })),
         approverIds: d.approverIds,
         notify: d.notify.map((n) => ({ appUserId: n.appUserId, channels: n.channels })),
@@ -367,7 +381,10 @@ function BookingPageForm({
   }
 
   function addWindow(): void {
-    set('windows', [...form.windows, { dayOfWeek: 1, startTime: '09:00', endTime: '17:00' }]);
+    set('windows', [
+      ...form.windows,
+      { dayOfWeek: 1, startTime: '09:00', endTime: '17:00', locationTypes: [] },
+    ]);
   }
   function updateWindow(idx: number, patch: Partial<WindowRow>): void {
     set(
@@ -379,6 +396,19 @@ function BookingPageForm({
     set(
       'windows',
       form.windows.filter((_, i) => i !== idx),
+    );
+  }
+  function toggleWindowLocationType(idx: number, type: LocationType): void {
+    set(
+      'windows',
+      form.windows.map((w, i) => {
+        if (i !== idx) return w;
+        const has = w.locationTypes.includes(type);
+        const locationTypes = has
+          ? w.locationTypes.filter((t) => t !== type)
+          : [...w.locationTypes, type];
+        return { ...w, locationTypes };
+      }),
     );
   }
 
@@ -430,6 +460,8 @@ function BookingPageForm({
         dayOfWeek: w.dayOfWeek,
         startTime: w.startTime,
         endTime: w.endTime,
+        // empty selection = all contact types allowed → null
+        locationTypes: w.locationTypes.length > 0 ? w.locationTypes : null,
       })),
       approverIds: form.approverIds,
       notify: form.notify.map((n) => ({ appUserId: n.appUserId, channels: n.channels })),
@@ -623,6 +655,38 @@ function BookingPageForm({
                 style={inputStyle}
                 aria-label="End time"
               />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  Contact types{w.locationTypes.length === 0 ? ' (Any):' : ':'}
+                </span>
+                {LOCATION_TYPES.map((type) => {
+                  const checked = w.locationTypes.includes(type);
+                  return (
+                    <label
+                      key={type}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        fontSize: 12,
+                        padding: '4px 8px',
+                        borderRadius: tokens.radius.sm,
+                        border: `1px solid ${checked ? tokens.color.accent : tokens.color.border}`,
+                        background: checked ? tokens.color.accentMuted : tokens.color.surface,
+                        color: tokens.color.text,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleWindowLocationType(idx, type)}
+                      />
+                      {LOCATION_LABELS[type]}
+                    </label>
+                  );
+                })}
+              </div>
               <Button size="sm" variant="ghost" onClick={() => removeWindow(idx)}>
                 Remove
               </Button>
