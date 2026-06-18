@@ -9,7 +9,7 @@
 import crypto from 'node:crypto';
 
 import express, { type Router } from 'express';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
@@ -89,14 +89,21 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
 
   // ---- booking pages CRUD -------------------------------------------
 
-  async function uniqueSlug(db: Database, requested: string | undefined): Promise<string | null> {
+  async function uniqueSlug(
+    db: Database,
+    requested: string | undefined,
+    excludeId?: string,
+  ): Promise<string | null> {
     if (requested) {
       const norm = normalizeCustomSlug(requested);
       if (!norm) return null;
+      const conds = [eq(staffPublicBookingLinks.slug, norm)];
+      // When editing, a page keeping its own slug must not clash with itself.
+      if (excludeId) conds.push(ne(staffPublicBookingLinks.id, excludeId));
       const [clash] = await db
         .select({ id: staffPublicBookingLinks.id })
         .from(staffPublicBookingLinks)
-        .where(eq(staffPublicBookingLinks.slug, norm))
+        .where(and(...conds))
         .limit(1);
       return clash ? null : norm;
     }
@@ -298,10 +305,10 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
         )
         .limit(1);
       if (!existing) return void res.status(404).json({ error: 'not_found' });
-      // Optional custom-slug change.
+      // Optional custom-slug change (exclude this page from the clash check).
       let slug: string | undefined;
       if (data.slug) {
-        const s = await uniqueSlug(deps.db, data.slug);
+        const s = await uniqueSlug(deps.db, data.slug, id);
         if (!s) return void res.status(409).json({ error: 'slug_unavailable' });
         slug = s;
       }

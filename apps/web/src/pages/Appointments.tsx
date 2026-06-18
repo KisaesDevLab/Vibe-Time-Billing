@@ -218,6 +218,7 @@ function hashTab(): TabKey {
 }
 
 export function AppointmentsPage(): JSX.Element {
+  const { me } = useAuth();
   const [tab, setTab] = useState<TabKey>(hashTab());
   const [inboxCount, setInboxCount] = useState(0);
   const [reviewCount, setReviewCount] = useState(0);
@@ -289,7 +290,7 @@ export function AppointmentsPage(): JSX.Element {
       {tab === 'book' && <BookTab onBooked={() => go('list')} />}
       {tab === 'inbox' && <InboxTab onResolved={() => setInboxCount((c) => Math.max(0, c - 1))} />}
       {tab === 'requests' && <BookingRequestsPage />}
-      {tab === 'booking-page' && <BookingPagesPage />}
+      {tab === 'booking-page' && <BookingPagesPage scopeStaffId={me?.appUserId} />}
       {tab === 'availability' && <AvailabilityTab />}
       {tab === 'review' && <CalendarUnmatchedPage />}
     </div>

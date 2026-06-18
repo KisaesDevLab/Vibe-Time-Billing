@@ -230,6 +230,26 @@ describe('booking admin router', () => {
     expect(detail.body.approverIds).toEqual([seed.appUserId]);
   });
 
+  it('editing a page keeping its own custom slug does not 409 (slug self-clash fix)', async () => {
+    const created = await request(buildAdminApp())
+      .post('/api/staff/appointments/booking-links')
+      .send({ staffId: seed.appUserId, slug: 'kurt-consult' });
+    expect(created.status).toBe(201);
+    const patch = await request(buildAdminApp())
+      .patch(`/api/staff/appointments/booking-links/${created.body.id}`)
+      .send({ slug: 'kurt-consult', customMessage: 'Updated' });
+    expect(patch.status).toBe(200);
+    // A DIFFERENT page's slug is still rejected.
+    const other = await request(buildAdminApp())
+      .post('/api/staff/appointments/booking-links')
+      .send({ staffId: seed.appUserId, slug: 'other-page' });
+    const clash = await request(buildAdminApp())
+      .patch(`/api/staff/appointments/booking-links/${created.body.id}`)
+      .send({ slug: 'other-page' });
+    expect(other.status).toBe(201);
+    expect(clash.status).toBe(409);
+  });
+
   it('approve creates the appointment and marks the request APPROVED', async () => {
     const reqId = await insertPendingRequest(null);
     const res = await request(buildAdminApp()).post(

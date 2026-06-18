@@ -137,7 +137,13 @@ function emptyForm(): FormState {
   };
 }
 
-export function BookingPagesPage(): JSX.Element {
+export function BookingPagesPage({
+  scopeStaffId,
+}: {
+  // When set, the screen manages only this staff member's own pages (their
+  // booking page is for their own calendar) — no cross-staff picker/listing.
+  scopeStaffId?: string;
+} = {}): JSX.Element {
   const [items, setItems] = useState<LinkListRow[]>([]);
   const [staff, setStaff] = useState<BookableStaff[]>([]);
   const [types, setTypes] = useState<ApptType[]>([]);
@@ -187,7 +193,9 @@ export function BookingPagesPage(): JSX.Element {
   }
 
   function startCreate(): void {
-    setForm(emptyForm());
+    const f = emptyForm();
+    if (scopeStaffId) f.staffId = scopeStaffId;
+    setForm(f);
     setEditId('');
     setError(null);
   }
@@ -247,6 +255,7 @@ export function BookingPagesPage(): JSX.Element {
         editId={editId}
         staff={staff}
         types={types}
+        lockStaff={Boolean(scopeStaffId)}
         onCancel={() => {
           setEditId(null);
           setForm(null);
@@ -322,9 +331,9 @@ export function BookingPagesPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={items}
+            rows={scopeStaffId ? items.filter((i) => i.staffId === scopeStaffId) : items}
             rowKey={(r) => r.id}
-            empty="No booking pages yet."
+            empty="No booking page yet — create one to share a public link."
           />
         )}
       </Card>
@@ -345,6 +354,7 @@ function BookingPageForm({
   editId,
   staff,
   types,
+  lockStaff,
   onCancel,
   onSaved,
 }: {
@@ -354,6 +364,7 @@ function BookingPageForm({
   editId: string;
   staff: BookableStaff[];
   types: ApptType[];
+  lockStaff: boolean;
   onCancel: () => void;
   onSaved: (result?: { id: string; publicUrl: string }) => void;
 }): JSX.Element {
@@ -517,16 +528,18 @@ function BookingPageForm({
             gap: 12,
           }}
         >
-          <label style={{ display: 'grid', gap: 4 }}>
-            {fieldLabel('Staff member')}
-            <Combobox
-              ariaLabel="Staff member"
-              value={form.staffId}
-              onChange={(v) => set('staffId', v)}
-              options={staffOptions}
-              placeholder="— pick staff —"
-            />
-          </label>
+          {!lockStaff && (
+            <label style={{ display: 'grid', gap: 4 }}>
+              {fieldLabel('Staff member')}
+              <Combobox
+                ariaLabel="Staff member"
+                value={form.staffId}
+                onChange={(v) => set('staffId', v)}
+                options={staffOptions}
+                placeholder="— pick staff —"
+              />
+            </label>
+          )}
           <label style={{ display: 'grid', gap: 4 }}>
             {fieldLabel('Custom slug (optional)')}
             <input

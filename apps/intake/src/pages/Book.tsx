@@ -88,6 +88,25 @@ const inputStyle: React.CSSProperties = {
   color: tokens.color.text,
   boxSizing: 'border-box',
 };
+const cardStyle: React.CSSProperties = {
+  background: tokens.color.surface,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.md,
+  padding: 24,
+  boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+};
+// A choice "chip" used for type / location / time selectors.
+function chipStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: '9px 13px',
+    border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
+    borderRadius: tokens.radius.sm,
+    fontSize: 14,
+    background: active ? tokens.color.accentMuted : tokens.color.surface,
+    color: tokens.color.text,
+    cursor: 'pointer',
+  };
+}
 
 // Read the raw response body, throwing a typed { status, error } on failure
 // so callers can branch on the server's error code (slot_taken, etc.).
@@ -208,9 +227,17 @@ function MonthCalendar({
           ›
         </button>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
         {WEEKDAYS.map((w) => (
-          <div key={w} style={{ textAlign: 'center', fontSize: 10, color: tokens.color.textMuted }}>
+          <div
+            key={w}
+            style={{
+              textAlign: 'center',
+              fontSize: 10,
+              color: tokens.color.textMuted,
+              paddingBottom: 2,
+            }}
+          >
             {w}
           </div>
         ))}
@@ -539,13 +566,18 @@ export function Book(): JSX.Element {
     );
   }
 
+  const selectedType =
+    config.types.find((t) => t.id === typeId) ??
+    (config.types.length === 1 ? config.types[0] : undefined);
+  const durationLabel = selectedType ? `${selectedType.durationMinutes} min` : null;
+
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg }}>
+    <div style={{ ...cardStyle, display: 'grid', gap: tokens.space.lg }}>
       <div>
-        <h2 style={{ fontSize: 16, margin: 0 }}>Book time with {config.staffName}</h2>
-        {config.customMessage && (
+        <h2 style={{ fontSize: 18, margin: 0 }}>Book time with {config.staffName}</h2>
+        {(durationLabel || config.customMessage) && (
           <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: '6px 0 0' }}>
-            {config.customMessage}
+            {[durationLabel, config.customMessage].filter(Boolean).join(' · ')}
           </p>
         )}
       </div>
@@ -567,15 +599,7 @@ export function Book(): JSX.Element {
                     // Availability differs by type — drop any picked day.
                     setDate(null);
                   }}
-                  style={{
-                    padding: '10px 14px',
-                    border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    fontSize: 14,
-                    background: active ? tokens.color.accentMuted : tokens.color.surface,
-                    color: tokens.color.text,
-                    cursor: 'pointer',
-                  }}
+                  style={chipStyle(active)}
                 >
                   {t.name}
                   <span style={{ color: tokens.color.textMuted }}> · {t.durationMinutes} min</span>
@@ -603,15 +627,7 @@ export function Book(): JSX.Element {
                     // Availability differs by location — drop any picked day.
                     setDate(null);
                   }}
-                  style={{
-                    padding: '10px 14px',
-                    border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    fontSize: 14,
-                    background: active ? tokens.color.accentMuted : tokens.color.surface,
-                    color: tokens.color.text,
-                    cursor: 'pointer',
-                  }}
+                  style={chipStyle(active)}
                 >
                   {loc.label}
                 </button>
@@ -636,79 +652,94 @@ export function Book(): JSX.Element {
         </div>
       )}
 
-      <div>
-        <span style={labelStyle}>Pick a day</span>
-        <MonthCalendar
-          year={view.year}
-          month={view.month}
-          availability={availability}
-          selected={date}
-          loading={monthLoading}
-          canPrev={!isCurrentOrEarlierMonth}
-          onSelect={(d) => setDate(d)}
-          onNav={(delta) => {
-            setDate(null);
-            setView((v) => {
-              const idx0 = v.month - 1 + delta; // 0-based month index, can go ±
-              const year = v.year + Math.floor(idx0 / 12);
-              const month = (((idx0 % 12) + 12) % 12) + 1; // wrap to 1..12
-              return { year, month };
-            });
-          }}
-        />
-      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
+        <div style={{ width: 300, maxWidth: '100%' }}>
+          <span style={labelStyle}>Select a day</span>
+          <MonthCalendar
+            year={view.year}
+            month={view.month}
+            availability={availability}
+            selected={date}
+            loading={monthLoading}
+            canPrev={!isCurrentOrEarlierMonth}
+            onSelect={(d) => setDate(d)}
+            onNav={(delta) => {
+              setDate(null);
+              setView((v) => {
+                const idx0 = v.month - 1 + delta; // 0-based month index, can go ±
+                const year = v.year + Math.floor(idx0 / 12);
+                const month = (((idx0 % 12) + 12) % 12) + 1; // wrap to 1..12
+                return { year, month };
+              });
+            }}
+          />
+        </div>
 
-      <div>
-        <span style={labelStyle}>Available times</span>
-        {!date && (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-            Pick a highlighted day above to see open times.
-          </p>
-        )}
-        {slotsState === 'loading' && (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading times…</p>
-        )}
-        {slotsState === 'error' && (
-          <p style={{ fontSize: 13, color: tokens.color.danger, margin: 0 }}>
-            Couldn&apos;t load times for this day. Try another day.
-          </p>
-        )}
-        {slotsState === 'idle' && date && slotsResp && slotsResp.slots.length === 0 && (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-            No open times on {dayFmt.format(new Date(`${date}T12:00:00`))}. Try another day.
-          </p>
-        )}
-        {slotsState === 'idle' && slotsResp && slotsResp.slots.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {slotsResp.slots.map((slot) => {
-              const active = selectedSlot?.start === slot.start;
-              return (
-                <button
-                  key={slot.start}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => setSelectedSlot(slot)}
-                  style={{
-                    padding: '10px 14px',
-                    border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    fontSize: 14,
-                    background: active ? tokens.color.accentMuted : tokens.color.surface,
-                    color: tokens.color.text,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {timeFmt.format(new Date(slot.start))}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {slotsResp && timezone && (
-          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
-            Times shown in {timezone}.
-          </p>
-        )}
+        <div style={{ flex: '1 1 220px', minWidth: 200 }}>
+          <span style={labelStyle}>
+            {date ? dayFmt.format(new Date(`${date}T12:00:00`)) : 'Available times'}
+          </span>
+          {!date && (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+              Pick a highlighted day to see open times.
+            </p>
+          )}
+          {slotsState === 'loading' && (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading times…</p>
+          )}
+          {slotsState === 'error' && (
+            <p style={{ fontSize: 13, color: tokens.color.danger, margin: 0 }}>
+              Couldn&apos;t load times for this day. Try another day.
+            </p>
+          )}
+          {slotsState === 'idle' && date && slotsResp && slotsResp.slots.length === 0 && (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+              No open times this day. Try another.
+            </p>
+          )}
+          {slotsState === 'idle' && slotsResp && slotsResp.slots.length > 0 && (
+            <div
+              style={{
+                display: 'grid',
+                gap: 8,
+                maxHeight: 300,
+                overflowY: 'auto',
+                paddingRight: 4,
+              }}
+            >
+              {slotsResp.slots.map((slot) => {
+                const active = selectedSlot?.start === slot.start;
+                return (
+                  <button
+                    key={slot.start}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setSelectedSlot(slot)}
+                    style={{
+                      padding: '10px 12px',
+                      width: '100%',
+                      textAlign: 'center',
+                      border: `1px solid ${active ? tokens.color.accent : tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      fontSize: 14,
+                      fontWeight: active ? 600 : 400,
+                      background: active ? tokens.color.accentMuted : tokens.color.surface,
+                      color: tokens.color.text,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {timeFmt.format(new Date(slot.start))}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {slotsResp && timezone && (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
+              Times shown in {timezone}.
+            </p>
+          )}
+        </div>
       </div>
 
       <div>
