@@ -140,6 +140,7 @@ import { createBookingSettingsRouter } from './appointments/booking-settings-rou
 import { createSlotsRouter } from './appointments/slots-routes';
 import { createBookingRouter } from './appointments/booking-routes';
 import { createAppointmentPublicRouter } from './appointments/public-routes';
+import { createPublicBookingRouter } from './appointments/public-booking-routes';
 import { createAppointmentTwilioRouter } from './appointments/twilio-routes';
 import { createNotificationCenterRouter } from './notifications/center-routes';
 import { createStagedNotificationRouter } from './notifications/staged/routes';
@@ -1139,11 +1140,26 @@ export function createApp(deps: AppDeps): Express {
     createAppointmentPublicRouter({ db: deps.db, redis: deps.redis }),
   );
 
-  // BK-8 — v2 client self-booking public link (stubbed behind a flag).
-  // See docs/public-booking-v2.md for the intended v2 flow.
-  app.get('/api/public/book/:slug', (_req, res) => {
-    res.status(501).json({ error: 'not_implemented', feature: 'public_booking' });
-  });
+  // 0168 — PUBLIC self-booking (request→confirm). Gated by
+  // FEATURE_PUBLIC_BOOKING; served from the intake Caddy site (which proxies
+  // /api/public/book/*). CORS + rate limit + Turnstile live inside the router.
+  if (process.env['FEATURE_PUBLIC_BOOKING'] === 'true') {
+    app.use(
+      '/api/public/book',
+      createPublicBookingRouter({
+        db: deps.db,
+        redis: deps.redis,
+        sendEmail: deps.sendPortalEmail,
+        sendSms: deps.sendPortalSms,
+        intakeBaseUrl: process.env['INTAKE_BASE_URL'],
+        staffBaseUrl: config.APP_BASE_URL,
+      }),
+    );
+  } else {
+    app.get('/api/public/book/:slug', (_req, res) => {
+      res.status(501).json({ error: 'not_implemented', feature: 'public_booking' });
+    });
+  }
 
   // In-office signing — public scan target for the per-signer QR. Token-only;
   // no login/CSRF (like the other /api/public/* token surfaces).
