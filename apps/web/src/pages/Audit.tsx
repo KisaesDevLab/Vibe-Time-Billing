@@ -11,8 +11,11 @@ interface AuditRow {
   action: string;
   entityType: string;
   entityId: string | null;
+  entityName: string | null;
   actorAppUserId: string | null;
+  actorMcpTokenId: string | null;
   actorPortalIdentityId: string | null;
+  actorName: string | null;
   ip: string | null;
 }
 
@@ -159,30 +162,45 @@ export function AuditPage(): JSX.Element {
               render: (r) => new Date(r.occurredAt).toLocaleString(),
             },
             { key: 'action', header: 'Action', render: (r) => <Pill>{r.action}</Pill> },
-            { key: 'entity', header: 'Entity', render: (r) => r.entityType },
+            { key: 'entity', header: 'Type', render: (r) => r.entityType },
             {
               key: 'eid',
-              header: 'Entity ID',
+              header: 'Entity',
               render: (r) =>
-                r.entityId ? <code style={{ fontSize: 11 }}>{r.entityId.slice(0, 8)}…</code> : '—',
-            },
-            {
-              key: 'actor',
-              header: 'Actor',
-              render: (r) =>
-                r.actorAppUserId ? (
-                  <span>
-                    <Pill tone="accent">staff</Pill>{' '}
-                    <code style={{ fontSize: 11 }}>{r.actorAppUserId.slice(0, 8)}…</code>
-                  </span>
-                ) : r.actorPortalIdentityId ? (
-                  <span>
-                    <Pill tone="success">portal</Pill>{' '}
-                    <code style={{ fontSize: 11 }}>{r.actorPortalIdentityId.slice(0, 8)}…</code>
+                r.entityId ? (
+                  <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                    {r.entityName && <span>{r.entityName}</span>}
+                    <code style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      {r.entityId}
+                    </code>
                   </span>
                 ) : (
                   '—'
                 ),
+            },
+            {
+              key: 'actor',
+              header: 'Actor',
+              render: (r) => {
+                const actorId =
+                  r.actorAppUserId ?? r.actorMcpTokenId ?? r.actorPortalIdentityId ?? null;
+                if (!actorId) return '—';
+                const pill = r.actorAppUserId ? (
+                  <Pill tone="accent">staff</Pill>
+                ) : r.actorMcpTokenId ? (
+                  <Pill tone="warning">MCP</Pill>
+                ) : (
+                  <Pill tone="success">portal</Pill>
+                );
+                return (
+                  <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                    <span>
+                      {pill} {r.actorName ?? ''}
+                    </span>
+                    <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{actorId}</code>
+                  </span>
+                );
+              },
             },
             { key: 'ip', header: 'IP', render: (r) => r.ip ?? '—' },
           ]}

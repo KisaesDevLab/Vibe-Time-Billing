@@ -54,6 +54,7 @@ function toneOf(kind: AlertRow['entityType']): 'accent' | 'warning' | 'danger' {
 export function AlertsPage(): JSX.Element {
   const [items, setItems] = useState<AlertRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<AlertRow | null>(null);
 
   const view = useColumnView('vibe.alerts.view', { sortCol: 'when', sortDir: 'desc' });
 
@@ -160,12 +161,114 @@ export function AlertsPage(): JSX.Element {
               header: 'Summary',
               render: (r) => summarize(r),
             },
+            {
+              key: 'actions',
+              header: '',
+              render: (r) => (
+                <Button size="sm" variant="secondary" onClick={() => setDetail(r)}>
+                  Details
+                </Button>
+              ),
+            },
           ]}
           rows={visible}
           rowKey={(r) => r.id}
           empty="No alerts. Quiet day."
         />
       </Card>
+      {detail && <AlertDetailModal alert={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+function AlertDetailModal({
+  alert,
+  onClose,
+}: {
+  alert: AlertRow;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+        padding: 16,
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Close details"
+        onClick={onClose}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(0,0,0,0.45)',
+          border: 'none',
+          padding: 0,
+          cursor: 'pointer',
+        }}
+      />
+      <div
+        style={{
+          position: 'relative',
+          background: tokens.color.surface,
+          color: tokens.color.text,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.lg,
+          padding: tokens.space.lg,
+          maxWidth: 640,
+          width: '100%',
+          maxHeight: '80vh',
+          overflow: 'auto',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 12,
+          }}
+        >
+          <Pill tone={toneOf(alert.entityType)}>{alert.entityType.replace(/_/g, ' ')}</Pill>
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 8 }}>{summarize(alert)}</div>
+        <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+          {new Date(alert.occurredAt).toLocaleString()}
+        </div>
+        {alert.entityId && (
+          <div style={{ fontSize: 12, marginBottom: 12 }}>
+            Subject id: <code style={{ fontSize: 11 }}>{alert.entityId}</code>
+          </div>
+        )}
+        <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+          Full detail
+        </div>
+        <pre
+          style={{
+            fontSize: 11,
+            fontFamily: tokens.font.mono,
+            padding: 12,
+            borderRadius: tokens.radius.sm,
+            border: `1px solid ${tokens.color.border}`,
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            margin: 0,
+          }}
+        >
+          {JSON.stringify(alert.afterJson ?? {}, null, 2)}
+        </pre>
+      </div>
     </div>
   );
 }

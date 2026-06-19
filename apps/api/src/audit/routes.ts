@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, inArray, lte, type SQL } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { auditLog } from '@vibe/db/schema';
+import { appUsers, auditLog, clients, engagements, invoices, mcpTokens } from '@vibe/db/schema';
 
 import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -53,6 +53,95 @@ const QuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
 
+type AuditRowLike = {
+  actorAppUserId: string | null;
+  actorMcpTokenId: string | null;
+  actorPortalIdentityId: string | null;
+  entityType: string;
+  entityId: string | null;
+};
+
+// Attach human names to audit rows: the actor (staff user / MCP token / portal
+// identity) and the entity (for the common entity types — engagement, client,
+// invoice, app_user). Unmapped types leave entityName null (UI falls back to
+// the full id). Batched to keep it a handful of queries regardless of page size.
+async function enrichWithNames<T extends AuditRowLike>(
+  db: Database,
+  rows: T[],
+): Promise<Array<T & { actorName: string | null; entityName: string | null }>> {
+  const appUserIds = new Set<string>();
+  const tokenIds = new Set<string>();
+  const engIds = new Set<string>();
+  const clientIds = new Set<string>();
+  const invoiceIds = new Set<string>();
+  for (const r of rows) {
+    if (r.actorAppUserId) appUserIds.add(r.actorAppUserId);
+    if (r.actorMcpTokenId) tokenIds.add(r.actorMcpTokenId);
+    if (r.entityId) {
+      if (r.entityType === 'engagement') engIds.add(r.entityId);
+      else if (r.entityType === 'client') clientIds.add(r.entityId);
+      else if (r.entityType === 'invoice') invoiceIds.add(r.entityId);
+      else if (r.entityType === 'app_user' || r.entityType === 'staff_user')
+        appUserIds.add(r.entityId);
+    }
+  }
+  const toMap = (rs: Array<{ id: string; name: string | null }>): Map<string, string | null> =>
+    new Map(rs.map((x) => [x.id, x.name]));
+  const empty = (): Map<string, string | null> => new Map();
+  const [users, tokens, engs, clis, invs] = await Promise.all([
+    appUserIds.size
+      ? db
+          .select({ id: appUsers.id, name: appUsers.fullName })
+          .from(appUsers)
+          .where(inArray(appUsers.id, [...appUserIds]))
+          .then(toMap)
+      : empty(),
+    tokenIds.size
+      ? db
+          .select({ id: mcpTokens.id, name: mcpTokens.name })
+          .from(mcpTokens)
+          .where(inArray(mcpTokens.id, [...tokenIds]))
+          .then(toMap)
+      : empty(),
+    engIds.size
+      ? db
+          .select({ id: engagements.id, name: engagements.name })
+          .from(engagements)
+          .where(inArray(engagements.id, [...engIds]))
+          .then(toMap)
+      : empty(),
+    clientIds.size
+      ? db
+          .select({ id: clients.id, name: clients.name })
+          .from(clients)
+          .where(inArray(clients.id, [...clientIds]))
+          .then(toMap)
+      : empty(),
+    invoiceIds.size
+      ? db
+          .select({ id: invoices.id, name: invoices.invoiceNumber })
+          .from(invoices)
+          .where(inArray(invoices.id, [...invoiceIds]))
+          .then(toMap)
+      : empty(),
+  ]);
+  return rows.map((r) => {
+    let actorName: string | null = null;
+    if (r.actorAppUserId) actorName = users.get(r.actorAppUserId) ?? null;
+    else if (r.actorMcpTokenId) actorName = `MCP token: ${tokens.get(r.actorMcpTokenId) ?? '?'}`;
+    else if (r.actorPortalIdentityId) actorName = 'Portal user';
+    let entityName: string | null = null;
+    if (r.entityId) {
+      if (r.entityType === 'engagement') entityName = engs.get(r.entityId) ?? null;
+      else if (r.entityType === 'client') entityName = clis.get(r.entityId) ?? null;
+      else if (r.entityType === 'invoice') entityName = invs.get(r.entityId) ?? null;
+      else if (r.entityType === 'app_user' || r.entityType === 'staff_user')
+        entityName = users.get(r.entityId) ?? null;
+    }
+    return { ...r, actorName, entityName };
+  });
+}
+
 export function createAuditRouter(deps: AuditRoutesDeps): Router {
   const router = express.Router();
 
@@ -87,7 +176,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
             .where(and(...conds))
             .orderBy(desc(auditLog.occurredAt))
             .limit(q.limit));
-      res.json({ items });
+      res.json({ items: await enrichWithNames(deps.db, items) });
     },
   );
 
