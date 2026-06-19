@@ -10,6 +10,18 @@ import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
+import { RichTextEditor, type RichTextVariable } from '../proposal-editor/RichTextEditor';
+
+// Merge tokens available in a client email body/subject. Resolved per-recipient
+// on the server before send.
+const EMAIL_VARIABLES: RichTextVariable[] = [
+  { token: 'client.name', label: 'Client name' },
+  { token: 'client.primaryContact', label: 'Primary contact name' },
+  { token: 'firm.name', label: 'Firm name' },
+  { token: 'firm.displayName', label: 'Firm display name' },
+  { token: 'firm.support_email', label: 'Firm support email' },
+  { token: 'firm.support_phone', label: 'Firm support phone' },
+];
 import { RollDueRecurrencesDialog } from './clients/RollDueRecurrencesDialog';
 import { RouteSheetDialog } from './clients/RouteSheetDialog';
 
@@ -595,20 +607,11 @@ function BulkEmailDialog({
               </div>
               <div style={{ display: 'grid', gap: 4 }}>
                 <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Body</label>
-                <textarea
-                  rows={8}
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  style={{
-                    padding: '8px 10px',
-                    fontSize: 13,
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    background: tokens.color.bg,
-                    color: tokens.color.text,
-                    resize: 'vertical',
-                  }}
-                />
+                <RichTextEditor value={body} onChange={setBody} variables={EMAIL_VARIABLES} />
+                <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  Format with the toolbar and insert variables like{' '}
+                  <code>{'{{ client.name }}'}</code> — filled in per recipient when sent.
+                </span>
               </div>
               {error && (
                 <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">

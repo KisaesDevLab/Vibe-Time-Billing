@@ -30,6 +30,9 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, userHasPermission, type RbacDeps } from '../auth/rbac-middleware';
 import { canAccessClient, requireFullClientAccessForSection } from './access';
 import { createClientCredentialRouter } from '../vault/routes';
+import { firmScope } from '../notifications/templating';
+import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
+import { markdownToHtml } from '../lib/markdown';
 import type { StorageAdapter } from '../files/storage';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -1340,6 +1343,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         arr.push(c);
         byClient.set(c.clientId, arr);
       }
+      // Firm-level merge tokens (firm.name, firm.support_email, …) — fetched
+      // once and reused for every recipient.
+      const firmTokens = await firmScope(deps.db, session.firmId);
       const results: Array<{
         clientId: string;
         clientName: string;
@@ -1364,10 +1370,20 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           continue;
         }
         try {
+          // Substitute {{client.*}} / {{firm.*}} per recipient, then render the
+          // Markdown body to HTML (the staff mailer wraps it in the firm's
+          // branded shell). The substituted Markdown doubles as the text part.
+          const ctx: MergeContext = {
+            firm: firmTokens,
+            client: { name: client.name, primaryContact: pick.fullName ?? '' },
+          };
+          const subject = resolveMergeTokens(parsed.data.subject, ctx).output;
+          const textBody = resolveMergeTokens(parsed.data.body, ctx).output;
           await deps.sendStaffMail({
             to: pick.email,
-            subject: parsed.data.subject,
-            body: parsed.data.body,
+            subject,
+            body: textBody,
+            html: markdownToHtml(textBody),
           });
           results.push({
             clientId: client.id,
