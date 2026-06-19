@@ -2338,7 +2338,7 @@ Staff accounts live under **Admin → People**: **Users** (\`/admin/users\`), **
 
 ## Other notes
 - **Second factor is mandatory**: every staff user must enroll a second factor (passkey, TOTP, email OTP, or SMS OTP). The **TOTP** column shows \`pending\` until enrolled. On the **Authentication** card an admin can **Reset TOTP** — the user re-enrolls at next sign-in.
-- The 5 system roles cannot be edited or deleted; the **Permissions** page is a read-only matrix of which template grants which key.
+- The 5 system roles cannot be edited or deleted, but the **Permissions** page is an **editable** matrix: click a cell to grant (✓) or revoke (✗) a permission for a role. Changes save as per-firm overrides and take effect immediately; a dot marks any cell that differs from the role's default. (The Admin column stays locked so you can't lock yourself out.)
 - A user with no role has read-only baseline access and will hit 403s on most actions. Use **Archive** to disable sign-in (soft delete; users are never hard-deleted).
 `),
   },
@@ -2360,14 +2360,14 @@ Taxonomy is the reference data that scopes and prices work. It lives in two admi
 - **Engagement statuses**, **Templates**, and **Recurring engagements** under the Catalog group.
 
 ## Fields
-- **Service lines**: **Name** + **Category** (Tax, Audit, Advisory, Bookkeeping, Payroll). Rename via the row's **Rename** button.
+- **Service lines**: **Name** + a free-text **Category** (any label you like; defaults to the name). Rename via the row's **Rename** button.
 - **Work codes**: **key** (snake_case) + **Display name**, with a **Billable default** column. Work codes drive in-scope tagging on engagements and can be attached to staff under a user's **Skill Set** tab.
 - **Reason codes**: **Category** (Write-down, Write-up, Transfer) + **Label**. Used when staff record write-ups/write-downs and transfers.
 - **Offices**: **Name** + **Timezone**; one office is flagged \`default\`. Each office has a **Settings** panel with per-office overrides.
 
 ## Steps
-1. **Add a service line**: Admin → Catalog → Taxonomy → **Service lines** card → type **Name**, pick **Category**, click **Add**.
-2. **Add a work code**: in the **Work codes** card, enter **key (snake_case)** and **Display name**, click **Add**.
+1. **Add a service line**: Admin → Catalog → Taxonomy → **Service lines** card → type **Name**, optionally type a **Category**, click **Add**.
+2. **Add a work code**: in the **Work codes** card, enter **key (snake_case)** and **Display name** (and optionally assign a **Service line**), click **Add**.
 3. **Add a reason code**: in the **Reason codes** card, pick **Category**, type **Label**, click **Add**.
 4. **Add an office**: Admin → Firm → Offices → **Add office** card → **Name** + **Timezone** → **Add**.
 5. **Override an office setting**: click **Settings** on an office row, then set any of **Adjustment approval threshold (cents)**, **Time entry rounding (hours)**, **Late-entry alert days**, **Late-entry lockout days**, **Invoice numbering prefix**. Leave blank to inherit the firm value; the "Effective" line shows the resolved value.
@@ -2393,7 +2393,7 @@ The admin sidebar collapses into seven semantic groups; each expands to a list o
 
 ## What you'll see
 - **Firm**: **Settings** (firm-wide defaults), **Offices** (locations + per-office overrides), **Holidays** (firm holidays + PTO).
-- **People**: **Users** (invite + staff list), **Roles** (system + custom roles), **Permissions** (read-only permission matrix).
+- **People**: **Users** (invite + staff list), **Roles** (system + custom roles), **Permissions** (editable per-firm permission matrix).
 - **Catalog**: **Taxonomy**, **Engagement statuses**, **Templates**, **Recurring engagements**, **Services catalog**, **Packages**, **Payment methods**, **Tax payments**, **Terms templates**, **Milestones**, **Engagement letters**.
 - **Billing**: **Rate codes**, **Rates**, **Recurring plans**, **Hour banks**, **Hour-bank tx**, **Retainer tiers**, **Appointments**, **Approval rules**, **Required fields**, **Stripe Connect**.
 - **Messaging**: **Email + SMS providers**, **Notification templates**, **Notifications log**, **Webhooks**.
@@ -2688,7 +2688,7 @@ Vibe Practice Management ships as a versioned Docker image. Database migrations 
 Vibe Practice Management connects to a handful of external services so the appliance can take card payments, send email and SMS, store files, reach the internet, and run cloud AI. The guiding rule everywhere: **you supply your own credentials**. Kisaes never holds your Stripe keys, mail-provider secrets, Cloudflare token, or AI keys — they live on your appliance (as env vars) or encrypted at rest in your own database.
 
 ## Steps
-1. **Payments (Stripe).** Stripe keys are set on the appliance as environment variables — \`STRIPE_SECRET_KEY\`, \`STRIPE_PUBLISHABLE_KEY\`, \`STRIPE_WEBHOOK_SECRET\` — using your own Stripe account. When \`STRIPE_SECRET_KEY\` is present, online card payment turns on and the staff **Receive Payment** form shows the Card (Stripe) option.
+1. **Payments (Stripe).** Use your own Stripe account. You can enter the keys **in the UI** under **Admin → Billing → Stripe Connect** in the **Stripe API keys (firm-owned)** card — paste your **Secret key**, **Publishable key**, and **Webhook signing secret**, then **Save keys** (and **Test secret key** to confirm). Keys are encrypted at rest. (Operators may instead set \`STRIPE_SECRET_KEY\` / \`STRIPE_PUBLISHABLE_KEY\` / \`STRIPE_WEBHOOK_SECRET\` as appliance env vars.) Once a secret key is present, online card payment turns on and the staff **Receive Payment** form shows the Card (Stripe) option.
 2. **Payments (CPACharge).** CPACharge is scaffolded but **not yet live** — the provider stub returns not-implemented and there's no admin screen to enable it today.
 3. **Stripe Connect (optional).** A separate **Admin → Billing → Stripe Connect** page supports the operator-platform OAuth flow; it only appears configured when the operator has set the Connect env vars. The firm then clicks **Connect Stripe** to link its own account.
 4. **Email provider.** Go to **Admin → Messaging → Email + SMS providers**. In the **Email provider** card, pick \`SMTP\`, \`Postmark\`, \`Resend\`, or \`EmailIt\`, fill the credentials, click **Send test**, then **Save**. (If a save fails, the error now names the exact field that's wrong — e.g. "host: Required".)
@@ -2698,7 +2698,7 @@ Vibe Practice Management connects to a handful of external services so the appli
 8. **Cloud AI providers.** Cloud AI is set via env vars (\`AI_CLOUD_API_KEY\` for Anthropic, or the OpenAI-compatible vars); local AI uses Ollama. Cloud egress is additionally gated by the Vibe Shield policy.
 
 ## Fields
-- **Stripe** — your account's secret/publishable/webhook keys, set on the appliance (not in the UI).
+- **Stripe** — your account's **Secret key**, **Publishable key**, and **Webhook signing secret**, entered in **Admin → Billing → Stripe Connect** (or as appliance env vars).
 - **Email** — **From address** plus provider secrets (SMTP host/port/user/password, Postmark **Server token**, Resend **API key**, or EmailIt **API key**).
 - **SMS** — TextLink **API key**; or Twilio **From number (E.164)** + **Account SID** + **Auth token**.
 - **Cloudflare — API token** — scoped for Tunnel + DNS edit.
@@ -3774,8 +3774,8 @@ From a tax return you can assemble a signature package in one step — the app f
 2. The app scans the return PDF's bookmarks and lists the **signature pages it detected** (for example, the federal and state e-file authorization forms) using your firm's signature-page rules.
 3. If nothing matched, expand **manual page selection** and check the pages you want from the full bookmark list.
 4. Optionally include **document templates** configured for this return's form type (engagement letter, consents) and upload any one-off PDFs.
-5. Add the **signers** (taxpayer, spouse, officers) with names and emails; signature fields are placed automatically based on each signer's role and the matched page layout.
-6. Click **Create package**. The selected pages, templates, and extra PDFs are merged into one document and the signature request is created (in draft, linked to the return). It then appears right on the return's **Signatures** card — you stay on the tax return.
+5. For a 1040, set the **filing status** — **Single** or **Married filing jointly** — which decides whether a spouse signer slot is created. Add the **signers** (taxpayer, spouse, officers) with names and emails; signature fields are placed automatically based on each signer's role and the matched page layout.
+6. Click **Create & review**. The selected pages, templates, and extra PDFs are merged into one document and the signature request is created (in draft, linked to the return), then opens for you to review.
 7. From the Signatures card, run **in-office signing** inline (the normal path for an individual 1040 — see [[in-office-signing]]), or click **Open** to fine-tune field placement and, for an entity return, send for signature.
 
 ## Tips
