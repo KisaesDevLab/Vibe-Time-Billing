@@ -607,6 +607,7 @@ interface InboxCounts {
   requests: number;
   intake: number;
   approvals: number;
+  bookingRequests: number;
 }
 
 function InboxCard(): JSX.Element {
@@ -634,11 +635,12 @@ function InboxCard(): JSX.Element {
     { key: 'requests', label: 'Requests', href: '/requests' },
     { key: 'intake', label: 'Intake', href: '/intake' },
     { key: 'approvals', label: 'Approvals', href: '/approvals' },
+    { key: 'bookingRequests', label: 'Booking', href: '/appointments#requests' },
   ];
 
   return (
     <Card title="Needs attention">
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 16 }}>
         {items.map((it) => {
           const value = counts ? counts[it.key] : 0;
           const has = value > 0;

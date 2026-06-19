@@ -11,6 +11,7 @@ import { and, eq, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   approvalRequests,
+  bookingRequests,
   staffNotifications,
   clientRequests,
   clients,
@@ -129,6 +130,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         intake: 0,
         approvals: 0,
         notifications: 0,
+        bookingRequests: 0,
       };
       if (!deps.db) {
         res.json(empty);
@@ -213,6 +215,12 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           ),
         );
 
+      // Pending public booking requests awaiting a staff decision.
+      const bookingReqs = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(bookingRequests)
+        .where(and(eq(bookingRequests.firmId, firmId), eq(bookingRequests.status, 'PENDING')));
+
       res.json({
         clientMsg: n(clientMsg),
         teamMsg: n(teamMsg),
@@ -220,6 +228,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         intake: n(intake),
         approvals: n(approvals),
         notifications: n(notifications),
+        bookingRequests: n(bookingReqs),
       });
     },
   );

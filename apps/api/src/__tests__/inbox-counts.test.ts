@@ -56,6 +56,7 @@ describe('GET /stats/inbox-counts', () => {
       intake: 0,
       approvals: 0,
       notifications: 0, // BK-7 — in-app staff notifications
+      bookingRequests: 0,
     });
   });
 
