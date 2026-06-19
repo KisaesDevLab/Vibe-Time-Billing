@@ -15,7 +15,9 @@ import {
   clientRequests,
   clients,
   engagementAssignments,
+  engagementNotes,
   engagements,
+  retainers,
   rollforwardAppointmentCandidates,
   rollforwardBatches,
   rollforwardEngagementCandidates,
@@ -281,6 +283,25 @@ export async function commitRollforwardBatch(
           dueDate: c.suggestedDropoffDate,
           reminderDaysBefore: srcDrop?.reminderDaysBefore ?? null,
           status: 'OPEN',
+        });
+      }
+
+      // Q44 — carry the retainer INTENT forward. Retainers are offer-at-billing
+      // and payment-gated (a draft engagement has no prep invoice to base an
+      // offer on, and the prior balance forfeits on close), so we never copy a
+      // funded retainer or its balance. Instead, if the source carried a live
+      // retainer, leave a note so staff re-offer the same tier when this
+      // engagement is billed (the offer then recurs through the normal flow).
+      const [srcRetainer] = await tx
+        .select({ tier: retainers.tier, hours: retainers.hoursPurchased })
+        .from(retainers)
+        .where(and(eq(retainers.engagementId, src.id), ne(retainers.status, 'void')))
+        .limit(1);
+      if (srcRetainer) {
+        await tx.insert(engagementNotes).values({
+          engagementId: targetId,
+          authorId: opts.actorAppUserId,
+          body: `Rollforward: the prior-year engagement carried a ${srcRetainer.tier} retainer (${srcRetainer.hours}h). Offer the retainer again when billing this engagement's prep fee.`,
         });
       }
 

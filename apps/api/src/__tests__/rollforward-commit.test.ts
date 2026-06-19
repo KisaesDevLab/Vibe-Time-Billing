@@ -11,7 +11,10 @@ import {
   appointmentStaff,
   appointments,
   clientRequests,
+  engagementNotes,
   engagements,
+  retainerTierConfigs,
+  retainers,
   rollforwardAppointmentCandidates,
   rollforwardEngagementCandidates,
 } from '@vibe/db/schema';
@@ -142,6 +145,63 @@ describe('rollforward commit (end-to-end)', () => {
       .from(engagements)
       .where(ne(engagements.id, seed.engagementId));
     expect(allTargets).toHaveLength(1); // no duplicate engagement
+  });
+
+  it('Q44 — carries a retainer-intent note when the source had a live retainer', async () => {
+    await harness.db
+      .update(engagements)
+      .set({ returnType: '1040', dueDate: '2025-04-01', taxYear: 2024, partnerId: seed.appUserId })
+      .where(eq(engagements.id, seed.engagementId));
+    const [tier] = await harness.db
+      .insert(retainerTierConfigs)
+      .values({
+        firmId: seed.firmId,
+        returnType: '1040',
+        tier: 'TIER_1',
+        name: 'Tier 1',
+        hours: '5',
+      })
+      .returning({ id: retainerTierConfigs.id });
+    await harness.db.insert(retainers).values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      engagementId: seed.engagementId,
+      tier: 'TIER_1',
+      returnType: '1040',
+      taxYear: 2024,
+      tierConfigId: tier!.id,
+      name: 'Tax Representation Retainer',
+      hoursPurchased: '5',
+      priceCents: 100000,
+      purchaseDate: '2025-01-01',
+      expiryDate: '2025-12-31',
+      status: 'active',
+    });
+
+    const { batchId } = await createRollforwardBatch(harness.db, {
+      firmId: seed.firmId,
+      staffId: seed.appUserId,
+      sourceStart: '2025-02-01',
+      sourceEnd: '2025-04-15',
+      targetYear: 2026,
+      mode: 'DEADLINE',
+      createdByAppUserId: seed.appUserId,
+    });
+    await harness.db
+      .update(rollforwardEngagementCandidates)
+      .set({ status: 'APPROVED' })
+      .where(eq(rollforwardEngagementCandidates.batchId, batchId));
+    const result = await commitRollforwardBatch(harness.db, {
+      batchId,
+      firmId: seed.firmId,
+      actorAppUserId: seed.appUserId,
+    });
+    const targetEngId = result.mapping[0]!.targetEngagementId;
+    const notes = await harness.db
+      .select()
+      .from(engagementNotes)
+      .where(eq(engagementNotes.engagementId, targetEngId));
+    expect(notes.some((n) => /retainer/i.test(n.body))).toBe(true);
   });
 
   it('Q46 — appointment-only opt-in commits an engagement-less appointment when the engagement is skipped', async () => {
