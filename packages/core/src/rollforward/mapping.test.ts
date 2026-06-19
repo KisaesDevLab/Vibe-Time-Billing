@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
 
-import { mapDate, mapDeadlineAnchored, mapIsoWeek } from './mapping';
+import { mapDate, mapDateTime, mapDeadlineAnchored, mapIsoWeek } from './mapping';
 
 const wd = (iso: string): number => DateTime.fromISO(iso, { zone: 'utc' }).weekday;
 const wn = (iso: string): number => DateTime.fromISO(iso, { zone: 'utc' }).weekNumber;
@@ -68,6 +68,25 @@ describe('ISO-week-anchored mapping', () => {
     const tgt = mapIsoWeek(src, 2021); // 2021 has 52 ISO weeks
     expect(wn(tgt)).toBe(52);
     expect(wd(tgt)).toBe(wd(src));
+  });
+});
+
+describe('mapDateTime', () => {
+  it('preserves wall-clock time-of-day in the firm zone and the weekday', () => {
+    const src = '2025-04-01T15:00:00.000Z'; // 10:00 America/Chicago (CDT)
+    const out = mapDateTime({
+      sourceUtcISO: src,
+      returnType: '1040',
+      targetYear: 2026,
+      mode: 'DEADLINE',
+      zone: 'America/Chicago',
+    });
+    const outCh = DateTime.fromISO(out, { zone: 'utc' }).setZone('America/Chicago');
+    const srcCh = DateTime.fromISO(src, { zone: 'utc' }).setZone('America/Chicago');
+    expect(outCh.hour).toBe(srcCh.hour); // 10
+    expect(outCh.minute).toBe(srcCh.minute);
+    expect(outCh.weekday).toBe(srcCh.weekday);
+    expect(outCh.year).toBe(2026);
   });
 });
 

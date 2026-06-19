@@ -97,3 +97,32 @@ export function mapDate(opts: {
     ? mapIsoWeek(opts.sourceDate, opts.targetYear)
     : mapDeadlineAnchored(opts.sourceDate, opts.returnType, opts.targetYear);
 }
+
+/**
+ * Map a full instant (an appointment's start) to the target year, preserving
+ * the local wall-clock time-of-day in the firm timezone (DST-correct via
+ * Luxon). Returns a UTC ISO string. The date is moved by the same rule as
+ * mapDate; only the calendar date changes, not the time-of-day.
+ */
+export function mapDateTime(opts: {
+  sourceUtcISO: string;
+  returnType: string | null | undefined;
+  targetYear: number;
+  mode: MappingMode;
+  zone: string; // firm timezone, e.g. America/Chicago
+}): string {
+  const src = DateTime.fromISO(opts.sourceUtcISO, { zone: 'utc' }).setZone(opts.zone);
+  const targetDate = mapDate({
+    sourceDate: src.toISODate()!,
+    returnType: opts.returnType,
+    targetYear: opts.targetYear,
+    mode: opts.mode,
+  });
+  const [y, m, d] = targetDate.split('-').map(Number) as [number, number, number];
+  return DateTime.fromObject(
+    { year: y, month: m, day: d, hour: src.hour, minute: src.minute, second: src.second },
+    { zone: opts.zone },
+  )
+    .toUTC()
+    .toISO()!;
+}
