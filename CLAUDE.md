@@ -62,7 +62,7 @@ These come from `QUESTIONS.md` and must be respected everywhere they touch.
 6. **Phone re-verification on every new device** for portal_identity. Fingerprint by IP + user-agent (best-effort); on mismatch, send SMS OTP confirming the new device before issuing session.
 
 ### Payments
-7. **Firm owns the Stripe account.** Firm pastes their own API keys into admin settings. No Stripe Connect, no Kisaes-owned platform account.
+7. **Firm owns the Stripe account (default).** The primary model is unchanged: the firm pastes its own Stripe API keys (Secret / Publishable / Webhook-signing) into **Admin → Billing → Stripe Connect** (encrypted at rest) or sets them as appliance env vars; Kisaes never holds the firm's keys. **Revision (P08+):** in addition, an **optional** Stripe **Connect Standard (OAuth)** path now exists for operators who configure a platform `STRIPE_CONNECT_CLIENT_ID` — the firm clicks "Connect Stripe" to link its own (Standard) account via OAuth. It is opt-in (hidden unless the operator sets the platform client id) and powers proposal-payment collection and Stripe Terminal (in-person readers provision against the connected account). This supersedes the original "no Stripe Connect" clause; firm-owned, customer-controlled credentials remain non-negotiable in both modes.
 8. **No trust account / IOLTA support.** Don't add the schema, don't add the UI.
 9. **Payment processor fees: per-engagement configurable.** Boolean `fee_passthrough_enabled` on engagement. When true, invoices auto-add a "processing fee" line item calculated from card vs ACH rates.
 
