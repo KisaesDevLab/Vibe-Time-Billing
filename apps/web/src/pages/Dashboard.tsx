@@ -92,6 +92,9 @@ function daysFromToday(iso: string | null): number | null {
 export function DashboardPage(): JSX.Element {
   const { me } = useAuth();
   const [items, setItems] = useState<RealizationItem[]>([]);
+  // Realization card: 'mine' = the current staff person's realization;
+  // 'service_line' = firm-wide breakdown by service line.
+  const [realizMode, setRealizMode] = useState<'mine' | 'service_line'>('mine');
   const [summary, setSummary] = useState<FirmSummary | null>(null);
   const [myEngagements, setMyEngagements] = useState<MyEngagement[]>([]);
   const [engTypes, setEngTypes] = useState<EngagementType[]>([]);
@@ -122,11 +125,14 @@ export function DashboardPage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const params = new URLSearchParams({
-          dimension: 'timekeeper',
-          start: range.start,
-          end: range.end,
-        });
+        const params = new URLSearchParams({ start: range.start, end: range.end });
+        if (realizMode === 'service_line') {
+          params.set('dimension', 'service_line');
+        } else {
+          params.set('dimension', 'timekeeper');
+          // Scope to the logged-in staff person's own realization.
+          if (me?.appUserId) params.set('appUserId', me.appUserId);
+        }
         const [r, s] = await Promise.all([
           api<{ items: RealizationItem[] }>(`/api/staff/reports/realization?${params}`),
           api<{ summary: FirmSummary | null }>('/api/staff/stats/firm'),
@@ -139,7 +145,7 @@ export function DashboardPage(): JSX.Element {
         setLoading(false);
       }
     })();
-  }, [range.start, range.end]);
+  }, [range.start, range.end, realizMode, me?.appUserId]);
 
   useEffect(() => {
     if (!me?.appUserId) return;
@@ -253,15 +259,35 @@ export function DashboardPage(): JSX.Element {
 
       <InboxCard />
 
-      <MyCalendarPanel />
-
-      <UpcomingBookingsPanel />
-
-      {/* 0051 — realization card moved above My active engagements. */}
+      {/* Realization sits directly under "Needs attention" (InboxCard). */}
       <Card
-        title="Realization by timekeeper"
+        title={realizMode === 'service_line' ? 'Realization by service line' : 'My realization'}
         action={
           <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <span
+              style={{
+                display: 'inline-flex',
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+              }}
+            >
+              <Button
+                size="sm"
+                variant={realizMode === 'mine' ? 'secondary' : 'ghost'}
+                onClick={() => setRealizMode('mine')}
+                aria-pressed={realizMode === 'mine'}
+              >
+                Mine
+              </Button>
+              <Button
+                size="sm"
+                variant={realizMode === 'service_line' ? 'secondary' : 'ghost'}
+                onClick={() => setRealizMode('service_line')}
+                aria-pressed={realizMode === 'service_line'}
+              >
+                Service line
+              </Button>
+            </span>
             <span
               style={{
                 display: 'inline-flex',
@@ -316,7 +342,11 @@ export function DashboardPage(): JSX.Element {
         ) : (
           <Table
             columns={[
-              { key: 'name', header: 'Timekeeper', render: (r) => r.label ?? r.key },
+              {
+                key: 'name',
+                header: realizMode === 'service_line' ? 'Service line' : 'Timekeeper',
+                render: (r) => r.label ?? r.key,
+              },
               {
                 key: 'wip',
                 header: 'Standard WIP',
@@ -342,6 +372,10 @@ export function DashboardPage(): JSX.Element {
           />
         )}
       </Card>
+
+      <MyCalendarPanel />
+
+      <UpcomingBookingsPanel />
 
       {/* 0050 — My active engagements card (now below realization). */}
       <Card
