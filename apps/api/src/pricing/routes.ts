@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { clients, engagements, firmSettings, pricingDecisions } from '@vibe/db/schema';
@@ -20,27 +20,27 @@ import type { AiComplete } from './rationale';
 
 const TIER = z.enum(['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF']);
 
-const SuggestionSchema = z.object({
-  overrides: z
-    .object({
-      tiers: z
-        .array(
-          z.object({
-            tier: TIER,
-            expectedHours: z.number().nonnegative().max(100000).optional(),
-            burdenedCostRateCents: z.number().int().nonnegative().max(10_000_00).optional(),
-          }),
-        )
-        .optional(),
-      targetMarginPct: z.number().min(0).max(99.99).optional(),
-      economicFactorPct: z.number().min(-50).max(100).optional(),
-    })
-    .optional(),
-});
+const OverridesSchema = z
+  .object({
+    tiers: z
+      .array(
+        z.object({
+          tier: TIER,
+          expectedHours: z.number().nonnegative().max(100000).optional(),
+          burdenedCostRateCents: z.number().int().nonnegative().max(10_000_00).optional(),
+        }),
+      )
+      .optional(),
+    targetMarginPct: z.number().min(0).max(99.99).optional(),
+    economicFactorPct: z.number().min(-50).max(100).optional(),
+  })
+  .optional();
+
+const SuggestionSchema = z.object({ overrides: OverridesSchema });
 
 const DecisionSchema = z.object({
-  decisionId: z.string().uuid(),
   action: z.enum(['ACCEPTED', 'EDITED', 'OVERRIDDEN']),
+  overrides: OverridesSchema,
   finalLowCents: z.number().int().nonnegative().optional(),
   finalHighCents: z.number().int().nonnegative().optional(),
 });
@@ -120,38 +120,14 @@ export function createPricingRouter(deps: AiRoutesDeps): Router {
         aiComplete,
       });
 
-      const [decision] = await deps.db
-        .insert(pricingDecisions)
-        .values({
-          firmId,
-          engagementId,
-          inputsJson: {
-            tiers: suggestion.price.breakdownByTier,
-            costBaseCents: suggestion.price.costBaseCents,
-            grossedUpCents: suggestion.price.grossedUpCents,
-            targetMarginPct: suggestion.price.targetMarginPct,
-            economic: suggestion.economic,
-            mode: suggestion.price.mode,
-            cohortSize: suggestion.cohortSize,
-            complexity: suggestion.complexity,
-            signals: suggestion.signals,
-          },
-          suggestedLowCents: suggestion.price.lowCents,
-          suggestedHighCents: suggestion.price.highCents,
-          suggestedRationale: suggestion.rationale.text,
-          rationaleSource: suggestion.rationale.source,
-          economicSource: suggestion.economic.source,
-          economicAsOf: suggestion.economic.asOf,
-          confidence: suggestion.price.confidence,
-          createdByAppUserId: appUserId,
-        })
-        .returning({ id: pricingDecisions.id });
-
-      res.json({ decisionId: decision!.id, suggestion });
+      // No persistence here — live recompute would spam rows. The decision
+      // endpoint recomputes authoritatively and writes one audit row.
+      res.json({ suggestion });
     },
   );
 
-  // Record the CPA's accept/edit/override (no engagement fee is written).
+  // Record the CPA's accept/edit/override. Recomputes server-side (tamper-proof
+  // snapshot) and writes one pricing_decision row. No engagement fee is written.
   router.post(
     '/engagements/:id/decision',
     requirePermission(deps, 'engagement:write'),
@@ -161,48 +137,67 @@ export function createPricingRouter(deps: AiRoutesDeps): Router {
       if (!parsed.success) return void res.status(400).json({ error: 'invalid_payload' });
       const { firmId, appUserId } = req.staffSession!;
       const engagementId = req.params['id']!;
+      const owner = await loadEngagementFirm(deps.db, engagementId);
+      if (owner !== firmId) return void res.status(404).json({ error: 'not_found' });
 
-      const [existing] = await deps.db
-        .select()
-        .from(pricingDecisions)
-        .where(
-          and(eq(pricingDecisions.id, parsed.data.decisionId), eq(pricingDecisions.firmId, firmId)),
-        )
-        .limit(1);
-      if (!existing || existing.engagementId !== engagementId)
-        return void res.status(404).json({ error: 'not_found' });
+      const settings = await loadSettings(deps.db, firmId);
+      const s = await computePricingSuggestion(deps.db, {
+        firmId,
+        engagementId,
+        settings,
+        overrides: parsed.data.overrides,
+        aiComplete: null, // no AI spend just to log a decision
+      });
+      const finalLow = parsed.data.finalLowCents ?? s.price.lowCents;
+      const finalHigh = parsed.data.finalHighCents ?? s.price.highCents;
 
-      await deps.db
-        .update(pricingDecisions)
-        .set({
+      const [decision] = await deps.db
+        .insert(pricingDecisions)
+        .values({
+          firmId,
+          engagementId,
+          inputsJson: {
+            tiers: s.price.breakdownByTier,
+            costBaseCents: s.price.costBaseCents,
+            grossedUpCents: s.price.grossedUpCents,
+            targetMarginPct: s.price.targetMarginPct,
+            economic: s.economic,
+            mode: s.price.mode,
+            cohortSize: s.cohortSize,
+            complexity: s.complexity,
+            signals: s.signals,
+          },
+          suggestedLowCents: s.price.lowCents,
+          suggestedHighCents: s.price.highCents,
+          economicSource: s.economic.source,
+          economicAsOf: s.economic.asOf,
+          confidence: s.price.confidence,
           userAction: parsed.data.action,
-          finalLowCents: parsed.data.finalLowCents ?? existing.suggestedLowCents,
-          finalHighCents: parsed.data.finalHighCents ?? existing.suggestedHighCents,
+          finalLowCents: finalLow,
+          finalHighCents: finalHigh,
           decidedByAppUserId: appUserId,
           decidedAt: new Date(),
+          createdByAppUserId: appUserId,
         })
-        .where(eq(pricingDecisions.id, existing.id));
+        .returning({ id: pricingDecisions.id });
 
       await emitAudit(deps.db, {
-        action: 'UPDATE',
+        action: 'CREATE',
         entityType: 'pricing_decision',
-        entityId: existing.id,
+        entityId: decision!.id,
         actorAppUserId: appUserId,
-        before: {
-          userAction: existing.userAction,
-          suggestedLowCents: existing.suggestedLowCents,
-          suggestedHighCents: existing.suggestedHighCents,
-        },
         after: {
           userAction: parsed.data.action,
-          finalLowCents: parsed.data.finalLowCents ?? existing.suggestedLowCents,
-          finalHighCents: parsed.data.finalHighCents ?? existing.suggestedHighCents,
+          suggestedLowCents: s.price.lowCents,
+          suggestedHighCents: s.price.highCents,
+          finalLowCents: finalLow,
+          finalHighCents: finalHigh,
         },
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       });
 
-      res.json({ ok: true });
+      res.json({ ok: true, decisionId: decision!.id });
     },
   );
 
