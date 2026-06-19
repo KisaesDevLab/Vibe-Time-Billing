@@ -71,6 +71,20 @@ function csvCell(s: string | number | null | undefined): string {
   return csvField(s);
 }
 
+// Resolve a report's date window from the query (?start=&end=, YYYY-MM-DD),
+// falling back to a trailing default-day window when start is absent. `end`
+// is null when not supplied (i.e. "up to now").
+function rangeFromQuery(req: Request, defaultDays: number): { start: string; end: string | null } {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  const pick = (k: string): string | null => {
+    const v = req.query[k];
+    return typeof v === 'string' && re.test(v) ? v : null;
+  };
+  const start =
+    pick('start') ?? new Date(Date.now() - defaultDays * 86_400_000).toISOString().slice(0, 10);
+  return { start, end: pick('end') };
+}
+
 // Attribute invoice revenue to engagements. A CONSOLIDATED invoice (one
 // invoice spanning several engagements via line items) is split by each
 // engagement's share of the engagement-tagged line-item amounts; a simple
@@ -585,7 +599,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+      const { start: since, end: until } = rangeFromQuery(req, 30);
       const { timeEntries: te, appUsers: au } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
       const rows = await deps.db
@@ -604,6 +618,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             // Exclude soft-deleted (ARCHIVED) entries.
             ne(te.status, 'ARCHIVED'),
             drz`${te.entryDate} >= ${since}::date`,
+            until ? drz`${te.entryDate} <= ${until}::date` : undefined,
           ),
         )
         .groupBy(te.appUserId, au.fullName, au.standardHoursPerWeek);
@@ -958,7 +973,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
       const rows = await deps.db
         .select({
           partnerId: clients.partnerInChargeId,
@@ -972,6 +987,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             eq(invoices.firmId, session.firmId),
             notInArray(invoices.status, ['DRAFT', 'VOIDED']),
             drz`${invoices.issueDate} >= ${since}::date`,
+            until ? drz`${invoices.issueDate} <= ${until}::date` : undefined,
           ),
         )
         .groupBy(clients.partnerInChargeId);
@@ -1009,7 +1025,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const { start: since } = rangeFromQuery(req, 90);
       // Billed (post-write-down) value per time entry: the APPLIED adjusted
       // value where the entry was adjusted, otherwise its standard amount. A
       // time entry belongs to a single billing batch/adjustment, so the SUM
@@ -1178,7 +1194,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const since = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+      const { start: since, end: until } = rangeFromQuery(req, 365);
       const rows = await deps.db
         .select({
           partnerId: clients.partnerInChargeId,
@@ -1193,6 +1209,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             eq(invoices.clientId, clients.id),
             notInArray(invoices.status, ['DRAFT', 'VOIDED']),
             drz`${invoices.issueDate} >= ${since}::date`,
+            until ? drz`${invoices.issueDate} <= ${until}::date` : undefined,
           ),
         )
         // A partner's "book" is their ACTIVE clients — exclude archived.
@@ -1352,7 +1369,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const weeklyTarget = parseFloat(String(req.query['weeklyTarget'] ?? '32')) || 32;
-      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const { start: since } = rangeFromQuery(req, 90);
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -1660,7 +1677,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const since = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+      const { start: since } = rangeFromQuery(req, 90);
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,

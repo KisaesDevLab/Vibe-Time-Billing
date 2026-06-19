@@ -24,6 +24,11 @@ export interface ReportSpec {
   params?: ParamSpec[];
 }
 
+const DATE_PARAMS: ParamSpec[] = [
+  { name: 'start', label: 'Start (YYYY-MM-DD)' },
+  { name: 'end', label: 'End (YYYY-MM-DD)' },
+];
+
 // API-only reports surfaced through the generic viewer. Reports that have a
 // dedicated page (realization, dso/mrr/revenue-ops, profitability,
 // payments-received, signed-forms) are linked to those pages instead.
@@ -41,12 +46,14 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'utilization',
     label: 'Utilization',
-    description: 'Billable vs total and vs available capacity, last 30 days.',
+    description: 'Billable vs total and vs available capacity (default 30 days).',
+    params: DATE_PARAMS,
   },
   {
     kind: 'effective-rate',
     label: 'Effective rate',
-    description: 'Billed value ÷ billable hours per timekeeper, last 90 days.',
+    description: 'Billed value ÷ billable hours per timekeeper (default 90 days).',
+    params: [{ name: 'start', label: 'Start (YYYY-MM-DD)' }],
   },
   {
     kind: 'time-by-engagement',
@@ -61,12 +68,14 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'collection-realization',
     label: 'Collection realization',
-    description: 'Paid ÷ billed per partner, last 90 days.',
+    description: 'Paid ÷ billed per partner (default 90 days).',
+    params: DATE_PARAMS,
   },
   {
     kind: 'book-of-business',
     label: 'Book of business',
-    description: 'Active clients + billed/paid per partner, last 365 days.',
+    description: 'Active clients + billed/paid per partner (default 365 days).',
+    params: DATE_PARAMS,
   },
   {
     kind: 'clv',
@@ -82,7 +91,10 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'capacity-forecast',
     label: 'Capacity forecast',
     description: 'Projected next-4-week billable hours vs target and per-user capacity.',
-    params: [{ name: 'weeklyTarget', label: 'Weekly target hrs', placeholder: '32' }],
+    params: [
+      { name: 'weeklyTarget', label: 'Weekly target hrs', placeholder: '32' },
+      { name: 'start', label: 'Start (YYYY-MM-DD)' },
+    ],
   },
   {
     kind: 'productivity-by-office',
@@ -115,7 +127,10 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'subscription-profitability',
     label: 'Subscription profitability',
     description: 'Retainer revenue vs cost-to-serve over a trailing window.',
-    params: [{ name: 'days', label: 'Window (days)', placeholder: '90' }],
+    params: [
+      { name: 'days', label: 'Window (days)', placeholder: '90' },
+      { name: 'start', label: 'Start (YYYY-MM-DD)' },
+    ],
   },
   {
     kind: 'client-request-capture',
