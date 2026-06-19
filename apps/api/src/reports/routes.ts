@@ -39,6 +39,7 @@ import { sql as drz } from 'drizzle-orm';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { csvField } from '../lib/csv';
 import { namesByIds } from './names';
+import { renderHtmlToPdf } from '../pdf/render';
 
 export interface ReportRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -2121,6 +2122,55 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         })),
         methodOptions,
       });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Generic report → PDF. The web report viewer posts the columns + rows it
+  // already fetched (firm-scoped at fetch time); we render a simple HTML
+  // table and pipe it through the shared Puppeteer renderer used for invoices.
+  // -------------------------------------------------------------------
+  const PdfSchema = z.object({
+    title: z.string().max(120).default('Report'),
+    columns: z.array(z.string().max(60)).max(40),
+    rows: z.array(z.record(z.unknown())).max(5000),
+  });
+  router.post(
+    '/pdf',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const parsed = PdfSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const { title, columns, rows } = parsed.data;
+      const esc = (v: unknown): string =>
+        String(v ?? '').replace(
+          /[&<>]/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c,
+        );
+      const head = columns.map((c) => `<th>${esc(c)}</th>`).join('');
+      const body = rows
+        .map((r) => `<tr>${columns.map((c) => `<td>${esc(r[c])}</td>`).join('')}</tr>`)
+        .join('');
+      const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+        body{font-family:system-ui,-apple-system,sans-serif;font-size:11px;color:#111;padding:24px;}
+        h1{font-size:16px;margin:0 0 4px;}
+        .meta{color:#666;font-size:10px;margin-bottom:12px;}
+        table{border-collapse:collapse;width:100%;}
+        th,td{border:1px solid #ccc;padding:4px 6px;text-align:left;vertical-align:top;}
+        th{background:#f3f3f3;}
+      </style></head><body>
+        <h1>${esc(title)}</h1>
+        <div class="meta">${new Date().toISOString().slice(0, 10)} · ${rows.length} rows</div>
+        <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+      </body></html>`;
+      const pdf = await renderHtmlToPdf(html);
+      const fname = title.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'report';
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${fname}.pdf"`);
+      res.send(pdf);
     },
   );
 

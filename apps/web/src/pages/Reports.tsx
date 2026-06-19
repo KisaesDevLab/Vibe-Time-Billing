@@ -595,9 +595,18 @@ function BillableTargetsCard(): JSX.Element {
   );
 }
 
+// Map a plain-English citation to a viewable report route. Match the AI's
+// report label to a generic-viewer kind; otherwise just go to the Reports hub.
+const VIEWER_BY_LABEL = new Map(VIEWER_REPORTS.map((r) => [r.label.toLowerCase(), r.kind]));
+function citationHref(label: string): string {
+  const kind = VIEWER_BY_LABEL.get(label.toLowerCase());
+  return kind ? `/reports/view/${kind}` : '/reports';
+}
+
 function PlainEnglishCard(): JSX.Element {
   const [q, setQ] = useState('');
   const [text, setText] = useState<string | null>(null);
+  const [cites, setCites] = useState<Array<{ label: string; path: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   async function ask(): Promise<void> {
@@ -605,11 +614,15 @@ function PlainEnglishCard(): JSX.Element {
     setBusy(true);
     setErr(null);
     try {
-      const r = await api<{ answer: string }>('/api/staff/ai/plain-english-query', {
-        method: 'POST',
-        body: JSON.stringify({ question: q }),
-      });
+      const r = await api<{ answer: string; citations?: Array<{ label: string; path: string }> }>(
+        '/api/staff/ai/plain-english-query',
+        {
+          method: 'POST',
+          body: JSON.stringify({ question: q }),
+        },
+      );
       setText(r.answer);
+      setCites(r.citations ?? []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed');
     } finally {
@@ -658,6 +671,29 @@ function PlainEnglishCard(): JSX.Element {
         >
           {text}
         </p>
+      )}
+      {cites.length > 0 && (
+        <div
+          style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
+        >
+          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Open report:</span>
+          {cites.map((c) => (
+            <a
+              key={c.label}
+              href={citationHref(c.label)}
+              style={{
+                fontSize: 12,
+                padding: '3px 8px',
+                borderRadius: tokens.radius.pill,
+                border: `1px solid ${tokens.color.border}`,
+                color: tokens.color.accent,
+                textDecoration: 'none',
+              }}
+            >
+              {c.label} →
+            </a>
+          ))}
+        </div>
       )}
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
     </Card>

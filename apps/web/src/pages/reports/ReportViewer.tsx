@@ -10,7 +10,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 
 import { Button, Card, Input, Table, tokens } from '@vibe/ui';
 
-import { api } from '../../api-client';
+import { api, getCsrfToken } from '../../api-client';
 
 export interface ParamSpec {
   name: string;
@@ -251,6 +251,34 @@ export function ReportViewerPage(): JSX.Element {
     URL.revokeObjectURL(url);
   }
 
+  async function downloadPdf(): Promise<void> {
+    if (!items || columns.length === 0) return;
+    // Send the already-fetched, formatted rows keyed by human column labels so
+    // the server-rendered PDF shows names / currency / % just like the table.
+    const headers = columns.map((c) => humanize(c));
+    const payloadRows = items.map((row) =>
+      Object.fromEntries(columns.map((c) => [humanize(c), fmtCell(c, row[c])])),
+    );
+    const csrf = getCsrfToken();
+    const res = await fetch('/api/staff/reports/pdf', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+      },
+      body: JSON.stringify({ title: spec?.label ?? kind, columns: headers, rows: payloadRows }),
+    });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${kind}-${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (!spec) {
     return (
       <Card title="Unknown report">
@@ -265,9 +293,14 @@ export function ReportViewerPage(): JSX.Element {
         title={spec.label}
         action={
           items && items.length > 0 ? (
-            <Button size="sm" variant="secondary" onClick={downloadCsv}>
-              ⬇ CSV
-            </Button>
+            <span style={{ display: 'inline-flex', gap: 6 }}>
+              <Button size="sm" variant="secondary" onClick={downloadCsv}>
+                ⬇ CSV
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => void downloadPdf()}>
+                ⬇ PDF
+              </Button>
+            </span>
           ) : undefined
         }
       >
