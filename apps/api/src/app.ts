@@ -171,6 +171,7 @@ import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createStripeKeysRouter } from './admin/stripe-keys';
+import { createWebhookKeysRouter } from './admin/webhook-keys';
 import { createTerminalRouter } from './terminal/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -1793,6 +1794,12 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/admin/stripe-keys', auth.requireAuth, auth.requireCsrf, stripeKeysRouter);
 
+  const webhookKeysRouter = createWebhookKeysRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/webhook-keys', auth.requireAuth, auth.requireCsrf, webhookKeysRouter);
+
   const paymentRouter = createPaymentRouter({
     db: deps.db,
     stripe: deps.stripeProvider ?? null,
@@ -1923,6 +1930,7 @@ export function createApp(deps: AppDeps): Express {
       postmarkSecret: process.env['NOTIFICATION_WEBHOOK_POSTMARK_SECRET'] ?? null,
       resendSecret: process.env['NOTIFICATION_WEBHOOK_RESEND_SECRET'] ?? null,
       twilioSecret: process.env['NOTIFICATION_WEBHOOK_TWILIO_SECRET'] ?? null,
+      textlinkSecret: process.env['NOTIFICATION_WEBHOOK_TEXTLINK_SECRET'] ?? null,
     }),
   );
 

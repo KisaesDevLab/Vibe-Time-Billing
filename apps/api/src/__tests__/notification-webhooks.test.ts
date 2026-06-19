@@ -185,6 +185,46 @@ describe('Notification delivery webhooks', () => {
     expect(row!.errorMessage).toBe('invalid number');
   });
 
+  it('TextLink delivered → status=delivered (env-fallback secret)', async () => {
+    const rowId = await seedSentRow('textlink-1', 'sms');
+    const router = createNotificationWebhookRouter({
+      db: harness.db,
+      log: silentLog,
+      textlinkSecret: 'tok',
+    });
+    const r = await invoke(
+      router,
+      '/textlink',
+      req({ messageId: 'textlink-1', status: 'delivered' }, 'tok'),
+    );
+    expect(r.statusCode).toBe(200);
+    const [row] = await harness.db
+      .select()
+      .from(notificationLog)
+      .where(eq(notificationLog.id, rowId));
+    expect(row!.status).toBe('delivered');
+  });
+
+  it('TextLink failed → status=failed with error', async () => {
+    const rowId = await seedSentRow('textlink-2', 'sms');
+    const router = createNotificationWebhookRouter({
+      db: harness.db,
+      log: silentLog,
+      textlinkSecret: 'tok',
+    });
+    await invoke(
+      router,
+      '/textlink',
+      req({ id: 'textlink-2', status: 'failed', error: 'carrier rejected' }, 'tok'),
+    );
+    const [row] = await harness.db
+      .select()
+      .from(notificationLog)
+      .where(eq(notificationLog.id, rowId));
+    expect(row!.status).toBe('failed');
+    expect(row!.errorMessage).toBe('carrier rejected');
+  });
+
   it('rejects bad secret with 401', async () => {
     await seedSentRow('pm-msg-3', 'email');
     const router = createNotificationWebhookRouter({

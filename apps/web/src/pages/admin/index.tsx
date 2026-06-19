@@ -34,6 +34,7 @@ import { HourBankTxPage } from './HourBankTx';
 import { JobsPage } from './Jobs';
 import { MilestonesPage } from './Milestones';
 import { MessagingPage } from './Messaging';
+import { WebhookKeysPage } from './WebhookKeys';
 import { NotificationsPage } from './Notifications';
 import { NotificationTemplatesPage } from './NotificationTemplates';
 import { OfficesPage } from './Offices';
@@ -143,6 +144,7 @@ const GROUPS: Group[] = [
       { key: 'notif-tpl', label: 'Notification templates', href: '/admin/notification-templates' },
       { key: 'notifs', label: 'Notifications log', href: '/admin/notifications' },
       { key: 'webhooks', label: 'Webhooks', href: '/admin/webhooks' },
+      { key: 'webhook-keys', label: 'Webhook keys', href: '/admin/webhook-keys' },
     ],
   },
   {
@@ -358,6 +360,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="permissions" element={<PermissionMatrixPage />} />
         <Route path="roles" element={<RolesPage />} />
         <Route path="messaging" element={<MessagingPage />} />
+        <Route path="webhook-keys" element={<WebhookKeysPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="notification-templates" element={<NotificationTemplatesPage />} />
         <Route path="jobs" element={<JobsPage />} />

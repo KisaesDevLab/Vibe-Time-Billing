@@ -36,15 +36,18 @@ import type { Logger } from 'pino';
 import type { Database } from '@vibe/db';
 import { notificationLog } from '@vibe/db/schema';
 
+import { resolveWebhookSecret } from './webhook-keys';
+
 export interface NotificationWebhookDeps {
   db: Database | null;
   log: Logger;
-  /** Shared-secret env values per provider; the receiver compares to
-   *  the provider's header. Missing secret ⇒ receiver rejects every
-   *  call with 503 (fail closed). */
+  /** Env-var fallbacks per provider. Each receiver prefers the firm's
+   *  DB-stored secret (Admin → Webhook keys) and falls back to these.
+   *  No secret from either source ⇒ receiver rejects with 503 (fail closed). */
   postmarkSecret?: string | null;
   resendSecret?: string | null;
   twilioSecret?: string | null;
+  textlinkSecret?: string | null;
 }
 
 type NewStatus = 'delivered' | 'bounced' | 'complained' | 'opened' | 'failed';
@@ -85,11 +88,12 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
   // the Postmark dashboard. (Postmark itself recommends a custom
   // webhook-URL token, which this matches.)
   router.post('/postmark', async (req: Request, res: Response) => {
-    if (!deps.postmarkSecret) {
+    const secret = await resolveWebhookSecret(deps.db, 'postmark', deps.postmarkSecret);
+    if (!secret) {
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== deps.postmarkSecret) {
+    if (req.header('x-webhook-token') !== secret) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }
@@ -118,11 +122,12 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
   // this receiver uses a simple shared-secret comparison via
   // X-Webhook-Token to stay symmetric with the Postmark path.
   router.post('/resend', async (req: Request, res: Response) => {
-    if (!deps.resendSecret) {
+    const secret = await resolveWebhookSecret(deps.db, 'resend', deps.resendSecret);
+    if (!secret) {
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== deps.resendSecret) {
+    if (req.header('x-webhook-token') !== secret) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }
@@ -151,11 +156,12 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
   // signature requires the raw URL + body, which is fine for v2; v1
   // uses the same X-Webhook-Token convention.
   router.post('/twilio', async (req: Request, res: Response) => {
-    if (!deps.twilioSecret) {
+    const secret = await resolveWebhookSecret(deps.db, 'twilio', deps.twilioSecret);
+    if (!secret) {
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== deps.twilioSecret) {
+    if (req.header('x-webhook-token') !== secret) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }
@@ -173,6 +179,40 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
       return;
     }
     const errMsg = body['ErrorMessage'] ? String(body['ErrorMessage']) : null;
+    const updated = await updateStatus(deps, messageId, newStatus, errMsg);
+    res.json({ ok: true, updated });
+  });
+
+  // ----- TextLink (SMS) -----------------------------------------------
+  // TextLink posts a JSON delivery callback. Field names vary by account;
+  // accept the common shapes ({ messageId|id|sid, status }). Same
+  // X-Webhook-Token shared-secret convention as the other receivers.
+  router.post('/textlink', async (req: Request, res: Response) => {
+    const secret = await resolveWebhookSecret(deps.db, 'textlink', deps.textlinkSecret);
+    if (!secret) {
+      res.status(503).json({ error: 'not_configured' });
+      return;
+    }
+    if (req.header('x-webhook-token') !== secret) {
+      res.status(401).json({ error: 'bad_signature' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const messageId = String(body['messageId'] ?? body['id'] ?? body['sid'] ?? '');
+    const status = String(body['status'] ?? body['state'] ?? '').toLowerCase();
+    const mapping: Record<string, NewStatus> = {
+      delivered: 'delivered',
+      sent: 'delivered',
+      undelivered: 'bounced',
+      failed: 'failed',
+      error: 'failed',
+    };
+    const newStatus = mapping[status];
+    if (!newStatus || !messageId) {
+      res.json({ ok: true, ignored: true });
+      return;
+    }
+    const errMsg = body['error'] ? String(body['error']) : null;
     const updated = await updateStatus(deps, messageId, newStatus, errMsg);
     res.json({ ok: true, updated });
   });
