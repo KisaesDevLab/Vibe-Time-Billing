@@ -456,6 +456,24 @@ export const firmSettings = pgTable('firm_settings', {
   mailConfigUpdatedAt: timestamp('mail_config_updated_at', { withTimezone: true }),
   smsConfigUpdatedAt: timestamp('sms_config_updated_at', { withTimezone: true }),
 
+  // 0178 — AI pricing-suggestion knobs. The engine picks the number
+  // deterministically; these only tune inputs. Economic source defaults to
+  // MANUAL (no network); "allow LLM to adjust the number" defaults OFF.
+  pricingEconomicSource: text('pricing_economic_source').notNull().default('MANUAL'), // MANUAL|CPI|ECI
+  pricingEconomicManualPct: numeric('pricing_economic_manual_pct', { precision: 5, scale: 2 })
+    .notNull()
+    .default('0.00'),
+  pricingTargetMarginPct: numeric('pricing_target_margin_pct', { precision: 5, scale: 2 })
+    .notNull()
+    .default('40.00'),
+  pricingExpectedHoursStat: text('pricing_expected_hours_stat').notNull().default('TRIMMED_MEAN'), // TRIMMED_MEAN|MEDIAN
+  pricingCohortMin: integer('pricing_cohort_min').notNull().default(5),
+  pricingBurdenedCostPerTier: jsonb('pricing_burdened_cost_per_tier')
+    .$type<Record<string, number>>()
+    .notNull()
+    .default({}),
+  pricingAllowLlmAdjust: boolean('pricing_allow_llm_adjust').notNull().default(false),
+
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

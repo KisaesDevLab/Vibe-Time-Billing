@@ -76,7 +76,17 @@ interface Settings {
   dunningMessage3: string | null;
   dunningMessage4: string | null;
   dunningMessage5: string | null;
+  // 0178 — AI pricing-suggestion knobs.
+  pricingEconomicSource: string;
+  pricingEconomicManualPct: string;
+  pricingTargetMarginPct: string;
+  pricingExpectedHoursStat: string;
+  pricingCohortMin: number;
+  pricingBurdenedCostPerTier: Record<string, number>;
+  pricingAllowLlmAdjust: boolean;
 }
+
+const PRICING_TIERS = ['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF'] as const;
 
 const MONTHS = [
   'January',
@@ -200,6 +210,14 @@ export function FirmSettingsPage(): JSX.Element {
           dunningMessage3: s.dunningMessage3 || null,
           dunningMessage4: s.dunningMessage4 || null,
           dunningMessage5: s.dunningMessage5 || null,
+          // 0178 — pricing-suggestion knobs.
+          pricingEconomicSource: s.pricingEconomicSource,
+          pricingEconomicManualPct: Number(s.pricingEconomicManualPct),
+          pricingTargetMarginPct: Number(s.pricingTargetMarginPct),
+          pricingExpectedHoursStat: s.pricingExpectedHoursStat,
+          pricingCohortMin: s.pricingCohortMin,
+          pricingBurdenedCostPerTier: s.pricingBurdenedCostPerTier,
+          pricingAllowLlmAdjust: s.pricingAllowLlmAdjust,
           // Firm-table fields — server splits the body across tables.
           defaultAllocationMethod: f.defaultAllocationMethod,
           fiscalYearStartMonth: f.fiscalYearStartMonth,
@@ -602,6 +620,101 @@ export function FirmSettingsPage(): JSX.Element {
             The secret is encrypted at rest and never shown again. CAPTCHA activates once both the
             site key and secret are saved.
           </p>
+        </div>
+      </Card>
+
+      {/* 0178 — AI pricing-suggestion knobs. The engine picks the number
+          deterministically; these only tune the inputs. */}
+      <Card title="Pricing suggestion">
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+          Drives the on-demand pricing suggestion on engagements. The number is computed by a
+          deterministic engine (cost build → gross margin → economic factor); these settings only
+          tune its inputs.
+        </p>
+        <div style={{ display: 'grid', gap: 16, maxWidth: 480 }}>
+          <Select
+            label="Economic factor source"
+            value={s.pricingEconomicSource}
+            onChange={(v) => setS({ ...s, pricingEconomicSource: v })}
+            options={[
+              { value: 'MANUAL', label: 'Manual annual % (no network)' },
+              { value: 'CPI', label: 'CPI (live, requires egress)' },
+              { value: 'ECI', label: 'ECI — labor (live, requires egress)' },
+            ]}
+          />
+          {s.pricingEconomicSource === 'MANUAL' && (
+            <Input
+              label="Manual annual increase (%)"
+              type="number"
+              step="0.01"
+              value={s.pricingEconomicManualPct}
+              onChange={(e) => setS({ ...s, pricingEconomicManualPct: e.target.value })}
+            />
+          )}
+          <Input
+            label="Target gross margin (%) — applied by division, cost ÷ (1 − margin)"
+            type="number"
+            step="0.01"
+            min={0}
+            max={99.99}
+            value={s.pricingTargetMarginPct}
+            onChange={(e) => setS({ ...s, pricingTargetMarginPct: e.target.value })}
+          />
+          <Select
+            label="Expected-hours statistic"
+            value={s.pricingExpectedHoursStat}
+            onChange={(v) => setS({ ...s, pricingExpectedHoursStat: v })}
+            options={[
+              { value: 'TRIMMED_MEAN', label: 'Trimmed mean (default)' },
+              { value: 'MEDIAN', label: 'Median' },
+            ]}
+          />
+          <Input
+            label="Minimum cohort size before the cost build is trusted"
+            type="number"
+            min={1}
+            max={100}
+            value={String(s.pricingCohortMin)}
+            onChange={(e) => setS({ ...s, pricingCohortMin: Number(e.target.value) })}
+          />
+          <div>
+            <p style={{ fontSize: 13, margin: '0 0 6px' }}>
+              Burdened cost rate fallback ($/hour by tier)
+            </p>
+            <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '0 0 8px' }}>
+              Used only when the cohort has no captured cost rate for a tier.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {PRICING_TIERS.map((tier) => (
+                <Input
+                  key={tier}
+                  label={tier}
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={String((s.pricingBurdenedCostPerTier[tier] ?? 0) / 100)}
+                  onChange={(e) =>
+                    setS({
+                      ...s,
+                      pricingBurdenedCostPerTier: {
+                        ...s.pricingBurdenedCostPerTier,
+                        [tier]: Math.round(Number(e.target.value) * 100),
+                      },
+                    })
+                  }
+                />
+              ))}
+            </div>
+          </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={s.pricingAllowLlmAdjust}
+              onChange={(e) => setS({ ...s, pricingAllowLlmAdjust: e.target.checked })}
+            />
+            Allow the LLM to adjust the suggested number (off by default — the LLM normally writes
+            only the rationale)
+          </label>
         </div>
       </Card>
 

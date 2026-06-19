@@ -142,6 +142,21 @@ const FirmSettingsPatchSchema = z.object({
   // Empty string / null clears the value.
   turnstileSiteKey: z.string().max(200).nullable().optional(),
   turnstileSecret: z.string().max(500).nullable().optional(),
+  // 0178 — AI pricing-suggestion knobs. Percents map to NUMERIC columns
+  // (string), so transform on the way in. Per-tier burdened cost is stored in
+  // CENTS per hour, keyed by engagement_assignment role.
+  pricingEconomicSource: z.enum(['MANUAL', 'CPI', 'ECI']).optional(),
+  pricingEconomicManualPct: z.number().min(-50).max(100).optional(),
+  pricingTargetMarginPct: z.number().min(0).max(99.99).optional(),
+  pricingExpectedHoursStat: z.enum(['TRIMMED_MEAN', 'MEDIAN']).optional(),
+  pricingCohortMin: z.number().int().min(1).max(100).optional(),
+  pricingBurdenedCostPerTier: z
+    .record(
+      z.enum(['PARTNER', 'MANAGER', 'REVIEWER', 'PREPARER', 'STAFF']),
+      z.number().int().nonnegative(),
+    )
+    .optional(),
+  pricingAllowLlmAdjust: z.boolean().optional(),
 });
 // NOT .strict(): the PATCH handler validates the SAME combined body against
 // both this schema and FirmPatchSchema. Zod's default STRIP behavior drops the
@@ -231,13 +246,19 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       if (settingsData) {
         // turnstileSecret isn't a column — encrypt it into turnstile_secret_enc
         // (or clear it). Everything else maps to columns directly.
-        const { turnstileSecret, ...columns } = settingsData;
+        const { turnstileSecret, pricingEconomicManualPct, pricingTargetMarginPct, ...columns } =
+          settingsData;
         const set: Record<string, unknown> = { ...columns, updatedAt: new Date() };
         if (turnstileSecret !== undefined) {
           set['turnstileSecretEnc'] = turnstileSecret
             ? encryptTurnstileSecret(turnstileSecret)
             : null;
         }
+        // NUMERIC columns take strings.
+        if (pricingEconomicManualPct !== undefined)
+          set['pricingEconomicManualPct'] = pricingEconomicManualPct.toFixed(2);
+        if (pricingTargetMarginPct !== undefined)
+          set['pricingTargetMarginPct'] = pricingTargetMarginPct.toFixed(2);
         await deps.db.update(firmSettings).set(set).where(eq(firmSettings.firmId, firmId));
       }
       if (firmData) {
