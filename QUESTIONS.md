@@ -389,6 +389,17 @@ Context: OpenSign is built but profile-gated and off by default (needs `OPENSIGN
 Context: the real-B2 round-trip suite (`packages/storage/src/__tests__/b2.integration.test.ts`) is gated behind `B2_INTEGRATION=1` + the five `B2_*` vars; today it only runs locally on demand.
 **RESOLVED 2026-06-04 (operator):** **Wire CI secrets.** Add a manual-dispatch (`workflow_dispatch`) CI job that injects throwaway-bucket B2 credentials from GitHub Actions secrets and runs the integration suite on demand. Creds are a dedicated throwaway bucket + restricted key, never production.
 
+## Q43–Q49 — Tax-Season Rollforward addendum [rollforward kickoff]
+Context: the rollforward wizard (engagements → drop-off dates → appointments) was built on `feat/tax-season-rollforward` to the plan's recommended defaults, then these decisions were confirmed/adjusted by the operator. Five match as-built; **Q44 and Q46 changed** and require a follow-up implementation pass.
+
+- **Q43 — Engagement creation.** **RESOLVED 2026-06-19 (operator): direct insert** mirroring the `/engagements/:id/rollover` clone (no proposal; scope copied not frozen). *As built.*
+- **Q44 — What carries forward.** **RESOLVED: carry staff + type/scope + fee structure + fee amount (seeded with the engagement's autoRollover % bump, editable per row) AND the retainer/billing terms.** *Delta from as-built:* billing-arrangement fields (feeStructure, fee, nteCap, feePassthrough, autoRollover, scopeDefinition, budget) already carry; **retainer-term carry is not yet implemented.** Caveat: a retainer is a paid arrangement with a balance/ledger and the hour-bank residual forfeits on close (decision #22) — "carry retainer terms" must copy the retainer **tier/config** and stand up a fresh retainer to be funded anew, NOT copy the old balance or repoint `retainerId`. Needs its own small build.
+- **Q45 — Drop-off & appointment anchoring.** **RESOLVED: same deadline** — both anchor to the engagement's `returnType` filing deadline. *As built.*
+- **Q46 — Cascade.** **RESOLVED: allow appointment-only rollforward via an explicit opt-in** (in addition to the default hard-block). *Delta from as-built:* needs an opt-in so appointments of skipped/absent engagements can roll as standalone candidates and commit with `appointment.engagement_id = null` (the column is already nullable; no migration required).
+- **Q47 — Deadline on weekend/holiday.** **RESOLVED: anchor to the statutory date** (4/15 etc.); observed/next-business-day is a future option. *As built.*
+- **Q48 — Inactive/lost clients.** **RESOLVED: exclude by default with an "include inactive" toggle.** *As built* in the API (`includeInactive`); the toggle still needs to be surfaced in the wizard's Step 1 UI.
+- **Q49 — 3/15 vs 4/15 split source.** **RESOLVED: infer from the engagement's `returnType`** (1120S/1065 → 3/15; 1040/1120/1041 → 4/15; 990 → 5/15); ISO-week fallback when null. *As built.*
+
 ---
 
 # CHANGE LOG
@@ -401,3 +412,4 @@ Context: the real-B2 round-trip suite (`packages/storage/src/__tests__/b2.integr
 - 2026-06-03 — Operator Q&A resolved open items: Q38 → run gap audit (Option A); Q36 → build CSV client-import UI now; Q37 → keep GL export deferred; Q34 (proposals) → build multi-signer UI now. Q35 (OpenSign AGPL) left open — proposals ship native HMAC e-sign, so the sidecar boundary is currently moot.
 - 2026-06-04 — Operator Q&A resolved the remaining open items: Q31 → close as implemented (files schema rebuilt); Q33 → close as implemented (pending_upload live); Q32 → production storage = Backblaze B2 (firm-supplied creds; mock stays dev default); Q35 → build out OpenSign now as an AGPL-isolated sidecar alternative to native e-sign. All OPEN QUESTIONS Q31–Q38 now resolved.
 - 2026-06-04 — Q39–Q42 added + resolved (follow-ups surfaced by the Q32/Q35 builds): Q39 B2 lifecycle → keep-last-version; Q40 multipart → defer; Q41 OpenSign → keep off by default + write deploy runbook; Q42 B2 integration suite → wire manual-dispatch CI secrets.
+- 2026-06-19 — Q43–Q49 added + resolved for the Tax-Season Rollforward addendum. Built to defaults; operator changed Q44 (also carry retainer/billing terms) and Q46 (allow appointment-only opt-in) — both pending a follow-up build. Q48 wizard toggle also pending.
