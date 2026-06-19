@@ -32,7 +32,8 @@
     "./filer": "./src/filer/index.ts",
     "./signatures": "./src/signatures/index.ts",
     "./tasks": "./src/tasks/index.ts",
-    "./rollforward": "./src/rollforward/index.ts"
+    "./rollforward": "./src/rollforward/index.ts",
+    "./pricing": "./src/pricing/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
