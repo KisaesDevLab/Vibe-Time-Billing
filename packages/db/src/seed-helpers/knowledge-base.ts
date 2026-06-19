@@ -1975,14 +1975,14 @@ The **Reports** workspace (left-nav **Reports**, at \`/reports\`) is the firm's 
 1. Open **Reports** from the left navigation.
 2. In the **Report library** card, pick a tile: **Payments received ★**, **Realization**, **Revenue ops**, **Engagement profitability**, **Subscription profitability**, **Billable targets**, **Capacity forecast**, **WIP dashboard**, **AR aging**, **AR snapshots**, or **Audit log**.
 3. Set a date window in **Filters**: type a **Start** and **End** date, or click a preset — **7d**, **30d**, **90d**, **12m**. Use **Clear dates** to reset.
-4. In the **Realization** card, switch the lens with the **firm**, **timekeeper**, **engagement**, or **client** buttons.
+4. In the **Realization** card, switch the lens with the **firm**, **timekeeper**, **engagement**, **client**, or **service line** buttons.
 5. Click any row label in a dimension table to drill in (the card title shows "Realization (drilled)"). Click **✕ Clear drill** in **Filters** to exit.
 6. Export the current realization view with the **↓ CSV** link, or **⬇ Excel** on **Revenue operations**.
-7. Optionally use **Ask in plain English** to ask a question and have the AI suggest which reports to run.
+7. Optionally use **Ask in plain English** to ask a question; the answer includes **Open report:** pills that take you straight to the matching report view.
 
 ## Fields
 - **Start** / **End** — date-range filter (note: these apply to realization; other cards use their own fixed windows).
-- Realization dimension buttons — **firm**, **timekeeper**, **engagement**, **client** (the API also supports a service-line dimension).
+- Realization dimension buttons — **firm**, **timekeeper**, **engagement**, **client**, **service line**.
 - **Standard WIP** — original standard value; **After adjustments** — adjusted value; **Realization** — adjusted ÷ original, as a percent (green at ≥ 90%, otherwise amber).
 
 ## What you'll see
@@ -1993,10 +1993,17 @@ The **Reports** workspace (left-nav **Reports**, at \`/reports\`) is the firm's 
 - **Realization**: firm summary stats or a drillable dimension table sorted worst-realization first.
 - Dedicated pages: **Payments Received** (\`/reports/payments-received\`) and **Engagement profitability** (\`/reports/profitability\`).
 
+## Detailed reports (the report viewer)
+Many report-library tiles open the **report viewer** at \`/reports/view/<report>\` — a table view with its own controls:
+- Where a report supports a window, enter **Start** / **End** dates (and any report-specific input) and click **Run**.
+- Reports show **names, not raw IDs** — e.g. a partner, client, or engagement name instead of a long identifier.
+- Export the table with **⬇ CSV** or **⬇ PDF** (the PDF mirrors the on-screen, formatted table).
+
+See [[report-viewer]] for the full list of detailed reports and how to read them.
+
 ## Tips
 - Filter settings persist in the page URL — copy the address bar to share an exact report view.
 - Reports are gated by reporting permissions (e.g. \`report:realization:read\`, \`report:profitability:read\`, \`report:utilization:read\`, \`report:partner-data:read\`); payments-received needs \`payment:read\`.
-- Exports are CSV/Excel; there is no PDF export for these reports.
 - Click **✨ Explain this** under the firm realization stats for an AI narrative.
 `),
   },
@@ -2505,7 +2512,9 @@ Each audit row records:
 4. To export, request \`/api/staff/audit/export.csv\` (with your active filters). This requires the separate \`admin:audit:export\` permission.
 
 ## What you'll see
-- The **Events** table lists each row with **When**, **Action** (a pill), **Entity**, a shortened **Entity ID**, **Actor** (a \`staff\` or \`portal\` pill plus a shortened id), and **IP**. Newest first; the list view returns up to 200 rows.
+- The **Events** table lists each row with **When**, **Action** (a pill), **Type**, **Entity**, **Actor**, and **IP**. Newest first; the list view returns up to 200 rows.
+- The **Entity** column shows the resolved **name** (for engagements, clients, invoices, and staff users) above the **full** identifier — no longer a shortened id.
+- The **Actor** column shows a tone-coded pill — **staff**, **portal**, or **MCP** (for an API/MCP token) — the resolved person/token name, and the full actor id.
 - Specialized read-only views exist for events by IP, by actor, by entity, recent webhook deliveries, recent outbound notifications, and worker alerts.
 
 ## Tips
@@ -2682,16 +2691,16 @@ Vibe Practice Management connects to a handful of external services so the appli
 1. **Payments (Stripe).** Stripe keys are set on the appliance as environment variables — \`STRIPE_SECRET_KEY\`, \`STRIPE_PUBLISHABLE_KEY\`, \`STRIPE_WEBHOOK_SECRET\` — using your own Stripe account. When \`STRIPE_SECRET_KEY\` is present, online card payment turns on and the staff **Receive Payment** form shows the Card (Stripe) option.
 2. **Payments (CPACharge).** CPACharge is scaffolded but **not yet live** — the provider stub returns not-implemented and there's no admin screen to enable it today.
 3. **Stripe Connect (optional).** A separate **Admin → Billing → Stripe Connect** page supports the operator-platform OAuth flow; it only appears configured when the operator has set the Connect env vars. The firm then clicks **Connect Stripe** to link its own account.
-4. **Email provider.** Go to **Admin → Messaging → Email + SMS providers**. In the **Email provider** card, pick \`SMTP\`, \`Postmark\`, \`Resend\`, or \`AWS SES\`, fill the credentials, click **Send test**, then **Save**.
-5. **SMS provider.** In the same screen's **SMS provider** card, pick \`TextLink\`, \`Twilio\`, or \`AWS SNS\`, enter credentials, **Send test** to an E.164 number, then **Save**.
+4. **Email provider.** Go to **Admin → Messaging → Email + SMS providers**. In the **Email provider** card, pick \`SMTP\`, \`Postmark\`, \`Resend\`, or \`EmailIt\`, fill the credentials, click **Send test**, then **Save**. (If a save fails, the error now names the exact field that's wrong — e.g. "host: Required".)
+5. **SMS provider.** In the same screen's **SMS provider** card, pick \`TextLink\` or \`Twilio\`, enter credentials, **Send test** to an E.164 number, then **Save**.
 6. **Object storage.** Configure your bucket under **Admin → Operations → Storage settings** / **Storage onboarding** (Backblaze B2 or MinIO/S3-compatible). See the storage articles.
 7. **Cloudflare Tunnel.** Under **Admin → Operations → Cloudflare Tunnel**, paste an API token and provision hostnames. See *Remote access via Cloudflare Tunnel*.
 8. **Cloud AI providers.** Cloud AI is set via env vars (\`AI_CLOUD_API_KEY\` for Anthropic, or the OpenAI-compatible vars); local AI uses Ollama. Cloud egress is additionally gated by the Vibe Shield policy.
 
 ## Fields
 - **Stripe** — your account's secret/publishable/webhook keys, set on the appliance (not in the UI).
-- **Email** — **From address** plus provider secrets (SMTP host/port/user/password, Postmark **Server token**, Resend **API key**, or SES **Region** + **Access key ID** + **Secret access key**).
-- **SMS** — TextLink **API key**; Twilio **From number (E.164)** + **Account SID** + **Auth token**; or SNS **Region** + keys.
+- **Email** — **From address** plus provider secrets (SMTP host/port/user/password, Postmark **Server token**, Resend **API key**, or EmailIt **API key**).
+- **SMS** — TextLink **API key**; or Twilio **From number (E.164)** + **Account SID** + **Auth token**.
 - **Cloudflare — API token** — scoped for Tunnel + DNS edit.
 
 ## What you'll see
@@ -2800,7 +2809,7 @@ You requested a magic link, a sign-in code, or a client notification, and nothin
 
 ## Causes & fixes
 1. **Enumeration-safe response is hiding a non-existent account.** The login endpoint always returns the same generic message whether or not the email matches a user. Fix: confirm the address exactly matches the staff/client record (an operator can verify the user exists in Admin).
-2. **No real mail provider configured (operator).** The server picks a provider from \`MAIL_PROVIDER\` (\`smtp\` / \`postmark\` / \`resend\` / \`ses\`). For postmark/resend, if the matching secret is missing the app silently falls back to a console provider that only logs to stdout — nothing is emailed; \`ses\` is not yet wired. Fix: set \`MAIL_PROVIDER\`, \`MAIL_FROM\`, and the provider's credentials, then restart the API.
+2. **No real mail provider configured (operator).** The server picks a provider from \`MAIL_PROVIDER\` (\`smtp\` / \`postmark\` / \`resend\` / \`emailit\`). For postmark/resend/emailit, if the matching secret is missing the app silently falls back to a console provider that only logs to stdout — nothing is emailed. (\`ses\` is selectable in the schema but **not yet wired** — don't rely on it.) Fix: set \`MAIL_PROVIDER\`, \`MAIL_FROM\`, and the provider's credentials, then restart the API. When configuring email in **Admin → Messaging**, a failed **Save**/**Send test** now reports the exact invalid field (for example "host: Required" or "apiKey: too small") instead of a generic \`invalid_email_config\`.
 3. **You're in dev pointing at MailHog.** The default dev config is SMTP to MailHog (\`localhost:1025\`, web inbox at \`http://localhost:8025\`). Mail won't reach real inboxes — check the MailHog UI; for real delivery switch \`MAIL_PROVIDER\` to a live provider.
 4. **The provider accepted it but delivery failed.** Every send appends a \`notification_log\` row with status \`sent\` or \`failed\`. Fix: check **Admin → Notifications → Outbound notifications**. A \`failed\` row's error points at bad credentials, a rejected \`from\` address, or throttling; a \`sent\` row means the problem is downstream (spam folder, recipient server).
 5. **SMS code not arriving.** SMS uses \`SMS_PROVIDER\` (\`textlink\` / \`twilio\`), with the same console fallback if credentials are missing (\`sns\` not wired). The user must also have a verified SMS phone enrolled. Fix: configure the SMS provider and confirm SMS enrollment.
@@ -3073,28 +3082,36 @@ Questions about a charge? Use **Messages** to ask your firm directly.
     slug: 'client-uploading-documents',
     category: 'client-help',
     title: 'Uploading requested documents',
-    summary: 'Respond to document requests and upload files securely.',
-    tags: ['documents', 'upload', 'requests', 'files'],
+    summary: 'Respond to document requests and send files to your firm securely.',
+    tags: ['documents', 'upload', 'requests', 'files', 'messages'],
     sortOrder: 30,
     audience: 'both',
     body: md(`
-# Uploading requested documents
+# Sending documents to your firm
 
-When your firm needs paperwork from you (W-2s, receipts, statements), they'll send a **request**.
+When your firm needs paperwork from you (W-2s, receipts, statements), they'll send a **request**, and you send files through **Messages**.
 
 ## Respond to a request
 1. Open **Requests** from the menu — open items show what's needed.
-2. Select a request to see the checklist and any notes.
-3. Choose **Upload** and pick your files (PDF, images, and common document types are supported).
-4. Mark items complete as you go; your firm is notified automatically.
+2. Select a request to see its checklist and any notes.
+3. For each item, **answer the question** or check it off, then **Mark done**.
+4. If something is unclear, use **Send question** to ask your firm; use **Send reply** to add a note. Your firm is notified automatically.
 
-## Upload files any time
-You can also open **Files** to upload or view documents your firm has shared with you, even without a specific request.
+## Send a file (use Messages)
+Files are sent as **message attachments**:
+1. Open **Messages** from the menu and open the relevant conversation (or start one with **+ New message**).
+2. Attach your file(s) with the attachment button, add a short note, and **Send**.
+3. Your firm receives the files securely and can file them to your folders.
+
+## View files your firm shared
+Open **Files** to view and **Download PDF** documents your firm has shared with you. The Files page is for **downloading** — to send something to your firm, use Messages. (Some documents stay locked until a related invoice is paid.)
 
 ## Tips
 - Clear photos of paper documents are fine — make sure the whole page is in frame and readable.
-- Large files may take a moment to upload; wait for the confirmation before closing.
-- Everything you upload is encrypted and visible only to your firm.
+- Large files may take a moment to send; wait for confirmation before closing.
+- Everything you send is encrypted and visible only to your firm.
+
+Related: [[client-messaging-your-firm]], [[client-viewing-paying-invoices]].
 `),
   },
   {
