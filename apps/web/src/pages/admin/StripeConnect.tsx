@@ -139,6 +139,7 @@ export function StripeConnectPage(): JSX.Element {
             <code>STRIPE_SECRET_KEY</code> on the appliance and restart the API.
           </p>
         </Card>
+        <StripeApiKeysCard />
       </div>
     );
   }
@@ -150,6 +151,8 @@ export function StripeConnectPage(): JSX.Element {
         description="Process payments for accepted proposals via Stripe Connect Standard."
       />
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+
+      <StripeApiKeysCard />
 
       {!status.connected ? (
         <Card>
@@ -248,5 +251,162 @@ export function StripeConnectPage(): JSX.Element {
         </>
       )}
     </div>
+  );
+}
+
+interface MaskedStripeConfig {
+  secretKeyMasked: string | null;
+  publishableKeyMasked: string | null;
+  webhookSecretSet: boolean;
+}
+
+// Firm-owned Stripe API keys (Q7). Stored encrypted server-side; the form only
+// ever shows masked status and sends new values. "Test" validates the secret
+// key against Stripe live.
+function StripeApiKeysCard(): JSX.Element {
+  const [cfg, setCfg] = useState<MaskedStripeConfig | null>(null);
+  const [kmsReady, setKmsReady] = useState(true);
+  const [secretKey, setSecretKey] = useState('');
+  const [publishableKey, setPublishableKey] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const r = await api<{ config: MaskedStripeConfig; kmsReady: boolean }>(
+        '/api/staff/admin/stripe-keys',
+      );
+      setCfg(r.config);
+      setKmsReady(r.kmsReady);
+    } catch {
+      /* non-fatal */
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const body: Record<string, string> = {};
+      if (secretKey) body['secretKey'] = secretKey.trim();
+      if (publishableKey) body['publishableKey'] = publishableKey.trim();
+      if (webhookSecret) body['webhookSecret'] = webhookSecret.trim();
+      await api('/api/staff/admin/stripe-keys', { method: 'PUT', body: JSON.stringify(body) });
+      setSecretKey('');
+      setPublishableKey('');
+      setWebhookSecret('');
+      setMsg({ tone: 'ok', text: 'Saved.' });
+      await load();
+    } catch (e) {
+      setMsg({ tone: 'err', text: e instanceof Error ? e.message : 'save_failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function test(): Promise<void> {
+    setBusy(true);
+    setMsg(null);
+    try {
+      // Test the key being entered, else the stored one.
+      const body = secretKey.trim() ? { secretKey: secretKey.trim() } : {};
+      await api('/api/staff/admin/stripe-keys/test', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setMsg({ tone: 'ok', text: 'Stripe accepted the secret key.' });
+    } catch (e) {
+      setMsg({
+        tone: 'err',
+        text: e instanceof Error ? `Test failed: ${e.message}` : 'test_failed',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (
+    label: string,
+    value: string,
+    onChange: (v: string) => void,
+    placeholder: string,
+  ): JSX.Element => (
+    <label style={{ display: 'grid', gap: 4, fontSize: 13 }}>
+      {label}
+      <input
+        type="password"
+        autoComplete="off"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          padding: '6px 8px',
+          fontFamily: tokens.font.mono,
+          fontSize: 12,
+          borderRadius: tokens.radius.sm,
+          border: `1px solid ${tokens.color.border}`,
+        }}
+      />
+    </label>
+  );
+
+  return (
+    <Card title="Stripe API keys (firm-owned)">
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+        Paste your own Stripe keys instead of relying on appliance env vars. Stored encrypted. Leave
+        a field blank to keep the saved value.
+      </p>
+      {!kmsReady && (
+        <p style={{ fontSize: 12, color: tokens.color.danger }}>
+          KMS_KEY is not set on the appliance — keys cannot be encrypted/saved.
+        </p>
+      )}
+      <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+        {field(
+          `Secret key${cfg?.secretKeyMasked ? ` (saved: ${cfg.secretKeyMasked})` : ''}`,
+          secretKey,
+          setSecretKey,
+          'sk_live_…',
+        )}
+        {field(
+          `Publishable key${cfg?.publishableKeyMasked ? ` (saved: ${cfg.publishableKeyMasked})` : ''}`,
+          publishableKey,
+          setPublishableKey,
+          'pk_live_…',
+        )}
+        {field(
+          `Webhook signing secret${cfg?.webhookSecretSet ? ' (saved)' : ''}`,
+          webhookSecret,
+          setWebhookSecret,
+          'whsec_…',
+        )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Button onClick={() => void save()} disabled={busy || !kmsReady}>
+            {busy ? 'Working…' : 'Save keys'}
+          </Button>
+          <Button variant="secondary" onClick={() => void test()} disabled={busy}>
+            Test secret key
+          </Button>
+          {msg && (
+            <span
+              style={{
+                fontSize: 12,
+                color: msg.tone === 'ok' ? tokens.color.text : tokens.color.danger,
+              }}
+            >
+              {msg.text}
+            </span>
+          )}
+        </div>
+        <p style={{ fontSize: 11, color: tokens.color.textMuted }}>
+          Note: charges + inbound webhooks currently use the appliance env keys; wiring the live
+          payment path to these stored keys is a follow-up.
+        </p>
+      </div>
+    </Card>
   );
 }

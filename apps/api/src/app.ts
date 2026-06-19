@@ -170,6 +170,7 @@ import { createFilerRouter } from './filer/router';
 import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
+import { createStripeKeysRouter } from './admin/stripe-keys';
 import { createTerminalRouter } from './terminal/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
@@ -1785,6 +1786,12 @@ export function createApp(deps: AppDeps): Express {
     },
   });
   app.use('/api/staff/stripe-connect', auth.requireAuth, auth.requireCsrf, stripeConnectRouter);
+
+  const stripeKeysRouter = createStripeKeysRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/stripe-keys', auth.requireAuth, auth.requireCsrf, stripeKeysRouter);
 
   const paymentRouter = createPaymentRouter({
     db: deps.db,

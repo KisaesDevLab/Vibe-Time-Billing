@@ -449,6 +449,8 @@ export const firmSettings = pgTable('firm_settings', {
   // at rest with AES-256-GCM. NULL = inherit from env vars.
   mailConfigEncrypted: text('mail_config_encrypted'),
   smsConfigEncrypted: text('sms_config_encrypted'),
+  // 0173 — firm-owned Stripe keys (secret/publishable/webhook), encrypted.
+  stripeConfigEncrypted: text('stripe_config_encrypted'),
   mailConfigUpdatedAt: timestamp('mail_config_updated_at', { withTimezone: true }),
   smsConfigUpdatedAt: timestamp('sms_config_updated_at', { withTimezone: true }),
 
