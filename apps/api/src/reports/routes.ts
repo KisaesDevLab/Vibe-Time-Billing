@@ -86,6 +86,17 @@ function rangeFromQuery(req: Request, defaultDays: number): { start: string; end
   return { start, end: pick('end') };
 }
 
+// For all-time reports: parse ?start=/?end= without imposing a default window,
+// so the report stays all-time unless the caller supplies a bound.
+function optionalRange(req: Request): { start: string | null; end: string | null } {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  const pick = (k: string): string | null => {
+    const v = req.query[k];
+    return typeof v === 'string' && re.test(v) ? v : null;
+  };
+  return { start: pick('start'), end: pick('end') };
+}
+
 // Attribute invoice revenue to engagements. A CONSOLIDATED invoice (one
 // invoice spanning several engagements via line items) is split by each
 // engagement's share of the engagement-tagged line-item amounts; a simple
@@ -96,6 +107,7 @@ async function billedByEngagement(
   db: Database,
   firmId: string,
   engIdSet: Set<string>,
+  range?: { start: string | null; end: string | null },
 ): Promise<Map<string, { billed: number; paid: number }>> {
   const billedBy = new Map<string, { billed: number; paid: number }>();
   if (engIdSet.size === 0) return billedBy;
@@ -107,7 +119,14 @@ async function billedByEngagement(
       paidCents: invoices.paidCents,
     })
     .from(invoices)
-    .where(and(eq(invoices.firmId, firmId), notInArray(invoices.status, ['DRAFT', 'VOIDED'])));
+    .where(
+      and(
+        eq(invoices.firmId, firmId),
+        notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+        range?.start ? drz`${invoices.issueDate} >= ${range.start}::date` : undefined,
+        range?.end ? drz`${invoices.issueDate} <= ${range.end}::date` : undefined,
+      ),
+    );
   const invIds = firmInvoices.map((i) => i.id);
   const liRows = invIds.length
     ? await db
@@ -425,6 +444,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      const { start: dStart, end: dEnd } = optionalRange(req);
       // Group adjustment_allocations by engagement.partnerId.
       const firmClients = await deps.db
         .select({ id: clients.id })
@@ -457,10 +477,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             })
             .from(adjustmentAllocations)
             .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+            // Left-join the originating time entry only to support the optional
+            // date window; without a bound the predicates are skipped and every
+            // allocation (incl. those with no time entry) is still counted.
+            .leftJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
             // Scope to this firm's batches in SQL, and only realized (APPLIED)
             // adjustments — mirrors /realization.
             .where(
-              and(inArray(adjustments.billingBatchId, batchIds), eq(adjustments.status, 'APPLIED')),
+              and(
+                inArray(adjustments.billingBatchId, batchIds),
+                eq(adjustments.status, 'APPLIED'),
+                dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
+                dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
+              ),
             )
         : [];
       const byPartner = new Map<string, { originalCents: number; adjustedCents: number }>();
@@ -522,16 +551,24 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const engIdSet = new Set(engIds);
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const [billedBy, cost] = await Promise.all([
-        billedByEngagement(deps.db, session.firmId, engIdSet),
+        billedByEngagement(deps.db, session.firmId, engIdSet, { start: dStart, end: dEnd }),
         deps.db
           .select({
             engagementId: timeEntries.engagementId,
             costCents: drz<number>`COALESCE(SUM(${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)), 0)::bigint`,
           })
           .from(timeEntries)
-          // Exclude soft-deleted (ARCHIVED) entries from the cost base.
-          .where(and(inArray(timeEntries.engagementId, engIds), ne(timeEntries.status, 'ARCHIVED')))
+          // Exclude soft-deleted (ARCHIVED) entries from the cost base; optional date window.
+          .where(
+            and(
+              inArray(timeEntries.engagementId, engIds),
+              ne(timeEntries.status, 'ARCHIVED'),
+              dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
+              dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
+            ),
+          )
           .groupBy(timeEntries.engagementId),
       ]);
       const costBy = new Map<string, number>();
@@ -567,6 +604,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }
       const { invoices: inv } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const rows = await deps.db
         .select({
           month: drz<string>`to_char(${inv.issueDate}, 'YYYY-MM')`.as('month'),
@@ -576,7 +614,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         })
         .from(inv)
         // Exclude DRAFT (not yet real revenue) and VOIDED (reversed) invoices.
-        .where(and(eq(inv.firmId, session.firmId), notInArray(inv.status, ['DRAFT', 'VOIDED'])))
+        .where(
+          and(
+            eq(inv.firmId, session.firmId),
+            notInArray(inv.status, ['DRAFT', 'VOIDED']),
+            dStart ? drz`${inv.issueDate} >= ${dStart}::date` : undefined,
+            dEnd ? drz`${inv.issueDate} <= ${dEnd}::date` : undefined,
+          ),
+        )
         .groupBy(drz`to_char(${inv.issueDate}, 'YYYY-MM')`)
         .orderBy(drz`to_char(${inv.issueDate}, 'YYYY-MM') DESC`)
         .limit(24);
@@ -678,6 +723,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }
       const { timeEntries: te } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const rows = await deps.db
         .select({
           engagementId: te.engagementId,
@@ -685,8 +731,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`.as('amount'),
         })
         .from(te)
-        // Exclude soft-deleted (ARCHIVED) entries.
-        .where(and(inArray(te.engagementId, engIds), ne(te.status, 'ARCHIVED')))
+        // Exclude soft-deleted (ARCHIVED) entries; optional date window.
+        .where(
+          and(
+            inArray(te.engagementId, engIds),
+            ne(te.status, 'ARCHIVED'),
+            dStart ? drz`${te.entryDate} >= ${dStart}::date` : undefined,
+            dEnd ? drz`${te.entryDate} <= ${dEnd}::date` : undefined,
+          ),
+        )
         .groupBy(te.engagementId);
       const tbeEngNames = await namesByIds(
         deps.db,
@@ -726,6 +779,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }
       const { timeEntries: te } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const rows = await deps.db
         .select({
           engagementId: te.engagementId,
@@ -733,8 +787,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           amount: drz<number>`COALESCE(SUM(${te.standardAmountCents}), 0)`.as('amount'),
         })
         .from(te)
-        // Exclude soft-deleted (ARCHIVED) entries.
-        .where(and(inArray(te.engagementId, engIds), ne(te.status, 'ARCHIVED')))
+        // Exclude soft-deleted (ARCHIVED) entries; optional date window.
+        .where(
+          and(
+            inArray(te.engagementId, engIds),
+            ne(te.status, 'ARCHIVED'),
+            dStart ? drz`${te.entryDate} >= ${dStart}::date` : undefined,
+            dEnd ? drz`${te.entryDate} <= ${dEnd}::date` : undefined,
+          ),
+        )
         .groupBy(te.engagementId);
       const byClient = new Map<string, { hours: number; amountCents: number }>();
       for (const r of rows) {
@@ -1094,6 +1155,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const monthCol = drz<string>`to_char(date_trunc('month', ${invoices.issueDate})::date, 'YYYY-MM')`;
       const rows = await deps.db
         .select({
@@ -1107,6 +1169,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           and(
             eq(invoices.firmId, session.firmId),
             notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+            dStart ? drz`${invoices.issueDate} >= ${dStart}::date` : undefined,
+            dEnd ? drz`${invoices.issueDate} <= ${dEnd}::date` : undefined,
           ),
         )
         .groupBy(monthCol)
@@ -1300,6 +1364,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       // 0063 — cost is now snapshotted on time_entry.cost_rate_snapshot_cents.
       // No more correlated SELECT against staff_rate_snapshot at read
       // time; historical profitability is locked at the write moment.
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const rows = await deps.db
         .select({
           engagementId: engagements.id,
@@ -1309,10 +1374,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         })
         .from(engagements)
         .innerJoin(clients, eq(clients.id, engagements.clientId))
-        // Exclude soft-deleted (ARCHIVED) entries from the cost base.
+        // Exclude soft-deleted (ARCHIVED) entries from the cost base; optional date window.
         .leftJoin(
           timeEntries,
-          and(eq(timeEntries.engagementId, engagements.id), ne(timeEntries.status, 'ARCHIVED')),
+          and(
+            eq(timeEntries.engagementId, engagements.id),
+            ne(timeEntries.status, 'ARCHIVED'),
+            dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
+            dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
+          ),
         )
         .where(and(eq(clients.firmId, session.firmId)))
         .groupBy(engagements.id, engagements.name, clients.name);
@@ -1322,6 +1392,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         deps.db,
         session.firmId,
         new Set(rows.map((r) => r.engagementId)),
+        { start: dStart, end: dEnd },
       );
       const items = rows
         .map((r) => {
@@ -1568,6 +1639,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const rows = await deps.db
         .select({
           engagementId: engagements.id,
@@ -1582,7 +1654,12 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // Exclude soft-deleted (ARCHIVED) entries.
         .leftJoin(
           timeEntries,
-          and(eq(timeEntries.engagementId, engagements.id), ne(timeEntries.status, 'ARCHIVED')),
+          and(
+            eq(timeEntries.engagementId, engagements.id),
+            ne(timeEntries.status, 'ARCHIVED'),
+            dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
+            dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
+          ),
         )
         .where(and(eq(clients.firmId, session.firmId), eq(engagements.mixedModeEnabled, true)))
         .groupBy(engagements.id);

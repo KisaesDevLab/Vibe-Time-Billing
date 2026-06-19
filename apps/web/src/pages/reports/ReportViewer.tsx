@@ -37,11 +37,13 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'realization-by-partner',
     label: 'Realization by partner',
     description: 'Write-up / write-down realization grouped by partner in charge.',
+    params: DATE_PARAMS,
   },
   {
     kind: 'revenue-by-month',
     label: 'Revenue by month',
     description: 'Billed + paid totals per calendar month (last 24).',
+    params: DATE_PARAMS,
   },
   {
     kind: 'utilization',
@@ -59,11 +61,13 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'time-by-engagement',
     label: 'Time by engagement',
     description: 'Hours + standard value per engagement.',
+    params: DATE_PARAMS,
   },
   {
     kind: 'time-by-client',
     label: 'Time by client',
     description: 'Hours + standard value per client.',
+    params: DATE_PARAMS,
   },
   {
     kind: 'collection-realization',
@@ -86,6 +90,7 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'firm-profitability',
     label: 'Firm profitability',
     description: 'Cost, billed, paid, and margin per engagement.',
+    params: DATE_PARAMS,
   },
   {
     kind: 'capacity-forecast',
@@ -112,16 +117,19 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'scope-creep',
     label: 'Scope creep',
     description: 'Out-of-scope hours per mixed-mode engagement.',
+    params: DATE_PARAMS,
   },
   {
     kind: 'approval-metrics',
     label: 'Approval metrics',
-    description: 'Approval counts, rates, and response time per approver.',
+    description: 'Approval counts, rates, and response time per approver (default 30 days).',
+    params: [{ name: 'days', label: 'Window (days)', placeholder: '30' }],
   },
   {
     kind: 'time-anomalies',
     label: 'Time anomalies',
-    description: 'Per-timekeeper daily-hours outliers (z-score).',
+    description: 'Per-timekeeper daily-hours outliers (z-score, default 90 days).',
+    params: [{ name: 'start', label: 'Start (YYYY-MM-DD)' }],
   },
   {
     kind: 'subscription-profitability',
