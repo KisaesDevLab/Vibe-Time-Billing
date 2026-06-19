@@ -27,6 +27,27 @@ interface BookingRequest {
   createdAt: string;
 }
 
+interface Slot {
+  start: string;
+  end: string;
+}
+
+function durationMin(r: BookingRequest): number {
+  return Math.max(
+    15,
+    Math.round((new Date(r.endsAt).getTime() - new Date(r.startsAt).getTime()) / 60_000),
+  );
+}
+function ymd(iso: string): string {
+  const d = new Date(iso);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+function slotTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 function fmtRange(startsAt: string, endsAt: string): string {
   const s = new Date(startsAt);
   const e = new Date(endsAt);
@@ -46,6 +67,47 @@ export function BookingRequestsPage(): JSX.Element {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [decliningId, setDecliningId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  // Change-time state (per request being rescheduled on approval).
+  const [changingId, setChangingId] = useState<string | null>(null);
+  const [slotDate, setSlotDate] = useState('');
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [slotsBusy, setSlotsBusy] = useState(false);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
+  const [chosenStart, setChosenStart] = useState<string | null>(null);
+
+  async function loadSlots(r: BookingRequest, date: string): Promise<void> {
+    setSlotsBusy(true);
+    setSlotsError(null);
+    setSlots([]);
+    try {
+      const p = new URLSearchParams({
+        staffIds: r.staffId,
+        date,
+        durationMinutes: String(durationMin(r)),
+      });
+      const resp = await api<{ slots: Slot[] }>(`/api/staff/booking/slots?${p.toString()}`);
+      setSlots(resp.slots ?? []);
+    } catch (err) {
+      setSlotsError(err instanceof Error ? err.message : 'failed to load times');
+    } finally {
+      setSlotsBusy(false);
+    }
+  }
+
+  function startChange(r: BookingRequest): void {
+    const date = ymd(r.startsAt);
+    setChangingId(r.id);
+    setDecliningId(null);
+    setChosenStart(null);
+    setSlotDate(date);
+    void loadSlots(r, date);
+  }
+  function cancelChange(): void {
+    setChangingId(null);
+    setChosenStart(null);
+    setSlots([]);
+    setSlotsError(null);
+  }
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -63,14 +125,15 @@ export function BookingRequestsPage(): JSX.Element {
     void load();
   }, []);
 
-  async function approve(id: string): Promise<void> {
+  async function approve(id: string, startsAt?: string): Promise<void> {
     setBusyId(id);
     setError(null);
     try {
       await api<{ ok: boolean; appointmentId: string }>(
         `/api/staff/appointments/booking-requests/${id}/approve`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify(startsAt ? { startsAt } : {}) },
       );
+      cancelChange();
       await load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'failed';
@@ -177,10 +240,82 @@ export function BookingRequestsPage(): JSX.Element {
                   </Button>
                 </div>
               </div>
+            ) : changingId === r.id ? (
+              <div style={{ display: 'grid', gap: 8, marginTop: 12, maxWidth: 520 }}>
+                <label
+                  style={{ fontSize: 12, color: tokens.color.textMuted, display: 'grid', gap: 4 }}
+                >
+                  New date
+                  <input
+                    type="date"
+                    value={slotDate}
+                    onChange={(e) => {
+                      setSlotDate(e.target.value);
+                      setChosenStart(null);
+                      void loadSlots(r, e.target.value);
+                    }}
+                    style={{
+                      padding: '6px 8px',
+                      borderRadius: tokens.radius.sm,
+                      border: `1px solid ${tokens.color.border}`,
+                      background: tokens.color.surface,
+                      color: tokens.color.text,
+                      width: 190,
+                    }}
+                  />
+                </label>
+                {slotsBusy ? (
+                  <p style={{ fontSize: 12, color: tokens.color.textMuted }}>Loading times…</p>
+                ) : slotsError ? (
+                  <p style={{ fontSize: 12, color: tokens.color.danger }}>{slotsError}</p>
+                ) : slots.length === 0 ? (
+                  <p style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    No open times that day.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {slots.map((s) => (
+                      <Button
+                        key={s.start}
+                        size="sm"
+                        variant={chosenStart === s.start ? undefined : 'secondary'}
+                        onClick={() => setChosenStart(s.start)}
+                      >
+                        {slotTime(s.start)}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                  <Button
+                    size="sm"
+                    disabled={busyId === r.id || !chosenStart}
+                    onClick={() => void approve(r.id, chosenStart ?? undefined)}
+                  >
+                    Approve at selected time
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busyId === r.id}
+                    onClick={cancelChange}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                 <Button size="sm" disabled={busyId === r.id} onClick={() => void approve(r.id)}>
                   Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busyId === r.id}
+                  onClick={() => startChange(r)}
+                >
+                  Change time
                 </Button>
                 <Button
                   size="sm"

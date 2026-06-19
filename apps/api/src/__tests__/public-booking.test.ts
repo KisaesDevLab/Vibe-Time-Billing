@@ -271,6 +271,25 @@ describe('booking admin router', () => {
     expect(appts[0]!.status).toBe('SCHEDULED');
   });
 
+  it('approve at a changed time uses the chosen start and keeps the duration', async () => {
+    const reqId = await insertPendingRequest(null);
+    const res = await request(buildAdminApp())
+      .post(`/api/staff/appointments/booking-requests/${reqId}/approve`)
+      .send({ startsAt: `${MONDAY}T14:00:00.000Z` }); // requested was 09:00
+    expect(res.status).toBe(200);
+    const [appt] = await harness.db
+      .select()
+      .from(appointments)
+      .where(eq(appointments.id, res.body.appointmentId));
+    expect(appt!.startsAt.toISOString()).toBe(`${MONDAY}T14:00:00.000Z`);
+    expect(appt!.endsAt.toISOString()).toBe(`${MONDAY}T15:00:00.000Z`); // +60 min
+    const [reqRow] = await harness.db
+      .select()
+      .from(bookingRequests)
+      .where(eq(bookingRequests.id, reqId));
+    expect(reqRow!.startsAt.toISOString()).toBe(`${MONDAY}T14:00:00.000Z`);
+  });
+
   it('decline marks the request DECLINED (no appointment)', async () => {
     const reqId = await insertPendingRequest(null);
     const res = await request(buildAdminApp())

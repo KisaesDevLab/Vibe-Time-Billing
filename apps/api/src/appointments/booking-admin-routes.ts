@@ -460,6 +460,22 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
         return void res.status(403).json({ error: 'not_an_approver' });
       }
 
+      // Staff may approve at a different time than requested. endsAt keeps the
+      // originally requested duration; the visitor is emailed the final time.
+      const reschedule = z
+        .object({ startsAt: z.string().datetime().optional() })
+        .safeParse(req.body ?? {});
+      let startsAt = reqRow.startsAt;
+      let endsAt = reqRow.endsAt;
+      if (reschedule.success && reschedule.data.startsAt) {
+        const s = new Date(reschedule.data.startsAt);
+        if (Number.isNaN(s.getTime())) {
+          return void res.status(400).json({ error: 'invalid_starts_at' });
+        }
+        startsAt = s;
+        endsAt = new Date(s.getTime() + reqRow.durationMinutes * 60_000);
+      }
+
       const typeName = reqRow.appointmentTypeId
         ? (
             await db
@@ -480,7 +496,7 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
           await tx.execute(
             sql`SELECT pg_advisory_xact_lock(hashtextextended(${reqRow.staffId}::text, 0))`,
           );
-          if (await findBookingConflict(tx, [reqRow.staffId], reqRow.startsAt, reqRow.endsAt)) {
+          if (await findBookingConflict(tx, [reqRow.staffId], startsAt, endsAt)) {
             throw new Error('slot_taken');
           }
           const [appt] = await tx
@@ -489,8 +505,8 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
               firmId: session.firmId,
               appointmentTypeId: reqRow.appointmentTypeId ?? null,
               title,
-              startsAt: reqRow.startsAt,
-              endsAt: reqRow.endsAt,
+              startsAt,
+              endsAt,
               durationMinutes: reqRow.durationMinutes,
               location: (reqRow.location as 'VIDEO' | 'PHONE' | 'IN_PERSON' | null) ?? 'VIDEO',
               locationDetail: reqRow.locationDetail,
@@ -499,7 +515,7 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
               status: 'SCHEDULED',
               cancelToken,
               rescheduleToken,
-              tokenExpiresAt: new Date(reqRow.endsAt.getTime() + TOKEN_TTL_MS),
+              tokenExpiresAt: new Date(endsAt.getTime() + TOKEN_TTL_MS),
               createdById: session.appUserId,
             })
             .returning({ id: appointments.id });
@@ -509,6 +525,9 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
             .update(bookingRequests)
             .set({
               status: 'APPROVED',
+              // Reflect the final scheduled time on the request record.
+              startsAt,
+              endsAt,
               decidedByAppUserId: session.appUserId,
               decidedAt: now(),
               createdAppointmentId: appointmentId,
@@ -535,7 +554,7 @@ export function createBookingAdminRouter(deps: BookingAdminRoutesDeps): Router {
         visitorName: reqRow.visitorName,
         visitorEmail: reqRow.visitorEmail,
         staffId: reqRow.staffId,
-        startsAt: reqRow.startsAt,
+        startsAt,
         durationMinutes: reqRow.durationMinutes,
         title,
         cancelToken,
