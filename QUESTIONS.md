@@ -400,6 +400,23 @@ Context: the rollforward wizard (engagements → drop-off dates → appointments
 - **Q48 — Inactive/lost clients.** **RESOLVED: exclude by default with an "include inactive" toggle.** *As built* in the API (`includeInactive`); the toggle still needs to be surfaced in the wizard's Step 1 UI.
 - **Q49 — 3/15 vs 4/15 split source.** **RESOLVED: infer from the engagement's `returnType`** (1120S/1065 → 3/15; 1040/1120/1041 → 4/15; 990 → 5/15); ISO-week fallback when null. *As built.*
 
+## Q50–Q60 — AI Pricing Suggestion addendum [pricing kickoff]
+Context: an on-demand pricing suggestion on the engagement Activity card. The number is produced by a **deterministic engine** over structured inputs (auditable, reproducible); the LLM writes the rationale only. Decisions confirmed by the operator before build.
+
+- **Q50 — Margin.** Target margin **0.40, a TRUE GROSS MARGIN applied by DIVISION** (`cost ÷ (1 − 0.40)`), never `× 1.40`. Asserted in code + tests.
+- **Q51 — Burdened cost rates.** Derive per-tier from the cohort's captured `cost_rate_snapshot_cents` (hours-weighted); **firm per-tier settings fallback** when thin/zero.
+- **Q52 — Expected hours.** **Trimmed mean** (configurable → median) across the cohort; this client's own actuals shown as a comparison line only.
+- **Q53 — Complexity tiers.** Computed from the tax-return **form/section count** (SIMPLE/MODERATE/COMPLEX) + manual override; non-tax → type-only cohort.
+- **Q54 — Minimum cohort.** **5**; below it the engine falls back to prior-fee × economic uplift, low confidence, wider band.
+- **Q55 — Default economic source.** **MANUAL % (0%)**, no network; live CPI/ECI is opt-in + egress-gated.
+- **Q56 — Egress / BLS.** Outbound BLS fetch allowed only under the firm's direct/shield egress mode; worker/admin refresh caches `economic_index`, degrading to last-cached then MANUAL. Manual path needs no network.
+- **Q57 — Range width.** Scales with confidence (HIGH ±8% / MEDIUM ±15% / LOW ±25%).
+- **Q58 — Override history.** **Audit-only for v1** — `pricing_decision` stores suggested vs final + inputs snapshot; no engine feedback loop yet.
+- **Q59 — "Accept".** **Records the decision only** (no engagement fee written; the next-year engagement may not exist).
+- **Q60 — LLM number authority.** The engine always owns the number; the `pricing_allow_llm_adjust` toggle defaults **OFF** and is reserved (the rationale prompt forbids changing figures).
+
+Deferred follow-ups (noted, not blocking): a **periodic worker** to auto-refresh the economic index (admin/manual refresh ships now); Tier-1 rate-base is intentionally **burdened cost** while Tier-2 is **billable** — do not unify.
+
 ---
 
 # CHANGE LOG
@@ -413,3 +430,4 @@ Context: the rollforward wizard (engagements → drop-off dates → appointments
 - 2026-06-04 — Operator Q&A resolved the remaining open items: Q31 → close as implemented (files schema rebuilt); Q33 → close as implemented (pending_upload live); Q32 → production storage = Backblaze B2 (firm-supplied creds; mock stays dev default); Q35 → build out OpenSign now as an AGPL-isolated sidecar alternative to native e-sign. All OPEN QUESTIONS Q31–Q38 now resolved.
 - 2026-06-04 — Q39–Q42 added + resolved (follow-ups surfaced by the Q32/Q35 builds): Q39 B2 lifecycle → keep-last-version; Q40 multipart → defer; Q41 OpenSign → keep off by default + write deploy runbook; Q42 B2 integration suite → wire manual-dispatch CI secrets.
 - 2026-06-19 — Q43–Q49 added + resolved for the Tax-Season Rollforward addendum. Built to defaults; operator changed Q44 (carry retainer/billing terms) and Q46 (appointment-only opt-in). Q46 + Q48 (wizard inactive toggle) built. Q44 built: billing fields carry on the clone; retainer carried as an intent **note** (retainers are offer-at-billing/payment-gated, so no funded retainer is fabricated).
+- 2026-06-19 — Q50–Q60 added + resolved for the AI Pricing Suggestion addendum (migration 0178). Deterministic engine (÷-margin, burdened-cost base, once-only economic factor, confidence-scaled range, thin-cohort fallback); LLM writes the rationale only with a templated fallback; decisions audit-logged (no fee write). Periodic economic-index worker deferred (manual/admin refresh ships).
