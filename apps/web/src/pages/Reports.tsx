@@ -7,7 +7,7 @@ import { Button, Card, Input, Pill, Sparkline, Table, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { VIEWER_REPORTS } from './reports/ReportViewer';
 
-type Dimension = 'firm' | 'timekeeper' | 'engagement' | 'client';
+type Dimension = 'firm' | 'timekeeper' | 'engagement' | 'client' | 'service_line';
 
 interface DimensionItem {
   key: string;
@@ -81,19 +81,10 @@ export function ReportsPage(): JSX.Element {
         drillActive={drillActive}
         onClearDrill={clearDrill}
       />
-      {/* id wrappers are the scroll targets for the Report-library cards. */}
+      {/* id wrappers are the scroll targets for the Report-library cards.
+          Revenue ops sits at the top, with Realization directly under it. */}
       <div id="revenue-ops-card">
         <RevenueOpsCard />
-      </div>
-      <div id="subscription-profitability-card">
-        <SubscriptionProfitabilityCard />
-      </div>
-      <PlainEnglishCard />
-      <div id="billable-targets-card">
-        <BillableTargetsCard />
-      </div>
-      <div id="capacity-forecast-card">
-        <CapacityForecastCard />
       </div>
       <div id="realization-card">
         <RealizationCard
@@ -114,6 +105,16 @@ export function ReportsPage(): JSX.Element {
             setSearch(next);
           }}
         />
+      </div>
+      <div id="subscription-profitability-card">
+        <SubscriptionProfitabilityCard />
+      </div>
+      <PlainEnglishCard />
+      <div id="billable-targets-card">
+        <BillableTargetsCard />
+      </div>
+      <div id="capacity-forecast-card">
+        <CapacityForecastCard />
       </div>
     </div>
   );
@@ -252,14 +253,14 @@ function RealizationCard({
       title={`Realization${drillUser || drillEng || drillClient ? ' (drilled)' : ''}`}
       action={
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {(['firm', 'timekeeper', 'engagement', 'client'] as const).map((d) => (
+          {(['firm', 'timekeeper', 'engagement', 'client', 'service_line'] as const).map((d) => (
             <Button
               key={d}
               size="sm"
               variant={dim === d ? 'primary' : 'secondary'}
               onClick={() => onDimChange(d)}
             >
-              {d}
+              {d === 'service_line' ? 'service line' : d}
             </Button>
           ))}
           <a
