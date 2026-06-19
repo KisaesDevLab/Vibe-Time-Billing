@@ -5180,3 +5180,31 @@ export const terminalReaders = pgTable(
     stripeIdx: index('terminal_readers_stripe_idx').on(t.stripeReaderId),
   }),
 );
+
+// 0175 — background-job admin. Appliance-global (jobs aren't firm-scoped).
+// job_schedule toggles a job on/off (+ optional cron override); job_run is the
+// per-execution history the worker writes.
+export const jobSchedule = pgTable('job_schedule', {
+  jobName: text('job_name').primaryKey(),
+  enabled: boolean('enabled').notNull().default(true),
+  cronOverride: text('cron_override'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const jobRun = pgTable(
+  'job_run',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    jobName: text('job_name').notNull(),
+    // running | completed | failed | skipped
+    status: text('status').notNull(),
+    itemCount: integer('item_count'),
+    error: text('error'),
+    triggeredBy: text('triggered_by'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => ({
+    jobIdx: index('job_run_job_idx').on(t.jobName, t.startedAt),
+  }),
+);

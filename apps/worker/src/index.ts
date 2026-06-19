@@ -138,6 +138,71 @@ if (dbUrl) {
   closeDb = created.close;
 }
 
+// 0175 — job admin. Wrap each cron-tick handler so the run is recorded in
+// job_run and a disabled job (job_schedule.enabled=false) is skipped without
+// executing. Failures are recorded then re-thrown so BullMQ still marks the
+// job failed + retries. Best-effort: a tracking-table error never blocks the
+// actual job.
+async function runTracked(
+  name: string,
+  job: Job<JobPayload>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  if (!db) return fn();
+  const { eq } = await import('drizzle-orm');
+  const { jobSchedule, jobRun } = await import('@vibe/db/schema');
+  const triggeredBy = (job.data as { reason?: string } | undefined)?.reason ?? null;
+  try {
+    const [sched] = await db
+      .select({ enabled: jobSchedule.enabled })
+      .from(jobSchedule)
+      .where(eq(jobSchedule.jobName, name))
+      .limit(1);
+    if (sched && sched.enabled === false) {
+      await db
+        .insert(jobRun)
+        .values({ jobName: name, status: 'skipped', triggeredBy, finishedAt: new Date() });
+      logger.info({ name }, 'job disabled — skipped');
+      return;
+    }
+  } catch (err) {
+    logger.warn({ err, name }, 'job_schedule check failed; running anyway');
+  }
+  let runId: string | null = null;
+  try {
+    const [run] = await db
+      .insert(jobRun)
+      .values({ jobName: name, status: 'running', triggeredBy })
+      .returning({ id: jobRun.id });
+    runId = run?.id ?? null;
+  } catch (err) {
+    logger.warn({ err, name }, 'job_run insert failed; running untracked');
+  }
+  try {
+    await fn();
+    if (runId) {
+      await db
+        .update(jobRun)
+        .set({ status: 'completed', finishedAt: new Date() })
+        .where(eq(jobRun.id, runId))
+        .catch(() => undefined);
+    }
+  } catch (err) {
+    if (runId) {
+      await db
+        .update(jobRun)
+        .set({
+          status: 'failed',
+          finishedAt: new Date(),
+          error: (err instanceof Error ? err.message : 'error').slice(0, 500),
+        })
+        .where(eq(jobRun.id, runId))
+        .catch(() => undefined);
+    }
+    throw err;
+  }
+}
+
 // Autopay: if STRIPE_SECRET_KEY is set, build a charge hook that the
 // recurring-billing tick can invoke per plan. Otherwise autopay is
 // skipped silently (and audit-logged in the job).
@@ -809,10 +874,14 @@ async function setup(): Promise<void> {
     });
     events.set(name, evt);
 
-    const w = new Worker<JobPayload>(name, async (job) => handlers[name](job), {
-      connection,
-      concurrency: 1,
-    });
+    const w = new Worker<JobPayload>(
+      name,
+      async (job) => runTracked(name, job, () => handlers[name](job)),
+      {
+        connection,
+        concurrency: 1,
+      },
+    );
     workers.set(name, w);
 
     await queue.upsertJobScheduler(
