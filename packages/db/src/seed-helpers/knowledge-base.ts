@@ -13,6 +13,11 @@ import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { kbArticles, kbCategories } from '../schema/core';
+import { md, type ArticleDef } from './kb-types';
+import { STAFF_A_ARTICLES } from './kb-gap-staff-a';
+import { STAFF_B_ARTICLES } from './kb-gap-staff-b';
+import { ADMIN_GAP_ARTICLES } from './kb-gap-admin';
+import { CLIENT_GAP_ARTICLES } from './kb-gap-client';
 
 // reason: drizzle's per-schema Tx generics aren't assignment-compatible
 // across call sites; widen to the base PgDatabase like the other helpers.
@@ -26,19 +31,8 @@ interface CategoryDef {
   sortOrder: number;
 }
 
-interface ArticleDef {
-  slug: string;
-  category: string;
-  title: string;
-  summary: string;
-  tags: string[];
-  sortOrder: number;
-  body: string;
-  // 0113 — realm visibility. Omitted = 'staff' (internal). Client-facing
-  // articles are tagged 'both' so they appear in the portal help center +
-  // ground the portal AI support chat, and staff can still see them.
-  audience?: 'staff' | 'client' | 'both';
-}
+// ArticleDef + md() now live in ./kb-types (imported above) so the per-area
+// gap-article files can share them without an import cycle.
 
 export const KB_CATEGORIES: ReadonlyArray<CategoryDef> = [
   {
@@ -213,9 +207,6 @@ export const KB_CATEGORIES: ReadonlyArray<CategoryDef> = [
   },
 ];
 
-// Small helper to keep bodies readable in source.
-const md = (s: string): string => s.trim();
-
 export const KB_ARTICLES: ReadonlyArray<ArticleDef> = [
   // =================================================================== Getting Started
   {
@@ -263,8 +254,9 @@ Vibe Practice Management is the staff web app your firm uses to run client work 
 The app has a persistent left navigation (the sidebar) and a top header. This article maps every nav item so you know where to go. Items you don't have permission for, or that are role-gated, may not appear for you.
 
 ## What you'll see
-The left sidebar lists, top to bottom:
-- **Dashboard** — your landing page (the \`/\` home view).
+The left sidebar is grouped into collapsible **sections**. Each section header collapses and expands; its state is remembered between visits. At the top is a **Dashboard** link (the \`/\` home view), then the grouped sections, then a short utility footer at the bottom.
+
+**Work**
 - **Clients** — client records and detail pages.
 - **People** — the firm-wide directory of contacts and portal logins ([[people-directory]]).
 - **Engagements** — engagement records; create and open engagements.
@@ -273,28 +265,38 @@ The left sidebar lists, top to bottom:
 - **Appointments** — book and manage appointments.
 - **My calendar** — connect and view your own calendar.
 - **Messages** — engagement and team messaging threads.
+
+**Documents**
 - **Proposals** — draft and send client proposals.
 - **Signatures** — e-signature requests and their status ([[in-office-signing]]).
 - **Requests** — document/info requests to and from clients.
 - **Intake** — secure document intake from clients and prospects ([[intake-overview]]).
 - **Document Inbox** — match and route incoming documents into client folders ([[document-inbox]]).
 - **Tax returns** — tax return tracking.
+
+**Billing**
 - **WIP** — work-in-progress dashboard.
 - **Billing** — billing batches and pre-bills.
 - **Invoices** — issued invoices and invoice detail.
 - **Payments** — receive payments and import payment CSVs ([[payment-import]]).
 - **Retainers** — firm-wide retainer dashboard (shows only with the \`retainer:read\` permission; otherwise you reach your own view at \`/my/retainers\`).
 - **A / R** — accounts receivable.
+- **Recurring plans** — recurring billing plans.
+
+**Oversight**
 - **Approvals** — items awaiting approval, plus portal-access and client-notification queues.
 - **Reports** — realization, utilization, profitability, AR, payments-received, signed forms.
 - **Alerts** — system and workflow alerts.
 - **Audit** — the audit log.
+- **Engagement letters** — engagement-letter status.
+
+**Footer** (no section header)
 - **Notifications** — your in-app notifications.
 - **Admin** — firm settings and administration.
 - **Help** — Knowledge Base and Ask AI.
 - **Account** — your profile and sign-in settings.
 
-Nav items you don't have permission for won't appear, so your sidebar may be shorter than this list.
+Nav items you don't have permission for won't appear, so a whole section may collapse to fewer items — or vanish — for you.
 
 ## Search
 - Press \`Ctrl+K\` (or \`Cmd+K\` on Mac) anywhere to open Quick find.
@@ -451,7 +453,7 @@ A short, practical checklist to get a new staffer productive in the staff app. W
 
 ## Steps
 1. Open **Clients**. Click **+ New client** (top-right of the Clients card) to open the **New client** wizard.
-2. **Client type** step — choose **Individual** ("Single filer, joint filer…") or **Business** ("C-corp, S-corp, LLC, partnership, sole prop, nonprofit"). This drives the next step's fields.
+2. **Client type** step — choose **Individual** ("Single filer, joint filer, etc. Filing status applies.") or **Business** ("C-corp, S-corp, LLC, partnership, sole prop, nonprofit."). This drives the next step's fields.
 3. **Client info** step — fill the name (**Client name (e.g. Smith, John)** for individuals, **Business name** for businesses). Optionally tick **Use a different client-facing name**.
 4. Choose **Client owner \\*** (partner in charge) and **Office \\*** (both required in the wizard).
 5. Optionally set **External ID**, **AWS ID**, **Source**, **Pipeline stage** (Client / Other / Prospect), **Terms (days)** (default 30), and — for individuals — **Filing status**. Leave **Active** on (default).
@@ -469,7 +471,7 @@ Open the client and use **Edit** on the **Client info** card to change name, own
 
 ## Tips
 - Individual vs Business only changes the name label and whether Filing status appears — both store the same way.
-- **Client names must be unique within the firm** (case-insensitive). Creating or renaming to a name already in use is refused with a clear message; archiving a client frees its name for reuse.
+- **Client names must be unique within the firm** (case-insensitive). Creating or renaming to a name already in use is refused — e.g. \`A client named "Smith, John" already exists. Use a distinct name (you can set a separate client-facing name later).\` Archiving a client frees its name for reuse.
 - **External ID** and **AWS ID** are two optional identifiers the [[document-inbox]] matches incoming documents against — set whichever your tax-software exports stamp on filenames. Both are unique per firm when set.
 `),
   },
@@ -486,7 +488,9 @@ Open the client and use **Edit** on the **Client info** card to change name, own
 Open a client from the list, or land here via **Create and manage**.
 
 ## Tabs
-**Home · Messages · Requests · Communications · Notes · Files · Tasks · Engagements (count) · Billing · Tax.** Header actions: **+ Engagement**, **+ Task**, **✉ Log email**.
+**Home · Messages · Requests · Communications · Notes · Files · Tasks · Engagements (count) · Appointments · Billing · Tax · Credentials.** Header actions: **+ Engagement**, **+ Task**, **✉ Log email**.
+
+**Appointments** and **Credentials** are conditional: **Credentials** appears only if you have permission to view stored client credentials, and on an access-restricted client most tabs (including Messages, Requests, Communications, Notes, Files, Tasks, Engagements, Appointments, Tax, and Credentials) are hidden — leaving just **Home** and **Billing**.
 
 ## Home tab cards
 - **At a glance** — Engagements (active/total), WIP, Invoiced, Paid, Outstanding.
@@ -753,7 +757,7 @@ The **Time** page has four tabs: **Quick log**, **Day**, **Week**, **Month**. Th
 These thresholds are **display indicators**, not enforced limits. Out-of-scope work shows an **OOS** pill; non-billable shows a **non-bill** pill.
 
 ## Tips
-- The **Quick log → My entries** list supports filters (client, engagement, dates, billable, out-of-scope), sorting, and paging (50/100/200).
+- The **Quick log → My entries** list supports filters (client, engagement, dates, billable, out-of-scope) and sorting; a count above the table shows how many entries are visible (e.g. "12 of 30").
 `),
   },
   {
@@ -1053,13 +1057,14 @@ A statement summarizes a client's **SENT / PARTIALLY_PAID / OVERDUE** invoices (
 - A policy notice that balances over 90 days past due may have work suspended.
 
 ## How to produce one
-- **One client** — generate the statement (HTML, or PDF).
-- **Many clients** — bulk-generate a single combined PDF (one statement per page) for printing, or bulk-email each client their own statement PDF to their billing contact.
+Statements are produced from the **AR** page (\`/ar\`, see [[ar-aging]]):
+- **One client** — click the **Statement** button on that client's row to download their statement-of-account PDF.
+- **Many clients** — tick the row checkboxes (or **Select all**), then use **Generate statements (PDF)** for one combined PDF (one statement per page) for printing, or **Email statements** to email each client their own statement PDF to their billing contact.
 - Computed "as of" today; only invoices with a remaining balance are listed.
 
 ## Notes
 - Requires the \`report:ar:read\` permission; bulk email needs mail configured.
-- Statements are driven via \`/api/staff/statements\` in the current build.
+- Bulk actions skip clients with no outstanding balance, and email is skipped for any client without a billing-contact email.
 `),
   },
   {
@@ -1183,18 +1188,22 @@ The **Receive payment** page handles money received outside Vibe (checks, cash, 
 
 ## Steps
 1. Open **Receive payment** (from the AR area).
-2. In **Record or charge**, pick a mode: **Record payment** ("Received via check, cash, other") or **Charge new payment** ("Process a card via Stripe" — only when Stripe + card processing are enabled).
+2. Pick a mode: **Record payment** ("Received via check, cash, other"), **Charge new payment** ("Process a card via Stripe" — only when Stripe + card processing are enabled), or **In-person terminal** ("Tap or insert a card on a connected reader" — collects on a Stripe Terminal card reader).
 3. Set **Payment date** and an optional **Reference no.** ("Check #, wire conf #, etc.").
-4. **Record** mode: choose a **Payment method** (Check / Cash / ACH (manual) / Other, plus any custom methods). **Charge** mode is fixed to "Card via Stripe."
-5. In **Amount**, enter **Amount received ($)** and pick the **Payee** (paying client). Use **Entities included** to add linked clients' invoices.
-6. In **Outstanding transactions**, check each invoice to pay and adjust the per-row amount (selecting an invoice auto-allocates the entered amount up to its open balance).
-7. Submit: **Record payment**, or **Charge $X** → enter card details → **Confirm charge**.
+4. **Record** mode: choose a **Payment method** (Check / Cash / ACH (manual) / Other, plus any custom methods). **Charge** and **In-person terminal** modes run a card.
+5. In **Amount**, enter **Amount received ($)** and pick the **Payee** (paying client). Use the **Entities included** card ("One payer may cover invoices for multiple entities they own") to add linked clients' invoices.
+6. In **Outstanding transactions**, check each invoice to pay and adjust the per-row amount (selecting an invoice auto-allocates the entered amount up to its open balance). The **Auto-allocate** button spreads the amount received across the invoices oldest-first.
+7. Submit: **Record payment** (or **Record + New** to record this one and immediately start another for a different client), or **Charge $X** → enter card details → **Confirm charge**.
 
 ## What you'll see
-An allocation summary ("Payment: $X allocated"). If you enter more than you allocate, "$X surplus → becomes a credit on submit" and an overpayment credit is created. A card charge cycles **Confirm charge → Confirming… → Awaiting Stripe…** and is finalized by the **Stripe webhook** (the source of truth) — if it's slow you'll see "Charge is still processing… check AR in a moment." When a payment fully pays an invoice, gated **pay-to-unlock** deliverables unlock and the portal contacts are emailed.
+An allocation summary ("Payment: $X allocated"). If you enter more than you allocate, "$X surplus → becomes a credit on submit" and an overpayment credit is created. A card charge cycles **Confirm charge → Confirming… → Awaiting Stripe…** and is finalized by the **Stripe webhook** (the source of truth) — if it's slow you'll see "Charge is still processing… check AR in a moment." After a payment is recorded you get a receipt with **Print receipt** and **Email receipt** buttons; for a multi-entity payment the receipt lists every entity under **Entities included**. When a payment fully pays an invoice, gated **pay-to-unlock** deliverables unlock and the portal contacts are emailed.
+
+## Managing recorded payments
+Receive payment is for *taking in* money. To review, edit, re-apply (re-allocate), void, or pull a receipt for payments already recorded, use the separate **Payments** list (\`/payments\` in the left nav), which also hosts the **ACH returns** and CSV **Import** ([[payment-import]]) tabs.
 
 ## Tips
-- **Record** = money already in hand; **Charge** runs a card via Stripe. If you close the page mid-charge, the webhook still completes it — check AR.
+- **Record** = money already in hand; **Charge** runs a card via Stripe; **In-person terminal** collects on a card reader. If you close the page mid-charge, the webhook still completes it — check AR.
+- **Record + New** is the fast path when posting a batch of checks: it saves the current payment and resets the form for the next client.
 - **Autopay** is a client-portal feature: clients enroll a saved card per engagement (Portal → Payment methods → Autopay enrollment), and the recurring-billing run charges it when an invoice is created.
 `),
   },
@@ -1332,7 +1341,7 @@ The client portal is a separate, branded web app (served from your firm's \`port
 - The portal is **commercial-license-gated**. If the appliance has no commercial license token configured, the portal shows a full-page **Portal unavailable** message reading "This appliance does not have a commercial license token configured." Clients cannot even reach the login form.
 - The portal can also be turned off per-firm. When a firm disables it, the same **Portal unavailable** page instead reads "Your firm has disabled the client portal." Both states point the client to "Contact your firm administrator for help."
 - The portal header shows your firm's branding (logo + display name) when configured; otherwise it falls back to **Client Portal**. A green \`portal\` realm badge sits in the header.
-- The left navigation a signed-in client sees: **Overview**, **Engagements**, **Appointments**, **Invoices**, **Messages**, **Requests**, **Letters**, **Files**, **Tax payments**, **Tax returns**, **Statement**, **Payment methods**, **Profile**, **Activity**, **Switch client**, and **Notifications**.
+- The left navigation a signed-in client sees is grouped: at the top **Overview**, **Messages**, and **Updates** (an in-app notices inbox that shows an unread count badge); then **Billing & payments** (**Invoices**, **Statement**, **Payment methods**, **Tax payments**); **Documents** (**Requests**, **Files**, **Letters**); **Your work** (**Engagements**, **Appointments**, **Tax returns**); and a footer (**Profile**, **Notifications**, **Activity**, **Help**, **Switch client**).
 - On **Invoices**, clients see "Open invoices" and "Paid" cards, can open an invoice to see line items and payments, **View as PDF**, **Download receipt**, and pay an open balance with a \`Pay $<amount>\` button.
 - On **Messages**, clients pick a thread and reply with a **Send** button.
 - On **Requests**, clients see "Open requests" and "History," open a request to read it, post a reply, and mark it complete.
@@ -1355,12 +1364,12 @@ The client portal is a separate, branded web app (served from your firm's \`port
     body: md(`
 # Inviting a client to the portal
 
-Staff grant portal access from the client's record, in the **Portal access** card. Each person you invite becomes a portal identity that can sign in on behalf of that client. This article covers sending an invitation, what the client does, identity verification, and managing access afterward.
+Staff grant portal access from the client's record, in the unified **People** card (it lists that client's contacts and portal logins together, and also has a **+ Add contact** action for adding a directory contact without a login). Each person you invite becomes a portal identity that can sign in on behalf of that client. This article covers sending an invitation, what the client does, identity verification, and managing access afterward.
 
 ## Steps
-1. Open the client's record and find the **Portal access** card.
-2. Click **+ Invite to portal** (top-right of the card). The button toggles to **Cancel** while the form is open.
-3. Fill in the invite form: **Full name**, a **Role**, an **Email** and/or **Phone (E.164)**, and the **Send invitation via** channel.
+1. Open the client's record and find the **People** card.
+2. Click **+ Invite to portal** (top-right of the card). The button toggles to **Cancel** while the form is open. (To add a contact with no login, use **+ Add contact** instead.)
+3. Fill in the invite form: **Full name**, a **Role**, an **Email** and/or **Phone (E.164)**, and the **Send via** channel.
 4. Click **Send invitation**. You'll see "Invitation email queued to …" / "Invitation text queued to …", or — if that contact already has a portal identity at your firm — "That contact already has a portal identity at this firm — access added immediately."
 5. The client opens the invitation and accepts; their access flips to **ACTIVE** and they land on the portal home.
 
@@ -1369,7 +1378,7 @@ Staff grant portal access from the client's record, in the **Portal access** car
 - **Role** — one of **Full access** (\`FULL\`), **View only** (\`VIEW_ONLY\`), or **Pay only** (\`PAY_ONLY\`). Defaults to **Full access**.
 - **Email** — optional; standard email format.
 - **Phone (E.164)** — optional; must be E.164 format (e.g. \`+15555550123\`).
-- **Send invitation via** — **Email** or **Text message**. Defaults to **Email**.
+- **Send via** — **Email** or **Text message**. Defaults to **Email**.
 - Name plus at least one of email or phone is required; otherwise the form reports "Check the form — name plus either email or phone is required."
 
 ## What you'll see
@@ -1415,7 +1424,7 @@ A portal identity is one person who can hold access to several client accounts a
 - When a client has access to more than one entity, the **Switch client** page also shows a **Consolidated view** card with a "Show entries across all my clients" toggle. When on, the **Invoices**, **Tax payments**, **Engagements**, and **Activity** pages aggregate entries across every client they can access. It does not change which client is active for actions like making a payment.
 
 ## How staff add multi-entity access
-- To give an existing portal user access to another entity, open that other client's record and invite the same person (same email or phone) via **+ Invite to portal**. Because the system dedupes by firm + contact, their existing identity gains a new access row immediately rather than creating a duplicate identity.
+- To give an existing portal user access to another entity, open that other client's record and invite the same person (same email or phone) via **+ Invite to portal** on the **People** card. Because the system dedupes by firm + contact, their existing identity gains a new access row immediately rather than creating a duplicate identity.
 
 ## Alternate contacts (client-managed)
 Clients add and verify their own alternate emails/phones on the portal's alternate-contacts page (reached from **Profile**).
@@ -1433,7 +1442,7 @@ Clients add and verify their own alternate emails/phones on the portal's alterna
 
 ## Tips
 - A contact can be re-added to reset its code; the system upserts on (identity, channel, value) rather than duplicating, and limits sends to roughly one per minute.
-- Removing or adding alternate contacts is something the client does themselves; staff edit only the identity's primary name/email/phone from the **Portal access** card.
+- Removing or adding alternate contacts is something the client does themselves; staff edit only the identity's primary name/email/phone from the client record's **People** card.
 `),
   },
 
@@ -1499,10 +1508,12 @@ Proposals are branded, block-based documents you assemble from your services cat
 2. Click **New proposal**. On the "New proposal" page pick a **Client** and enter a **Title**, then click **Create + open editor**.
 3. In the editor, use the **Add block** palette to drop in blocks: \`Cover\`, \`Markdown text\`, \`Heading\`, \`Divider\`, \`Video\`, \`Services list\`, \`Package selector\`, \`Terms\`, and \`Signature\`.
 4. Configure each block by selecting its row. For **Services list**, check the services to show and toggle "Show prices in the rendered list." For **Package selector**, pick one package. For **Terms**, choose a terms template.
-5. Drag the \`⋮⋮\` handle to reorder; use **Undo**/**Redo** (or Ctrl/Cmd+Z). The editor autosaves about every 2 seconds; click **Save now** to flush immediately.
-6. Resolve any validation issues (shown inline and as a counter pill), then click **Send proposal**. This snapshots the document as version 1 with a SHA-256 content hash and flips status \`DRAFT → SENT\`.
-7. Mint a client link; the system returns a URL of the form \`<portalBaseUrl>/p/<token>\`. Deliver it to the client. Re-minting supersedes the prior unused link.
-8. Track progress on the pipeline dashboard (kanban, funnel, time-to-sign, abandoners, stale proposals).
+5. In the **Signers** card, add the signer roster — each signer gets a role of **Primary**, **Co-signer**, or **Witness** — and set the signing order to **Parallel (any order)** or **Sequential (one at a time)**.
+6. In the **On acceptance** card, optionally turn on **Create an engagement when the client accepts** and/or **Send a request list on acceptance** to automate post-signature work.
+7. Drag the \`⋮⋮\` handle to reorder; use **Undo**/**Redo** (or Ctrl/Cmd+Z). The editor autosaves about every 2 seconds; click **Save now** to flush immediately.
+8. Resolve any validation issues (shown inline and as a counter pill), then click **Send proposal**. This snapshots the document as version 1 with a SHA-256 content hash and flips status \`DRAFT → SENT\`.
+9. Mint a client link; the system returns a URL of the form \`<portalBaseUrl>/p/<token>\`. Deliver it to the client. Re-minting supersedes the prior unused link.
+10. Track progress on the pipeline dashboard (kanban, funnel, time-to-sign, abandoners, stale proposals).
 
 ## Fields
 - **Client**, **Title** — set on creation; title is editable only while \`DRAFT\`.
@@ -1519,52 +1530,11 @@ Proposals are branded, block-based documents you assemble from your services cat
 ## Tips
 - Clients can optionally create a password account (email + Argon2id password) from a magic-link session so they can return without a fresh link.
 - A proposal can only be edited while \`DRAFT\`; sending locks the content. Cancelling sets status \`CANCELLED\` (not allowed once \`ACCEPTED\`).
-- On acceptance the system records the signature + per-firm HMAC, optionally captures an ACH mandate, marks the selected package, snapshots a final \`ACCEPTED\` version, and **freezes the scope into a new engagement**. This conversion is idempotent.
+- On acceptance the system records the signature + per-firm HMAC, optionally captures an ACH mandate, marks the selected package, and snapshots a final \`ACCEPTED\` version. The post-acceptance automation (creating the engagement, sending the request list) is exactly what you toggled in the editor's **On acceptance** card — engagement conversion is idempotent.
 - Magic-link redemption is rate-limited per IP (10/hour); tokens are 256-bit random and stored only as SHA-256 hashes.
 - The funnel values an engagement as one-time + 12 × recurring; filter the dashboard by date range, owner, and value.
 `),
   },
-  {
-    slug: 'renewals',
-    category: 'proposals',
-    title: 'Renewals',
-    summary: 'Renew recurring engagements and proposals.',
-    tags: ['renewals', 'recurring', 'pipeline'],
-    sortOrder: 30,
-    body: md(`
-# Renewals
-
-The renewal engine surfaces active engagements approaching their end date and helps you roll them forward into fresh proposals — optionally with a price uplift. It does the candidate detection and the uplift math; you choose the strategy per candidate.
-
-## Steps
-1. Run a scan. By default it looks **90 days** ahead (\`daysAhead\`, 1–365). The scan finds \`ACTIVE\` engagements whose end date falls between today and the cutoff and that don't already have an open renewal.
-2. Each new candidate is created in state \`CANDIDATE\` with a send window running from 30 days before the engagement's end date through the end date itself.
-3. List candidates, ordered by send-window end (soonest first).
-4. For a candidate, choose an uplift mode and recompute the suggested total (only while state is \`CANDIDATE\`):
-   - \`MANUAL_PERCENT\` — supply \`manualBps\` (basis points; 500 = +5%).
-   - \`REALIZATION_BASED\` — supply prior billed/billable amounts and an optional target realization (defaults to 100%).
-   - \`CPI_INDEXED\` — uses a CPI-U year-over-year snapshot to set the uplift.
-5. (Optional) Toggle the **auto-renew** flag. The UI gates this behind prior client consent.
-
-## Fields
-- \`daysAhead\` — scan horizon, default 90.
-- \`mode\` — \`MANUAL_PERCENT\`, \`REALIZATION_BASED\`, or \`CPI_INDEXED\`.
-- \`manualBps\` — uplift in basis points for manual mode.
-- \`autoRenew\` — boolean flag on the renewal candidate.
-
-## What you'll see
-- Each candidate carries the engagement name, client name, end date, current fee, the chosen uplift mode/bps, the suggested total, state, send-window dates, and the auto-renew flag.
-- Uplift responses include a human-readable reason, e.g. \`Manual 5.00%\`, \`Realization 82.0% vs target 100.0% → +21.95%\`, or \`CPI-U YoY 3.00% (2024-12 → 2025-12)\`.
-- Realization uplift returns +0% ("already meets target") when prior realization is at or above target, and holds at 0 when there's no prior data.
-
-## Tips
-- Scan is idempotent — running it again won't duplicate a candidate that's already \`CANDIDATE\` or \`PROPOSED\`.
-- Uplift can only be recomputed while the candidate is still \`CANDIDATE\`.
-- Basis-point convention: 10000 bps = 100%, so "target 100%" is \`10000\`.
-- Renewal actions require \`engagement:write\` (\`engagement:read\` to list). Every scan, uplift, and auto-renew toggle is audit-logged.
-`),
-  },
-
   // =================================================================== Tax Returns
   {
     slug: 'tax-returns-overview',
@@ -1854,7 +1824,7 @@ A client request is a checklist the firm sends to a client for documents, questi
 - Template: key, name, title pattern, body pattern, default priority, default due offset, default reminder days, default assignee, item rows.
 
 ## What you'll see
-- Request statuses include \`OPEN\`, \`NEEDS_INFO\`, \`FULFILLED\`, and \`DISMISSED\`.
+- Request statuses are \`OPEN\`, \`NEEDS_INFO\`, \`FULFILLED\`, \`DISMISSED\`, and \`EXPIRED\` (a request past its window that was never fulfilled); the list's status filter offers all of them.
 - A fulfilled request enriched with its linked time entry shows hours, entry date, and staff name in the list and detail.
 - Reminder emails carry the subject "Reminder: <title> — due <date>" and are sent at most once per day per request.
 - Explicit fields sent at create time always override template defaults.
@@ -2060,10 +2030,11 @@ The app watches for engagements drifting out of scope and for unusual activity, 
 
 ## Steps
 1. For a live view, open **Reports**; the scope-creep report ranks mixed-mode engagements by out-of-scope share of total hours.
-2. To review flagged events, open **Alerts** from the left navigation.
+2. To review flagged events, open **Alerts** from the left navigation (gated by the \`admin:audit:read\` permission).
 3. Read the **Inbox · worker alerts** table for **scope creep**, **audit anomaly**, **wip age**, and **engagement rollover** rows.
-4. Triage with the **When**, **Kind**, **Subject**, and **Summary** columns; the **Subject** is the affected engagement or actor.
-5. Optionally click **✨ Summarize these alerts** in the **AI summary** card for a plain-language rollup.
+4. Triage with the **When**, **Kind**, **Subject**, and **Summary** columns; the **Subject** is the affected engagement or actor. Use the **Search alerts…** box, the per-column sort, and the **Kind** filter to narrow the list.
+5. Click **Details** on any row to open a modal with the alert's full pretty-printed JSON payload.
+6. Optionally click **✨ Summarize these alerts** in the **AI summary** card for a plain-language rollup.
 
 ## Fields
 - Scope-creep metrics: **totalHours**, **outOfScopeHours**, and **creepPct** (out-of-scope ÷ total), sorted highest first.
@@ -2154,7 +2125,7 @@ The app ships with an optional, **local-first** AI layer that powers in-app draf
 
 ## Multi-provider abstraction
 - All features call one \`AiProvider\` interface, so the same feature runs on any wired provider.
-- Three provider implementations exist: local \`Ollama\`, \`OpenAI-compatible\` (Groq, Together, vLLM, LM Studio, llama.cpp server, etc.), and cloud \`Anthropic\` Claude.
+- Three provider types are configured as credential cards on **Admin → AI settings** (\`/admin/ai-settings\`): **Anthropic (Claude)** (cloud), **OpenAI-compatible** (cloud — Groq, Together, vLLM, LM Studio, llama.cpp server, etc.), and **Ollama (local)**.
 - Routing is **local-preferred**: even when cloud is permitted, the local provider is used unless a per-feature override pins it to cloud.
 
 ## Budget cap (warn 80% / hard cap 100%)
@@ -2163,13 +2134,14 @@ The app ships with an optional, **local-first** AI layer that powers in-app draf
 - At **100%** of the monthly budget, AI calls are blocked with an \`ai_budget_exhausted\` error and a reset date (the first of next month, UTC). Local Ollama calls are costed at $0, so a local-only firm effectively never exhausts the cap.
 
 ## Egress policy / Vibe Shield
-- The default per-firm policy is **local-only**: every AI call uses the local provider and cloud is never reached.
-- When AI egress is enabled, cloud calls are allowed **only** while Vibe Shield is reachable (status cached by a healthcheck worker). If Shield is unreachable or unconfigured, the call fails safe and falls back to local.
-- A cloud override requested on a local-only firm is silently downgraded to local.
+- Cloud egress is controlled by the **Cloud egress** card on **Admin → AI settings**. The default is **Disabled (local-only)**: every AI call uses the local provider and cloud is never reached.
+- When egress is enabled, the **Mode** control chooses how cloud calls leave the appliance: **Direct (no shield)** sends straight to the provider, or **Shield (proxy)** routes through a **Vibe Shield endpoint** you configure on the card.
+- In Shield mode, cloud calls are allowed **only** while Vibe Shield is reachable (status cached by a healthcheck worker); if Shield is unreachable, the call fails safe and falls back to local.
+- A cloud override requested while egress is disabled is silently downgraded to local.
 
 ## What you'll see
 - A consistent **✨ AI · <feature>** panel header on each embedded feature, with a small provider-id tag.
-- The **AI usage** admin page shows status, request counts, tokens, cost, and a per-feature breakdown.
+- The **AI settings** admin page (\`/admin/ai-settings\`) holds the provider credential cards and the egress control; the **AI usage** admin page shows status, request counts, tokens, cost, and a per-feature breakdown.
 - Panels render nothing when AI is disabled or no provider is wired, so screens stay clean.
 
 ## Tips
@@ -2188,27 +2160,28 @@ The app ships with an optional, **local-first** AI layer that powers in-app draf
     body: md(`
 # Enabling & configuring AI
 
-AI is configured by environment variables (which provider is wired) plus admin settings (budget and provider preference).
+AI providers and cloud egress are configured on the **AI settings** admin page (\`/admin/ai-settings\`, titled **AI settings**); the spending cap and provider preference live on **Admin → Firm settings**. Saving here requires \`firm:settings:write\`.
 
-## Steps
-1. **Choose and wire a provider** in the appliance environment. Exactly one local provider is built from env, plus an optional cloud provider:
-   - Local \`Ollama\`: set \`AI_LOCAL_MODEL\` (e.g. \`qwen3:8b-q4_K_M\`); optionally \`AI_LOCAL_URL\` (defaults to \`http://localhost:11434\`).
-   - \`OpenAI-compatible\`: set \`AI_OPENAI_BASE_URL\` (this elects the OpenAI path), plus \`AI_OPENAI_API_KEY\`, \`AI_OPENAI_MODEL\`, and optional cost-per-token vars.
-   - Cloud \`Anthropic\`: set \`AI_CLOUD_API_KEY\`; \`AI_CLOUD_MODEL\` has a built-in default.
-2. Open **Admin → AI usage** to confirm provider wiring under the **AI status** card.
-3. Open **Admin → Firm settings** and set **AI monthly budget ($) — Q14**.
-4. Set **AI provider preference — Q15 / Phase 23 #6** to one of **Default (local-first)**, **Force local (Ollama)**, or **Force cloud (Anthropic)**.
-5. To allow cloud calls at all, an admin must enable AI egress and configure a Vibe Shield endpoint in firm config; otherwise the firm stays local-only.
-6. Leave AI enabled, or disable all AI features by setting \`VIBE_AI_DISABLED=true\` in the environment.
+## Configure a provider
+1. Open **Admin → AI settings**. Each provider type has its own credential card:
+   - **Anthropic (Claude)** (cloud) — enter the **API key** and **Model**.
+   - **OpenAI-compatible** (cloud) — enter the **Base URL**, **API key**, and **Model** (use this for Groq, Together, vLLM, LM Studio, llama.cpp servers, etc.).
+   - **Ollama (local)** — enter the **Base URL** and **Model**; no key needed.
+2. Optionally set per-token pricing on the cloud cards: **Input ¢ / 1M tok** and **Output ¢ / 1M tok** (so usage and the budget cap cost correctly). Ollama is costed at $0.
+3. Click **Save** to store the card, **Test connection** to verify it reaches the provider, or **Remove** to clear it. Credentials are stored encrypted in the database (not env vars).
 
-## Fields
-- **AI monthly budget ($) — Q14** — the per-firm monthly cap. Warn fires at the firm's warn threshold (default 80%); hard cap at 100%.
-- **AI provider preference — Q15 / Phase 23 #6** — **Default (local-first)**, **Force local (Ollama)**, or **Force cloud (Anthropic)**.
-- **AI egress / Vibe Shield endpoint** (firm config) — gate that must be on, with a reachable Shield, before any cloud call is made.
+## Configure cloud egress
+4. On the **Cloud egress** card, leave it **Disabled (local-only)** to keep every call on the local provider, or enable it and pick a **Mode**:
+   - **Direct (no shield)** — cloud calls go straight to the provider.
+   - **Shield (proxy)** — cloud calls route through the **Vibe Shield endpoint** you enter on the card; calls only succeed while Shield is reachable, otherwise they fall back to local.
+5. Click **Save egress**.
+
+## Set the budget and preference
+6. Open **Admin → Firm settings** → the **Approvals + auth + AI** card and set **AI monthly budget ($)** (warn at 80%, hard cap at 100%) and **AI provider preference** (**Default (local-first)**, **Force local (Ollama)**, or **Force cloud (Anthropic)**).
 
 ## What you'll see
+- The **Cloud egress** card shows a status pill — **Enabled · <mode>** or **Disabled (local-only)**.
 - The **AI status** card on **Admin → AI usage** shows three pills: **Status** (\`enabled\`/\`disabled\`), **Opted in** (\`yes\`/\`no\`), and **Provider** (the provider id or \`none\`).
-- A note states you can toggle AI off via \`VIBE_AI_DISABLED=true\` and set per-feature overrides with \`VIBE_AI_FEATURE_<NAME>=local|cloud\`.
 - Staff-facing AI panels appear only when the firm is opted in, enabled, and a provider is wired.
 
 ## How staff see AI availability
@@ -2217,9 +2190,9 @@ AI is configured by environment variables (which provider is wired) plus admin s
 - When AI is unavailable, the **Ask AI** tab shows "Ask AI is not enabled" and points staff to enable a provider and to use the **Knowledge Base** tab.
 
 ## Tips
-- Setting \`AI_OPENAI_BASE_URL\` takes precedence over \`AI_LOCAL_MODEL\` for the local slot — use it for hosted gateways or on-prem inference servers.
+- Keep egress **Disabled (local-only)** for maximum data sovereignty — only the Ollama card is needed.
 - Local providers cost $0, so a local-only firm can leave the budget conservative without blocking work.
-- Use per-feature overrides (e.g. \`VIBE_AI_FEATURE_REALIZATION_NARRATIVE=cloud\`) to route only specific features to cloud; overrides are still blocked by the egress policy.
+- A cloud override on a feature is still blocked unless the **Cloud egress** card allows it.
 `),
   },
   {
@@ -2235,8 +2208,12 @@ AI is configured by environment variables (which provider is wired) plus admin s
 The MCP (Model Context Protocol) server lets external AI agents call this firm's tools with **full read and write** access, scoped per token. Every mutating call is audit-logged with the token as the actor.
 
 ## What the MCP server exposes
-- **Read tools:** \`list_engagements\`, \`get_time_entries\`, \`query_recurring_plans\`, \`query_realization\`, \`suggest_adjustment\` (computes a suggestion but does not write), \`list_unresolved_client_requests\`, \`summarize_engagement_thread\`, \`suggest_billable_messages\`, \`draft_pre_bill_narrative\`.
-- **Write tools:** \`create_time_entry\`, \`generate_pre_bill\` (creates a billing batch from unbilled entries), \`link_message_to_time_entry\`.
+The **Allowed tools** picker on **Admin → API tokens** groups the tools so you can grant least privilege:
+- **Read:** \`list_engagements\`, \`get_time_entries\`, \`query_recurring_plans\`, \`list_clients\`, \`list_invoices\`.
+- **Reporting:** \`query_realization\`, \`suggest_adjustment\` (computes a suggestion but does not write), \`get_ar_aging\`, \`query_mrr\`.
+- **Write (mutating):** \`create_time_entry\`, \`generate_pre_bill\` (creates a billing batch from unbilled entries), \`update_engagement\`, \`create_client\`.
+- **Automation (mutating):** \`pause_recurring_plan\`, \`resume_recurring_plan\`.
+- **Connect (messaging):** \`summarize_engagement_thread\`, \`list_unresolved_client_requests\`, \`link_message_to_time_entry\`, \`suggest_billable_messages\`, \`draft_pre_bill_narrative\`.
 - All tools are firm-scoped: cross-firm requests are rejected.
 
 ## Steps
@@ -2262,7 +2239,7 @@ The MCP (Model Context Protocol) server lets external AI agents call this firm's
 ## Tips
 - Grant least privilege: issue separate tokens per integration rather than one all-tools token.
 - Revoke immediately if a token leaks; revocation takes effect on the next call.
-- Mutating tools (\`create_time_entry\`, \`generate_pre_bill\`, \`link_message_to_time_entry\`) audit every call, satisfying the firm's append-only audit guarantee.
+- Mutating tools (e.g. \`create_time_entry\`, \`generate_pre_bill\`, \`update_engagement\`, \`create_client\`, \`pause_recurring_plan\`, \`resume_recurring_plan\`, \`link_message_to_time_entry\`) audit every call, satisfying the firm's append-only audit guarantee.
 `),
   },
 
@@ -2280,17 +2257,19 @@ The MCP (Model Context Protocol) server lets external AI agents call this firm's
 The **Firm** group of the admin area holds the firm-wide defaults that drive billing, approvals, branding, security, and AI. Open **Admin → Firm → Settings** (\`/admin/firm\`). The page is one long form split into cards; one **Save** button commits the whole form. Reading requires \`firm:settings:read\` (partner and above); saving requires \`firm:settings:write\`, which only the **admin** role template carries by default.
 
 ## What you'll see
-- A stack of cards: **Firm**, **Engagement defaults**, **Approvals + auth + AI**, **Time entry**, **Portal**, **Branding**, **Billing and A/R**, and **Security · Unlock mode**.
+- A stack of cards, top to bottom: **Firm**, **Engagement defaults**, **Approvals + auth + AI**, **Time entry**, **Portal**, **E-signature**, **Branding**, **Document intake — CAPTCHA**, **Billing and A/R**, and **Security · Unlock mode**.
 - A **Save** button with a "Saved at …" confirmation timestamp.
 
 ## Fields
 - **Firm**: **Default allocation method**, **Fiscal year starts in** (month), **Default invoice terms (days)**.
 - **Engagement defaults**: **Enabled fee structures** (toggle pills — you cannot drop to zero), **Firm-wide billable target (hrs/month)**, **Default invoice surcharge label**.
-- **Approvals + auth + AI**: **Adjustment approval threshold ($)** (default $1,000), **AI monthly budget ($)**, **AI provider preference** (Default local-first / Force local (Ollama) / Force cloud (Anthropic)), **Step-up TOTP timeout (minutes)** (default 30).
-- **Time entry**: **Late-entry alert (days)**, **Late-entry lockout (days)**, **Invoice numbering prefix**. (Time-entry rounding is set per-office, not on this form — see *Taxonomy*.)
+- **Approvals + auth + AI**: **Adjustment approval threshold ($)** (default $1,000), **AI monthly budget ($)**, **AI provider preference** (Default local-first / Force local (Ollama) / Force cloud (Anthropic)), **Step-up TOTP timeout (minutes)** (default 30), and a **Require a second factor for staff sign-in** toggle (leave on for any internet-reachable appliance — see [[two-factor]]).
+- **Time entry**: **Late-entry alert (days)**, **Late-entry lockout (days)**, **Invoice numbering prefix**.
 - **Portal**: **Portal enabled** checkbox, **Portal subdomain**.
-- **Branding**: **Invoice template style**, **Display name**, **Logo URL**, **Accent color (hex)**, **Support email**, **Support phone**, **Support fax**, **Website**, **Footer HTML**.
-- **Billing and A/R**: default invoice/statement formats for new clients, days-until-due, ACH/credit-card processing toggles, statement e-mail message, service-charge rate, dunning messages **1 Period old** through **5 Periods or older**, and **A/R Terms** (printed at the bottom of every invoice PDF).
+- **E-signature**: the firm's **proposal e-signature provider** (e.g. Native or OpenSign) — see [[esign-providers]].
+- **Branding**: **Invoice template style**, **Display name**, a **Logo (wide)** upload and **Logo URL**, an **App icon (square)** upload, **Accent color (hex)**, **Support email**, **Support phone**, **Support fax**, **Website**, **Footer HTML**.
+- **Document intake — CAPTCHA**: a **Cloudflare Turnstile** site key + secret, used to protect the public intake / booking pages.
+- **Billing and A/R**: default invoice/statement formats for new clients, days-until-due, the **Time entry rounding (hours, firm-wide)** selector (**0.25 — quarter hour (default)**, **0.10 — six minutes**, or **0.00 — No rounding (free decimal)**), ACH/credit-card processing toggles, statement e-mail message, service-charge rate, dunning messages **1 Period old** through **5 Periods or older**, and **A/R Terms** (printed at the bottom of every invoice PDF).
 
 ## Steps
 1. Go to **Admin → Firm → Settings**.
@@ -3062,17 +3041,17 @@ If you can't sign in, contact your firm — they can re-send your invitation or 
 # Viewing and paying invoices
 
 ## Find your invoices
-Open **Invoices** from the menu. You'll see what's due, what's paid, and the amount outstanding. Select any invoice to see the detail and download a PDF.
+Open **Invoices** from the menu. You'll see what's due, what's paid, and the amount outstanding. Select any invoice to see the detail, **Download PDF**, or **View as page** (toggles back to **Hide page**).
 
 ## Pay an invoice
-1. Open the invoice and choose **Pay**.
+1. Open the invoice and choose **Pay $X.XX** (the button shows your outstanding balance).
 2. Enter your card or bank (ACH) details on the secure payment screen.
 3. Submit — you'll see a confirmation and the invoice updates to paid.
 
 ## Good to know
 - Payments are processed securely; your firm never sees your full card number.
 - If you've saved a payment method, you can reuse it next time.
-- A processing fee may be added depending on your firm's settings and the payment type — it's shown before you confirm.
+- A processing fee may be added depending on your firm's settings and the payment type. When it applies, it appears as a line item on the invoice itself — there's no separate fee screen before you confirm, so the **Pay $X.XX** amount already reflects it.
 - Some documents unlock automatically once the related invoice is paid.
 
 Questions about a charge? Use **Messages** to ask your firm directly.
@@ -3125,12 +3104,12 @@ Related: [[client-messaging-your-firm]], [[client-viewing-paying-invoices]].
     body: md(`
 # Messaging your firm
 
-Use **Messages** to communicate securely with your firm instead of regular email.
+Use **Messages** to communicate securely with your firm instead of regular email. **Messages is also the only place in the portal where you can send your firm a file** — attach it to a message. (The Files page is download-only, and requests don't have an upload box.)
 
 ## Send a message
 1. Open **Messages** from the menu.
-2. Type your message and attach files if needed.
-3. Send — your firm is notified and can reply in the same thread.
+2. Type your message; to send a document, use the attach (paperclip) button — its tooltip reads "Attach files or images".
+3. Click **Send** (or **Send message** when starting a new conversation) — your firm is notified and can reply in the same thread.
 
 ## Why use portal messages
 - Messages are encrypted and tied to your account, so sensitive details stay protected.
@@ -3159,7 +3138,7 @@ Open **Appointments** to see meetings your firm has scheduled with you.
 - Recent past appointments.
 
 ## Add to your calendar
-Choose **Add to calendar** on an appointment to download a calendar file you can open in Outlook, Google Calendar, or Apple Calendar.
+For appointments that are synced from your firm's calendar, choose **Add to calendar** to download a calendar (.ics) file you can open in Outlook, Google Calendar, or Apple Calendar. Appointments your firm entered manually don't offer this; a video meeting instead shows a **Join meeting →** link.
 
 If you need to reschedule or have a question about a meeting, send your firm a message from the **Messages** tab.
 `),
@@ -3321,6 +3300,15 @@ When this is configured, **Settings → Calendar integrations** shows a "built-i
 
 ## Option B — Your firm's own app
 A firm can instead paste its own OAuth app credentials under **Settings → Calendar integrations**: enter the Client ID / Secret (and Tenant ID for Microsoft), use **Test Connection**, then enable the provider. Secrets are encrypted at rest and never shown again.
+
+## Sync schedule
+The **Sync schedule** card on **Settings → Calendar integrations** tunes how often and how far the appliance syncs, plus reminder behavior:
+- **Interval (min, 5–60)** — how often the sync worker runs.
+- **Look back (days)** / **Look ahead (days)** — the window of events that's kept in sync.
+- **Appointment reminders** — the reminder offsets to send (7 days before / 3 days before / 1 day before / 2 hours before).
+- **Quiet hours** — a **From** / **To** window; SMS & voice reminders only fire inside it (in the firm timezone), while email is always sent.
+
+Click **Save schedule** to apply.
 
 ## After enabling
 Staff connect from **Account → My Calendars** (see *Connect your calendar*). Monitor connection health under **Settings → Calendar overview**; appointment write-back additionally requires the \`FEATURE_CALENDAR_WRITE\` flag to be on.
@@ -3490,14 +3478,15 @@ Confirmations appear as the Confirmed/Awaiting chips in the appointments list an
 ## What you see
 The list shows each person's name, email, and phone, plus:
 - **Clients** — how many client records this person is attached to.
-- **Portal** — whether they have an active portal login (shown as an *Enabled* badge) or none.
+- **Portal** — whether they have an active portal login (shown as an *Enabled* badge) or none; this column has a filter (**Enabled** / **None**).
+- **Kind** — whether the row is a **Directory contact** or **Portal-only** person; this column also has a filter.
 
 Search matches name, email, or phone. Click any name to open the person's detail page.
 
 ## A person's detail page
-The detail page has the canonical name/email/phone (edit them here and the change applies everywhere that person appears) and a table of every client they touch. For each client you can:
+The detail page has the canonical name/email/phone (edit them here and the change applies everywhere that person appears) and a **card grid** of every client they touch. For each client you can:
 - **Enable or disable portal access** — grants a login or revokes it (same action as a portal invite).
-- **Change the access role** — *Full*, *View only*, or *Pay only*.
+- **Change the access role** — **Full access**, **View only**, or **Pay only**.
 - **Cancel a pending invitation** — when an invite is sent but not yet accepted.
 - **View as** — open a short, read-only portal session as that person to see exactly what they see (requires the right permission).
 
@@ -3674,9 +3663,9 @@ How it differs from the others:
 - **Document requests** ask an existing, signed-in portal client for specific items. Intake needs no login at all.
 
 ## Send a link
-1. Open **Intake** (left nav) and use **Send a link**.
+1. Open **Intake** (left nav); the staff dialog is titled **Send a secure upload link**.
 2. Choose which staff member the link is on behalf of, enter the recipient's **email and/or phone**, and pick an expiry (e.g. 7, 14, or 30 days).
-3. The app emails/texts the link. You can also copy the link and send it yourself.
+3. Click **Create link**. The app emails/texts the link; you can also copy the link and send it yourself.
 
 ## What the submitter sees
 The public page shows the staff member's name and a note that files are encrypted and scanned. The submitter enters their name (email/phone optional), an optional message, and uploads files — from their device or by using the on-screen **camera scanner** to photograph pages. They submit and get a thank-you confirmation. There are sensible per-file size and count limits, and executable file types are blocked.
@@ -3745,9 +3734,9 @@ You can drive in-office signing in two places: from the **Signatures** detail pa
 
 ## How it works
 1. Build the request (or assemble one from a return — see [[collect-signatures-from-return]]) and place the fields. You do **not** send it to the client.
-2. Click **Set up in-office signing** (on the return's Signatures card, or on the request's detail page). For a 1040, this is the primary action — the screen explains that no email is sent.
+2. While the request is still a draft, the in-office panel shows **View / Print QR sheet** (opens the QR sheet PDF) and **Set up on this device**. Click **Set up on this device** to begin. For a 1040, this is the primary action — the screen explains that no email is sent.
 3. For a 1040 (Form 8879), record each signer's **government photo-ID type** and check **"I verified this person's photo ID in person."** This is required to satisfy the in-person IRS rule and is saved as an audit event (no ID numbers are stored).
-4. Click **Start in-office signing**. The request goes live with **no email to the client**, and the **in-office signing** card appears.
+4. Confirm to take the request live with **no email to the client**. The live in-office panel now shows **Print QR sheet** and **Refresh status**, plus per-signer **Sign now** and **Show QR** controls.
 5. **Print QR sheet** for a one-page-per-signer PDF (each shows the signer's name and a QR to their signing page), or hand a signer the device with **Sign now**, or **Show QR** on screen.
 6. The signer scans/opens their page and signs on the spot. Click **Refresh status** to pull the result immediately; once everyone has signed, the signed PDF is available to download (and a return-linked request files it to the client's Tax Returns folder automatically).
 
@@ -3933,6 +3922,12 @@ When an engagement enters a configured status, the notification is created. Imme
 - This pairs with [[in-office-signing]] and [[collect-signatures-from-return]].
 `),
   },
+  // Newer feature gap-fill articles, authored in their own files (kept out of
+  // this list to keep diffs reviewable) and spread in here.
+  ...STAFF_A_ARTICLES,
+  ...STAFF_B_ARTICLES,
+  ...ADMIN_GAP_ARTICLES,
+  ...CLIENT_GAP_ARTICLES,
 ];
 
 export async function seedKnowledgeBase(
