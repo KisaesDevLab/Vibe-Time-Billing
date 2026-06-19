@@ -167,6 +167,9 @@ export function EngagementsPage(): JSX.Element {
     new Set(saved.serviceLine),
   );
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set(saved.assignee));
+  // Show/hide DRAFT-workflow engagements (applies to both list + kanban via
+  // the `visible` memo). Default true = no behavior change.
+  const [showDrafts, setShowDrafts] = useState(true);
   // 0050 — filter by client owner (client.partnerInChargeId).
   const [clientOwnerId, setClientOwnerId] = useState<string>(saved.clientOwnerId ?? '');
   // 0050 — List | Kanban view toggle. Persisted in localStorage so users
@@ -386,6 +389,9 @@ export function EngagementsPage(): JSX.Element {
   // here on top of the up-to-500-row server response).
   const visible = useMemo(() => {
     let r = rows;
+    if (!showDrafts) {
+      r = r.filter((row) => row.workflowState !== 'DRAFT');
+    }
     if (typeFilter.size > 0) {
       r = r.filter((row) => row.engagementTypeId && typeFilter.has(row.engagementTypeId));
     }
@@ -445,7 +451,7 @@ export function EngagementsPage(): JSX.Element {
       });
     }
     return r;
-  }, [rows, typeFilter, assigneeFilter, serviceLineFilter, clientFilter, sortBy]);
+  }, [rows, showDrafts, typeFilter, assigneeFilter, serviceLineFilter, clientFilter, sortBy]);
 
   const clientOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -618,6 +624,22 @@ export function EngagementsPage(): JSX.Element {
                 ▦ Board
               </Button>
             </span>
+            <label
+              style={{
+                fontSize: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                color: tokens.color.textMuted,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={showDrafts}
+                onChange={(e) => setShowDrafts(e.target.checked)}
+              />
+              Show drafts
+            </label>
             {view === 'kanban' && (
               <KanbanViewsMenu
                 columns={statusCols}

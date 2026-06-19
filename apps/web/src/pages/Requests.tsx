@@ -505,17 +505,12 @@ export function RequestsPage(): JSX.Element {
       )}
 
       <Card title="Filters">
-        <div
-          style={{
-            display: 'grid',
-            gap: tokens.space.sm,
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            alignItems: 'end',
-          }}
-        >
+        {/* Button groups get their own full-width rows so they wrap freely;
+            the inputs sit in a separate consistent grid that never overlaps. */}
+        <div style={{ display: 'grid', gap: tokens.space.md }}>
           <div>
             <div style={{ fontSize: 11, marginBottom: 4 }}>Status</div>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {STATUS_OPTIONS.map((s) => (
                 <Button
                   key={s}
@@ -533,7 +528,7 @@ export function RequestsPage(): JSX.Element {
           </div>
           <div>
             <div style={{ fontSize: 11, marginBottom: 4 }}>Priority</div>
-            <div style={{ display: 'flex', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <Button
                 size="sm"
                 variant={priorityFilter === '' ? 'primary' : 'secondary'}
@@ -559,79 +554,88 @@ export function RequestsPage(): JSX.Element {
               ))}
             </div>
           </div>
-          <div>
-            <div style={{ fontSize: 11, marginBottom: 4 }}>Assigned to</div>
-            <Combobox
-              options={[{ value: '', label: 'Anyone' }, ...userOptions]}
-              value={assignedFilter}
-              onChange={(v) => {
-                setAssignedFilter(v);
-                setOffset(0);
-              }}
-              placeholder="Anyone"
-              clearable
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, marginBottom: 4 }}>Client</div>
-            <Combobox
-              options={[{ value: '', label: 'All clients' }, ...clientOptions]}
-              value={clientFilter}
-              onChange={(v) => {
-                setClientFilter(v);
-                setOffset(0);
-              }}
-              placeholder="All clients"
-              clearable
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, marginBottom: 4 }}>Due after</div>
-            <input
-              type="date"
-              value={dueAfter}
-              onChange={(e) => {
-                setDueAfter(e.target.value);
-                setOffset(0);
-              }}
-              style={fieldStyle()}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, marginBottom: 4 }}>Due before</div>
-            <input
-              type="date"
-              value={dueBefore}
-              onChange={(e) => {
-                setDueBefore(e.target.value);
-                setOffset(0);
-              }}
-              style={fieldStyle()}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, marginBottom: 4 }}>Tag</div>
-            <input
-              type="text"
-              value={tagFilter}
-              onChange={(e) => {
-                setTagFilter(e.target.value);
-                setOffset(0);
-              }}
-              placeholder="e.g. urgent"
-              style={fieldStyle()}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, marginBottom: 4 }}>Search</div>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={onSearchKey}
-              placeholder="title / body (Enter)"
-              style={fieldStyle()}
-            />
+          <div
+            style={{
+              display: 'grid',
+              gap: tokens.space.sm,
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+              alignItems: 'end',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 11, marginBottom: 4 }}>Assigned to</div>
+              <Combobox
+                options={[{ value: '', label: 'Anyone' }, ...userOptions]}
+                value={assignedFilter}
+                onChange={(v) => {
+                  setAssignedFilter(v);
+                  setOffset(0);
+                }}
+                placeholder="Anyone"
+                clearable
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, marginBottom: 4 }}>Client</div>
+              <Combobox
+                options={[{ value: '', label: 'All clients' }, ...clientOptions]}
+                value={clientFilter}
+                onChange={(v) => {
+                  setClientFilter(v);
+                  setOffset(0);
+                }}
+                placeholder="All clients"
+                clearable
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, marginBottom: 4 }}>Due after</div>
+              <input
+                type="date"
+                value={dueAfter}
+                onChange={(e) => {
+                  setDueAfter(e.target.value);
+                  setOffset(0);
+                }}
+                style={fieldStyle()}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, marginBottom: 4 }}>Due before</div>
+              <input
+                type="date"
+                value={dueBefore}
+                onChange={(e) => {
+                  setDueBefore(e.target.value);
+                  setOffset(0);
+                }}
+                style={fieldStyle()}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, marginBottom: 4 }}>Tag</div>
+              <input
+                type="text"
+                value={tagFilter}
+                onChange={(e) => {
+                  setTagFilter(e.target.value);
+                  setOffset(0);
+                }}
+                placeholder="e.g. urgent"
+                style={fieldStyle()}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, marginBottom: 4 }}>Search</div>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={onSearchKey}
+                placeholder="title / body (Enter)"
+                style={fieldStyle()}
+              />
+            </div>
           </div>
         </div>
       </Card>
