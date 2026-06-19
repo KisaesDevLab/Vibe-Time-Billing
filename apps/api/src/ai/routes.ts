@@ -1227,6 +1227,60 @@ async function logAiRequest(deps: AiRoutesDeps, args: LogArgs): Promise<void> {
     .catch((err: unknown) => logger.error({ err }, 'ai log failed'));
 }
 
+/**
+ * Reusable best-effort completion for non-AI-first features (e.g. the pricing
+ * rationale). Applies the same egress gate, budget cap, and request logging as
+ * the AI endpoints. Returns null — never throws — when no provider is
+ * available, the budget is exhausted, or the call fails, so callers degrade to
+ * a templated fallback.
+ */
+export async function runAiCompletion(
+  deps: AiRoutesDeps,
+  args: {
+    firmId: string;
+    appUserId?: string;
+    feature: string;
+    systemPrompt: string;
+    userPrompt: string;
+    maxTokens?: number;
+  },
+): Promise<string | null> {
+  const provider = await pickProvider(deps, args.feature, args.firmId);
+  if (!provider) return null;
+  const budget = await loadBudget(deps, args.firmId, deps.now?.() ?? new Date());
+  if (budget.kind === 'exhausted') return null;
+  const started = Date.now();
+  try {
+    const result = await provider.complete({
+      systemPrompt: args.systemPrompt,
+      userPrompt: args.userPrompt,
+      maxTokens: args.maxTokens ?? 220,
+    });
+    await logAiRequest(deps, {
+      firmId: args.firmId,
+      providerId: provider.id,
+      feature: args.feature,
+      success: true,
+      appUserId: args.appUserId ?? null,
+      latencyMs: Date.now() - started,
+      usage: result.usage,
+      costCents: result.costEstimateCents,
+    });
+    return result.text;
+  } catch (err) {
+    await logAiRequest(deps, {
+      firmId: args.firmId,
+      providerId: provider.id,
+      feature: args.feature,
+      success: false,
+      errorMessage: err instanceof Error ? err.message : 'unknown',
+      appUserId: args.appUserId ?? null,
+      latencyMs: Date.now() - started,
+    });
+    return null;
+  }
+}
+
 // =====================================================================
 // KB-grounded support chat — shared by the staff (/api/staff/ai/chat)
 // and portal (/api/portal/ai/chat) routers. Framework-agnostic: returns

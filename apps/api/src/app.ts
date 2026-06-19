@@ -116,6 +116,7 @@ import { createAttachmentRouter } from './attachments/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
+import { createPricingRouter } from './pricing/routes';
 import { createPortalAiRouter } from './ai/portal-routes';
 import { createPortalHelpRouter } from './help/portal-routes';
 import { createHelpRouter } from './help/routes';
@@ -1246,6 +1247,17 @@ export function createApp(deps: AppDeps): Express {
     localProvider: deps.localAiProvider ?? null,
   });
   app.use('/api/staff/ai', auth.requireAuth, auth.requireCsrf, aiRouter);
+
+  // AI pricing suggestion (engine-driven number; LLM writes the rationale).
+  // Shares the AI deps so the rationale reuses the egress gate + budget cap.
+  const pricingRouter = createPricingRouter({
+    db: deps.db,
+    redis: deps.redis,
+    fakeUserRoles: deps.fakeUserRoles,
+    cloudProvider: deps.cloudAiProvider ?? null,
+    localProvider: deps.localAiProvider ?? null,
+  });
+  app.use('/api/staff/pricing', auth.requireAuth, auth.requireCsrf, pricingRouter);
 
   // Portal-realm help center + KB-grounded AI chat (client-visible content
   // only). Portal auth is applied per-route inside the routers.
