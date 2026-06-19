@@ -20,6 +20,7 @@ import {
 import { BookingSettingsEditor } from './BookingSettingsEditor';
 import { BookingRequestsPage } from './BookingRequests';
 import { BookingPagesPage } from './admin/BookingPages';
+import { RollforwardPage } from './Rollforward';
 import { CalendarUnmatchedPage } from './CalendarUnmatched';
 
 type LocationType = 'VIDEO' | 'PHONE' | 'IN_PERSON';
@@ -209,6 +210,7 @@ const TABS = [
   'booking-page',
   'availability',
   'review',
+  'rollforward',
 ] as const;
 type TabKey = (typeof TABS)[number];
 
@@ -282,6 +284,7 @@ export function AppointmentsPage(): JSX.Element {
             label: 'Calendar review',
             badge: reviewCount > 0 ? <Pill tone="warning">{reviewCount}</Pill> : undefined,
           },
+          { key: 'rollforward', label: 'Rollforward' },
         ]}
         active={tab}
         onChange={(k) => go(k as TabKey)}
@@ -293,6 +296,7 @@ export function AppointmentsPage(): JSX.Element {
       {tab === 'booking-page' && <BookingPagesPage scopeStaffId={me?.appUserId} />}
       {tab === 'availability' && <AvailabilityTab />}
       {tab === 'review' && <CalendarUnmatchedPage />}
+      {tab === 'rollforward' && <RollforwardPage />}
     </div>
   );
 }
