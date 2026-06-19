@@ -10,10 +10,13 @@ import { and, eq, gte, inArray, isNotNull, lte, ne, or, sql } from 'drizzle-orm'
 
 import type { Database } from '@vibe/db';
 import {
+  appointmentStaff,
+  appointments,
   clientRequests,
   clients,
   engagementAssignments,
   engagements,
+  rollforwardAppointmentCandidates,
   rollforwardBatches,
   rollforwardEngagementCandidates,
 } from '@vibe/db/schema';
@@ -154,5 +157,191 @@ export async function createRollforwardBatch(
 
     await tx.insert(rollforwardEngagementCandidates).values(rows);
     return { batchId, engagementCount: rows.length };
+  });
+}
+
+export interface CommitResult {
+  engagementsCreated: number;
+  appointmentsCreated: number;
+  alreadyCommitted: boolean;
+  mapping: Array<{ sourceEngagementId: string; targetEngagementId: string }>;
+}
+
+type ApptLocation = 'VIDEO' | 'PHONE' | 'IN_PERSON';
+
+/**
+ * Commit a batch: in one transaction create the target-year engagements (DRAFT,
+ * with rolled drop-off requests) for APPROVED engagement candidates, then the
+ * APPROVED appointments linked to them (cascade — an appointment needs its
+ * engagement). Idempotent: a COMMITTED batch is a no-op. Writes target ids back
+ * onto the candidates.
+ */
+export async function commitRollforwardBatch(
+  db: Database,
+  opts: { batchId: string; firmId: string; actorAppUserId: string },
+): Promise<CommitResult> {
+  return db.transaction(async (tx) => {
+    const [batch] = await tx
+      .select()
+      .from(rollforwardBatches)
+      .where(
+        and(eq(rollforwardBatches.id, opts.batchId), eq(rollforwardBatches.firmId, opts.firmId)),
+      )
+      .limit(1);
+    if (!batch) throw new Error('batch_not_found');
+    if (batch.status === 'COMMITTED') {
+      return { engagementsCreated: 0, appointmentsCreated: 0, alreadyCommitted: true, mapping: [] };
+    }
+
+    const engCands = await tx
+      .select()
+      .from(rollforwardEngagementCandidates)
+      .where(
+        and(
+          eq(rollforwardEngagementCandidates.batchId, opts.batchId),
+          eq(rollforwardEngagementCandidates.status, 'APPROVED'),
+        ),
+      );
+
+    const mapping: Array<{ sourceEngagementId: string; targetEngagementId: string }> = [];
+    const targetByCandidate = new Map<string, string>();
+
+    for (const c of engCands) {
+      const [src] = await tx
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, c.sourceEngagementId))
+        .limit(1);
+      if (!src) continue;
+      const [created] = await tx
+        .insert(engagements)
+        .values({
+          clientId: src.clientId,
+          engagementTypeId: src.engagementTypeId,
+          name: src.name,
+          feeStructure: src.feeStructure,
+          feeAmountCents: c.suggestedFeeCents ?? src.feeAmountCents,
+          budgetHours: src.budgetHours,
+          budgetAmountCents: src.budgetAmountCents,
+          mixedModeEnabled: src.mixedModeEnabled,
+          inScopeWorkCodeIds: src.inScopeWorkCodeIds,
+          nteCapCents: src.nteCapCents,
+          nteCapScope: src.nteCapScope,
+          feePassthroughEnabled: src.feePassthroughEnabled,
+          partnerId: src.partnerId,
+          managerId: src.managerId,
+          scopeDefinition: src.scopeDefinition,
+          status: 'PROPOSED',
+          workflowState: 'DRAFT',
+          returnType: src.returnType,
+          taxYear: src.taxYear != null ? src.taxYear + 1 : null,
+          dueDate: c.suggestedDueDate,
+          autoRolloverEnabled: src.autoRolloverEnabled,
+          autoRolloverPriceIncreasePct: src.autoRolloverPriceIncreasePct,
+          renewedFromEngagementId: src.id,
+        })
+        .returning({ id: engagements.id });
+      const targetId = created!.id;
+      targetByCandidate.set(c.id, targetId);
+      mapping.push({ sourceEngagementId: src.id, targetEngagementId: targetId });
+
+      const assigns = await tx
+        .select()
+        .from(engagementAssignments)
+        .where(eq(engagementAssignments.engagementId, src.id));
+      if (assigns.length) {
+        await tx.insert(engagementAssignments).values(
+          assigns.map((a) => ({
+            engagementId: targetId,
+            appUserId: a.appUserId,
+            role: a.role,
+            assignedById: opts.actorAppUserId,
+          })),
+        );
+      }
+
+      if (c.suggestedDropoffDate) {
+        const [srcDrop] = await tx
+          .select()
+          .from(clientRequests)
+          .where(and(eq(clientRequests.engagementId, src.id), eq(clientRequests.kind, 'DROP_OFF')))
+          .limit(1);
+        await tx.insert(clientRequests).values({
+          firmId: opts.firmId,
+          engagementId: targetId,
+          title: srcDrop?.title ?? 'Document drop-off',
+          kind: 'DROP_OFF',
+          dueDate: c.suggestedDropoffDate,
+          reminderDaysBefore: srcDrop?.reminderDaysBefore ?? null,
+          status: 'OPEN',
+        });
+      }
+
+      await tx
+        .update(rollforwardEngagementCandidates)
+        .set({ status: 'COMMITTED', targetEngagementId: targetId })
+        .where(eq(rollforwardEngagementCandidates.id, c.id));
+    }
+
+    const apptCands = await tx
+      .select()
+      .from(rollforwardAppointmentCandidates)
+      .where(
+        and(
+          eq(rollforwardAppointmentCandidates.batchId, opts.batchId),
+          eq(rollforwardAppointmentCandidates.status, 'APPROVED'),
+        ),
+      );
+    let appointmentsCreated = 0;
+    for (const a of apptCands) {
+      const targetEngId = targetByCandidate.get(a.engagementCandidateId);
+      if (!targetEngId || !a.suggestedStartsAt) continue; // cascade guard
+      const staffIds = (a.staffIds as string[]) ?? [];
+      const start = a.suggestedStartsAt;
+      const end = new Date(start.getTime() + a.durationMinutes * 60_000);
+      const [appt] = await tx
+        .insert(appointments)
+        .values({
+          firmId: opts.firmId,
+          clientId: a.clientId,
+          engagementId: targetEngId,
+          title: a.title,
+          startsAt: start,
+          endsAt: end,
+          durationMinutes: a.durationMinutes,
+          location: (a.location as ApptLocation | null) ?? 'VIDEO',
+          locationOptionId: a.locationOptionId,
+          leadAppUserId: staffIds[0] ?? null,
+          status: 'SCHEDULED',
+          createdById: opts.actorAppUserId,
+        })
+        .returning({ id: appointments.id });
+      if (staffIds.length) {
+        await tx
+          .insert(appointmentStaff)
+          .values(staffIds.map((s) => ({ appointmentId: appt!.id, staffId: s })));
+      }
+      await tx
+        .update(rollforwardAppointmentCandidates)
+        .set({ status: 'COMMITTED', targetAppointmentId: appt!.id })
+        .where(eq(rollforwardAppointmentCandidates.id, a.id));
+      appointmentsCreated += 1;
+    }
+
+    await tx
+      .update(rollforwardBatches)
+      .set({
+        status: 'COMMITTED',
+        committedAt: new Date(),
+        idempotencyKey: `rollforward:${opts.batchId}`,
+      })
+      .where(eq(rollforwardBatches.id, opts.batchId));
+
+    return {
+      engagementsCreated: mapping.length,
+      appointmentsCreated,
+      alreadyCommitted: false,
+      mapping,
+    };
   });
 }

@@ -131,6 +131,7 @@ import { createPortalInviteRouter } from './portal-invites/routes';
 import { createPortalAccessRequestRouter } from './portal-access-requests/routes';
 import { createPortalAccessRequestPublicRouter } from './portal-access-requests/public-routes';
 import { createRecurringPlanRouter } from './recurring-plans/routes';
+import { createRollforwardRouter } from './rollforward/routes';
 import { createHourBankRouter } from './hour-banks/routes';
 import { createRetainerConfigRouter } from './retainers-config/routes';
 import { createAppointmentRouter } from './appointments/routes';
@@ -1445,6 +1446,12 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/recurring-plans', auth.requireAuth, auth.requireCsrf, recurringPlanRouter);
+
+  const rollforwardRouter = createRollforwardRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/rollforward', auth.requireAuth, auth.requireCsrf, rollforwardRouter);
 
   const hourBankRouter = createHourBankRouter({
     db: deps.db,
