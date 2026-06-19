@@ -20,6 +20,7 @@ import { createOllamaProvider } from './ai/ollama';
 import { createOpenAiCompatibleProvider } from './ai/openai-compatible';
 import {
   createConsoleMailProvider,
+  createEmailItProvider,
   createPostmarkProvider,
   createResendProvider,
   createSmtpMailProvider,
@@ -111,6 +112,13 @@ const baseMailer: MailProvider = (() => {
       return config.MAIL_RESEND_API_KEY
         ? createResendProvider(
             { apiKey: config.MAIL_RESEND_API_KEY, from: config.MAIL_FROM },
+            logger,
+          )
+        : createConsoleMailProvider(logger);
+    case 'emailit':
+      return config.MAIL_EMAILIT_API_KEY
+        ? createEmailItProvider(
+            { apiKey: config.MAIL_EMAILIT_API_KEY, from: config.MAIL_FROM },
             logger,
           )
         : createConsoleMailProvider(logger);

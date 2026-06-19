@@ -150,6 +150,25 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
       if (!r.ok) throw new Error(`resend_${r.status}`);
     };
   }
+  if (provider === 'emailit' && process.env['MAIL_EMAILIT_API_KEY']) {
+    const key = process.env['MAIL_EMAILIT_API_KEY'];
+    return async (args) => {
+      // EmailIt takes `to` as an array; mirrors createEmailItProvider. ICS
+      // attachments are omitted (not part of the provider's send shape).
+      const r = await fetch('https://api.emailit.com/v1/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from,
+          to: [args.to],
+          subject: args.subject,
+          text: args.body,
+          ...(args.html ? { html: args.html } : {}),
+        }),
+      });
+      if (!r.ok) throw new Error(`emailit_${r.status}`);
+    };
+  }
   if (provider === 'smtp' && process.env['MAIL_SMTP_HOST']) {
     const nodemailer = await import('nodemailer');
     const transport = nodemailer.default.createTransport({

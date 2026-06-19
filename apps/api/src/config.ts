@@ -30,7 +30,7 @@ const Schema = z.object({
   MAGIC_LINK_TTL_MINUTES: z.coerce.number().int().positive().default(15),
   SMS_OTP_TTL_MINUTES: z.coerce.number().int().positive().default(5),
 
-  MAIL_PROVIDER: z.enum(['smtp', 'postmark', 'resend', 'ses']).default('smtp'),
+  MAIL_PROVIDER: z.enum(['smtp', 'postmark', 'resend', 'ses', 'emailit']).default('smtp'),
   SMS_PROVIDER: z.enum(['textlink', 'twilio', 'sns']).default('textlink'),
 
   // v2 Sprint A — at-rest encryption key for DB-backed messaging
@@ -133,6 +133,7 @@ const Schema = z.object({
   MAIL_SMTP_PASS: z.string().optional(),
   MAIL_POSTMARK_TOKEN: z.string().optional(),
   MAIL_RESEND_API_KEY: z.string().optional(),
+  MAIL_EMAILIT_API_KEY: z.string().optional(),
   // SMS provider secrets.
   SMS_TWILIO_ACCOUNT_SID: z.string().optional(),
   SMS_TWILIO_AUTH_TOKEN: z.string().optional(),

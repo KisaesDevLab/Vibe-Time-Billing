@@ -7,6 +7,7 @@
 import type { Logger } from 'pino';
 
 import {
+  createEmailItProvider,
   createPostmarkProvider,
   createResendProvider,
   createSmtpMailProvider,
@@ -37,6 +38,8 @@ export function buildMailProvider(cfg: EmailConfig, log: Logger): MailProvider {
       return createPostmarkProvider({ token: cfg.token, from: cfg.from }, log);
     case 'resend':
       return createResendProvider({ apiKey: cfg.apiKey, from: cfg.from }, log);
+    case 'emailit':
+      return createEmailItProvider({ apiKey: cfg.apiKey, from: cfg.from }, log);
     case 'ses':
       // SES path not yet wired through a provider helper. For now, error
       // so the admin UI surfaces the gap honestly rather than silently

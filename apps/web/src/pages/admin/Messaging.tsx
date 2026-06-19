@@ -12,7 +12,7 @@ import { Button, Card, Combobox, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
-type EmailProvider = 'smtp' | 'postmark' | 'resend' | 'ses';
+type EmailProvider = 'smtp' | 'postmark' | 'resend' | 'ses' | 'emailit';
 type SmsProvider = 'textlink' | 'twilio' | 'sns';
 
 interface MaskedEmail {
@@ -60,6 +60,7 @@ type EmailDraft =
     }
   | { provider: 'postmark'; from: string; token: string }
   | { provider: 'resend'; from: string; apiKey: string }
+  | { provider: 'emailit'; from: string; apiKey: string }
   | { provider: 'ses'; from: string; region: string; accessKeyId: string; secretAccessKey: string };
 
 type SmsDraft =
@@ -83,6 +84,8 @@ function emptyEmailDraft(provider: EmailProvider): EmailDraft {
       return { provider: 'postmark', from: '', token: '' };
     case 'resend':
       return { provider: 'resend', from: '', apiKey: '' };
+    case 'emailit':
+      return { provider: 'emailit', from: '', apiKey: '' };
     case 'ses':
       return {
         provider: 'ses',
@@ -119,6 +122,7 @@ function buildEmailBody(draft: EmailDraft): unknown {
       };
     case 'postmark':
     case 'resend':
+    case 'emailit':
     case 'ses':
       return { ...draft };
   }
@@ -126,6 +130,24 @@ function buildEmailBody(draft: EmailDraft): unknown {
 
 function buildSmsBody(draft: SmsDraft): unknown {
   return { ...draft };
+}
+
+// Surface the server's Zod validation issues so an invalid_email_config (or
+// invalid_sms_config) tells the user exactly which field is wrong rather than
+// just the opaque error code. ApiError carries the full response body.
+function formatConfigError(e: unknown): string {
+  const body = (
+    e as {
+      body?: { error?: string; issues?: Array<{ path?: (string | number)[]; message?: string }> };
+    }
+  ).body;
+  if (body?.issues && Array.isArray(body.issues) && body.issues.length > 0) {
+    const parts = body.issues.map(
+      (i) => `${(i.path ?? []).join('.') || 'config'}: ${i.message ?? 'invalid'}`,
+    );
+    return `Invalid config — ${parts.join('; ')}`;
+  }
+  return e instanceof Error ? e.message : 'failed';
 }
 
 // For the "Test" buttons: only send the typed draft when its secret is
@@ -153,6 +175,7 @@ function emailTestConfig(draft: EmailDraft): unknown | undefined {
     case 'postmark':
       return draft.token ? { ...draft } : undefined;
     case 'resend':
+    case 'emailit':
       return draft.apiKey ? { ...draft } : undefined;
     case 'ses':
       return draft.secretAccessKey ? { ...draft } : undefined;
@@ -210,7 +233,7 @@ export function MessagingPage(): JSX.Element {
       setEmailStatus('Saved.');
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'save_failed');
+      setError(formatConfigError(e));
     }
   }
 
@@ -268,7 +291,7 @@ export function MessagingPage(): JSX.Element {
         r.ok ? `OK · messageId=${r.messageId ?? '(none)'}` : `Failed: ${r.error ?? 'unknown'}`,
       );
     } catch (e) {
-      setEmailStatus(e instanceof Error ? `Failed: ${e.message}` : 'Failed');
+      setEmailStatus(`Failed: ${formatConfigError(e)}`);
     }
   }
 
@@ -328,6 +351,7 @@ export function MessagingPage(): JSX.Element {
               { value: 'smtp', label: 'SMTP' },
               { value: 'postmark', label: 'Postmark' },
               { value: 'resend', label: 'Resend' },
+              { value: 'emailit', label: 'EmailIt' },
               { value: 'ses', label: 'AWS SES' },
             ]}
           />
@@ -406,7 +430,7 @@ export function MessagingPage(): JSX.Element {
             </label>
           )}
 
-          {emailDraft.provider === 'resend' && (
+          {(emailDraft.provider === 'resend' || emailDraft.provider === 'emailit') && (
             <label style={{ display: 'grid', gap: 4 }}>
               <span style={labelStyle}>API key</span>
               <input

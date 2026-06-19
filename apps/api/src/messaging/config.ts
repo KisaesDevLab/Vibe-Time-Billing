@@ -11,7 +11,7 @@ import { loadConfig } from '../config';
 
 // ----- Email -----
 
-export const EmailProviderId = z.enum(['smtp', 'postmark', 'resend', 'ses']);
+export const EmailProviderId = z.enum(['smtp', 'postmark', 'resend', 'ses', 'emailit']);
 export type EmailProviderId = z.infer<typeof EmailProviderId>;
 
 const SmtpConfig = z.object({
@@ -44,11 +44,18 @@ const SesConfig = z.object({
   secretAccessKey: z.string().min(8).max(255),
 });
 
+const EmailItConfig = z.object({
+  provider: z.literal('emailit'),
+  from: z.string().min(3).max(254),
+  apiKey: z.string().min(8).max(255),
+});
+
 export const EmailConfig = z.discriminatedUnion('provider', [
   SmtpConfig,
   PostmarkConfig,
   ResendConfig,
   SesConfig,
+  EmailItConfig,
 ]);
 export type EmailConfig = z.infer<typeof EmailConfig>;
 
@@ -161,6 +168,8 @@ export function maskEmailConfig(cfg: EmailConfig): MaskedEmailConfig {
       return { provider: 'postmark', from: cfg.from, tokenMasked: mask(cfg.token) };
     case 'resend':
       return { provider: 'resend', from: cfg.from, apiKeyMasked: mask(cfg.apiKey) };
+    case 'emailit':
+      return { provider: 'emailit', from: cfg.from, apiKeyMasked: mask(cfg.apiKey) };
     case 'ses':
       return {
         provider: 'ses',
