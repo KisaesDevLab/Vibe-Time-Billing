@@ -38,6 +38,7 @@ import { sql as drz } from 'drizzle-orm';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { csvField } from '../lib/csv';
+import { namesByIds } from './names';
 
 export interface ReportRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -458,9 +459,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         cur.adjustedCents += Number(r.adjusted);
         byPartner.set(partnerId, cur);
       }
+      const partnerNames = await namesByIds(deps.db, Array.from(byPartner.keys()), 'partner');
       res.json({
         items: Array.from(byPartner.entries()).map(([partnerId, v]) => ({
           partnerId,
+          partnerName: partnerNames.get(partnerId) ?? null,
           originalCents: v.originalCents,
           adjustedCents: v.adjustedCents,
           // 0–1 ratio, consistent with /realization (was 0–100 here).
@@ -669,9 +672,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // Exclude soft-deleted (ARCHIVED) entries.
         .where(and(inArray(te.engagementId, engIds), ne(te.status, 'ARCHIVED')))
         .groupBy(te.engagementId);
+      const tbeEngNames = await namesByIds(
+        deps.db,
+        rows.map((r) => r.engagementId),
+        'engagement',
+      );
       res.json({
         items: rows.map((r) => ({
           engagementId: r.engagementId,
+          engagementName: r.engagementId ? (tbeEngNames.get(r.engagementId) ?? null) : null,
           hours: Number(r.hours),
           amountCents: Number(r.amount),
         })),
@@ -720,9 +729,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         cur.amountCents += Number(r.amount);
         byClient.set(cid, cur);
       }
+      const tbcClientNames = await namesByIds(deps.db, Array.from(byClient.keys()), 'client');
       res.json({
         items: Array.from(byClient.entries()).map(([clientId, v]) => ({
           clientId,
+          clientName: tbcClientNames.get(clientId) ?? null,
           hours: v.hours,
           amountCents: v.amountCents,
         })),
@@ -964,6 +975,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           ),
         )
         .groupBy(clients.partnerInChargeId);
+      const crPartnerNames = await namesByIds(
+        deps.db,
+        rows.map((r) => r.partnerId),
+        'partner',
+      );
       res.json({
         windowDays: 90,
         items: rows.map((r) => {
@@ -971,6 +987,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           const p = Number(r.paid);
           return {
             partnerId: r.partnerId,
+            partnerName: r.partnerId ? (crPartnerNames.get(r.partnerId) ?? null) : null,
             billedCents: b,
             paidCents: p,
             collectionRatePct: b > 0 ? (p / b) * 100 : null,
@@ -1181,10 +1198,16 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // A partner's "book" is their ACTIVE clients — exclude archived.
         .where(and(eq(clients.firmId, session.firmId), ne(clients.status, 'ARCHIVED')))
         .groupBy(clients.partnerInChargeId);
+      const bobPartnerNames = await namesByIds(
+        deps.db,
+        rows.map((r) => r.partnerId),
+        'partner',
+      );
       res.json({
         windowDays: 365,
         items: rows.map((r) => ({
           partnerId: r.partnerId,
+          partnerName: r.partnerId ? (bobPartnerNames.get(r.partnerId) ?? null) : null,
           clientCount: Number(r.clientCount),
           billedCents: Number(r.billedCents),
           paidCents: Number(r.paidCents),
@@ -1224,9 +1247,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .groupBy(invoices.clientId)
         .orderBy(drz`COALESCE(SUM(${invoices.paidCents}), 0) DESC`)
         .limit(200);
+      const clvClientNames = await namesByIds(
+        deps.db,
+        rows.map((r) => r.clientId),
+        'client',
+      );
       res.json({
         items: rows.map((r) => ({
           clientId: r.clientId,
+          clientName: r.clientId ? (clvClientNames.get(r.clientId) ?? null) : null,
           paidCents: Number(r.paidCents),
           billedCents: Number(r.billedCents),
           firstInvoiceAt: r.firstInvoiceAt,

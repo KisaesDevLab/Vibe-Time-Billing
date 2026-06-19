@@ -207,6 +207,11 @@ export function ReportViewerPage(): JSX.Element {
     const keys = new Set<string>();
     for (const row of items.slice(0, 50))
       for (const k of Object.keys(row)) if (!k.startsWith('__')) keys.add(k);
+    // Prefer resolved names over raw ids: when both `xId` and `xName` are
+    // present, drop the raw id column (e.g. partnerId → partnerName).
+    for (const k of [...keys]) {
+      if (/Id$/.test(k) && keys.has(k.replace(/Id$/, 'Name'))) keys.delete(k);
+    }
     return Array.from(keys);
   }, [items]);
 
