@@ -6,10 +6,26 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { csvField } from '../lib/csv';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, notInArray, type SQL } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, auditLog, clients, engagements, invoices, mcpTokens } from '@vibe/db/schema';
+import {
+  alertDismissals,
+  appUsers,
+  auditLog,
+  clients,
+  engagements,
+  invoices,
+  mcpTokens,
+} from '@vibe/db/schema';
+
+// Worker-emitted alert kinds surfaced by the Alerts inbox.
+const ALERT_KINDS = [
+  'audit_anomaly_alert',
+  'scope_creep_alert',
+  'wip_age_alert',
+  'engagement_rollover',
+];
 
 import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -440,17 +456,17 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
   router.get(
     '/alerts',
     requirePermission(deps, 'admin:audit:read'),
-    async (_req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       if (!deps.db) {
         res.json({ items: [] });
         return;
       }
-      const kinds = [
-        'audit_anomaly_alert',
-        'scope_creep_alert',
-        'wip_age_alert',
-        'engagement_rollover',
-      ];
+      const firmId = req.staffSession!.firmId;
+      // Exclude alerts a staff member has already dismissed (firm-wide).
+      const dismissed = deps.db
+        .select({ id: alertDismissals.auditLogId })
+        .from(alertDismissals)
+        .where(eq(alertDismissals.firmId, firmId));
       const items = await deps.db
         .select({
           id: auditLog.id,
@@ -460,10 +476,43 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
           afterJson: auditLog.afterJson,
         })
         .from(auditLog)
-        .where(inArray(auditLog.entityType, kinds))
+        .where(and(inArray(auditLog.entityType, ALERT_KINDS), notInArray(auditLog.id, dismissed)))
         .orderBy(desc(auditLog.occurredAt))
         .limit(200);
       res.json({ items });
+    },
+  );
+
+  // Dismiss a worker alert so it drops off the inbox + dashboard callout.
+  router.post(
+    '/alerts/:id/dismiss',
+    requirePermission(deps, 'admin:audit:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = z.string().uuid().safeParse(req.params['id']);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      const { firmId, appUserId } = req.staffSession!;
+      // Defensive: only allow dismissing rows that are actually alerts.
+      const [row] = await deps.db
+        .select({ id: auditLog.id })
+        .from(auditLog)
+        .where(and(eq(auditLog.id, parsed.data), inArray(auditLog.entityType, ALERT_KINDS)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'alert_not_found' });
+        return;
+      }
+      await deps.db
+        .insert(alertDismissals)
+        .values({ firmId, auditLogId: parsed.data, dismissedByAppUserId: appUserId })
+        .onConflictDoNothing();
+      res.json({ ok: true });
     },
   );
 

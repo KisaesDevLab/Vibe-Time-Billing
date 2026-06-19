@@ -82,6 +82,18 @@ export function AlertsPage(): JSX.Element {
     })();
   }, []);
 
+  async function dismiss(id: string): Promise<void> {
+    // Optimistically drop the row; a dismissed alert leaves the inbox and the
+    // dashboard "Alerts" callout (both read the same endpoint).
+    setItems((prev) => prev.filter((a) => a.id !== id));
+    setDetail((d) => (d?.id === id ? null : d));
+    try {
+      await api(`/api/staff/audit/alerts/${id}/dismiss`, { method: 'POST' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to dismiss');
+    }
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <SummarizeButton alerts={items} />
@@ -165,9 +177,14 @@ export function AlertsPage(): JSX.Element {
               key: 'actions',
               header: '',
               render: (r) => (
-                <Button size="sm" variant="secondary" onClick={() => setDetail(r)}>
-                  Details
-                </Button>
+                <span style={{ display: 'inline-flex', gap: 6 }}>
+                  <Button size="sm" variant="secondary" onClick={() => setDetail(r)}>
+                    Details
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void dismiss(r.id)}>
+                    Dismiss
+                  </Button>
+                </span>
               ),
             },
           ]}

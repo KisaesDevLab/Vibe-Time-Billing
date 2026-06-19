@@ -3145,6 +3145,32 @@ export const auditLog = pgTable(
 );
 
 // =====================================================================
+// alert_dismissal — staff can dismiss a worker alert (an audit_log row of
+// an alert kind) so it leaves the Alerts inbox and the dashboard callout.
+// audit_log is append-only, so the dismissal lives here. Per-firm: one
+// dismissal hides the alert for the whole firm.
+// =====================================================================
+export const alertDismissals = pgTable(
+  'alert_dismissal',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    auditLogId: uuid('audit_log_id')
+      .notNull()
+      .references(() => auditLog.id, { onDelete: 'cascade' }),
+    dismissedByAppUserId: uuid('dismissed_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uk: uniqueIndex('alert_dismissal_uk').on(t.firmId, t.auditLogId),
+  }),
+);
+
+// =====================================================================
 // notification_log — Connect H.8. One row per outbound mail/sms send
 // attempt so firms can answer "did this dunning email actually go
 // out?" without grepping pino logs. Captures success + failure.
