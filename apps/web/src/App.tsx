@@ -79,6 +79,7 @@ import { DashboardPage } from './pages/Dashboard';
 import { EngagementCreatePage } from './pages/EngagementCreate';
 import { EngagementDetailPage } from './pages/EngagementDetail';
 import { EngagementsPage } from './pages/Engagements';
+import { RollforwardPage } from './pages/Rollforward';
 import { FilerPage } from './pages/Filer';
 import { ProposalsListPage } from './pages/Proposals';
 import { ProposalCreatePage } from './pages/ProposalCreate';
@@ -153,6 +154,7 @@ export function App(): JSX.Element {
                   <Route path="/people" element={<PeopleDirectoryPage />} />
                   <Route path="/people/:id" element={<PersonDetailPage />} />
                   <Route path="/engagements" element={<EngagementsPage />} />
+                  <Route path="/rollforward" element={<RollforwardPage />} />
                   <Route path="/engagements/new" element={<EngagementCreatePage />} />
                   <Route path="/engagements/:id" element={<EngagementDetailPage />} />
                   <Route path="/proposals" element={<ProposalsListPage />} />
@@ -342,6 +344,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           href: '/engagements',
           icon: <Layers size={16} />,
           active: location.pathname.startsWith('/engagements'),
+          show: can.engagements,
+        },
+        {
+          section: 'Work',
+          label: 'Rollforward',
+          href: '/rollforward',
+          icon: <Layers size={16} />,
+          active: location.pathname.startsWith('/rollforward'),
           show: can.engagements,
         },
         {
