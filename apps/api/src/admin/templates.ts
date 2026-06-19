@@ -68,6 +68,12 @@ const EngagementSchema = z.object({
     .nullable()
     .optional(),
   defaultRecurrenceTriggerMode: z.enum(['SCHEDULE', 'ON_COMPLETION']).nullable().optional(),
+  // 0172 — lifecycle status applied to engagements spawned by a recurrence
+  // built from this template.
+  defaultRecurrenceStatus: z
+    .enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'])
+    .nullable()
+    .optional(),
 });
 
 const LetterSchema = z.object({
@@ -166,6 +172,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultSurchargeLabel: d.defaultSurchargeLabel ?? null,
           defaultRecurrenceFrequency: d.defaultRecurrenceFrequency ?? null,
           defaultRecurrenceTriggerMode: d.defaultRecurrenceTriggerMode ?? null,
+          defaultRecurrenceStatus: d.defaultRecurrenceStatus ?? null,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -232,6 +239,8 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.defaultRecurrenceFrequency = d.defaultRecurrenceFrequency;
       if (d.defaultRecurrenceTriggerMode !== undefined)
         updates.defaultRecurrenceTriggerMode = d.defaultRecurrenceTriggerMode;
+      if (d.defaultRecurrenceStatus !== undefined)
+        updates.defaultRecurrenceStatus = d.defaultRecurrenceStatus;
       await deps.db
         .update(engagementTemplates)
         .set(updates)
@@ -331,6 +340,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultSurchargeLabel: src.defaultSurchargeLabel,
           defaultRecurrenceFrequency: src.defaultRecurrenceFrequency,
           defaultRecurrenceTriggerMode: src.defaultRecurrenceTriggerMode,
+          defaultRecurrenceStatus: src.defaultRecurrenceStatus,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });

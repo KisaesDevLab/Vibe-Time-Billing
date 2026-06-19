@@ -32,6 +32,14 @@ export const RECURRENCE_FREQUENCIES = [
 export type RecurrenceFrequency = (typeof RECURRENCE_FREQUENCIES)[number]['value'];
 
 export type RecurrenceTriggerMode = 'SCHEDULE' | 'ON_COMPLETION';
+export type RecurrenceSpawnStatus = 'PROPOSED' | 'ACTIVE' | 'PAUSED' | 'CLOSED' | 'ARCHIVED';
+const SPAWN_STATUS_OPTIONS: RecurrenceSpawnStatus[] = [
+  'PROPOSED',
+  'ACTIVE',
+  'PAUSED',
+  'CLOSED',
+  'ARCHIVED',
+];
 
 export interface RecurrenceDraft {
   frequency: RecurrenceFrequency;
@@ -40,6 +48,9 @@ export interface RecurrenceDraft {
   seedPeriodYear: string;
   seedPeriodMonth: string;
   seedPeriodLabel: string;
+  // '' = inherit the template's default_recurrence_status (which itself falls
+  // back to ACTIVE). Otherwise the lifecycle status the spawned engagement gets.
+  spawnStatus: '' | RecurrenceSpawnStatus;
   notes: string;
 }
 
@@ -55,6 +66,7 @@ export function makeDefaultRecurrenceDraft(): RecurrenceDraft {
     seedPeriodYear: String(new Date().getFullYear() + 1),
     seedPeriodMonth: '',
     seedPeriodLabel: '',
+    spawnStatus: '',
     notes: '',
   };
 }
@@ -95,6 +107,25 @@ export function RecurrenceComposer({
           {RECURRENCE_FREQUENCIES.map((f) => (
             <option key={f.value} value={f.value}>
               {f.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div style={{ display: 'grid', gap: 4 }}>
+        <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+          Status of each new engagement
+        </label>
+        <select
+          value={value.spawnStatus}
+          onChange={(e) => set('spawnStatus', e.target.value as '' | RecurrenceSpawnStatus)}
+          disabled={disabled}
+          style={selectStyle()}
+        >
+          <option value="">Use template default (Active)</option>
+          {SPAWN_STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>
+              {s}
             </option>
           ))}
         </select>
@@ -239,6 +270,7 @@ export function recurrenceDraftToPayload(d: RecurrenceDraft): Record<string, unk
   if (d.seedPeriodYear.trim()) body['seedPeriodYear'] = Number(d.seedPeriodYear);
   if (d.seedPeriodMonth.trim()) body['seedPeriodMonth'] = Number(d.seedPeriodMonth);
   if (d.seedPeriodLabel.trim()) body['seedPeriodLabel'] = d.seedPeriodLabel.trim();
+  if (d.spawnStatus) body['spawnStatus'] = d.spawnStatus;
   if (d.notes.trim()) body['notes'] = d.notes.trim();
   return body;
 }

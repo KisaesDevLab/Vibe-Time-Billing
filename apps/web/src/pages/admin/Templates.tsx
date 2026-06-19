@@ -38,6 +38,8 @@ type RecurrenceFrequency =
   | 'ANNUAL';
 
 type RecurrenceTriggerMode = 'SCHEDULE' | 'ON_COMPLETION';
+type EngagementStatus = 'PROPOSED' | 'ACTIVE' | 'PAUSED' | 'CLOSED' | 'ARCHIVED';
+const STATUS_OPTIONS: EngagementStatus[] = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'];
 const TRIGGER_OPTIONS: { value: RecurrenceTriggerMode; label: string }[] = [
   { value: 'ON_COMPLETION', label: 'When the current one closes' },
   { value: 'SCHEDULE', label: 'On a schedule' },
@@ -79,6 +81,7 @@ interface EngagementTpl {
   defaultSurchargeLabel: string | null;
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
   defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
+  defaultRecurrenceStatus: EngagementStatus | null;
   isSystem: boolean;
   status: string;
 }
@@ -166,6 +169,7 @@ interface EngagementDraftFields {
   defaultSurchargeLabel: string;
   defaultRecurrenceFrequency: '' | RecurrenceFrequency;
   defaultRecurrenceTriggerMode: '' | RecurrenceTriggerMode;
+  defaultRecurrenceStatus: '' | EngagementStatus;
 }
 
 const EMPTY_DEFAULTS = {
@@ -182,6 +186,7 @@ const EMPTY_DEFAULTS = {
   defaultSurchargeLabel: '',
   defaultRecurrenceFrequency: '' as '' | RecurrenceFrequency,
   defaultRecurrenceTriggerMode: '' as '' | RecurrenceTriggerMode,
+  defaultRecurrenceStatus: '' as '' | EngagementStatus,
 };
 
 // Translate a draft's new-defaults fields into the API payload shape
@@ -215,6 +220,10 @@ function draftDefaultsToPayload(d: EngagementDraftFields): Record<string, unknow
     // (no next-run date needed) so the recurrence is complete on apply.
     defaultRecurrenceTriggerMode: d.defaultRecurrenceFrequency
       ? d.defaultRecurrenceTriggerMode || 'ON_COMPLETION'
+      : null,
+    // Spawned-engagement status only matters when a recurrence is set.
+    defaultRecurrenceStatus: d.defaultRecurrenceFrequency
+      ? d.defaultRecurrenceStatus || null
       : null,
   };
 }
@@ -384,6 +393,7 @@ function EngagementTab(): JSX.Element {
       defaultSurchargeLabel: t.defaultSurchargeLabel ?? '',
       defaultRecurrenceFrequency: t.defaultRecurrenceFrequency ?? '',
       defaultRecurrenceTriggerMode: t.defaultRecurrenceTriggerMode ?? '',
+      defaultRecurrenceStatus: t.defaultRecurrenceStatus ?? '',
     });
   }
 
@@ -689,6 +699,24 @@ function EngagementTab(): JSX.Element {
               {TRIGGER_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
+                </option>
+              ))}
+            </select>
+          )}
+          {d.defaultRecurrenceFrequency && (
+            <select
+              id={`${idPrefix}-recurrence-status`}
+              value={d.defaultRecurrenceStatus}
+              onChange={(e) =>
+                update({ defaultRecurrenceStatus: e.target.value as '' | EngagementStatus })
+              }
+              aria-label="Default recurrence engagement status"
+              style={{ ...fieldStyle, width: '100%', marginTop: 6 }}
+            >
+              <option value="">Spawned status: Active (default)</option>
+              {STATUS_OPTIONS.map((o) => (
+                <option key={o} value={o}>
+                  Spawned status: {o}
                 </option>
               ))}
             </select>

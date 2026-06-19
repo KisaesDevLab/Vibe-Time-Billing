@@ -194,7 +194,9 @@ export async function spawnNextEngagement(args: SpawnArgs): Promise<SpawnResult>
         periodYear: period.year ?? null,
         periodMonth: period.month ?? null,
         periodLabel: period.label ?? null,
-        status: 'ACTIVE',
+        // 0172 — configurable spawned status: per-recurrence override, then
+        // template default, then 'ACTIVE' (the historical hardcoded value).
+        status: rec.spawnStatus ?? tpl.defaultRecurrenceStatus ?? 'ACTIVE',
       })
       .returning({ id: engagements.id });
     if (!eng) throw new Error('engagement_insert_failed');

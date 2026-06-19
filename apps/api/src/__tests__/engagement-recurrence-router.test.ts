@@ -8,7 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 import type express from 'express';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { engagementRecurrences, engagementTemplates } from '@vibe/db/schema';
+import { engagementRecurrences, engagementTemplates, engagements } from '@vibe/db/schema';
 import { createEngagementRecurrenceRouter } from '../engagements/recurrence';
 
 let harness: PgliteHarness;
@@ -378,5 +378,41 @@ describe('engagement-recurrence router', () => {
     const body = r.jsonBody as { kind: string; name?: string };
     expect(body.kind).toBe('spawned');
     expect(body.name).toBe('Bookkeeping 4/2026');
+  });
+
+  it('applies the recurrence spawn_status to the spawned engagement', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const tplId = await seedTemplate(seed.firmId);
+    const [row] = await harness.db
+      .insert(engagementRecurrences)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        templateId: tplId,
+        frequency: 'MONTHLY',
+        triggerMode: 'SCHEDULE',
+        nextRunDate: '2026-06-01',
+        seedPeriodYear: 2026,
+        seedPeriodMonth: 4,
+        // Override the historical hardcoded 'ACTIVE'.
+        spawnStatus: 'PROPOSED',
+        createdById: seed.appUserId,
+      })
+      .returning({ id: engagementRecurrences.id });
+    const router = createEngagementRecurrenceRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'post', '/:id/run-now', {
+      ...req({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: row!.id } }),
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.jsonBody as { kind: string; engagementId?: string };
+    expect(body.kind).toBe('spawned');
+    const [eng] = await harness.db
+      .select({ status: engagements.status })
+      .from(engagements)
+      .where(eq(engagements.id, body.engagementId!));
+    expect(eng!.status).toBe('PROPOSED');
   });
 });

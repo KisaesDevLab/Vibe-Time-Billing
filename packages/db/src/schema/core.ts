@@ -1643,6 +1643,9 @@ export const engagementTemplates = pgTable(
     defaultRecurrenceFrequency: text('default_recurrence_frequency'),
     // 0171 — trigger mode that pairs with the frequency ('SCHEDULE' | 'ON_COMPLETION').
     defaultRecurrenceTriggerMode: text('default_recurrence_trigger_mode'),
+    // 0172 — lifecycle status applied to a recurrence-spawned engagement.
+    // NULL falls back to 'ACTIVE' at spawn time.
+    defaultRecurrenceStatus: engagementStatus('default_recurrence_status'),
     // FK added in 0033 after the letter table exists; declared here as
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),
@@ -3426,6 +3429,9 @@ export const engagementRecurrences = pgTable(
     }),
     lastRunAt: timestamp('last_run_at', { withTimezone: true }),
     status: text('status').notNull().default('ACTIVE'),
+    // 0172 — per-recurrence override for the spawned engagement's lifecycle
+    // status. NULL inherits the template default, then falls back to 'ACTIVE'.
+    spawnStatus: engagementStatus('spawn_status'),
     notes: text('notes'),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -34,6 +34,9 @@ export interface EngagementRecurrenceRoutesDeps extends RbacDeps {
 }
 
 const FREQUENCIES = ['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL'] as const;
+// Lifecycle status the spawned engagement gets. NULL inherits the template's
+// default_recurrence_status, which itself falls back to 'ACTIVE' at spawn.
+const SPAWN_STATUSES = ['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'] as const;
 
 const CreateSchema = z
   .object({
@@ -48,6 +51,7 @@ const CreateSchema = z
     seedPeriodYear: z.number().int().min(1900).max(9999).optional(),
     seedPeriodMonth: z.number().int().min(1).max(12).optional(),
     seedPeriodLabel: z.string().max(80).optional(),
+    spawnStatus: z.enum(SPAWN_STATUSES).optional(),
     notes: z.string().max(2000).optional(),
   })
   .refine((v) => (v.triggerMode === 'SCHEDULE' ? !!v.nextRunDate : true), {
@@ -68,6 +72,7 @@ const PatchSchema = z
     seedPeriodMonth: z.number().int().min(1).max(12).nullable().optional(),
     seedPeriodLabel: z.string().max(80).nullable().optional(),
     status: z.enum(['ACTIVE', 'PAUSED']).optional(),
+    spawnStatus: z.enum(SPAWN_STATUSES).nullable().optional(),
     notes: z.string().max(2000).nullable().optional(),
   })
   .strict()
@@ -123,6 +128,7 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           lastEngagementStatus: lastEng.status,
           lastRunAt: engagementRecurrences.lastRunAt,
           status: engagementRecurrences.status,
+          spawnStatus: engagementRecurrences.spawnStatus,
           notes: engagementRecurrences.notes,
           createdAt: engagementRecurrences.createdAt,
         })
@@ -206,6 +212,7 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           seedPeriodYear: parsed.data.seedPeriodYear ?? null,
           seedPeriodMonth: parsed.data.seedPeriodMonth ?? null,
           seedPeriodLabel: parsed.data.seedPeriodLabel ?? null,
+          spawnStatus: parsed.data.spawnStatus ?? null,
           notes: parsed.data.notes ?? null,
           createdById: session.appUserId,
         })
@@ -270,6 +277,7 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
       if (parsed.data.seedPeriodLabel !== undefined)
         patch['seedPeriodLabel'] = parsed.data.seedPeriodLabel;
       if (parsed.data.status !== undefined) patch['status'] = parsed.data.status;
+      if (parsed.data.spawnStatus !== undefined) patch['spawnStatus'] = parsed.data.spawnStatus;
       if (parsed.data.notes !== undefined) patch['notes'] = parsed.data.notes;
       // When trigger flips to ON_COMPLETION, drop the date so the
       // schema CHECK (schedule = has-date) is satisfied.
