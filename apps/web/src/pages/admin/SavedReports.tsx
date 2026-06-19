@@ -55,6 +55,7 @@ export function SavedReportsPage(): JSX.Element {
   const [kind, setKind] = useState(KINDS[0]!);
   const [shared, setShared] = useState(false);
   const [params, setParams] = useState('{}');
+  const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // When set, the form edits an existing saved report (PATCH) instead of
   // creating a new one. Report kind is immutable once saved, so the select
@@ -121,6 +122,28 @@ export function SavedReportsPage(): JSX.Element {
     }
   }
 
+  async function suggestParams(): Promise<void> {
+    const prompt = window.prompt(
+      `Describe the report in plain English and AI will fill in the parameters for "${kind}":`,
+    );
+    if (!prompt || !prompt.trim()) return;
+    setError(null);
+    setSuggesting(true);
+    try {
+      const r = await api<{ params: Record<string, unknown> }>('/api/staff/ai/report-params', {
+        method: 'POST',
+        body: JSON.stringify({ reportKind: kind, prompt: prompt.trim() }),
+      });
+      setParams(JSON.stringify(r.params ?? {}, null, 2));
+    } catch (err) {
+      setError(
+        err instanceof Error ? `AI suggestion failed: ${err.message}` : 'AI suggestion failed',
+      );
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
   async function remove(id: string): Promise<void> {
     try {
       await api(`/api/staff/saved-reports/${id}`, { method: 'DELETE' });
@@ -157,7 +180,20 @@ export function SavedReportsPage(): JSX.Element {
             </select>
           </label>
           <label style={{ fontSize: 13 }}>
-            Params JSON
+            <span
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+            >
+              Params JSON
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={suggesting}
+                onClick={() => void suggestParams()}
+              >
+                {suggesting ? 'Thinking…' : '✨ Suggest with AI'}
+              </Button>
+            </span>
             <textarea
               value={params}
               onChange={(e) => setParams(e.target.value)}

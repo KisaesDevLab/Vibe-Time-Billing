@@ -23,6 +23,7 @@ import {
   type ResolvedFirmProviders,
 } from './resolve-providers';
 import { searchKbArticles, type KbAudience } from '../help/queries';
+import { paramSpecPrompt, validateReportParams, extractJsonObject } from './report-params';
 
 export interface AiRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -60,6 +61,11 @@ const ChatSchema = z.object({
     .min(1)
     .max(12),
   maxTokens: z.number().int().min(64).max(2000).optional(),
+});
+
+const ReportParamsSchema = z.object({
+  reportKind: z.string().min(1).max(60),
+  prompt: z.string().min(1).max(1000),
 });
 
 // Firm-level AI opt-in (Phase 23 #28). Defaults to true; firms can set
@@ -1010,6 +1016,34 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     sendKbChat(res, out);
   });
 
+  // ---------------------------------------------------------------------
+  // POST /report-params — turn a plain-English description into a validated
+  // params object for a saved report of the given kind. Powers the
+  // "Suggest params with AI" button in the saved-reports admin.
+  // ---------------------------------------------------------------------
+  router.post('/report-params', async (req: Request, res: Response) => {
+    const parsed = ReportParamsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const session = req.staffSession!;
+    const out = await runReportParams(deps, {
+      firmId: session.firmId,
+      reportKind: parsed.data.reportKind,
+      prompt: parsed.data.prompt,
+      actorAppUserId: session.appUserId,
+    });
+    if (!out.ok) {
+      res.status(out.status).json({
+        error: out.error,
+        ...(out.resetsOn ? { resetsOn: out.resetsOn } : {}),
+      });
+      return;
+    }
+    res.json({ params: out.params, providerId: out.providerId });
+  });
+
   return router;
 }
 
@@ -1312,6 +1346,75 @@ export function sendKbChat(res: Response, out: KbChatResult): void {
     sources: out.sources,
     budget: out.budget,
   });
+}
+
+export type ReportParamsResult =
+  | { ok: true; params: Record<string, unknown>; providerId: string }
+  | { ok: false; status: number; error: string; resetsOn?: string };
+
+/**
+ * Turn a natural-language request into a validated params object for a saved
+ * report of the given kind. Output is constrained by the kind's server-side
+ * param spec and validated before return — the model never produces free-form
+ * config that the report endpoints wouldn't accept.
+ */
+export async function runReportParams(
+  deps: AiRoutesDeps,
+  args: { firmId: string; reportKind: string; prompt: string; actorAppUserId?: string | null },
+): Promise<ReportParamsResult> {
+  const specPrompt = paramSpecPrompt(args.reportKind);
+  if (!specPrompt) return { ok: false, status: 400, error: 'unknown_report_kind' };
+
+  const nowFn = deps.now ?? (() => new Date());
+  const provider = await pickProvider(deps, 'support-chat', args.firmId);
+  if (!provider) return { ok: false, status: 503, error: 'no_ai_provider' };
+  const budget = await loadBudget(deps, args.firmId, nowFn());
+  if (budget.kind === 'exhausted') {
+    return { ok: false, status: 402, error: 'ai_budget_exhausted', resetsOn: budget.resetsOn };
+  }
+
+  const systemPrompt =
+    'You convert a natural-language request into a JSON parameters object for a ' +
+    'saved report. Output ONLY a single minified JSON object — no prose, no code ' +
+    'fences. Use only the allowed parameter names; omit any not clearly implied ' +
+    'by the request. Dates must be YYYY-MM-DD.\n\n' +
+    specPrompt;
+
+  const started = Date.now();
+  try {
+    const result = await provider.complete({
+      systemPrompt,
+      userPrompt: `Request: ${args.prompt}\n\nJSON parameters:`,
+      maxTokens: 200,
+      temperature: 0,
+    });
+    await logAiRequest(deps, {
+      firmId: args.firmId,
+      providerId: provider.id,
+      feature: 'report_params',
+      success: true,
+      appUserId: args.actorAppUserId ?? null,
+      latencyMs: Date.now() - started,
+      usage: result.usage,
+      costCents: result.costEstimateCents,
+    });
+    const json = extractJsonObject(result.text);
+    if (json === null) return { ok: false, status: 422, error: 'no_json_returned' };
+    const v = validateReportParams(args.reportKind, json);
+    if (!v.ok) return { ok: false, status: 422, error: v.error };
+    return { ok: true, params: v.params, providerId: result.providerId };
+  } catch (err) {
+    await logAiRequest(deps, {
+      firmId: args.firmId,
+      providerId: provider.id,
+      feature: 'report_params',
+      success: false,
+      errorMessage: err instanceof Error ? err.message : 'unknown',
+      appUserId: args.actorAppUserId ?? null,
+      latencyMs: Date.now() - started,
+    });
+    return { ok: false, status: 502, error: 'ai_provider_failed' };
+  }
 }
 
 /** Whether AI support chat is usable for a firm (provider wired + opted in). */
