@@ -178,7 +178,14 @@ type ApptLocation = 'VIDEO' | 'PHONE' | 'IN_PERSON';
  */
 export async function commitRollforwardBatch(
   db: Database,
-  opts: { batchId: string; firmId: string; actorAppUserId: string },
+  opts: {
+    batchId: string;
+    firmId: string;
+    actorAppUserId: string;
+    // Q46 — allow committing approved appointments whose engagement was not
+    // kept (creates them engagement-less). Default: cascade hard-block.
+    allowAppointmentOnly?: boolean;
+  },
 ): Promise<CommitResult> {
   return db.transaction(async (tx) => {
     const [batch] = await tx
@@ -294,8 +301,10 @@ export async function commitRollforwardBatch(
       );
     let appointmentsCreated = 0;
     for (const a of apptCands) {
-      const targetEngId = targetByCandidate.get(a.engagementCandidateId);
-      if (!targetEngId || !a.suggestedStartsAt) continue; // cascade guard
+      if (!a.suggestedStartsAt) continue;
+      const targetEngId = targetByCandidate.get(a.engagementCandidateId) ?? null;
+      // Cascade hard-block by default; with the opt-in, commit engagement-less.
+      if (!targetEngId && !opts.allowAppointmentOnly) continue;
       const staffIds = (a.staffIds as string[]) ?? [];
       const start = a.suggestedStartsAt;
       const end = new Date(start.getTime() + a.durationMinutes * 60_000);

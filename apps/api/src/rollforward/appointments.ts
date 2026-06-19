@@ -31,9 +31,18 @@ async function firmTimezone(db: Database, firmId: string): Promise<string> {
 
 export async function buildAppointmentCandidates(
   db: Database,
-  opts: { batchId: string; firmId: string; targetYear: number; mode: MappingMode },
+  opts: {
+    batchId: string;
+    firmId: string;
+    targetYear: number;
+    mode: MappingMode;
+    // Q46 — when true, also build candidates for appointments whose engagement
+    // is NOT approved (they commit engagement-less). Default: cascade hard-block.
+    allowAppointmentOnly?: boolean;
+  },
 ): Promise<number> {
-  // Only appointments tied to engagements approved in step 2 (the cascade).
+  // By default only appointments tied to engagements approved in step 2 (the
+  // cascade); with the opt-in, all engagement candidates' appointments.
   const engCands = await db
     .select({
       id: rollforwardEngagementCandidates.id,
@@ -42,10 +51,12 @@ export async function buildAppointmentCandidates(
     })
     .from(rollforwardEngagementCandidates)
     .where(
-      and(
-        eq(rollforwardEngagementCandidates.batchId, opts.batchId),
-        eq(rollforwardEngagementCandidates.status, 'APPROVED'),
-      ),
+      opts.allowAppointmentOnly
+        ? eq(rollforwardEngagementCandidates.batchId, opts.batchId)
+        : and(
+            eq(rollforwardEngagementCandidates.batchId, opts.batchId),
+            eq(rollforwardEngagementCandidates.status, 'APPROVED'),
+          ),
     );
 
   // Re-runnable preview: clear prior appointment candidates for this batch.

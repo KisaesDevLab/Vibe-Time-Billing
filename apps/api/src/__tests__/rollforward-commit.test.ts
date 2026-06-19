@@ -143,4 +143,71 @@ describe('rollforward commit (end-to-end)', () => {
       .where(ne(engagements.id, seed.engagementId));
     expect(allTargets).toHaveLength(1); // no duplicate engagement
   });
+
+  it('Q46 — appointment-only opt-in commits an engagement-less appointment when the engagement is skipped', async () => {
+    await harness.db
+      .update(engagements)
+      .set({ returnType: '1040', dueDate: '2025-04-01', partnerId: seed.appUserId })
+      .where(eq(engagements.id, seed.engagementId));
+    const [srcAppt] = await harness.db
+      .insert(appointments)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        engagementId: seed.engagementId,
+        title: 'Consult',
+        startsAt: new Date('2025-04-01T15:00:00Z'),
+        endsAt: new Date('2025-04-01T16:00:00Z'),
+        durationMinutes: 60,
+        status: 'SCHEDULED',
+      })
+      .returning({ id: appointments.id });
+    await harness.db
+      .insert(appointmentStaff)
+      .values({ appointmentId: srcAppt!.id, staffId: seed.appUserId });
+
+    const { batchId } = await createRollforwardBatch(harness.db, {
+      firmId: seed.firmId,
+      staffId: seed.appUserId,
+      sourceStart: '2025-02-01',
+      sourceEnd: '2025-04-15',
+      targetYear: 2026,
+      mode: 'DEADLINE',
+      createdByAppUserId: seed.appUserId,
+    });
+    // Skip the engagement; opt in to appointment-only.
+    await harness.db
+      .update(rollforwardEngagementCandidates)
+      .set({ status: 'SKIPPED' })
+      .where(eq(rollforwardEngagementCandidates.batchId, batchId));
+
+    const n = await buildAppointmentCandidates(harness.db, {
+      batchId,
+      firmId: seed.firmId,
+      targetYear: 2026,
+      mode: 'DEADLINE',
+      allowAppointmentOnly: true,
+    });
+    expect(n).toBe(1); // built despite the skipped engagement
+    await harness.db
+      .update(rollforwardAppointmentCandidates)
+      .set({ status: 'APPROVED' })
+      .where(eq(rollforwardAppointmentCandidates.batchId, batchId));
+
+    const result = await commitRollforwardBatch(harness.db, {
+      batchId,
+      firmId: seed.firmId,
+      actorAppUserId: seed.appUserId,
+      allowAppointmentOnly: true,
+    });
+    expect(result.engagementsCreated).toBe(0);
+    expect(result.appointmentsCreated).toBe(1);
+    // The new appointment is engagement-less.
+    const created = await harness.db
+      .select()
+      .from(appointments)
+      .where(eq(appointments.title, 'Consult'));
+    const target = created.find((a) => a.id !== srcAppt!.id)!;
+    expect(target.engagementId).toBeNull();
+  });
 });

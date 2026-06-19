@@ -59,6 +59,8 @@ export function RollforwardPage(): JSX.Element {
   const [sourceEnd, setSourceEnd] = useState('');
   const [targetYear, setTargetYear] = useState(new Date().getFullYear() + 1);
   const [mode, setMode] = useState<'DEADLINE' | 'ISO_WEEK'>('DEADLINE');
+  const [includeInactive, setIncludeInactive] = useState(false);
+  const [allowApptOnly, setAllowApptOnly] = useState(false);
 
   // Batch
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -91,7 +93,14 @@ export function RollforwardPage(): JSX.Element {
         '/api/staff/rollforward',
         {
           method: 'POST',
-          body: JSON.stringify({ staffId, sourceStart, sourceEnd, targetYear, mode }),
+          body: JSON.stringify({
+            staffId,
+            sourceStart,
+            sourceEnd,
+            targetYear,
+            mode,
+            includeInactive,
+          }),
         },
       );
       setBatchId(r.batchId);
@@ -128,7 +137,7 @@ export function RollforwardPage(): JSX.Element {
     try {
       const r = await api<{ appointmentCandidates: ApptCandidate[] }>(
         `/api/staff/rollforward/${batchId}/appointments/preview`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ allowAppointmentOnly: allowApptOnly }) },
       );
       setAppts(r.appointmentCandidates ?? []);
       setStep(3);
@@ -165,7 +174,7 @@ export function RollforwardPage(): JSX.Element {
     try {
       const r = await api<{ engagementsCreated: number; appointmentsCreated: number }>(
         `/api/staff/rollforward/${batchId}/commit`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ allowAppointmentOnly: allowApptOnly }) },
       );
       setCommitted(r);
       setStep(4);
@@ -245,6 +254,22 @@ export function RollforwardPage(): JSX.Element {
                 Deadline-anchored keeps each item the same number of weeks from its filing deadline,
                 on the same weekday. ISO-week keeps the same calendar week number.
               </span>
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={includeInactive}
+                onChange={(e) => setIncludeInactive(e.target.checked)}
+              />
+              Include engagements for inactive / archived clients
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={allowApptOnly}
+                onChange={(e) => setAllowApptOnly(e.target.checked)}
+              />
+              Also roll appointments whose engagement isn&apos;t kept (e.g. consults)
             </label>
             <div>
               <Button onClick={() => void generate()} disabled={busy}>

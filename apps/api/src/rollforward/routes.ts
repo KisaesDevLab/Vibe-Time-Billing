@@ -181,6 +181,9 @@ export function createRollforwardRouter(deps: RollforwardRoutesDeps): Router {
         firmId: batch.firmId,
         targetYear: batch.targetYear,
         mode: batch.mappingMode as 'DEADLINE' | 'ISO_WEEK',
+        allowAppointmentOnly: Boolean(
+          (req.body as { allowAppointmentOnly?: boolean })?.allowAppointmentOnly,
+        ),
       });
       res.json({ count, appointmentCandidates: await appointmentCandidates(deps.db, batch.id) });
     },
@@ -249,6 +252,9 @@ export function createRollforwardRouter(deps: RollforwardRoutesDeps): Router {
         batchId: batch.id,
         firmId,
         actorAppUserId: appUserId,
+        allowAppointmentOnly: Boolean(
+          (req.body as { allowAppointmentOnly?: boolean })?.allowAppointmentOnly,
+        ),
       });
       if (!result.alreadyCommitted) {
         await emitAudit(deps.db, {
