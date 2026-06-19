@@ -309,7 +309,7 @@ Staff with **\`firm:settings:write\`** can add, edit, toggle, and delete rules; 
 - **Wrong signature fields placed** — the matched rule points at the wrong **Fields from** layout/profile; change it on the rule's row.
 - **form_type_required** — you tried to add a rule with a blank custom form type.
 
-Related: [[signatures]] [[signatures-overview]] [[tax-returns-overview]]
+Related: [[signatures-workspace]] [[collect-signatures-from-return]] [[tax-returns-overview]]
 `),
   },
   {
@@ -355,7 +355,7 @@ Firm administrators with access to Admin settings.
 - **Notification never reaches the client** — the status isn't notify-enabled, no method is selected, or with **Require approval** the queued notice was never released under Approvals.
 - **A status missing for some engagements** — it's scoped to **service lines** that don't include that engagement.
 
-Related: [[status-history]] [[staged-notifications-module]] [[notification-templates]] [[approvals-overview]]
+Related: [[status-history]] [[staged-notifications]] [[notification-templates]] [[approvals-overview]]
 `),
   },
 ];

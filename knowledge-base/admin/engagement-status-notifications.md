@@ -40,4 +40,4 @@ Firm administrators with access to Admin settings.
 - **Notification never reaches the client** — the status isn't notify-enabled, no method is selected, or with **Require approval** the queued notice was never released under Approvals.
 - **A status missing for some engagements** — it's scoped to **service lines** that don't include that engagement.
 
-Related: [[status-history]] [[staged-notifications-module]] [[notification-templates]] [[approvals-overview]]
+Related: [[status-history]] [[staged-notifications]] [[notification-templates]] [[approvals-overview]]

@@ -35,4 +35,4 @@ Staff with **`firm:settings:write`** can add, edit, toggle, and delete rules; ot
 - **Wrong signature fields placed** — the matched rule points at the wrong **Fields from** layout/profile; change it on the rule's row.
 - **form_type_required** — you tried to add a rule with a blank custom form type.
 
-Related: [[signatures]] [[signatures-overview]] [[tax-returns-overview]]
+Related: [[signatures-workspace]] [[collect-signatures-from-return]] [[tax-returns-overview]]
