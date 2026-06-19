@@ -14,14 +14,44 @@ interface Token {
   createdAt: string;
 }
 
-const MCP_TOOLS = [
-  'list_engagements',
-  'get_time_entries',
-  'create_time_entry',
-  'query_recurring_plans',
-  'generate_pre_bill',
-  'suggest_adjustment',
-  'query_realization',
+// Mirrors @vibe/core/mcp MCP_TOOL_CATEGORY (kept inline to avoid importing the
+// server package into the web bundle). Mutating groups are flagged so the
+// issuer grants write/automation scopes deliberately.
+const MCP_TOOL_GROUPS: { label: string; mutating?: boolean; tools: string[] }[] = [
+  {
+    label: 'Read',
+    tools: [
+      'list_engagements',
+      'get_time_entries',
+      'query_recurring_plans',
+      'list_clients',
+      'list_invoices',
+    ],
+  },
+  {
+    label: 'Reporting',
+    tools: ['query_realization', 'suggest_adjustment', 'get_ar_aging', 'query_mrr'],
+  },
+  {
+    label: 'Write',
+    mutating: true,
+    tools: ['create_time_entry', 'generate_pre_bill', 'update_engagement', 'create_client'],
+  },
+  {
+    label: 'Automation',
+    mutating: true,
+    tools: ['pause_recurring_plan', 'resume_recurring_plan'],
+  },
+  {
+    label: 'Connect (messaging)',
+    tools: [
+      'summarize_engagement_thread',
+      'list_unresolved_client_requests',
+      'link_message_to_time_entry',
+      'suggest_billable_messages',
+      'draft_pre_bill_narrative',
+    ],
+  },
 ];
 
 export function ApiTokensPage(): JSX.Element {
@@ -98,28 +128,45 @@ export function ApiTokensPage(): JSX.Element {
             <div style={{ fontSize: 13, color: tokens.color.textMuted, marginBottom: 6 }}>
               Allowed tools
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {MCP_TOOLS.map((t) => (
-                <label
-                  key={t}
-                  style={{
-                    fontSize: 11,
-                    fontFamily: tokens.font.mono,
-                    padding: '4px 8px',
-                    borderRadius: tokens.radius.pill,
-                    border: `1px solid ${selected.has(t) ? tokens.color.accent : tokens.color.border}`,
-                    cursor: 'pointer',
-                    background: selected.has(t) ? tokens.color.accent + '20' : 'transparent',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(t)}
-                    onChange={() => toggle(t)}
-                    style={{ marginRight: 6 }}
-                  />
-                  {t}
-                </label>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {MCP_TOOL_GROUPS.map((g) => (
+                <div key={g.label}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      marginBottom: 4,
+                      color: g.mutating ? tokens.color.danger : tokens.color.textMuted,
+                    }}
+                  >
+                    {g.label}
+                    {g.mutating ? ' · mutating' : ''}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {g.tools.map((t) => (
+                      <label
+                        key={t}
+                        style={{
+                          fontSize: 11,
+                          fontFamily: tokens.font.mono,
+                          padding: '4px 8px',
+                          borderRadius: tokens.radius.pill,
+                          border: `1px solid ${selected.has(t) ? tokens.color.accent : tokens.color.border}`,
+                          cursor: 'pointer',
+                          background: selected.has(t) ? tokens.color.accent + '20' : 'transparent',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(t)}
+                          onChange={() => toggle(t)}
+                          style={{ marginRight: 6 }}
+                        />
+                        {t}
+                      </label>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </div>

@@ -17,6 +17,7 @@ import type { Database } from '@vibe/db';
 import {
   adjustmentAllocations,
   adjustments,
+  appUsers,
   billingBatchEntries,
   billingBatches,
   clientRequests,
@@ -25,6 +26,7 @@ import {
   engagements,
   invoices,
   messages,
+  offices,
   recurringBillingPlans,
   timeEntries,
 } from '@vibe/db/schema';
@@ -748,6 +750,196 @@ async function dispatch(
           standardAmountCents: t.standardAmountCents,
         })),
       };
+    }
+
+    // ===============================================================
+    // Expanded catalog — read / write / reporting / automation.
+    // ===============================================================
+    case 'list_clients': {
+      const rows = await deps.db
+        .select({
+          id: clients.id,
+          name: clients.name,
+          status: clients.status,
+          partnerInChargeId: clients.partnerInChargeId,
+        })
+        .from(clients)
+        .where(eq(clients.firmId, token.firmId))
+        .limit(500);
+      return { items: rows.filter((c) => !blocked.has(c.id)) };
+    }
+
+    case 'list_invoices': {
+      const Schema = z.object({
+        status: z.enum(['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'VOIDED']).optional(),
+        limit: z.number().int().positive().max(200).default(100),
+      });
+      const parsed = Schema.parse(args);
+      const conds = [eq(invoices.firmId, token.firmId)];
+      if (parsed.status) conds.push(eq(invoices.status, parsed.status));
+      const rows = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          clientId: invoices.clientId,
+          status: invoices.status,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          issueDate: invoices.issueDate,
+          dueDate: invoices.dueDate,
+        })
+        .from(invoices)
+        .where(and(...conds))
+        .orderBy(desc(invoices.issueDate))
+        .limit(parsed.limit);
+      return { items: rows.filter((r) => !blocked.has(r.clientId)) };
+    }
+
+    case 'get_ar_aging': {
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = await deps.db
+        .select({
+          clientId: invoices.clientId,
+          outstandingCents: drz<number>`${invoices.totalCents} - ${invoices.paidCents}`,
+          dueDate: invoices.dueDate,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.firmId, token.firmId),
+            inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
+          ),
+        );
+      const buckets = { current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+      const todayMs = new Date(today).getTime();
+      for (const r of rows) {
+        if (blocked.has(r.clientId)) continue;
+        const out = Number(r.outstandingCents);
+        if (out <= 0) continue;
+        const days = r.dueDate
+          ? Math.floor((todayMs - new Date(r.dueDate).getTime()) / 86_400_000)
+          : 0;
+        if (days <= 0) buckets.current += out;
+        else if (days <= 30) buckets.d1_30 += out;
+        else if (days <= 60) buckets.d31_60 += out;
+        else if (days <= 90) buckets.d61_90 += out;
+        else buckets.d90_plus += out;
+      }
+      return {
+        asOf: today,
+        buckets,
+        totalOutstandingCents: Object.values(buckets).reduce((a, b) => a + b, 0),
+      };
+    }
+
+    case 'update_engagement': {
+      const Schema = z
+        .object({
+          engagementId: z.string().uuid(),
+          status: z.enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED']).optional(),
+          name: z.string().min(1).max(200).optional(),
+        })
+        .refine((v) => v.status !== undefined || v.name !== undefined, { message: 'no_fields' });
+      const parsed = Schema.parse(args);
+      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId, blocked);
+      if (!firmEngagementIds.includes(parsed.engagementId)) {
+        throw new Error('engagement_not_in_firm');
+      }
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (parsed.status !== undefined) patch['status'] = parsed.status;
+      if (parsed.name !== undefined) patch['name'] = parsed.name;
+      await deps.db.update(engagements).set(patch).where(eq(engagements.id, parsed.engagementId));
+      return { id: parsed.engagementId, updated: true };
+    }
+
+    case 'create_client': {
+      const Schema = z.object({
+        name: z.string().min(1).max(200),
+        // A client needs a partner-in-charge + office (both NOT NULL); both
+        // must belong to the token's firm.
+        partnerInChargeId: z.string().uuid(),
+        officeId: z.string().uuid(),
+      });
+      const parsed = Schema.parse(args);
+      const [partner] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, parsed.partnerInChargeId), eq(appUsers.firmId, token.firmId)))
+        .limit(1);
+      if (!partner) throw new Error('partner_not_in_firm');
+      const [office] = await deps.db
+        .select({ id: offices.id })
+        .from(offices)
+        .where(and(eq(offices.id, parsed.officeId), eq(offices.firmId, token.firmId)))
+        .limit(1);
+      if (!office) throw new Error('office_not_in_firm');
+      const [row] = await deps.db
+        .insert(clients)
+        .values({
+          firmId: token.firmId,
+          name: parsed.name,
+          partnerInChargeId: parsed.partnerInChargeId,
+          officeId: parsed.officeId,
+        })
+        .returning({ id: clients.id });
+      return { id: row?.id };
+    }
+
+    case 'query_mrr': {
+      const rows = await deps.db
+        .select({
+          frequency: recurringBillingPlans.frequency,
+          amountCents: recurringBillingPlans.amountCents,
+        })
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(clients.firmId, token.firmId), eq(recurringBillingPlans.status, 'ACTIVE')));
+      const monthly = (freq: string, amt: number): number => {
+        switch (freq) {
+          case 'WEEKLY':
+            return Math.round((amt * 52) / 12);
+          case 'BIWEEKLY':
+            return Math.round((amt * 26) / 12);
+          case 'MONTHLY':
+            return amt;
+          case 'QUARTERLY':
+            return Math.round(amt / 3);
+          case 'SEMIANNUAL':
+            return Math.round(amt / 6);
+          case 'ANNUAL':
+            return Math.round(amt / 12);
+          default:
+            return 0;
+        }
+      };
+      const mrr = rows.reduce((a, r) => a + monthly(r.frequency, Number(r.amountCents)), 0);
+      return { mrrCents: mrr, arrCents: mrr * 12, planCount: rows.length };
+    }
+
+    case 'pause_recurring_plan':
+    case 'resume_recurring_plan': {
+      const Schema = z.object({ planId: z.string().uuid() });
+      const parsed = Schema.parse(args);
+      const [plan] = await deps.db
+        .select({
+          id: recurringBillingPlans.id,
+          clientId: engagements.clientId,
+          firmId: clients.firmId,
+        })
+        .from(recurringBillingPlans)
+        .innerJoin(engagements, eq(engagements.id, recurringBillingPlans.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(recurringBillingPlans.id, parsed.planId))
+        .limit(1);
+      if (!plan || plan.firmId !== token.firmId) throw new Error('plan_not_found_or_cross_firm');
+      if (blocked.has(plan.clientId)) throw new Error('client_restricted');
+      const nextStatus = tool === 'pause_recurring_plan' ? 'PAUSED' : 'ACTIVE';
+      await deps.db
+        .update(recurringBillingPlans)
+        .set({ status: nextStatus })
+        .where(eq(recurringBillingPlans.id, parsed.planId));
+      return { planId: parsed.planId, status: nextStatus };
     }
   }
 }
