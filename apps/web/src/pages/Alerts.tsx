@@ -94,10 +94,32 @@ export function AlertsPage(): JSX.Element {
     }
   }
 
+  async function dismissAll(): Promise<void> {
+    // Optimistically clear the inbox; restore the prior list on failure.
+    const prev = items;
+    setItems([]);
+    setDetail(null);
+    try {
+      await api('/api/staff/audit/alerts/dismiss-all', { method: 'POST' });
+    } catch (err) {
+      setItems(prev);
+      setError(err instanceof Error ? err.message : 'failed to dismiss all');
+    }
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <SummarizeButton alerts={items} />
-      <Card title="Inbox · worker alerts">
+      <Card
+        title="Inbox · worker alerts"
+        action={
+          items.length > 0 ? (
+            <Button size="sm" variant="secondary" onClick={() => void dismissAll()}>
+              Dismiss all
+            </Button>
+          ) : undefined
+        }
+      >
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
           Surfaces the recent alert events emitted by the background workers (audit anomalies, scope
           creep, aged WIP, engagement rollovers). Read-only; alerts are immutable in the audit log.

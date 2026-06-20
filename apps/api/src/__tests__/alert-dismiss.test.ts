@@ -110,6 +110,32 @@ describe('Alert dismissal', () => {
     expect((after.jsonBody as { items: unknown[] }).items).toHaveLength(0);
   });
 
+  it('dismiss-all clears every alert in the inbox', async () => {
+    await harness.db.insert(auditLog).values([
+      { action: 'UPDATE', entityType: 'wip_age_alert', entityId: seed.engagementId },
+      { action: 'UPDATE', entityType: 'scope_creep_alert', entityId: seed.engagementId },
+      { action: 'UPDATE', entityType: 'engagement_rollover', entityId: seed.engagementId },
+    ]);
+    const router = createAuditRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin'] as RoleSlug[]]]),
+    });
+
+    const before = await invoke(router, 'get', '/alerts', req());
+    expect((before.jsonBody as { items: unknown[] }).items).toHaveLength(3);
+
+    const res = await invoke(router, 'post', '/alerts/dismiss-all', req());
+    expect(res.statusCode).toBe(200);
+    expect(res.jsonBody).toMatchObject({ ok: true, dismissed: 3 });
+
+    const after = await invoke(router, 'get', '/alerts', req());
+    expect((after.jsonBody as { items: unknown[] }).items).toHaveLength(0);
+
+    // Idempotent: a second call finds nothing left to dismiss.
+    const again = await invoke(router, 'post', '/alerts/dismiss-all', req());
+    expect(again.jsonBody).toMatchObject({ ok: true, dismissed: 0 });
+  });
+
   it('rejects dismissing a non-alert id', async () => {
     const router = createAuditRouter({
       db: harness.db,

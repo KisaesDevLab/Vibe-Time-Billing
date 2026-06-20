@@ -516,6 +516,37 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
     },
   );
 
+  // Dismiss every alert currently in the firm's inbox in one shot. Mirrors the
+  // single dismiss but fans out over all not-yet-dismissed alert rows.
+  router.post(
+    '/alerts/dismiss-all',
+    requirePermission(deps, 'admin:audit:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const { firmId, appUserId } = req.staffSession!;
+      const dismissed = deps.db
+        .select({ id: alertDismissals.auditLogId })
+        .from(alertDismissals)
+        .where(eq(alertDismissals.firmId, firmId));
+      const open = await deps.db
+        .select({ id: auditLog.id })
+        .from(auditLog)
+        .where(and(inArray(auditLog.entityType, ALERT_KINDS), notInArray(auditLog.id, dismissed)));
+      if (open.length === 0) {
+        res.json({ ok: true, dismissed: 0 });
+        return;
+      }
+      await deps.db
+        .insert(alertDismissals)
+        .values(open.map((r) => ({ firmId, auditLogId: r.id, dismissedByAppUserId: appUserId })))
+        .onConflictDoNothing();
+      res.json({ ok: true, dismissed: open.length });
+    },
+  );
+
   return router;
 }
 
