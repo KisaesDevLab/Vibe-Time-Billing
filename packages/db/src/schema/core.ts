@@ -2077,6 +2077,13 @@ export const timeEntries = pgTable(
     retainerHours: numeric('retainer_hours', { precision: 8, scale: 2 }),
     billableHours: numeric('billable_hours', { precision: 8, scale: 2 }),
 
+    // 0179 — durable back-link to the appointment this entry was logged
+    // from (the appointment "Log time" action). Nullable; most time has no
+    // appointment behind it. Set null if the appointment is ever deleted.
+    appointmentId: uuid('appointment_id').references(() => appointments.id, {
+      onDelete: 'set null',
+    }),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2086,6 +2093,9 @@ export const timeEntries = pgTable(
     dateIdx: index('time_entry_date_idx').on(t.entryDate),
     statusIdx: index('time_entry_status_idx').on(t.status),
     batchIdx: index('time_entry_batch_idx').on(t.billingBatchId),
+    appointmentIdx: index('time_entry_appointment_idx')
+      .on(t.appointmentId)
+      .where(sql`appointment_id IS NOT NULL`),
     // CRITICAL: snapshot must be present
     rateSnapshotPositive: check(
       'time_entry_rate_snapshot_positive',

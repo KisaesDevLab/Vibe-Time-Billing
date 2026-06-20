@@ -344,6 +344,12 @@ function LogView({
   // resulting entry is auto-linked to the citing message.
   const initialDescription = searchParams.get('description') ?? '';
   const initialLinkMessageId = searchParams.get('linkMessageId') ?? '';
+  // 0179 — appointment "Log time" deep link. Carries the originating
+  // appointment (persisted as a back-link on submit) plus a pre-filled
+  // duration (hours) and the appointment's date.
+  const initialAppointmentId = searchParams.get('appointmentId') ?? '';
+  const qpHours = searchParams.get('hours');
+  const qpDate = searchParams.get('date');
   const [clientId, setClientId] = useState(() => {
     if (initialClientId) return initialClientId;
     try {
@@ -398,10 +404,17 @@ function LogView({
   const [workflowState, setWorkflowState] = useState('');
   // Process-project print dialog (opened from the green-box button).
   const [processOpen, setProcessOpen] = useState(false);
-  const [entryDate, setEntryDate] = useState(today());
-  const [hours, setHours] = useState('1.00');
+  const [entryDate, setEntryDate] = useState(
+    qpDate && /^\d{4}-\d{2}-\d{2}$/.test(qpDate) ? qpDate : today(),
+  );
+  const [hours, setHours] = useState(
+    qpHours && Number(qpHours) > 0 ? Number(qpHours).toFixed(2) : '1.00',
+  );
   const [description, setDescription] = useState(initialDescription);
   const [linkMessageId, setLinkMessageId] = useState(initialLinkMessageId);
+  // 0179 — one-shot back-link from the appointment "Log time" deep link;
+  // cleared after the first save so a subsequent manual entry isn't linked.
+  const [appointmentId, setAppointmentId] = useState(initialAppointmentId);
   // 0050 — user-controlled out-of-scope override.
   const [outOfScope, setOutOfScope] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -572,6 +585,7 @@ function LogView({
           outOfScopeOverride: outOfScope,
           linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
           workflowState: statusToSet,
+          appointmentId: appointmentId || undefined,
         }),
       });
       if (statusToSet) {
@@ -581,6 +595,7 @@ function LogView({
       setDescription('');
       setOutOfScope(false);
       setLinkMessageId('');
+      setAppointmentId('');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');

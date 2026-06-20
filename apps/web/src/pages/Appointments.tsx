@@ -5,6 +5,7 @@
 // reschedule inbox, and per-staff availability. Hash-routed tabs.
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
@@ -328,9 +329,29 @@ function presetRange(preset: DatePreset): { from: string; to: string } {
 }
 
 function ListTab(): JSX.Element {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<ApptListRow[]>([]);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // BK + 0179 — turn an appointment into a time log. Deep-links to the
+  // Time page with the client/engagement/subject/date pre-filled, the
+  // duration carried as hours, and the appointment id so the resulting
+  // entry is persisted with a durable back-link to it.
+  function logTime(r: ApptListRow): void {
+    const mins = Math.max(
+      0,
+      Math.round((new Date(r.endsAt).getTime() - new Date(r.startsAt).getTime()) / 60000),
+    );
+    const params = new URLSearchParams();
+    if (r.clientId) params.set('clientId', r.clientId);
+    if (r.engagementId) params.set('engagementId', r.engagementId);
+    if (r.title) params.set('description', r.title);
+    if (mins > 0) params.set('hours', (mins / 60).toFixed(2));
+    params.set('date', dateYmd(new Date(r.startsAt)));
+    params.set('appointmentId', r.id);
+    navigate(`/time?${params.toString()}`);
+  }
   // Broad server-side pre-filters that bound the loaded set. Staff is
   // multi-valued per appointment and Type has no column, so both stay as
   // toolbar dropdowns; the date range bounds volume. Everything else
@@ -769,9 +790,16 @@ function ListTab(): JSX.Element {
             key: 'actions',
             header: '',
             render: (r) => (
-              <Button size="sm" variant="secondary" onClick={() => setDetailId(r.id)}>
-                Details
-              </Button>
+              <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
+                {r.status !== 'CANCELLED' && (
+                  <Button size="sm" variant="secondary" onClick={() => logTime(r)}>
+                    Log time
+                  </Button>
+                )}
+                <Button size="sm" variant="secondary" onClick={() => setDetailId(r.id)}>
+                  Details
+                </Button>
+              </span>
             ),
           },
         ]}

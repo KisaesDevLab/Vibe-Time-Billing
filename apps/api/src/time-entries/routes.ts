@@ -11,6 +11,7 @@ import type { Redis } from 'ioredis';
 import type { Database } from '@vibe/db';
 import {
   clientRateOverrides,
+  appointments,
   clients,
   engagementRateOverrides,
   engagementStatusConfig,
@@ -135,6 +136,10 @@ const CreateSchema = z.object({
   // logging. Validated against the firm's status catalog; gated by the
   // same time_entry:create permission as the entry itself.
   workflowState: z.string().min(1).max(120).optional(),
+  // 0179 — the appointment this entry was logged from (the appointment
+  // "Log time" action). Validated to belong to the firm before it's
+  // persisted as a durable back-link on the entry.
+  appointmentId: z.string().uuid().optional(),
 });
 
 const UpdateSchema = z.object({
@@ -420,6 +425,27 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         return;
       }
 
+      // 0179 — validate the optional appointment back-link: it must exist
+      // and belong to the firm. We don't force it to match the engagement
+      // (an appointment may be client-only, or logged against a different
+      // engagement than it was booked under) — just that it's the firm's.
+      if (parsed.data.appointmentId) {
+        const [appt] = await deps.db
+          .select({ id: appointments.id })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, parsed.data.appointmentId),
+              eq(appointments.firmId, session.firmId),
+            ),
+          )
+          .limit(1);
+        if (!appt) {
+          res.status(404).json({ error: 'appointment_not_found' });
+          return;
+        }
+      }
+
       // Optional progress-status change. Validate up-front (fail fast,
       // nothing created on a bad status); applied after the entry inserts.
       let statusChange: { from: string; to: string } | null = null;
@@ -568,6 +594,8 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           // staff_rate_snapshot exists for the user; downstream sums
           // COALESCE to 0 in that case.
           costRateSnapshotCents: snapshot.costRateCents,
+          // 0179 — durable back-link to the originating appointment.
+          appointmentId: parsed.data.appointmentId ?? null,
         })
         .returning({ id: timeEntries.id });
 
