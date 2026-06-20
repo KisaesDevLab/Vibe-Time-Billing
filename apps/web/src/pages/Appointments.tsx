@@ -807,13 +807,20 @@ function ListTab(): JSX.Element {
         rowKey={(r) => r.id}
         empty="No appointments match these filters."
       />
-      {detailId && (
-        <DetailDrawer
-          id={detailId}
-          onClose={() => setDetailId(null)}
-          onChanged={() => void load()}
-        />
-      )}
+      {detailId &&
+        (() => {
+          const selected = rows.find((r) => r.id === detailId);
+          return (
+            <DetailDrawer
+              id={detailId}
+              onClose={() => setDetailId(null)}
+              onChanged={() => void load()}
+              onLogTime={
+                selected && selected.status !== 'CANCELLED' ? () => logTime(selected) : undefined
+              }
+            />
+          );
+        })()}
     </Card>
   );
 }
@@ -861,10 +868,14 @@ function DetailDrawer({
   id,
   onClose,
   onChanged,
+  onLogTime,
 }: {
   id: string;
   onClose: () => void;
   onChanged: () => void;
+  // 0179 — provided (and the appointment isn't cancelled) when the entry
+  // can be logged from here; deep-links to the Time form pre-filled.
+  onLogTime?: () => void;
 }): JSX.Element {
   const [d, setD] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
@@ -957,6 +968,13 @@ function DetailDrawer({
               minute: '2-digit',
             })}
           </div>
+          {onLogTime && (
+            <div>
+              <Button size="sm" onClick={onLogTime}>
+                Log time
+              </Button>
+            </div>
+          )}
           <Section title="Staff">
             {d.staff.map((s) => (
               <div
