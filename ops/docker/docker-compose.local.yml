@@ -117,6 +117,21 @@ services:
       # data already in the DB.
       - firm-key:/data/firm-key
       - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+      # Read-only view of host mounts so Admin → Operations → Backup can
+      # enumerate destination drives mounted under /mnt or /media. rshared
+      # surfaces drives hot-plugged after the container starts.
+      - type: bind
+        source: /mnt
+        target: /mnt
+        read_only: true
+        bind:
+          propagation: rshared
+      - type: bind
+        source: /media
+        target: /media
+        read_only: true
+        bind:
+          propagation: rshared
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
       interval: 15s
@@ -293,6 +308,61 @@ services:
       # (e.g. esign.vcpa.app) can route to the OpenSign signing UI.
       - opensign-net
 
+  # Q12 (revised): the backup EXECUTOR — the local counterpart of the prod
+  # `backup` sidecar. Polls vibetb.backup_config and runs pg_dump + the
+  # optional encrypted key bundle when a run is due or was requested from
+  # Admin → Operations → Backup. Reaches the (dev-compose) postgres over the
+  # shared docker_default network; no depends_on since postgres isn't defined
+  # in this compose.
+  backup:
+    image: postgres:16-alpine
+    container_name: vibe-tb-backup
+    environment:
+      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
+      BACKUP_POLL_SECONDS: ${BACKUP_POLL_SECONDS:-300}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      # App-key bundle: encrypted with this OPERATOR-HELD passphrase (never
+      # stored on the appliance). Empty → the DB backup still runs and the key
+      # bundle is skipped + logged.
+      BACKUP_KEYS_PASSPHRASE: ${BACKUP_KEYS_PASSPHRASE:-}
+      # Secrets captured into the bundle. Local crypto is sealed-on-disk, so
+      # the seal file (mounted below) is the critical key; mirror the rest of
+      # the api's secret set too.
+      FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
+      KMS_KEY: ${KMS_KEY:-}
+      STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:-}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vibe}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
+    volumes:
+      - backups:/backups
+      - ../scripts:/scripts:ro
+      # Read-only seal so the encrypted key bundle can capture it.
+      - firm-key:/data/firm-key:ro
+      # External drives: any host drive mounted under /mnt or /media is
+      # writable here and selectable as the destination in the Backup tab
+      # (the api mounts the same paths read-only to enumerate them).
+      - type: bind
+        source: /mnt
+        target: /mnt
+        bind:
+          propagation: rshared
+      - type: bind
+        source: /media
+        target: /media
+        bind:
+          propagation: rshared
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        apk add --no-cache bash gnupg coreutils >/dev/null 2>&1 || true
+        exec bash /scripts/backup.sh --loop
+    restart: unless-stopped
+
   # =====================================================================
   # Q35 — OpenSign e-signature is deployed STANDALONE, not here.
   #
@@ -326,6 +396,7 @@ volumes:
   file-storage:
   storage-mock:
   firm-key:
+  backups:
   caddy-data:
   caddy-config:
   clamav-data:

@@ -5262,3 +5262,52 @@ export const jobRun = pgTable(
     jobIdx: index('job_run_job_idx').on(t.jobName, t.startedAt),
   }),
 );
+
+// 0180 — configurable appliance backup (Q12 revision). Appliance-global
+// (the dump is whole-DB; app keys are appliance-wide), so a single 'default'
+// row like job_schedule. The executor (ops/scripts/backup.sh) reads this and
+// writes backup_run; the API/UI manage it via Admin → Operations → Backup.
+export const backupConfig = pgTable('backup_config', {
+  id: text('id').primaryKey().default('default'),
+  enabled: boolean('enabled').notNull().default(true),
+  // daily | every_2_days | weekly
+  frequency: text('frequency').notNull().default('daily'),
+  // "HH:MM" 24h UTC.
+  timeOfDayUtc: text('time_of_day_utc').notNull().default('02:00'),
+  retentionDays: integer('retention_days').notNull().default(30),
+  destinationPath: text('destination_path').notNull().default('/backups'),
+  includeAppKeys: boolean('include_app_keys').notNull().default(true),
+  keyBundleKeep: integer('key_bundle_keep').notNull().default(14),
+  manualRequestedAt: timestamp('manual_requested_at', { withTimezone: true }),
+  lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+  // null | running | completed | failed
+  lastStatus: text('last_status'),
+  lastError: text('last_error'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const backupRun = pgTable(
+  'backup_run',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    // scheduled | manual
+    kind: text('kind').notNull(),
+    // running | completed | failed
+    status: text('status').notNull(),
+    destinationPath: text('destination_path'),
+    dbFile: text('db_file'),
+    dbBytes: bigint('db_bytes', { mode: 'number' }),
+    keysFile: text('keys_file'),
+    keysBytes: bigint('keys_bytes', { mode: 'number' }),
+    retentionDays: integer('retention_days'),
+    prunedCount: integer('pruned_count'),
+    triggeredBy: text('triggered_by'),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => ({
+    startedIdx: index('backup_run_started_idx').on(t.startedAt),
+  }),
+);

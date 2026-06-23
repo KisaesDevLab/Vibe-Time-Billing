@@ -134,6 +134,22 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@example.com}
     volumes:
       - cloudflared-run:/run/cloudflared
+      # Read-only view of host mounts so Admin → Operations → Backup can
+      # enumerate destination drives. The backup sidecar mounts the same paths
+      # read-write to actually write. rshared lets drives hot-plugged on the
+      # host (under /mnt or /media) propagate into the container.
+      - type: bind
+        source: /mnt
+        target: /mnt
+        read_only: true
+        bind:
+          propagation: rshared
+      - type: bind
+        source: /media
+        target: /media
+        read_only: true
+        bind:
+          propagation: rshared
     entrypoint: ['/usr/bin/tini', '--', '/app/ops/docker/entrypoint-api.sh']
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
@@ -304,6 +320,12 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  # Q12 (revised): the backup EXECUTOR. Schedule, retention, destination and
+  # "include app keys" are configured from Admin → Operations → Backup and
+  # stored in vibetb.backup_config; this sidecar polls that row (every
+  # BACKUP_POLL_SECONDS) and runs pg_dump + the optional encrypted key bundle
+  # when a run is due or was manually requested. It is the only container with
+  # BOTH pg_dump and the /backups volume, so it owns execution.
   backup:
     image: postgres:16-alpine
     container_name: vibe-tb-backup
@@ -311,22 +333,58 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      PGHOST: postgres
-      PGUSER: ${POSTGRES_USER:-vibe}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB:-vibe_tb}
+      # DATABASE_URL drives both pg_dump and the config/run psql queries.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vibe}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibe_tb}
+      BACKUP_POLL_SECONDS: ${BACKUP_POLL_SECONDS:-300}
+      # Fallback defaults used only before the 0180 migration / on a DB hiccup.
       BACKUP_DIR: /backups
-      RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      # --- App-key bundle (include_app_keys in the UI) -------------------
+      # The bundle is encrypted with this OPERATOR-HELD passphrase. It is NOT
+      # stored on the appliance (it protects the very secrets below). Leave it
+      # empty to disable the key bundle even when the UI toggle is on.
+      BACKUP_KEYS_PASSPHRASE: ${BACKUP_KEYS_PASSPHRASE:-}
+      # Secrets captured into the encrypted bundle. Mirror the api/worker set
+      # so a restored DB can decrypt its at-rest columns and issue sessions.
+      KMS_KEY: ${KMS_KEY:-}
+      STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:-}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
+      B2_KEY_ID: ${B2_KEY_ID:-}
+      B2_APPLICATION_KEY: ${B2_APPLICATION_KEY:-}
     volumes:
       - backups:/backups
       - ../scripts:/scripts:ro
+      # Optional: mount the deployment's secret env files (read-only) so the
+      # raw *.env are captured verbatim into the encrypted key bundle (the
+      # KMS_KEY/JWT/etc. env vars above are captured regardless). Set
+      # APPLIANCE_SECRETS_DIR to your secrets dir; the default (the compose
+      # dir) resolves but contains no root-level *.env, so it's inert.
+      - ${APPLIANCE_SECRETS_DIR:-.}:/secrets:ro
+      # External drives: any host drive mounted under /mnt or /media is
+      # writable here and selectable as the destination in the Backup tab.
+      # rshared lets drives hot-plugged after start propagate in (the api
+      # mounts the same paths read-only to enumerate them).
+      - type: bind
+        source: /mnt
+        target: /mnt
+        bind:
+          propagation: rshared
+      - type: bind
+        source: /media
+        target: /media
+        bind:
+          propagation: rshared
     entrypoint: ['/bin/sh', '-c']
-    # Q12: nightly pg_dump cron via simple loop (lighter than full cron).
     command:
       - |
-        apk add --no-cache busybox-suid >/dev/null 2>&1 || true
-        echo "0 2 * * * /scripts/backup.sh" > /etc/crontabs/root
-        crond -f -l 8
+        apk add --no-cache bash gnupg coreutils >/dev/null 2>&1 || true
+        exec bash /scripts/backup.sh --loop
     restart: unless-stopped
 
 volumes:

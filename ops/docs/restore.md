@@ -1,6 +1,31 @@
 # Database restore procedure
 
-This document describes how to restore the Vibe Practice Management database from a `pg_dump` backup. See `ops/scripts/backup.sh` for how backups are created (nightly at firm-local 02:00, retained 30 days in `/backups`).
+This document describes how to restore the Vibe Practice Management database from a `pg_dump` backup. See `ops/scripts/backup.sh` for how backups are created.
+
+## Schedule, destination & retention (configurable)
+
+The backup **schedule, destination path, retention, and "include app keys"** are configured in the app at **Admin → Operations → Backup** and stored in `vibetb.backup_config` (a single appliance-global row). The `backup` sidecar (the only container with both `pg_dump` and the `/backups` volume) polls that row every `BACKUP_POLL_SECONDS` (default 300) and runs when a scheduled run is due or a manual run was requested, recording each run in `vibetb.backup_run`.
+
+Defaults (recommended): **daily** at **02:00 UTC**, **30-day** retention, written to `/backups`. To copy off-appliance, **mount an external drive on the host under `/mnt` or `/media`** (e.g. `/mnt/backup-drive`) — the api binds `/mnt`+`/media` read-only (to enumerate them) and the `backup` sidecar binds them read-write (to write), so the drive appears in the **Backup tab's destination dropdown**. Pick it there and save. Drives hot-plugged after the stack starts propagate in via `rshared`; if a drive doesn't appear, click **Rescan** (or, on hosts without mount propagation, mount it before starting the appliance).
+
+## App keys — REQUIRED for a working restore
+
+A database dump alone is **not** restorable to a functioning appliance. Stripe, email, SMS and webhook credentials are stored **encrypted in the DB under the appliance master key `KMS_KEY`**; staff/portal sessions are signed with `STAFF_JWT_SECRET` / `PORTAL_JWT_SECRET`. Without these keys, the restored DB's encrypted columns are unreadable and no one can sign in.
+
+When **include app keys** is enabled, the sidecar also writes an **encrypted** bundle `vibe-tb-keys-YYYY-MM-DD-HHMMSS.tar.gz.gpg` (gpg symmetric, AES-256) containing `KMS_KEY`, the JWT secrets, `POSTGRES_PASSWORD`, the proposal HMAC seed, VAPID keys, the sealed-on-disk master key (if present), and any operator-mounted `/secrets/*.env`. It is encrypted with `BACKUP_KEYS_PASSPHRASE` — a passphrase **the operator holds and stores off-appliance** (never on the box; it protects the very secrets inside). The last `key_bundle_keep` (default 14) bundles are retained.
+
+To recover the keys before restoring data:
+
+```sh
+# Decrypt and inspect the most recent key bundle (needs BACKUP_KEYS_PASSPHRASE)
+gpg --batch --decrypt --passphrase "$BACKUP_KEYS_PASSPHRASE" \
+  /backups/vibe-tb-keys-2026-05-18-020000.tar.gz.gpg | tar -tzf -
+
+# Extract keys.env and restore each value into the new appliance's env file
+# (KMS_KEY, STAFF_JWT_SECRET, PORTAL_JWT_SECRET, POSTGRES_PASSWORD, …) BEFORE
+# starting the api/worker — the api exits at boot if KMS_KEY is missing, and a
+# mismatched KMS_KEY cannot decrypt the restored DB's secret columns.
+```
 
 ## When to restore
 
@@ -26,7 +51,7 @@ If the firm needs zero data loss, document the upgrade path to WAL archiving or 
    ```sh
    pg_dump -U vibe -d vibe_tb > /backups/pre-restore-snapshot-$(date +%F).sql
    ```
-4. **Identify the backup to restore.** Backups in `/backups/` are named `vibe-tb-YYYY-MM-DD.sql.gz`. Pick the most recent one before the corruption window.
+4. **Identify the backup to restore.** Backups in the destination dir are named `vibe-tb-YYYY-MM-DD-HHMMSS.sql.gz` (the run history in Admin → Operations → Backup lists each with its size). Pick the most recent one before the corruption window.
 
 ## Restore procedure
 

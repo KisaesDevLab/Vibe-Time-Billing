@@ -20,3 +20,4 @@ export * as proposals from './proposals';
 export * as taxReturns from './tax-returns';
 export * as signatures from './signatures';
 export * as tasks from './tasks';
+export * as backup from './backup';

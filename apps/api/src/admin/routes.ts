@@ -3,6 +3,9 @@
 // Admin endpoints (Phase 4). Backs the firm-settings, office, and user
 // admin UIs. RBAC-gated via `requirePermission`.
 
+import { access, readFile, statfs } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
@@ -10,6 +13,8 @@ import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
+  backupConfig,
+  backupRun,
   engagementStatusConfig,
   engagementStatusServiceLine,
   firms,
@@ -37,6 +42,20 @@ import {
   type PermissionOverride,
   type RoleSlug,
 } from '@vibe/core/rbac';
+import {
+  BACKUP_FREQUENCIES,
+  DEFAULT_DESTINATION,
+  backupDestinationsFromMounts,
+  computeNextRunAt,
+  retentionRecommendation,
+  validateRetentionDays,
+  MIN_RETENTION_DAYS,
+  MAX_RETENTION_DAYS,
+  RECOMMENDED_FREQUENCY,
+  RECOMMENDED_RETENTION_DAYS,
+  RECOMMENDED_KEY_BUNDLE_KEEP,
+  type BackupFrequency,
+} from '@vibe/core/backup';
 import { seedNotificationTemplates, NOTIFICATION_TEMPLATE_DEFAULTS } from '@vibe/db/seed-helpers';
 
 import { emitAudit } from '../auth/audit';
@@ -745,20 +764,211 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // ---------------------------------------------------------------------
+  // Backup (Q12 revision). Control plane for the configurable appliance
+  // backup. The executor (ops/scripts/backup.sh, the only container with
+  // pg_dump + the /backups volume) reads backup_config and writes backup_run;
+  // these endpoints just read/patch config, list run history, and request a
+  // one-off run. Appliance-global singleton ('default' row).
+  // ---------------------------------------------------------------------
+  const BackupConfigPatchSchema = z
+    .object({
+      enabled: z.boolean(),
+      frequency: z.enum(BACKUP_FREQUENCIES as unknown as [BackupFrequency, ...BackupFrequency[]]),
+      timeOfDayUtc: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'want "HH:MM" 24h UTC'),
+      retentionDays: z.number().int().min(MIN_RETENTION_DAYS).max(MAX_RETENTION_DAYS),
+      destinationPath: z.string().min(1).max(512),
+      includeAppKeys: z.boolean(),
+      keyBundleKeep: z.number().int().min(1).max(365),
+    })
+    .partial();
+
+  router.get(
+    '/backup/config',
+    requirePermission(deps, 'admin:backup:manage'),
+    async (_req: Request, res: Response) => {
+      const recommendation = {
+        frequency: RECOMMENDED_FREQUENCY,
+        retentionDays: RECOMMENDED_RETENTION_DAYS,
+        keyBundleKeep: RECOMMENDED_KEY_BUNDLE_KEEP,
+        text: retentionRecommendation(),
+      };
+      if (!deps.db) {
+        res.json({ config: null, nextRunAt: null, recommendation });
+        return;
+      }
+      const [config] = await deps.db
+        .select()
+        .from(backupConfig)
+        .where(eq(backupConfig.id, 'default'))
+        .limit(1);
+      const nextRunAt =
+        config && config.enabled
+          ? computeNextRunAt(
+              { frequency: config.frequency as BackupFrequency, timeOfDayUtc: config.timeOfDayUtc },
+              config.lastSuccessAt ?? null,
+              new Date(),
+            ).toISOString()
+          : null;
+      res.json({ config: config ?? null, nextRunAt, recommendation });
+    },
+  );
+
+  router.patch(
+    '/backup/config',
+    requirePermission(deps, 'admin:backup:manage'),
+    async (req: Request, res: Response) => {
+      const parsed = BackupConfigPatchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      // Defence-in-depth: clamp retention through the shared validator even
+      // though Zod already bounds it, so the stored value is always sane.
+      const patch = { ...parsed.data };
+      if (patch.retentionDays !== undefined) {
+        patch.retentionDays = validateRetentionDays(patch.retentionDays).retentionDays;
+      }
+      const session = req.staffSession!;
+      await deps.db
+        .update(backupConfig)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(backupConfig.id, 'default'));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'backup_config',
+        entityId: 'default',
+        actorAppUserId: session.appUserId,
+        after: patch,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  router.get(
+    '/backup/runs',
+    requirePermission(deps, 'admin:backup:manage'),
+    async (_req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ runs: [] });
+        return;
+      }
+      const runs = await deps.db
+        .select()
+        .from(backupRun)
+        .orderBy(desc(backupRun.startedAt))
+        .limit(50);
+      res.json({ runs });
+    },
+  );
+
+  // Mounted-drive discovery for the destination dropdown. Reads /proc/mounts
+  // (the api binds the host's /mnt + /media read-only so external drives
+  // surface; the executor binds them read-write to actually write), filters to
+  // plausible targets, and enriches each with free/total space. Always offers
+  // the durable /backups volume and the currently-configured path (even if its
+  // drive is detached) so a selection is never lost.
+  router.get(
+    '/backup/destinations',
+    requirePermission(deps, 'admin:backup:manage'),
+    async (_req: Request, res: Response) => {
+      type Dest = {
+        path: string;
+        fstype: string | null;
+        device: string | null;
+        totalBytes: number | null;
+        freeBytes: number | null;
+        mounted: boolean;
+      };
+
+      let mounts: { path: string; fstype: string; device: string }[] = [];
+      try {
+        mounts = backupDestinationsFromMounts(await readFile('/proc/mounts', 'utf8'));
+      } catch {
+        // /proc/mounts unreadable (non-Linux dev box) — fall back to defaults.
+        mounts = [];
+      }
+
+      // Ensure the durable default is present even if not in /proc/mounts.
+      if (!mounts.some((m) => m.path === DEFAULT_DESTINATION)) {
+        mounts.unshift({ path: DEFAULT_DESTINATION, fstype: '', device: '' });
+      }
+
+      const enrich = async (m: { path: string; fstype: string; device: string }): Promise<Dest> => {
+        let totalBytes: number | null = null;
+        let freeBytes: number | null = null;
+        let mounted = false;
+        try {
+          await access(m.path, fsConstants.F_OK);
+          mounted = true;
+          const s = await statfs(m.path);
+          totalBytes = Number(s.blocks) * s.bsize;
+          freeBytes = Number(s.bavail) * s.bsize;
+        } catch {
+          mounted = false;
+        }
+        return {
+          path: m.path,
+          fstype: m.fstype || null,
+          device: m.device || null,
+          totalBytes,
+          freeBytes,
+          mounted,
+        };
+      };
+
+      const destinations = await Promise.all(mounts.map(enrich));
+
+      // Include the current configured destination if it isn't already listed.
+      let current: string | null = null;
+      if (deps.db) {
+        const [cfg] = await deps.db
+          .select({ destinationPath: backupConfig.destinationPath })
+          .from(backupConfig)
+          .where(eq(backupConfig.id, 'default'))
+          .limit(1);
+        current = cfg?.destinationPath ?? null;
+        if (current && !destinations.some((d) => d.path === current)) {
+          destinations.push(await enrich({ path: current, fstype: '', device: '' }));
+        }
+      }
+
+      res.json({ destinations, current });
+    },
+  );
+
   router.post(
     '/backup/trigger',
     requirePermission(deps, 'admin:backup:manage'),
     async (req: Request, res: Response) => {
-      // Real backups run from a cron inside ops/docker — this endpoint
-      // marks an audit event the operator can correlate against the file.
+      // Request a one-off run: stamp manual_requested_at. The executor polls
+      // backup_config, runs once, then clears the stamp (writing a backup_run
+      // row with kind='manual'). The returned marker is kept for back-compat
+      // with operators correlating against the audit log.
       const session = req.staffSession!;
-      res.json({
-        ok: true,
-        kind: 'manual',
-        requestedBy: session.appUserId,
-        // The ops script reads this header to differentiate manual runs.
-        marker: `manual-${new Date().toISOString().replace(/[:.]/g, '-')}`,
-      });
+      const marker = `manual-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      if (deps.db) {
+        await deps.db
+          .update(backupConfig)
+          .set({ manualRequestedAt: new Date() })
+          .where(eq(backupConfig.id, 'default'));
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'backup_config',
+          entityId: 'default',
+          actorAppUserId: session.appUserId,
+          after: { manualRequested: true, marker },
+          ip: req.ip ?? null,
+          userAgent: req.get('user-agent') ?? null,
+        }).catch(() => undefined);
+      }
+      res.json({ ok: true, kind: 'manual', requestedBy: session.appUserId, marker });
     },
   );
 

@@ -33,7 +33,8 @@
     "./signatures": "./src/signatures/index.ts",
     "./tasks": "./src/tasks/index.ts",
     "./rollforward": "./src/rollforward/index.ts",
-    "./pricing": "./src/pricing/index.ts"
+    "./pricing": "./src/pricing/index.ts",
+    "./backup": "./src/backup/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
