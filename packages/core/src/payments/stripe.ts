@@ -14,6 +14,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ChargeRequest,
   ChargeResult,
+  CreateCheckoutSessionRequest,
+  CreateCheckoutSessionResult,
   CreateIntentRequest,
   CreateIntentResult,
   PaymentProvider,
@@ -110,6 +112,42 @@ export function createStripeProvider(opts: StripeProviderOptions): PaymentProvid
       const a = Buffer.from(expected, 'hex');
       const b = Buffer.from(match[2]!, 'hex');
       return a.length === b.length && timingSafeEqual(a, b);
+    },
+
+    async createCheckoutSession(
+      req: CreateCheckoutSessionRequest,
+    ): Promise<CreateCheckoutSessionResult> {
+      const params: Record<string, string> = {
+        mode: 'payment',
+        success_url: req.successUrl,
+        cancel_url: req.cancelUrl,
+        'line_items[0][quantity]': '1',
+        'line_items[0][price_data][currency]': req.currency.toLowerCase(),
+        'line_items[0][price_data][unit_amount]': String(req.amountCents),
+        'line_items[0][price_data][product_data][name]': req.productName,
+      };
+      // Stamp metadata on both the session and the resulting PaymentIntent so
+      // the webhook can resolve the pay-link from either event shape.
+      for (const [k, v] of Object.entries(req.metadata)) {
+        params[`metadata[${k}]`] = v;
+        params[`payment_intent_data[metadata][${k}]`] = v;
+      }
+      try {
+        const json = (await postForm('/checkout/sessions', params)) as {
+          id: string;
+          url: string;
+        };
+        return { ok: true, sessionId: json.id, url: json.url };
+      } catch (err) {
+        if (err instanceof StripeError) {
+          return {
+            ok: false,
+            errorCode: String(err.statusCode),
+            errorMessage: err.message,
+          };
+        }
+        throw err;
+      }
     },
 
     async createIntent(req: CreateIntentRequest): Promise<CreateIntentResult> {

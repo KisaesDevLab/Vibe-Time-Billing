@@ -49,6 +49,7 @@ import { createRouteSheetRouter } from './route-sheets/routes';
 import { createProcessProjectRouter } from './process-project/routes';
 import { createStaffFileShareRouter } from './files/share-routes';
 import { createFileRecipientRouter } from './share-public/file-recipient';
+import { createInvoicePayPublicRouter } from './pay-public/invoice-pay';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
@@ -837,6 +838,7 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendPortalEmail,
     sendSms: deps.sendPortalSms,
     portalBaseUrl: config.PORTAL_BASE_URL,
+    publicBaseUrl: config.PUBLIC_BASE_URL ?? config.PORTAL_BASE_URL,
     paymentProvider: deps.stripeProvider ?? null,
     requireStepUp: stepUpGuard,
   });
@@ -1093,6 +1095,17 @@ export function createApp(deps: AppDeps): Express {
     sendSms: deps.sendPortalSms,
   });
   app.use('/api/shared-file', fileRecipientRouter);
+
+  // 0181 — public pay-by-link surface (no portal auth). The link token is
+  // the credential; opens a Stripe Checkout Session. Settlement is recorded
+  // by the Stripe webhook, not here.
+  const invoicePayPublicRouter = createInvoicePayPublicRouter({
+    db: deps.db,
+    stripe: deps.stripeProvider ?? null,
+    redis: deps.redis,
+    publicBaseUrl: config.PUBLIC_BASE_URL ?? config.PORTAL_BASE_URL,
+  });
+  app.use('/api/pay', invoicePayPublicRouter);
 
   // TR-7 — tax-return recipient API (3rd-party token surface). Mounted
   // under /api so Caddy proxies it; the recipient *page* is the portal

@@ -17,6 +17,11 @@ const Schema = z.object({
 
   APP_BASE_URL: z.string().url().default('http://localhost:5173'),
   PORTAL_BASE_URL: z.string().url().default('http://localhost:5174'),
+  // 0181 — internet-facing origin that serves the no-login pay-by-link page
+  // (/pay/:token) and the public /api/pay surface. Distinct from
+  // PORTAL_BASE_URL because the pay page must be reachable WITHOUT a portal
+  // session. Defaults to PORTAL_BASE_URL when unset (single-host deploys).
+  PUBLIC_BASE_URL: z.string().url().optional(),
 
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),

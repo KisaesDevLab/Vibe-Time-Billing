@@ -13,6 +13,7 @@ import {
   clients,
   creditMemos,
   dunningHistory,
+  invoicePayLinks,
   invoices,
   paymentMethod,
   paymentReceipts,
@@ -49,6 +50,8 @@ interface StripeEvent {
     object: {
       id: string;
       amount?: number;
+      // Checkout Session total (cents). Present on checkout.session.* events.
+      amount_total?: number;
       payment_intent?: string;
       metadata?: Record<string, string>;
       // ACH lifecycle (best-effort extraction; shapes vary by event type).
@@ -551,6 +554,67 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           source: 'dispute',
         }).catch((err: unknown) => logger.error({ err }, 'ach dispute handling failed'));
       }
+      return;
+    }
+    case 'checkout.session.completed': {
+      // 0181 — pay-by-link settlement. A hosted Checkout Session the client
+      // opened from the no-login /pay/:token page has completed. We do NOT
+      // trust the browser redirect; THIS event is the proof of payment.
+      const meta = event.data.object.metadata ?? {};
+      const tokenHash = meta['pay_link_token_hash'];
+      const linkInvoiceId = meta['invoice_id'];
+      if (!tokenHash || !linkInvoiceId) return; // not a pay-link checkout
+      const [link] = await deps.db
+        .select()
+        .from(invoicePayLinks)
+        .where(eq(invoicePayLinks.tokenHash, tokenHash))
+        .limit(1);
+      if (!link) return;
+      // The session's PaymentIntent is the ledger key; chargeId here is the
+      // Checkout Session id (cs_…), which we stash for reconciliation.
+      const piId = event.data.object.payment_intent ?? chargeId;
+      const [existing] = await deps.db
+        .select({ id: payments.id, status: payments.status })
+        .from(payments)
+        .where(eq(payments.providerChargeId, piId))
+        .limit(1);
+      if (existing?.status === 'SUCCEEDED') {
+        // Re-delivery: ledger already settled. Ensure the link reflects PAID.
+        if (link.status !== 'PAID') {
+          await deps.db
+            .update(invoicePayLinks)
+            .set({ status: 'PAID', paidAt: new Date(), stripeSessionId: chargeId })
+            .where(eq(invoicePayLinks.id, link.id));
+        }
+        return;
+      }
+      if (!existing) {
+        const amount = event.data.object.amount_total ?? event.data.object.amount ?? 0;
+        await deps.db.insert(payments).values({
+          invoiceId: linkInvoiceId,
+          amountCents: amount,
+          feeCents: 0,
+          provider: 'STRIPE',
+          providerChargeId: piId,
+          status: 'PENDING',
+          receivedAt: new Date(),
+        });
+      }
+      await deps.db
+        .update(invoicePayLinks)
+        .set({ status: 'PAID', paidAt: new Date(), stripeSessionId: chargeId })
+        .where(eq(invoicePayLinks.id, link.id));
+      // Delegate to the succeeded path: it finds the pending payment by
+      // provider_charge_id, flips it to SUCCEEDED, updates the invoice, and
+      // runs every paid side-effect (escrow promote, confirmation email,
+      // retainer activation, outbound webhooks) — idempotent on
+      // (provider_charge_id, status). A real payment_intent.succeeded for the
+      // same PI arriving later finds it already SUCCEEDED and no-ops.
+      await dispatch(deps, {
+        id: event.id,
+        type: 'payment_intent.succeeded',
+        data: { object: { id: piId, payment_intent: piId, metadata: meta } },
+      });
       return;
     }
     default:

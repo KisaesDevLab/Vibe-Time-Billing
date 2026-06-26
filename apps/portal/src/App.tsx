@@ -61,6 +61,7 @@ import { TaxReturnsPage } from './pages/TaxReturns';
 import { TaxReturnViewPage } from './pages/TaxReturnView';
 import { SharedTaxReturnPage } from './pages/SharedTaxReturn';
 import { SharedFilePage } from './pages/SharedFile';
+import { PayPage } from './pages/PayPage';
 import { InOfficeSignPage } from './pages/InOfficeSign';
 
 export function App(): JSX.Element {
@@ -114,6 +115,9 @@ function PortalRoutes(): JSX.Element {
         <Route path="/shared/file/:token" element={<SharedFilePage />} />
         {/* Public in-office signing landing — per-signer QR target. */}
         <Route path="/in-office/:token" element={<InOfficeSignPage />} />
+        {/* 0181 — no-login pay-by-link landing + post-checkout return page. */}
+        <Route path="/pay/:token" element={<PayPage />} />
+        <Route path="/pay/:token/done" element={<PayPage />} />
         <Route
           path="*"
           element={

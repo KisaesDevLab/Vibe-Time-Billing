@@ -43,6 +43,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { maybeCreateRetainerOffer } from '../retainers/offers';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
+import { createPayLink, voidActivePayLinks } from '../payments/pay-link-helper';
 import { csvField } from '../lib/csv';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -59,6 +60,8 @@ export interface InvoiceRoutesDeps extends RbacDeps {
   // returns 503 if the provider isn't configured.
   sendSms?: (args: { to: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
+  // 0181 — internet-facing origin for the no-login pay-by-link page.
+  publicBaseUrl?: string;
   paymentProvider?: PaymentProvider | null;
   // Stage 1B — step-up gate for void/refund actions. Optional so tests
   // can mount the router without an auth stack.
@@ -104,6 +107,11 @@ const CreditMemoSchema = z.object({
   // credit memo. Recorded in audit log + invoice notes so reverse
   // lookups work (admin search by adjustmentId).
   adjustmentId: z.string().uuid().optional(),
+});
+
+// 0181 — pay-by-link delivery. Same token sent on whichever channels.
+const PayLinkSendSchema = z.object({
+  channel: z.enum(['EMAIL', 'SMS', 'BOTH']).default('EMAIL'),
 });
 
 const LineItemSchema = z.object({
@@ -2028,10 +2036,33 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
     }
     const balance = Number(inv.totalCents) - Number(inv.paidCents);
     const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+    // 0181 — mint a no-login pay-by-link so the reminder itself is payable
+    // without a portal session. Best-effort: if minting fails, fall back to
+    // the portal link only. Multiple active links may coexist, so this never
+    // invalidates a link the client may already be holding.
+    let payUrl = '';
+    const payBase = (deps.publicBaseUrl ?? '').replace(/\/$/, '');
+    if (payBase) {
+      try {
+        const payLink = await createPayLink(deps.db, {
+          firmId: session.firmId,
+          invoiceId: inv.id,
+          createdByAppUserId: session.appUserId,
+        });
+        payUrl = `${payBase}/pay/${payLink.token}`;
+      } catch (err) {
+        logger.error({ err, invoiceId: inv.id }, 'reminder pay-link mint failed');
+      }
+    }
+    const payLine = payUrl
+      ? `Pay now (no login required): ${payUrl}\n\n`
+      : link
+        ? `View/pay: ${link}\n\n`
+        : '';
     const fallbackBody =
       `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
       `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
-      (link ? `View/pay: ${link}\n\n` : '') +
+      payLine +
       `Please reach out if you have any questions.`;
     const fallbackSubject = `Reminder: invoice ${inv.invoiceNumber}`;
     const [client] = await deps.db
@@ -2054,6 +2085,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           balance: '$' + (balance / 100).toFixed(2),
           due_date: String(inv.dueDate),
           portal_url: link,
+          pay_url: payUrl,
         },
       },
     });
@@ -2092,6 +2124,264 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
 
   router.post('/:id/dunning', requirePermission(deps, 'invoice:write'), remindHandler);
   router.post('/:id/remind', requirePermission(deps, 'invoice:write'), remindHandler);
+
+  // 0181 — send a pay-by-link payment request by email and/or SMS. Mints a
+  // single fresh link (the same token is delivered on both channels) and
+  // dispatches it; the client pays without logging into the portal. Each
+  // channel has its own 24h cooldown (invoice_reminder_log.channel) and a
+  // missing destination is reported as a per-channel "skip", not a hard
+  // error (except when that channel was the only one requested).
+  router.post(
+    '/:id/pay-link/send',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response): Promise<void> => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const parsed = PayLinkSendSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const wantEmail = parsed.data.channel === 'EMAIL' || parsed.data.channel === 'BOTH';
+      const wantSms = parsed.data.channel === 'SMS' || parsed.data.channel === 'BOTH';
+
+      const [inv] = await deps.db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          totalCents: invoices.totalCents,
+          paidCents: invoices.paidCents,
+          dueDate: invoices.dueDate,
+          status: invoices.status,
+          clientId: invoices.clientId,
+        })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (inv.status === 'DRAFT' || inv.status === 'PAID' || inv.status === 'VOIDED') {
+        res.status(409).json({ error: 'invoice_not_payable', status: inv.status });
+        return;
+      }
+      const balance = Number(inv.totalCents) - Number(inv.paidCents);
+      if (balance <= 0) {
+        res.status(409).json({ error: 'no_balance_due' });
+        return;
+      }
+
+      const billingContact = await getBillingContact(deps.db, inv.clientId);
+      // Hard error only when the SOLE requested channel has no destination.
+      if (parsed.data.channel === 'EMAIL' && (!deps.sendEmail || !billingContact?.email)) {
+        res.status(409).json({ error: 'no_email_destination' });
+        return;
+      }
+      if (parsed.data.channel === 'SMS' && (!deps.sendSms || !billingContact?.phone)) {
+        res.status(409).json({ error: 'no_sms_destination' });
+        return;
+      }
+
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const onCooldown = async (channel: 'EMAIL' | 'SMS'): Promise<boolean> => {
+        const [recent] = await deps
+          .db!.select({ sentAt: invoiceReminderLog.sentAt })
+          .from(invoiceReminderLog)
+          .where(
+            and(
+              eq(invoiceReminderLog.invoiceId, inv.id),
+              eq(invoiceReminderLog.channel, channel),
+              sql`${invoiceReminderLog.sentAt} > ${cutoff.toISOString()}`,
+            ),
+          )
+          .limit(1);
+        return Boolean(recent);
+      };
+
+      // Mint one fresh link; the same token is delivered on every channel.
+      const link = await createPayLink(deps.db, {
+        firmId: session.firmId,
+        invoiceId: inv.id,
+        createdByAppUserId: session.appUserId,
+      });
+      const base = (deps.publicBaseUrl ?? '').replace(/\/$/, '');
+      const payUrl = base ? `${base}/pay/${link.token}` : `/pay/${link.token}`;
+
+      const [client] = await deps.db
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, inv.clientId))
+        .limit(1);
+      const firmMerge = await firmScope(deps.db, session.firmId);
+      const dollars = '$' + (balance / 100).toFixed(2);
+      const context = {
+        client: { name: client?.name ?? '' },
+        firm: firmMerge,
+        invoice: {
+          number: inv.invoiceNumber,
+          balance: dollars,
+          due_date: String(inv.dueDate),
+          pay_url: payUrl,
+        },
+      };
+
+      const results: { email: string; sms: string } = { email: 'skipped', sms: 'skipped' };
+
+      if (wantEmail) {
+        if (!deps.sendEmail || !billingContact?.email) {
+          results.email = 'no_destination';
+        } else if (await onCooldown('EMAIL')) {
+          results.email = 'cooldown';
+        } else {
+          const fallbackSubject = `Payment request: invoice ${inv.invoiceNumber}`;
+          const fallbackBody =
+            `${firmMerge['name'] ?? 'Your accountant'} has requested payment for ` +
+            `invoice ${inv.invoiceNumber} (${dollars}).\n\n` +
+            `Pay securely — no login required:\n${payUrl}\n\n` +
+            `Please reach out if you have any questions.`;
+          const rendered = await renderTemplate({
+            db: deps.db,
+            firmId: session.firmId,
+            kind: 'invoice_payment_request',
+            channel: 'EMAIL',
+            fallback: { subject: fallbackSubject, body: fallbackBody },
+            context,
+          });
+          try {
+            await deps.sendEmail({
+              to: billingContact.email,
+              subject: rendered.subject ?? fallbackSubject,
+              body: rendered.body,
+            });
+            results.email = 'sent';
+            await deps.db
+              .insert(invoiceReminderLog)
+              .values({
+                invoiceId: inv.id,
+                actorAppUserId: session.appUserId,
+                kind: 'MANUAL',
+                template: 'PAY_LINK_REQUEST',
+                channel: 'EMAIL',
+                sentAt: new Date(),
+              })
+              .catch((err: unknown) => logger.error({ err }, 'pay-link email log write failed'));
+            await recordOutbound({
+              db: deps.db,
+              firmId: session.firmId,
+              clientId: inv.clientId,
+              channel: 'EMAIL',
+              subject: rendered.subject ?? fallbackSubject,
+              body: rendered.body,
+              relatedEntityType: 'invoice',
+              relatedEntityId: inv.id,
+            }).catch((err) => logger.warn({ err }, 'comms record failed'));
+          } catch (err) {
+            logger.error({ err, invoiceId: inv.id }, 'pay-link email dispatch failed');
+            results.email = 'failed';
+          }
+        }
+      }
+
+      if (wantSms) {
+        // NOTE: staff-initiated, like POST /:id/send-sms. SMS marketing/quiet-
+        // hours consent (TCPA) is assumed enforced at the contact level; this
+        // is a transactional payment request the staff member explicitly sent.
+        if (!deps.sendSms || !billingContact?.phone) {
+          results.sms = 'no_destination';
+        } else if (await onCooldown('SMS')) {
+          results.sms = 'cooldown';
+        } else {
+          const fallbackSmsBody =
+            `${firmMerge['name'] ?? 'Your accountant'}: invoice ${inv.invoiceNumber}, ` +
+            `balance ${dollars}. Pay securely (no login): ${payUrl}`;
+          const rendered = await renderTemplate({
+            db: deps.db,
+            firmId: session.firmId,
+            kind: 'invoice_payment_request',
+            channel: 'SMS',
+            fallback: { body: fallbackSmsBody },
+            context,
+          });
+          try {
+            await deps.sendSms({ to: billingContact.phone, body: rendered.body });
+            results.sms = 'sent';
+            await deps.db
+              .insert(invoiceReminderLog)
+              .values({
+                invoiceId: inv.id,
+                actorAppUserId: session.appUserId,
+                kind: 'MANUAL',
+                template: 'PAY_LINK_REQUEST',
+                channel: 'SMS',
+                sentAt: new Date(),
+              })
+              .catch((err: unknown) => logger.error({ err }, 'pay-link sms log write failed'));
+            await recordOutbound({
+              db: deps.db,
+              firmId: session.firmId,
+              clientId: inv.clientId,
+              channel: 'SMS',
+              body: rendered.body,
+              relatedEntityType: 'invoice',
+              relatedEntityId: inv.id,
+            }).catch((err) => logger.warn({ err }, 'comms record failed'));
+          } catch (err) {
+            logger.error({ err, invoiceId: inv.id }, 'pay-link sms dispatch failed');
+            results.sms = 'failed';
+          }
+        }
+      }
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'pay_link_sent', payLinkId: link.id, channel: parsed.data.channel, results },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      res.json({ ok: true, payUrl, results });
+    },
+  );
+
+  // 0181 — revoke any ACTIVE pay-link for this invoice.
+  router.post(
+    '/:id/pay-link/revoke',
+    requirePermission(deps, 'invoice:write'),
+    async (req: Request, res: Response): Promise<void> => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [inv] = await deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.id, req.params['id']!), eq(invoices.firmId, session.firmId)))
+        .limit(1);
+      if (!inv) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await voidActivePayLinks(deps.db, inv.id);
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'invoice',
+        entityId: inv.id,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'pay_link_revoked' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
 
   router.post(
     '/:id/refund',

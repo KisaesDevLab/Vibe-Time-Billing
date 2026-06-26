@@ -3664,10 +3664,54 @@ export const invoiceReminderLog = pgTable(
     }),
     kind: invoiceReminderKind('kind').notNull(),
     template: text('template').notNull(),
+    // 0181 — delivery channel so the 24h cooldown is computed per-channel
+    // (an EMAIL reminder and an SMS payment request are independent sends).
+    // Defaults to EMAIL so pre-0181 rows keep their original meaning.
+    channel: text('channel').notNull().default('EMAIL'),
     sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     invoiceSentIdx: index('invoice_reminder_log_invoice_sent_idx').on(t.invoiceId, t.sentAt),
+  }),
+);
+
+// =====================================================================
+// 0181 — pay-by-link (no portal login). One row per generated link.
+// The opaque token (sha256 at rest) IS the credential; the public
+// /api/pay surface and the Stripe Checkout flow key off it. The same
+// token is delivered by email and/or SMS — a payment request that
+// settles into the existing payments ledger via the Stripe webhook.
+// =====================================================================
+export const invoicePayLinks = pgTable(
+  'invoice_pay_link',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    // sha256(token) hex — the plaintext token is never stored or logged.
+    tokenHash: text('token_hash').notNull().unique(),
+    // ACTIVE | PAID | VOIDED | EXPIRED. One ACTIVE link per invoice is a
+    // soft rule enforced in code (re-issue voids the prior link).
+    status: text('status').notNull().default('ACTIVE'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // Staff initiator (loose FK to app_user; set null if the user is removed).
+    createdByAppUserId: uuid('created_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    // The open Stripe Checkout Session id, set when a session is created.
+    stripeSessionId: text('stripe_session_id'),
+    accessCount: integer('access_count').notNull().default(0),
+    lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    invoiceIdx: index('invoice_pay_link_invoice_idx').on(t.invoiceId),
+    firmStatusIdx: index('invoice_pay_link_firm_status_idx').on(t.firmId, t.status),
   }),
 );
 

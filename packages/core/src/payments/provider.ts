@@ -58,6 +58,31 @@ export interface CreateIntentResult {
   errorMessage?: string;
 }
 
+/**
+ * Create a hosted Checkout Session so an UNAUTHENTICATED payer (pay-by-link)
+ * can enter card details on the provider's PCI-compliant page. The caller
+ * redirects the browser to `url`; settlement arrives asynchronously via the
+ * provider's webhook (do NOT treat the success redirect as proof of payment).
+ */
+export interface CreateCheckoutSessionRequest {
+  amountCents: Cents;
+  currency: 'USD';
+  /** Shown on the hosted page as the line-item name, e.g. "Invoice INV-1042". */
+  productName: string;
+  successUrl: string;
+  cancelUrl: string;
+  /** Echoed back on the webhook event so the handler can resolve the link. */
+  metadata: Record<string, string>;
+}
+
+export interface CreateCheckoutSessionResult {
+  ok: boolean;
+  sessionId?: string;
+  url?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
 export interface RefundRequest {
   providerChargeId: string;
   amountCents?: Cents; // omit for full refund
@@ -82,4 +107,10 @@ export interface PaymentProvider {
    * intent-style flow may omit this; callers must feature-detect.
    */
   createIntent?(req: CreateIntentRequest): Promise<CreateIntentResult>;
+  /**
+   * Optional: create a hosted Checkout Session for the no-login pay-by-link
+   * flow. Providers without a hosted-checkout product may omit this; callers
+   * must feature-detect.
+   */
+  createCheckoutSession?(req: CreateCheckoutSessionRequest): Promise<CreateCheckoutSessionResult>;
 }
