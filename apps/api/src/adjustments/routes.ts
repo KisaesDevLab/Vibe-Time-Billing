@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql as drz } from 'drizzle-orm';
+import { and, between, desc, eq, inArray, isNull, sql as drz } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -15,30 +15,23 @@ import {
   approvalRequests,
   appUsers as appUsersTable,
   billingBatches,
+  billingBatchEngagements,
+  billingBatchEntries,
   clients,
   engagements,
   firmSettings,
-  roles,
+  invoiceLineItems,
+  invoices,
   timeEntries,
-  userRoles,
 } from '@vibe/db/schema';
-import type { AppUserRole } from '@vibe/types';
-import {
-  allocateCustomWeighted,
-  allocateHierarchicalCascade,
-  allocatePartnerAbsorbs,
-  allocateProRataByHours,
-  allocateProRataByValue,
-  allocateSpecificEntries,
-  type AllocationResult,
-  type TimeEntryInput,
-} from '@vibe/core';
+import { type AllocationResult, type TimeEntryInput } from '@vibe/core';
 import { evaluate, type ApprovalRule } from '@vibe/core/approvals';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { loadRolesForUsers, runAllocation } from './allocate';
 
 export interface AdjustmentRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -69,6 +62,46 @@ const CreateSchema = z
     reasonCodeId: z.string().uuid(),
     notes: z.string().max(2000).optional(),
     // Method-specific payload
+    entrySelections: z
+      .array(z.object({ entryId: z.string().uuid(), amountCents: z.number().int() }))
+      .optional(),
+    cascadeOrder: z.array(z.enum(['PARTNER', 'MANAGER', 'SENIOR', 'STAFF', 'ADMIN'])).optional(),
+    weights: z.array(z.object({ appUserId: z.string().uuid(), weight: z.number() })).optional(),
+    weightingMode: z.enum(['PERCENT', 'DOLLAR']).optional(),
+  })
+  .strict();
+
+// Engagement close-out true-up. Realization-only: clears accumulated WIP
+// against an already-billed target (e.g. the sum of recurring fees) and
+// spreads the write-up/down per timekeeper — WITHOUT issuing a new invoice.
+const CloseOutTrueUpSchema = z
+  .object({
+    engagementId: z.string().uuid(),
+    allocationMethod: z
+      .enum([
+        'SPECIFIC_ENTRIES',
+        'PRO_RATA_BY_VALUE',
+        'PRO_RATA_BY_HOURS',
+        'PARTNER_ABSORBS',
+        'HIERARCHICAL_CASCADE',
+        'CUSTOM_WEIGHTED',
+      ])
+      .default('PRO_RATA_BY_VALUE'),
+    reasonCodeId: z.string().uuid(),
+    // Explicit realized target; when omitted, the engagement's already-billed
+    // RECURRING_FEE invoice lines (non-draft, non-void) are summed.
+    targetAmountCents: z.number().int().nonnegative().optional(),
+    // Optional WIP window; when omitted, ALL unbilled entries on the engagement.
+    periodStart: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    periodEnd: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    notes: z.string().max(2000).optional(),
+    // Allocation payloads (only the chosen method's fields are read).
     entrySelections: z
       .array(z.object({ entryId: z.string().uuid(), amountCents: z.number().int() }))
       .optional(),
@@ -303,6 +336,326 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
         requiresApproval: decision.requiresApproval,
         approverAppUserId: decision.approverAppUserId,
         allocationCount: allocation.length,
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Engagement close-out true-up (realization-only). For an engagement
+  // whose revenue was already collected outside of WIP (e.g. a
+  // RECURRING_SUBSCRIPTION billed monthly), this:
+  //   1. opens a billing batch over the engagement's accumulated WIP and
+  //      claims those time entries (so they can't be re-billed),
+  //   2. derives the realized target (explicit, or the sum of the
+  //      engagement's already-billed RECURRING_FEE invoice lines),
+  //   3. creates ONE allocated FEE adjustment for (target − WIP), spread
+  //      per timekeeper via the chosen method — feeding realization,
+  //   4. issues NO client invoice (the money is already in).
+  // It fixes the set-target gap (which never wrote per-timekeeper
+  // allocation rows) and automates the target.
+  // -----------------------------------------------------------------
+  router.post(
+    '/close-out-trueup',
+    deps.requireStepUp,
+    requirePermission(deps, 'adjustment:create'),
+    async (req: Request, res: Response) => {
+      const parsed = CloseOutTrueUpSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(201).json({ ok: true });
+        return;
+      }
+
+      // Engagement + firm scope.
+      const [eng] = await deps.db
+        .select()
+        .from(engagements)
+        .where(eq(engagements.id, parsed.data.engagementId))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      const [client] = await deps.db
+        .select()
+        .from(clients)
+        .where(eq(clients.id, eng.clientId))
+        .limit(1);
+      if (!client || client.firmId !== session.firmId) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+
+      // Realized target: explicit, else sum of already-billed RECURRING_FEE
+      // lines on this engagement (non-draft, non-void invoices).
+      let targetAmountCents = parsed.data.targetAmountCents;
+      if (targetAmountCents == null) {
+        const [billed] = await deps.db
+          .select({
+            total: drz<number>`COALESCE(SUM(${invoiceLineItems.amountCents}), 0)::bigint`.as(
+              'total',
+            ),
+          })
+          .from(invoiceLineItems)
+          .innerJoin(invoices, eq(invoices.id, invoiceLineItems.invoiceId))
+          .where(
+            and(
+              eq(invoiceLineItems.engagementId, eng.id),
+              eq(invoiceLineItems.kind, 'RECURRING_FEE'),
+              drz`${invoices.status} NOT IN ('DRAFT', 'VOIDED')`,
+            ),
+          );
+        targetAmountCents = Number(billed?.total ?? 0);
+      }
+
+      // Pull the engagement's unbilled WIP (optionally windowed).
+      const wipConds = [
+        eq(timeEntries.engagementId, eng.id),
+        isNull(timeEntries.billingBatchId),
+        drz`${timeEntries.status} <> 'ARCHIVED'`,
+      ];
+      if (parsed.data.periodStart && parsed.data.periodEnd) {
+        wipConds.push(
+          between(timeEntries.entryDate, parsed.data.periodStart, parsed.data.periodEnd),
+        );
+      }
+      const wipRows = await deps.db
+        .select({
+          id: timeEntries.id,
+          appUserId: timeEntries.appUserId,
+          hours: timeEntries.hours,
+          standardAmountCents: timeEntries.standardAmountCents,
+          entryDate: timeEntries.entryDate,
+        })
+        .from(timeEntries)
+        .where(and(...wipConds));
+      if (wipRows.length === 0) {
+        res.status(400).json({ error: 'no_unbilled_wip' });
+        return;
+      }
+
+      const wipStandardCents = wipRows.reduce((s, r) => s + Number(r.standardAmountCents), 0);
+      const deltaCents = targetAmountCents - wipStandardCents;
+
+      // Batch period (NOT NULL): explicit window, else span of pulled entries.
+      const sortedDates = wipRows.map((r) => r.entryDate).sort();
+      const periodStart = parsed.data.periodStart ?? sortedDates[0]!;
+      const periodEnd = parsed.data.periodEnd ?? sortedDates[sortedDates.length - 1]!;
+
+      // Build allocation inputs + run the spread (skip if already at target).
+      const userIds = Array.from(new Set(wipRows.map((r) => r.appUserId)));
+      const roleMap = await loadRolesForUsers(deps.db, userIds);
+      const entries: TimeEntryInput[] = wipRows.map((r) => ({
+        id: r.id,
+        appUserId: r.appUserId,
+        appUserRole: roleMap.get(r.appUserId) ?? 'STAFF',
+        hours: Number(r.hours),
+        standardAmountCents: r.standardAmountCents,
+      }));
+      let allocation: AllocationResult[] = [];
+      if (deltaCents !== 0) {
+        try {
+          allocation = runAllocation(
+            {
+              allocationMethod: parsed.data.allocationMethod,
+              totalAmountCents: deltaCents,
+              entrySelections: parsed.data.entrySelections,
+              cascadeOrder: parsed.data.cascadeOrder,
+              weights: parsed.data.weights,
+              weightingMode: parsed.data.weightingMode,
+            },
+            entries,
+          );
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'allocation_failed';
+          res.status(400).json({ error: 'allocation_failed', detail: message });
+          return;
+        }
+      }
+
+      // Approval threshold (Q27) — same engine as the manual adjustment path.
+      const [settings] = await deps.db
+        .select({ thr: firmSettings.adjustmentApprovalThresholdCents })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      const rules: ApprovalRule[] = [
+        {
+          id: 'firm-threshold',
+          entityType: 'ADJUSTMENT',
+          match: 'over_threshold',
+          thresholdCents: settings?.thr ?? 100000,
+          exemptRoles: [],
+          approverResolver: 'partner_in_charge',
+        },
+      ];
+      const decision = evaluate({
+        context: {
+          entityType: 'ADJUSTMENT',
+          entityId: 'pending',
+          requesterRole: 'STAFF',
+          amountCents: deltaCents,
+          partnerInChargeId: client.partnerInChargeId,
+        },
+        rules,
+      });
+      const needsApproval = deltaCents !== 0 && decision.requiresApproval;
+
+      const result = await deps.db.transaction(async (tx) => {
+        // Realization-only batch: APPROVED + marked do-not-invoice.
+        const [batch] = await tx
+          .insert(billingBatches)
+          .values({
+            engagementId: eng.id,
+            periodStart,
+            periodEnd,
+            status: 'APPROVED',
+            createdById: session.appUserId,
+            approvedById: session.appUserId,
+            invoiceDescription:
+              'Close-out true-up — realization only (already billed via recurring fees); do not invoice.',
+          })
+          .returning({ id: billingBatches.id });
+        if (!batch) throw new Error('batch insert failed');
+        await tx
+          .insert(billingBatchEngagements)
+          .values({ billingBatchId: batch.id, engagementId: eng.id, ordinal: 0 });
+        await tx.insert(billingBatchEntries).values(
+          wipRows.map((r) => ({
+            billingBatchId: batch.id,
+            timeEntryId: r.id,
+            action: 'INCLUDE' as const,
+          })),
+        );
+        // Claim the WIP so it can never be re-billed.
+        for (const r of wipRows) {
+          await tx
+            .update(timeEntries)
+            .set({ billingBatchId: batch.id })
+            .where(eq(timeEntries.id, r.id));
+        }
+
+        let adjId: string | null = null;
+        let assignedApproverId: string | null = null;
+        if (deltaCents !== 0) {
+          const [adj] = await tx
+            .insert(adjustments)
+            .values({
+              billingBatchId: batch.id,
+              method: 'FEE',
+              allocationMethod: parsed.data.allocationMethod,
+              totalAmountCents: deltaCents,
+              reasonCodeId: parsed.data.reasonCodeId,
+              notes: parsed.data.notes ?? 'Engagement close-out true-up',
+              createdById: session.appUserId,
+              status: needsApproval ? 'PENDING_APPROVAL' : 'APPLIED',
+            })
+            .returning({ id: adjustments.id });
+          if (!adj) throw new Error('adjustment insert failed');
+          adjId = adj.id;
+          await tx.insert(adjustmentAllocations).values(
+            allocation.map((a) => ({
+              adjustmentId: adj.id,
+              timeEntryId: a.timeEntryId,
+              appUserId: a.appUserId,
+              originalValueCents: a.originalValueCents,
+              adjustedValueCents: a.adjustedValueCents,
+              adjustmentAmountCents: a.adjustmentAmountCents,
+            })),
+          );
+          if (needsApproval) {
+            assignedApproverId = decision.approverAppUserId ?? client.partnerInChargeId ?? null;
+            await tx.insert(approvalRequests).values({
+              entityType: 'ADJUSTMENT',
+              entityId: adj.id,
+              requesterId: session.appUserId,
+              approverId: assignedApproverId,
+              status: 'PENDING',
+              comments: parsed.data.notes ?? null,
+              dueAt: new Date(Date.now() + 48 * 3600 * 1000),
+            });
+          }
+        }
+        return { batchId: batch.id, adjId, assignedApproverId };
+      });
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'adjustment',
+        entityId: result.adjId ?? result.batchId,
+        actorAppUserId: session.appUserId,
+        after: {
+          source: 'close_out_trueup',
+          engagementId: eng.id,
+          batchId: result.batchId,
+          targetAmountCents,
+          wipStandardCents,
+          deltaCents,
+          allocationMethod: parsed.data.allocationMethod,
+          requiresApproval: needsApproval,
+          entriesClaimed: wipRows.length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      // Notify the assigned approver (parity with the manual path).
+      if (result.assignedApproverId && deps.sendEmail) {
+        try {
+          const [approver] = await deps.db
+            .select({ email: appUsersTable.email, fullName: appUsersTable.fullName })
+            .from(appUsersTable)
+            .where(eq(appUsersTable.id, result.assignedApproverId))
+            .limit(1);
+          if (approver?.email) {
+            const dollars = (deltaCents / 100).toLocaleString('en-US', {
+              style: 'currency',
+              currency: 'USD',
+            });
+            const sign = deltaCents < 0 ? 'write-down' : 'write-up';
+            const link = deps.staffBaseUrl
+              ? `${deps.staffBaseUrl}/approvals?entityId=${result.adjId}`
+              : `/approvals?entityId=${result.adjId}`;
+            await deps.sendEmail({
+              to: approver.email,
+              subject: `Approval needed: close-out ${sign} ${dollars} on ${eng.name}`,
+              body: [
+                `Hi ${approver.fullName ?? 'there'},`,
+                ``,
+                `A close-out true-up needs your approval:`,
+                `  Engagement: ${eng.name}`,
+                `  Realized target: ${(targetAmountCents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`,
+                `  WIP at standard: ${(wipStandardCents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`,
+                `  Adjustment: ${dollars} (${sign}, ${parsed.data.allocationMethod})`,
+                ``,
+                `Open the approvals queue: ${link}`,
+              ].join('\n'),
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, approverId: result.assignedApproverId },
+            'close-out approval email failed',
+          );
+        }
+      }
+
+      res.status(201).json({
+        ok: true,
+        batchId: result.batchId,
+        adjustmentId: result.adjId,
+        targetAmountCents,
+        wipStandardCents,
+        deltaCents,
+        direction: deltaCents < 0 ? 'WRITE_DOWN' : deltaCents > 0 ? 'WRITE_UP' : 'NONE',
+        entriesClaimed: wipRows.length,
+        allocationCount: allocation.length,
+        requiresApproval: needsApproval,
+        invoiced: false,
       });
     },
   );
@@ -745,73 +1098,6 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
   return router;
 }
 
-function runAllocation(
-  input: z.infer<typeof CreateSchema>,
-  entries: TimeEntryInput[],
-): AllocationResult[] {
-  switch (input.allocationMethod) {
-    case 'SPECIFIC_ENTRIES':
-      if (!input.entrySelections) throw new Error('entrySelections required');
-      return allocateSpecificEntries({
-        totalAmountCents: input.totalAmountCents,
-        timeEntries: entries,
-        entrySelections: input.entrySelections,
-      });
-    case 'PRO_RATA_BY_VALUE':
-      return allocateProRataByValue({
-        totalAmountCents: input.totalAmountCents,
-        timeEntries: entries,
-      });
-    case 'PRO_RATA_BY_HOURS':
-      return allocateProRataByHours({
-        totalAmountCents: input.totalAmountCents,
-        timeEntries: entries,
-      });
-    case 'PARTNER_ABSORBS':
-      return allocatePartnerAbsorbs({
-        totalAmountCents: input.totalAmountCents,
-        timeEntries: entries,
-      });
-    case 'HIERARCHICAL_CASCADE':
-      if (!input.cascadeOrder) throw new Error('cascadeOrder required');
-      return allocateHierarchicalCascade({
-        totalAmountCents: input.totalAmountCents,
-        timeEntries: entries,
-        cascadeOrder: input.cascadeOrder,
-      });
-    case 'CUSTOM_WEIGHTED':
-      if (!input.weights || !input.weightingMode) {
-        throw new Error('weights and weightingMode required');
-      }
-      return allocateCustomWeighted({
-        totalAmountCents: input.totalAmountCents,
-        timeEntries: entries,
-        weightingMode: input.weightingMode,
-        weights: input.weights,
-      });
-  }
-}
-
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
-}
-
-const KNOWN_ROLES: AppUserRole[] = ['PARTNER', 'MANAGER', 'SENIOR', 'STAFF', 'ADMIN'];
-
-async function loadRolesForUsers(
-  db: Database,
-  userIds: string[],
-): Promise<Map<string, AppUserRole>> {
-  if (userIds.length === 0) return new Map();
-  const rows = await db
-    .select({ userId: userRoles.appUserId, slug: roles.name })
-    .from(userRoles)
-    .innerJoin(roles, eq(roles.id, userRoles.roleId))
-    .where(inArray(userRoles.appUserId, userIds));
-  const out = new Map<string, AppUserRole>();
-  for (const r of rows) {
-    const upper = r.slug.toUpperCase() as AppUserRole;
-    if (KNOWN_ROLES.includes(upper)) out.set(r.userId, upper);
-  }
-  return out;
 }
