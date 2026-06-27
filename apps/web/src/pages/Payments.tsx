@@ -12,6 +12,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Button, Card, ColumnFilter, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { ReceiptActions } from '../components/ReceiptActions';
 import { selectRows, useColumnView } from '../lib/column-view';
 import { AchReturnsPage } from './admin/AchReturns';
 import { PaymentImportTab } from './payments/PaymentImportTab';
@@ -107,6 +108,7 @@ export function PaymentsPage(): JSX.Element {
   const [eAmount, setEAmount] = useState('');
   const [eDate, setEDate] = useState('');
   // receipt drill-in
+  const [receiptDrawerId, setReceiptDrawerId] = useState<string | null>(null);
   const [receiptItems, setReceiptItems] = useState<
     {
       paymentId: string;
@@ -239,6 +241,7 @@ export function PaymentsPage(): JSX.Element {
     if (!row.receiptId) return;
     setDrawerErr(null);
     setReceiptItems([]);
+    setReceiptDrawerId(row.receiptId);
     setDrawer('receipt');
     try {
       const r = await api<{ items: typeof receiptItems }>(
@@ -759,6 +762,11 @@ export function PaymentsPage(): JSX.Element {
                       )}
                     </span>
                   </div>
+                  {receiptDrawerId && (
+                    <div style={{ marginTop: 8 }}>
+                      <ReceiptActions receiptId={receiptDrawerId} />
+                    </div>
+                  )}
                 </div>
               )}
             </Drawer>

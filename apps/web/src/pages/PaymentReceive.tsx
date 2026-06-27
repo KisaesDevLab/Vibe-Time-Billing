@@ -23,6 +23,7 @@ import { loadStripe, type Stripe } from '@stripe/stripe-js';
 import { Button, Card, Combobox, Input, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { ReceiptActions } from '../components/ReceiptActions';
 
 // ---------------------------------------------------------------------
 // Types
@@ -1436,52 +1437,6 @@ function SummaryRow({ label, value }: { label: string; value: string }): JSX.Ele
       <span style={{ color: tokens.color.textMuted }}>{label}</span>
       <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
     </div>
-  );
-}
-
-// Print or email the receipt for a recorded payment. Email goes to the
-// client's billing contact (falling back to primary).
-function ReceiptActions({ receiptId }: { receiptId: string }): JSX.Element {
-  const [sending, setSending] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  async function emailReceipt(): Promise<void> {
-    setSending(true);
-    setMsg(null);
-    try {
-      const r = await api<{ to: string }>(`/api/staff/payments/receipt/${receiptId}/email`, {
-        method: 'POST',
-        body: '{}',
-      });
-      setMsg(`Emailed to ${r.to}.`);
-    } catch (e) {
-      const m = e instanceof Error ? e.message : 'failed';
-      setMsg(
-        m === 'no_billing_contact_email'
-          ? 'No billing/primary contact with an email on file.'
-          : m === 'mail_not_configured'
-            ? 'Email delivery is not configured.'
-            : `Email failed: ${m}`,
-      );
-    } finally {
-      setSending(false);
-    }
-  }
-
-  return (
-    <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      <Button
-        size="sm"
-        variant="secondary"
-        onClick={() => window.open(`/api/staff/payments/receipt/${receiptId}/print.html`, '_blank')}
-      >
-        Print receipt
-      </Button>
-      <Button size="sm" variant="secondary" disabled={sending} onClick={() => void emailReceipt()}>
-        {sending ? 'Emailing…' : 'Email receipt'}
-      </Button>
-      {msg && <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{msg}</span>}
-    </span>
   );
 }
 
