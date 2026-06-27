@@ -259,15 +259,49 @@ describe('0181 — checkout.session.completed webhook', () => {
     expect(inv!.paidCents).toBe(4000);
   });
 
+  it('settles two distinct payments on one invoice to the exact sum (absolute recompute)', async () => {
+    const invoiceId = await makeInvoice({ totalCents: 10000 });
+    const a = await createPayLink(harness.db, { firmId: seed.firmId, invoiceId });
+    const b = await createPayLink(harness.db, { firmId: seed.firmId, invoiceId });
+    const app = webhookApp();
+    await send(
+      app,
+      event({ tokenHash: hashPayLinkToken(a.token), invoiceId, pi: 'pi_a', amount: 6000 }),
+    ).expect(200);
+    await send(
+      app,
+      event({ tokenHash: hashPayLinkToken(b.token), invoiceId, pi: 'pi_b', amount: 4000 }),
+    ).expect(200);
+    const [inv] = await harness.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(inv!.paidCents).toBe(10000); // exact sum, no lost update
+    expect(inv!.status).toBe('PAID');
+    const rows = await harness.db.select().from(payments).where(eq(payments.invoiceId, invoiceId));
+    expect(rows.length).toBe(2);
+    expect(rows.every((r) => r.status === 'SUCCEEDED')).toBe(true);
+  });
+
   it('clamps an overpayment to the current open balance', async () => {
-    // Balance was $100 at checkout-open, but $80 got paid since → only $20 open.
+    // $80 already paid (a real prior payment), then a pay-link charges the
+    // full $100 (race) — only $20 should apply, $80 becomes credit.
     const invoiceId = await makeInvoice({ totalCents: 10000, paidCents: 8000 });
+    await harness.db.insert(payments).values({
+      invoiceId,
+      amountCents: 8000,
+      feeCents: 0,
+      provider: 'STRIPE',
+      providerChargeId: 'pi_prior',
+      status: 'SUCCEEDED',
+      receivedAt: new Date(),
+    });
     const { token } = await createPayLink(harness.db, { firmId: seed.firmId, invoiceId });
     const app = webhookApp();
     await send(app, event({ tokenHash: hashPayLinkToken(token), invoiceId, amount: 10000 })).expect(
       200,
     );
-    const [pay] = await harness.db.select().from(payments).where(eq(payments.invoiceId, invoiceId));
+    const [pay] = await harness.db
+      .select()
+      .from(payments)
+      .where(eq(payments.providerChargeId, 'pi_test_1'));
     expect(pay!.amountCents).toBe(2000); // clamped to open balance, not the $100 charged
     const [inv] = await harness.db.select().from(invoices).where(eq(invoices.id, invoiceId));
     expect(inv!.status).toBe('PAID');

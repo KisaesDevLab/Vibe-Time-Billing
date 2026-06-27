@@ -25,7 +25,7 @@ import { emitAudit } from '../auth/audit';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
-import { recomputeInvoicePaid } from '../payments/routes';
+import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from '../payments/routes';
 import {
   promoteEscrowFilesForInvoice,
   revertEscrowFilesForInvoice,
@@ -177,35 +177,40 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         return;
       }
       if (pay.status === 'SUCCEEDED') return;
-      // Atomically claim the settlement: WHERE status != SUCCEEDED + check the
-      // affected row. A concurrent delivery of the SAME PaymentIntent (e.g. the
-      // checkout.session.completed delegation racing the real
-      // payment_intent.succeeded) loses here and returns without crediting the
-      // invoice a second time.
-      const flipped = await deps.db
-        .update(payments)
-        .set({ status: 'SUCCEEDED' })
-        .where(and(eq(payments.id, pay.id), ne(payments.status, 'SUCCEEDED')))
-        .returning({ id: payments.id });
-      if (flipped.length === 0) return; // already settled concurrently
-      // Update the invoice
-      const [inv] = await deps.db
-        .select()
-        .from(invoices)
-        .where(eq(invoices.id, pay.invoiceId))
-        .limit(1);
-      if (inv) {
-        const newPaid = inv.paidCents + pay.amountCents;
-        const newStatus = newPaid >= inv.totalCents ? 'PAID' : 'PARTIALLY_PAID';
-        await deps.db
-          .update(invoices)
-          .set({
-            paidCents: newPaid,
-            status: newStatus,
-            paidAt: newStatus === 'PAID' ? new Date() : null,
-          })
-          .where(eq(invoices.id, inv.id));
-      }
+      // Settle under an invoice ROW LOCK so concurrent settlements on the same
+      // invoice serialize: recompute paid_cents from the SUCCEEDED payment set
+      // (an ABSOLUTE value, immune to the read-modify-write lost-update that a
+      // `paid_cents += amount` would suffer when two different payments land on
+      // one invoice at once). The conditional flip (WHERE status != SUCCEEDED)
+      // additionally guarantees only ONE delivery of THIS payment runs the
+      // post-settlement side effects below — idempotent on duplicate events.
+      const settled = await deps.db.transaction(async (tx) => {
+        const [lockedInv] = await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, pay.invoiceId))
+          .for('update')
+          .limit(1);
+        const claim = await tx
+          .update(payments)
+          .set({ status: 'SUCCEEDED' })
+          .where(and(eq(payments.id, pay.id), ne(payments.status, 'SUCCEEDED')))
+          .returning({ id: payments.id });
+        if (claim.length === 0) return null; // already settled by a concurrent delivery
+        if (!lockedInv) return { inv: null, fullyPaid: false, newPaidCents: 0 };
+        const fp = await recomputeInvoicePaidReturnsFullyPaid(tx, lockedInv.id);
+        const [fresh] = await tx
+          .select({ paid: invoices.paidCents })
+          .from(invoices)
+          .where(eq(invoices.id, lockedInv.id))
+          .limit(1);
+        return { inv: lockedInv, fullyPaid: fp, newPaidCents: Number(fresh?.paid ?? 0) };
+      });
+      if (!settled) return; // duplicate delivery — payment already settled
+      const inv = settled.inv;
+      const fullyPaid = settled.fullyPaid;
+      const newPaidCents = settled.newPaidCents;
+
       await emitAudit(deps.db, {
         action: 'PAYMENT',
         entityType: 'invoice',
@@ -214,11 +219,8 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         // by entity_type + after_json.providerChargeId.
         after: { providerChargeId: chargeId, status: 'SUCCEEDED' },
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      // Dispatch outbound events. We re-read the invoice to pick the
-      // right "paid" vs "received" event depending on whether it cleared
-      // the full balance.
+      // Dispatch outbound events using the recomputed balance.
       if (inv) {
-        const fullyPaid = inv.paidCents + pay.amountCents >= inv.totalCents;
         await publishWebhookEvent(deps.db, inv.firmId, 'payment.received', {
           invoiceId: pay.invoiceId,
           paymentId: pay.id,
@@ -243,7 +245,7 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
                 `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
                 fullyPaid
                   ? `This invoice is now PAID. Thank you!`
-                  : `Remaining balance: $${((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2)}.`,
+                  : `Remaining balance: $${((inv.totalCents - newPaidCents) / 100).toFixed(2)}.`,
                 link ? `\nView receipt: ${link}` : '',
               ].join('\n');
               const rendered = await renderTemplate({
@@ -257,8 +259,7 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
                   firm: await firmScope(deps.db, inv.firmId),
                   invoice: {
                     number: inv.invoiceNumber,
-                    balance:
-                      '$' + ((inv.totalCents - inv.paidCents - pay.amountCents) / 100).toFixed(2),
+                    balance: '$' + ((inv.totalCents - newPaidCents) / 100).toFixed(2),
                     portal_url: link,
                   },
                 },
