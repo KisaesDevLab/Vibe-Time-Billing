@@ -76,6 +76,26 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     channel: 'SMS',
     body: '{{ firm.displayName }}: invoice {{ invoice.number }} (balance {{ invoice.balance }}) is past due. Pay securely: {{ invoice.portal_url }}',
   },
+
+  // 0181 — no-login pay-by-link payment request ("Send payment request").
+  // {{ invoice.pay_url }} opens a secure page that needs no portal sign-in.
+  {
+    kind: 'invoice_payment_request',
+    channel: 'EMAIL',
+    subject: 'Payment request: invoice {{ invoice.number }} from {{ firm.displayName }}',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      'A payment of {{ invoice.balance }} is requested for invoice {{ invoice.number }}.\n\n' +
+      'You can pay securely online — no account or sign-in required:\n' +
+      '{{ invoice.pay_url }}\n\n' +
+      'If you have any questions, simply reply to this email or contact us at {{ firm.supportEmail }}.\n\n' +
+      'With appreciation,\n{{ firm.displayName }}',
+  },
+  {
+    kind: 'invoice_payment_request',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: invoice {{ invoice.number }}, balance {{ invoice.balance }}. Pay securely (no login): {{ invoice.pay_url }}',
+  },
   {
     kind: 'dunning_first',
     channel: 'EMAIL',

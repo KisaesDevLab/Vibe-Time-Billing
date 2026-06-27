@@ -30,6 +30,12 @@ interface KindEntry {
 const KINDS: ReadonlyArray<KindEntry> = [
   { key: 'invoice_sent', label: 'Invoice sent', channels: ['EMAIL'] },
   { key: 'invoice_overdue', label: 'Invoice overdue', channels: ['EMAIL', 'SMS'] },
+  // 0181 — no-login pay-by-link payment request (staff "Send payment request").
+  {
+    key: 'invoice_payment_request',
+    label: 'Payment request (pay-by-link)',
+    channels: ['EMAIL', 'SMS'],
+  },
   { key: 'dunning_first', label: 'First dunning', channels: ['EMAIL', 'SMS'] },
   { key: 'dunning_second', label: 'Second dunning', channels: ['EMAIL', 'SMS'] },
   { key: 'payment_received', label: 'Payment received', channels: ['EMAIL'] },
@@ -91,6 +97,8 @@ const SAMPLE_VARIABLES = [
   'invoice.due_date',
   'invoice.balance',
   'invoice.portal_url',
+  // 0181 — no-login pay-by-link URL (invoice_payment_request + reminders).
+  'invoice.pay_url',
   // Firm + branding tokens (resolve from Admin → Branding).
   'firm.name',
   'firm.displayName',
