@@ -25,6 +25,8 @@ interface BatchRow {
   // 0052 — invoice composition saved on the batch.
   invoiceDescription?: string | null;
   invoiceLineItems?: Array<{ description: string; amountCents: number }> | null;
+  // 0182 — realization-only close-out batch: never invoiceable.
+  realizationOnly?: boolean;
 }
 
 interface Engagement {
@@ -1166,6 +1168,8 @@ function BatchDetailPage(): JSX.Element {
                 {finalizing ? 'Finalizing…' : 'Finalize'}
               </Button>
             </div>
+          ) : detail.batch.status === 'APPROVED' && detail.batch.realizationOnly ? (
+            <Pill tone="neutral">Realization only — not invoiceable</Pill>
           ) : detail.batch.status === 'APPROVED' ? (
             <div
               style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}

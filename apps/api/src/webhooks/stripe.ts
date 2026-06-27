@@ -6,7 +6,7 @@
 // at the (provider_charge_id, status) grain — re-deliveries are no-ops.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -177,7 +177,17 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         return;
       }
       if (pay.status === 'SUCCEEDED') return;
-      await deps.db.update(payments).set({ status: 'SUCCEEDED' }).where(eq(payments.id, pay.id));
+      // Atomically claim the settlement: WHERE status != SUCCEEDED + check the
+      // affected row. A concurrent delivery of the SAME PaymentIntent (e.g. the
+      // checkout.session.completed delegation racing the real
+      // payment_intent.succeeded) loses here and returns without crediting the
+      // invoice a second time.
+      const flipped = await deps.db
+        .update(payments)
+        .set({ status: 'SUCCEEDED' })
+        .where(and(eq(payments.id, pay.id), ne(payments.status, 'SUCCEEDED')))
+        .returning({ id: payments.id });
+      if (flipped.length === 0) return; // already settled concurrently
       // Update the invoice
       const [inv] = await deps.db
         .select()
@@ -562,59 +572,108 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
       // trust the browser redirect; THIS event is the proof of payment.
       const meta = event.data.object.metadata ?? {};
       const tokenHash = meta['pay_link_token_hash'];
-      const linkInvoiceId = meta['invoice_id'];
-      if (!tokenHash || !linkInvoiceId) return; // not a pay-link checkout
-      const [link] = await deps.db
-        .select()
-        .from(invoicePayLinks)
-        .where(eq(invoicePayLinks.tokenHash, tokenHash))
-        .limit(1);
-      if (!link) return;
+      if (!tokenHash) return; // not a pay-link checkout
       // The session's PaymentIntent is the ledger key; chargeId here is the
       // Checkout Session id (cs_…), which we stash for reconciliation.
       const piId = event.data.object.payment_intent ?? chargeId;
-      const [existing] = await deps.db
-        .select({ id: payments.id, status: payments.status })
-        .from(payments)
-        .where(eq(payments.providerChargeId, piId))
-        .limit(1);
-      if (existing?.status === 'SUCCEEDED') {
-        // Re-delivery: ledger already settled. Ensure the link reflects PAID.
-        if (link.status !== 'PAID') {
-          await deps.db
+
+      // Settle atomically under a row lock on the pay-link. The lock + the
+      // link.status PAID gate make duplicate deliveries of this event fully
+      // idempotent: the first delivery marks the link PAID inside the lock,
+      // so any later delivery reads PAID and does NOT re-insert or re-dispatch.
+      const settle = await deps.db.transaction(async (tx) => {
+        const [link] = await tx
+          .select()
+          .from(invoicePayLinks)
+          .where(eq(invoicePayLinks.tokenHash, tokenHash))
+          .for('update')
+          .limit(1);
+        if (!link || link.status === 'PAID') return { proceed: false as const };
+
+        const [existing] = await tx
+          .select({ status: payments.status })
+          .from(payments)
+          .where(eq(payments.providerChargeId, piId))
+          .limit(1);
+
+        if (!existing) {
+          // Clamp to the invoice's CURRENT open balance — multiple active
+          // links + portal pay + staff receive can settle the same invoice
+          // between checkout-open and here. Excess (overpayment) is dropped
+          // from the invoice ledger, mirroring the staff-receipt path; the
+          // firm's Stripe reconciliation surfaces any surplus.
+          const [inv] = await tx
+            .select({
+              total: invoices.totalCents,
+              paid: invoices.paidCents,
+              clientId: invoices.clientId,
+              firmId: invoices.firmId,
+            })
+            .from(invoices)
+            .where(eq(invoices.id, link.invoiceId))
+            .limit(1);
+          const open = inv ? Number(inv.total) - Number(inv.paid) : 0;
+          const requested = event.data.object.amount_total ?? event.data.object.amount ?? 0;
+          const amount = Math.max(0, Math.min(requested, open));
+          if (amount > 0) {
+            await tx.insert(payments).values({
+              invoiceId: link.invoiceId,
+              amountCents: amount,
+              feeCents: 0,
+              provider: 'STRIPE',
+              providerChargeId: piId,
+              status: 'PENDING',
+              receivedAt: new Date(),
+            });
+          }
+          // Stripe already CAPTURED `requested`; if we applied less than that
+          // to the invoice (it was paid down / fully paid concurrently), bank
+          // the surplus as an OPEN client credit so the money is tracked and
+          // refundable — never silently dropped.
+          const excessCents = requested - amount;
+          if (excessCents > 0 && inv) {
+            await tx.insert(creditMemos).values({
+              firmId: inv.firmId,
+              clientId: inv.clientId,
+              issuedDate: new Date().toISOString().slice(0, 10),
+              originalAmountCents: excessCents,
+              source: 'OVERPAYMENT',
+              reference: `Pay-link overpayment (Stripe session ${chargeId})`,
+              status: 'OPEN',
+              sourcePaymentId: null,
+            });
+          }
+          // amount === 0 → invoice already settled; just mark the link PAID.
+          await tx
             .update(invoicePayLinks)
             .set({ status: 'PAID', paidAt: new Date(), stripeSessionId: chargeId })
             .where(eq(invoicePayLinks.id, link.id));
+          return { proceed: amount > 0 ? (true as const) : (false as const) };
         }
-        return;
-      }
-      if (!existing) {
-        const amount = event.data.object.amount_total ?? event.data.object.amount ?? 0;
-        await deps.db.insert(payments).values({
-          invoiceId: linkInvoiceId,
-          amountCents: amount,
-          feeCents: 0,
-          provider: 'STRIPE',
-          providerChargeId: piId,
-          status: 'PENDING',
-          receivedAt: new Date(),
+
+        // A payment row already exists for this PI (PENDING from an earlier
+        // partial delivery, or SUCCEEDED). Mark the link PAID; let the
+        // succeeded path finalize the ledger (idempotent on payment.status).
+        await tx
+          .update(invoicePayLinks)
+          .set({ status: 'PAID', paidAt: new Date(), stripeSessionId: chargeId })
+          .where(eq(invoicePayLinks.id, link.id));
+        return { proceed: existing.status !== 'SUCCEEDED' };
+      });
+
+      // Delegate to the succeeded path OUTSIDE the lock: it finds the pending
+      // payment by provider_charge_id, flips it to SUCCEEDED, updates the
+      // invoice, and runs every paid side-effect (escrow promote, confirmation
+      // email, retainer activation, outbound webhooks). A real
+      // payment_intent.succeeded for the same PI arriving later finds it
+      // already SUCCEEDED and no-ops.
+      if (settle.proceed) {
+        await dispatch(deps, {
+          id: event.id,
+          type: 'payment_intent.succeeded',
+          data: { object: { id: piId, payment_intent: piId, metadata: meta } },
         });
       }
-      await deps.db
-        .update(invoicePayLinks)
-        .set({ status: 'PAID', paidAt: new Date(), stripeSessionId: chargeId })
-        .where(eq(invoicePayLinks.id, link.id));
-      // Delegate to the succeeded path: it finds the pending payment by
-      // provider_charge_id, flips it to SUCCEEDED, updates the invoice, and
-      // runs every paid side-effect (escrow promote, confirmation email,
-      // retainer activation, outbound webhooks) — idempotent on
-      // (provider_charge_id, status). A real payment_intent.succeeded for the
-      // same PI arriving later finds it already SUCCEEDED and no-ops.
-      await dispatch(deps, {
-        id: event.id,
-        type: 'payment_intent.succeeded',
-        data: { object: { id: piId, payment_intent: piId, metadata: meta } },
-      });
       return;
     }
     default:

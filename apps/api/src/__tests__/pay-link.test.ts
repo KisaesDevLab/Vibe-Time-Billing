@@ -16,7 +16,14 @@ import {
   seedContact,
   type PgliteHarness,
 } from './_pglite-harness';
-import { invoicePayLinks, invoiceReminderLog, invoices, payments } from '@vibe/db/schema';
+import {
+  creditMemos,
+  invoicePayLinks,
+  invoiceReminderLog,
+  invoices,
+  notificationTemplates,
+  payments,
+} from '@vibe/db/schema';
 import type { Database } from '@vibe/db';
 import type { PaymentProvider } from '@vibe/core/payments';
 
@@ -250,6 +257,49 @@ describe('0181 — checkout.session.completed webhook', () => {
     const [inv] = await harness.db.select().from(invoices).where(eq(invoices.id, invoiceId));
     expect(inv!.status).toBe('PARTIALLY_PAID');
     expect(inv!.paidCents).toBe(4000);
+  });
+
+  it('clamps an overpayment to the current open balance', async () => {
+    // Balance was $100 at checkout-open, but $80 got paid since → only $20 open.
+    const invoiceId = await makeInvoice({ totalCents: 10000, paidCents: 8000 });
+    const { token } = await createPayLink(harness.db, { firmId: seed.firmId, invoiceId });
+    const app = webhookApp();
+    await send(app, event({ tokenHash: hashPayLinkToken(token), invoiceId, amount: 10000 })).expect(
+      200,
+    );
+    const [pay] = await harness.db.select().from(payments).where(eq(payments.invoiceId, invoiceId));
+    expect(pay!.amountCents).toBe(2000); // clamped to open balance, not the $100 charged
+    const [inv] = await harness.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(inv!.status).toBe('PAID');
+    expect(inv!.paidCents).toBe(10000); // exactly total, never over
+    // The $80 surplus Stripe captured is banked as an OPEN client credit.
+    const credits = await harness.db.select().from(creditMemos);
+    expect(credits).toHaveLength(1);
+    expect(credits[0]!.source).toBe('OVERPAYMENT');
+    expect(Number(credits[0]!.originalAmountCents)).toBe(8000);
+  });
+
+  it('an entirely-redundant pay-link charge is banked as credit, not dropped', async () => {
+    // Invoice already fully paid; a second pay-link still completes a charge.
+    const invoiceId = await makeInvoice({ totalCents: 10000, paidCents: 10000, status: 'PAID' });
+    const { token } = await createPayLink(harness.db, { firmId: seed.firmId, invoiceId });
+    const app = webhookApp();
+    await send(app, event({ tokenHash: hashPayLinkToken(token), invoiceId, amount: 10000 })).expect(
+      200,
+    );
+    // No payment row applied to the invoice; the full $100 is an open credit.
+    expect(await harness.db.select().from(payments)).toHaveLength(0);
+    const credits = await harness.db.select().from(creditMemos);
+    expect(credits).toHaveLength(1);
+    expect(Number(credits[0]!.originalAmountCents)).toBe(10000);
+    // Invoice untouched; link marked PAID.
+    const [inv] = await harness.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(inv!.paidCents).toBe(10000);
+    const [link] = await harness.db
+      .select()
+      .from(invoicePayLinks)
+      .where(eq(invoicePayLinks.tokenHash, hashPayLinkToken(token)));
+    expect(link!.status).toBe('PAID');
   });
 
   it('event without pay-link metadata is ignored', async () => {
@@ -491,6 +541,37 @@ describe('0181 — staff pay-link send/revoke', () => {
       .from(invoicePayLinks)
       .where(eq(invoicePayLinks.invoiceId, invoiceId));
     expect(links.filter((l) => l.status === 'ACTIVE').length).toBe(1);
+  });
+
+  it('reminder still includes the pay-link when the saved template lacks {{ invoice.pay_url }}', async () => {
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Pat Payer',
+      email: 'pat@payer.test',
+      isBilling: true,
+    });
+    const invoiceId = await makeInvoice();
+    // Pre-0181 override template: portal_url only, NO pay_url. The DB override
+    // wins over the inline fallback — the handler must still append the link.
+    await harness.db.insert(notificationTemplates).values({
+      firmId: seed.firmId,
+      kind: 'invoice_overdue',
+      channel: 'EMAIL',
+      subject: 'Past due {{ invoice.number }}',
+      body: 'Balance {{ invoice.balance }}. View in portal: {{ invoice.portal_url }}',
+      enabled: true,
+    });
+    let body = '';
+    const router = buildRouter({
+      sendEmail: async (a) => {
+        body = a.body;
+      },
+    });
+    const res = await invokeLast(router, 'post', '/:id/remind', staffReq(invoiceId, {}));
+    expect(res.statusCode).toBe(200);
+    expect(body).toContain('https://pay.firm.test/pay/');
+    expect(body).toContain('Pay now (no login required)');
   });
 
   it('revoke voids the active link', async () => {

@@ -4,8 +4,11 @@
 // lets a client pay an invoice without logging into the portal. The
 // token is ~128 bits (16 random bytes, base64url) so it is short enough
 // to drop into an SMS yet infeasible to guess; only its sha256 is stored
-// (never the plaintext, never logged). Re-issuing for an invoice voids
-// any prior ACTIVE link so a single live link exists per invoice.
+// (never the plaintext, never logged). Multiple ACTIVE links may coexist
+// for one invoice (each delivery mints its own; the plaintext is
+// unrecoverable, so we never invalidate a link a client may already hold).
+// A link dies only when the invoice is paid through it, it expires, or it
+// is explicitly revoked.
 
 import { createHash, randomBytes } from 'node:crypto';
 

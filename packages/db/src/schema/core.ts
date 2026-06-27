@@ -2276,6 +2276,11 @@ export const billingBatches = pgTable(
     // double-runs are dropped at the UNIQUE constraint. NULL for
     // manually-created batches.
     idempotencyKey: text('idempotency_key'),
+    // 0182 — realization-only close-out batch: clears WIP and carries a
+    // realization adjustment but must NEVER produce a client invoice (the
+    // revenue was already collected, e.g. via recurring fees). Hard-gates
+    // generate-from-batch and is excluded from the invoiceable queue.
+    realizationOnly: boolean('realization_only').notNull().default(false),
     createdById: uuid('created_by_id').references(() => appUsers.id),
     approvedById: uuid('approved_by_id').references(() => appUsers.id),
     // Phase 11 #10 — assigned partner for pre-bill review. NULL = use
@@ -3694,8 +3699,8 @@ export const invoicePayLinks = pgTable(
       .references(() => invoices.id, { onDelete: 'cascade' }),
     // sha256(token) hex — the plaintext token is never stored or logged.
     tokenHash: text('token_hash').notNull().unique(),
-    // ACTIVE | PAID | VOIDED | EXPIRED. One ACTIVE link per invoice is a
-    // soft rule enforced in code (re-issue voids the prior link).
+    // ACTIVE | PAID | VOIDED | EXPIRED. Multiple ACTIVE links may coexist for
+    // one invoice; a link dies only on pay/expire/explicit revoke.
     status: text('status').notNull().default('ACTIVE'),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     // Staff initiator (loose FK to app_user; set null if the user is removed).

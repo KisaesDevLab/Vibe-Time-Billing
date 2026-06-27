@@ -21,6 +21,8 @@ import {
 import type { Database } from '@vibe/db';
 
 import { createAdjustmentRouter } from '../adjustments/routes';
+import { createInvoiceRouter } from '../invoices/routes';
+import { createApprovalRouter } from '../approvals/routes';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
@@ -103,6 +105,7 @@ async function invokeLast(
   method: 'post',
   path: string,
   body: unknown,
+  params: Record<string, string> = {},
 ): Promise<FakeRes> {
   const res = makeRes();
   const layer = router.stack.find((l) => {
@@ -115,7 +118,7 @@ async function invokeLast(
   const handler = route.stack[route.stack.length - 1]!.handle;
   const req = {
     body,
-    params: {},
+    params,
     query: {},
     headers: {},
     staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
@@ -233,5 +236,123 @@ describe('engagement close-out true-up', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.jsonBody['error']).toBe('no_unbilled_wip');
+  });
+
+  it('refuses a 0 auto-target instead of silently writing down 100% of WIP', async () => {
+    await addWip(seed.appUserId, 100000); // WIP but no recurring invoices
+    const reasonId = await seedReason();
+    const res = await invokeLast(buildRouter(), 'post', '/close-out-trueup', {
+      engagementId: seed.engagementId,
+      reasonCodeId: reasonId, // no targetAmountCents → auto = 0
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.jsonBody['error']).toBe('target_unresolved');
+    // No batch / claim happened.
+    expect(await harness.db.select().from(billingBatches)).toHaveLength(0);
+    const te = await harness.db.select().from(timeEntries);
+    expect(te.every((e) => e.billingBatchId === null)).toBe(true);
+  });
+
+  it('rejects a reason code from another firm', async () => {
+    await addWip(seed.appUserId, 100000);
+    const res = await invokeLast(buildRouter(), 'post', '/close-out-trueup', {
+      engagementId: seed.engagementId,
+      reasonCodeId: '00000000-0000-0000-0000-000000000000',
+      targetAmountCents: 80000,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.jsonBody['error']).toBe('reason_code_not_found');
+  });
+
+  it('zero delta still records an APPLIED $0 adjustment and claims the WIP', async () => {
+    await addWip(seed.appUserId, 100000);
+    const reasonId = await seedReason();
+    const res = await invokeLast(buildRouter(), 'post', '/close-out-trueup', {
+      engagementId: seed.engagementId,
+      reasonCodeId: reasonId,
+      targetAmountCents: 100000, // == WIP → delta 0
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.jsonBody['deltaCents']).toBe(0);
+    expect(res.jsonBody['direction']).toBe('NONE');
+    const [adj] = await harness.db.select().from(adjustments);
+    expect(adj!.status).toBe('APPLIED');
+    expect(Number(adj!.totalAmountCents)).toBe(0);
+    const alloc = await harness.db.select().from(adjustmentAllocations);
+    expect(alloc).toHaveLength(1);
+    const te = await harness.db.select().from(timeEntries);
+    expect(te.every((e) => e.billingBatchId !== null)).toBe(true);
+  });
+
+  it('the realization-only batch is flagged and CANNOT be invoiced', async () => {
+    await addWip(seed.appUserId, 100000);
+    const reasonId = await seedReason();
+    const res = await invokeLast(buildRouter(), 'post', '/close-out-trueup', {
+      engagementId: seed.engagementId,
+      reasonCodeId: reasonId,
+      targetAmountCents: 80000,
+    });
+    const batchId = res.jsonBody['batchId'] as string;
+    const [batch] = await harness.db
+      .select()
+      .from(billingBatches)
+      .where(eq(billingBatches.id, batchId));
+    expect(batch!.realizationOnly).toBe(true);
+
+    // generate-from-batch must refuse it (no double-bill).
+    const invoiceRouter = createInvoiceRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const gen = await invokeLast(invoiceRouter, 'post', '/generate-from-batch', {
+      billingBatchId: batchId,
+    });
+    expect(gen.statusCode).toBe(409);
+    expect(gen.jsonBody['error']).toBe('batch_not_invoiceable');
+    // Still no invoice.
+    expect(await harness.db.select().from(invoices)).toHaveLength(0);
+  });
+
+  it('rejecting an over-threshold close-out releases the WIP and cancels the batch', async () => {
+    const teId = await addWip(seed.appUserId, 100000);
+    const reasonId = await seedReason();
+    // Write-up to $3000 → delta +200000 > $1000 default threshold → PENDING.
+    const res = await invokeLast(buildRouter(), 'post', '/close-out-trueup', {
+      engagementId: seed.engagementId,
+      reasonCodeId: reasonId,
+      targetAmountCents: 300000,
+    });
+    expect(res.jsonBody['requiresApproval']).toBe(true);
+    const batchId = res.jsonBody['batchId'] as string;
+    const [adj] = await harness.db.select().from(adjustments);
+    const [appr] = await harness.db
+      .select()
+      .from(approvalRequests)
+      .where(eq(approvalRequests.entityId, adj!.id));
+
+    // Reject via the approvals decide endpoint.
+    const approvalRouter = createApprovalRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const dec = await invokeLast(
+      approvalRouter,
+      'post',
+      '/:id/decide',
+      { decision: 'REJECTED', comments: 'not this time' },
+      { id: appr!.id },
+    );
+    expect(dec.statusCode).toBe(200);
+
+    // Adjustment rejected, WIP released back to open, batch cancelled.
+    const [adjAfter] = await harness.db.select().from(adjustments);
+    expect(adjAfter!.status).toBe('REJECTED');
+    const [te] = await harness.db.select().from(timeEntries).where(eq(timeEntries.id, teId));
+    expect(te!.billingBatchId).toBeNull();
+    const [batchAfter] = await harness.db
+      .select()
+      .from(billingBatches)
+      .where(eq(billingBatches.id, batchId));
+    expect(batchAfter!.status).toBe('CANCELLED');
   });
 });

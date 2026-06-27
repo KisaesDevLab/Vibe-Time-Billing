@@ -573,6 +573,13 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(409).json({ error: 'batch_not_approved' });
         return;
       }
+      // 0182 — realization-only close-out batches cleared WIP for realization
+      // reporting against revenue already collected; they must NEVER be
+      // turned into a client invoice (would double-bill).
+      if (batch.realizationOnly) {
+        res.status(409).json({ error: 'batch_not_invoiceable' });
+        return;
+      }
 
       // 0086 — load the full engagement set. Single-engagement batches
       // still produce a 1-element list (the batch's primary). The first
@@ -2089,7 +2096,14 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         },
       },
     });
-    const body = rendered.body;
+    // 0181 — guarantee the no-login pay-link reaches the client even when the
+    // firm's saved invoice_overdue template predates the {{ invoice.pay_url }}
+    // token (the DB override wins over the inline fallback). Append only if the
+    // rendered body doesn't already include the link.
+    let body = rendered.body;
+    if (payUrl && !body.includes(payUrl)) {
+      body += `\n\nPay now (no login required): ${payUrl}`;
+    }
     try {
       await deps.sendEmail({
         to: billingContact.email,

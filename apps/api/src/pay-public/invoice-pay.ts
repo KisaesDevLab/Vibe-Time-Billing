@@ -3,8 +3,9 @@
 // 0181 — public pay-by-link API (open internet surface). Lets a client
 // pay an invoice WITHOUT a portal session: the link token is the
 // credential. No OTP gate — the action only adds money to the firm's
-// own account, and the token is ~128 bits + sha256 at rest + expiry +
-// one-live-link-per-invoice.
+// own account, and the token is ~128 bits + sha256 at rest + expiry, with
+// the invoice-status/balance re-checked at checkout so a paid invoice can
+// never be re-charged (multiple active links may coexist).
 //
 // Routes (all unauthenticated):
 //   GET  /api/pay/:token            — safe summary for the landing page

@@ -66,15 +66,16 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     body:
       'Dear {{ client.name }},\n\n' +
       'Our records show that invoice {{ invoice.number }} for {{ invoice.total }}, due on {{ invoice.due_date }}, remains unpaid. The current outstanding balance is {{ invoice.balance }}.\n\n' +
-      'Please submit your payment at your earliest convenience:\n' +
-      '{{ invoice.portal_url }}\n\n' +
+      'Pay securely online — no account or sign-in required:\n' +
+      '{{ invoice.pay_url }}\n\n' +
+      'Or view the invoice in your portal: {{ invoice.portal_url }}\n\n' +
       'If you have already sent payment, please accept our thanks and disregard this notice. If you have any questions or would like to discuss payment arrangements, contact us at {{ firm.supportEmail }} or {{ firm.supportPhone }}.\n\n' +
       'Sincerely,\n{{ firm.displayName }}',
   },
   {
     kind: 'invoice_overdue',
     channel: 'SMS',
-    body: '{{ firm.displayName }}: invoice {{ invoice.number }} (balance {{ invoice.balance }}) is past due. Pay securely: {{ invoice.portal_url }}',
+    body: '{{ firm.displayName }}: invoice {{ invoice.number }} (balance {{ invoice.balance }}) is past due. Pay securely (no login): {{ invoice.pay_url }}',
   },
 
   // 0181 — no-login pay-by-link payment request ("Send payment request").

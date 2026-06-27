@@ -280,7 +280,13 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const allBatches = await deps.db.select().from(billingBatches).limit(500);
+      // 0182 — realization-only close-out batches are not pre-bills; keep them
+      // out of the invoiceable queue so they can't be invoiced from the UI.
+      const allBatches = await deps.db
+        .select()
+        .from(billingBatches)
+        .where(eq(billingBatches.realizationOnly, false))
+        .limit(500);
       const batchIds = allBatches.map((b) => b.id);
       // 0086 — pull every batch's engagement list in one query so we can
       // render multi-engagement batches without N+1.

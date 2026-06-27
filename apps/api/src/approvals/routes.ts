@@ -17,12 +17,44 @@ import {
   approvalRequests,
   approvalRules,
   appUsers,
+  billingBatches,
+  timeEntries,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+
+/**
+ * 0182 — when a close-out true-up adjustment is REJECTED, its realization-only
+ * batch and the WIP it claimed must not be stranded. Release the claimed time
+ * entries (back to open WIP) and cancel the batch. No-op for normal
+ * adjustments (whose batch is invoiceable and must keep its entries). Call
+ * inside the decide transaction with the tx cast to Database.
+ */
+async function releaseRejectedCloseOutBatch(db: Database, adjustmentId: string): Promise<void> {
+  const [adj] = await db
+    .select({ batchId: adjustments.billingBatchId })
+    .from(adjustments)
+    .where(eq(adjustments.id, adjustmentId))
+    .limit(1);
+  if (!adj?.batchId) return;
+  const [batch] = await db
+    .select({ id: billingBatches.id, realizationOnly: billingBatches.realizationOnly })
+    .from(billingBatches)
+    .where(eq(billingBatches.id, adj.batchId))
+    .limit(1);
+  if (!batch?.realizationOnly) return;
+  await db
+    .update(timeEntries)
+    .set({ billingBatchId: null })
+    .where(eq(timeEntries.billingBatchId, batch.id));
+  await db
+    .update(billingBatches)
+    .set({ status: 'CANCELLED' })
+    .where(eq(billingBatches.id, batch.id));
+}
 
 export interface ApprovalRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -187,6 +219,7 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
             .update(adjustments)
             .set({ status: 'REJECTED' })
             .where(eq(adjustments.id, request.entityId));
+          await releaseRejectedCloseOutBatch(tx as unknown as Database, request.entityId);
         }
       });
 
@@ -445,6 +478,7 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
               .update(adjustments)
               .set({ status: 'REJECTED' })
               .where(eq(adjustments.id, request.entityId));
+            await releaseRejectedCloseOutBatch(tx as unknown as Database, request.entityId);
           }
         });
         processed++;
