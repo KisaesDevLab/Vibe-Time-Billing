@@ -16,10 +16,11 @@ import {
   invoices,
   payments,
 } from '@vibe/db/schema';
-import { renderInvoiceHtml } from '@vibe/core/invoicing';
+import { renderInvoiceDocument } from '@vibe/core/invoicing';
 
 import { emitAudit } from '../auth/audit';
 import { renderReceiptHtml } from '../invoices/receipt-exports';
+import { loadInvoiceTemplateDef } from '../invoices/template-loader';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { resolveScope } from './scope';
@@ -192,58 +193,63 @@ export function createPortalInvoiceRouter(deps: PortalInvoiceRoutesDeps): Router
       .from(invoiceLineItems)
       .where(eq(invoiceLineItems.invoiceId, inv.id))
       .orderBy(invoiceLineItems.sortOrder);
-    const style: 'modern' | 'classic' | 'minimal' =
-      branding?.templateStyle === 'classic' || branding?.templateStyle === 'minimal'
-        ? branding.templateStyle
-        : 'modern';
-    const html = renderInvoiceHtml({
-      invoiceNumber: inv.invoiceNumber,
-      issueDate: inv.issueDate,
-      dueDate: inv.dueDate,
-      style,
-      firm: {
-        name: branding?.displayName || firm?.name || 'Firm',
-        logoUrl: branding?.logoUrl ?? null,
+    // 0183 — render through the firm's editable invoice template (falls
+    // back to the shipped default letterhead when unsaved).
+    const templateDef = await loadInvoiceTemplateDef(deps.db, inv.firmId);
+    const html = renderInvoiceDocument(
+      {
+        invoiceNumber: inv.invoiceNumber,
+        issueDate: inv.issueDate,
+        dueDate: inv.dueDate,
+        firm: {
+          name: branding?.displayName || firm?.name || 'Firm',
+          logoUrl: branding?.logoUrl ?? null,
+        },
+        branding: branding
+          ? {
+              accentColor: branding.accentColor ?? null,
+              supportEmail: branding.supportEmail ?? null,
+              supportPhone: branding.supportPhone ?? null,
+              supportFax: branding.supportFax ?? null,
+              supportWeb: branding.supportWeb ?? null,
+              footerHtml: branding.arTermsText
+                ? branding.arTermsText
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/\n/g, '<br />')
+                : (branding.footerHtml ?? null),
+            }
+          : null,
+        reference: inv.invoiceNumber,
+        client: {
+          name: client?.name ?? 'Client',
+          billingAddress: client?.billingAddress ?? null,
+          mailingStreet1: client?.mailingStreet1 ?? null,
+          mailingStreet2: client?.mailingStreet2 ?? null,
+          mailingCity: client?.mailingCity ?? null,
+          mailingState: client?.mailingState ?? null,
+          mailingPostal: client?.mailingPostal ?? null,
+          mailingCountry: client?.mailingCountry ?? null,
+          externalId: client?.externalId ?? null,
+        },
+        lines: lines.map((l) => ({
+          kind: l.kind,
+          description: l.description,
+          amountCents: Number(l.amountCents),
+        })),
+        subtotalCents: Number(inv.subtotalCents),
+        surchargeCents: Number(inv.surchargeCents ?? 0),
+        taxCents: Number(inv.taxCents ?? 0),
+        processingFeeCents: Number(inv.feeCents),
+        totalCents: Number(inv.totalCents),
+        paidCents: Number(inv.paidCents ?? 0),
+        status: inv.status,
+        notes: inv.notes ?? null,
       },
-      branding: branding
-        ? {
-            accentColor: branding.accentColor ?? null,
-            supportEmail: branding.supportEmail ?? null,
-            supportPhone: branding.supportPhone ?? null,
-            supportFax: branding.supportFax ?? null,
-            supportWeb: branding.supportWeb ?? null,
-            footerHtml: branding.arTermsText
-              ? branding.arTermsText
-                  .replace(/&/g, '&amp;')
-                  .replace(/</g, '&lt;')
-                  .replace(/>/g, '&gt;')
-                  .replace(/"/g, '&quot;')
-                  .replace(/\n/g, '<br />')
-              : (branding.footerHtml ?? null),
-          }
-        : null,
-      reference: inv.invoiceNumber,
-      client: {
-        name: client?.name ?? 'Client',
-        billingAddress: client?.billingAddress ?? null,
-        mailingStreet1: client?.mailingStreet1 ?? null,
-        mailingStreet2: client?.mailingStreet2 ?? null,
-        mailingCity: client?.mailingCity ?? null,
-        mailingState: client?.mailingState ?? null,
-        mailingPostal: client?.mailingPostal ?? null,
-        mailingCountry: client?.mailingCountry ?? null,
-        externalId: client?.externalId ?? null,
-      },
-      lines: lines.map((l) => ({
-        kind: l.kind,
-        description: l.description,
-        amountCents: Number(l.amountCents),
-      })),
-      subtotalCents: Number(inv.subtotalCents),
-      processingFeeCents: Number(inv.feeCents),
-      totalCents: Number(inv.totalCents),
-      notes: inv.notes ?? null,
-    });
+      templateDef,
+    );
     return { html, invoiceNumber: inv.invoiceNumber };
   }
 

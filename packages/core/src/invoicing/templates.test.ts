@@ -24,8 +24,8 @@ describe('renderInvoiceHtml', () => {
     expect(html).toContain('<!doctype html>');
     expect(html).toContain('INV-2026-00042');
     expect(html).toContain('Holland Manufacturing LLC');
-    expect(html).toContain('$1000.00'); // hours line
-    expect(html).toContain('$1500.00'); // total
+    expect(html).toContain('$1,000.00'); // hours line
+    expect(html).toContain('$1,500.00'); // total
   });
 
   it('escapes HTML in client name (XSS hardening)', () => {

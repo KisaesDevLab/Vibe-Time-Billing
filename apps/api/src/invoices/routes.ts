@@ -7,6 +7,7 @@
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import QRCode from 'qrcode';
 
 import type { Database } from '@vibe/db';
 import {
@@ -29,10 +30,13 @@ import {
 } from '@vibe/db/schema';
 import {
   computeTotals,
+  formatDateUS,
   formatInvoiceNumber,
-  renderInvoiceHtml,
+  formatMoneyCents,
+  renderInvoiceDocument,
   salesTaxLine,
   surchargeLine,
+  type InvoiceTemplateDef,
   type LineItem,
   type NumberingConfig,
 } from '@vibe/core/invoicing';
@@ -50,6 +54,8 @@ import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
 import { firmScope, renderTemplate } from '../notifications/templating';
+
+import { loadInvoiceTemplateDef } from './template-loader';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -1126,66 +1132,97 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         }
       }
 
-      const html = renderInvoiceHtml({
-        invoiceNumber: inv.invoiceNumber,
-        issueDate: inv.issueDate,
-        dueDate: inv.dueDate,
-        // Phase 13 #6 — firm picks the template style; ?style= override
-        // for preview ("preview as classic" without saving).
-        style: (() => {
-          const q = typeof req.query['style'] === 'string' ? req.query['style'] : null;
-          if (q === 'modern' || q === 'classic' || q === 'minimal') return q;
-          const s = branding?.templateStyle;
-          if (s === 'modern' || s === 'classic' || s === 'minimal') return s;
-          return 'modern';
-        })(),
-        firm: {
-          name: branding?.displayName || firm?.name || 'Firm',
-          logoUrl: branding?.logoUrl ?? null,
+      // Phase 13 #6 / 0183 — a ?style= override forces a legacy builtin
+      // renderer (preview "as classic" without saving). Otherwise the
+      // firm's editable invoice template is loaded (falling back to the
+      // shipped default letterhead when unsaved).
+      const styleOverride = (() => {
+        const q = typeof req.query['style'] === 'string' ? req.query['style'] : null;
+        return q === 'modern' || q === 'classic' || q === 'minimal' ? q : null;
+      })();
+      const templateDef: InvoiceTemplateDef = styleOverride
+        ? { bodyHtml: null, css: null, builtinStyle: styleOverride }
+        : await loadInvoiceTemplateDef(deps.db, inv.firmId);
+
+      // QR — mint a no-login pay-by-link and embed a QR code so the
+      // printed/mailed invoice can be paid by scanning. Best-effort; only
+      // when a public base URL is configured. (The plaintext token is
+      // unrecoverable once stored, so each render mints its own link;
+      // multiple ACTIVE links per invoice is by design.)
+      let payExtras: { payUrl?: string; payQrDataUri?: string } = {};
+      if (deps.publicBaseUrl) {
+        try {
+          const payBase = deps.publicBaseUrl.replace(/\/$/, '');
+          const payLink = await createPayLink(deps.db, {
+            firmId: inv.firmId,
+            invoiceId: inv.id,
+            createdByAppUserId: session.appUserId,
+          });
+          const payUrl = `${payBase}/pay/${payLink.token}`;
+          const payQrDataUri = await QRCode.toDataURL(payUrl, { margin: 1, width: 240 });
+          payExtras = { payUrl, payQrDataUri };
+        } catch (err) {
+          logger.warn({ err, invoiceId: inv.id }, 'invoice pay QR generation failed');
+        }
+      }
+
+      const html = renderInvoiceDocument(
+        {
+          invoiceNumber: inv.invoiceNumber,
+          issueDate: inv.issueDate,
+          dueDate: inv.dueDate,
+          firm: {
+            name: branding?.displayName || firm?.name || 'Firm',
+            logoUrl: branding?.logoUrl ?? null,
+          },
+          branding: branding
+            ? {
+                accentColor: branding.accentColor ?? null,
+                supportEmail: branding.supportEmail ?? null,
+                supportPhone: branding.supportPhone ?? null,
+                supportFax: branding.supportFax ?? null,
+                supportWeb: branding.supportWeb ?? null,
+                // 0053 — A/R terms wins over generic footer when both set.
+                footerHtml: branding.arTermsText
+                  ? branding.arTermsText
+                      .replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;')
+                      .replace(/\n/g, '<br />')
+                  : (branding.footerHtml ?? null),
+              }
+            : null,
+          reference: inv.invoiceNumber,
+          engagementName,
+          client: {
+            name: client?.name ?? 'Client',
+            billingAddress: client?.billingAddress ?? null,
+            mailingStreet1: client?.mailingStreet1 ?? null,
+            mailingStreet2: client?.mailingStreet2 ?? null,
+            mailingCity: client?.mailingCity ?? null,
+            mailingState: client?.mailingState ?? null,
+            mailingPostal: client?.mailingPostal ?? null,
+            mailingCountry: client?.mailingCountry ?? null,
+            externalId: client?.externalId ?? null,
+          },
+          lines: lines.map((l) => ({
+            kind: l.kind,
+            description: l.description,
+            amountCents: Number(l.amountCents),
+          })),
+          subtotalCents: Number(inv.subtotalCents),
+          surchargeCents: Number(inv.surchargeCents ?? 0),
+          taxCents: Number(inv.taxCents ?? 0),
+          processingFeeCents: Number(inv.feeCents),
+          totalCents: Number(inv.totalCents),
+          paidCents: Number(inv.paidCents ?? 0),
+          status: inv.status,
+          notes: inv.notes ?? null,
         },
-        branding: branding
-          ? {
-              accentColor: branding.accentColor ?? null,
-              supportEmail: branding.supportEmail ?? null,
-              supportPhone: branding.supportPhone ?? null,
-              supportFax: branding.supportFax ?? null,
-              supportWeb: branding.supportWeb ?? null,
-              // 0053 — A/R terms wins over generic footer when both set.
-              footerHtml: branding.arTermsText
-                ? branding.arTermsText
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/\n/g, '<br />')
-                : (branding.footerHtml ?? null),
-            }
-          : null,
-        reference: inv.invoiceNumber,
-        engagementName,
-        client: {
-          name: client?.name ?? 'Client',
-          billingAddress: client?.billingAddress ?? null,
-          mailingStreet1: client?.mailingStreet1 ?? null,
-          mailingStreet2: client?.mailingStreet2 ?? null,
-          mailingCity: client?.mailingCity ?? null,
-          mailingState: client?.mailingState ?? null,
-          mailingPostal: client?.mailingPostal ?? null,
-          mailingCountry: client?.mailingCountry ?? null,
-          externalId: client?.externalId ?? null,
-        },
-        lines: lines.map((l) => ({
-          kind: l.kind,
-          description: l.description,
-          amountCents: Number(l.amountCents),
-        })),
-        subtotalCents: Number(inv.subtotalCents),
-        surchargeCents: Number(inv.surchargeCents ?? 0),
-        taxCents: Number(inv.taxCents ?? 0),
-        processingFeeCents: Number(inv.feeCents),
-        totalCents: Number(inv.totalCents),
-        notes: detailFooter ? `${inv.notes ?? ''}\n\n${detailFooter}` : (inv.notes ?? null),
-      });
+        templateDef,
+        { timeDetailHtml: detailFooter, ...payExtras },
+      );
 
       // Only an explicit `?format=html` (the in-app 8.5×11 page-preview iframe)
       // gets the letter-size HTML render. A plain navigation to /pdf — e.g.
@@ -2068,7 +2105,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         : '';
     const fallbackBody =
       `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
-      `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
+      `${formatMoneyCents(balance)} was due ${formatDateUS(inv.dueDate)}.\n\n` +
       payLine +
       `Please reach out if you have any questions.`;
     const fallbackSubject = `Reminder: invoice ${inv.invoiceNumber}`;
@@ -2088,9 +2125,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         firm: await firmScope(deps.db, session.firmId),
         invoice: {
           number: inv.invoiceNumber,
-          total: '$' + (Number(inv.totalCents) / 100).toFixed(2),
-          balance: '$' + (balance / 100).toFixed(2),
-          due_date: String(inv.dueDate),
+          total: formatMoneyCents(Number(inv.totalCents)),
+          balance: formatMoneyCents(balance),
+          due_date: formatDateUS(inv.dueDate),
           portal_url: link,
           pay_url: payUrl,
         },
@@ -2231,14 +2268,14 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .where(eq(clients.id, inv.clientId))
         .limit(1);
       const firmMerge = await firmScope(deps.db, session.firmId);
-      const dollars = '$' + (balance / 100).toFixed(2);
+      const dollars = formatMoneyCents(balance);
       const context = {
         client: { name: client?.name ?? '' },
         firm: firmMerge,
         invoice: {
           number: inv.invoiceNumber,
           balance: dollars,
-          due_date: String(inv.dueDate),
+          due_date: formatDateUS(inv.dueDate),
           pay_url: payUrl,
         },
       };
@@ -2777,11 +2814,11 @@ async function sendInvoiceEmail(
   }
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
-  const total = (Number(inv.totalCents) / 100).toFixed(2);
+  const total = formatMoneyCents(Number(inv.totalCents));
   const fallbackBody =
     `Dear ${client.name},\n\n` +
-    `Invoice ${inv.invoiceNumber} for $${total} is available. ` +
-    `It is due ${inv.dueDate}.\n\n` +
+    `Invoice ${inv.invoiceNumber} for ${total} is available. ` +
+    `It is due ${formatDateUS(inv.dueDate)}.\n\n` +
     (link ? `View and pay online: ${link}\n\n` : '') +
     `Thank you.`;
   const fallbackSubject = `Invoice ${inv.invoiceNumber}`;
@@ -2796,8 +2833,8 @@ async function sendInvoiceEmail(
       firm: await firmScope(deps.db, firmId),
       invoice: {
         number: inv.invoiceNumber,
-        total: '$' + total,
-        due_date: String(inv.dueDate),
+        total,
+        due_date: formatDateUS(inv.dueDate),
         portal_url: link,
       },
     },
@@ -2854,11 +2891,11 @@ async function sendInvoiceSms(
   }
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
-  const total = (Number(inv.totalCents) / 100).toFixed(2);
+  const total = formatMoneyCents(Number(inv.totalCents));
   // Keep the body short — SMS limits + many providers truncate around
   // 160 chars per segment. ~140 leaves room for a short link rewrite.
   const body =
-    `${client.name}: invoice ${inv.invoiceNumber} for $${total} is ready (due ${inv.dueDate}).` +
+    `${client.name}: invoice ${inv.invoiceNumber} for ${total} is ready (due ${formatDateUS(inv.dueDate)}).` +
     (link ? ` View: ${link}` : '');
   try {
     await deps.sendSms({ to: billingContact.phone, body });

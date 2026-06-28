@@ -8,8 +8,24 @@
 import type { Cents, IsoDate } from '@vibe/types';
 
 import type { LineItem } from './composition';
+import { buildInvoiceTemplateContext, type InvoiceContextExtras } from './context';
+import { formatDateUS, formatMoneyCents } from './format';
+import { buildStatementTemplateContext } from './statement-context';
+import { composeInvoiceHtml } from './template-engine';
 
 export type InvoiceTemplateStyle = 'modern' | 'classic' | 'minimal';
+
+/**
+ * A firm's saved invoice document template. When `builtinStyle` is set
+ * (or there is no custom body), rendering falls back to the legacy
+ * modern/classic/minimal renderers; otherwise the editable HTML+CSS is
+ * rendered through the template engine.
+ */
+export interface InvoiceTemplateDef {
+  bodyHtml: string | null;
+  css: string | null;
+  builtinStyle?: InvoiceTemplateStyle | null;
+}
 
 export interface InvoiceTemplateInput {
   invoiceNumber: string;
@@ -54,9 +70,14 @@ export interface InvoiceTemplateInput {
   engagementName?: string | null;
   // Phase 13 #6 — firm-style template picker. Defaults to 'modern'.
   style?: InvoiceTemplateStyle;
+  /** Amount paid to date (drives invoice.paid / invoice.balance_due tokens). */
+  paidCents?: Cents;
+  /** Invoice status (DRAFT/SENT/PAID/…) — exposed as invoice.status. */
+  status?: string;
 }
 
-const cents = (c: Cents): string => `$${(c / 100).toFixed(2)}`;
+const cents = (c: Cents): string => formatMoneyCents(c);
+const fmtDate = (iso: string | null | undefined): string => formatDateUS(iso);
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -65,6 +86,38 @@ export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
   if (style === 'classic') return renderClassic(input);
   if (style === 'minimal') return renderMinimal(input);
   return renderModern(input);
+}
+
+/**
+ * Central invoice document renderer used by every surface (staff PDF,
+ * portal, pay-link, email). Renders the firm's editable HTML+CSS
+ * template through the engine, or falls back to a builtin style.
+ *
+ *   - custom template (bodyHtml present, no builtinStyle) → engine path
+ *   - builtinStyle set, or no custom body → legacy modern/classic/minimal
+ *
+ * `extras.timeDetailHtml` is emitted raw via {{{ time_detail_html }}} on
+ * the engine path; on the legacy path it is appended to notes to
+ * preserve the existing full-detail behavior.
+ */
+export function renderInvoiceDocument(
+  input: InvoiceTemplateInput,
+  template: InvoiceTemplateDef | null,
+  extras: InvoiceContextExtras = {},
+): string {
+  const useCustom = !!template && !template.builtinStyle && !!template.bodyHtml;
+  if (useCustom) {
+    const ctx = buildInvoiceTemplateContext(input, extras);
+    return composeInvoiceHtml(template!.bodyHtml!, template!.css ?? '', ctx);
+  }
+  const notes = extras.timeDetailHtml
+    ? `${input.notes ?? ''}\n\n${extras.timeDetailHtml}`
+    : input.notes;
+  return renderInvoiceHtml({
+    ...input,
+    notes,
+    style: template?.builtinStyle ?? input.style,
+  });
 }
 
 /**
@@ -143,7 +196,9 @@ function renderModern(input: InvoiceTemplateInput): string {
   const firmAddr = input.firm.address ?? '';
   const reference = input.reference ?? input.invoiceNumber;
   const dueLabel =
-    input.dueDate && input.dueDate <= input.issueDate ? 'Due Upon Receipt' : `Due ${input.dueDate}`;
+    input.dueDate && input.dueDate <= input.issueDate
+      ? 'Due Upon Receipt'
+      : `Due ${fmtDate(input.dueDate)}`;
 
   // Contact-pills strip on the right of the header. Each pill is one
   // medium-tinted accent rectangle with a label icon (unicode glyphs to
@@ -336,7 +391,7 @@ function renderModern(input: InvoiceTemplateInput): string {
       </div>
       <div class="inv-block">
         <div class="row"><span class="lbl">Invoice:</span><span>${esc(input.invoiceNumber)}</span></div>
-        <div class="row"><span class="lbl">Date:</span><span>${esc(input.issueDate)}</span></div>
+        <div class="row"><span class="lbl">Date:</span><span>${esc(fmtDate(input.issueDate))}</span></div>
         <div class="due">${esc(dueLabel)}</div>
       </div>
     </div>
@@ -431,7 +486,7 @@ function renderClassic(input: InvoiceTemplateInput): string {
   <div class="doc-title">Invoice</div>
   <div class="meta-row">
     <div><strong>Invoice #${esc(input.invoiceNumber)}</strong></div>
-    <div>Issued ${esc(input.issueDate)} · Due ${esc(input.dueDate)}</div>
+    <div>Issued ${esc(fmtDate(input.issueDate))} · Due ${esc(fmtDate(input.dueDate))}</div>
   </div>
   <div class="parties">
     <h3>Bill to</h3>
@@ -495,7 +550,7 @@ function renderMinimal(input: InvoiceTemplateInput): string {
   ${logo}
   <h1>${esc(input.firm.name)}</h1>
   <div class="meta">
-    Invoice #${esc(input.invoiceNumber)} · Issued ${esc(input.issueDate)} · Due ${esc(input.dueDate)}
+    Invoice #${esc(input.invoiceNumber)} · Issued ${esc(fmtDate(input.issueDate))} · Due ${esc(fmtDate(input.dueDate))}
   </div>
   <div class="total-callout">${cents(input.totalCents)}</div>
   <div class="total-caption">Total due — ${esc(input.client.name)}</div>
@@ -518,7 +573,7 @@ function renderMinimal(input: InvoiceTemplateInput): string {
   </table>
   ${
     input.processingFeeCents > 0
-      ? `<div class="meta">Includes $${(input.processingFeeCents / 100).toFixed(2)} processing fee</div>`
+      ? `<div class="meta">Includes ${cents(input.processingFeeCents)} processing fee</div>`
       : ''
   }
   ${input.notes ? `<div class="notes">${esc(input.notes)}</div>` : ''}
@@ -586,6 +641,40 @@ export interface StatementTemplateInput {
   aging: StatementAgingBuckets;
   /** Optional banner under the table, e.g. suspension policy notice. */
   policyNotice?: string | null;
+  // ---- date-range "account activity" mode (optional) ----
+  /** 'outstanding' (default) or 'activity'. */
+  mode?: 'outstanding' | 'activity';
+  periodStart?: IsoDate | null;
+  periodEnd?: IsoDate | null;
+  openingBalanceCents?: Cents;
+  chargesCents?: Cents;
+  paymentsCents?: Cents;
+  closingBalanceCents?: Cents;
+}
+
+/** A firm's saved statement document template (mirrors InvoiceTemplateDef). */
+export interface StatementTemplateDef {
+  bodyHtml: string | null;
+  css: string | null;
+  /** When set, render with the legacy builtin instead of the custom body. */
+  builtinStyle?: string | null;
+}
+
+/**
+ * Central statement document renderer used by every surface (single,
+ * bulk-generate, bulk-email). Custom template (bodyHtml present, no
+ * builtinStyle) → engine path; else legacy renderStatementHtml.
+ */
+export function renderStatementDocument(
+  input: StatementTemplateInput,
+  template: StatementTemplateDef | null,
+): string {
+  const useCustom = !!template && !template.builtinStyle && !!template.bodyHtml;
+  if (useCustom) {
+    const ctx = buildStatementTemplateContext(input);
+    return composeInvoiceHtml(template!.bodyHtml!, template!.css ?? '', ctx);
+  }
+  return renderStatementHtml(input);
 }
 
 function formatStmtAddress(c: StatementTemplateInput['client']): string[] {
@@ -631,7 +720,7 @@ export function renderStatementHtml(input: StatementTemplateInput): string {
     .map(
       (l) => `
       <tr>
-        <td>${esc(l.date)}</td>
+        <td>${esc(fmtDate(l.date))}</td>
         <td>${esc(l.type)}</td>
         <td>${esc(l.reference)}</td>
         <td class="num">${l.debitCents != null ? cents(l.debitCents) : ''}</td>
@@ -789,7 +878,7 @@ export function renderStatementHtml(input: StatementTemplateInput): string {
       ${addressLines.map((l) => `<div>${esc(l)}</div>`).join('')}
     </div>
     <div class="meta">
-      <div class="row"><span class="lbl">Date:</span><span>${esc(input.statementDate)}</span></div>
+      <div class="row"><span class="lbl">Date:</span><span>${esc(fmtDate(input.statementDate))}</span></div>
       <div class="row"><span class="lbl">ID:</span><span>${esc(input.client.externalId ?? '—')}</span></div>
       <div class="row" style="font-weight:600; margin-top:4px;"><span>${esc(input.client.name)}</span></div>
     </div>
@@ -812,7 +901,7 @@ export function renderStatementHtml(input: StatementTemplateInput): string {
   </table>
 
   <div class="total-row">
-    <div class="date">${esc(input.statementDate)}</div>
+    <div class="date">${esc(fmtDate(input.statementDate))}</div>
     <div class="label">Total Amount Due</div>
     <div class="amt">${cents(input.totalAmountDueCents)}</div>
   </div>

@@ -12,6 +12,7 @@ import type { Database } from '@vibe/db';
 import { clients, engagementTypes, engagements, invoices, serviceLines } from '@vibe/db/schema';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { bucketize, type AgingBucket } from '@vibe/core/billing';
+import { formatDateUS, formatMoneyCents } from '@vibe/core/invoicing';
 
 import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -371,19 +372,18 @@ export function createArRouter(deps: ArRoutesDeps): Router {
       const today = new Date().toISOString().slice(0, 10);
       const rows = open
         .map((o) => ({
-          line: `${o.invoiceNumber}  due ${o.dueDate}  balance $${(
-            (Number(o.totalCents) - Number(o.paidCents)) /
-            100
-          ).toFixed(2)}`,
+          line: `${o.invoiceNumber}  due ${formatDateUS(o.dueDate)}  balance ${formatMoneyCents(
+            Number(o.totalCents) - Number(o.paidCents),
+          )}`,
           amountCents: Number(o.totalCents) - Number(o.paidCents),
         }))
         .filter((r) => r.amountCents > 0);
       const balance = rows.reduce((s, r) => s + r.amountCents, 0);
       const body =
-        `Account statement for ${client.name} as of ${today}:\n\n` +
+        `Account statement for ${client.name} as of ${formatDateUS(today)}:\n\n` +
         rows.map((r) => r.line).join('\n') +
-        `\n\nTotal balance: $${(balance / 100).toFixed(2)}`;
-      const balanceStr = `$${(balance / 100).toFixed(2)}`;
+        `\n\nTotal balance: ${formatMoneyCents(balance)}`;
+      const balanceStr = formatMoneyCents(balance);
       const firm = await firmScope(deps.db, session.firmId);
       const rendered = await renderTemplate({
         db: deps.db,

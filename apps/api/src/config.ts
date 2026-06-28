@@ -52,6 +52,9 @@ const Schema = z.object({
   MCP_PORT: z.coerce.number().int().positive().default(3002),
 
   AI_DEFAULT_MONTHLY_BUDGET_CENTS: z.coerce.number().int().nonnegative().default(10000),
+  // 0185 — Vibe Print LAN gateway fallback (firm DB config overrides these).
+  PRINT_GATEWAY_BASE_URL: z.string().optional(),
+  PRINT_GATEWAY_API_KEY: z.string().optional(),
   // Provider secrets — all optional; presence drives wiring in server.ts.
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),

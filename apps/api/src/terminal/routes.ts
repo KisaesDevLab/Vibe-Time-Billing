@@ -181,6 +181,32 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
     res.json({ readers, locations });
   });
 
+  // 0186 — bind a reader to a printer + per-reader auto-print toggle.
+  const ReaderPrintConfigSchema = z.object({
+    printerId: z.number().int().positive().nullable(),
+    autoPrintReceipt: z.boolean(),
+  });
+  router.patch(
+    '/readers/:id/print-config',
+    requirePermission(deps, 'payment:write'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) return void res.status(503).json({ error: 'db_unavailable' });
+      const parsed = ReaderPrintConfigSchema.safeParse(req.body);
+      if (!parsed.success) return void res.status(400).json({ error: 'invalid_payload' });
+      await deps.db
+        .update(terminalReaders)
+        .set({ printerId: parsed.data.printerId, autoPrintReceipt: parsed.data.autoPrintReceipt })
+        .where(
+          and(
+            eq(terminalReaders.id, req.params['id']!),
+            eq(terminalReaders.firmId, session.firmId),
+          ),
+        );
+      res.json({ ok: true });
+    },
+  );
+
   // ----- collection (in person) --------------------------------------
 
   router.post('/collect', requirePermission(deps, 'payment:write'), async (req, res) => {
@@ -309,6 +335,9 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
         status: 'PENDING',
         allocationsPending: parsed.data.allocations,
         createdById: session.appUserId,
+        // 0186 — record the reader so the completion webhook can auto-print
+        // the receipt to this terminal's configured printer.
+        terminalReaderId: parsed.data.readerId,
       })
       .returning({ id: paymentReceipts.id });
     if (!receipt) return void res.status(500).json({ error: 'receipt_insert_failed' });

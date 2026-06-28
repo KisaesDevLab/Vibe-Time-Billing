@@ -445,7 +445,9 @@ export function ClientDetailPage(): JSX.Element {
 
       {tab === 'appointments' && <ClientAppointmentsCard clientId={client.id} />}
 
-      {tab === 'billing' && <BillingCard clientId={client.id} />}
+      {tab === 'billing' && (
+        <BillingCard clientId={client.id} clientName={client.clientFacingName || client.name} />
+      )}
 
       {tab === 'tax' && (
         <>

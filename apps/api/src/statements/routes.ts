@@ -9,23 +9,14 @@
 // PDF as an attachment to the client's billing contact.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import {
-  clientContacts,
-  clients,
-  firmSettings,
-  firms,
-  invoices,
-  payments,
-  persons,
-} from '@vibe/db/schema';
+import { clientContacts, firms, persons } from '@vibe/db/schema';
 import {
   combineStatementsHtml,
-  renderStatementHtml,
-  type StatementLine,
-  type StatementTemplateInput,
+  formatMoneyCents,
+  renderStatementDocument,
 } from '@vibe/core/invoicing';
 
 import { emitAudit } from '../auth/audit';
@@ -34,6 +25,9 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { renderHtmlToPdf } from '../pdf/render';
 import { logger } from '../logger';
+
+import { buildStatement, loadBranding } from './build';
+import { loadStatementTemplateDef } from './template-loader';
 
 export interface StatementsRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -48,206 +42,6 @@ export interface StatementsRoutesDeps extends RbacDeps {
 
 function clientIp(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
-}
-
-function daysBetween(a: string, b: string): number {
-  return Math.round(
-    (Date.parse(`${a}T00:00:00`) - Date.parse(`${b}T00:00:00`)) / (1000 * 60 * 60 * 24),
-  );
-}
-
-/** Build the statement-template input for one client. Pulls SENT /
- *  PARTIALLY_PAID / OVERDUE invoices and their payments, computes a
- *  running balance per row, and bucketizes outstanding amounts by
- *  days-past-due. */
-async function buildStatement(
-  db: Database,
-  firmId: string,
-  clientId: string,
-  asOfIso: string,
-  branding: {
-    displayName?: string | null;
-    logoUrl?: string | null;
-    accentColor?: string | null;
-    supportEmail?: string | null;
-    supportPhone?: string | null;
-    supportFax?: string | null;
-    supportWeb?: string | null;
-    arTermsText?: string | null;
-    footerHtml?: string | null;
-  } | null,
-  firmRow: { name: string } | null,
-): Promise<StatementTemplateInput | null> {
-  const [clientRow] = await db
-    .select()
-    .from(clients)
-    .where(and(eq(clients.id, clientId), eq(clients.firmId, firmId)))
-    .limit(1);
-  if (!clientRow) return null;
-
-  const invs = await db
-    .select({
-      id: invoices.id,
-      invoiceNumber: invoices.invoiceNumber,
-      issueDate: invoices.issueDate,
-      dueDate: invoices.dueDate,
-      totalCents: invoices.totalCents,
-      paidCents: invoices.paidCents,
-      status: invoices.status,
-    })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.firmId, firmId),
-        eq(invoices.clientId, clientId),
-        inArray(invoices.status, ['SENT', 'PARTIALLY_PAID', 'OVERDUE']),
-        ne(invoices.status, 'VOIDED'),
-      ),
-    )
-    .orderBy(invoices.issueDate);
-
-  const lines: StatementLine[] = [];
-  let running = 0;
-  let bucket0 = 0;
-  let bucket30 = 0;
-  let bucket60 = 0;
-  let bucket90 = 0;
-  let bucket121 = 0;
-
-  for (const inv of invs) {
-    const total = Number(inv.totalCents);
-    const paid = Number(inv.paidCents);
-    const balance = total - paid;
-    if (balance <= 0) continue;
-
-    running += total;
-    lines.push({
-      date: inv.issueDate,
-      type: 'Invoice',
-      reference: inv.invoiceNumber,
-      debitCents: total,
-      balanceCents: running,
-    });
-
-    if (paid > 0) {
-      // Show payments as a credit immediately after the invoice row.
-      const pays = await db
-        .select({
-          id: payments.id,
-          amountCents: payments.amountCents,
-          receivedAt: payments.receivedAt,
-        })
-        .from(payments)
-        .where(and(eq(payments.invoiceId, inv.id), eq(payments.status, 'SUCCEEDED')));
-      for (const p of pays) {
-        const credit = Number(p.amountCents);
-        running -= credit;
-        const dateIso = p.receivedAt
-          ? new Date(p.receivedAt).toISOString().slice(0, 10)
-          : inv.issueDate;
-        lines.push({
-          date: dateIso,
-          type: 'Payment',
-          reference: p.id.slice(0, 8),
-          creditCents: credit,
-          balanceCents: running,
-        });
-      }
-    }
-
-    // Bucket the remaining balance by days past due (or issue date if
-    // due is null). Compare against asOf, not today, so historic
-    // statements stay stable.
-    const ageRef = inv.dueDate || inv.issueDate;
-    const daysPastDue = daysBetween(asOfIso, ageRef);
-    if (daysPastDue <= 30) bucket0 += balance;
-    else if (daysPastDue <= 60) bucket30 += balance;
-    else if (daysPastDue <= 90) bucket60 += balance;
-    else if (daysPastDue <= 120) bucket90 += balance;
-    else bucket121 += balance;
-  }
-
-  const totalDue = bucket0 + bucket30 + bucket60 + bucket90 + bucket121;
-
-  return {
-    statementDate: asOfIso,
-    firm: {
-      name: branding?.displayName || firmRow?.name || 'Firm',
-      logoUrl: branding?.logoUrl ?? null,
-      address: null,
-    },
-    branding: branding
-      ? {
-          accentColor: branding.accentColor ?? null,
-          supportEmail: branding.supportEmail ?? null,
-          supportPhone: branding.supportPhone ?? null,
-          supportFax: branding.supportFax ?? null,
-          supportWeb: branding.supportWeb ?? null,
-          footerHtml: branding.arTermsText
-            ? branding.arTermsText
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/\n/g, '<br />')
-            : (branding.footerHtml ?? null),
-        }
-      : null,
-    client: {
-      name: clientRow.name,
-      externalId: clientRow.externalId ?? null,
-      mailingStreet1: clientRow.mailingStreet1 ?? null,
-      mailingStreet2: clientRow.mailingStreet2 ?? null,
-      mailingCity: clientRow.mailingCity ?? null,
-      mailingState: clientRow.mailingState ?? null,
-      mailingPostal: clientRow.mailingPostal ?? null,
-      mailingCountry: clientRow.mailingCountry ?? null,
-      billingAddress: clientRow.billingAddress ?? null,
-    },
-    lines,
-    totalAmountDueCents: totalDue,
-    aging: {
-      d_0_30: bucket0,
-      d_31_60: bucket30,
-      d_61_90: bucket60,
-      d_91_120: bucket90,
-      d_121_plus: bucket121,
-    },
-    policyNotice:
-      'Accounts with balances over 90 days past due will have all work suspended until payment is received.',
-  };
-}
-
-async function loadBranding(
-  db: Database,
-  firmId: string,
-): Promise<{
-  displayName?: string | null;
-  logoUrl?: string | null;
-  accentColor?: string | null;
-  supportEmail?: string | null;
-  supportPhone?: string | null;
-  supportFax?: string | null;
-  supportWeb?: string | null;
-  arTermsText?: string | null;
-  footerHtml?: string | null;
-}> {
-  const [b] = await db
-    .select({
-      displayName: firmSettings.brandDisplayName,
-      logoUrl: firmSettings.brandLogoUrl,
-      accentColor: firmSettings.brandAccentColor,
-      supportEmail: firmSettings.brandSupportEmail,
-      supportPhone: firmSettings.brandSupportPhone,
-      supportFax: firmSettings.brandSupportFax,
-      supportWeb: firmSettings.brandSupportWeb,
-      arTermsText: firmSettings.arTermsText,
-      footerHtml: firmSettings.brandFooterHtml,
-    })
-    .from(firmSettings)
-    .where(eq(firmSettings.firmId, firmId))
-    .limit(1);
-  return b ?? {};
 }
 
 export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
@@ -274,6 +68,22 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
         .limit(1);
       const branding = await loadBranding(deps.db, session.firmId);
       const asOf = new Date().toISOString().slice(0, 10);
+      // ?mode=activity&start=YYYY-MM-DD&end=YYYY-MM-DD → account-activity
+      // statement with opening/closing balance; default is outstanding.
+      const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+      const qMode = req.query['mode'] === 'activity' ? 'activity' : 'outstanding';
+      const qStart =
+        typeof req.query['start'] === 'string' && dateRe.test(req.query['start'])
+          ? req.query['start']
+          : undefined;
+      const qEnd =
+        typeof req.query['end'] === 'string' && dateRe.test(req.query['end'])
+          ? req.query['end']
+          : undefined;
+      const opts =
+        qMode === 'activity' && qStart
+          ? { mode: 'activity' as const, start: qStart, end: qEnd ?? asOf }
+          : {};
       const input = await buildStatement(
         deps.db,
         session.firmId,
@@ -281,12 +91,14 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
         asOf,
         branding,
         firmRow ?? null,
+        opts,
       );
       if (!input) {
         res.status(404).json({ error: 'client_not_found' });
         return;
       }
-      const html = renderStatementHtml(input);
+      const templateDef = await loadStatementTemplateDef(deps.db, session.firmId);
+      const html = renderStatementDocument(input, templateDef);
       const wantsPdf =
         (req.query['accept'] as string | undefined) === 'pdf' ||
         (req.header('accept') ?? '').includes('application/pdf');
@@ -344,6 +156,7 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
         .where(eq(firms.id, session.firmId))
         .limit(1);
       const branding = await loadBranding(deps.db, session.firmId);
+      const templateDef = await loadStatementTemplateDef(deps.db, session.firmId);
       const asOf = new Date().toISOString().slice(0, 10);
 
       const htmls: string[] = [];
@@ -367,7 +180,7 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
           skipped.push(cid);
           continue;
         }
-        htmls.push(renderStatementHtml(input));
+        htmls.push(renderStatementDocument(input, templateDef));
         generated.push(cid);
       }
       if (htmls.length === 0) {
@@ -429,6 +242,7 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
         .where(eq(firms.id, session.firmId))
         .limit(1);
       const branding = await loadBranding(deps.db, session.firmId);
+      const templateDef = await loadStatementTemplateDef(deps.db, session.firmId);
       const asOf = new Date().toISOString().slice(0, 10);
       const firm = await firmScope(deps.db, session.firmId);
 
@@ -463,10 +277,10 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
           continue;
         }
         try {
-          const html = renderStatementHtml(input);
+          const html = renderStatementDocument(input, templateDef);
           const pdf = await renderHtmlToPdf(html);
           const fileSafeName = input.client.name.replace(/[^a-z0-9-]+/gi, '_');
-          const balanceStr = `$${(input.totalAmountDueCents / 100).toFixed(2)}`;
+          const balanceStr = formatMoneyCents(input.totalAmountDueCents);
           const rendered = await renderTemplate({
             db: deps.db,
             firmId: session.firmId,

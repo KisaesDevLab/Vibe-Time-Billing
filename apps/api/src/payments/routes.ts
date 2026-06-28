@@ -18,7 +18,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -29,7 +29,6 @@ import {
   creditApplications,
   creditMemos,
   firmSettings,
-  firms,
   invoices,
   paymentMethod,
   paymentMethodTypes,
@@ -39,6 +38,7 @@ import {
   portalIdentity,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
+import { formatDateUS, formatMoneyCents } from '@vibe/core/invoicing';
 import {
   promoteEscrowFilesForInvoice,
   sendDeliverableUnlockedNotifications,
@@ -49,7 +49,8 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
-import { methodLabel, renderPaymentReceiptHtml, type PaymentReceiptDoc } from './receipt-doc';
+import { loadReceiptDoc, renderPaymentReceiptHtml } from './receipt-doc';
+import { sendToPrinter } from '../print-gateway/send';
 
 export interface PaymentRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -1561,59 +1562,6 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
 
   // ----- Receipt document (print / email) ----------------------------
 
-  async function loadReceiptDoc(
-    db: Database,
-    firmId: string,
-    receiptId: string,
-  ): Promise<{ doc: PaymentReceiptDoc; payerClientId: string } | null> {
-    const [receipt] = await db
-      .select({
-        id: paymentReceipts.id,
-        payerClientId: paymentReceipts.payerClientId,
-        paymentDate: paymentReceipts.paymentDate,
-        paymentMethod: paymentReceipts.paymentMethod,
-        reference: paymentReceipts.reference,
-        totalCents: paymentReceipts.totalCents,
-        payerName: clients.name,
-      })
-      .from(paymentReceipts)
-      .innerJoin(clients, eq(clients.id, paymentReceipts.payerClientId))
-      .where(and(eq(paymentReceipts.id, receiptId), eq(paymentReceipts.firmId, firmId)))
-      .limit(1);
-    if (!receipt) return null;
-    const [firm] = await db
-      .select({ name: firms.name })
-      .from(firms)
-      .where(eq(firms.id, firmId))
-      .limit(1);
-    const lineRows = await db
-      .select({ invoiceNumber: invoices.invoiceNumber, amountCents: payments.amountCents })
-      .from(payments)
-      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
-      .where(and(eq(payments.receiptId, receiptId), isNull(payments.voidedAt)))
-      .orderBy(asc(invoices.invoiceNumber));
-    const paymentDate =
-      typeof receipt.paymentDate === 'string'
-        ? receipt.paymentDate
-        : new Date(receipt.paymentDate as unknown as Date).toISOString().slice(0, 10);
-    return {
-      payerClientId: receipt.payerClientId,
-      doc: {
-        firmName: firm?.name ?? 'Your firm',
-        receiptId: receipt.id,
-        paymentDate,
-        methodLabel: methodLabel(receipt.paymentMethod),
-        reference: receipt.reference,
-        payerName: receipt.payerName,
-        totalCents: Number(receipt.totalCents),
-        lines: lineRows.map((l) => ({
-          invoiceNumber: l.invoiceNumber,
-          amountCents: Number(l.amountCents),
-        })),
-      },
-    };
-  }
-
   async function renderReceiptDoc(
     req: Request,
     res: Response,
@@ -1661,6 +1609,57 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
   );
   router.get('/receipt/:receiptId/print.pdf', requirePermission(deps, 'payment:read'), (req, res) =>
     renderReceiptDoc(req, res, 'pdf'),
+  );
+
+  // Direct-print the receipt to a Vibe Print gateway printer.
+  const ReceiptPrintSchema = z.object({
+    printerId: z.number().int().positive(),
+    copies: z.number().int().min(1).max(20).optional(),
+  });
+  router.post(
+    '/receipt/:receiptId/print',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ReceiptPrintSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const loaded = await loadReceiptDoc(deps.db, session.firmId, req.params['receiptId']!);
+      if (!loaded) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      let pdf: Buffer;
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        pdf = await renderHtmlToPdf(renderPaymentReceiptHtml(loaded.doc));
+      } catch (err) {
+        logger.error({ err, receiptId: loaded.doc.receiptId }, 'receipt print render failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const result = await sendToPrinter({
+        db: deps.db,
+        firmId: session.firmId,
+        appUserId: session.appUserId,
+        printableType: 'payment_receipt',
+        printableId: loaded.doc.receiptId,
+        pdf,
+        printerId: parsed.data.printerId,
+        copies: parsed.data.copies ?? 1,
+      });
+      if (!result.ok) {
+        res.status(502).json({ error: result.error });
+        return;
+      }
+      res.json({ ok: true, jobId: result.jobId });
+    },
   );
 
   // Email the receipt to the payer client's billing contact (falling back
@@ -1725,7 +1724,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       // Multi-invoice PDF receipt — distinct from the single-invoice
       // `payment_received` confirmation template, so this keeps its own copy.
       const subject = `Payment receipt — ${loaded.doc.firmName}`;
-      const body = `Thank you for your payment of $${(loaded.doc.totalCents / 100).toFixed(2)} received ${loaded.doc.paymentDate}. Your receipt is ${attachments ? 'attached' : 'below'}.`;
+      const body = `Thank you for your payment of ${formatMoneyCents(loaded.doc.totalCents)} received ${formatDateUS(loaded.doc.paymentDate)}. Your receipt is ${attachments ? 'attached' : 'below'}.`;
       try {
         await deps.sendStaffMail({ to: contact.email, subject, body, html, attachments });
       } catch (err) {

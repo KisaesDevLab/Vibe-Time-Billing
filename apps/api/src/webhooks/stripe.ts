@@ -18,8 +18,13 @@ import {
   paymentMethod,
   paymentReceipts,
   payments,
+  printLog,
+  terminalReaders,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
+import { formatMoneyCents } from '@vibe/core/invoicing';
+
+import type { PrintQueue } from '../print-gateway/queue';
 
 import { emitAudit } from '../auth/audit';
 import { getBillingContact } from '../clients/billing-contact';
@@ -41,6 +46,9 @@ export interface StripeWebhookDeps {
   // Phase 14 #15 + #20 — confirmation email + dunning re-route hooks.
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
+  // 0186 — enqueue terminal receipt auto-print on card-present completion.
+  // Injectable (default skip) so webhook tests run without Redis.
+  printQueue?: PrintQueue;
 }
 
 interface StripeEvent {
@@ -162,7 +170,7 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
       // from the stashed allocations. This is the single source of
       // truth for CHARGE-mode receipts; the frontend just polls
       // /payments/receive/:id until status leaves PENDING.
-      const materialized = await materializeReceiptIfPending(deps.db, intentId);
+      const materialized = await materializeReceiptIfPending(deps.db, intentId, deps.printQueue);
       if (materialized) return;
 
       // Find the payment row by provider_charge_id and mark succeeded.
@@ -242,10 +250,10 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
               const fallbackBody = [
                 `Hi ${client.name},`,
                 ``,
-                `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
+                `We've received your payment of ${formatMoneyCents(pay.amountCents)} for invoice ${inv.invoiceNumber}.`,
                 fullyPaid
                   ? `This invoice is now PAID. Thank you!`
-                  : `Remaining balance: $${((inv.totalCents - newPaidCents) / 100).toFixed(2)}.`,
+                  : `Remaining balance: ${formatMoneyCents(inv.totalCents - newPaidCents)}.`,
                 link ? `\nView receipt: ${link}` : '',
               ].join('\n');
               const rendered = await renderTemplate({
@@ -259,7 +267,7 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
                   firm: await firmScope(deps.db, inv.firmId),
                   invoice: {
                     number: inv.invoiceNumber,
-                    balance: '$' + ((inv.totalCents - newPaidCents) / 100).toFixed(2),
+                    balance: formatMoneyCents(inv.totalCents - newPaidCents),
                     portal_url: link,
                   },
                 },
@@ -694,7 +702,11 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
  * Idempotent on (provider_charge_id, status='SUCCEEDED'): a re-delivery
  * finds the receipt already SUCCEEDED and returns without re-writing.
  */
-async function materializeReceiptIfPending(db: Database, intentId: string): Promise<boolean> {
+async function materializeReceiptIfPending(
+  db: Database,
+  intentId: string,
+  printQueue?: PrintQueue,
+): Promise<boolean> {
   const [receipt] = await db
     .select()
     .from(paymentReceipts)
@@ -775,6 +787,41 @@ async function materializeReceiptIfPending(db: Database, intentId: string): Prom
       })
       .where(eq(paymentReceipts.id, receipt.id));
   });
+
+  // 0186 — auto-print the receipt to the terminal's configured printer.
+  // Only fires here (the fresh PENDING→SUCCEEDED transition), never on
+  // re-delivery (which returned early above).
+  if (printQueue && receipt.terminalReaderId) {
+    const [reader] = await db
+      .select({ printerId: terminalReaders.printerId, autoPrint: terminalReaders.autoPrintReceipt })
+      .from(terminalReaders)
+      .where(eq(terminalReaders.id, receipt.terminalReaderId))
+      .limit(1);
+    if (reader?.autoPrint) {
+      if (reader.printerId != null) {
+        await printQueue
+          .terminalReceipt({ receiptId: receipt.id, printerId: reader.printerId })
+          .catch((err: unknown) =>
+            logger.error({ err, receiptId: receipt.id }, 'terminal receipt enqueue failed'),
+          );
+      } else {
+        // Auto-print on but no printer assigned → skip + log (don't print
+        // to the wrong location).
+        await db
+          .insert(printLog)
+          .values({
+            firmId: receipt.firmId,
+            appUserId: null,
+            printableType: 'payment_receipt',
+            printableId: receipt.id,
+            printerId: 0,
+            status: 'FAILED',
+            error: 'no_printer_assigned',
+          })
+          .catch(() => undefined);
+      }
+    }
+  }
 
   await emitAudit(db, {
     action: 'PAYMENT',

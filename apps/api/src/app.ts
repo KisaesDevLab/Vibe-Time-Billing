@@ -174,6 +174,9 @@ import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createStripeKeysRouter } from './admin/stripe-keys';
+import { createPrintGatewayKeysRouter } from './admin/print-gateway-keys';
+import { createPrintRouter } from './print-gateway/routes';
+import { bullPrintQueue } from './print-gateway/queue';
 import { createWebhookKeysRouter } from './admin/webhook-keys';
 import { createTerminalRouter } from './terminal/routes';
 import { createRetainerRouter } from './retainers/routes';
@@ -285,6 +288,7 @@ export function createApp(deps: AppDeps): Express {
               })
           : undefined,
         portalBaseUrl: config.PORTAL_BASE_URL,
+        printQueue: bullPrintQueue,
       }),
     );
   }
@@ -1826,6 +1830,20 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/admin/stripe-keys', auth.requireAuth, auth.requireCsrf, stripeKeysRouter);
 
+  const printGatewayKeysRouter = createPrintGatewayKeysRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/print-gateway',
+    auth.requireAuth,
+    auth.requireCsrf,
+    printGatewayKeysRouter,
+  );
+
+  const printRouter = createPrintRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/print', auth.requireAuth, auth.requireCsrf, printRouter);
+
   const webhookKeysRouter = createWebhookKeysRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
@@ -1926,6 +1944,7 @@ export function createApp(deps: AppDeps): Express {
       webhookSecret: deps.stripeWebhookSecret ?? null,
       sendEmail: deps.sendPortalEmail,
       portalBaseUrl: config.PORTAL_BASE_URL,
+      printQueue: bullPrintQueue,
     }),
   );
 

@@ -453,6 +453,12 @@ export const firmSettings = pgTable('firm_settings', {
   stripeConfigEncrypted: text('stripe_config_encrypted'),
   // 0174 — inbound webhook signing secrets per notification provider, encrypted.
   webhookKeysEncrypted: text('webhook_keys_encrypted'),
+  // 0185 — Vibe Print LAN gateway config (baseUrl/apiKey/enabled/defaultPrinterId/
+  // autoPrintSignatureConfirmation), encrypted at rest under KMS_KEY.
+  printGatewayConfigEncrypted: text('print_gateway_config_encrypted'),
+  printGatewayConfigUpdatedAt: timestamp('print_gateway_config_updated_at', {
+    withTimezone: true,
+  }),
   mailConfigUpdatedAt: timestamp('mail_config_updated_at', { withTimezone: true }),
   smsConfigUpdatedAt: timestamp('sms_config_updated_at', { withTimezone: true }),
 
@@ -621,6 +627,9 @@ export const appUsers = pgTable(
     email: text('email').notNull(),
     fullName: text('full_name').notNull(),
     defaultOfficeId: uuid('default_office_id').references(() => offices.id),
+    // 0185 — remembered Vibe Print gateway printer (numeric gateway id) for
+    // this user's interactive direct-print actions.
+    defaultPrinterId: integer('default_printer_id'),
     status: userStatus('status').notNull().default('ACTIVE'),
 
     // TOTP — was Q5 (mandatory) prior to 0087. Now one of three
@@ -1721,6 +1730,120 @@ export const engagementLetterTemplates = pgTable(
 );
 
 // =====================================================================
+// 0183 — invoice_template. One editable invoice document template per
+// firm (HTML body + CSS). When `builtinStyle` is set the legacy
+// modern/classic/minimal renderer is used; otherwise the custom body is
+// rendered through the invoice template engine. No row → shipped default
+// letterhead template.
+// =====================================================================
+
+export const invoiceTemplates = pgTable(
+  'invoice_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    bodyHtml: text('body_html'),
+    css: text('css'),
+    variablesJson: jsonb('variables_json'),
+    builtinStyle: text('builtin_style'),
+    updatedByAppUserId: uuid('updated_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUnique: uniqueIndex('invoice_template_firm_uk').on(t.firmId),
+  }),
+);
+
+// =====================================================================
+// 0184 — statement_template. One editable statement-of-account document
+// template per firm (HTML body + CSS); statement counterpart to
+// invoice_template. No row → shipped default statement template.
+// =====================================================================
+
+export const statementTemplates = pgTable(
+  'statement_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    bodyHtml: text('body_html'),
+    css: text('css'),
+    variablesJson: jsonb('variables_json'),
+    builtinStyle: text('builtin_style'),
+    updatedByAppUserId: uuid('updated_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUnique: uniqueIndex('statement_template_firm_uk').on(t.firmId),
+  }),
+);
+
+// =====================================================================
+// 0185 — print_log. Audit of documents sent to the Vibe Print LAN
+// gateway for direct (silent) printing. app_user_id is null for
+// automated prints (e.g. signature-confirmation auto-print).
+// =====================================================================
+
+export const printLog = pgTable(
+  'print_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    printableType: text('printable_type').notNull(),
+    printableId: text('printable_id'),
+    printerId: integer('printer_id').notNull(),
+    copies: integer('copies').notNull().default(1),
+    status: text('status').notNull(), // SENT | FAILED
+    gatewayJobId: text('gateway_job_id'),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmCreatedIdx: index('print_log_firm_created_idx').on(t.firmId, t.createdAt),
+  }),
+);
+
+// =====================================================================
+// 0186 — printer_assignment. Maps a Vibe Print gateway printer (numeric
+// id) to an office + friendly label, so the print picker can group
+// printers by location and staff pick the right one.
+// =====================================================================
+
+export const printerAssignments = pgTable(
+  'printer_assignment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    gatewayPrinterId: integer('gateway_printer_id').notNull(),
+    officeId: uuid('office_id').references(() => offices.id, { onDelete: 'set null' }),
+    label: text('label'),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmPrinterUk: uniqueIndex('printer_assignment_firm_printer_uk').on(
+      t.firmId,
+      t.gatewayPrinterId,
+    ),
+  }),
+);
+
+// =====================================================================
 // v2 0036 — user_pinned_client. Per-timekeeper pinned clients shown
 // at the top of the Time entry combobox and Clients list.
 // =====================================================================
@@ -2544,6 +2667,11 @@ export const paymentReceipts = pgTable(
       { invoiceId: string; amountCents: number }[]
     >(),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    // 0186 — the terminal reader this charge was taken on (set at collect
+    // time) so the completion webhook can auto-print to the reader's printer.
+    terminalReaderId: uuid('terminal_reader_id').references(() => terminalReaders.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -5276,6 +5404,10 @@ export const terminalReaders = pgTable(
     serialNumber: text('serial_number'),
     status: text('status').notNull().default('offline'), // online | offline
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    // 0186 — direct-print binding: which gateway printer this reader's
+    // receipts go to, and whether to auto-print on payment completion.
+    printerId: integer('printer_id'),
+    autoPrintReceipt: boolean('auto_print_receipt').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

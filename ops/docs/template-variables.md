@@ -201,3 +201,128 @@ When a build phase needs a new template variable:
 2. Implement it in `apps/api/src/templates/context-builder.ts` (the function that constructs the rendering context)
 3. Add a unit test in `apps/api/src/templates/context-builder.test.ts`
 4. Variables become available to all templates in the next deploy — no migration needed
+
+---
+
+# Invoice document template (Admin → Catalog → Templates → Invoice)
+
+The **invoice document template** is separate from the notification/letter
+templates above. It is the firm-wide HTML+CSS design used for every invoice
+surface — staff PDF (`GET /api/invoices/:id/pdf`), the portal invoice view,
+the pay-by-link PDF and the invoice email. It is edited in
+**Admin → Catalog → Templates → Invoice** and stored one row per firm in
+`vibetb.invoice_template`. With no saved row, the shipped default letterhead
+template is used, so every firm gets the design out of the box.
+
+Because an invoice must iterate its line items, this template uses a small
+dedicated engine (`packages/core/src/invoicing/template-engine.ts`) that adds
+loops and conditionals on top of `{{ token }}` substitution. This is the only
+place those constructs exist — the email/SMS resolver above stays flat.
+
+## Syntax
+
+- `{{ scope.field }}` — value, **HTML-escaped**
+- `{{{ scope.field }}}` — value, **raw HTML** (footer / dunning blocks)
+- `{{ token | default("Fallback") }}` — fallback when the value is empty
+- `{{#each line_items}} … {{/each}}` — iterate; inside, `{{ this.field }}`
+- `{{#each surcharges}} … {{/each}}`
+- `{{#if token}} … {{else}} … {{/if}}` — truthy / empty branch (nesting allowed)
+
+CSS is stored separately and is also token-substituted, so
+`--accent: {{ firm.accent_color | default("#1a1a1a") }}` works.
+
+## Variables
+
+### `firm.*`
+- `firm.name`, `firm.logo_url`, `firm.address`, `firm.phone`, `firm.email`,
+  `firm.fax`, `firm.web`, `firm.accent_color`
+
+### `client.*`
+- `client.name`, `client.address` (formatted block), `client.external_id`,
+  `client.mailing_street1`, `client.mailing_street2`, `client.mailing_city`,
+  `client.mailing_state`, `client.mailing_postal`, `client.mailing_country`
+
+### `invoice.*`
+- `invoice.number`, `invoice.issue_date`, `invoice.due_date`,
+  `invoice.due_terms`, `invoice.reference`, `invoice.engagement_name`,
+  `invoice.service_intro`, `invoice.billing_name`, `invoice.subtotal`,
+  `invoice.subtotal_label`, `invoice.surcharge_total`, `invoice.tax_total`,
+  `invoice.processing_fee`, `invoice.total`, `invoice.total_label`,
+  `invoice.paid`, `invoice.balance_due`, `invoice.status`, `invoice.notes`
+- `invoice.pay_url` — no-login pay-by-link URL (scan/click to pay without
+  logging in). Populated on the staff invoice PDF when a public base URL is
+  configured; empty otherwise.
+- `invoice.pay_qr_src` — the QR image as a `data:` URI, for a custom
+  `<img src="{{ invoice.pay_qr_src }}">`.
+
+### `line_items[]` — inside `{{#each line_items}}`
+- `this.description`, `this.amount`, `this.quantity`, `this.rate`, `this.kind`
+
+### `surcharges[]` — inside `{{#each surcharges}}` (surcharge + tax + processing fee rows)
+- `this.label`, `this.amount`
+
+### Raw-HTML blocks — emit with `{{{ … }}}`
+- `invoice.pay_qr` — a ready `<img>` QR code linking to the no-login pay page
+  (use `{{#if invoice.pay_qr}} … {{{ invoice.pay_qr }}} … {{/if}}`)
+- `dunning` — past-due / payment-terms notice
+- `invoice_footer` — remit-to / EIN / terms footer (A/R terms win over the
+  generic footer when both are set)
+- `time_detail_html` — time-entry detail table (full-detail PDF mode)
+
+## Adding new invoice variables
+
+1. Add the field in `buildInvoiceTemplateContext` and the catalog entry in
+   `INVOICE_TEMPLATE_TOKENS` (both in `packages/core/src/invoicing/context.ts`).
+2. Add a unit test in `packages/core/src/invoicing/context.test.ts`.
+3. The token appears in the editor's variable picker automatically.
+
+---
+
+# Statement document template (Admin → Catalog → Templates → Statement)
+
+The **statement document template** is the firm-wide HTML+CSS design for the
+statement of account. It uses the same template engine as the invoice document
+template (loops, conditionals, `{{{ raw }}}`) and is edited in
+**Admin → Catalog → Templates → Statement**, stored one row per firm in
+`vibetb.statement_template`. No saved row → shipped default statement template.
+
+It renders every statement surface: single PDF
+(`GET /api/staff/statements/clients/:id`), `bulk-generate`, and `bulk-email`.
+
+Two modes feed the same template (chosen at generation time from the client's
+Billing tab, or via query params):
+- **outstanding** (default): open invoices with a running balance + aging buckets.
+- **activity** (`?mode=activity&start=…&end=…`): opening balance, every invoice and
+  payment in the range with a running balance, and a closing balance. The
+  activity-only opening/closing rows are gated on `{{#if statement.period_start}}`.
+
+## Variables
+
+### `firm.*` / `client.*`
+Same as the invoice template (`firm.name`, `firm.logo_url`, `firm.address`,
+`firm.phone`, `firm.email`, `firm.fax`, `firm.web`, `firm.accent_color`;
+`client.name`, `client.address`, `client.external_id`, `client.mailing_*`).
+
+### `statement.*`
+- `statement.date` (as-of), `statement.mode` (outstanding | activity)
+- `statement.period_start`, `statement.period_end` (activity mode)
+- `statement.opening_balance`, `statement.charges`, `statement.payments`,
+  `statement.closing_balance` (activity mode)
+- `statement.total_due`
+
+### `aging.*`
+- `aging.d_0_30`, `aging.d_31_60`, `aging.d_61_90`, `aging.d_91_120`, `aging.d_121_plus`
+
+### `lines[]` — inside `{{#each lines}}`
+- `this.date`, `this.type` (Invoice/Payment), `this.reference`, `this.debit`,
+  `this.credit`, `this.balance`
+
+### Raw-HTML blocks
+- `footer` — A/R terms / footer (`{{{ footer }}}`)
+- `policy_notice` — banner under the table (escaped)
+
+## Adding new statement variables
+1. Add the field in `buildStatementTemplateContext` and the catalog entry in
+   `STATEMENT_TEMPLATE_TOKENS` (both in `packages/core/src/invoicing/statement-context.ts`).
+2. Add a unit test in `packages/core/src/invoicing/statement-context.test.ts`.
+3. The token appears in the editor's variable picker automatically.

@@ -25,6 +25,13 @@ import { runBookingHoldExpiryTick } from './jobs/booking-hold-expiry';
 import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
+import { runSignatureConfirmationPrint } from './jobs/signature-confirmation-print';
+import { runTerminalReceiptPrint } from './jobs/terminal-receipt-print';
+import {
+  SIGNATURE_CONFIRMATION_PRINT_QUEUE,
+  TERMINAL_RECEIPT_PRINT_QUEUE,
+  bullPrintQueue,
+} from '../../api/src/print-gateway/queue';
 import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
 import { runCalendarMatch } from '../../api/src/calendar/match';
 import { runCalendarReminderTick } from '../../api/src/calendar/reminder-tick';
@@ -622,6 +629,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runSignaturesPollTick(db, logger, {
       storage,
       sendEmail: dunningSendEmail,
+      printQueue: bullPrintQueue,
     });
     logger.info({ jobId: job.id, ...result }, 'signatures-poll complete');
   },
@@ -920,6 +928,12 @@ async function setup(): Promise<void> {
   setupFilerRouteQueue();
   setupZipImportQueue();
 
+  // 0185 — auto-print signature confirmation reports (tax-return signing).
+  setupSignatureConfirmationPrintQueue();
+
+  // 0186 — auto-print terminal payment receipts (card-present completion).
+  setupTerminalReceiptPrintQueue();
+
   // Staff-to-staff message notifications (debounced email/SMS fan-out).
   setupInternalMessageNotifyQueue();
 
@@ -1005,6 +1019,84 @@ function setupFilerRouteQueue(): void {
   filerQueueRef = q;
   filerEventsRef = events;
   logger.info({ queueName: FILER_ROUTE_QUEUE }, 'filer-route queue registered');
+}
+
+// 0185 — signature confirmation auto-print consumer.
+let sigPrintWorkerRef: Worker<{ requestId: string }> | null = null;
+let sigPrintQueueRef: Queue<{ requestId: string }> | null = null;
+let sigPrintEventsRef: QueueEvents | null = null;
+
+function setupSignatureConfirmationPrintQueue(): void {
+  if (!db) {
+    logger.warn('signature-confirmation-print queue not registered — db missing');
+    return;
+  }
+  const q = new Queue<{ requestId: string }>(SIGNATURE_CONFIRMATION_PRINT_QUEUE, { connection });
+  const events = new QueueEvents(SIGNATURE_CONFIRMATION_PRINT_QUEUE, { connection });
+  events.on('failed', ({ jobId, failedReason }) => {
+    logger.error(
+      { jobId, queue: SIGNATURE_CONFIRMATION_PRINT_QUEUE, failedReason },
+      'signature-confirmation-print job failed',
+    );
+  });
+  const w = new Worker<{ requestId: string }>(
+    SIGNATURE_CONFIRMATION_PRINT_QUEUE,
+    async (job) => {
+      const result = await runSignatureConfirmationPrint(db!, logger, job.data);
+      logger.info(
+        { jobId: job.id, requestId: job.data.requestId, ...result },
+        'signature-confirmation-print complete',
+      );
+    },
+    { connection, concurrency: 2 },
+  );
+  sigPrintWorkerRef = w;
+  sigPrintQueueRef = q;
+  sigPrintEventsRef = events;
+  logger.info(
+    { queueName: SIGNATURE_CONFIRMATION_PRINT_QUEUE },
+    'signature-confirmation-print queue registered',
+  );
+}
+
+// 0186 — terminal receipt auto-print consumer.
+let termPrintWorkerRef: Worker<{ receiptId: string; printerId: number }> | null = null;
+let termPrintQueueRef: Queue<{ receiptId: string; printerId: number }> | null = null;
+let termPrintEventsRef: QueueEvents | null = null;
+
+function setupTerminalReceiptPrintQueue(): void {
+  if (!db) {
+    logger.warn('terminal-receipt-print queue not registered — db missing');
+    return;
+  }
+  const q = new Queue<{ receiptId: string; printerId: number }>(TERMINAL_RECEIPT_PRINT_QUEUE, {
+    connection,
+  });
+  const events = new QueueEvents(TERMINAL_RECEIPT_PRINT_QUEUE, { connection });
+  events.on('failed', ({ jobId, failedReason }) => {
+    logger.error(
+      { jobId, queue: TERMINAL_RECEIPT_PRINT_QUEUE, failedReason },
+      'terminal-receipt-print job failed',
+    );
+  });
+  const w = new Worker<{ receiptId: string; printerId: number }>(
+    TERMINAL_RECEIPT_PRINT_QUEUE,
+    async (job) => {
+      const result = await runTerminalReceiptPrint(db!, logger, job.data);
+      logger.info(
+        { jobId: job.id, receiptId: job.data.receiptId, ...result },
+        'terminal-receipt-print complete',
+      );
+    },
+    { connection, concurrency: 2 },
+  );
+  termPrintWorkerRef = w;
+  termPrintQueueRef = q;
+  termPrintEventsRef = events;
+  logger.info(
+    { queueName: TERMINAL_RECEIPT_PRINT_QUEUE },
+    'terminal-receipt-print queue registered',
+  );
 }
 
 // 0153 — Vibe Filer zip import (extract a client document export).
@@ -1413,6 +1505,12 @@ async function shutdown(): Promise<void> {
   if (zipImportWorkerRef) await zipImportWorkerRef.close();
   if (zipImportQueueRef) await zipImportQueueRef.close();
   if (zipImportEventsRef) await zipImportEventsRef.close();
+  if (sigPrintWorkerRef) await sigPrintWorkerRef.close();
+  if (sigPrintQueueRef) await sigPrintQueueRef.close();
+  if (sigPrintEventsRef) await sigPrintEventsRef.close();
+  if (termPrintWorkerRef) await termPrintWorkerRef.close();
+  if (termPrintQueueRef) await termPrintQueueRef.close();
+  if (termPrintEventsRef) await termPrintEventsRef.close();
   if (imNotifyWorkerRef) await imNotifyWorkerRef.close();
   if (imNotifyQueueRef) await imNotifyQueueRef.close();
   if (imNotifyEventsRef) await imNotifyEventsRef.close();

@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { StatementDialog } from './StatementDialog';
 
 type YearFilter = 'current' | 'prior' | 'all';
 
@@ -62,11 +63,13 @@ interface CreditMemo {
 
 interface Props {
   clientId: string;
+  clientName?: string;
 }
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
-export function BillingCard({ clientId }: Props): JSX.Element {
+export function BillingCard({ clientId, clientName }: Props): JSX.Element {
+  const [statementOpen, setStatementOpen] = useState(false);
   const [items, setItems] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditMemo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -294,9 +297,23 @@ export function BillingCard({ clientId }: Props): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
+      {statementOpen && (
+        <StatementDialog
+          clientId={clientId}
+          clientName={clientName ?? 'Client'}
+          onClose={() => setStatementOpen(false)}
+        />
+      )}
       <Card
         title="Billing summary"
-        action={<YearFilterToggle value={yearFilter} onChange={setYearFilter} />}
+        action={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button size="sm" variant="ghost" onClick={() => setStatementOpen(true)}>
+              Generate statement
+            </Button>
+            <YearFilterToggle value={yearFilter} onChange={setYearFilter} />
+          </div>
+        }
       >
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">

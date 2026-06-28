@@ -3,7 +3,13 @@
 // Printable payment receipt. A receipt groups one received payment (or
 // charge) across one-or-many invoices; this renders a self-contained HTML
 // document staff can print, save as PDF, or email to the client's billing
-// contact.
+// contact. Also exposes loadReceiptDoc so both the receipt print endpoint
+// and the worker's terminal-receipt auto-print share one loader.
+
+import { and, asc, eq, isNull } from 'drizzle-orm';
+
+import type { Database } from '@vibe/db';
+import { clients, firms, invoices, paymentReceipts, payments } from '@vibe/db/schema';
 
 export interface PaymentReceiptDoc {
   firmName: string;
@@ -97,4 +103,60 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
 
 export function methodLabel(method: string): string {
   return PAYMENT_METHOD_LABELS[method.toUpperCase()] ?? method;
+}
+
+/** Load a firm-scoped receipt into the renderable PaymentReceiptDoc shape.
+ *  Shared by the staff receipt print endpoint and the worker's terminal
+ *  auto-print consumer. Returns null when the receipt isn't found. */
+export async function loadReceiptDoc(
+  db: Database,
+  firmId: string,
+  receiptId: string,
+): Promise<{ doc: PaymentReceiptDoc; payerClientId: string } | null> {
+  const [receipt] = await db
+    .select({
+      id: paymentReceipts.id,
+      payerClientId: paymentReceipts.payerClientId,
+      paymentDate: paymentReceipts.paymentDate,
+      paymentMethod: paymentReceipts.paymentMethod,
+      reference: paymentReceipts.reference,
+      totalCents: paymentReceipts.totalCents,
+      payerName: clients.name,
+    })
+    .from(paymentReceipts)
+    .innerJoin(clients, eq(clients.id, paymentReceipts.payerClientId))
+    .where(and(eq(paymentReceipts.id, receiptId), eq(paymentReceipts.firmId, firmId)))
+    .limit(1);
+  if (!receipt) return null;
+  const [firm] = await db
+    .select({ name: firms.name })
+    .from(firms)
+    .where(eq(firms.id, firmId))
+    .limit(1);
+  const lineRows = await db
+    .select({ invoiceNumber: invoices.invoiceNumber, amountCents: payments.amountCents })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .where(and(eq(payments.receiptId, receiptId), isNull(payments.voidedAt)))
+    .orderBy(asc(invoices.invoiceNumber));
+  const paymentDate =
+    typeof receipt.paymentDate === 'string'
+      ? receipt.paymentDate
+      : new Date(receipt.paymentDate as unknown as Date).toISOString().slice(0, 10);
+  return {
+    payerClientId: receipt.payerClientId,
+    doc: {
+      firmName: firm?.name ?? 'Your firm',
+      receiptId: receipt.id,
+      paymentDate,
+      methodLabel: methodLabel(receipt.paymentMethod),
+      reference: receipt.reference,
+      payerName: receipt.payerName,
+      totalCents: Number(receipt.totalCents),
+      lines: lineRows.map((l) => ({
+        invoiceNumber: l.invoiceNumber,
+        amountCents: Number(l.amountCents),
+      })),
+    },
+  };
 }
