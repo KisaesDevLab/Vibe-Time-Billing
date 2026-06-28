@@ -1,3 +1,5 @@
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I3D3227TTP)
+
 # Vibe Practice Management
 
 **Self-hosted practice management for CPA firms — time tracking, recurring billing, proposals, tax-return tracking, and a branded client portal.**
