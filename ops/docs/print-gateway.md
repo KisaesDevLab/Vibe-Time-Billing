@@ -30,10 +30,19 @@ then assign each to an office.
 ## What can print directly
 - **Route sheets** — "Print" on each recent route sheet (RouteSheetDialog).
 - **Payment receipts** — "Print to printer" in the receipt actions.
-- **Signature confirmation (automated)** — when a **tax-return** signature request
-  completes (OpenSign webhook, or the 2-min poll as a safety net), a confirmation
-  report is rendered and printed to the firm **default printer** — only when the
-  gateway is enabled, a default printer is set, and the auto-print toggle is on.
+- **Signature confirmation (automated, configurable — 0187)** — when a **tax-return**
+  signature completes (OpenSign webhook, or the 2-min poll as a safety net), the firm's
+  **signature print rules** (Admin → Operations → Signature print rules) decide what
+  prints and where. Each rule has: a **trigger** (form codes + engagement/service types;
+  empty = any), a **template** (the built-in confirmation report **or** a Vibe Print
+  gateway template rendered from signature data via `POST /v1/print`), and a **printer**
+  (a specific id, or the signature's **client office** printer from the assignments).
+  First enabled rule by priority wins; no match → no print; printer unresolved → skip +
+  log. **Configured rules are authoritative** — they apply whenever the gateway is enabled,
+  regardless of the master "auto-print signature confirmation" toggle. That toggle governs
+  only the **legacy fallback**: a firm with *no rules* but the toggle on + a firm default
+  printer prints the built-in report to that printer. The gateway **Enable direct printing**
+  switch is the global kill switch for all of it.
 - **Terminal receipts (automated, 0186)** — each Stripe Terminal **reader** (Admin →
   Terminal → Readers) can be bound to a **receipt printer** + an **Auto-print** toggle.
   When a card-present payment completes (`payment_intent.succeeded` →
@@ -41,6 +50,15 @@ then assign each to an office.
   printer assigned, the receipt is rendered and printed to that printer. Auto-print on
   but no printer assigned → **skipped + logged** (`print_log` error `no_printer_assigned`)
   so receipts never print at the wrong location.
+
+- **Notification PRINT channel (0188)** — notification templates (Admin → Messaging →
+  Notification templates) gain a **PRINT** channel for: `invoice_sent`, `payment_received`,
+  `statement_sent`, `signature_complete`, and engagement **status-change** notifications. A
+  PRINT template defines a **message body** + a **printer** (a specific id, or the
+  notification's **client-office** printer). When the notification fires it auto-prints a copy
+  **alongside** the other channels (best-effort — a print failure never blocks email/SMS).
+  Opt-in: it only prints when an **enabled PRINT template exists** for that kind; status-change
+  prints also require `PRINT` in the status's notify methods. No-printer → skipped + logged.
 
 Interactive prints use the live printer list (`GET /v1/printers`) and remember each
 user's chosen printer (`app_user.default_printer_id`). Every send is recorded in

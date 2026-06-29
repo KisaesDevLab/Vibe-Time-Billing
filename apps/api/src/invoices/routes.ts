@@ -54,6 +54,7 @@ import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { printNotificationChannel } from '../notifications/print-channel';
 
 import { loadInvoiceTemplateDef } from './template-loader';
 
@@ -1119,13 +1120,24 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           (detail as unknown as { rows?: Array<Record<string, unknown>> }).rows ??
           (detail as unknown as Array<Record<string, unknown>>);
         if (rows && rows.length > 0) {
+          // Escape the staff-sourced date/description cells — this footer is
+          // injected raw (`{{{ time_detail_html }}}`) and the invoice is served
+          // as text/html for `?format=html`, so unescaped values would be a
+          // stored-HTML vector. Mirrors the shared renderer's escaping.
+          const escCell = (s: string): string =>
+            s
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
           detailFooter =
             '<h3 style="margin-top:24px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#666">Time entry detail</h3>' +
             '<table style="width:100%;border-collapse:collapse;font-size:11px"><tr><th style="text-align:left">Date</th><th style="text-align:left">Description</th><th style="text-align:right">Hours</th><th style="text-align:right">Amount</th></tr>' +
             rows
               .map(
                 (r) =>
-                  `<tr><td>${String(r['d'] ?? '')}</td><td>${String(r['description'] ?? '').slice(0, 80)}</td><td style="text-align:right">${Number(r['hours'] ?? 0).toFixed(2)}</td><td style="text-align:right">$${(Number(r['amt'] ?? 0) / 100).toFixed(2)}</td></tr>`,
+                  `<tr><td>${escCell(String(r['d'] ?? ''))}</td><td>${escCell(String(r['description'] ?? '').slice(0, 80))}</td><td style="text-align:right">${Number(r['hours'] ?? 0).toFixed(2)}</td><td style="text-align:right">$${(Number(r['amt'] ?? 0) / 100).toFixed(2)}</td></tr>`,
               )
               .join('') +
             '</table>';
@@ -1149,8 +1161,13 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       // when a public base URL is configured. (The plaintext token is
       // unrecoverable once stored, so each render mints its own link;
       // multiple ACTIVE links per invoice is by design.)
+      // Skip the mint for the `?format=html` page-preview iframe — that
+      // surface is viewed repeatedly in-app and a QR there would mint a
+      // fresh payable token on every load. The binary PDF (printed/mailed)
+      // is the only surface that needs a scannable link.
+      const wantsHtmlPreview = req.query['format'] === 'html';
       let payExtras: { payUrl?: string; payQrDataUri?: string } = {};
-      if (deps.publicBaseUrl) {
+      if (deps.publicBaseUrl && !wantsHtmlPreview) {
         try {
           const payBase = deps.publicBaseUrl.replace(/\/$/, '');
           const payLink = await createPayLink(deps.db, {
@@ -2253,6 +2270,25 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         return Boolean(recent);
       };
 
+      // Don't mint a payable token when NO requested channel even has a
+      // destination — that link could never be delivered. (Cooldown still
+      // mints by design: re-sending keeps the prior link valid for a client
+      // who already holds it; see the "re-sending mints an independent link"
+      // test. The per-channel blocks below set the exact per-channel reason.)
+      const emailDeliverable = wantEmail && !!deps.sendEmail && !!billingContact?.email;
+      const smsDeliverable = wantSms && !!deps.sendSms && !!billingContact?.phone;
+      if (!emailDeliverable && !smsDeliverable) {
+        res.json({
+          ok: true,
+          payUrl: null,
+          results: {
+            email: wantEmail ? 'no_destination' : 'skipped',
+            sms: wantSms ? 'no_destination' : 'skipped',
+          },
+        });
+        return;
+      }
+
       // Mint one fresh link; the same token is delivered on every channel.
       const link = await createPayLink(deps.db, {
         firmId: session.firmId,
@@ -2857,6 +2893,24 @@ async function sendInvoiceEmail(
     logger.error({ err, invoiceId: inv.id }, 'invoice email dispatch failed');
     return { ok: false, status: 502, error: 'email_dispatch_failed' };
   }
+  // PRINT channel (0188) — auto-print a copy if a PRINT template is configured.
+  await printNotificationChannel({
+    db: deps.db,
+    firmId,
+    kind: 'invoice_sent',
+    clientId: inv.clientId,
+    printableId: inv.id,
+    context: {
+      client: { name: client.name },
+      firm: await firmScope(deps.db, firmId),
+      invoice: {
+        number: inv.invoiceNumber,
+        total,
+        due_date: formatDateUS(inv.dueDate),
+        portal_url: link,
+      },
+    },
+  }).catch((err) => logger.warn({ err, invoiceId: inv.id }, 'invoice print channel failed'));
   return { ok: true, emailedTo: billingContact.email };
 }
 

@@ -66,6 +66,27 @@ export async function upsertAssignment(
     });
 }
 
+/** The enabled gateway printer assigned to an office, or null. */
+export async function resolveOfficePrinter(
+  db: Database,
+  firmId: string,
+  officeId: string | null,
+): Promise<number | null> {
+  if (!officeId) return null;
+  const [row] = await db
+    .select({ printerId: printerAssignments.gatewayPrinterId })
+    .from(printerAssignments)
+    .where(
+      and(
+        eq(printerAssignments.firmId, firmId),
+        eq(printerAssignments.officeId, officeId),
+        eq(printerAssignments.enabled, true),
+      ),
+    )
+    .limit(1);
+  return row?.printerId ?? null;
+}
+
 /** Resolve a single user's preselect printer: remembered → a printer
  *  assigned to their default office → firm default. Returns null if none. */
 export async function resolvePreselectPrinter(

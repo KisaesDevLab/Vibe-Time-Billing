@@ -6,15 +6,16 @@
 
 import express, { type Router } from 'express';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { firmSettings, offices } from '@vibe/db/schema';
+import { firmSettings, offices, signaturePrintRules } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { emitAudit } from '../auth/audit';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { listAssignments, upsertAssignment } from '../print-gateway/assignments';
-import { listPrinters } from '../print-gateway/client';
+import { listPrinters, listTemplates } from '../print-gateway/client';
 import {
   encryptPrintGatewayConfig,
   loadPrintGatewayConfig,
@@ -42,6 +43,9 @@ const TestSchema = z.object({
 
 export function createPrintGatewayKeysRouter(deps: PrintGatewayKeysRoutesDeps): Router {
   const router = express.Router();
+  // Non-UUID :id (e.g. signature-print-rules/:id) → 404 instead of a
+  // Postgres 22P02 → 500.
+  addUuidIdGuard(router);
 
   router.get('/', requirePermission(deps, 'firm:settings:read'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
@@ -202,6 +206,168 @@ export function createPrintGatewayKeysRouter(deps: PrintGatewayKeysRoutesDeps): 
     }).catch(() => undefined);
     res.json({ ok: true });
   });
+
+  // ----- signature print rules (0187) -----
+
+  // Gateway-side templates, for the rule editor's "Vibe Print template" picker.
+  router.get(
+    '/gateway-templates',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req, res) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ templates: [] });
+        return;
+      }
+      const gateway = await resolvePrintGateway(deps.db, firmId);
+      if (!gateway) {
+        res.json({ templates: [] });
+        return;
+      }
+      try {
+        res.json({ templates: await listTemplates(gateway) });
+      } catch (err) {
+        res.status(502).json({ error: err instanceof Error ? err.message : 'gateway_unreachable' });
+      }
+    },
+  );
+
+  router.get(
+    '/signature-print-rules',
+    requirePermission(deps, 'firm:settings:read'),
+    async (req, res) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ rules: [] });
+        return;
+      }
+      const rules = await deps.db
+        .select()
+        .from(signaturePrintRules)
+        .where(eq(signaturePrintRules.firmId, firmId))
+        .orderBy(signaturePrintRules.priority);
+      res.json({ rules });
+    },
+  );
+
+  const RuleSchema = z.object({
+    name: z.string().trim().min(1).max(120),
+    priority: z.number().int().min(0).max(10000).optional(),
+    enabled: z.boolean().optional(),
+    formCodes: z.array(z.string().trim().max(40)).max(50).optional(),
+    engagementTypeIds: z.array(z.string().uuid()).max(100).optional(),
+    templateSource: z.enum(['builtin', 'gateway']),
+    gatewayTemplateId: z.number().int().positive().nullable().optional(),
+    printerMode: z.enum(['specific', 'client_office']),
+    printerId: z.number().int().positive().nullable().optional(),
+    copies: z.number().int().min(1).max(20).optional(),
+  });
+
+  router.post(
+    '/signature-print-rules',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req, res) => {
+      const parsed = RuleSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const d = parsed.data;
+      const [row] = await deps.db
+        .insert(signaturePrintRules)
+        .values({
+          firmId,
+          name: d.name,
+          priority: d.priority ?? 100,
+          enabled: d.enabled ?? true,
+          formCodes: d.formCodes ?? [],
+          engagementTypeIds: d.engagementTypeIds ?? [],
+          templateSource: d.templateSource,
+          gatewayTemplateId: d.gatewayTemplateId ?? null,
+          printerMode: d.printerMode,
+          printerId: d.printerId ?? null,
+          copies: d.copies ?? 1,
+        })
+        .returning({ id: signaturePrintRules.id });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'signature_print_rule',
+        entityId: row?.id ?? null,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: { name: d.name },
+      }).catch(() => undefined);
+      res.status(201).json({ id: row?.id });
+    },
+  );
+
+  router.put(
+    '/signature-print-rules/:id',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req, res) => {
+      const parsed = RuleSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const d = parsed.data;
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+      for (const k of [
+        'name',
+        'priority',
+        'enabled',
+        'formCodes',
+        'engagementTypeIds',
+        'templateSource',
+        'gatewayTemplateId',
+        'printerMode',
+        'printerId',
+        'copies',
+      ] as const) {
+        if (d[k] !== undefined) updates[k] = d[k];
+      }
+      await deps.db
+        .update(signaturePrintRules)
+        .set(updates)
+        .where(
+          and(
+            eq(signaturePrintRules.id, req.params['id']!),
+            eq(signaturePrintRules.firmId, firmId),
+          ),
+        );
+      res.json({ ok: true });
+    },
+  );
+
+  router.delete(
+    '/signature-print-rules/:id',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req, res) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .delete(signaturePrintRules)
+        .where(
+          and(
+            eq(signaturePrintRules.id, req.params['id']!),
+            eq(signaturePrintRules.firmId, firmId),
+          ),
+        );
+      res.json({ ok: true });
+    },
+  );
 
   return router;
 }

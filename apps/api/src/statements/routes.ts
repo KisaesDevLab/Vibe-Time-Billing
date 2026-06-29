@@ -23,6 +23,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { printNotificationChannel } from '../notifications/print-channel';
 import { renderHtmlToPdf } from '../pdf/render';
 import { logger } from '../logger';
 
@@ -309,6 +310,18 @@ export function createStatementsRouter(deps: StatementsRoutesDeps): Router {
             ],
           });
           sent.push({ clientId: cid, to: billing.email });
+          await printNotificationChannel({
+            db: deps.db,
+            firmId: session.firmId,
+            kind: 'statement_sent',
+            clientId: cid,
+            printableId: cid,
+            context: {
+              client: { name: input.client.name },
+              firm,
+              statement: { balance: balanceStr },
+            },
+          }).catch((err) => logger.warn({ err, clientId: cid }, 'statement print channel failed'));
         } catch (err) {
           logger.error({ err, clientId: cid }, 'statement email failed');
           skipped.push({

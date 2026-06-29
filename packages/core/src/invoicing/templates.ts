@@ -79,7 +79,12 @@ export interface InvoiceTemplateInput {
 const cents = (c: Cents): string => formatMoneyCents(c);
 const fmtDate = (iso: string | null | undefined): string => formatDateUS(iso);
 const esc = (s: string): string =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
 export function renderInvoiceHtml(input: InvoiceTemplateInput): string {
   const style = input.style ?? 'modern';
@@ -501,12 +506,12 @@ function renderClassic(input: InvoiceTemplateInput): string {
     <tfoot>
       <tr><td>Subtotal</td><td class="amt">${cents(input.subtotalCents)}</td></tr>
       ${
-        (input.surchargeCents ?? 0) > 0
+        (input.surchargeCents ?? 0) !== 0
           ? `<tr><td>${esc(labelFor(input, 'SURCHARGE', 'Surcharge'))}</td><td class="amt">${cents(input.surchargeCents ?? 0)}</td></tr>`
           : ''
       }
       ${
-        (input.taxCents ?? 0) > 0
+        (input.taxCents ?? 0) !== 0
           ? `<tr><td>${esc(labelFor(input, 'SALES_TAX', 'Sales tax'))}</td><td class="amt">${cents(input.taxCents ?? 0)}</td></tr>`
           : ''
       }
@@ -560,12 +565,12 @@ function renderMinimal(input: InvoiceTemplateInput): string {
     <tfoot>
       <tr><td>Subtotal</td><td class="amt">${cents(input.subtotalCents)}</td></tr>
       ${
-        (input.surchargeCents ?? 0) > 0
+        (input.surchargeCents ?? 0) !== 0
           ? `<tr><td>${esc(labelFor(input, 'SURCHARGE', 'Surcharge'))}</td><td class="amt">${cents(input.surchargeCents ?? 0)}</td></tr>`
           : ''
       }
       ${
-        (input.taxCents ?? 0) > 0
+        (input.taxCents ?? 0) !== 0
           ? `<tr><td>${esc(labelFor(input, 'SALES_TAX', 'Sales tax'))}</td><td class="amt">${cents(input.taxCents ?? 0)}</td></tr>`
           : ''
       }

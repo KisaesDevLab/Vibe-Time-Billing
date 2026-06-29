@@ -14,6 +14,8 @@ import { sql as drizzleSql } from 'drizzle-orm';
 import { bucketize, type AgingBucket } from '@vibe/core/billing';
 import { formatDateUS, formatMoneyCents } from '@vibe/core/invoicing';
 
+import { printNotificationChannel } from '../notifications/print-channel';
+
 import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBillingContact } from '../clients/billing-contact';
@@ -416,6 +418,13 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         res.status(502).json({ error: 'email_dispatch_failed' });
         return;
       }
+      await printNotificationChannel({
+        db: deps.db,
+        firmId: session.firmId,
+        kind: 'statement_sent',
+        clientId: client.id,
+        context: { client: { name: client.name }, firm, statement: { balance: balanceStr } },
+      }).catch(() => undefined);
       res.json({ ok: true, sentTo: billingEmail, balanceCents: balance });
     },
   );

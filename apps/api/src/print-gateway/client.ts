@@ -110,3 +110,89 @@ export async function printPdf(
     raw['id'] != null ? String(raw['id']) : raw['job_id'] != null ? String(raw['job_id']) : null;
   return { jobId, raw };
 }
+
+export interface GatewayTemplate {
+  id: number;
+  name: string;
+}
+
+/** GET /v1/admin/templates — gateway-side PDF/HTML templates, for the
+ *  signature-print rule editor. */
+export async function listTemplates(
+  cfg: ResolvedPrintGateway,
+  opts: { fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<GatewayTemplate[]> {
+  const f = opts.fetchImpl ?? fetch;
+  const res = await withTimeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, (signal) =>
+    f(`${cfg.baseUrl}/v1/admin/templates`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${cfg.apiKey}` },
+      signal,
+    }),
+  );
+  if (!res.ok) {
+    throw new Error(`gateway_templates_failed_${res.status}`);
+  }
+  const body = (await res.json()) as unknown;
+  const arr = Array.isArray(body)
+    ? body
+    : Array.isArray((body as { templates?: unknown[] })?.templates)
+      ? (body as { templates: unknown[] }).templates
+      : [];
+  return arr
+    .map((t) => {
+      const r = t as { id?: unknown; name?: unknown };
+      return { id: Number(r.id), name: String(r.name ?? '') };
+    })
+    .filter((t) => Number.isFinite(t.id));
+}
+
+export interface PrintTemplateInput {
+  printerId: number;
+  templateId: number;
+  data: Record<string, unknown>;
+  copies?: number;
+  idempotencyKey?: string | null;
+}
+
+/** POST /v1/print — render a gateway template from `data` and print it. */
+export async function printWithTemplate(
+  cfg: ResolvedPrintGateway,
+  input: PrintTemplateInput,
+  opts: { fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<PrintPdfResult> {
+  const f = opts.fetchImpl ?? fetch;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${cfg.apiKey}`,
+  };
+  if (input.idempotencyKey) headers['Idempotency-Key'] = input.idempotencyKey;
+  const res = await withTimeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, (signal) =>
+    f(`${cfg.baseUrl}/v1/print`, {
+      method: 'POST',
+      headers,
+      signal,
+      body: JSON.stringify({
+        printer: input.printerId,
+        template: input.templateId,
+        data: input.data,
+        copies: input.copies ?? 1,
+      }),
+    }),
+  );
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = await res.text();
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      `gateway_print_failed_${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
+    );
+  }
+  const raw = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const jobId =
+    raw['id'] != null ? String(raw['id']) : raw['job_id'] != null ? String(raw['job_id']) : null;
+  return { jobId, raw };
+}

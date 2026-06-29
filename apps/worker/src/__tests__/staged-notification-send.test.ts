@@ -205,6 +205,44 @@ describe('runStagedNotificationSend', () => {
     expect(row!.errorMessage).toContain('no_portal_access');
   });
 
+  it('claims atomically — no duplicate send on re-invocation or for an in-flight (SENDING) row', async () => {
+    await setEngagementState('WITH_CLIENT');
+    const emails: string[] = [];
+    const deps = {
+      sendEmail: async (a: { to: string }) => {
+        emails.push(a.to);
+      },
+    };
+
+    // First delivery sends once and lands SENT.
+    const id = await insertRow({ channels: ['EMAIL'] });
+    const first = await runStagedNotificationSend(harness.db, silent, deps, {
+      stagedNotificationId: id,
+    });
+    expect(first.outcome).toBe('sent');
+
+    // A BullMQ stalled-job reprocess after completion (row now SENT) must NOT
+    // re-send to the recipient.
+    const second = await runStagedNotificationSend(harness.db, silent, deps, {
+      stagedNotificationId: id,
+    });
+    expect(second.outcome).toBe('skipped');
+    expect(emails).toEqual(['lisa@example.com']); // exactly once
+
+    // A row left mid-flight in SENDING (worker crashed after the claim) is not
+    // re-sent either — the claim's SCHEDULED-only guard rejects it.
+    const id2 = await insertRow({ channels: ['EMAIL'] });
+    await harness.db
+      .update(stagedNotifications)
+      .set({ status: 'SENDING' })
+      .where(eq(stagedNotifications.id, id2));
+    const third = await runStagedNotificationSend(harness.db, silent, deps, {
+      stagedNotificationId: id2,
+    });
+    expect(third.outcome).toBe('skipped');
+    expect(emails).toEqual(['lisa@example.com']); // still exactly once
+  });
+
   it('skips rows that are not SCHEDULED', async () => {
     await setEngagementState('WITH_CLIENT');
     const id = await insertRow({ status: 'CANCELED' });

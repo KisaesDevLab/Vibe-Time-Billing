@@ -583,11 +583,15 @@ export const notificationTemplates = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
-    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'PORTAL'] }).notNull(),
+    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'PORTAL', 'PRINT'] }).notNull(),
     subject: text('subject'),
     body: text('body').notNull(),
     variablesJson: jsonb('variables_json'),
     enabled: boolean('enabled').notNull().default(true),
+    // 0188 — PRINT channel: which gateway printer this notification prints to.
+    // 'specific' (printerId) or 'client_office' (the client office's printer).
+    printerMode: text('printer_mode'),
+    printerId: integer('printer_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1840,6 +1844,40 @@ export const printerAssignments = pgTable(
       t.firmId,
       t.gatewayPrinterId,
     ),
+  }),
+);
+
+// =====================================================================
+// 0187 — signature_print_rule. Prioritized rules for auto-printing a
+// document when a tax-return signature completes. First enabled rule
+// (priority asc) whose filters match wins. Empty filter array = match
+// any. template_source: 'builtin' (app confirmation report) or 'gateway'
+// (a Vibe Print template rendered from data). printer_mode: 'specific'
+// (printer_id) or 'client_office' (the client office's assigned printer).
+// =====================================================================
+
+export const signaturePrintRules = pgTable(
+  'signature_print_rule',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    priority: integer('priority').notNull().default(100),
+    enabled: boolean('enabled').notNull().default(true),
+    formCodes: text('form_codes').array().notNull().default([]),
+    engagementTypeIds: uuid('engagement_type_ids').array().notNull().default([]),
+    templateSource: text('template_source').notNull().default('builtin'), // builtin | gateway
+    gatewayTemplateId: integer('gateway_template_id'),
+    printerMode: text('printer_mode').notNull().default('specific'), // specific | client_office
+    printerId: integer('printer_id'),
+    copies: integer('copies').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmPriorityIdx: index('signature_print_rule_firm_priority_idx').on(t.firmId, t.priority),
   }),
 );
 
@@ -3747,7 +3785,7 @@ export const stagedNotifications = pgTable(
     supersedeKey: text('supersede_key').notNull(),
     mode: text('mode', { enum: ['IMMEDIATE', 'STAGED'] }).notNull(),
     status: text('status', {
-      enum: ['PENDING_APPROVAL', 'SCHEDULED', 'SENT', 'CANCELED', 'FAILED'],
+      enum: ['PENDING_APPROVAL', 'SCHEDULED', 'SENDING', 'SENT', 'CANCELED', 'FAILED'],
     }).notNull(),
     channels: text('channels').array().notNull(),
     recipientMode: text('recipient_mode', {

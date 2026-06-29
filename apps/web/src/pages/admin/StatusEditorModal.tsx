@@ -404,6 +404,7 @@ export function StatusEditorModal({ status, serviceLines, onClose, onSaved }: Pr
                       ['EMAIL', 'Email'],
                       ['SMS', 'Text message'],
                       ['PORTAL', 'Portal notice'],
+                      ['PRINT', 'Print'],
                     ] as const
                   ).map(([value, text]) => (
                     <label

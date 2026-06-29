@@ -235,6 +235,8 @@ export async function buildStatement(
       and(
         eq(invoices.firmId, firmId),
         eq(invoices.clientId, clientId),
+        ne(invoices.status, 'VOIDED'),
+        ne(invoices.status, 'DRAFT'),
         eq(payments.status, 'SUCCEEDED'),
         sql`${payments.receivedAt}::date < ${start}`,
       ),
@@ -266,6 +268,8 @@ export async function buildStatement(
       and(
         eq(invoices.firmId, firmId),
         eq(invoices.clientId, clientId),
+        ne(invoices.status, 'VOIDED'),
+        ne(invoices.status, 'DRAFT'),
         eq(payments.status, 'SUCCEEDED'),
         sql`${payments.receivedAt}::date >= ${start}`,
         sql`${payments.receivedAt}::date <= ${end}`,

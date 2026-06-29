@@ -1669,17 +1669,31 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         return;
       }
       const kind = req.params['kind']!;
-      const channel =
-        req.params['channel'] === 'SMS'
-          ? 'SMS'
-          : req.params['channel'] === 'CALL'
-            ? 'CALL'
-            : req.params['channel'] === 'PORTAL'
-              ? 'PORTAL'
-              : 'EMAIL';
-      const body = (req.body ?? {}) as { subject?: string; body?: string; enabled?: boolean };
+      const channel = ['SMS', 'CALL', 'PORTAL', 'PRINT'].includes(req.params['channel'] ?? '')
+        ? (req.params['channel'] as 'SMS' | 'CALL' | 'PORTAL' | 'PRINT')
+        : 'EMAIL';
+      const body = (req.body ?? {}) as {
+        subject?: string;
+        body?: string;
+        enabled?: boolean;
+        printerMode?: string | null;
+        printerId?: number | null;
+      };
       if (typeof body.body !== 'string' || body.body.length === 0) {
         res.status(400).json({ error: 'body_required' });
+        return;
+      }
+      // PRINT requires a resolvable printer: 'specific' needs a printerId.
+      const printerMode =
+        channel === 'PRINT'
+          ? body.printerMode === 'client_office'
+            ? 'client_office'
+            : 'specific'
+          : null;
+      const printerId =
+        channel === 'PRINT' && printerMode === 'specific' ? (body.printerId ?? null) : null;
+      if (channel === 'PRINT' && printerMode === 'specific' && printerId == null) {
+        res.status(400).json({ error: 'printer_required' });
         return;
       }
       // Mine placeholder names so the UI variable picker can render them.
@@ -1693,11 +1707,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       const values = {
         firmId,
         kind,
-        channel: channel as 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL',
+        channel: channel as 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL' | 'PRINT',
         subject: body.subject ?? null,
         body: body.body,
         variablesJson: variables,
         enabled: body.enabled ?? true,
+        printerMode,
+        printerId,
         updatedAt: new Date(),
       };
       await deps.db
@@ -1732,14 +1748,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         return;
       }
       const kind = req.params['kind']!;
-      const channel =
-        req.params['channel'] === 'SMS'
-          ? 'SMS'
-          : req.params['channel'] === 'CALL'
-            ? 'CALL'
-            : req.params['channel'] === 'PORTAL'
-              ? 'PORTAL'
-              : 'EMAIL';
+      const channel = ['SMS', 'CALL', 'PORTAL', 'PRINT'].includes(req.params['channel'] ?? '')
+        ? (req.params['channel'] as 'SMS' | 'CALL' | 'PORTAL' | 'PRINT')
+        : 'EMAIL';
       await deps.db
         .delete(notificationTemplates)
         .where(

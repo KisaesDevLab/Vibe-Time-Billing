@@ -28,7 +28,9 @@ import {
   clientPortalAccess,
   clients,
   engagements,
+  firms,
   notificationLog,
+  notificationTemplates,
   portalNotifications,
   stagedNotifications,
 } from '@vibe/db/schema';
@@ -37,6 +39,10 @@ import type { Logger } from 'pino';
 
 import type { MailDispatch, SmsDispatch } from '../dispatchers';
 import { sendWebPushToIdentity } from '../web-push';
+import { renderHtmlToPdf } from '../../../api/src/pdf/render';
+import { resolveOfficePrinter } from '../../../api/src/print-gateway/assignments';
+import { resolvePrintGateway } from '../../../api/src/print-gateway/config';
+import { sendToPrinter } from '../../../api/src/print-gateway/send';
 
 export interface StagedNotificationSendDeps {
   sendEmail?: MailDispatch;
@@ -80,6 +86,24 @@ export async function runStagedNotificationSend(
     return { outcome: 'skipped' };
   }
 
+  // Atomically CLAIM the row (SCHEDULED -> SENDING) so exactly one execution
+  // fans out to recipients. A BullMQ stalled-job reprocess (worker killed
+  // mid-send) or any double-fire loses this conditional update and skips,
+  // preventing duplicate client emails/SMS. (A crash after claiming leaves the
+  // row in SENDING — it won't auto-retry, trading at-most-once for no dupes.)
+  const claimed = await db
+    .update(stagedNotifications)
+    .set({ status: 'SENDING', updatedAt: new Date() })
+    .where(and(eq(stagedNotifications.id, row.id), eq(stagedNotifications.status, 'SCHEDULED')))
+    .returning({ id: stagedNotifications.id });
+  if (claimed.length === 0) {
+    log.info(
+      { stagedNotificationId: payload.stagedNotificationId },
+      'staged send skipped (already claimed)',
+    );
+    return { outcome: 'skipped' };
+  }
+
   // Fire-time guard: the snapshot must still describe reality.
   if (row.triggerKind === 'engagement_status') {
     const ctx = row.triggerContext as { workflowState?: string };
@@ -115,7 +139,7 @@ export async function runStagedNotificationSend(
           action: 'UPDATE',
           entityType: 'staged_notification',
           entityId: row.id,
-          beforeJson: { status: 'SCHEDULED' },
+          beforeJson: { status: 'SENDING' },
           afterJson: { status: 'CANCELED', canceledReason: 'STATE_CHANGED_AT_FIRE' },
         })
         .catch((err: unknown) => log.error({ err }, 'audit emit failed'));
@@ -135,12 +159,15 @@ export async function runStagedNotificationSend(
       results['SMS'] = await sendSmsChannel(db, log, deps, row, recipients, rendered['SMS']);
     } else if (channel === 'PORTAL') {
       results['PORTAL'] = await sendPortalChannel(db, log, row, rendered['PORTAL']);
+    } else if (channel === 'PRINT') {
+      results['PRINT'] = await sendPrintChannel(db, log, row, rendered['PRINT']);
     }
   }
 
   // One client_communication row per successful channel (timeline view).
+  // PRINT is audited in print_log (not the client_communication enum).
   for (const [channel, result] of Object.entries(results)) {
-    if (!result.ok) continue;
+    if (!result.ok || channel === 'PRINT') continue;
     const r = rendered[channel];
     await db
       .insert(clientCommunications)
@@ -335,4 +362,86 @@ async function logSend(
       errorMessage,
     })
     .catch((err: unknown) => log.error({ err }, 'notification_log insert failed'));
+}
+
+// 0188 — PRINT channel: render the snapshotted message to a PDF and print
+// it to the kind's PRINT-template printer (specific id, or the client
+// office's printer). Audited in print_log via sendToPrinter.
+function escHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function sendPrintChannel(
+  db: Database,
+  log: Logger,
+  row: StagedRow,
+  rendered: { subject: string | null; body: string } | undefined,
+): Promise<ChannelResult> {
+  if (!rendered?.body) return { ok: false, sentTo: [], error: 'no_body' };
+  const gateway = await resolvePrintGateway(db, row.firmId);
+  if (!gateway || !gateway.enabled) return { ok: false, sentTo: [], error: 'gateway_disabled' };
+
+  const [tpl] = await db
+    .select({
+      printerMode: notificationTemplates.printerMode,
+      printerId: notificationTemplates.printerId,
+    })
+    .from(notificationTemplates)
+    .where(
+      and(
+        eq(notificationTemplates.firmId, row.firmId),
+        eq(notificationTemplates.kind, row.templateKind),
+        eq(notificationTemplates.channel, 'PRINT'),
+      ),
+    )
+    .limit(1);
+
+  let printerId: number | null;
+  if (tpl?.printerMode === 'client_office') {
+    let officeId: string | null = null;
+    if (row.clientId) {
+      const [c] = await db
+        .select({ officeId: clients.officeId })
+        .from(clients)
+        .where(eq(clients.id, row.clientId))
+        .limit(1);
+      officeId = c?.officeId ?? null;
+    }
+    printerId = await resolveOfficePrinter(db, row.firmId, officeId);
+  } else {
+    printerId = tpl?.printerId ?? null;
+  }
+  if (printerId == null) return { ok: false, sentTo: [], error: 'no_printer' };
+
+  const [firm] = await db
+    .select({ name: firms.name })
+    .from(firms)
+    .where(eq(firms.id, row.firmId))
+    .limit(1);
+  const html = `<!doctype html><html><head><meta charset="utf-8" />
+<style>@page{size:Letter;margin:0.75in}body{font:11pt "Helvetica Neue",Helvetica,Arial,sans-serif;color:#111;margin:0}.firm{font-size:16pt;font-weight:800;border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:16px}.body{white-space:pre-wrap;line-height:1.5}</style>
+</head><body><div class="firm">${escHtml(firm?.name ?? 'Firm')}</div><div class="body">${escHtml(rendered.body)}</div></body></html>`;
+  try {
+    const pdf = await renderHtmlToPdf(html);
+    const result = await sendToPrinter({
+      db,
+      firmId: row.firmId,
+      appUserId: null,
+      printableType: `notification:${row.templateKind}`,
+      printableId: row.entityId,
+      pdf,
+      printerId,
+      copies: 1,
+      gateway,
+      idempotencyKey: `staged-print:${row.id}`,
+    });
+    return result.ok ? { ok: true, sentTo: [] } : { ok: false, sentTo: [], error: result.error };
+  } catch (err) {
+    log.warn({ err, stagedNotificationId: row.id }, 'staged print channel failed');
+    return { ok: false, sentTo: [], error: err instanceof Error ? err.message : 'print_failed' };
+  }
 }

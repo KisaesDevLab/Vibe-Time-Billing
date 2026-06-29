@@ -100,11 +100,15 @@ export async function resolvePrintGateway(
   const baseUrl = cfg?.baseUrl || process.env['PRINT_GATEWAY_BASE_URL'] || '';
   const apiKey = cfg?.apiKey || process.env['PRINT_GATEWAY_API_KEY'] || '';
   if (!baseUrl || !apiKey) return null;
+  // The `enabled` toggle only governs a gateway the firm configured via the
+  // DB (admin UI). When the connection comes from env (the DB row carries no
+  // baseUrl+apiKey — e.g. the firm only saved a default printer), the toggle
+  // is irrelevant and the env-backed gateway is treated as enabled.
+  const dbHasConnection = Boolean(cfg?.baseUrl && cfg?.apiKey);
   return {
     baseUrl: normalizeBase(baseUrl),
     apiKey,
-    // When relying on env-only config (no DB row), treat as enabled.
-    enabled: cfg ? Boolean(cfg.enabled) : true,
+    enabled: dbHasConnection ? Boolean(cfg?.enabled) : true,
     defaultPrinterId: cfg?.defaultPrinterId ?? null,
     autoPrintSignatureConfirmation: Boolean(cfg?.autoPrintSignatureConfirmation),
   };

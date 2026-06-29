@@ -38,6 +38,7 @@ import {
 } from '../files/promote-on-paid';
 import { publishWebhookEvent } from './publish';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { printNotificationChannel } from '../notifications/print-channel';
 
 export interface StripeWebhookDeps {
   db: Database | null;
@@ -290,6 +291,35 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           } catch (err) {
             logger.warn({ err, invoiceId: inv.id }, 'payment confirmation email failed');
           }
+        }
+        // PRINT channel (0188) — auto-print a payment-received copy. Runs
+        // independently of the email branch (a firm may use PRINT-only
+        // receipts, or a client may have no billing email). Best-effort.
+        {
+          const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+          const [printClient] = await deps.db
+            .select({ name: clients.name })
+            .from(clients)
+            .where(eq(clients.id, inv.clientId))
+            .limit(1);
+          await printNotificationChannel({
+            db: deps.db,
+            firmId: inv.firmId,
+            kind: 'payment_received',
+            clientId: inv.clientId,
+            printableId: inv.id,
+            context: {
+              client: { name: printClient?.name ?? '' },
+              firm: await firmScope(deps.db, inv.firmId),
+              invoice: {
+                number: inv.invoiceNumber,
+                balance: formatMoneyCents(inv.totalCents - newPaidCents),
+                portal_url: link,
+              },
+            },
+          }).catch((err) =>
+            logger.warn({ err, invoiceId: inv.id }, 'payment print channel failed'),
+          );
         }
         if (fullyPaid) {
           await publishWebhookEvent(deps.db, inv.firmId, 'invoice.paid', {
@@ -714,7 +744,12 @@ async function materializeReceiptIfPending(
     .limit(1);
   if (!receipt) return false;
   if (receipt.status === 'SUCCEEDED') {
-    // Re-delivery; nothing to do but signal that we owned the event.
+    // Re-delivery. The receipt was already materialized, but a crash between
+    // the commit and the enqueue on the original delivery could have left the
+    // auto-print un-enqueued — so we (idempotently) ensure it here too. The
+    // deterministic queue jobId + gateway idempotency key prevent any double
+    // physical print.
+    await enqueueTerminalReceiptPrint(db, receipt, printQueue);
     return true;
   }
   if (receipt.status !== 'PENDING') return true;
@@ -789,39 +824,9 @@ async function materializeReceiptIfPending(
   });
 
   // 0186 — auto-print the receipt to the terminal's configured printer.
-  // Only fires here (the fresh PENDING→SUCCEEDED transition), never on
-  // re-delivery (which returned early above).
-  if (printQueue && receipt.terminalReaderId) {
-    const [reader] = await db
-      .select({ printerId: terminalReaders.printerId, autoPrint: terminalReaders.autoPrintReceipt })
-      .from(terminalReaders)
-      .where(eq(terminalReaders.id, receipt.terminalReaderId))
-      .limit(1);
-    if (reader?.autoPrint) {
-      if (reader.printerId != null) {
-        await printQueue
-          .terminalReceipt({ receiptId: receipt.id, printerId: reader.printerId })
-          .catch((err: unknown) =>
-            logger.error({ err, receiptId: receipt.id }, 'terminal receipt enqueue failed'),
-          );
-      } else {
-        // Auto-print on but no printer assigned → skip + log (don't print
-        // to the wrong location).
-        await db
-          .insert(printLog)
-          .values({
-            firmId: receipt.firmId,
-            appUserId: null,
-            printableType: 'payment_receipt',
-            printableId: receipt.id,
-            printerId: 0,
-            status: 'FAILED',
-            error: 'no_printer_assigned',
-          })
-          .catch(() => undefined);
-      }
-    }
-  }
+  // Idempotent (deterministic jobId + gateway idempotency key), so it is also
+  // safe to re-run on webhook re-delivery (see the SUCCEEDED branch above).
+  await enqueueTerminalReceiptPrint(db, receipt, printQueue);
 
   await emitAudit(db, {
     action: 'PAYMENT',
@@ -837,4 +842,44 @@ async function materializeReceiptIfPending(
   );
 
   return true;
+}
+
+/** 0186 — enqueue the terminal receipt auto-print for a SUCCEEDED receipt.
+ *  Idempotent: the queue uses a deterministic jobId and the worker sends with
+ *  a `termreceipt:` gateway idempotency key, so calling this on both the fresh
+ *  transition and any webhook re-delivery prints at most once. */
+async function enqueueTerminalReceiptPrint(
+  db: Database,
+  receipt: { id: string; firmId: string; terminalReaderId: string | null },
+  printQueue?: PrintQueue,
+): Promise<void> {
+  if (!printQueue || !receipt.terminalReaderId) return;
+  const [reader] = await db
+    .select({ printerId: terminalReaders.printerId, autoPrint: terminalReaders.autoPrintReceipt })
+    .from(terminalReaders)
+    .where(eq(terminalReaders.id, receipt.terminalReaderId))
+    .limit(1);
+  if (!reader?.autoPrint) return;
+  if (reader.printerId != null) {
+    await printQueue
+      .terminalReceipt({ receiptId: receipt.id, printerId: reader.printerId })
+      .catch((err: unknown) =>
+        logger.error({ err, receiptId: receipt.id }, 'terminal receipt enqueue failed'),
+      );
+  } else {
+    // Auto-print on but no printer assigned → skip + log (don't print to the
+    // wrong location).
+    await db
+      .insert(printLog)
+      .values({
+        firmId: receipt.firmId,
+        appUserId: null,
+        printableType: 'payment_receipt',
+        printableId: receipt.id,
+        printerId: 0,
+        status: 'FAILED',
+        error: 'no_printer_assigned',
+      })
+      .catch(() => undefined);
+  }
 }

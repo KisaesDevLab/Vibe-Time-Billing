@@ -29,7 +29,7 @@ import {
 } from '@vibe/core/notifications';
 import type { MergeContext } from '@vibe/core/proposals';
 
-export type TemplateChannel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL';
+export type TemplateChannel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL' | 'PRINT';
 
 /** Firm's enabled template override for (kind, channel), or null. */
 export async function loadNotificationTemplate(
