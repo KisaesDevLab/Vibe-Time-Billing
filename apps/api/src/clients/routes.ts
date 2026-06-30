@@ -42,6 +42,7 @@ import { mountPeopleRoutes } from './people';
 import { mountFileRoutes } from './files';
 import { mountClientImportRoutes } from './import';
 import { findOrCreatePerson } from './person-helpers';
+import { printClientMailing, type MailingKind } from './mailing-print';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
@@ -382,6 +383,52 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         },
       });
     },
+  );
+
+  // ── Envelope / mailing-label direct print (Vibe Print gateway) ──────
+  // Reuses the gateway's pre-formatted "#10 Envelope" / "Mailing Label
+  // 4x3" templates; we only send the address data. Hidden in the UI when
+  // the gateway is off (PrintButton). Read-grade action (addressing an
+  // existing client), so gated on client:read like the other prints.
+  const MailingPrintSchema = z.object({
+    printerId: z.number().int().positive(),
+    copies: z.number().int().min(1).max(20).optional(),
+  });
+  const mailingPrintHandler =
+    (kind: MailingKind) =>
+    async (req: Request, res: Response): Promise<void> => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailingPrintSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const result = await printClientMailing({
+        db: deps.db,
+        firmId: req.staffSession!.firmId,
+        clientId: req.params['id']!,
+        kind,
+        printerId: parsed.data.printerId,
+        copies: parsed.data.copies,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      res.json({ ok: true, jobId: result.jobId });
+    };
+  router.post(
+    '/:id/print-envelope',
+    requirePermission(deps, 'client:read'),
+    mailingPrintHandler('envelope'),
+  );
+  router.post(
+    '/:id/print-label',
+    requirePermission(deps, 'client:read'),
+    mailingPrintHandler('label'),
   );
 
   router.post('/', requirePermission(deps, 'client:write'), async (req: Request, res: Response) => {
