@@ -644,7 +644,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       let pdf: Buffer;
       try {
         const { renderHtmlToPdf } = await import('../pdf/render');
-        pdf = await renderHtmlToPdf(combined);
+        // preferCSSPageSize → the letter template's `@page { margin }` controls
+        // the page margins (default DEFAULT_LETTER_CSS = 1in).
+        pdf = await renderHtmlToPdf(combined, { preferCSSPageSize: true });
       } catch (err) {
         logger.error({ err }, 'mail-merge pdf render failed');
         res.status(502).json({ error: 'render_failed' });
@@ -725,7 +727,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       }> = [];
       for (const client of clientData) {
         try {
-          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
+          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now), {
+            preferCSSPageSize: true,
+          });
           const out = await createFileInClientFolder(deps.db, storage, {
             firmId,
             clientId: client.id,
@@ -862,7 +866,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
             parsed.data.body?.trim() || 'Please see the attached letter.',
             ctx,
           ).output;
-          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
+          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now), {
+            preferCSSPageSize: true,
+          });
           await sendStaffMail({
             to: client.recipientEmail,
             subject,

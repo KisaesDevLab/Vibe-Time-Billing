@@ -83,6 +83,26 @@ export interface PdfRenderOptions {
   fetchImpl?: typeof fetch;
   // Render timeout in ms. Default 30s per addendum P14 spec.
   timeoutMs?: number;
+  // Override the default 0.5in page margins. Ignored when preferCSSPageSize
+  // is set (the CSS @page rule then controls the margins).
+  margin?: { top?: string; right?: string; bottom?: string; left?: string };
+  // Let the document's CSS `@page { size; margin }` rule drive page size AND
+  // margins (Puppeteer honors @page instead of the format/margin options).
+  // Used by the mail-merge letters so a template's `@page { margin }` works.
+  preferCSSPageSize?: boolean;
+}
+
+const DEFAULT_MARGIN = { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' };
+
+// The options object handed to page.pdf() (and the sidecar). Default =
+// Letter + 0.5in margins (unchanged for every existing caller). When
+// preferCSSPageSize is set we omit format+margin so the CSS @page rule wins.
+// Exported for tests.
+export function pdfPageOptions(opts: PdfRenderOptions): Record<string, unknown> {
+  if (opts.preferCSSPageSize) {
+    return { printBackground: true, preferCSSPageSize: true };
+  }
+  return { format: 'Letter', printBackground: true, margin: opts.margin ?? DEFAULT_MARGIN };
 }
 
 async function renderViaSidecar(
@@ -90,6 +110,7 @@ async function renderViaSidecar(
   url: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  pageOptions: Record<string, unknown>,
 ): Promise<Buffer> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -97,14 +118,7 @@ async function renderViaSidecar(
     const res = await fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        html,
-        options: {
-          format: 'Letter',
-          printBackground: true,
-          margin: { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' },
-        },
-      }),
+      body: JSON.stringify({ html, options: pageOptions }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -120,20 +134,17 @@ async function renderViaSidecar(
 export async function renderHtmlToPdf(html: string, opts: PdfRenderOptions = {}): Promise<Buffer> {
   const sidecarUrl = opts.sidecarUrl ?? process.env['PDF_SIDECAR_URL'];
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  const pageOptions = pdfPageOptions(opts);
   if (sidecarUrl) {
     const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch);
-    return renderViaSidecar(html, sidecarUrl, fetchImpl, timeoutMs);
+    return renderViaSidecar(html, sidecarUrl, fetchImpl, timeoutMs, pageOptions);
   }
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     await guardPageRequests(page);
     await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({
-      format: 'Letter',
-      printBackground: true,
-      margin: { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' },
-    });
+    const pdf = await page.pdf(pageOptions);
     return Buffer.from(pdf);
   } finally {
     await page.close().catch(() => undefined);
