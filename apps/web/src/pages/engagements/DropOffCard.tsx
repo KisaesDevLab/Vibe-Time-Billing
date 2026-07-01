@@ -176,8 +176,8 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
       }
     >
       <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
-        Ask the client to drop off / upload information by a due date. The client is reminded once
-        (email + SMS) the configured number of days before, and uploads through the portal to
+        Ask the client to drop off / upload information by a due date. The client is reminded on the
+        schedule you set below (email / SMS, one nudge per step) and uploads through the portal to
         fulfill it.
       </p>
 
