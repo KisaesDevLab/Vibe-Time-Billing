@@ -211,6 +211,7 @@ function emptyDraftFrom(e: Engagement): EditDraft {
 export function EngagementDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const [engagement, setEngagement] = useState<Engagement | null>(null);
+  const [client, setClient] = useState<{ id: string; name: string } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [banks, setBanks] = useState<HourBank[]>([]);
@@ -229,9 +230,11 @@ export function EngagementDetailPage(): JSX.Element {
     if (!id) return;
     try {
       const [e, s, m, b, u, rc, et, sl] = await Promise.all([
-        api<{ engagement: Engagement; assignments?: AssignmentRow[] }>(
-          `/api/staff/engagements/${id}`,
-        ),
+        api<{
+          engagement: Engagement;
+          client?: { id: string; name: string } | null;
+          assignments?: AssignmentRow[];
+        }>(`/api/staff/engagements/${id}`),
         api<{ summary: Summary | null }>(`/api/staff/stats/engagement/${id}`),
         api<{ milestones: Milestone[] }>(`/api/staff/milestones/by-engagement/${id}`),
         api<{ bank: HourBank | null }>(`/api/staff/hour-banks/by-engagement/${id}`).catch(() => ({
@@ -247,6 +250,7 @@ export function EngagementDetailPage(): JSX.Element {
         })),
       ]);
       setEngagement(e.engagement);
+      setClient(e.client ?? null);
       setSummary(s.summary);
       setMilestones(m.milestones ?? []);
       setBanks(b.bank ? [b.bank] : []);
@@ -413,7 +417,15 @@ export function EngagementDetailPage(): JSX.Element {
               aria-label="Engagement name"
             />
           ) : (
-            engagement.name
+            <>
+              {engagement.name}
+              {client?.name && (
+                <span style={{ fontWeight: 400, color: tokens.color.textMuted }}>
+                  {' · '}
+                  {client.name}
+                </span>
+              )}
+            </>
           )
         }
         action={
@@ -722,7 +734,7 @@ export function EngagementDetailPage(): JSX.Element {
           >
             <dt style={{ color: tokens.color.textMuted }}>Client</dt>
             <dd style={{ margin: 0 }}>
-              <a href={`/clients/${engagement.clientId}`}>open</a>
+              <a href={`/clients/${engagement.clientId}`}>{client?.name ?? 'open'}</a>
             </dd>
             <dt style={{ color: tokens.color.textMuted }}>Fee</dt>
             <dd style={{ margin: 0 }}>

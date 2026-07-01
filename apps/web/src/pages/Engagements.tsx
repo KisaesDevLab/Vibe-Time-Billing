@@ -152,6 +152,7 @@ export function EngagementsPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [nameQuery, setNameQuery] = useState('');
   const [users, setUsers] = useState<AppUser[]>([]);
   const [types, setTypes] = useState<EngagementType[]>([]);
   const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
@@ -394,6 +395,10 @@ export function EngagementsPage(): JSX.Element {
     if (!showDrafts) {
       r = r.filter((row) => row.workflowState !== 'DRAFT');
     }
+    if (nameQuery.trim()) {
+      const q = nameQuery.trim().toLowerCase();
+      r = r.filter((row) => row.name.toLowerCase().includes(q));
+    }
     if (typeFilter.size > 0) {
       r = r.filter((row) => row.engagementTypeId && typeFilter.has(row.engagementTypeId));
     }
@@ -453,7 +458,16 @@ export function EngagementsPage(): JSX.Element {
       });
     }
     return r;
-  }, [rows, showDrafts, typeFilter, assigneeFilter, serviceLineFilter, clientFilter, sortBy]);
+  }, [
+    rows,
+    showDrafts,
+    nameQuery,
+    typeFilter,
+    assigneeFilter,
+    serviceLineFilter,
+    clientFilter,
+    sortBy,
+  ]);
 
   const clientOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -591,6 +605,22 @@ export function EngagementsPage(): JSX.Element {
         }
         action={
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="search"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="Search name…"
+              aria-label="Search engagements by name"
+              style={{
+                width: 180,
+                padding: '6px 8px',
+                fontSize: 13,
+                borderRadius: tokens.radius.sm,
+                border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+              }}
+            />
             <div style={{ width: 200 }}>
               <Combobox
                 ariaLabel="Client owner"
