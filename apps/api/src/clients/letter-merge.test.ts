@@ -109,6 +109,17 @@ describe('date-range helpers (appointment filter)', () => {
       '2026-01-15T06:00:00.000Z',
     );
   });
+
+  it('is correct for an ahead-of-UTC zone on DST-transition days (double-correction)', () => {
+    // Sydney DST ends Apr 5 2026 (midnight is still AEDT +11) → prev day 13:00Z.
+    expect(zonedDayStartUtc('2026-04-05', 'Australia/Sydney').toISOString()).toBe(
+      '2026-04-04T13:00:00.000Z',
+    );
+    // Sydney DST starts Oct 4 2026 (midnight is AEST +10) → prev day 14:00Z.
+    expect(zonedDayStartUtc('2026-10-04', 'Australia/Sydney').toISOString()).toBe(
+      '2026-10-03T14:00:00.000Z',
+    );
+  });
 });
 
 describe('renderLetterHtml', () => {

@@ -1921,7 +1921,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
             firm: firmTokens,
             client: { name: client.name, primaryContact: pick.fullName ?? '' },
           };
-          const subject = resolveMergeTokens(parsed.data.subject, ctx).output;
+          const subject = resolveMergeTokens(parsed.data.subject, ctx)
+            .output.replace(/[\r\n]+/g, ' ')
+            .trim();
           const textBody = resolveMergeTokens(parsed.data.body, ctx).output;
           await deps.sendStaffMail({
             to: pick.email,

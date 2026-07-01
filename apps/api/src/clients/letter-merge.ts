@@ -253,8 +253,11 @@ function tzOffsetMs(at: Date, tz: string): number {
 export function zonedDayStartUtc(ymd: string, tz: string): Date {
   const [y, mo, d] = ymd.split('-').map(Number);
   const guess = Date.UTC(y!, mo! - 1, d!, 0, 0, 0);
-  // Correct the guess by the tz offset at that (approximate) instant.
-  return new Date(guess - tzOffsetMs(new Date(guess), tz));
+  // Correct by the offset at the guess, then re-sample at the corrected
+  // instant so a DST transition on the target day (ahead-of-UTC zones)
+  // doesn't leave a ±1h error.
+  const corrected = guess - tzOffsetMs(new Date(guess), tz);
+  return new Date(guess - tzOffsetMs(new Date(corrected), tz));
 }
 
 /** ymd + 1 day, as a YYYY-MM-DD string (calendar arithmetic, UTC-safe).
