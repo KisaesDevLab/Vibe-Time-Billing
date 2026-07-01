@@ -2330,6 +2330,44 @@ export const recurringBillingPlanServices = pgTable('recurring_billing_plan_serv
   pk: primaryKey({ columns: [t.planId, t.serviceLineId] }),
 }));
 
+// 0192 — staff-managed recurring installment plan against a client's open
+// balance (charges a saved method a fixed amount per cycle, oldest-first).
+export const clientPaymentPlans = pgTable(
+  'client_payment_plan',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id').notNull(),
+    clientId: uuid('client_id').notNull(),
+    paymentMethodId: uuid('payment_method_id').notNull(),
+    // text + CHECK (see migration) — reuses the recurring_frequency value space.
+    frequency: text('frequency').$type<
+      'WEEKLY' | 'BIWEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'SEMIANNUAL' | 'ANNUAL'
+    >().notNull(),
+    nextRunDate: date('next_run_date').notNull(),
+    installmentCents: bigint('installment_cents', { mode: 'number' }).notNull(),
+    status: text('status')
+      .$type<'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED'>()
+      .notNull()
+      .default('ACTIVE'),
+    consecutiveFailureCount: integer('consecutive_failure_count').notNull().default(0),
+    pauseThreshold: integer('pause_threshold').notNull().default(3),
+    pausedReason: text('paused_reason'),
+    authorizedByAppUserId: uuid('authorized_by_app_user_id'),
+    authorizedAt: timestamp('authorized_at', { withTimezone: true }),
+    authorizationNote: text('authorization_note'),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+    notes: text('notes'),
+    createdByAppUserId: uuid('created_by_app_user_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dueIdx: index('client_payment_plan_due_idx').on(t.status, t.nextRunDate),
+    firmClientIdx: index('client_payment_plan_firm_client_idx').on(t.firmId, t.clientId),
+  }),
+);
+
 export const milestonePlans = pgTable('milestone_plan', {
   id: uuid('id').defaultRandom().primaryKey(),
   engagementId: uuid('engagement_id')
