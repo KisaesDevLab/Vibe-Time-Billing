@@ -301,9 +301,9 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         })
         .catch(() => undefined);
       if (can.requests) {
-        void api<{ total: number }>('/api/staff/requests?status=OPEN&limit=1')
+        void api<{ count: number }>('/api/staff/requests/client-responses/unread-count')
           .then((r) => {
-            if (alive) setRequestsNew(r.total ?? 0);
+            if (alive) setRequestsNew(r.count ?? 0);
           })
           .catch(() => undefined);
       }

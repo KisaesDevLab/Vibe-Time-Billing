@@ -87,6 +87,8 @@ export function RequestDetailPage(): JSX.Element {
   const navigate = useNavigate();
   const id = params.id ?? '';
   const [request, setRequest] = useState<RequestRow | null>(null);
+  const [clientName, setClientName] = useState<string | null>(null);
+  const [clientId, setClientId] = useState<string | null>(null);
   const [items, setItems] = useState<RequestItem[]>([]);
   const [engagements, setEngagements] = useState<EngagementLite[]>([]);
   const [users, setUsers] = useState<FirmUser[]>([]);
@@ -103,12 +105,16 @@ export function RequestDetailPage(): JSX.Element {
     setError(null);
     try {
       const [detail, itemList] = await Promise.all([
-        api<{ request: RequestRow }>(`/api/staff/requests/${id}`),
+        api<{ request: RequestRow; clientName?: string | null; clientId?: string | null }>(
+          `/api/staff/requests/${id}`,
+        ),
         api<{ items: RequestItem[] }>(`/api/staff/requests/${id}/items`).catch(() => ({
           items: [] as RequestItem[],
         })),
       ]);
       setRequest(detail.request);
+      setClientName(detail.clientName ?? null);
+      setClientId(detail.clientId ?? null);
       setItems(itemList.items ?? []);
       setReassignEng(detail.request.engagementId);
       setReassignUser(detail.request.assignedAppUserId ?? '');
@@ -300,6 +306,11 @@ export function RequestDetailPage(): JSX.Element {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 18 }}>{request.title}</h2>
+            {clientName && (
+              <div style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 2 }}>
+                {clientId ? <a href={`/clients/${clientId}`}>{clientName}</a> : clientName}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
               <Pill tone={statusTone(request.status)}>{request.status}</Pill>
               <Pill tone={priorityTone(request.priority)}>{request.priority}</Pill>

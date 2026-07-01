@@ -4183,6 +4183,10 @@ export const clientRequests = pgTable(
     // instead of the single reminder_days_before nudge.
     reminderSchedule: jsonb('reminder_schedule').$type<ReminderStep[]>(),
     clientReplyText: text('client_reply_text'),
+    // 0197 — when staff last saw the client's reply. Cleared when a client
+    // responds (portal reply/needs-info); stamped when staff opens the detail.
+    // Unread client response = clientReplyText set AND clientReplySeenAt IS NULL.
+    clientReplySeenAt: timestamp('client_reply_seen_at', { withTimezone: true }),
   },
   (t) => ({
     firmStatusIdx: index('client_request_firm_status_idx').on(t.firmId, t.status),

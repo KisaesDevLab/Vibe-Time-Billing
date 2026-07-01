@@ -342,6 +342,32 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
     res.json({ items: enriched, total });
   });
 
+  // 0197 — count of requests with an UNREAD client response (client replied,
+  // still open, staff hasn't opened it). Drives the Requests nav highlight.
+  router.get(
+    '/client-responses/unread-count',
+    requirePermission(deps, 'requests:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ count: 0 });
+        return;
+      }
+      const [row] = await deps.db
+        .select({ c: sql<number>`COUNT(*)::int` })
+        .from(clientRequests)
+        .where(
+          and(
+            eq(clientRequests.firmId, session.firmId),
+            sql`${clientRequests.clientReplyText} IS NOT NULL`,
+            isNull(clientRequests.clientReplySeenAt),
+            inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
+          ),
+        );
+      res.json({ count: row?.c ?? 0 });
+    },
+  );
+
   router.get(
     '/:id',
     requirePermission(deps, 'requests:read'),
@@ -361,6 +387,14 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       if (!row) {
         res.status(404).json({ error: 'not_found' });
         return;
+      }
+      // 0197 — opening the detail marks an unread client reply as seen (clears
+      // the Requests nav highlight).
+      if (row.clientReplyText && !row.clientReplySeenAt) {
+        await deps.db
+          .update(clientRequests)
+          .set({ clientReplySeenAt: new Date() })
+          .where(eq(clientRequests.id, row.id));
       }
       // P2.3 — resolve the linked time entry (if any) for the request's
       // accepted suggestion. Surfaces in the staff request-detail UI as
@@ -392,7 +426,24 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             staffName: linkedRows[0].staffName,
           }
         : null;
-      res.json({ request: row, linkedTimeEntry });
+      // Which client this request relates to (via its engagement).
+      const [engRow] = await deps.db
+        .select({
+          engagementName: engagements.name,
+          clientId: engagements.clientId,
+          clientName: clients.name,
+        })
+        .from(engagements)
+        .leftJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(engagements.id, row.engagementId))
+        .limit(1);
+      res.json({
+        request: row,
+        linkedTimeEntry,
+        engagementName: engRow?.engagementName ?? null,
+        clientId: engRow?.clientId ?? null,
+        clientName: engRow?.clientName ?? null,
+      });
     },
   );
 
@@ -845,6 +896,8 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         .set({
           status: 'NEEDS_INFO',
           clientReplyText: parsed.data.text,
+          // Staff authored this note, so it isn't an unread client response.
+          clientReplySeenAt: new Date(),
           updatedAt: new Date(),
         })
         .where(

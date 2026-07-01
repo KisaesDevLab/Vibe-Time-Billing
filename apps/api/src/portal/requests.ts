@@ -152,7 +152,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
     }
     await deps.db
       .update(clientRequests)
-      .set({ clientReplyText: parsed.data.text, updatedAt: new Date() })
+      .set({ clientReplyText: parsed.data.text, clientReplySeenAt: null, updatedAt: new Date() })
       .where(eq(clientRequests.id, scoped.id));
     await emitAudit(deps.db, {
       action: 'UPDATE',
@@ -200,6 +200,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       .set({
         status: 'NEEDS_INFO',
         clientReplyText: parsed.data.text,
+        clientReplySeenAt: null,
         updatedAt: new Date(),
       })
       .where(eq(clientRequests.id, scoped.id));

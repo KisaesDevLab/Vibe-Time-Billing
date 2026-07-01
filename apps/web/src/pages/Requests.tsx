@@ -492,6 +492,18 @@ export function RequestsPage(): JSX.Element {
     () => templates.map((t) => ({ value: t.id, label: t.name, description: t.key })),
     [templates],
   );
+  // engagementId → client name (a request is tied to an engagement, which
+  // belongs to a client) and appUserId → name, for the list columns.
+  const clientNameByEngagement = useMemo(() => {
+    const clientById = new Map(clients.map((c) => [c.id, c.name]));
+    const m = new Map<string, string>();
+    for (const e of engagements) {
+      const cn = clientById.get(e.clientId);
+      if (cn) m.set(e.id, cn);
+    }
+    return m;
+  }, [clients, engagements]);
+  const userNameById = useMemo(() => new Map(users.map((u) => [u.id, u.fullName])), [users]);
 
   const page = Math.floor(offset / limit) + 1;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -1002,6 +1014,24 @@ export function RequestsPage(): JSX.Element {
                     </div>
                   )}
                 </div>
+              ),
+            },
+            {
+              key: 'client',
+              header: 'Client',
+              render: (r) => (
+                <span style={{ fontSize: 13 }}>
+                  {clientNameByEngagement.get(r.engagementId) ?? '—'}
+                </span>
+              ),
+            },
+            {
+              key: 'assigned',
+              header: 'Assigned',
+              render: (r) => (
+                <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                  {r.assignedAppUserId ? (userNameById.get(r.assignedAppUserId) ?? '—') : '—'}
+                </span>
               ),
             },
             {
