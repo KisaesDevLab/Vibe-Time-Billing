@@ -4167,6 +4167,10 @@ export const clientRequests = pgTable(
     templateId: uuid('template_id'),
     reminderDaysBefore: integer('reminder_days_before'),
     lastReminderSentAt: timestamp('last_reminder_sent_at', { withTimezone: true }),
+    // 0194 — multi-reminder scheduling for drop-offs. When present, the worker
+    // sends one reminder per step (see client_request_reminder_sent ledger)
+    // instead of the single reminder_days_before nudge.
+    reminderSchedule: jsonb('reminder_schedule').$type<ReminderStep[]>(),
     clientReplyText: text('client_reply_text'),
   },
   (t) => ({
@@ -4183,6 +4187,31 @@ export const clientRequests = pgTable(
     ),
     // 0135 — kind discriminator; mirrors the migration's CHECK.
     kindCk: check('client_request_kind_ck', sql`${t.kind} IN ('GENERAL', 'DROP_OFF')`),
+  }),
+);
+
+// 0194 — per-offset/channel sent-ledger for drop-off scheduled reminders.
+// One row per (request × offset × channel); the unique index gives idempotency
+// (mirrors appointment_reminders_sent).
+export const clientRequestReminderSent = pgTable(
+  'client_request_reminder_sent',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientRequestId: uuid('client_request_id')
+      .notNull()
+      .references(() => clientRequests.id, { onDelete: 'cascade' }),
+    reminderOffsetMinutes: integer('reminder_offset_minutes').notNull(),
+    channel: text('channel').notNull().default('EMAIL'),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveryStatus: text('delivery_status').notNull().default('sent'),
+  },
+  (t) => ({
+    uniq: uniqueIndex('client_request_reminder_sent_uk').on(
+      t.clientRequestId,
+      t.reminderOffsetMinutes,
+      t.channel,
+    ),
+    reqIdx: index('client_request_reminder_sent_req_idx').on(t.clientRequestId),
   }),
 );
 

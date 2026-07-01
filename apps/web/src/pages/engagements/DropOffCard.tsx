@@ -17,6 +17,17 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Card, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import {
+  ReminderScheduleEditor,
+  humanizeOffset,
+  type ReminderStep,
+} from '../../components/ReminderScheduleEditor';
+
+// Preserves the old "email + SMS 3 days before" behavior as the starting point.
+const DEFAULT_DROPOFF_REMINDERS: ReminderStep[] = [
+  { offsetMinutes: 4320, channel: 'EMAIL' },
+  { offsetMinutes: 4320, channel: 'SMS' },
+];
 
 interface DropOffRow {
   id: string;
@@ -25,6 +36,7 @@ interface DropOffRow {
   kind: string;
   dueDate: string | null;
   reminderDaysBefore: number | null;
+  reminderSchedule: ReminderStep[] | null;
   lastReminderSentAt: string | null;
   createdAt: string;
 }
@@ -62,7 +74,8 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
   // Composer state.
   const [title, setTitle] = useState('Document drop-off');
   const [dueDate, setDueDate] = useState('');
-  const [reminderDays, setReminderDays] = useState('3');
+  const [reminderSchedule, setReminderSchedule] =
+    useState<ReminderStep[]>(DEFAULT_DROPOFF_REMINDERS);
   const [docList, setDocList] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -92,7 +105,7 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
   function resetComposer(): void {
     setTitle('Document drop-off');
     setDueDate('');
-    setReminderDays('3');
+    setReminderSchedule(DEFAULT_DROPOFF_REMINDERS);
     setDocList('');
     setComposing(false);
   }
@@ -102,6 +115,10 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
     if (busy) return;
     if (!dueDate) {
       setError('A due date is required for a drop-off.');
+      return;
+    }
+    if (reminderSchedule.length === 0) {
+      setError('Add at least one reminder (or the client is never nudged).');
       return;
     }
     setBusy(true);
@@ -117,17 +134,12 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
           itemKind: 'DOCUMENT' as const,
           required: true,
         }));
-      // A drop-off's reminder is required server-side; default to 3 days
-      // if the field was cleared or non-numeric rather than silently
-      // creating an un-remindable drop-off.
-      const parsedDays = Number(reminderDays);
-      const days = Number.isFinite(parsedDays) && parsedDays >= 0 ? Math.floor(parsedDays) : 3;
       const body: Record<string, unknown> = {
         engagementId,
         kind: 'DROP_OFF',
         title: title.trim() || 'Document drop-off',
         dueDate,
-        reminderDaysBefore: days,
+        reminderSchedule,
       };
       if (items.length > 0) body['items'] = items;
       await api('/api/staff/requests', { method: 'POST', body: JSON.stringify(body) });
@@ -197,30 +209,26 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
               maxLength={200}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div style={{ display: 'grid', gap: 4 }}>
-              <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Due date</label>
-              <input
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                style={inputStyle()}
-                required
-              />
-            </div>
-            <div style={{ display: 'grid', gap: 4 }}>
-              <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                Remind this many days before
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={365}
-                value={reminderDays}
-                onChange={(e) => setReminderDays(e.target.value)}
-                style={inputStyle()}
-              />
-            </div>
+          <div style={{ display: 'grid', gap: 4, maxWidth: 280 }}>
+            <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Due date</label>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              style={inputStyle()}
+              required
+            />
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+              Reminders (before the due date)
+            </label>
+            <ReminderScheduleEditor
+              value={reminderSchedule}
+              onChange={setReminderSchedule}
+              channels={['EMAIL', 'SMS']}
+              helpText="the client won't be reminded"
+            />
           </div>
           <div style={{ display: 'grid', gap: 4 }}>
             <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
@@ -282,15 +290,26 @@ export function DropOffCard({ engagementId }: { engagementId: string }): JSX.Ele
             {
               key: 'reminder',
               header: 'Reminder',
-              render: (r) =>
-                r.reminderDaysBefore === null ? (
+              render: (r) => {
+                const sched = r.reminderSchedule;
+                if (sched && sched.length > 0) {
+                  const summary =
+                    sched.length === 1
+                      ? `${humanizeOffset(sched[0]!.offsetMinutes)} · ${sched[0]!.channel}`
+                      : `${sched.length} reminders`;
+                  return (
+                    <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{summary}</span>
+                  );
+                }
+                return r.reminderDaysBefore === null ? (
                   <span style={{ fontSize: 12, color: tokens.color.textMuted }}>none</span>
                 ) : (
                   <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
                     {r.reminderDaysBefore}d before
                     {r.lastReminderSentAt ? ' · sent' : ''}
                   </span>
-                ),
+                );
+              },
             },
             {
               key: 'status',

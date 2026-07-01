@@ -9,7 +9,15 @@ import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clientRequests, clients, engagements, persons } from '@vibe/db/schema';
+import {
+  clientContacts,
+  clientRequestReminderSent,
+  clientRequests,
+  clients,
+  engagements,
+  persons,
+  type ReminderStep,
+} from '@vibe/db/schema';
 
 import type { MailDispatch, SmsDispatch } from '../dispatchers';
 import { firmScope, renderTemplate } from '../notifications/templating';
@@ -49,21 +57,35 @@ export async function runRequestReminderTick(
       dueDate: clientRequests.dueDate,
       engagementId: clientRequests.engagementId,
       reminderDays: clientRequests.reminderDaysBefore,
+      reminderSchedule: clientRequests.reminderSchedule,
       lastSent: clientRequests.lastReminderSentAt,
     })
     .from(clientRequests)
     .where(
       and(
         inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
-        isNotNull(clientRequests.reminderDaysBefore),
         isNotNull(clientRequests.dueDate),
-        sql`${clientRequests.dueDate} - ${today}::date <= ${clientRequests.reminderDaysBefore}`,
+        // Either a legacy single lead or a multi-step schedule.
+        sql`(${clientRequests.reminderDaysBefore} IS NOT NULL
+             OR ${clientRequests.reminderSchedule} IS NOT NULL)`,
         // DROP_OFF reminders are bounded to the window [due - N, due]:
         // never nudge "drop off by {past date}". GENERAL keeps its prior
         // behavior (re-fires daily while OPEN, even once overdue).
         sql`(${clientRequests.kind} <> 'DROP_OFF'
              OR ${clientRequests.dueDate} - ${today}::date >= 0)`,
-        sql`(${clientRequests.lastReminderSentAt} IS NULL
+        // Due-window prefilter: legacy uses reminder_days_before; scheduled
+        // rows use a fixed 15-day superset (max supported offset ~14d), with
+        // exact per-step timing checked in JS below.
+        sql`(
+          (${clientRequests.reminderDaysBefore} IS NOT NULL
+           AND ${clientRequests.dueDate} - ${today}::date <= ${clientRequests.reminderDaysBefore})
+          OR (${clientRequests.reminderSchedule} IS NOT NULL
+              AND ${clientRequests.dueDate} - ${today}::date <= 15)
+        )`,
+        // Once-only / re-fire policy applies to the LEGACY path only; scheduled
+        // rows are idempotent via the client_request_reminder_sent ledger.
+        sql`(${clientRequests.reminderSchedule} IS NOT NULL
+             OR ${clientRequests.lastReminderSentAt} IS NULL
              OR (${clientRequests.kind} <> 'DROP_OFF'
                  AND ${clientRequests.lastReminderSentAt} < ${today}::date))`,
       ),
@@ -141,100 +163,148 @@ export async function runRequestReminderTick(
     }
     const client = clientById.get(eng.clientId);
     const email = billingByClient.get(eng.clientId) ?? primaryByClient.get(eng.clientId);
+    const phone = billingPhoneByClient.get(eng.clientId) ?? primaryPhoneByClient.get(eng.clientId);
+    const isDropOff = req.kind === 'DROP_OFF';
+    const link = `${portalBase.replace(/\/$/, '')}/requests/${req.id}`;
+    const firm = await firmScope(db, req.firmId);
+
+    // Send helpers (bound to this request); return true on success.
+    const sendEmailReminder = async (): Promise<boolean> => {
+      if (!email || !args.sendEmail) return false;
+      const fallbackBody = [
+        `Hello${client ? ` ${client.name}` : ''},`,
+        '',
+        isDropOff
+          ? `This is a reminder to drop off / upload the requested information by ${req.dueDate}:`
+          : `This is a friendly reminder that the following request from your firm is due on ${req.dueDate}:`,
+        '',
+        `  ${req.title}`,
+        '',
+        `Please upload here: ${link}`,
+      ].join('\n');
+      const rendered = await renderTemplate({
+        db,
+        firmId: req.firmId,
+        kind: isDropOff ? 'dropoff_reminder' : 'document_request',
+        channel: 'EMAIL',
+        fallback: { subject: `Reminder: ${req.title} — due ${req.dueDate}`, body: fallbackBody },
+        context: isDropOff
+          ? {
+              client: { name: client?.name ?? '' },
+              firm,
+              engagement: { name: eng.name },
+              link: { url: link },
+            }
+          : {
+              client: { name: client?.name ?? '' },
+              firm,
+              request: { title: req.title },
+              link: { url: link },
+            },
+      });
+      try {
+        await args.sendEmail({
+          to: email,
+          subject: rendered.subject ?? `Reminder: ${req.title} — due ${req.dueDate}`,
+          body: rendered.body,
+        });
+        return true;
+      } catch (err) {
+        log.warn({ err, requestId: req.id }, 'request-reminder: email send failed');
+        return false;
+      }
+    };
+    const sendSmsReminder = async (): Promise<boolean> => {
+      if (!phone || !args.sendSms) return false;
+      try {
+        const renderedSms = await renderTemplate({
+          db,
+          firmId: req.firmId,
+          kind: 'dropoff_reminder',
+          channel: 'SMS',
+          fallback: {
+            subject: null,
+            body: `Reminder: please drop off / upload "${req.title}" by ${req.dueDate}. ${link}`,
+          },
+          context: {
+            client: { name: client?.name ?? '' },
+            firm,
+            engagement: { name: eng.name },
+            link: { url: link },
+          },
+        });
+        await args.sendSms({ to: phone, body: renderedSms.body });
+        return true;
+      } catch (smsErr) {
+        log.warn({ err: smsErr, requestId: req.id }, 'request-reminder: sms send failed');
+        return false;
+      }
+    };
+
+    const schedule =
+      Array.isArray(req.reminderSchedule) && req.reminderSchedule.length > 0
+        ? (req.reminderSchedule as ReminderStep[])
+        : null;
+
+    // ---- Scheduled path (drop-off multi-reminder): one send per due,
+    //      unsent (offset, channel) step; idempotent via the ledger. ----
+    if (schedule) {
+      const sentRows = await db
+        .select({
+          offset: clientRequestReminderSent.reminderOffsetMinutes,
+          channel: clientRequestReminderSent.channel,
+        })
+        .from(clientRequestReminderSent)
+        .where(eq(clientRequestReminderSent.clientRequestId, req.id));
+      const sentSet = new Set(sentRows.map((s) => `${s.offset}:${s.channel}`));
+      const dueMs = Date.parse(`${req.dueDate}T00:00:00Z`);
+      for (const step of schedule) {
+        const key = `${step.offsetMinutes}:${step.channel}`;
+        if (sentSet.has(key)) continue;
+        // Not yet time (due - offset still in the future).
+        if (dueMs - step.offsetMinutes * 60_000 > now.getTime()) continue;
+        let ok = false;
+        if (step.channel === 'EMAIL') ok = await sendEmailReminder();
+        else if (step.channel === 'SMS') ok = await sendSmsReminder();
+        else continue; // CALL not supported for drop-offs
+        if (ok) {
+          if (step.channel === 'EMAIL') result.sent += 1;
+          else result.smsSent += 1;
+          await db
+            .insert(clientRequestReminderSent)
+            .values({
+              clientRequestId: req.id,
+              reminderOffsetMinutes: step.offsetMinutes,
+              channel: step.channel,
+            })
+            .onConflictDoNothing();
+          sentSet.add(key);
+        } else {
+          result.skipped += 1;
+        }
+      }
+      continue;
+    }
+
+    // ---- Legacy single-reminder path ----
     if (!email) {
       result.skipped += 1;
       log.info({ requestId: req.id, clientId: eng.clientId }, 'request-reminder: no email');
       continue;
     }
-    const isDropOff = req.kind === 'DROP_OFF';
-    const link = `${portalBase.replace(/\/$/, '')}/requests/${req.id}`;
-    const noun = isDropOff ? 'drop-off' : 'request';
-    const fallbackBody = [
-      `Hello${client ? ` ${client.name}` : ''},`,
-      '',
-      isDropOff
-        ? `This is a reminder to drop off / upload the requested information by ${req.dueDate}:`
-        : `This is a friendly reminder that the following request from your firm is due on ${req.dueDate}:`,
-      '',
-      `  ${req.title}`,
-      '',
-      `Please upload here: ${link}`,
-    ].join('\n');
-    const firm = await firmScope(db, req.firmId);
-    const emailKind = isDropOff ? 'dropoff_reminder' : 'document_request';
-    const emailContext = isDropOff
-      ? {
-          client: { name: client?.name ?? '' },
-          firm,
-          engagement: { name: eng.name },
-          link: { url: link },
-        }
-      : {
-          client: { name: client?.name ?? '' },
-          firm,
-          request: { title: req.title },
-          link: { url: link },
-        };
-    const rendered = await renderTemplate({
-      db,
-      firmId: req.firmId,
-      kind: emailKind,
-      channel: 'EMAIL',
-      fallback: { subject: `Reminder: ${req.title} — due ${req.dueDate}`, body: fallbackBody },
-      context: emailContext,
-    });
-    try {
-      await args.sendEmail({
-        to: email,
-        subject: rendered.subject ?? `Reminder: ${req.title} — due ${req.dueDate}`,
-        body: rendered.body,
-      });
-      result.sent += 1;
-
-      // DROP_OFF also nudges by SMS (email + SMS), when a phone is on
-      // file and an SMS dispatcher is configured.
-      if (isDropOff && args.sendSms) {
-        const phone =
-          billingPhoneByClient.get(eng.clientId) ?? primaryPhoneByClient.get(eng.clientId);
-        if (phone) {
-          try {
-            const renderedSms = await renderTemplate({
-              db,
-              firmId: req.firmId,
-              kind: 'dropoff_reminder',
-              channel: 'SMS',
-              fallback: {
-                subject: null,
-                body: `Reminder: please drop off / upload "${req.title}" by ${req.dueDate}. ${link}`,
-              },
-              context: {
-                client: { name: client?.name ?? '' },
-                firm,
-                engagement: { name: eng.name },
-                link: { url: link },
-              },
-            });
-            await args.sendSms({
-              to: phone,
-              body: renderedSms.body,
-            });
-            result.smsSent += 1;
-          } catch (smsErr) {
-            log.warn({ err: smsErr, requestId: req.id }, 'request-reminder: sms send failed');
-          }
-        } else {
-          log.info({ requestId: req.id, clientId: eng.clientId }, 'request-reminder: no phone');
-        }
-      }
-
-      await db
-        .update(clientRequests)
-        .set({ lastReminderSentAt: now, updatedAt: now })
-        .where(eq(clientRequests.id, req.id));
-    } catch (err) {
-      log.warn({ err, requestId: req.id, noun }, 'request-reminder: send failed');
+    const emailedOk = await sendEmailReminder();
+    if (!emailedOk) {
       result.skipped += 1;
+      continue;
     }
+    result.sent += 1;
+    if (isDropOff) {
+      if (await sendSmsReminder()) result.smsSent += 1;
+    }
+    await db
+      .update(clientRequests)
+      .set({ lastReminderSentAt: now, updatedAt: now })
+      .where(eq(clientRequests.id, req.id));
   }
 
   return result;

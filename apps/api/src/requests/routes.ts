@@ -39,6 +39,7 @@ import {
 } from '@vibe/db/schema';
 
 import { spawnFromTemplate, type Priority } from './template-spawn';
+import { ReminderScheduleSchema } from '../appointments/reminders-validation';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -78,6 +79,8 @@ const CreateSchema = z.object({
   priority: z.enum(PRIORITIES).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
+  // 0194 — drop-off multi-reminder schedule (offsetMinutes + channel steps).
+  reminderSchedule: ReminderScheduleSchema.nullable().optional(),
   items: z.array(ItemInputSchema).max(100).optional(),
 });
 
@@ -520,12 +523,18 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       // (and a reminder lead) the worker sweep can never fire it, so the
       // request would be silently inert. Enforce server-side (the UI also
       // requires it, but MCP/bulk callers bypass the UI).
+      // A drop-off's reminder can be either the legacy single lead
+      // (reminderDaysBefore) or a multi-step schedule (reminderSchedule).
+      const resolvedSchedule =
+        parsed.data.reminderSchedule && parsed.data.reminderSchedule.length > 0
+          ? parsed.data.reminderSchedule
+          : null;
       if (parsed.data.kind === 'DROP_OFF') {
         if (!resolvedDueDate) {
           res.status(400).json({ error: 'due_date_required_for_drop_off' });
           return;
         }
-        if (resolvedReminder === null) {
+        if (resolvedReminder === null && !resolvedSchedule) {
           res.status(400).json({ error: 'reminder_required_for_drop_off' });
           return;
         }
@@ -547,6 +556,7 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             tags: parsed.data.tags ?? [],
             templateId: parsed.data.templateId ?? null,
             reminderDaysBefore: resolvedReminder,
+            reminderSchedule: resolvedSchedule,
           })
           .returning({ id: clientRequests.id });
         if (!row) throw new Error('insert_failed');
