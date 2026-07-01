@@ -72,7 +72,15 @@ export interface OpenSignPos {
   scale: number;
   type: string;
   isStamp: boolean;
-  options: { name: string; status: string };
+  // `response: 'today'` + a date-format validation makes OpenSign's signing
+  // page pre-fill a date widget with the current date (getDefaultDate('today')
+  // → new Date()); the signer can still change it. Non-date widgets omit these.
+  options: {
+    name: string;
+    status: string;
+    response?: string;
+    validation?: { type: string; format: string };
+  };
 }
 
 export interface OpenSignPlaceholder {
@@ -121,7 +129,17 @@ export function toOpenSignPlaceholder(
         scale: 1,
         type: OPENSIGN_TYPE[p.fieldType],
         isStamp: false,
-        options: { name: p.fieldType, status: p.required === false ? 'optional' : 'required' },
+        options: {
+          name: p.fieldType,
+          status: p.required === false ? 'optional' : 'required',
+          // Default date fields to today's date on the signing page.
+          ...(p.fieldType === 'date'
+            ? {
+                response: 'today',
+                validation: { type: 'date-format', format: 'MM/dd/yyyy' },
+              }
+            : {}),
+        },
       };
       const list = byPage.get(p.pageNumber) ?? [];
       list.push(pos);
