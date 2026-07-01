@@ -49,7 +49,6 @@ import { findOrCreatePerson } from './person-helpers';
 import { printClientMailing, type MailingKind } from './mailing-print';
 import {
   buildLetterContext,
-  LETTER_MARGIN,
   listLetterTemplates,
   loadAppointmentLetterData,
   loadClientLetterData,
@@ -645,9 +644,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       let pdf: Buffer;
       try {
         const { renderHtmlToPdf } = await import('../pdf/render');
-        // 1in letter margins (Chromium honors the render margin option, not
-        // CSS @page); change LETTER_MARGIN to change every letter's margin.
-        pdf = await renderHtmlToPdf(combined, { margin: LETTER_MARGIN });
+        // Page margins come from the letter template's `@page { margin }`
+        // rule (DEFAULT_LETTER_CSS = 1in), which Chromium honors.
+        pdf = await renderHtmlToPdf(combined);
       } catch (err) {
         logger.error({ err }, 'mail-merge pdf render failed');
         res.status(502).json({ error: 'render_failed' });
@@ -728,9 +727,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       }> = [];
       for (const client of clientData) {
         try {
-          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now), {
-            margin: LETTER_MARGIN,
-          });
+          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
           const out = await createFileInClientFolder(deps.db, storage, {
             firmId,
             clientId: client.id,
@@ -867,9 +864,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
             parsed.data.body?.trim() || 'Please see the attached letter.',
             ctx,
           ).output;
-          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now), {
-            margin: LETTER_MARGIN,
-          });
+          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
           await sendStaffMail({
             to: client.recipientEmail,
             subject,

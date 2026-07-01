@@ -497,17 +497,14 @@ export function isFullHtmlDoc(html: string): boolean {
   return /<!doctype|<html|<head|<style/i.test(html);
 }
 
-// Page margin for mail-merge letter PDFs. Chromium ignores CSS
-// `@page { margin }`, so the actual margin is set via the renderHtmlToPdf
-// `margin` option — change this one value to change every letter's margin.
-// (A template can still push content further in with body/element padding.)
-export const LETTER_MARGIN = { top: '1in', right: '1in', bottom: '1in', left: '1in' };
-
 // Default letterhead/letter styling for fragment (WYSIWYG) letters. An
-// <h1> reads as the firm-name letterhead; <hr> is the rule under it. The
-// page margin comes from LETTER_MARGIN (render option), not `@page`.
+// <h1> reads as the firm-name letterhead; <hr> is the rule under it.
+// The page margin is the `@page { margin }` value below — Chromium honors
+// the CSS @page margin (it takes precedence over renderHtmlToPdf's default),
+// so changing this value (or a full-doc template's own @page) changes the
+// printed margin. Default = 1in.
 export const DEFAULT_LETTER_CSS = `
-@page { size: Letter; margin: 0; }
+@page { size: Letter; margin: 1in; }
 body { font: 12pt Georgia, "Times New Roman", serif; color: #1a1a1a; line-height: 1.5; }
 h1 { font-family: Arial, Helvetica, sans-serif; font-size: 20pt; margin: 0 0 4px; }
 h2 { font-size: 14pt; margin: 18px 0 6px; }

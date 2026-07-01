@@ -148,10 +148,10 @@ describe('renderLetterHtml', () => {
     expect(html).toContain('A &amp; B &lt;Co&gt;');
   });
 
-  it('applies the default letter stylesheet to fragment (WYSIWYG) letters', () => {
+  it('applies the default letter stylesheet (incl. 1in @page margin) to fragments', () => {
     const html = renderLetterHtml('<h1>{{ firm.name }}</h1><p>Hi</p>', client, firm, now);
-    // Page margin comes from the render LETTER_MARGIN option, not @page.
-    expect(html).toContain('@page { size: Letter; margin: 0; }');
+    // Chromium honors this @page margin over the renderer default.
+    expect(html).toContain('@page { size: Letter; margin: 1in; }');
     expect(html).toContain('font: 12pt Georgia');
   });
 
