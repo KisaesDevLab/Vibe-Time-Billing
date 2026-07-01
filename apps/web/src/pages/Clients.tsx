@@ -10,6 +10,7 @@ import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
+import { MailMergeDialog } from './clients/MailMergeDialog';
 import { RichTextEditor, type RichTextVariable } from '../proposal-editor/RichTextEditor';
 
 // Merge tokens available in a client email body/subject. Resolved per-recipient
@@ -60,6 +61,7 @@ export function ClientsPage(): JSX.Element {
   // toolbar action enables when at least one row is selected.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
+  const [mailMergeOpen, setMailMergeOpen] = useState(false);
   // Route-sheet printing — the client whose dialog is open (or null).
   const [routeSheetClient, setRouteSheetClient] = useState<ClientRow | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -182,6 +184,13 @@ export function ClientsPage(): JSX.Element {
             >
               Send email
             </Button>
+            <Button
+              variant={selectedIds.size > 0 ? 'secondary' : 'ghost'}
+              disabled={selectedIds.size === 0}
+              onClick={() => setMailMergeOpen(true)}
+            >
+              Mail merge letter
+            </Button>
             <Button variant="secondary" onClick={() => setRollOpen(true)}>
               Roll due recurrences
             </Button>
@@ -230,6 +239,19 @@ export function ClientsPage(): JSX.Element {
           onClose={() => setBulkEmailOpen(false)}
           onSent={() => {
             setBulkEmailOpen(false);
+            setSelectedIds(new Set());
+          }}
+        />
+      )}
+
+      {mailMergeOpen && (
+        <MailMergeDialog
+          targets={clients
+            .filter((c) => selectedIds.has(c.id))
+            .map((c) => ({ id: c.id, name: c.name }))}
+          onClose={() => setMailMergeOpen(false)}
+          onDone={() => {
+            setMailMergeOpen(false);
             setSelectedIds(new Set());
           }}
         />
@@ -580,7 +602,14 @@ function BulkEmailDialog({
         zIndex: 200,
       }}
     >
-      <div style={{ minWidth: 560, maxWidth: 720, maxHeight: '85vh', overflow: 'auto' }}>
+      <div
+        style={{
+          width: 'min(900px, 94vw)',
+          maxWidth: 900,
+          maxHeight: '90vh',
+          overflow: 'auto',
+        }}
+      >
         <Card title="Send email to selected clients">
           {!result ? (
             <div style={{ display: 'grid', gap: 12 }}>
@@ -607,7 +636,12 @@ function BulkEmailDialog({
               </div>
               <div style={{ display: 'grid', gap: 4 }}>
                 <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Body</label>
-                <RichTextEditor value={body} onChange={setBody} variables={EMAIL_VARIABLES} />
+                <RichTextEditor
+                  value={body}
+                  onChange={setBody}
+                  variables={EMAIL_VARIABLES}
+                  minHeight={300}
+                />
                 <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
                   Format with the toolbar and insert variables like{' '}
                   <code>{'{{ client.name }}'}</code> — filled in per recipient when sent.

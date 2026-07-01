@@ -43,6 +43,13 @@ import { mountFileRoutes } from './files';
 import { mountClientImportRoutes } from './import';
 import { findOrCreatePerson } from './person-helpers';
 import { printClientMailing, type MailingKind } from './mailing-print';
+import {
+  listLetterTemplates,
+  loadClientLetterData,
+  loadLetterTemplateBody,
+  renderLetterHtml,
+} from './letter-merge';
+import { combineStatementsHtml } from '@vibe/core/invoicing';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
@@ -429,6 +436,116 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     '/:id/print-label',
     requirePermission(deps, 'client:read'),
     mailingPrintHandler('label'),
+  );
+
+  // ── Mail merge: a firm letter template → personalized letters for many
+  // clients. Phase 1 output = one combined PDF (a page-run per client).
+  // Read-grade (generates a document from existing client data).
+  router.get(
+    '/mail-merge-templates',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await listLetterTemplates(deps.db, req.staffSession!.firmId);
+      res.json({ items });
+    },
+  );
+
+  const MailMergePreviewSchema = z.object({
+    templateId: z.string().uuid(),
+    clientId: z.string().uuid(),
+  });
+  router.post(
+    '/mail-merge-preview',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailMergePreviewSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const [client] = await loadClientLetterData(deps.db, firmId, [parsed.data.clientId]);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const firm = await firmScope(deps.db, firmId);
+      res.json({ html: renderLetterHtml(tpl.bodyHtml, client, firm, new Date()) });
+    },
+  );
+
+  const MailMergePdfSchema = z.object({
+    templateId: z.string().uuid(),
+    clientIds: z.array(z.string().uuid()).min(1).max(200),
+  });
+  router.post(
+    '/mail-merge-pdf',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailMergePdfSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const firmId = req.staffSession!.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const clientData = await loadClientLetterData(deps.db, firmId, parsed.data.clientIds);
+      if (clientData.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      const firm = await firmScope(deps.db, firmId);
+      const now = new Date();
+      const htmls = clientData.map((c) => renderLetterHtml(tpl.bodyHtml, c, firm, now));
+      const combined = combineStatementsHtml(htmls);
+      let pdf: Buffer;
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        pdf = await renderHtmlToPdf(combined);
+      } catch (err) {
+        logger.error({ err }, 'mail-merge pdf render failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'EXPORT',
+        entityType: 'client',
+        entityId: clientData[0]!.id,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: {
+          kind: 'mail_merge_letter',
+          templateId: parsed.data.templateId,
+          clientIds: clientData.map((c) => c.id),
+          count: clientData.length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'mail-merge audit failed'));
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="mail-merge-letters.pdf"');
+      res.send(pdf);
+    },
   );
 
   router.post('/', requirePermission(deps, 'client:write'), async (req: Request, res: Response) => {
