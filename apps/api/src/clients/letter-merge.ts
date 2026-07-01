@@ -73,7 +73,12 @@ export interface ClientLetterData {
   mailingState: string | null;
   mailingPostal: string | null;
   mailingCountry: string | null;
+  /** Greeting name — primary → billing → first ACTIVE contact (any). */
   primaryContactName: string | null;
+  /** Email delivery target — primary → billing → first ACTIVE contact
+   *  that HAS an email. Null when none has an email (letter can't email). */
+  recipientEmail: string | null;
+  recipientName: string | null;
 }
 
 /** Load the per-client data a letter needs (mailing address + primary
@@ -103,6 +108,7 @@ export async function loadClientLetterData(
     .select({
       clientId: clientContacts.clientId,
       fullName: persons.fullName,
+      email: persons.email,
       isPrimary: clientContacts.isPrimary,
       isBilling: clientContacts.isBilling,
       status: clientContacts.status,
@@ -127,13 +133,29 @@ export async function loadClientLetterData(
     const pick = cs.find((c) => c.isPrimary) || cs.find((c) => c.isBilling) || cs[0];
     return pick?.fullName ?? null;
   };
+  const pickRecipient = (clientId: string): { email: string; name: string | null } | null => {
+    const cs = byClient.get(clientId) ?? [];
+    const pick =
+      cs.find((c) => c.isPrimary && c.email) ||
+      cs.find((c) => c.isBilling && c.email) ||
+      cs.find((c) => c.email);
+    return pick?.email ? { email: pick.email, name: pick.fullName ?? null } : null;
+  };
 
   const byId = new Map(rows.map((r) => [r.id, r]));
   // Preserve caller order; drop ids that weren't found / not in firm.
   return clientIds
     .map((id) => byId.get(id))
     .filter((r): r is (typeof rows)[number] => Boolean(r))
-    .map((r) => ({ ...r, primaryContactName: pickName(r.id) }));
+    .map((r) => {
+      const recipient = pickRecipient(r.id);
+      return {
+        ...r,
+        primaryContactName: pickName(r.id),
+        recipientEmail: recipient?.email ?? null,
+        recipientName: recipient?.name ?? null,
+      };
+    });
 }
 
 /** MM/DD/YYYY for the `today` token, in the server's local time. */

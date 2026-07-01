@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
 // Mail merge — pick a firm letter template, preview it against the first
-// selected client, then either download one combined PDF (a page-run per
-// client) or save a personalized PDF into each client's Files folder.
-// Modeled on BulkEmailDialog. Email output lands in a later phase.
+// selected client, then deliver the personalized letters one of three
+// ways: download a single combined PDF (a page-run per client), save a
+// PDF into each client's Files folder, or email each client their letter
+// as a PDF attachment. Modeled on BulkEmailDialog.
 
 import { useEffect, useState } from 'react';
 
@@ -23,10 +24,20 @@ interface MailMergeTarget {
   name: string;
 }
 
-interface SaveResult {
-  results: Array<{ clientId: string; clientName: string; saved: boolean; reason: string | null }>;
-  summary: { requested: number; saved: number; skipped: number };
+// Unified per-client outcome view, shared by Save-to-Files and Email.
+interface RunResult {
+  title: string;
+  rows: Array<{ clientId: string; clientName: string; ok: boolean; detail: string }>;
 }
+
+const inputStyle = {
+  padding: '8px 10px',
+  fontSize: 13,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  background: tokens.color.bg,
+  color: tokens.color.text,
+} as const;
 
 export function MailMergeDialog({
   targets,
@@ -39,11 +50,15 @@ export function MailMergeDialog({
 }): JSX.Element {
   const [templates, setTemplates] = useState<LetterTemplate[] | null>(null);
   const [templateId, setTemplateId] = useState<string>('');
+  const [subject, setSubject] = useState('');
+  const [coverNote, setCoverNote] = useState('');
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
+  const [result, setResult] = useState<RunResult | null>(null);
+
+  const clientIds = targets.map((t) => t.id);
 
   // Load the active letter templates once.
   useEffect(() => {
@@ -91,7 +106,7 @@ export function MailMergeDialog({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() ?? '' },
         credentials: 'same-origin',
-        body: JSON.stringify({ templateId, clientIds: targets.map((t) => t.id) }),
+        body: JSON.stringify({ templateId, clientIds }),
       });
       if (!res.ok) {
         let reason = res.statusText;
@@ -128,13 +143,75 @@ export function MailMergeDialog({
     setBusy(true);
     setError(null);
     try {
-      const r = await api<SaveResult>('/api/staff/clients/mail-merge-save-to-files', {
+      const r = await api<{
+        results: Array<{
+          clientId: string;
+          clientName: string;
+          saved: boolean;
+          reason: string | null;
+        }>;
+        summary: { saved: number; skipped: number };
+      }>('/api/staff/clients/mail-merge-save-to-files', {
         method: 'POST',
-        body: JSON.stringify({ templateId, clientIds: targets.map((t) => t.id) }),
+        body: JSON.stringify({ templateId, clientIds }),
       });
-      setSaveResult(r);
+      setResult({
+        title: `${r.summary.saved} saved to Files · ${r.summary.skipped} skipped.`,
+        rows: r.results.map((x) => ({
+          clientId: x.clientId,
+          clientName: x.clientName,
+          ok: x.saved,
+          detail: x.saved ? 'saved' : (x.reason ?? 'unknown'),
+        })),
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function emailLetters(): Promise<void> {
+    if (!templateId) {
+      setError('Choose a letter template.');
+      return;
+    }
+    if (!subject.trim()) {
+      setError('An email subject is required.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{
+        results: Array<{
+          clientId: string;
+          clientName: string;
+          sent: boolean;
+          to: string | null;
+          reason: string | null;
+        }>;
+        summary: { sent: number; skipped: number };
+      }>('/api/staff/clients/mail-merge-email', {
+        method: 'POST',
+        body: JSON.stringify({
+          templateId,
+          clientIds,
+          subject: subject.trim(),
+          body: coverNote.trim() || undefined,
+        }),
+      });
+      setResult({
+        title: `${r.summary.sent} emailed · ${r.summary.skipped} skipped.`,
+        rows: r.results.map((x) => ({
+          clientId: x.clientId,
+          clientName: x.clientName,
+          ok: x.sent,
+          detail: x.sent ? `sent to ${x.to}` : (x.reason ?? 'unknown'),
+        })),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Email failed');
     } finally {
       setBusy(false);
     }
@@ -159,11 +236,10 @@ export function MailMergeDialog({
         style={{ width: 'min(900px, 94vw)', maxWidth: 900, maxHeight: '90vh', overflow: 'auto' }}
       >
         <Card title="Mail merge letter">
-          {saveResult ? (
+          {result ? (
             <div style={{ display: 'grid', gap: 10 }}>
               <p style={{ fontSize: 13, margin: 0 }}>
-                <strong>Done.</strong> {saveResult.summary.saved} saved to Files ·{' '}
-                {saveResult.summary.skipped} skipped.
+                <strong>Done.</strong> {result.title}
               </p>
               <ul
                 style={{
@@ -176,16 +252,12 @@ export function MailMergeDialog({
                   overflow: 'auto',
                 }}
               >
-                {saveResult.results.map((r) => (
+                {result.rows.map((r) => (
                   <li key={r.clientId} style={{ marginBottom: 4 }}>
                     <strong>{r.clientName}</strong> —{' '}
-                    {r.saved ? (
-                      <span style={{ color: tokens.color.success }}>saved</span>
-                    ) : (
-                      <span style={{ color: tokens.color.warning }}>
-                        skipped ({r.reason ?? 'unknown'})
-                      </span>
-                    )}
+                    <span style={{ color: r.ok ? tokens.color.success : tokens.color.warning }}>
+                      {r.ok ? r.detail : `skipped (${r.detail})`}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -197,8 +269,8 @@ export function MailMergeDialog({
             <div style={{ display: 'grid', gap: 12 }}>
               <p style={{ fontSize: 13, margin: 0 }}>
                 Generate a personalized letter for each of <strong>{targets.length}</strong>{' '}
-                selected client{targets.length === 1 ? '' : 's'} — download them as one combined
-                PDF, or save a copy into each client&apos;s Files (Correspondence).
+                selected client{targets.length === 1 ? '' : 's'} — download one combined PDF, save a
+                copy to each client&apos;s Files, or email each client their letter as a PDF.
               </p>
               <div style={{ display: 'grid', gap: 4 }}>
                 <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
@@ -207,14 +279,7 @@ export function MailMergeDialog({
                 <select
                   value={templateId}
                   onChange={(e) => setTemplateId(e.target.value)}
-                  style={{
-                    padding: '8px 10px',
-                    fontSize: 13,
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    background: tokens.color.bg,
-                    color: tokens.color.text,
-                  }}
+                  style={inputStyle}
                 >
                   <option value="">
                     {templates === null ? 'Loading templates…' : 'Select a template…'}
@@ -246,7 +311,7 @@ export function MailMergeDialog({
                   }
                   style={{
                     width: '100%',
-                    height: 360,
+                    height: 320,
                     border: `1px solid ${tokens.color.border}`,
                     borderRadius: tokens.radius.sm,
                     background: '#fff',
@@ -254,12 +319,49 @@ export function MailMergeDialog({
                 />
               </div>
 
+              <details>
+                <summary style={{ fontSize: 12, color: tokens.color.textMuted, cursor: 'pointer' }}>
+                  Email options (only used for the Email action)
+                </summary>
+                <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      Email subject
+                    </label>
+                    <input
+                      type="text"
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                      placeholder="e.g. A letter from {{ firm.name }}"
+                      style={inputStyle}
+                    />
+                  </div>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      Cover note (optional)
+                    </label>
+                    <textarea
+                      value={coverNote}
+                      onChange={(e) => setCoverNote(e.target.value)}
+                      rows={3}
+                      placeholder="Short message shown in the email body; the letter is attached as a PDF."
+                      style={{ ...inputStyle, resize: 'vertical' }}
+                    />
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      Subject and note support tokens like <code>{'{{ client.name }}'}</code>.
+                    </span>
+                  </div>
+                </div>
+              </details>
+
               {error && (
                 <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
                   {error}
                 </p>
               )}
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <div
+                style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}
+              >
                 <Button variant="ghost" onClick={onClose} disabled={busy}>
                   Cancel
                 </Button>
@@ -269,6 +371,13 @@ export function MailMergeDialog({
                   onClick={() => void saveToFiles()}
                 >
                   {busy ? 'Working…' : `Save to Files (${targets.length})`}
+                </Button>
+                <Button
+                  variant="secondary"
+                  disabled={busy || !templateId || !subject.trim()}
+                  onClick={() => void emailLetters()}
+                >
+                  {busy ? 'Working…' : `Email (${targets.length})`}
                 </Button>
                 <Button disabled={busy || !templateId} onClick={() => void downloadPdf()}>
                   {busy ? 'Working…' : `Download PDF (${targets.length})`}

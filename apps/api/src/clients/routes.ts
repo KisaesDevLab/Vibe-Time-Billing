@@ -44,6 +44,7 @@ import { mountClientImportRoutes } from './import';
 import { findOrCreatePerson } from './person-helpers';
 import { printClientMailing, type MailingKind } from './mailing-print';
 import {
+  buildLetterContext,
   listLetterTemplates,
   loadClientLetterData,
   loadLetterTemplateBody,
@@ -650,6 +651,140 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           requested: clientData.length,
           saved: results.filter((r) => r.saved).length,
           skipped: results.filter((r) => !r.saved).length,
+        },
+      });
+    },
+  );
+
+  // Email each client their letter as a PDF attachment. Per client:
+  // resolve recipient (primary→billing→first with an email) → render the
+  // letter → attach the PDF → sendStaffMail. Subject/body are merge-token
+  // resolved per client. Outbound → client:write; capped at 100.
+  const MailMergeEmailSchema = z.object({
+    templateId: z.string().uuid(),
+    clientIds: z.array(z.string().uuid()).min(1).max(100),
+    subject: z.string().min(1).max(200),
+    body: z.string().max(20_000).optional(),
+  });
+  router.post(
+    '/mail-merge-email',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail) {
+        res.status(503).json({ error: 'mailer_unavailable' });
+        return;
+      }
+      const sendStaffMail = deps.sendStaffMail;
+      const parsed = MailMergeEmailSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const clientData = await loadClientLetterData(deps.db, firmId, parsed.data.clientIds);
+      if (clientData.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      let renderMod;
+      try {
+        renderMod = await import('../pdf/render');
+      } catch (err) {
+        logger.error({ err }, 'mail-merge email render import failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const { renderHtmlToPdf } = renderMod;
+      const firm = await firmScope(deps.db, firmId);
+      const now = new Date();
+      const stamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${now.getFullYear()}`;
+      const results: Array<{
+        clientId: string;
+        clientName: string;
+        sent: boolean;
+        to: string | null;
+        reason: string | null;
+      }> = [];
+      for (const client of clientData) {
+        if (!client.recipientEmail) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: false,
+            to: null,
+            reason: 'no_contact_with_email',
+          });
+          continue;
+        }
+        try {
+          const ctx = buildLetterContext(client, firm, now) as MergeContext;
+          const subject = resolveMergeTokens(parsed.data.subject, ctx).output;
+          const bodyText = resolveMergeTokens(
+            parsed.data.body?.trim() || 'Please see the attached letter.',
+            ctx,
+          ).output;
+          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
+          await sendStaffMail({
+            to: client.recipientEmail,
+            subject,
+            body: bodyText,
+            html: markdownToHtml(bodyText),
+            attachments: [
+              {
+                filename: `${tpl.name} - ${stamp}.pdf`,
+                content: pdf,
+                contentType: 'application/pdf',
+              },
+            ],
+          });
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: true,
+            to: client.recipientEmail,
+            reason: null,
+          });
+        } catch (err) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: false,
+            to: client.recipientEmail,
+            reason: err instanceof Error ? err.message : 'send_failed',
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        entityId: clientData[0]!.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'mail_merge_email',
+          templateId: parsed.data.templateId,
+          subject: parsed.data.subject,
+          sentCount: results.filter((r) => r.sent).length,
+          skippedCount: results.filter((r) => !r.sent).length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'mail-merge email audit failed'));
+      res.json({
+        results,
+        summary: {
+          requested: clientData.length,
+          sent: results.filter((r) => r.sent).length,
+          skipped: results.filter((r) => !r.sent).length,
         },
       });
     },

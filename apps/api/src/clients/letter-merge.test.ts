@@ -14,6 +14,8 @@ const client: ClientLetterData = {
   mailingPostal: '62704',
   mailingCountry: 'US',
   primaryContactName: 'Dana Whitfield',
+  recipientEmail: 'dana@riverside.test',
+  recipientName: 'Dana Whitfield',
 };
 const firm = { name: 'Northwind Tax', support_email: 'hi@northwind.test' };
 const now = new Date('2026-02-03T10:00:00');
