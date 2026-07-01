@@ -34,6 +34,15 @@ interface Client {
   partnerInChargeId: string | null;
 }
 
+type EngagementStatusValue = 'PROPOSED' | 'ACTIVE' | 'PAUSED' | 'CLOSED' | 'ARCHIVED';
+const ENGAGEMENT_STATUS_OPTIONS: EngagementStatusValue[] = [
+  'PROPOSED',
+  'ACTIVE',
+  'PAUSED',
+  'CLOSED',
+  'ARCHIVED',
+];
+
 interface EngagementTpl {
   id: string;
   key: string;
@@ -67,6 +76,8 @@ interface EngagementTpl {
   defaultSurchargeLabel: string | null;
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
   defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
+  // 0195 — default lifecycle status for a new engagement from this template.
+  defaultEngagementStatus: EngagementStatusValue | null;
   isSystem: boolean;
   status: string;
 }
@@ -153,6 +164,8 @@ export function EngagementCreatePage(): JSX.Element {
   const [periodYear, setPeriodYear] = useState<string>('');
   const [periodMonth, setPeriodMonth] = useState<string>('');
   const [periodLabel, setPeriodLabel] = useState<string>('');
+  // 0195 — initial status; '' means "use the server/template default".
+  const [status, setStatus] = useState<'' | EngagementStatusValue>('');
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [defaultRateCodeId, setDefaultRateCodeId] = useState<string>('');
   const [feeStructure, setFeeStructure] = useState<FeeStructure>('FIXED_FEE');
@@ -304,6 +317,8 @@ export function EngagementCreatePage(): JSX.Element {
     // prefill their plain name here.
     setNameAutoFilled(true);
     if (!tpl.namePattern) setName(tpl.name);
+    // Prefill the initial status from the template's default (if any).
+    setStatus(tpl.defaultEngagementStatus ?? '');
     setFeeStructure(tpl.defaultFeeStructure);
     setFeeAmountDollars(centsToDollarsInput(tpl.defaultFeeAmountCents));
     setBudgetHours(tpl.defaultBudgetHours ?? '');
@@ -380,6 +395,7 @@ export function EngagementCreatePage(): JSX.Element {
         feePassthroughEnabled,
       };
       if (name.trim()) body.name = name.trim();
+      if (status) body.status = status;
       if (pickedTemplateId) body.templateId = pickedTemplateId;
       if (periodPreview.year != null || periodPreview.month != null || periodPreview.label) {
         body.period = periodPreview;
@@ -546,6 +562,39 @@ export function EngagementCreatePage(): JSX.Element {
                 )}
               </p>
             )}
+          </div>
+
+          {/* 0195 — initial lifecycle status. Blank uses the template's
+              default (or PROPOSED). Prefilled from the picked template. */}
+          <div>
+            <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 4 }}>
+              Status
+            </div>
+            <select
+              aria-label="Initial engagement status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as '' | EngagementStatusValue)}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                borderRadius: tokens.radius.sm,
+                border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+                fontSize: 14,
+              }}
+            >
+              <option value="">
+                {pickedTpl?.defaultEngagementStatus
+                  ? `Template default (${pickedTpl.defaultEngagementStatus})`
+                  : 'Default (Proposed)'}
+              </option>
+              {ENGAGEMENT_STATUS_OPTIONS.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* 0083 — period inputs. Render only when a template is

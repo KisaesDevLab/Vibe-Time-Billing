@@ -1681,6 +1681,9 @@ export const engagementTemplates = pgTable(
     // 0172 — lifecycle status applied to a recurrence-spawned engagement.
     // NULL falls back to 'ACTIVE' at spawn time.
     defaultRecurrenceStatus: engagementStatus('default_recurrence_status'),
+    // 0195 — default lifecycle status for a NEW engagement created from this
+    // template. NULL falls back to the table default ('PROPOSED') at create.
+    defaultEngagementStatus: engagementStatus('default_engagement_status'),
     // FK added in 0033 after the letter table exists; declared here as
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),

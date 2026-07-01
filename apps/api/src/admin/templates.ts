@@ -99,6 +99,12 @@ const EngagementSchema = z.object({
     .enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'])
     .nullable()
     .optional(),
+  // 0195 — default lifecycle status for a new engagement created from this
+  // template.
+  defaultEngagementStatus: z
+    .enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'])
+    .nullable()
+    .optional(),
 });
 
 // Page margin: a safe CSS length (1–4 space-separated lengths), or '' to
@@ -320,6 +326,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultRecurrenceFrequency: d.defaultRecurrenceFrequency ?? null,
           defaultRecurrenceTriggerMode: d.defaultRecurrenceTriggerMode ?? null,
           defaultRecurrenceStatus: d.defaultRecurrenceStatus ?? null,
+          defaultEngagementStatus: d.defaultEngagementStatus ?? null,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -388,6 +395,8 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.defaultRecurrenceTriggerMode = d.defaultRecurrenceTriggerMode;
       if (d.defaultRecurrenceStatus !== undefined)
         updates.defaultRecurrenceStatus = d.defaultRecurrenceStatus;
+      if (d.defaultEngagementStatus !== undefined)
+        updates.defaultEngagementStatus = d.defaultEngagementStatus;
       await deps.db
         .update(engagementTemplates)
         .set(updates)
@@ -488,6 +497,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultRecurrenceFrequency: src.defaultRecurrenceFrequency,
           defaultRecurrenceTriggerMode: src.defaultRecurrenceTriggerMode,
           defaultRecurrenceStatus: src.defaultRecurrenceStatus,
+          defaultEngagementStatus: src.defaultEngagementStatus,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });

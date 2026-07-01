@@ -174,6 +174,7 @@ interface EngagementTpl {
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
   defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
   defaultRecurrenceStatus: EngagementStatus | null;
+  defaultEngagementStatus: EngagementStatus | null;
   isSystem: boolean;
   status: string;
 }
@@ -263,6 +264,7 @@ interface EngagementDraftFields {
   defaultRecurrenceFrequency: '' | RecurrenceFrequency;
   defaultRecurrenceTriggerMode: '' | RecurrenceTriggerMode;
   defaultRecurrenceStatus: '' | EngagementStatus;
+  defaultEngagementStatus: '' | EngagementStatus;
 }
 
 const EMPTY_DEFAULTS = {
@@ -280,6 +282,7 @@ const EMPTY_DEFAULTS = {
   defaultRecurrenceFrequency: '' as '' | RecurrenceFrequency,
   defaultRecurrenceTriggerMode: '' as '' | RecurrenceTriggerMode,
   defaultRecurrenceStatus: '' as '' | EngagementStatus,
+  defaultEngagementStatus: '' as '' | EngagementStatus,
 };
 
 // Translate a draft's new-defaults fields into the API payload shape
@@ -318,6 +321,9 @@ function draftDefaultsToPayload(d: EngagementDraftFields): Record<string, unknow
     defaultRecurrenceStatus: d.defaultRecurrenceFrequency
       ? d.defaultRecurrenceStatus || null
       : null,
+    // Default status for a NEW engagement created from this template (not
+    // gated on recurrence).
+    defaultEngagementStatus: d.defaultEngagementStatus || null,
   };
 }
 
@@ -491,6 +497,7 @@ function EngagementTab(): JSX.Element {
       defaultRecurrenceFrequency: t.defaultRecurrenceFrequency ?? '',
       defaultRecurrenceTriggerMode: t.defaultRecurrenceTriggerMode ?? '',
       defaultRecurrenceStatus: t.defaultRecurrenceStatus ?? '',
+      defaultEngagementStatus: t.defaultEngagementStatus ?? '',
     });
   }
 
@@ -752,6 +759,36 @@ function EngagementTab(): JSX.Element {
             />
           </div>
         )}
+
+        <div>
+          <label
+            htmlFor={`${idPrefix}-new-status`}
+            style={{
+              fontSize: 11,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Default status for new engagements
+          </label>
+          <select
+            id={`${idPrefix}-new-status`}
+            value={d.defaultEngagementStatus}
+            onChange={(e) =>
+              update({ defaultEngagementStatus: e.target.value as '' | EngagementStatus })
+            }
+            aria-label="Default status for new engagements"
+            style={{ ...fieldStyle, width: '100%' }}
+          >
+            <option value="">New status: Proposed (default)</option>
+            {STATUS_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                New status: {o}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div>
           <label
