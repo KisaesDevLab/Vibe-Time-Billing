@@ -6,13 +6,14 @@
 // at the (provider_charge_id, status) grain — re-deliveries are no-ops.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   clients,
   creditMemos,
   dunningHistory,
+  firmSettings,
   invoicePayLinks,
   invoices,
   paymentMethod,
@@ -39,6 +40,35 @@ import {
 import { publishWebhookEvent } from './publish';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { printNotificationChannel } from '../notifications/print-channel';
+import { createStripeProvider } from '../payments/stripe';
+import { loadFirmStripeConfig } from '../payments/stripe-resolver';
+
+// Verify against the firm's DB-stored webhook secret when the env one isn't
+// set (single-firm appliance) — so webhooks work from keys pasted in the UI.
+async function resolveWebhookVerifier(
+  deps: StripeWebhookDeps,
+): Promise<{ stripe: PaymentProvider | null; secret: string | null }> {
+  if (deps.stripe && deps.webhookSecret) {
+    return { stripe: deps.stripe, secret: deps.webhookSecret };
+  }
+  if (deps.db) {
+    const [fs] = await deps.db
+      .select({ firmId: firmSettings.firmId })
+      .from(firmSettings)
+      .where(isNotNull(firmSettings.stripeConfigEncrypted))
+      .limit(1);
+    if (fs) {
+      const cfg = await loadFirmStripeConfig(deps.db, fs.firmId);
+      if (cfg?.webhookSecret) {
+        return {
+          stripe: deps.stripe ?? createStripeProvider({ secretKey: cfg.secretKey ?? '' }),
+          secret: cfg.webhookSecret,
+        };
+      }
+    }
+  }
+  return { stripe: deps.stripe, secret: deps.webhookSecret };
+}
 
 export interface StripeWebhookDeps {
   db: Database | null;
@@ -115,7 +145,8 @@ export function createStripeWebhookRouter(deps: StripeWebhookDeps): Router {
   router.use(express.raw({ type: 'application/json', limit: '1mb' }));
 
   router.post('/', async (req: Request, res: Response) => {
-    if (!deps.stripe || !deps.webhookSecret) {
+    const { stripe: verifier, secret } = await resolveWebhookVerifier(deps);
+    if (!verifier || !secret) {
       res.status(503).json({ error: 'stripe_not_configured' });
       return;
     }
@@ -125,10 +156,10 @@ export function createStripeWebhookRouter(deps: StripeWebhookDeps): Router {
       return;
     }
     const payload = req.body instanceof Buffer ? req.body.toString('utf8') : String(req.body);
-    const ok = deps.stripe.verifyWebhookSignature({
+    const ok = verifier.verifyWebhookSignature({
       payload,
       signature,
-      secret: deps.webhookSecret,
+      secret,
     });
     if (!ok) {
       res.status(401).json({ error: 'invalid_signature' });

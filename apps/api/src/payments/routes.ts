@@ -51,6 +51,28 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { loadReceiptDoc, renderPaymentReceiptHtml } from './receipt-doc';
 import { sendToPrinter } from '../print-gateway/send';
+import { createStripeProvider } from './stripe';
+import { loadFirmStripeConfig } from './stripe-resolver';
+
+// Resolve the Stripe provider + publishable key for a firm, preferring the
+// firm's DB-stored keys (Admin → Billing → Stripe Connect) over the boot-time
+// env provider. This is what lets the Charge button / pay-links work from keys
+// pasted in the UI without setting appliance env vars.
+async function resolveStripeForFirm(
+  deps: PaymentRoutesDeps,
+  firmId: string,
+): Promise<{ provider: PaymentProvider | null; publishableKey: string | null }> {
+  if (deps.db) {
+    const cfg = await loadFirmStripeConfig(deps.db, firmId);
+    if (cfg?.secretKey) {
+      return {
+        provider: createStripeProvider({ secretKey: cfg.secretKey }),
+        publishableKey: cfg.publishableKey ?? deps.stripePublishableKey ?? null,
+      };
+    }
+  }
+  return { provider: deps.stripe ?? null, publishableKey: deps.stripePublishableKey ?? null };
+}
 
 export interface PaymentRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -188,7 +210,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
     requirePermission(deps, 'payment:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const stripeEnabled = Boolean(deps.stripe);
+      const { provider, publishableKey } = await resolveStripeForFirm(deps, session.firmId);
+      const stripeEnabled = Boolean(provider);
       let achEnabled = false;
       let ccEnabled = false;
       if (deps.db) {
@@ -205,7 +228,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       }
       res.json({
         stripeEnabled,
-        stripePublishableKey: deps.stripePublishableKey ?? null,
+        stripePublishableKey: publishableKey,
         // ACH via Stripe is deferred (v1 = record-only). The flag is
         // surfaced so the UI can show ACH as a Record-mode option.
         achEnabled,
@@ -787,7 +810,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
-      if (!deps.stripe || !deps.stripe.createIntent) {
+      const { provider: firmStripe } = await resolveStripeForFirm(deps, session.firmId);
+      if (!firmStripe || !firmStripe.createIntent) {
         res.status(409).json({ error: 'stripe_not_configured' });
         return;
       }
@@ -880,8 +904,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         return;
       }
 
-      // Create the Stripe PaymentIntent.
-      const intent = await deps.stripe.createIntent({
+      // Create the Stripe PaymentIntent (firm's resolved provider).
+      const intent = await firmStripe.createIntent({
         amountCents: parsed.data.amountReceivedCents,
         currency: 'USD',
         description: `Receipt ${receipt.id} (${PAYMENT_METHOD_LABELS.CARD_STRIPE})`,
