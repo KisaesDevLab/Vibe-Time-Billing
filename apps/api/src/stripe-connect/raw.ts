@@ -21,8 +21,10 @@ export async function stripePostForm(opts: StripeCallOptions): Promise<Record<st
   const headers: Record<string, string> = {
     Authorization: `Bearer ${opts.secretKey}`,
     'Content-Type': 'application/x-www-form-urlencoded',
-    'Stripe-Account': opts.stripeAccountId,
   };
+  // Direct firm keys (secretKey already scopes to the firm's account) pass an
+  // empty accountId → omit the header. Connect OAuth passes the connected id.
+  if (opts.stripeAccountId) headers['Stripe-Account'] = opts.stripeAccountId;
   if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
   const res = await fetchImpl(`${API_BASE}${opts.path}`, { method: 'POST', headers, body });
   const json = (await res.json()) as Record<string, unknown>;
@@ -38,12 +40,11 @@ export async function stripePostForm(opts: StripeCallOptions): Promise<Record<st
 export async function stripeGet(opts: StripeCallOptions): Promise<Record<string, unknown>> {
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch);
   const qs = opts.params ? `?${new URLSearchParams(opts.params).toString()}` : '';
+  const getHeaders: Record<string, string> = { Authorization: `Bearer ${opts.secretKey}` };
+  if (opts.stripeAccountId) getHeaders['Stripe-Account'] = opts.stripeAccountId;
   const res = await fetchImpl(`${API_BASE}${opts.path}${qs}`, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${opts.secretKey}`,
-      'Stripe-Account': opts.stripeAccountId,
-    },
+    headers: getHeaders,
   });
   const json = (await res.json()) as Record<string, unknown>;
   if (!res.ok) {

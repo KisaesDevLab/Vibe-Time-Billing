@@ -32,7 +32,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { paymentMandates, stripeCustomers } from '@vibe/db/schema';
 
@@ -185,7 +185,9 @@ export async function getOrCreateCustomer(
   const [existing] = await input.db
     .select({ stripeCustomerId: stripeCustomers.stripeCustomerId })
     .from(stripeCustomers)
-    .where(eq(stripeCustomers.firmId, input.firmId))
+    .where(
+      and(eq(stripeCustomers.firmId, input.firmId), eq(stripeCustomers.clientId, input.clientId)),
+    )
     .limit(1);
   if (existing) {
     return { stripeCustomerId: existing.stripeCustomerId, created: false };
