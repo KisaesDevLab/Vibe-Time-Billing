@@ -1290,6 +1290,12 @@ function LetterTab(): JSX.Element {
                     <Button
                       size="sm"
                       variant={editMode === 'visual' ? 'secondary' : 'ghost'}
+                      disabled={isFullHtmlDoc(editBody)}
+                      title={
+                        isFullHtmlDoc(editBody)
+                          ? 'This letter has a letterhead/<style> block; the visual editor would strip it. Edit in HTML mode.'
+                          : undefined
+                      }
                       onClick={() => setEditMode('visual')}
                     >
                       Visual
@@ -1301,10 +1307,9 @@ function LetterTab(): JSX.Element {
                     >
                       {'</> HTML'}
                     </Button>
-                    {editMode === 'visual' && isFullHtmlDoc(editBody) && (
-                      <span style={{ fontSize: 11, color: tokens.color.warning }}>
-                        This letter has a letterhead/&lt;style&gt; block — edit in HTML mode to keep
-                        it.
+                    {isFullHtmlDoc(editBody) && (
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        Letterhead/&lt;style&gt; letter — editing in HTML to preserve it.
                       </span>
                     )}
                   </div>

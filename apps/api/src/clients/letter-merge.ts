@@ -11,7 +11,7 @@
 // HTML document (with its own <style>/@page for letterhead + page size);
 // tokens are substituted in that HTML per client.
 
-import { and, asc, eq, gte, inArray, isNotNull, lte } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -227,6 +227,44 @@ async function firmTimezone(db: Database, firmId: string): Promise<string> {
   return row?.tz ?? 'America/Chicago';
 }
 
+// Milliseconds `tz` is ahead of UTC at the given instant (DST-aware).
+function tzOffsetMs(at: Date, tz: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  const m: Record<string, number> = {};
+  for (const p of parts) if (p.type !== 'literal') m[p.type] = Number(p.value);
+  // Intl gives 24 for midnight; normalize.
+  const hour = m['hour'] === 24 ? 0 : m['hour']!;
+  const asUtc = Date.UTC(m['year']!, m['month']! - 1, m['day']!, hour, m['minute']!, m['second']!);
+  return asUtc - at.getTime();
+}
+
+/** The UTC instant of local midnight (start of day) for `ymd` (YYYY-MM-DD)
+ *  in timezone `tz`. Used so an appointment date-range filter matches the
+ *  calendar day the firm actually sees. Exported for tests. */
+export function zonedDayStartUtc(ymd: string, tz: string): Date {
+  const [y, mo, d] = ymd.split('-').map(Number);
+  const guess = Date.UTC(y!, mo! - 1, d!, 0, 0, 0);
+  // Correct the guess by the tz offset at that (approximate) instant.
+  return new Date(guess - tzOffsetMs(new Date(guess), tz));
+}
+
+/** ymd + 1 day, as a YYYY-MM-DD string (calendar arithmetic, UTC-safe).
+ *  Exported for tests. */
+export function nextYmd(ymd: string): string {
+  const [y, mo, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y!, mo! - 1, d! + 1));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+
 const LOCATION_LABEL: Record<string, string> = {
   VIDEO: 'Video',
   PHONE: 'Phone',
@@ -312,6 +350,7 @@ export async function loadEngagementLetterData(
   engagementIds: string[],
   apptRange?: AppointmentRange,
 ): Promise<ClientLetterData[]> {
+  const now = new Date();
   // engagement has no firm_id — firm-scope via its client.
   const engs = await db
     .select({ id: engagements.id, clientId: engagements.clientId, name: engagements.name })
@@ -344,15 +383,22 @@ export async function loadEngagementLetterData(
       dropByEng.set(d.engagementId, formatDateUS(d.dueDate));
   }
 
-  // Per-engagement appointment (soonest), optionally within [from, to].
+  const tz = await firmTimezone(db, firmId);
+  // Per-engagement appointment (soonest). With a date range, bound by the
+  // office-local calendar days [from, to] (converted to UTC instants so a
+  // late-evening appointment isn't misfiled by the UTC/office offset). With
+  // NO range, restrict to upcoming appointments (soonest still in the future)
+  // rather than the earliest in all history.
+  const rangeActive = Boolean(apptRange?.from || apptRange?.to);
   const apptConds = [
     eq(appointments.firmId, firmId),
     inArray(appointments.engagementId, engagementIds),
   ];
   if (apptRange?.from)
-    apptConds.push(gte(appointments.startsAt, new Date(`${apptRange.from}T00:00:00`)));
+    apptConds.push(gte(appointments.startsAt, zonedDayStartUtc(apptRange.from, tz)));
   if (apptRange?.to)
-    apptConds.push(lte(appointments.startsAt, new Date(`${apptRange.to}T23:59:59.999`)));
+    apptConds.push(lt(appointments.startsAt, zonedDayStartUtc(nextYmd(apptRange.to), tz)));
+  if (!rangeActive) apptConds.push(gte(appointments.startsAt, now));
   const appts = await db
     .select({
       engagementId: appointments.engagementId,
@@ -368,10 +414,6 @@ export async function loadEngagementLetterData(
     if (a.engagementId && !apptByEng.has(a.engagementId)) apptByEng.set(a.engagementId, a);
   }
 
-  // When a date range is set, only keep engagements whose appointment
-  // falls in it (apptByEng already reflects the range filter).
-  const rangeActive = Boolean(apptRange?.from || apptRange?.to);
-  const tz = await firmTimezone(db, firmId);
   const rows: ClientLetterData[] = [];
   for (const engId of engagementIds) {
     const e = engs.find((x) => x.id === engId);

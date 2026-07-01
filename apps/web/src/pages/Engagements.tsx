@@ -803,7 +803,7 @@ export function EngagementsPage(): JSX.Element {
         {mergeOpen && (
           <MailMergeDialog
             mode="engagements"
-            targets={rows
+            targets={visible
               .filter((r) => selectedIds.has(r.id))
               .map((r) => ({ id: r.clientId, name: r.clientName, engagementId: r.id }))}
             onClose={() => setMergeOpen(false)}

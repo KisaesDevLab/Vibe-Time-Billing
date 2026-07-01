@@ -28,7 +28,11 @@ import { asc, desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, userHasPermission, type RbacDeps } from '../auth/rbac-middleware';
-import { canAccessClient, requireFullClientAccessForSection } from './access';
+import {
+  canAccessClient,
+  getBlockedClientIdsCached,
+  requireFullClientAccessForSection,
+} from './access';
 import { createClientCredentialRouter } from '../vault/routes';
 import { firmScope } from '../notifications/templating';
 import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
@@ -463,9 +467,13 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // Resolve the per-letter rows for a merge run — one row per appointment
   // (Appointments flow), per engagement (Engagements flow — pulls the
   // engagement's drop-off date + its appointment in [apptFrom, apptTo]),
-  // else one per client (Clients flow).
-  const resolveLetterRows = (
+  // else one per client (Clients flow). Rows for RESTRICTED clients the
+  // caller can't access (0165) are dropped, so no letter is rendered,
+  // saved, or emailed for them.
+  const resolveLetterRows = async (
+    req: Request,
     firmId: string,
+    appUserId: string,
     data: {
       clientIds?: string[];
       appointmentIds?: string[];
@@ -474,22 +482,59 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       apptTo?: string;
     },
   ): Promise<ClientLetterData[]> => {
+    let rows: ClientLetterData[];
     if (data.appointmentIds && data.appointmentIds.length > 0) {
-      return loadAppointmentLetterData(deps.db!, firmId, data.appointmentIds);
-    }
-    if (data.engagementIds && data.engagementIds.length > 0) {
-      return loadEngagementLetterData(deps.db!, firmId, data.engagementIds, {
+      rows = await loadAppointmentLetterData(deps.db!, firmId, data.appointmentIds);
+    } else if (data.engagementIds && data.engagementIds.length > 0) {
+      rows = await loadEngagementLetterData(deps.db!, firmId, data.engagementIds, {
         from: data.apptFrom,
         to: data.apptTo,
       });
+    } else {
+      rows = await loadClientLetterData(deps.db!, firmId, data.clientIds ?? []);
     }
-    return loadClientLetterData(deps.db!, firmId, data.clientIds ?? []);
+    const blocked = await getBlockedClientIdsCached(deps, req, appUserId, firmId);
+    if (blocked.length === 0) return rows;
+    const blockedSet = new Set(blocked);
+    return rows.filter((r) => !blockedSet.has(r.id));
+  };
+
+  // Appointment/engagement flows expose that data — gate them behind the
+  // corresponding read permission (a firm may revoke appointment:read /
+  // engagement:read via the 0147 override while keeping client:read).
+  const modePermitted = async (
+    req: Request,
+    res: Response,
+    d: { appointmentIds?: string[]; engagementIds?: string[] },
+  ): Promise<boolean> => {
+    const appUserId = req.staffSession!.appUserId;
+    if (
+      d.appointmentIds?.length &&
+      !(await userHasPermission(deps, appUserId, 'appointment:read'))
+    ) {
+      res.status(403).json({ error: 'forbidden', required: 'appointment:read' });
+      return false;
+    }
+    if (d.engagementIds?.length && !(await userHasPermission(deps, appUserId, 'engagement:read'))) {
+      res.status(403).json({ error: 'forbidden', required: 'engagement:read' });
+      return false;
+    }
+    return true;
   };
 
   // Shared target fields for the pdf/save/email schemas — one of clientIds /
   // appointmentIds / engagementIds, plus an optional appointment date range
-  // (engagements flow only).
-  const YMD = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+  // (engagements flow only). YMD must be a real calendar date (the regex
+  // alone would accept 2026-13-40 → Invalid Date → 500 downstream).
+  const isRealYmd = (s: string): boolean => {
+    const [y, m, d] = s.split('-').map(Number);
+    const dt = new Date(Date.UTC(y!, m! - 1, d!));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m! - 1 && dt.getUTCDate() === d;
+  };
+  const YMD = z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(isRealYmd, { message: 'invalid_date' });
   const targetFields = {
     clientIds: z.array(z.string().uuid()).max(200).optional(),
     appointmentIds: z.array(z.string().uuid()).max(200).optional(),
@@ -504,6 +549,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   }): boolean =>
     (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) + (d.engagementIds?.length ?? 0) >
     0;
+  // from must not be after to (string compare is chronological for YMD).
+  const rangeOk = (d: { apptFrom?: string; apptTo?: string }): boolean =>
+    !d.apptFrom || !d.apptTo || d.apptFrom <= d.apptTo;
 
   const MailMergePreviewSchema = z
     .object({
@@ -516,7 +564,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     })
     .refine((d) => Boolean(d.clientId) || Boolean(d.appointmentId) || Boolean(d.engagementId), {
       message: 'target_required',
-    });
+    })
+    .refine(rangeOk, { message: 'invalid_range' });
   router.post(
     '/mail-merge-preview',
     requirePermission(deps, 'client:read'),
@@ -530,19 +579,21 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
+      const target = {
+        clientIds: parsed.data.clientId ? [parsed.data.clientId] : undefined,
+        appointmentIds: parsed.data.appointmentId ? [parsed.data.appointmentId] : undefined,
+        engagementIds: parsed.data.engagementId ? [parsed.data.engagementId] : undefined,
+        apptFrom: parsed.data.apptFrom,
+        apptTo: parsed.data.apptTo,
+      };
+      if (!(await modePermitted(req, res, target))) return;
       const firmId = req.staffSession!.firmId;
       const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
       if (!tpl) {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const [client] = await resolveLetterRows(firmId, {
-        clientIds: parsed.data.clientId ? [parsed.data.clientId] : undefined,
-        appointmentIds: parsed.data.appointmentId ? [parsed.data.appointmentId] : undefined,
-        engagementIds: parsed.data.engagementId ? [parsed.data.engagementId] : undefined,
-        apptFrom: parsed.data.apptFrom,
-        apptTo: parsed.data.apptTo,
-      });
+      const [client] = await resolveLetterRows(req, firmId, req.staffSession!.appUserId, target);
       if (!client) {
         res.status(404).json({ error: 'client_not_found' });
         return;
@@ -554,7 +605,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
 
   const MailMergePdfSchema = z
     .object({ templateId: z.string().uuid(), ...targetFields })
-    .refine(hasTarget, { message: 'targets_required' });
+    .refine(hasTarget, { message: 'targets_required' })
+    .refine(rangeOk, { message: 'invalid_range' });
   router.post(
     '/mail-merge-pdf',
     requirePermission(deps, 'client:read'),
@@ -568,13 +620,19 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
+      if (!(await modePermitted(req, res, parsed.data))) return;
       const firmId = req.staffSession!.firmId;
       const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
       if (!tpl) {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const clientData = await resolveLetterRows(firmId, parsed.data);
+      const clientData = await resolveLetterRows(
+        req,
+        firmId,
+        req.staffSession!.appUserId,
+        parsed.data,
+      );
       if (clientData.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;
@@ -613,12 +671,13 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   );
 
   // Save one personalized letter PDF into each client's Files folder
-  // (Correspondence/). Renders per client (own PDF, not the combined one),
-  // so it's capped lower than the download path. Writes a `files` row per
-  // client via the shared create-file helper. Mutating → client:write.
+  // (Correspondence/). Renders per row (own PDF, not the combined one).
+  // Writes a `files` row per client via the shared create-file helper.
+  // Mutating → client:write (+ appointment/engagement:read per mode).
   const MailMergeSaveSchema = z
     .object({ templateId: z.string().uuid(), ...targetFields })
-    .refine(hasTarget, { message: 'targets_required' });
+    .refine(hasTarget, { message: 'targets_required' })
+    .refine(rangeOk, { message: 'invalid_range' });
   router.post(
     '/mail-merge-save-to-files',
     requirePermission(deps, 'client:write'),
@@ -632,6 +691,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
+      if (!(await modePermitted(req, res, parsed.data))) return;
       const session = req.staffSession!;
       const firmId = session.firmId;
       const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
@@ -639,7 +699,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const clientData = await resolveLetterRows(firmId, parsed.data);
+      const clientData = await resolveLetterRows(req, firmId, session.appUserId, parsed.data);
       if (clientData.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;
@@ -699,6 +759,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         after: {
           kind: 'mail_merge_save_to_files',
           templateId: parsed.data.templateId,
+          clientIds: results.filter((r) => r.saved).map((r) => r.clientId),
           savedCount: results.filter((r) => r.saved).length,
           skippedCount: results.filter((r) => !r.saved).length,
         },
@@ -719,7 +780,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // Email each client their letter as a PDF attachment. Per client:
   // resolve recipient (primary→billing→first with an email) → render the
   // letter → attach the PDF → sendStaffMail. Subject/body are merge-token
-  // resolved per client. Outbound → client:write; capped at 100.
+  // resolved per client. Outbound → client:write (+ appointment/engagement:read
+  // per mode).
   const MailMergeEmailSchema = z
     .object({
       templateId: z.string().uuid(),
@@ -727,7 +789,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       subject: z.string().min(1).max(200),
       body: z.string().max(20_000).optional(),
     })
-    .refine(hasTarget, { message: 'targets_required' });
+    .refine(hasTarget, { message: 'targets_required' })
+    .refine(rangeOk, { message: 'invalid_range' });
   router.post(
     '/mail-merge-email',
     requirePermission(deps, 'client:write'),
@@ -746,6 +809,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
+      if (!(await modePermitted(req, res, parsed.data))) return;
       const session = req.staffSession!;
       const firmId = session.firmId;
       const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
@@ -753,7 +817,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const clientData = await resolveLetterRows(firmId, parsed.data);
+      const clientData = await resolveLetterRows(req, firmId, session.appUserId, parsed.data);
       if (clientData.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;
@@ -790,7 +854,10 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         }
         try {
           const ctx = buildLetterContext(client, firm, now) as MergeContext;
-          const subject = resolveMergeTokens(parsed.data.subject, ctx).output;
+          // Strip CR/LF so a token value can't inject email headers.
+          const subject = resolveMergeTokens(parsed.data.subject, ctx)
+            .output.replace(/[\r\n]+/g, ' ')
+            .trim();
           const bodyText = resolveMergeTokens(
             parsed.data.body?.trim() || 'Please see the attached letter.',
             ctx,
@@ -835,6 +902,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           kind: 'mail_merge_email',
           templateId: parsed.data.templateId,
           subject: parsed.data.subject,
+          clientIds: results.filter((r) => r.sent).map((r) => r.clientId),
           sentCount: results.filter((r) => r.sent).length,
           skippedCount: results.filter((r) => !r.sent).length,
         },
@@ -1779,11 +1847,19 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         return;
       }
 
-      // Pull every targeted client + their contacts in two queries.
-      const clientRows = await deps.db
-        .select({ id: clients.id, name: clients.name })
-        .from(clients)
-        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, parsed.data.clientIds)));
+      // Pull every targeted client + their contacts in two queries. Drop
+      // RESTRICTED clients the caller can't access (0165).
+      const blockedBulk = new Set(
+        await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId),
+      );
+      const clientRows = (
+        await deps.db
+          .select({ id: clients.id, name: clients.name })
+          .from(clients)
+          .where(
+            and(eq(clients.firmId, session.firmId), inArray(clients.id, parsed.data.clientIds)),
+          )
+      ).filter((c) => !blockedBulk.has(c.id));
       if (clientRows.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;

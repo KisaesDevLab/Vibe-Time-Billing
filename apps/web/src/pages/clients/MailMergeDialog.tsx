@@ -71,6 +71,18 @@ export function MailMergeDialog({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
 
+  const noun =
+    mode === 'appointments' ? 'appointment' : mode === 'engagements' ? 'engagement' : 'client';
+  // Only the first target drives the live preview; depend on its stable id
+  // (not the array identity, which changes every parent render → refetch spam).
+  const previewId =
+    mode === 'appointments'
+      ? targets[0]?.appointmentId
+      : mode === 'engagements'
+        ? targets[0]?.engagementId
+        : targets[0]?.id;
+  const rangeInvalid = Boolean(mode === 'engagements' && apptFrom && apptTo && apptFrom > apptTo);
+
   // The batch's target field per mode, plus the engagements-only date range.
   const targetPayload: Record<string, unknown> =
     mode === 'appointments'
@@ -97,7 +109,7 @@ export function MailMergeDialog({
 
   // Refresh the preview whenever the chosen template changes.
   useEffect(() => {
-    if (!templateId || targets.length === 0) {
+    if (!templateId || targets.length === 0 || rangeInvalid) {
       setPreviewHtml(null);
       return;
     }
@@ -141,7 +153,9 @@ export function MailMergeDialog({
     return () => {
       cancelled = true;
     };
-  }, [templateId, targets, mode, apptFrom, apptTo]);
+    // Depend on the derived previewId (stable), not the targets array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, previewId, mode, apptFrom, apptTo, rangeInvalid]);
 
   async function downloadPdf(): Promise<void> {
     if (!templateId) {
@@ -175,7 +189,9 @@ export function MailMergeDialog({
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      // Revoke on the next tick — some browsers cancel the download if the
+      // object URL is revoked in the same synchronous frame as click().
+      setTimeout(() => URL.revokeObjectURL(url), 0);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Download failed');
@@ -301,8 +317,8 @@ export function MailMergeDialog({
                   overflow: 'auto',
                 }}
               >
-                {result.rows.map((r) => (
-                  <li key={r.clientId} style={{ marginBottom: 4 }}>
+                {result.rows.map((r, i) => (
+                  <li key={`${r.clientId}-${i}`} style={{ marginBottom: 4 }}>
                     <strong>{r.clientName}</strong> —{' '}
                     <span style={{ color: r.ok ? tokens.color.success : tokens.color.warning }}>
                       {r.ok ? r.detail : `skipped (${r.detail})`}
@@ -318,8 +334,9 @@ export function MailMergeDialog({
             <div style={{ display: 'grid', gap: 12 }}>
               <p style={{ fontSize: 13, margin: 0 }}>
                 Generate a personalized letter for each of <strong>{targets.length}</strong>{' '}
-                selected client{targets.length === 1 ? '' : 's'} — download one combined PDF, save a
-                copy to each client&apos;s Files, or email each client their letter as a PDF.
+                selected {noun}
+                {targets.length === 1 ? '' : 's'} — download one combined PDF, save a copy to each
+                client&apos;s Files, or email each client their letter as a PDF.
               </p>
               <div style={{ display: 'grid', gap: 4 }}>
                 <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
@@ -367,6 +384,11 @@ export function MailMergeDialog({
                       style={inputStyle}
                     />
                   </div>
+                  {rangeInvalid && (
+                    <span style={{ fontSize: 11, color: tokens.color.danger }}>
+                      The start date must be on or before the end date.
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -440,19 +462,22 @@ export function MailMergeDialog({
                 </Button>
                 <Button
                   variant="secondary"
-                  disabled={busy || !templateId}
+                  disabled={busy || !templateId || rangeInvalid}
                   onClick={() => void saveToFiles()}
                 >
                   {busy ? 'Working…' : `Save to Files (${targets.length})`}
                 </Button>
                 <Button
                   variant="secondary"
-                  disabled={busy || !templateId || !subject.trim()}
+                  disabled={busy || !templateId || !subject.trim() || rangeInvalid}
                   onClick={() => void emailLetters()}
                 >
                   {busy ? 'Working…' : `Email (${targets.length})`}
                 </Button>
-                <Button disabled={busy || !templateId} onClick={() => void downloadPdf()}>
+                <Button
+                  disabled={busy || !templateId || rangeInvalid}
+                  onClick={() => void downloadPdf()}
+                >
                   {busy ? 'Working…' : `Download PDF (${targets.length})`}
                 </Button>
               </div>

@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { describe, expect, it } from 'vitest';
 
-import { buildLetterContext, renderLetterHtml, type ClientLetterData } from './letter-merge';
+import {
+  buildLetterContext,
+  nextYmd,
+  renderLetterHtml,
+  zonedDayStartUtc,
+  type ClientLetterData,
+} from './letter-merge';
 
 const client: ClientLetterData = {
   id: 'c1',
@@ -80,6 +86,28 @@ describe('buildLetterContext', () => {
       client: Record<string, string>;
     };
     expect(ctx.client.display_name).toBe('Riverside Holdings LLC');
+  });
+});
+
+describe('date-range helpers (appointment filter)', () => {
+  it('nextYmd rolls months and years correctly', () => {
+    expect(nextYmd('2026-03-15')).toBe('2026-03-16');
+    expect(nextYmd('2026-02-28')).toBe('2026-03-01'); // 2026 not a leap year
+    expect(nextYmd('2026-12-31')).toBe('2027-01-01');
+  });
+
+  it('zonedDayStartUtc converts a local calendar day to the right UTC instant', () => {
+    // UTC: local midnight == the same instant.
+    expect(zonedDayStartUtc('2026-03-15', 'UTC').toISOString()).toBe('2026-03-15T00:00:00.000Z');
+    // America/Chicago on 2026-03-15 is CDT (UTC-5, DST began Mar 8) →
+    // local midnight is 05:00 UTC.
+    expect(zonedDayStartUtc('2026-03-15', 'America/Chicago').toISOString()).toBe(
+      '2026-03-15T05:00:00.000Z',
+    );
+    // Before DST (CST, UTC-6) → 06:00 UTC.
+    expect(zonedDayStartUtc('2026-01-15', 'America/Chicago').toISOString()).toBe(
+      '2026-01-15T06:00:00.000Z',
+    );
   });
 });
 

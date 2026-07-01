@@ -871,7 +871,7 @@ function ListTab(): JSX.Element {
       {mergeOpen && (
         <MailMergeDialog
           mode="appointments"
-          targets={rows
+          targets={visible
             .filter((r) => selectedIds.has(r.id) && r.clientId)
             .map((r) => ({
               id: r.clientId!,
