@@ -17,11 +17,11 @@
 //                                       to reschedule)
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, gte, isNull, lte, notInArray, or } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, gte, isNull, lte, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { appointments, clients, engagements } from '@vibe/db/schema';
+import { appointments, appointmentTypes, clients, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -119,8 +119,14 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         conds.push(lte(appointments.startsAt, new Date(to)));
       }
       const items = await deps.db
-        .select()
+        .select({
+          ...getTableColumns(appointments),
+          clientName: clients.name,
+          typeName: appointmentTypes.name,
+        })
         .from(appointments)
+        .leftJoin(clients, eq(clients.id, appointments.clientId))
+        .leftJoin(appointmentTypes, eq(appointmentTypes.id, appointments.appointmentTypeId))
         .where(and(...conds))
         .orderBy(desc(appointments.startsAt))
         .limit(500);
