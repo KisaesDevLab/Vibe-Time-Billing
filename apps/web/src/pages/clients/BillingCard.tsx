@@ -9,6 +9,8 @@ import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { StatementDialog } from './StatementDialog';
+import { SavedMethodsCard } from './SavedMethodsCard';
+import { PaymentPlanCard } from './PaymentPlanCard';
 
 type YearFilter = 'current' | 'prior' | 'all';
 
@@ -70,6 +72,7 @@ const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
 export function BillingCard({ clientId, clientName }: Props): JSX.Element {
   const [statementOpen, setStatementOpen] = useState(false);
+  const [methodsVersion, setMethodsVersion] = useState(0);
   const [items, setItems] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditMemo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -327,6 +330,9 @@ export function BillingCard({ clientId, clientName }: Props): JSX.Element {
           <Stat label="Open credits" value={formatCents(openCreditTotal)} />
         </div>
       </Card>
+
+      <SavedMethodsCard clientId={clientId} onChanged={() => setMethodsVersion((v) => v + 1)} />
+      <PaymentPlanCard clientId={clientId} reloadKey={methodsVersion} />
 
       <Card title={`Invoices (${filteredItems.length})`}>
         {notice && (
