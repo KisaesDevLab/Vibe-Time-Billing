@@ -183,6 +183,7 @@ import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
 import { createSavedMethodsRouter } from './payments/saved-methods-routes';
+import { createClientPaymentPlansRouter } from './client-payment-plans/routes';
 import { createPaymentImportRouter } from './payments/import-routes';
 import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
@@ -1912,6 +1913,18 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/payment-methods', auth.requireAuth, auth.requireCsrf, savedMethodsRouter);
+
+  // 0192 — recurring installment payment plans (staff control surface).
+  const clientPaymentPlansRouter = createClientPaymentPlansRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/client-payment-plans',
+    auth.requireAuth,
+    auth.requireCsrf,
+    clientPaymentPlansRouter,
+  );
 
   // 0158 — Payments → Import tab (payroll-charges CSV).
   const paymentImportRouter = createPaymentImportRouter({

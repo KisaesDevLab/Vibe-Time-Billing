@@ -17,7 +17,7 @@ import { paymentMethod, paymentReceipts, stripeCustomers } from '@vibe/db/schema
 
 import { resolveFirmStripe } from './firm-stripe';
 import { draftAchOffSession, draftCardOffSession } from '../stripe-connect/off-session-draft';
-import { materializeReceiptIfPending } from '../webhooks/stripe';
+import { materializeReceiptIfPending } from './settle-receipt';
 
 export interface ChargeAllocation {
   invoiceId: string;
@@ -72,6 +72,7 @@ export async function chargeClientBalanceOffSession(
       kind: paymentMethod.kind,
       providerToken: paymentMethod.providerToken,
       providerCustomerId: paymentMethod.providerCustomerId,
+      verificationStatus: paymentMethod.verificationStatus,
     })
     .from(paymentMethod)
     .where(
@@ -83,6 +84,8 @@ export async function chargeClientBalanceOffSession(
     )
     .limit(1);
   if (!pm) return { ok: false, error: 'payment_method_not_found' };
+  // A manual-ACH bank awaiting micro-deposit verification is not chargeable.
+  if (pm.verificationStatus) return { ok: false, error: 'payment_method_unverified' };
 
   // Resolve the Stripe customer for this client.
   let customerId = pm.providerCustomerId;

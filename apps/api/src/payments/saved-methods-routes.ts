@@ -22,6 +22,7 @@ import {
   createClientSetupIntent,
   listClientMethods,
 } from './saved-methods';
+import { createManualAchMethod, verifyMicrodeposits } from './manual-ach';
 
 export interface SavedMethodsDeps extends RbacDeps {
   db: Database | null;
@@ -42,7 +43,12 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
   addUuidIdGuard(router);
 
   // Begin a save flow — returns the SetupIntent client_secret + publishable key.
-  const SetupSchema = z.object({ clientId: z.string().uuid() });
+  // achVerificationMethod lets the caller force manual routing/account entry
+  // ('microdeposits') vs instant bank-login ('instant') in the Payment Element.
+  const SetupSchema = z.object({
+    clientId: z.string().uuid(),
+    achVerificationMethod: z.enum(['automatic', 'instant', 'microdeposits']).optional(),
+  });
   router.post(
     '/setup-intent',
     requirePermission(deps, 'payment:write'),
@@ -64,12 +70,137 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         deps.db,
         req.staffSession!.firmId,
         parsed.data.clientId,
+        { achVerificationMethod: parsed.data.achVerificationMethod },
       );
       if ('error' in r) {
         res.status(r.error === 'client_not_found' ? 404 : 400).json({ error: r.error });
         return;
       }
       res.json(r);
+    },
+  );
+
+  // Manual ACH — save a bank from raw routing + account numbers (no bank
+  // login). Verified asynchronously via micro-deposits; not chargeable until
+  // /:id/verify-microdeposits succeeds.
+  const ManualAchSchema = z.object({
+    clientId: z.string().uuid(),
+    routingNumber: z.string().regex(/^\d{9}$/),
+    accountNumber: z.string().regex(/^\d{4,17}$/),
+    accountHolderType: z.enum(['individual', 'company']),
+    accountHolderName: z.string().min(1).max(200),
+  });
+  router.post(
+    '/manual-ach',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ManualAchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const s = req.staffSession!;
+      if (await clientBlocked(deps, req, parsed.data.clientId)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      let out;
+      try {
+        out = await createManualAchMethod({
+          db: deps.db,
+          firmId: s.firmId,
+          clientId: parsed.data.clientId,
+          routingNumber: parsed.data.routingNumber,
+          accountNumber: parsed.data.accountNumber,
+          accountHolderType: parsed.data.accountHolderType,
+          accountHolderName: parsed.data.accountHolderName,
+        });
+      } catch (err) {
+        logger.error({ err }, 'manual-ach create failed');
+        res.status(502).json({ error: 'stripe_error' });
+        return;
+      }
+      if (!out.ok) {
+        res.status(out.error === 'client_not_found' ? 404 : 400).json({ error: out.error });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'payment_method',
+        entityId: out.paymentMethodId,
+        actorAppUserId: s.appUserId,
+        after: {
+          clientId: parsed.data.clientId,
+          kind: 'ach_manual',
+          verification: out.verification,
+        },
+      }).catch(() => undefined);
+      res
+        .status(201)
+        .json({ ok: true, paymentMethodId: out.paymentMethodId, verification: out.verification });
+    },
+  );
+
+  // Verify the two micro-deposits (or descriptor code) for a pending manual
+  // ACH bank — flips it to chargeable.
+  const VerifySchema = z
+    .object({
+      clientId: z.string().uuid(),
+      amounts: z.array(z.number().int().positive()).length(2).optional(),
+      descriptorCode: z.string().min(1).max(40).optional(),
+    })
+    .refine((v) => Boolean(v.amounts) || Boolean(v.descriptorCode), {
+      message: 'amounts_or_descriptor_required',
+    });
+  router.post(
+    '/:id/verify-microdeposits',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = VerifySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const s = req.staffSession!;
+      if (await clientBlocked(deps, req, parsed.data.clientId)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      let out;
+      try {
+        out = await verifyMicrodeposits({
+          db: deps.db,
+          firmId: s.firmId,
+          clientId: parsed.data.clientId,
+          paymentMethodId: req.params['id']!,
+          amounts: parsed.data.amounts as [number, number] | undefined,
+          descriptorCode: parsed.data.descriptorCode,
+        });
+      } catch (err) {
+        logger.error({ err }, 'verify-microdeposits failed');
+        res.status(502).json({ error: 'stripe_error' });
+        return;
+      }
+      if (!out.ok) {
+        res.status(out.error === 'payment_method_not_found' ? 404 : 400).json({ error: out.error });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'payment_method',
+        entityId: req.params['id']!,
+        actorAppUserId: s.appUserId,
+        after: { verification: 'verified' },
+      }).catch(() => undefined);
+      res.json({ ok: true });
     },
   );
 

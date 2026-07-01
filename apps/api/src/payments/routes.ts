@@ -53,6 +53,9 @@ import { loadReceiptDoc, renderPaymentReceiptHtml } from './receipt-doc';
 import { sendToPrinter } from '../print-gateway/send';
 import { createStripeProvider } from './stripe';
 import { loadFirmStripeConfig } from './stripe-resolver';
+import { chargeClientBalanceOffSession } from './off-session-charge';
+import { getBlockedClientIdsCached } from '../clients/access';
+import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from './recompute';
 
 // Resolve the Stripe provider + publishable key for a firm, preferring the
 // firm's DB-stored keys (Admin → Billing → Stripe Connect) over the boot-time
@@ -951,6 +954,130 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         receiptId: receipt.id,
         clientSecret: intent.clientSecret,
         providerChargeId: intent.providerChargeId,
+      });
+    },
+  );
+
+  // =================================================================
+  // POST /receive/charge-saved — charge a client's saved method off-session
+  // for a staff-specified amount/allocations. Settles via the same webhook as
+  // the Elements Charge flow; the UI polls GET /receive/:id.
+  // =================================================================
+  const ChargeSavedSchema = z.object({
+    payerClientId: z.string().uuid(),
+    paymentMethodId: z.string().uuid(),
+    paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    reference: z.string().max(200).nullish(),
+    amountReceivedCents: z.number().int().positive(),
+    allocations: z.array(AllocationSchema).min(1).max(200),
+  });
+  router.post(
+    '/receive/charge-saved',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ChargeSavedSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const body = parsed.data;
+      // 0165 restricted-client guard.
+      const blocked = await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId);
+      if (blocked.includes(body.payerClientId)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const allocSum = body.allocations.reduce((n, a) => n + a.amountCents, 0);
+      if (allocSum !== body.amountReceivedCents) {
+        res.status(400).json({ error: 'allocation_sum_mismatch' });
+        return;
+      }
+      // The method must be this firm+client's, ACTIVE, and verified.
+      const [pm] = await deps.db
+        .select({
+          kind: paymentMethod.kind,
+          verificationStatus: paymentMethod.verificationStatus,
+        })
+        .from(paymentMethod)
+        .where(
+          and(
+            eq(paymentMethod.id, body.paymentMethodId),
+            eq(paymentMethod.firmId, session.firmId),
+            eq(paymentMethod.clientId, body.payerClientId),
+            eq(paymentMethod.status, 'ACTIVE'),
+          ),
+        )
+        .limit(1);
+      if (!pm) {
+        res.status(404).json({ error: 'payment_method_not_found' });
+        return;
+      }
+      if (pm.verificationStatus) {
+        res.status(409).json({ error: 'payment_method_unverified' });
+        return;
+      }
+      // Firm-level processing toggle for the method kind.
+      const [fs] = await deps.db
+        .select({
+          cc: firmSettings.creditCardProcessingEnabled,
+          ach: firmSettings.achProcessingEnabled,
+        })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      if (pm.kind === 'CARD' && !fs?.cc) {
+        res.status(409).json({ error: 'credit_card_processing_disabled' });
+        return;
+      }
+      if (pm.kind === 'ACH' && !fs?.ach) {
+        res.status(409).json({ error: 'ach_processing_disabled' });
+        return;
+      }
+      let out;
+      try {
+        out = await chargeClientBalanceOffSession({
+          db: deps.db,
+          firmId: session.firmId,
+          clientId: body.payerClientId,
+          paymentMethodId: body.paymentMethodId,
+          amountCents: body.amountReceivedCents,
+          allocations: body.allocations,
+          paymentDate: body.paymentDate,
+          createdById: session.appUserId,
+          metadata: { source: 'receive_saved', reference: body.reference ?? '' },
+        });
+      } catch (err) {
+        logger.error({ err }, 'charge-saved failed');
+        res.status(502).json({ error: 'stripe_error' });
+        return;
+      }
+      if (!out.ok) {
+        res.status(400).json({ error: out.error, receiptId: out.receiptId });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'PAYMENT',
+        entityType: 'payment_receipt',
+        entityId: out.receiptId,
+        actorAppUserId: session.appUserId,
+        after: {
+          payerClientId: body.payerClientId,
+          amountCents: body.amountReceivedCents,
+          method: pm.kind === 'CARD' ? 'CARD_STRIPE' : 'ACH_STRIPE',
+          saved: true,
+        },
+      }).catch(() => undefined);
+      res.json({
+        ok: true,
+        receiptId: out.receiptId,
+        status: out.status,
+        requiresAction: out.requiresAction,
+        settled: out.settled,
       });
     },
   );
@@ -1859,74 +1986,11 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
   return router;
 }
 
-/**
- * Idempotent recompute of invoice.paid_cents from successful payments.
- * Run inside a transaction that already holds the invoice row lock.
- *
- * Also updates status (PAID / PARTIALLY_PAID) and clears paidAt when the
- * row goes from PAID back to PARTIALLY_PAID (e.g., after a refund).
- */
-export async function recomputeInvoicePaid(tx: Database, invoiceId: string): Promise<void> {
-  await recomputeInvoicePaidReturnsFullyPaid(tx, invoiceId);
-}
-
-/**
- * Same as recomputeInvoicePaid but reports whether the invoice
- * transitioned to (or remains) PAID after recompute. Used by /receive
- * to decide which invoices to fire the escrow-promote hook on.
- */
-export async function recomputeInvoicePaidReturnsFullyPaid(
-  tx: Database,
-  invoiceId: string,
-): Promise<boolean> {
-  const [agg] = await tx
-    .select({
-      paidCents: sql<number>`COALESCE(SUM(${payments.amountCents}), 0)::bigint`,
-    })
-    .from(payments)
-    .where(
-      and(
-        eq(payments.invoiceId, invoiceId),
-        eq(payments.status, 'SUCCEEDED'),
-        sql`${payments.voidedAt} IS NULL`,
-      ),
-    );
-  const [inv] = await tx
-    .select({
-      total: invoices.totalCents,
-      currentStatus: invoices.status,
-      dueDate: invoices.dueDate,
-    })
-    .from(invoices)
-    .where(eq(invoices.id, invoiceId))
-    .limit(1);
-  if (!inv) return false;
-  const paidCents = Number(agg?.paidCents ?? 0);
-  const total = Number(inv.total);
-  let nextStatus: typeof inv.currentStatus;
-  if (paidCents >= total) {
-    nextStatus = 'PAID';
-  } else if (paidCents > 0) {
-    nextStatus = 'PARTIALLY_PAID';
-  } else if (inv.currentStatus === 'PAID' || inv.currentStatus === 'PARTIALLY_PAID') {
-    // Paid amount fell back to zero (e.g. a payment was voided) — return the
-    // invoice to the unpaid list as OVERDUE (if past due) or SENT. DRAFT /
-    // VOIDED invoices are left untouched.
-    const overdue = inv.dueDate != null && inv.dueDate < new Date().toISOString().slice(0, 10);
-    nextStatus = overdue ? 'OVERDUE' : 'SENT';
-  } else {
-    nextStatus = inv.currentStatus;
-  }
-  await tx
-    .update(invoices)
-    .set({
-      paidCents,
-      status: nextStatus,
-      paidAt: nextStatus === 'PAID' ? new Date() : null,
-    })
-    .where(eq(invoices.id, invoiceId));
-  return nextStatus === 'PAID';
-}
+// Recompute helpers live in ./recompute (Express-free) so the webhook +
+// off-session charge path can be imported by the worker without pulling this
+// Express-typed module into the worker's tsc program. Re-exported here for the
+// existing import sites.
+export { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid };
 
 /**
  * Inline credit-memo status recompute. Duplicates the helper in

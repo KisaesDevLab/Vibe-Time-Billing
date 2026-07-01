@@ -6,7 +6,7 @@
 // at the (provider_charge_id, status) grain — re-deliveries are no-ops.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, eq, isNotNull, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -19,8 +19,6 @@ import {
   paymentMethod,
   paymentReceipts,
   payments,
-  printLog,
-  terminalReaders,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
 import { formatMoneyCents } from '@vibe/core/invoicing';
@@ -31,7 +29,8 @@ import { emitAudit } from '../auth/audit';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
-import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from '../payments/routes';
+import { recomputeInvoicePaidReturnsFullyPaid } from '../payments/recompute';
+import { materializeReceiptIfPending } from '../payments/settle-receipt';
 import {
   promoteEscrowFilesForInvoice,
   revertEscrowFilesForInvoice,
@@ -748,172 +747,5 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
     }
     default:
       logger.debug({ type: event.type }, 'unhandled stripe event');
-  }
-}
-
-/**
- * 0055 — when a Stripe payment_intent.succeeded event arrives for a
- * staff Receive Payment receipt that is still PENDING, materialize the
- * N child payment rows from the receipt's stashed allocations.
- *
- * Returns true when a receipt was processed (whether materialized or
- * already SUCCEEDED — both cases mean "this id belongs to a receipt, do
- * NOT fall through to the legacy per-payment branch").
- *
- * Idempotent on (provider_charge_id, status='SUCCEEDED'): a re-delivery
- * finds the receipt already SUCCEEDED and returns without re-writing.
- */
-// Exported so the off-session charge service can settle synchronously when a
-// card charge returns 'succeeded' immediately (the webhook is the backstop;
-// this is idempotent — a re-run finds the receipt already SUCCEEDED → no-op).
-export async function materializeReceiptIfPending(
-  db: Database,
-  intentId: string,
-  printQueue?: PrintQueue,
-): Promise<boolean> {
-  const [receipt] = await db
-    .select()
-    .from(paymentReceipts)
-    .where(eq(paymentReceipts.providerChargeId, intentId))
-    .limit(1);
-  if (!receipt) return false;
-  if (receipt.status === 'SUCCEEDED') {
-    // Re-delivery. The receipt was already materialized, but a crash between
-    // the commit and the enqueue on the original delivery could have left the
-    // auto-print un-enqueued — so we (idempotently) ensure it here too. The
-    // deterministic queue jobId + gateway idempotency key prevent any double
-    // physical print.
-    await enqueueTerminalReceiptPrint(db, receipt, printQueue);
-    return true;
-  }
-  if (receipt.status !== 'PENDING') return true;
-  const allocations = (receipt.allocationsPending ?? []) as {
-    invoiceId: string;
-    amountCents: number;
-  }[];
-  if (allocations.length === 0) {
-    await db
-      .update(paymentReceipts)
-      .set({ status: 'FAILED', updatedAt: new Date() })
-      .where(eq(paymentReceipts.id, receipt.id));
-    logger.warn({ receiptId: receipt.id }, 'pending receipt had no allocations');
-    return true;
-  }
-
-  await db.transaction(async (tx) => {
-    // Lock allocation invoices in firm scope, then re-validate balances.
-    const locked = await tx
-      .select({
-        id: invoices.id,
-        totalCents: invoices.totalCents,
-        paidCents: invoices.paidCents,
-      })
-      .from(invoices)
-      .where(
-        and(
-          inArray(
-            invoices.id,
-            allocations.map((a) => a.invoiceId),
-          ),
-          eq(invoices.firmId, receipt.firmId),
-        ),
-      )
-      .for('update');
-    const lockedById = new Map(locked.map((i) => [i.id, i]));
-    const receivedAt = new Date();
-    for (const a of allocations) {
-      const inv = lockedById.get(a.invoiceId);
-      if (!inv) {
-        // Invoice disappeared (voided?) between intent and confirmation —
-        // skip this row; the receipt total may not match the sum applied,
-        // which the reconciliation report will surface.
-        continue;
-      }
-      const open = Number(inv.totalCents) - Number(inv.paidCents);
-      // If someone else already paid the invoice down (e.g., portal pay
-      // between intent and webhook), apply only what fits. Excess gets
-      // dropped — better than violating the invoice CHECK constraint.
-      const apply = Math.min(a.amountCents, open);
-      if (apply <= 0) continue;
-      await tx.insert(payments).values({
-        invoiceId: inv.id,
-        amountCents: apply,
-        feeCents: 0,
-        provider: 'STRIPE',
-        providerChargeId: intentId,
-        status: 'SUCCEEDED',
-        receivedAt,
-        receiptId: receipt.id,
-      });
-      await recomputeInvoicePaid(tx, inv.id);
-    }
-    await tx
-      .update(paymentReceipts)
-      .set({
-        status: 'SUCCEEDED',
-        allocationsPending: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(paymentReceipts.id, receipt.id));
-  });
-
-  // 0186 — auto-print the receipt to the terminal's configured printer.
-  // Idempotent (deterministic jobId + gateway idempotency key), so it is also
-  // safe to re-run on webhook re-delivery (see the SUCCEEDED branch above).
-  await enqueueTerminalReceiptPrint(db, receipt, printQueue);
-
-  await emitAudit(db, {
-    action: 'PAYMENT',
-    entityType: 'payment_receipt',
-    entityId: receipt.id,
-    after: {
-      kind: 'receive_materialized',
-      providerChargeId: intentId,
-      allocationCount: allocations.length,
-    },
-  }).catch((err: unknown) =>
-    logger.error({ err, receiptId: receipt.id }, 'audit emit failed (receive_materialized)'),
-  );
-
-  return true;
-}
-
-/** 0186 — enqueue the terminal receipt auto-print for a SUCCEEDED receipt.
- *  Idempotent: the queue uses a deterministic jobId and the worker sends with
- *  a `termreceipt:` gateway idempotency key, so calling this on both the fresh
- *  transition and any webhook re-delivery prints at most once. */
-async function enqueueTerminalReceiptPrint(
-  db: Database,
-  receipt: { id: string; firmId: string; terminalReaderId: string | null },
-  printQueue?: PrintQueue,
-): Promise<void> {
-  if (!printQueue || !receipt.terminalReaderId) return;
-  const [reader] = await db
-    .select({ printerId: terminalReaders.printerId, autoPrint: terminalReaders.autoPrintReceipt })
-    .from(terminalReaders)
-    .where(eq(terminalReaders.id, receipt.terminalReaderId))
-    .limit(1);
-  if (!reader?.autoPrint) return;
-  if (reader.printerId != null) {
-    await printQueue
-      .terminalReceipt({ receiptId: receipt.id, printerId: reader.printerId })
-      .catch((err: unknown) =>
-        logger.error({ err, receiptId: receipt.id }, 'terminal receipt enqueue failed'),
-      );
-  } else {
-    // Auto-print on but no printer assigned → skip + log (don't print to the
-    // wrong location).
-    await db
-      .insert(printLog)
-      .values({
-        firmId: receipt.firmId,
-        appUserId: null,
-        printableType: 'payment_receipt',
-        printableId: receipt.id,
-        printerId: 0,
-        status: 'FAILED',
-        error: 'no_printer_assigned',
-      })
-      .catch(() => undefined);
   }
 }

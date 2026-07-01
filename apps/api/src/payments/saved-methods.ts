@@ -31,10 +31,11 @@ export interface SavedMethodView {
   expMonth: number | null;
   expYear: number | null;
   isDefault: boolean;
+  verificationStatus: 'PENDING_MICRODEPOSIT' | null;
 }
 
 /** The billing email + name to attach to the Stripe Customer. */
-async function clientBillingIdentity(
+export async function clientBillingIdentity(
   db: Database,
   firmId: string,
   clientId: string,
@@ -73,7 +74,11 @@ export async function createClientSetupIntent(
   db: Database,
   firmId: string,
   clientId: string,
-  opts: { portalIdentityId?: string | null; fetchImpl?: typeof fetch } = {},
+  opts: {
+    portalIdentityId?: string | null;
+    achVerificationMethod?: 'automatic' | 'instant' | 'microdeposits';
+    fetchImpl?: typeof fetch;
+  } = {},
 ): Promise<CreateSetupIntentResult | { error: string }> {
   const creds = await resolveFirmStripe(db, firmId);
   if (!creds) return { error: 'stripe_not_configured' };
@@ -95,6 +100,7 @@ export async function createClientSetupIntent(
     stripeAccountId: creds.stripeAccountId,
     customerId: stripeCustomerId,
     paymentMethodTypes: ['card', 'us_bank_account'],
+    achVerificationMethod: opts.achVerificationMethod,
     fetchImpl: opts.fetchImpl,
   });
   return {
@@ -227,6 +233,7 @@ export async function listClientMethods(
       expMonth: paymentMethod.expMonth,
       expYear: paymentMethod.expYear,
       isDefault: paymentMethod.isDefault,
+      verificationStatus: paymentMethod.verificationStatus,
     })
     .from(paymentMethod)
     .where(

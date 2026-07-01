@@ -602,6 +602,12 @@ export const paymentMethod = pgTable(
     isDefault: boolean('is_default').notNull().default(false),
     status: paymentMethodStatus('status').notNull().default('ACTIVE'),
 
+    // 0193 — manual ACH micro-deposit verification. NULL = ready/instant/card;
+    // 'PENDING_MICRODEPOSIT' while awaiting the two-deposit confirmation, during
+    // which the method must not be charged.
+    verificationStatus: text('verification_status').$type<'PENDING_MICRODEPOSIT'>(),
+    pendingSetupIntentId: text('pending_setup_intent_id'),
+
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

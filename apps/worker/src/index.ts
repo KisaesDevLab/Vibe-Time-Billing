@@ -22,6 +22,8 @@ import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
 import { runBookingHoldExpiryTick } from './jobs/booking-hold-expiry';
+import { runPaymentPlanChargeTick } from './jobs/payment-plan-charge';
+import { chargeClientBalanceOffSession } from '../../api/src/payments/off-session-charge';
 import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
@@ -329,6 +331,9 @@ const QUEUES = [
   'appointment-reminders',
   // 0168 — expire stale public booking-request holds (frees the slot).
   'booking-hold-expiry',
+  // 0192 — recurring installment payment plans. Daily sweep charges each
+  // ACTIVE plan due today off-session against the saved method.
+  'payment-plan-charge',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -446,6 +451,33 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runPaymentRetry(db, logger, { chargeInvoice });
     logger.info({ jobId: job.id, ...result }, 'payment-retry complete');
+  },
+  'payment-plan-charge': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'payment-plan-charge: no DB configured');
+      return;
+    }
+    const boundDb = db;
+    const result = await runPaymentPlanChargeTick(boundDb, logger, undefined, {
+      // Off-session charge resolves per-firm Stripe keys internally
+      // (resolveFirmStripe) and settles via the existing webhook.
+      charge: async (args) => {
+        const r = await chargeClientBalanceOffSession({
+          db: boundDb,
+          firmId: args.firmId,
+          clientId: args.clientId,
+          paymentMethodId: args.paymentMethodId,
+          amountCents: args.amountCents,
+          allocations: args.allocations,
+          idempotencyKey: args.idempotencyKey,
+          metadata: args.metadata,
+        });
+        return r.ok
+          ? { ok: true, paymentIntentId: r.paymentIntentId, requiresAction: r.requiresAction }
+          : { ok: false, error: r.error };
+      },
+    });
+    logger.info({ jobId: job.id, ...result }, 'payment-plan-charge complete');
   },
   'webhook-dispatch': async (job) => {
     if (!db) {
@@ -766,6 +798,7 @@ const CRON: Record<QueueName, string> = {
   'approval-escalation': '20 * * * *',
   'approval-sla-monitor': '50 * * * *',
   'payment-retry': '15 2 * * *',
+  'payment-plan-charge': '30 3 * * *',
   'webhook-dispatch': '*/2 * * * *',
   'auto-rollover-scan': '30 2 * * *',
   'retention-enforcement': '45 3 * * *',
