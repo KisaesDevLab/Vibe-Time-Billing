@@ -732,7 +732,10 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
  * Idempotent on (provider_charge_id, status='SUCCEEDED'): a re-delivery
  * finds the receipt already SUCCEEDED and returns without re-writing.
  */
-async function materializeReceiptIfPending(
+// Exported so the off-session charge service can settle synchronously when a
+// card charge returns 'succeeded' immediately (the webhook is the backstop;
+// this is idempotent — a re-run finds the receipt already SUCCEEDED → no-op).
+export async function materializeReceiptIfPending(
   db: Database,
   intentId: string,
   printQueue?: PrintQueue,
