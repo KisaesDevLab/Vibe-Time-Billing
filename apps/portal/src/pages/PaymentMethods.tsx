@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, SectionHeading, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { AddPaymentMethodPanel, VerifyMicrodepositsButton } from './AddPaymentMethod';
 
 interface PaymentMethodRow {
   id: string;
@@ -16,6 +17,7 @@ interface PaymentMethodRow {
   expYear: number | null;
   isDefault: boolean;
   status: string;
+  verificationStatus: 'PENDING_MICRODEPOSIT' | null;
 }
 
 interface AutopayEnrollment {
@@ -40,6 +42,7 @@ export function PaymentMethodsPage(): JSX.Element {
   const [autopayMethods, setAutopayMethods] = useState<AutopayPaymentMethod[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   async function load(): Promise<void> {
     try {
@@ -116,12 +119,31 @@ export function PaymentMethodsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
-      <Card title="Saved payment methods">
+      <Card
+        title="Saved payment methods"
+        action={
+          !adding ? (
+            <Button size="sm" onClick={() => setAdding(true)}>
+              Add method
+            </Button>
+          ) : undefined
+        }
+      >
         {status && (
           <p style={{ color: tokens.color.success, fontSize: 12, marginBottom: 8 }}>{status}</p>
         )}
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }}>{error}</p>
+        )}
+        {adding && (
+          <AddPaymentMethodPanel
+            onCancel={() => setAdding(false)}
+            onDone={(msg) => {
+              setAdding(false);
+              setStatus(msg);
+              void load();
+            }}
+          />
         )}
         <Table<PaymentMethodRow>
           columns={[
@@ -129,10 +151,13 @@ export function PaymentMethodsPage(): JSX.Element {
               key: 'label',
               header: 'Method',
               render: (p) => (
-                <span>
+                <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   {p.brand ?? p.kind}
                   {p.lastFour ? ` ····${p.lastFour}` : ''}
                   {p.displayLabel ? ` (${p.displayLabel})` : ''}
+                  {p.verificationStatus === 'PENDING_MICRODEPOSIT' && (
+                    <Pill tone="accent">awaiting deposits</Pill>
+                  )}
                 </span>
               ),
             },
@@ -154,7 +179,17 @@ export function PaymentMethodsPage(): JSX.Element {
               header: '',
               render: (p) => (
                 <span style={{ display: 'flex', gap: 6 }}>
-                  {!p.isDefault && (
+                  {p.verificationStatus === 'PENDING_MICRODEPOSIT' && (
+                    <VerifyMicrodepositsButton
+                      methodId={p.id}
+                      onVerified={() => {
+                        setStatus('Bank verified.');
+                        void load();
+                      }}
+                      onError={setError}
+                    />
+                  )}
+                  {!p.isDefault && p.verificationStatus === null && (
                     <Button size="sm" variant="secondary" onClick={() => void setAutopay(p.id)}>
                       Use for autopay
                     </Button>

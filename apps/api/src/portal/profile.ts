@@ -25,6 +25,8 @@ import type { AnySession } from '@vibe/core/auth';
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { createClientSetupIntent, confirmClientSetupIntent } from '../payments/saved-methods';
+import { createManualAchMethod, verifyMicrodeposits } from '../payments/manual-ach';
 
 // Phase 19 #22 — alt-contact OTP timing constants.
 const OTP_TTL_MS = 10 * 60_000;
@@ -110,6 +112,7 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         expYear: paymentMethod.expYear,
         isDefault: paymentMethod.isDefault,
         status: paymentMethod.status,
+        verificationStatus: paymentMethod.verificationStatus,
       })
       .from(paymentMethod)
       .where(
@@ -119,6 +122,218 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         ),
       );
     res.json({ items });
+  });
+
+  // Confirm the signed-in identity still has ACTIVE access to its active client
+  // (activeClientId in the session is only validated at switch time).
+  async function requireActiveClientAccess(session: {
+    portalIdentityId: string;
+    activeClientId: string;
+  }): Promise<boolean> {
+    if (!deps.db || !session.activeClientId) return false;
+    const [access] = await deps.db
+      .select({ clientId: clientPortalAccess.clientId })
+      .from(clientPortalAccess)
+      .where(
+        and(
+          eq(clientPortalAccess.portalIdentityId, session.portalIdentityId),
+          eq(clientPortalAccess.clientId, session.activeClientId),
+          eq(clientPortalAccess.status, 'ACTIVE'),
+        ),
+      )
+      .limit(1);
+    return Boolean(access);
+  }
+
+  // Begin a save-a-method flow (Stripe Payment Element client_secret). The
+  // saved method is stamped with this identity so it appears in the list above.
+  const PortalSetupSchema = z.object({
+    achVerificationMethod: z.enum(['automatic', 'instant', 'microdeposits']).optional(),
+  });
+  router.post('/payment-methods/setup-intent', deps.requireAuth, async (req, res) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = PortalSetupSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    if (!(await requireActiveClientAccess(session))) {
+      res.status(403).json({ error: 'client_not_accessible' });
+      return;
+    }
+    const r = await createClientSetupIntent(deps.db, session.firmId, session.activeClientId, {
+      portalIdentityId: session.portalIdentityId,
+      achVerificationMethod: parsed.data.achVerificationMethod,
+    });
+    if ('error' in r) {
+      res.status(r.error === 'client_not_found' ? 404 : 400).json({ error: r.error });
+      return;
+    }
+    res.json(r);
+  });
+
+  // Persist the method after the browser confirms the SetupIntent.
+  const PortalConfirmSchema = z.object({
+    setupIntentId: z.string().min(1).max(120),
+    mandateText: z.string().max(20_000).optional(),
+  });
+  router.post('/payment-methods/confirm', deps.requireAuth, async (req, res) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = PortalConfirmSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    if (!(await requireActiveClientAccess(session))) {
+      res.status(403).json({ error: 'client_not_accessible' });
+      return;
+    }
+    let out;
+    try {
+      out = await confirmClientSetupIntent(
+        deps.db,
+        session.firmId,
+        session.activeClientId,
+        parsed.data.setupIntentId,
+        { portalIdentityId: session.portalIdentityId, mandateText: parsed.data.mandateText },
+      );
+    } catch (err) {
+      logger.error({ err }, 'portal saved-method confirm failed');
+      res.status(502).json({ error: 'stripe_error' });
+      return;
+    }
+    if (!out.ok) {
+      res.status(400).json({ error: out.error });
+      return;
+    }
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'payment_method',
+      entityId: out.paymentMethodId,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: { clientId: session.activeClientId, kind: 'saved', via: 'portal' },
+    }).catch(() => undefined);
+    res.status(201).json({ ok: true, paymentMethodId: out.paymentMethodId });
+  });
+
+  // Manual ACH — save a bank from routing + account numbers (no bank login).
+  const PortalManualAchSchema = z.object({
+    routingNumber: z.string().regex(/^\d{9}$/),
+    accountNumber: z.string().regex(/^\d{4,17}$/),
+    accountHolderType: z.enum(['individual', 'company']),
+    accountHolderName: z.string().min(1).max(200),
+  });
+  router.post('/payment-methods/manual-ach', deps.requireAuth, async (req, res) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = PortalManualAchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    if (!(await requireActiveClientAccess(session))) {
+      res.status(403).json({ error: 'client_not_accessible' });
+      return;
+    }
+    let out;
+    try {
+      out = await createManualAchMethod({
+        db: deps.db,
+        firmId: session.firmId,
+        clientId: session.activeClientId,
+        portalIdentityId: session.portalIdentityId,
+        routingNumber: parsed.data.routingNumber,
+        accountNumber: parsed.data.accountNumber,
+        accountHolderType: parsed.data.accountHolderType,
+        accountHolderName: parsed.data.accountHolderName,
+      });
+    } catch (err) {
+      logger.error({ err }, 'portal manual-ach create failed');
+      res.status(502).json({ error: 'stripe_error' });
+      return;
+    }
+    if (!out.ok) {
+      res.status(out.error === 'client_not_found' ? 404 : 400).json({ error: out.error });
+      return;
+    }
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'payment_method',
+      entityId: out.paymentMethodId,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: { clientId: session.activeClientId, kind: 'ach_manual', via: 'portal' },
+    }).catch(() => undefined);
+    res
+      .status(201)
+      .json({ ok: true, paymentMethodId: out.paymentMethodId, verification: out.verification });
+  });
+
+  // Verify micro-deposits for a pending manual ACH bank.
+  const PortalVerifySchema = z
+    .object({
+      amounts: z.array(z.number().int().positive()).length(2).optional(),
+      descriptorCode: z.string().min(1).max(40).optional(),
+    })
+    .refine((v) => Boolean(v.amounts) || Boolean(v.descriptorCode), {
+      message: 'amounts_or_descriptor_required',
+    });
+  router.post('/payment-methods/:id/verify-microdeposits', deps.requireAuth, async (req, res) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = PortalVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    // Ownership: the method must belong to this identity.
+    const [owned] = await deps.db
+      .select({ id: paymentMethod.id })
+      .from(paymentMethod)
+      .where(
+        and(
+          eq(paymentMethod.id, req.params['id']!),
+          eq(paymentMethod.portalIdentityId, session.portalIdentityId),
+        ),
+      )
+      .limit(1);
+    if (!owned) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    let out;
+    try {
+      out = await verifyMicrodeposits({
+        db: deps.db,
+        firmId: session.firmId,
+        clientId: session.activeClientId,
+        paymentMethodId: req.params['id']!,
+        amounts: parsed.data.amounts as [number, number] | undefined,
+        descriptorCode: parsed.data.descriptorCode,
+      });
+    } catch (err) {
+      logger.error({ err }, 'portal verify-microdeposits failed');
+      res.status(502).json({ error: 'stripe_error' });
+      return;
+    }
+    if (!out.ok) {
+      res.status(out.error === 'payment_method_not_found' ? 404 : 400).json({ error: out.error });
+      return;
+    }
+    res.json({ ok: true });
   });
 
   router.delete('/payment-methods/:id', deps.requireAuth, async (req: Request, res: Response) => {
