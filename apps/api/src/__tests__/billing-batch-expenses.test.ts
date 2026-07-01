@@ -12,6 +12,7 @@ import type express from 'express';
 
 import {
   adjustments,
+  billingBatchEntries,
   billingBatchExpenses,
   billingBatches,
   engagementExpenses,
@@ -245,6 +246,78 @@ describe('billing-batch expenses (0199)', () => {
       .from(adjustments)
       .where(eq(adjustments.billingBatchId, batchId));
     expect(adj!.total).toBe(8500);
+  });
+
+  it('draft-saved DEFER action is persisted and excluded from set-target allocation', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const e1 = await seedTimeEntry(harness.db, {
+      engagementId: seed.engagementId,
+      appUserId: seed.appUserId,
+      workCodeId: seed.workCodeId,
+      standardAmountCents: 80000, // $800 — stays INCLUDE
+    });
+    const e2 = await seedTimeEntry(harness.db, {
+      engagementId: seed.engagementId,
+      appUserId: seed.appUserId,
+      workCodeId: seed.workCodeId,
+      standardAmountCents: 40000, // $400 — will be deferred
+    });
+    const router = batchRouter(seed);
+    const batchId = await createBatch(router, seed);
+
+    // Draft-save: defer the second entry WITHOUT finalizing.
+    const save = await invoke(router, 'patch', '/:id/actions', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        params: { id: batchId },
+        body: { actions: [{ timeEntryId: e2, action: 'DEFER' }] },
+      }),
+    });
+    expect(save.statusCode).toBe(200);
+
+    // Persisted to billing_batch_entry (and NOT released — still in batch).
+    const [bbe2] = await harness.db
+      .select()
+      .from(billingBatchEntries)
+      .where(
+        and(
+          eq(billingBatchEntries.billingBatchId, batchId),
+          eq(billingBatchEntries.timeEntryId, e2),
+        ),
+      );
+    expect(bbe2!.action).toBe('DEFER');
+
+    const rc = await harness.db.execute(
+      sql`INSERT INTO reason_code (firm_id, category, label)
+          VALUES (${seed.firmId}, 'WRITE_DOWN', 'Scope') RETURNING id`,
+    );
+    const reasonId = (rc as unknown as { rows: { id: string }[] }).rows[0]!.id;
+
+    // Target $500 with only e1 ($800) as INCLUDE → delta = 500 − 800 = −300.
+    const r = await invoke(router, 'post', '/:id/set-target', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        params: { id: batchId },
+        body: { targetAmountCents: 50000, reasonCodeId: reasonId },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    expect((r.jsonBody as { deltaCents: number }).deltaCents).toBe(-30000);
+    void e1;
+
+    // The DEFER selection survived the set-target operation.
+    const [bbe2After] = await harness.db
+      .select()
+      .from(billingBatchEntries)
+      .where(
+        and(
+          eq(billingBatchEntries.billingBatchId, batchId),
+          eq(billingBatchEntries.timeEntryId, e2),
+        ),
+      );
+    expect(bbe2After!.action).toBe('DEFER');
   });
 
   it('finalize DEFER releases the expense back to the pool', async () => {

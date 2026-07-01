@@ -709,6 +709,38 @@ function BatchDetailPage(): JSX.Element {
     }
   }
 
+  // Draft-save the current action selections (+ expense billed amounts) to the
+  // batch WITHOUT finalizing, so set-target / create-adjustment (which read
+  // billing_batch_entry.action from the DB) allocate only across the rows the
+  // biller left as INCLUDE — and so the selections survive the reload those
+  // operations trigger. Maps are passed explicitly to avoid stale closures.
+  async function persistActions(
+    nextActions: Map<string, BatchEntry['action']>,
+    nextExpenseActions: Map<string, BatchExpense['action']>,
+    nextExpenseBilled: Map<string, number>,
+  ): Promise<void> {
+    if (!detail) return;
+    try {
+      await api(`/api/staff/billing-batches/${id}/actions`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          actions: detail.entries.map((e) => ({
+            timeEntryId: e.timeEntryId,
+            action: nextActions.get(e.timeEntryId) ?? e.action,
+          })),
+          expenseActions: (detail.expenses ?? []).map((x) => ({
+            expenseId: x.expenseId,
+            action: nextExpenseActions.get(x.expenseId) ?? x.action,
+            billedAmountCents: nextExpenseBilled.get(x.expenseId) ?? x.billedAmountCents,
+          })),
+        }),
+      });
+    } catch {
+      // Non-fatal — the change stays in local state and is re-sent on the
+      // next action change or captured at finalize.
+    }
+  }
+
   function printInvoice(): void {
     if (!detail?.invoiceId) return;
     window.open(`/api/staff/invoices/${detail.invoiceId}/pdf`, '_blank', 'noopener,noreferrer');
@@ -768,6 +800,9 @@ function BatchDetailPage(): JSX.Element {
     setSettingTarget(true);
     setError(null);
     try {
+      // Flush the current action/billed selections first so the server
+      // allocates the target only across rows left as INCLUDE.
+      await persistActions(actions, expenseActions, expenseBilled);
       await api(`/api/staff/billing-batches/${id}/set-target`, {
         method: 'POST',
         body: JSON.stringify({
@@ -1239,7 +1274,16 @@ function BatchDetailPage(): JSX.Element {
         action={
           detail.batch.status === 'DRAFT' || detail.batch.status === 'IN_REVIEW' ? (
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button variant="secondary" size="sm" onClick={() => setShowAdjustDialog(true)}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  // Flush selections so the dialog + server see only INCLUDE rows.
+                  void persistActions(actions, expenseActions, expenseBilled).then(() =>
+                    setShowAdjustDialog(true),
+                  );
+                }}
+              >
                 Create adjustment
               </Button>
               <Button onClick={() => void finalize()} disabled={finalizing}>
@@ -1400,6 +1444,7 @@ function BatchDetailPage(): JSX.Element {
                         const m = new Map(actions);
                         m.set(e.timeEntryId, v);
                         setActions(m);
+                        void persistActions(m, expenseActions, expenseBilled);
                       }}
                     />
                   ),
@@ -1437,6 +1482,7 @@ function BatchDetailPage(): JSX.Element {
               next.set(x.expenseId, Math.round(x.costCents * (1 + pct / 100)));
             }
             setExpenseBilled(next);
+            void persistActions(actions, expenseActions, next);
           };
           return (
             <Card title="Expenses">
@@ -1519,6 +1565,7 @@ function BatchDetailPage(): JSX.Element {
                                     Math.round((Number(e.target.value) || 0) * 100),
                                   );
                                   setExpenseBilled(next);
+                                  void persistActions(actions, expenseActions, next);
                                 }}
                                 style={{
                                   padding: '4px 6px',
@@ -1541,6 +1588,7 @@ function BatchDetailPage(): JSX.Element {
                                 const m = new Map(expenseActions);
                                 m.set(x.expenseId, v);
                                 setExpenseActions(m);
+                                void persistActions(actions, m, expenseBilled);
                               }}
                             />
                           </td>

@@ -699,6 +699,82 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // Draft-save per-entry / per-expense actions WITHOUT finalizing. The UI
+  // calls this whenever a biller flips an INCLUDE/DEFER/WRITE_OFF picker so
+  // that set-target and create-adjustment (both of which read
+  // billing_batch_entry.action from the DB to build the allocation universe)
+  // see the current selection. Unlike finalize this does NOT change batch
+  // status and does NOT release billing_batch_id — the entry/expense stays
+  // in the batch until finalize actually releases DEFER/held rows.
+  // -----------------------------------------------------------------
+  const SaveActionsSchema = z.object({
+    actions: z.array(EntryActionSchema).max(5000).optional(),
+    expenseActions: z.array(ExpenseActionSchema).max(5000).optional(),
+  });
+  router.patch(
+    '/:id/actions',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const parsed = SaveActionsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      // Draft action saves are transient (a biller may toggle a picker many
+      // times); the final set is audited at finalize, so we don't emit here.
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [batch] = await deps.db
+        .select({ id: billingBatches.id, status: billingBatches.status })
+        .from(billingBatches)
+        .where(eq(billingBatches.id, req.params['id']!))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Actions are only editable while the batch is still a draft.
+      if (batch.status !== 'DRAFT' && batch.status !== 'IN_REVIEW') {
+        res.status(409).json({ error: 'batch_not_editable' });
+        return;
+      }
+      await deps.db.transaction(async (tx) => {
+        for (const a of parsed.data.actions ?? []) {
+          await tx
+            .update(billingBatchEntries)
+            .set({ action: a.action, comment: a.comment ?? null })
+            .where(
+              and(
+                eq(billingBatchEntries.billingBatchId, batch.id),
+                eq(billingBatchEntries.timeEntryId, a.timeEntryId),
+              ),
+            );
+        }
+        for (const x of parsed.data.expenseActions ?? []) {
+          await tx
+            .update(billingBatchExpenses)
+            .set({
+              action: x.action,
+              comment: x.comment ?? null,
+              ...(x.billedAmountCents !== undefined
+                ? { billedAmountCents: x.billedAmountCents }
+                : {}),
+            })
+            .where(
+              and(
+                eq(billingBatchExpenses.billingBatchId, batch.id),
+                eq(billingBatchExpenses.expenseId, x.expenseId),
+              ),
+            );
+        }
+      });
+      res.json({ ok: true });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Emailable pre-bill (Phase 11 #9). Sends a plaintext pre-bill summary
   // to the configured partner-review email. The body lists the included
   // time entries grouped by user. No PDF — fast text only.
