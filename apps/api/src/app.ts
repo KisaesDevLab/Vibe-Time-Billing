@@ -53,6 +53,7 @@ import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createInvoicePayPublicRouter } from './pay-public/invoice-pay';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
+import { createExpensesRouter } from './expenses/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
 import { portalAuthDeps } from './auth/portal-middleware';
@@ -836,6 +837,12 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendPortalEmail,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
+
+  const expensesRouter = createExpensesRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/expenses', auth.requireAuth, auth.requireCsrf, expensesRouter);
 
   const auditRouter = createAuditRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/audit', auth.requireAuth, auth.requireCsrf, auditRouter);

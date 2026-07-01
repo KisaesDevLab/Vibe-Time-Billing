@@ -187,6 +187,10 @@ export const billingBatchEntryAction = pgEnum('billing_batch_entry_action', [
   'WRITE_OFF_HELD',
 ]);
 
+// 0199 — engagement expense lifecycle. ACTIVE expenses are billable /
+// pullable into a batch; ARCHIVED is the soft-delete state (CLAUDE.md #3).
+export const expenseStatus = pgEnum('expense_status', ['ACTIVE', 'ARCHIVED']);
+
 export const adjustmentMethod = pgEnum('adjustment_method', ['RATE', 'TIME', 'FEE']);
 
 export const adjustmentAllocationMethod = pgEnum('adjustment_allocation_method', [
@@ -2561,6 +2565,71 @@ export const billingBatchEngagements = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.billingBatchId, t.engagementId] }),
     engagementIdx: index('billing_batch_engagement_engagement_idx').on(t.engagementId),
+  }),
+);
+
+// =====================================================================
+// ENGAGEMENT EXPENSE — out-of-pocket costs billed at cost + markup.
+//
+// Expenses are deliberately NOT time_entry rows and NEVER produce
+// adjustment_allocation rows, so they carry no timekeeper and stay out
+// of per-timekeeper realization (CLAUDE.md non-negotiable #4). Billed at
+// cost + markup%; a billing batch pulls them in and applies the same
+// INCLUDE / DEFER / WRITE_OFF actions as time entries.
+// =====================================================================
+
+export const engagementExpenses = pgTable(
+  'engagement_expense',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id').notNull(),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id),
+    expenseDate: date('expense_date').notNull(),
+    description: text('description').notNull(),
+    costCents: bigint('cost_cents', { mode: 'number' }).notNull(),
+    category: text('category'),
+    vendor: text('vendor'),
+    // Availability governor — mirrors time_entry.billing_batch_id. Set when
+    // the expense is claimed into a batch; cleared on DEFER/release so a
+    // future batch can re-claim it.
+    billingBatchId: uuid('billing_batch_id'),
+    status: expenseStatus('status').notNull().default('ACTIVE'),
+    createdById: uuid('created_by_id').references(() => appUsers.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmEngagementStatusIdx: index('engagement_expense_firm_engagement_status_idx').on(
+      t.firmId,
+      t.engagementId,
+      t.status,
+    ),
+    batchIdx: index('engagement_expense_batch_idx').on(t.billingBatchId),
+    costNonNegative: check('engagement_expense_cost_nonnegative', sql`${t.costCents} >= 0`),
+  }),
+);
+
+// Expense↔batch association — parallels billing_batch_entry. Reuses the
+// billing_batch_entry_action enum; billed_amount_cents is the resolved
+// cost+markup amount for this batch.
+export const billingBatchExpenses = pgTable(
+  'billing_batch_expense',
+  {
+    billingBatchId: uuid('billing_batch_id')
+      .notNull()
+      .references(() => billingBatches.id, { onDelete: 'cascade' }),
+    expenseId: uuid('expense_id')
+      .notNull()
+      .references(() => engagementExpenses.id),
+    action: billingBatchEntryAction('action').notNull().default('INCLUDE'),
+    billedAmountCents: bigint('billed_amount_cents', { mode: 'number' }),
+    comment: text('comment'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.billingBatchId, t.expenseId] }),
+    expenseIdx: index('billing_batch_expense_expense_idx').on(t.expenseId),
   }),
 );
 

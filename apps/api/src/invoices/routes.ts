@@ -15,9 +15,11 @@ import {
   adjustments,
   billingBatchEngagements,
   billingBatchEntries,
+  billingBatchExpenses,
   billingBatches,
   clients,
   dunningHistory,
+  engagementExpenses,
   engagements,
   firmRetainerSettings,
   firmSettings,
@@ -854,6 +856,44 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           lineEngagementIds.push(eng.id);
         }
       }
+
+      // 0199 — append one EXPENSE line per INCLUDE expense on the batch.
+      // Expenses are billed at their resolved cost+markup amount (set on the
+      // billing screen / by set-target) and are added ON TOP of the time
+      // composition — they carry no timekeeper and are outside the
+      // surcharge/tax base (which was computed from preExtrasTotals above),
+      // matching the "target = time + expenses" model.
+      const expenseLines = await deps.db
+        .select({
+          expenseId: billingBatchExpenses.expenseId,
+          description: engagementExpenses.description,
+          engagementId: engagementExpenses.engagementId,
+          billedAmountCents: billingBatchExpenses.billedAmountCents,
+          costCents: engagementExpenses.costCents,
+        })
+        .from(billingBatchExpenses)
+        .innerJoin(engagementExpenses, eq(engagementExpenses.id, billingBatchExpenses.expenseId))
+        .where(
+          and(
+            eq(billingBatchExpenses.billingBatchId, batch.id),
+            eq(billingBatchExpenses.action, 'INCLUDE'),
+          ),
+        );
+      for (const x of expenseLines) {
+        // Fall back to cost + 15% if a billed amount was never resolved.
+        const amountCents =
+          x.billedAmountCents != null
+            ? Number(x.billedAmountCents)
+            : Math.round(Number(x.costCents) * 1.15);
+        if (amountCents === 0) continue;
+        lines.push({
+          kind: 'EXPENSE',
+          description: x.description,
+          amountCents,
+        });
+        lineEngagementIds.push(isMultiEngagement ? x.engagementId : eng.id);
+      }
+
       const totals = computeTotals(lines);
 
       // Captured from the offer-creation hook so we can schedule

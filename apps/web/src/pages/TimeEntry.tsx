@@ -21,6 +21,7 @@ import { filterStatuses } from '../status-filter';
 import { selectRows, useColumnView } from '../lib/column-view';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
 import { ProcessProjectDialog } from './clients/ProcessProjectDialog';
+import { ExpensesView } from './ExpensesView';
 
 interface Engagement {
   id: string;
@@ -87,7 +88,7 @@ interface MonthTotal {
   count: number;
 }
 
-type ViewMode = 'log' | 'day' | 'week' | 'month';
+type ViewMode = 'log' | 'day' | 'week' | 'month' | 'expenses';
 
 const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -230,6 +231,7 @@ export function TimeEntryPage(): JSX.Element {
       {view === 'day' && <DayView engagements={engagements} clients={clients} />}
       {view === 'week' && <WeekView engagements={engagements} clients={clients} />}
       {view === 'month' && <MonthView />}
+      {view === 'expenses' && <ExpensesView engagements={engagements} clients={clients} />}
     </div>
   );
 }
@@ -266,6 +268,7 @@ function ViewTabs({
     { id: 'day', label: 'Day' },
     { id: 'week', label: 'Week' },
     { id: 'month', label: 'Month' },
+    { id: 'expenses', label: 'Expenses' },
   ];
   return (
     <div

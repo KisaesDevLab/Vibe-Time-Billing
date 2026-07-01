@@ -62,9 +62,24 @@ interface BatchEntry {
   billedAmountCents?: number;
 }
 
+// 0199 — an expense line on the batch (cost + markup billed item, no
+// timekeeper). Same INCLUDE/DEFER/WRITE_OFF actions as time entries.
+interface BatchExpense {
+  expenseId: string;
+  expenseDate: string;
+  description: string;
+  costCents: number;
+  category?: string | null;
+  vendor?: string | null;
+  engagementId: string;
+  action: 'INCLUDE' | 'DEFER' | 'WRITE_OFF';
+  billedAmountCents: number;
+}
+
 interface BatchDetail {
   batch: BatchRow;
   entries: BatchEntry[];
+  expenses?: BatchExpense[];
   aging: Record<string, number>;
   engagement?: { id: string; name: string; clientId: string; clientName: string } | null;
   // 0086 — full engagement list (primary first) for the batch header.
@@ -577,6 +592,13 @@ function BatchDetailPage(): JSX.Element {
   const [detail, setDetail] = useState<BatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [actions, setActions] = useState<Map<string, BatchEntry['action']>>(new Map());
+  // 0199 — expense actions + editable billed amounts (cents), and the
+  // screen-level markup % (default 15) that defaults every expense's billed.
+  const [expenseActions, setExpenseActions] = useState<Map<string, BatchExpense['action']>>(
+    new Map(),
+  );
+  const [expenseBilled, setExpenseBilled] = useState<Map<string, number>>(new Map());
+  const [markupPct, setMarkupPct] = useState('15');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
@@ -618,6 +640,15 @@ function BatchDetailPage(): JSX.Element {
       const m = new Map<string, BatchEntry['action']>();
       for (const e of d.entries) m.set(e.timeEntryId, e.action);
       setActions(m);
+      // 0199 — seed expense actions + billed amounts.
+      const xa = new Map<string, BatchExpense['action']>();
+      const xb = new Map<string, number>();
+      for (const x of d.expenses ?? []) {
+        xa.set(x.expenseId, x.action);
+        xb.set(x.expenseId, x.billedAmountCents);
+      }
+      setExpenseActions(xa);
+      setExpenseBilled(xb);
       setInvoiceDescription(d.batch.invoiceDescription ?? '');
       setInvoiceLines(
         (d.batch.invoiceLineItems ?? []).map((l) => ({
@@ -661,6 +692,12 @@ function BatchDetailPage(): JSX.Element {
           actions: detail.entries.map((e) => ({
             timeEntryId: e.timeEntryId,
             action: actions.get(e.timeEntryId) ?? e.action,
+          })),
+          // 0199 — persist expense actions + billed amounts alongside time.
+          expenseActions: (detail.expenses ?? []).map((x) => ({
+            expenseId: x.expenseId,
+            action: expenseActions.get(x.expenseId) ?? x.action,
+            billedAmountCents: expenseBilled.get(x.expenseId) ?? x.billedAmountCents,
           })),
         }),
       });
@@ -737,6 +774,9 @@ function BatchDetailPage(): JSX.Element {
           targetAmountCents: cents,
           reasonCodeId: targetReasonId,
           notes: targetNotes || undefined,
+          // 0199 — expenses bill at cost + this markup% and are carved out of
+          // the target first; the remainder is written up/down across time.
+          expenseMarkupPct: Number(markupPct) || 0,
         }),
       });
       setTargetDollars('');
@@ -788,9 +828,19 @@ function BatchDetailPage(): JSX.Element {
     },
     { included: 0, deferred: 0, writtenOff: 0 },
   );
-  // 0052 — billed = INCLUDE total + signed approved adjustments.
+  // 0052 — billed = INCLUDE total + signed approved adjustments. This is the
+  // TIME portion; the invoice composition editor governs only this amount.
   const adjustmentTotalCents = detail.adjustmentTotalCents ?? 0;
   const billedCents = totals.included + adjustmentTotalCents;
+  // 0199 — expenses are billed on top of time at their (editable) cost+markup
+  // amount. The invoice grand total = time billed + INCLUDE expense billed.
+  const batchExpenses = detail.expenses ?? [];
+  const expenseBilledTotal = batchExpenses.reduce((s, x) => {
+    const a = expenseActions.get(x.expenseId) ?? x.action;
+    if (a !== 'INCLUDE') return s;
+    return s + (expenseBilled.get(x.expenseId) ?? x.billedAmountCents);
+  }, 0);
+  const grandTotalCents = billedCents + expenseBilledTotal;
   const lineSumCents = invoiceLines.reduce(
     (s, l) => s + (Number.isFinite(Number(l.dollars)) ? Math.round(Number(l.dollars) * 100) : 0),
     0,
@@ -936,13 +986,15 @@ function BatchDetailPage(): JSX.Element {
       {(detail.batch.status === 'DRAFT' || detail.batch.status === 'IN_REVIEW') && (
         <Card title="Set target invoice amount">
           <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
-            Enter the amount you want to bill — we&apos;ll auto-create a write-down or write-up
-            adjustment for the delta against the current total to invoice ({fmtCents(billedCents)}).
+            Enter the total you want to bill. Expenses bill at cost + markup% and are carved out
+            first ({fmtCents(expenseBilledTotal)}); the remainder is written up/down across time
+            (currently {fmtCents(billedCents)}).
           </p>
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr 2fr auto',
+              gridTemplateColumns:
+                batchExpenses.length > 0 ? '1fr 0.7fr 1fr 2fr auto' : '1fr 1fr 2fr auto',
               gap: 12,
               alignItems: 'end',
             }}
@@ -953,8 +1005,18 @@ function BatchDetailPage(): JSX.Element {
               label="Target ($)"
               value={targetDollars}
               onChange={(e) => setTargetDollars(e.target.value)}
-              placeholder={(billedCents / 100).toFixed(2)}
+              placeholder={(grandTotalCents / 100).toFixed(2)}
             />
+            {batchExpenses.length > 0 && (
+              <Input
+                type="text"
+                inputMode="decimal"
+                label="Markup %"
+                value={markupPct}
+                onChange={(e) => setMarkupPct(e.target.value)}
+                placeholder="15"
+              />
+            )}
             <div>
               <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
                 Reason code
@@ -983,15 +1045,25 @@ function BatchDetailPage(): JSX.Element {
               {settingTarget ? 'Applying…' : 'Apply'}
             </Button>
           </div>
-          {targetDollars && Number.isFinite(Number(targetDollars)) && (
-            <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8 }}>
-              Delta: {fmtCents(Math.round(Number(targetDollars) * 100) - billedCents)} (
-              {Math.round(Number(targetDollars) * 100) - billedCents >= 0
-                ? 'write-up'
-                : 'write-down'}
-              )
-            </p>
-          )}
+          {targetDollars &&
+            Number.isFinite(Number(targetDollars)) &&
+            (() => {
+              // Live expense total at the entered markup (INCLUDE expenses).
+              const pct = Number(markupPct) || 0;
+              const liveExpenseTotal = batchExpenses.reduce((s, x) => {
+                const a = expenseActions.get(x.expenseId) ?? x.action;
+                if (a !== 'INCLUDE') return s;
+                return s + Math.round(x.costCents * (1 + pct / 100));
+              }, 0);
+              const timeDelta =
+                Math.round(Number(targetDollars) * 100) - liveExpenseTotal - billedCents;
+              return (
+                <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 8 }}>
+                  {batchExpenses.length > 0 && <>Expenses: {fmtCents(liveExpenseTotal)} · </>}
+                  Time delta: {fmtCents(timeDelta)} ({timeDelta >= 0 ? 'write-up' : 'write-down'})
+                </p>
+              );
+            })()}
         </Card>
       )}
 
@@ -1349,6 +1421,143 @@ function BatchDetailPage(): JSX.Element {
           );
         })()}
       </Card>
+
+      {/* 0199 — Expenses card. Cost + markup billed items with the same
+          INCLUDE/DEFER/WRITE_OFF actions as time. No timekeeper, so they
+          never affect realization; billed amounts feed the invoice on top
+          of the time portion. */}
+      {batchExpenses.length > 0 &&
+        (() => {
+          const finalized =
+            detail.batch.status === 'APPROVED' || detail.batch.status === 'INVOICED';
+          const applyMarkup = (): void => {
+            const pct = Number(markupPct) || 0;
+            const next = new Map(expenseBilled);
+            for (const x of batchExpenses) {
+              next.set(x.expenseId, Math.round(x.costCents * (1 + pct / 100)));
+            }
+            setExpenseBilled(next);
+          };
+          return (
+            <Card title="Expenses">
+              {!finalized && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'end',
+                    gap: 12,
+                    marginBottom: tokens.space.md,
+                  }}
+                >
+                  <div style={{ width: 120 }}>
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      label="Markup %"
+                      value={markupPct}
+                      onChange={(e) => setMarkupPct(e.target.value)}
+                      placeholder="15"
+                    />
+                  </div>
+                  <Button variant="secondary" onClick={applyMarkup}>
+                    Apply to all
+                  </Button>
+                  <div style={{ marginLeft: 'auto', fontSize: 12, color: tokens.color.textMuted }}>
+                    Expense total to invoice: <strong>{fmtCents(expenseBilledTotal)}</strong>
+                  </div>
+                </div>
+              )}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      {['Date', 'Description', 'Category', 'Cost', 'Billed', 'Action'].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            padding: '6px 8px',
+                            borderBottom: `1px solid ${tokens.color.border}`,
+                            textAlign: h === 'Cost' || h === 'Billed' ? 'right' : 'left',
+                            color: tokens.color.textMuted,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchExpenses.map((x) => {
+                      const action = expenseActions.get(x.expenseId) ?? x.action;
+                      const billed = expenseBilled.get(x.expenseId) ?? x.billedAmountCents;
+                      return (
+                        <tr key={x.expenseId}>
+                          <td style={{ padding: '6px 8px' }}>{x.expenseDate}</td>
+                          <td style={{ padding: '6px 8px' }}>{x.description}</td>
+                          <td style={{ padding: '6px 8px' }}>{x.category ?? '—'}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                            {fmtCents(x.costCents)}
+                          </td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                            {finalized || action !== 'INCLUDE' ? (
+                              action === 'INCLUDE' ? (
+                                fmtCents(billed)
+                              ) : (
+                                <span style={{ color: tokens.color.textMuted }}>—</span>
+                              )
+                            ) : (
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={(billed / 100).toFixed(2)}
+                                onChange={(e) => {
+                                  const next = new Map(expenseBilled);
+                                  next.set(
+                                    x.expenseId,
+                                    Math.round((Number(e.target.value) || 0) * 100),
+                                  );
+                                  setExpenseBilled(next);
+                                }}
+                                style={{
+                                  padding: '4px 6px',
+                                  background: tokens.color.surface,
+                                  color: tokens.color.text,
+                                  border: `1px solid ${tokens.color.border}`,
+                                  borderRadius: tokens.radius.sm,
+                                  fontSize: 13,
+                                  width: 90,
+                                  textAlign: 'right',
+                                }}
+                              />
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 8px' }}>
+                            <ActionPicker
+                              value={action}
+                              disabled={finalized}
+                              onChange={(v) => {
+                                const m = new Map(expenseActions);
+                                m.set(x.expenseId, v);
+                                setExpenseActions(m);
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p
+                style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: tokens.space.sm }}
+              >
+                Invoice grand total (time + expenses): <strong>{fmtCents(grandTotalCents)}</strong>
+              </p>
+            </Card>
+          );
+        })()}
 
       {/* Suggested billing (pricing suggestion) for the batch's engagement,
           the same panel shown on the engagement screen. */}
