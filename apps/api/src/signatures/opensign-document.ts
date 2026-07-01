@@ -55,6 +55,9 @@ export interface CreateSignatureDocumentInput {
   }>;
   geometry: PageGeometry[];
   sendInOrder?: boolean;
+  /** Days the signer has to complete — sets OpenSign's TimeToCompleteDays so
+   *  its expiry matches our signatureRequests.expiresAt (default 30). */
+  expiresInDays?: number;
 }
 
 export interface CreatedSignatureSigner {
@@ -135,6 +138,9 @@ export async function createSignatureDocument(
     Signers: resolved.map((r) => client.ptr('contracts_Contactbook', r.opensignContactId)),
     Placeholders: placeholders,
     DocSentAt: { __type: 'Date', iso: new Date().toISOString() },
+    // Without this, OpenSign applies its own ~15-day default and the signing
+    // page shows an earlier expiry than our Signatures page.
+    TimeToCompleteDays: input.expiresInDays ?? 30,
   };
   const created = (await client.callFn('createdocumentfromapp', { document }, 'session')) as {
     objectId?: string;

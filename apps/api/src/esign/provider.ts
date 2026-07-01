@@ -251,6 +251,9 @@ export function createOpenSignProvider(opts: OpenSignProviderOptions): EsignProv
         IsEnableOTP: false,
         Signers: [client.ptr('contracts_Contactbook', contact.objectId)],
         DocSentAt: { __type: 'Date', iso: new Date().toISOString() },
+        // Pin OpenSign's expiry (default is ~15 days) so the signing page
+        // doesn't show an earlier expiration than the rest of the app.
+        TimeToCompleteDays: 30,
       };
       const created = (await client.callFn(
         'createdocumentfromapp',
