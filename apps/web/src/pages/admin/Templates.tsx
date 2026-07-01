@@ -25,6 +25,35 @@ const FEE_OPTIONS = [
 import { api, getCsrfToken } from '../../api-client';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../../lib/money';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
+import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
+
+// Merge tokens offered in the letter editor's variable picker. Mirrors the
+// server LETTER_TEMPLATE_TOKENS (apps/api/src/clients/letter-merge.ts) —
+// the ones that work well from the WYSIWYG (double-brace) editor. The raw
+// address-block token needs triple braces, so it's documented but omitted
+// from the picker; use the HTML source mode for that.
+const LETTER_VARIABLES: RichTextVariable[] = [
+  { token: 'client.display_name', label: 'Client display name' },
+  { token: 'client.name', label: 'Client legal name' },
+  { token: 'client.primary_contact', label: 'Primary contact name' },
+  { token: 'client.city_state_zip', label: 'City, State ZIP' },
+  { token: 'client.street1', label: 'Street line 1' },
+  { token: 'client.city', label: 'City' },
+  { token: 'client.state', label: 'State' },
+  { token: 'client.postal', label: 'ZIP / postal' },
+  { token: 'firm.name', label: 'Firm name' },
+  { token: 'firm.support_email', label: 'Firm email' },
+  { token: 'firm.support_phone', label: 'Firm phone' },
+  { token: 'firm.support_web', label: 'Firm website' },
+  { token: 'today', label: "Today's date" },
+];
+
+// A stored letter body is a "full document" (has its own letterhead
+// <style>/<head>) when it carries these markers — the WYSIWYG editor would
+// strip them, so we default such templates to HTML-source mode.
+function isFullHtmlDoc(html: string): boolean {
+  return /<!doctype|<html|<head|<style/i.test(html);
+}
 
 type Kind = 'engagement' | 'letter' | 'client' | 'request' | 'invoice' | 'statement';
 
@@ -1087,7 +1116,15 @@ function LetterTab(): JSX.Element {
   const [items, setItems] = useState<LetterTpl[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState('');
+  const [editMode, setEditMode] = useState<'visual' | 'html'>('visual');
   const [error, setError] = useState<string | null>(null);
+
+  function startEdit(t: LetterTpl): void {
+    setEditingId(t.id);
+    setEditBody(t.bodyHtml);
+    // Protect letterhead docs — WYSIWYG would drop <style>/<head>.
+    setEditMode(isFullHtmlDoc(t.bodyHtml) ? 'html' : 'visual');
+  }
 
   async function load(): Promise<void> {
     try {
@@ -1158,30 +1195,68 @@ function LetterTab(): JSX.Element {
                       </Button>
                     </>
                   ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        setEditingId(t.id);
-                        setEditBody(t.bodyHtml);
-                      }}
-                    >
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(t)}>
                       Edit body
                     </Button>
                   )}
                 </span>
               </div>
               {editingId === t.id ? (
-                <textarea
-                  value={editBody}
-                  onChange={(e) => setEditBody(e.target.value)}
-                  rows={10}
-                  style={{
-                    ...fieldStyle,
-                    fontFamily: tokens.font.mono,
-                    resize: 'vertical',
-                  }}
-                />
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Editor:</span>
+                    <Button
+                      size="sm"
+                      variant={editMode === 'visual' ? 'secondary' : 'ghost'}
+                      onClick={() => setEditMode('visual')}
+                    >
+                      Visual
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={editMode === 'html' ? 'secondary' : 'ghost'}
+                      onClick={() => setEditMode('html')}
+                    >
+                      {'</> HTML'}
+                    </Button>
+                    {editMode === 'visual' && isFullHtmlDoc(editBody) && (
+                      <span style={{ fontSize: 11, color: tokens.color.warning }}>
+                        This letter has a letterhead/&lt;style&gt; block — edit in HTML mode to keep
+                        it.
+                      </span>
+                    )}
+                  </div>
+                  {editMode === 'visual' ? (
+                    <RichTextEditor
+                      key={`${t.id}-visual`}
+                      format="html"
+                      value={editBody}
+                      onChange={setEditBody}
+                      variables={LETTER_VARIABLES}
+                      minHeight={260}
+                      placeholder="Write the letter. Use Insert variable for merge fields."
+                    />
+                  ) : (
+                    <textarea
+                      value={editBody}
+                      onChange={(e) => setEditBody(e.target.value)}
+                      rows={14}
+                      style={{ ...fieldStyle, fontFamily: tokens.font.mono, resize: 'vertical' }}
+                    />
+                  )}
+                  <div style={{ fontSize: 11, color: tokens.color.textMuted }}>Preview</div>
+                  <iframe
+                    title="Letter preview"
+                    srcDoc={editBody}
+                    style={{
+                      width: '100%',
+                      height: 320,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      background: '#fff',
+                    }}
+                  />
+                </div>
               ) : (
                 <pre
                   style={{
