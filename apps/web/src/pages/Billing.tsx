@@ -6,6 +6,7 @@ import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, tokens } from
 
 import { api } from '../api-client';
 import { AdjustmentDialog } from './AdjustmentDialog';
+import { PricingSuggestionPanel } from './engagements/PricingSuggestionPanel';
 import { selectRows, useColumnView } from '../lib/column-view';
 import { TableSearch } from '../components/TableSearch';
 
@@ -1281,6 +1282,12 @@ function BatchDetailPage(): JSX.Element {
           );
         })()}
       </Card>
+
+      {/* Suggested billing (pricing suggestion) for the batch's engagement,
+          the same panel shown on the engagement screen. */}
+      {detail.batch.engagementId && (
+        <PricingSuggestionPanel engagementId={detail.batch.engagementId} />
+      )}
 
       <PrebillNarrativePanel batchId={detail.batch.id} />
 
