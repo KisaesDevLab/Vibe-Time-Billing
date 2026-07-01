@@ -1356,7 +1356,19 @@ function BatchDetailPage(): JSX.Element {
         <PricingSuggestionPanel engagementId={detail.batch.engagementId} />
       )}
 
-      <PrebillNarrativePanel batchId={detail.batch.id} />
+      <PrebillNarrativePanel
+        summary={{
+          clientName: detail.engagement?.clientName ?? undefined,
+          engagementName: detail.engagement?.name ?? detail.batch.engagementName ?? undefined,
+          entryCount: detail.entries.length,
+          totalHours: detail.entries.reduce((s, e) => s + Number(e.hours), 0),
+          totalAmountCents: detail.entries.reduce((s, e) => s + e.standardAmountCents, 0),
+          oldestEntryDate: detail.entries.reduce<string | undefined>(
+            (min, e) => (!min || e.entryDate < min ? e.entryDate : min),
+            undefined,
+          ),
+        }}
+      />
 
       <UntrackedMessagesPanel
         engagementId={detail.batch.engagementId}
@@ -1380,7 +1392,17 @@ function BatchDetailPage(): JSX.Element {
   );
 }
 
-function PrebillNarrativePanel({ batchId }: { batchId: string }): JSX.Element | null {
+interface PrebillSummary {
+  clientName?: string;
+  engagementName?: string;
+  entryCount: number;
+  totalHours: number;
+  totalAmountCents: number;
+  oldestEntryDate?: string;
+  adjustmentCount?: number;
+}
+
+function PrebillNarrativePanel({ summary }: { summary: PrebillSummary }): JSX.Element | null {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [narrative, setNarrative] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1403,7 +1425,7 @@ function PrebillNarrativePanel({ batchId }: { batchId: string }): JSX.Element | 
     try {
       const r = await api<{ narrative: string }>('/api/staff/ai/prebill-narrative', {
         method: 'POST',
-        body: JSON.stringify({ billingBatchId: batchId }),
+        body: JSON.stringify(summary),
       });
       setNarrative(r.narrative);
     } catch (e) {
