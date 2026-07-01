@@ -207,6 +207,7 @@ interface LetterTpl {
   name: string;
   bodyHtml: string;
   variablesJson: string[] | null;
+  pageMargin: string | null;
   isSystem: boolean;
   status: string;
 }
@@ -1179,14 +1180,20 @@ function LetterTab(): JSX.Element {
   const [items, setItems] = useState<LetterTpl[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState('');
+  const [editMargin, setEditMargin] = useState('');
   const [editMode, setEditMode] = useState<'visual' | 'html'>('visual');
   const [error, setError] = useState<string | null>(null);
   const insertApiRef = useRef<RichTextApi | null>(null);
   const htmlRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // A valid CSS margin: 1–4 space-separated lengths (in/cm/mm/px/pt).
+  const marginValid =
+    editMargin.trim() === '' || /^(\d+(\.\d+)?(in|cm|mm|px|pt)\s*){1,4}$/i.test(editMargin.trim());
+
   function startEdit(t: LetterTpl): void {
     setEditingId(t.id);
     setEditBody(t.bodyHtml);
+    setEditMargin(t.pageMargin ?? '');
     // Protect letterhead docs — WYSIWYG would drop <style>/<head>.
     setEditMode(isFullHtmlDoc(t.bodyHtml) ? 'html' : 'visual');
   }
@@ -1224,7 +1231,7 @@ function LetterTab(): JSX.Element {
     try {
       await api(`/api/staff/admin/templates/letter/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ bodyHtml: editBody }),
+        body: JSON.stringify({ bodyHtml: editBody, pageMargin: editMargin.trim() }),
       });
       setEditingId(null);
       await load();
@@ -1269,7 +1276,7 @@ function LetterTab(): JSX.Element {
                 <span style={{ marginLeft: 'auto' }}>
                   {editingId === t.id ? (
                     <>
-                      <Button size="sm" onClick={() => void save(t.id)}>
+                      <Button size="sm" disabled={!marginValid} onClick={() => void save(t.id)}>
                         Save
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
@@ -1310,6 +1317,30 @@ function LetterTab(): JSX.Element {
                     {isFullHtmlDoc(editBody) && (
                       <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
                         Letterhead/&lt;style&gt; letter — editing in HTML to preserve it.
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label
+                      htmlFor={`letter-margin-${t.id}`}
+                      style={{ fontSize: 11, color: tokens.color.textMuted }}
+                    >
+                      Page margin
+                    </label>
+                    <input
+                      id={`letter-margin-${t.id}`}
+                      value={editMargin}
+                      onChange={(e) => setEditMargin(e.target.value)}
+                      placeholder="1in (default)"
+                      style={{ ...fieldStyle, width: 140, fontFamily: tokens.font.mono }}
+                    />
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      CSS length — e.g. <code>1in</code>, <code>0.75in</code>, or per-side{' '}
+                      <code>1in 0.75in</code>. Blank = 1in.
+                    </span>
+                    {!marginValid && (
+                      <span style={{ fontSize: 11, color: tokens.color.danger }}>
+                        Enter a valid CSS length (in/cm/mm/px/pt).
                       </span>
                     )}
                   </div>

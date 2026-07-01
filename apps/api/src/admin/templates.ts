@@ -101,6 +101,9 @@ const EngagementSchema = z.object({
     .optional(),
 });
 
+// Page margin: a safe CSS length (1–4 space-separated lengths), or '' to
+// clear back to the 1in default. Injected into `@page { margin }` at render.
+const CSS_MARGIN_RE = /^(\d+(\.\d+)?(in|cm|mm|px|pt)\s*){1,4}$/i;
 const LetterSchema = z.object({
   key: z
     .string()
@@ -110,6 +113,10 @@ const LetterSchema = z.object({
   name: z.string().min(1).max(200),
   engagementTypeId: z.string().uuid().nullable().optional(),
   bodyHtml: z.string().min(1),
+  pageMargin: z
+    .union([z.literal(''), z.string().trim().max(40).regex(CSS_MARGIN_RE)])
+    .nullable()
+    .optional(),
 });
 
 const ClientTemplateSchema = z.object({
@@ -536,6 +543,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           name: d.name,
           engagementTypeId: d.engagementTypeId ?? null,
           bodyHtml: d.bodyHtml,
+          pageMargin: d.pageMargin?.trim() || null,
           variablesJson: extractVariables(d.bodyHtml),
           isSystem: false,
         })
@@ -574,6 +582,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.bodyHtml = d.bodyHtml;
         updates.variablesJson = extractVariables(d.bodyHtml);
       }
+      if (d.pageMargin !== undefined) updates.pageMargin = d.pageMargin?.trim() || null;
       await deps.db
         .update(engagementLetterTemplates)
         .set(updates)

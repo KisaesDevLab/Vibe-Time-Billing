@@ -1721,6 +1721,9 @@ export const engagementLetterTemplates = pgTable(
     }),
     bodyHtml: text('body_html').notNull(),
     variablesJson: jsonb('variables_json'),
+    // 0190 — per-template mail-merge page margin (CSS length, e.g. '1in' or
+    // '1in 0.75in'); NULL = the 1in default. Injected as `@page { margin }`.
+    pageMargin: text('page_margin'),
     isSystem: boolean('is_system').notNull().default(false),
     clonedFromSlug: text('cloned_from_slug'),
     clonedFromPackVersion: text('cloned_from_pack_version'),

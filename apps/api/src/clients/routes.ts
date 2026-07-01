@@ -599,7 +599,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         return;
       }
       const firm = await firmScope(deps.db, firmId);
-      res.json({ html: renderLetterHtml(tpl.bodyHtml, client, firm, new Date()) });
+      res.json({ html: renderLetterHtml(tpl.bodyHtml, client, firm, new Date(), tpl.pageMargin) });
     },
   );
 
@@ -639,7 +639,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       }
       const firm = await firmScope(deps.db, firmId);
       const now = new Date();
-      const htmls = clientData.map((c) => renderLetterHtml(tpl.bodyHtml, c, firm, now));
+      const htmls = clientData.map((c) =>
+        renderLetterHtml(tpl.bodyHtml, c, firm, now, tpl.pageMargin),
+      );
       const combined = combineStatementsHtml(htmls);
       let pdf: Buffer;
       try {
@@ -727,7 +729,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       }> = [];
       for (const client of clientData) {
         try {
-          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
+          const pdf = await renderHtmlToPdf(
+            renderLetterHtml(tpl.bodyHtml, client, firm, now, tpl.pageMargin),
+          );
           const out = await createFileInClientFolder(deps.db, storage, {
             firmId,
             clientId: client.id,
@@ -864,7 +868,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
             parsed.data.body?.trim() || 'Please see the attached letter.',
             ctx,
           ).output;
-          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
+          const pdf = await renderHtmlToPdf(
+            renderLetterHtml(tpl.bodyHtml, client, firm, now, tpl.pageMargin),
+          );
           await sendStaffMail({
             to: client.recipientEmail,
             subject,

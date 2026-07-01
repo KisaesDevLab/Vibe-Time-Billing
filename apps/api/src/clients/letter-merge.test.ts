@@ -5,6 +5,7 @@ import {
   buildLetterContext,
   nextYmd,
   renderLetterHtml,
+  sanitizeCssMargin,
   zonedDayStartUtc,
   type ClientLetterData,
 } from './letter-merge';
@@ -161,5 +162,40 @@ describe('renderLetterHtml', () => {
     const html = renderLetterHtml(fullDoc, client, firm, now);
     expect(html).not.toContain('font: 12pt Georgia');
     expect(html).toContain('body{color:red}');
+  });
+
+  it('applies a per-template page margin to a fragment letter', () => {
+    const html = renderLetterHtml('<p>Hi</p>', client, firm, now, '0.75in');
+    expect(html).toContain('@page { size: Letter; margin: 0.75in; }');
+    expect(html).not.toContain('margin: 1in;');
+  });
+
+  it('injects a page-margin override into a full-document letter', () => {
+    const fullDoc =
+      '<!doctype html><html><head><style>@page{margin:1in}</style></head><body>x</body></html>';
+    const html = renderLetterHtml(fullDoc, client, firm, now, '2cm');
+    // The override goes into <head> after the template style → later @page wins.
+    expect(html).toContain('@page { margin: 2cm; }');
+  });
+
+  it('falls back to the 1in default for a blank/invalid margin', () => {
+    expect(renderLetterHtml('<p>Hi</p>', client, firm, now, '')).toContain('margin: 1in;');
+    expect(renderLetterHtml('<p>Hi</p>', client, firm, now, 'evil}')).toContain('margin: 1in;');
+  });
+});
+
+describe('sanitizeCssMargin', () => {
+  it('accepts valid CSS lengths (1–4 values)', () => {
+    expect(sanitizeCssMargin('1in')).toBe('1in');
+    expect(sanitizeCssMargin(' 0.75in ')).toBe('0.75in');
+    expect(sanitizeCssMargin('1in 0.75in')).toBe('1in 0.75in');
+    expect(sanitizeCssMargin('2cm')).toBe('2cm');
+  });
+
+  it('rejects empty and unsafe values', () => {
+    expect(sanitizeCssMargin('')).toBeNull();
+    expect(sanitizeCssMargin(null)).toBeNull();
+    expect(sanitizeCssMargin('1in; } body{display:none}')).toBeNull();
+    expect(sanitizeCssMargin('red')).toBeNull();
   });
 });

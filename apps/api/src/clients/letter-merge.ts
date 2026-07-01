@@ -63,9 +63,13 @@ export async function loadLetterTemplateBody(
   db: Database,
   firmId: string,
   templateId: string,
-): Promise<{ name: string; bodyHtml: string } | null> {
+): Promise<{ name: string; bodyHtml: string; pageMargin: string | null } | null> {
   const [row] = await db
-    .select({ name: engagementLetterTemplates.name, bodyHtml: engagementLetterTemplates.bodyHtml })
+    .select({
+      name: engagementLetterTemplates.name,
+      bodyHtml: engagementLetterTemplates.bodyHtml,
+      pageMargin: engagementLetterTemplates.pageMargin,
+    })
     .from(engagementLetterTemplates)
     .where(
       and(
@@ -503,8 +507,23 @@ export function isFullHtmlDoc(html: string): boolean {
 // the CSS @page margin (it takes precedence over renderHtmlToPdf's default),
 // so changing this value (or a full-doc template's own @page) changes the
 // printed margin. Default = 1in.
-export const DEFAULT_LETTER_CSS = `
-@page { size: Letter; margin: 1in; }
+export const DEFAULT_PAGE_MARGIN = '1in';
+
+/** Only allow safe CSS length values (1–4 space-separated lengths in
+ *  in/cm/mm/px/pt) for the page margin — this string is injected into the
+ *  `@page { margin }` declaration, so reject anything that could break out
+ *  of it. Returns the trimmed value, or null when empty/invalid. */
+export function sanitizeCssMargin(value: string | null | undefined): string | null {
+  const v = (value ?? '').trim();
+  if (!v) return null;
+  return /^(\d+(\.\d+)?(in|cm|mm|px|pt)\s*){1,4}$/i.test(v) ? v : null;
+}
+
+// The fragment (WYSIWYG) letter stylesheet at a given page margin. An <h1>
+// reads as the firm-name letterhead; <hr> is the rule under it.
+function letterCss(margin: string): string {
+  return `
+@page { size: Letter; margin: ${margin}; }
 body { font: 12pt Georgia, "Times New Roman", serif; color: #1a1a1a; line-height: 1.5; }
 h1 { font-family: Arial, Helvetica, sans-serif; font-size: 20pt; margin: 0 0 4px; }
 h2 { font-size: 14pt; margin: 18px 0 6px; }
@@ -513,16 +532,30 @@ p { margin: 0 0 12px; }
 hr { border: none; border-top: 2px solid #1a1a1a; margin: 8px 0 24px; }
 ul, ol { margin: 0 0 12px 22px; }
 `;
+}
+
+export const DEFAULT_LETTER_CSS = letterCss(DEFAULT_PAGE_MARGIN);
 
 /** Render one client's letter to a full HTML document. Fragment bodies get
- *  the default letter stylesheet; full-document bodies self-style. */
+ *  the default letter stylesheet; full-document bodies self-style. The
+ *  optional `pageMargin` (a validated CSS length) sets the printed margin:
+ *  it parameterizes the fragment stylesheet, and for a full-document body it
+ *  is injected as a trailing `@page { margin }` override. */
 export function renderLetterHtml(
   bodyHtml: string,
   client: ClientLetterData,
   firm: Record<string, string>,
   now: Date,
+  pageMargin?: string | null,
 ): string {
-  const css = isFullHtmlDoc(bodyHtml) ? '' : DEFAULT_LETTER_CSS;
+  const margin = sanitizeCssMargin(pageMargin);
+  let css: string;
+  if (isFullHtmlDoc(bodyHtml)) {
+    // Self-styled; only override its @page margin when the template sets one.
+    css = margin ? `@page { margin: ${margin}; }` : '';
+  } else {
+    css = letterCss(margin ?? DEFAULT_PAGE_MARGIN);
+  }
   return composeInvoiceHtml(bodyHtml, css, buildLetterContext(client, firm, now));
 }
 
