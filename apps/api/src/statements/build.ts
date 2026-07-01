@@ -13,6 +13,7 @@ import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { clients, firmSettings, invoices, payments } from '@vibe/db/schema';
 import type { StatementLine, StatementTemplateInput } from '@vibe/core/invoicing';
+import { composeFirmMailingAddress } from '../firm/mailing-address';
 
 export interface StatementBranding {
   displayName?: string | null;
@@ -24,6 +25,12 @@ export interface StatementBranding {
   supportWeb?: string | null;
   arTermsText?: string | null;
   footerHtml?: string | null;
+  mailingStreet1?: string | null;
+  mailingStreet2?: string | null;
+  mailingCity?: string | null;
+  mailingState?: string | null;
+  mailingPostal?: string | null;
+  mailingCountry?: string | null;
 }
 
 export interface StatementOptions {
@@ -46,6 +53,12 @@ export async function loadBranding(db: Database, firmId: string): Promise<Statem
       supportWeb: firmSettings.brandSupportWeb,
       arTermsText: firmSettings.arTermsText,
       footerHtml: firmSettings.brandFooterHtml,
+      mailingStreet1: firmSettings.mailingStreet1,
+      mailingStreet2: firmSettings.mailingStreet2,
+      mailingCity: firmSettings.mailingCity,
+      mailingState: firmSettings.mailingState,
+      mailingPostal: firmSettings.mailingPostal,
+      mailingCountry: firmSettings.mailingCountry,
     })
     .from(firmSettings)
     .where(eq(firmSettings.firmId, firmId))
@@ -182,7 +195,7 @@ export async function buildStatement(
     firm: {
       name: branding?.displayName || firmRow?.name || 'Firm',
       logoUrl: branding?.logoUrl ?? null,
-      address: null,
+      address: composeFirmMailingAddress(branding),
     },
     branding: brandingToInput(branding),
     client: {

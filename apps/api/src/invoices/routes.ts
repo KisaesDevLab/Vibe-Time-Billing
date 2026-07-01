@@ -57,6 +57,7 @@ import { firmScope, renderTemplate } from '../notifications/templating';
 import { printNotificationChannel } from '../notifications/print-channel';
 
 import { loadInvoiceTemplateDef } from './template-loader';
+import { composeFirmMailingAddress } from '../firm/mailing-address';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -1046,6 +1047,12 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           // 0053 — A/R terms text overrides footerHtml when present.
           arTermsText: firmSettings.arTermsText,
           templateStyle: firmSettings.invoiceTemplateStyle,
+          mailingStreet1: firmSettings.mailingStreet1,
+          mailingStreet2: firmSettings.mailingStreet2,
+          mailingCity: firmSettings.mailingCity,
+          mailingState: firmSettings.mailingState,
+          mailingPostal: firmSettings.mailingPostal,
+          mailingCountry: firmSettings.mailingCountry,
         })
         .from(firmSettings)
         .where(eq(firmSettings.firmId, inv.firmId))
@@ -1191,6 +1198,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           firm: {
             name: branding?.displayName || firm?.name || 'Firm',
             logoUrl: branding?.logoUrl ?? null,
+            address: composeFirmMailingAddress(branding),
           },
           branding: branding
             ? {

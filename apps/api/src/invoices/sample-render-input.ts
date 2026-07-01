@@ -18,6 +18,7 @@ import {
   invoices,
 } from '@vibe/db/schema';
 import type { InvoiceTemplateInput } from '@vibe/core/invoicing';
+import { composeFirmMailingAddress } from '../firm/mailing-address';
 
 export async function loadRandomInvoiceInput(
   db: Database,
@@ -56,6 +57,12 @@ export async function loadRandomInvoiceInput(
       supportWeb: firmSettings.brandSupportWeb,
       footerHtml: firmSettings.brandFooterHtml,
       arTermsText: firmSettings.arTermsText,
+      mailingStreet1: firmSettings.mailingStreet1,
+      mailingStreet2: firmSettings.mailingStreet2,
+      mailingCity: firmSettings.mailingCity,
+      mailingState: firmSettings.mailingState,
+      mailingPostal: firmSettings.mailingPostal,
+      mailingCountry: firmSettings.mailingCountry,
     })
     .from(firmSettings)
     .where(eq(firmSettings.firmId, inv.firmId))
@@ -97,6 +104,7 @@ export async function loadRandomInvoiceInput(
     firm: {
       name: branding?.displayName || firm?.name || 'Firm',
       logoUrl: branding?.logoUrl ?? null,
+      address: composeFirmMailingAddress(branding),
     },
     branding: branding
       ? {

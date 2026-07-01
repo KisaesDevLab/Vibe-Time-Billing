@@ -131,6 +131,13 @@ const FirmSettingsPatchSchema = z.object({
   brandSupportFax: z.string().max(40).nullable().optional(),
   brandSupportWeb: z.string().max(254).nullable().optional(),
   brandFooterHtml: z.string().max(4000).nullable().optional(),
+  // 0196 — firm mailing address (fed into the firm.address document token).
+  mailingStreet1: z.string().max(200).nullable().optional(),
+  mailingStreet2: z.string().max(200).nullable().optional(),
+  mailingCity: z.string().max(120).nullable().optional(),
+  mailingState: z.string().max(80).nullable().optional(),
+  mailingPostal: z.string().max(40).nullable().optional(),
+  mailingCountry: z.string().max(80).nullable().optional(),
   // 0053 — Billing + A/R block.
   arTermsText: z.string().max(4000).nullable().optional(),
   statementEmailMessage: z.string().max(4000).nullable().optional(),

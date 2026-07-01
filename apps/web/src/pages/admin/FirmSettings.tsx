@@ -52,6 +52,12 @@ interface Settings {
   brandSupportPhone: string | null;
   brandSupportFax: string | null;
   brandSupportWeb: string | null;
+  mailingStreet1: string | null;
+  mailingStreet2: string | null;
+  mailingCity: string | null;
+  mailingState: string | null;
+  mailingPostal: string | null;
+  mailingCountry: string | null;
   brandFooterHtml: string | null;
   enabledFeeStructures: FeeStructure[];
   billableTargetHoursPerMonth: number;
@@ -196,6 +202,12 @@ export function FirmSettingsPage(): JSX.Element {
           brandSupportPhone: s.brandSupportPhone || null,
           brandSupportFax: s.brandSupportFax || null,
           brandSupportWeb: s.brandSupportWeb || null,
+          mailingStreet1: s.mailingStreet1 || null,
+          mailingStreet2: s.mailingStreet2 || null,
+          mailingCity: s.mailingCity || null,
+          mailingState: s.mailingState || null,
+          mailingPostal: s.mailingPostal || null,
+          mailingCountry: s.mailingCountry || null,
           brandFooterHtml: s.brandFooterHtml || null,
           // 0053 — Billing + A/R
           arTermsText: s.arTermsText || null,
@@ -562,6 +574,53 @@ export function FirmSettingsPage(): JSX.Element {
             value={s.brandSupportWeb ?? ''}
             onChange={(e) => setS({ ...s, brandSupportWeb: e.target.value })}
             placeholder="www.example.com"
+          />
+          <div
+            style={{
+              gridColumn: '1 / -1',
+              fontSize: 12,
+              fontWeight: 600,
+              color: tokens.color.textMuted,
+              marginTop: 4,
+            }}
+          >
+            Mailing address (used on invoices, statements &amp; letters)
+          </div>
+          <Input
+            label="Street"
+            value={s.mailingStreet1 ?? ''}
+            onChange={(e) => setS({ ...s, mailingStreet1: e.target.value })}
+            placeholder="123 Main St"
+          />
+          <Input
+            label="Street 2 (suite, etc.)"
+            value={s.mailingStreet2 ?? ''}
+            onChange={(e) => setS({ ...s, mailingStreet2: e.target.value })}
+            placeholder="Suite 200"
+          />
+          <Input
+            label="City"
+            value={s.mailingCity ?? ''}
+            onChange={(e) => setS({ ...s, mailingCity: e.target.value })}
+            placeholder="Springfield"
+          />
+          <Input
+            label="State / province"
+            value={s.mailingState ?? ''}
+            onChange={(e) => setS({ ...s, mailingState: e.target.value })}
+            placeholder="IL"
+          />
+          <Input
+            label="ZIP / postal code"
+            value={s.mailingPostal ?? ''}
+            onChange={(e) => setS({ ...s, mailingPostal: e.target.value })}
+            placeholder="62704"
+          />
+          <Input
+            label="Country"
+            value={s.mailingCountry ?? ''}
+            onChange={(e) => setS({ ...s, mailingCountry: e.target.value })}
+            placeholder="USA"
           />
           <label style={{ fontSize: 13 }}>
             Footer HTML (rendered on invoice PDFs)

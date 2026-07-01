@@ -424,6 +424,14 @@ export const firmSettings = pgTable('firm_settings', {
   // 0053 — Billing + A/R block (legacy "Firm — Billing and A/R" tab).
   brandSupportFax: text('brand_support_fax'),
   brandSupportWeb: text('brand_support_web'),
+  // 0196 — firm mailing address, composed into the `firm.address` token used
+  // on invoices, statements, letters, and emails. Mirrors client.mailing*.
+  mailingStreet1: text('mailing_street1'),
+  mailingStreet2: text('mailing_street2'),
+  mailingCity: text('mailing_city'),
+  mailingState: text('mailing_state'),
+  mailingPostal: text('mailing_postal'),
+  mailingCountry: text('mailing_country'),
   arTermsText: text('ar_terms_text'),
   statementEmailMessage: text('statement_email_message'),
   defaultStatementFormat: text('default_statement_format')
