@@ -145,7 +145,7 @@ export function ClientRequestsCard({ clientId }: { clientId: string }): JSX.Elem
       try {
         const [e, u, t] = await Promise.all([
           api<{ items: EngagementOption[] }>(`/api/staff/engagements?clientId=${clientId}`),
-          api<{ items: FirmUser[] }>('/api/staff/users').catch(() => ({ items: [] })),
+          api<{ items: FirmUser[] }>('/api/staff/firm-users').catch(() => ({ items: [] })),
           api<{ items: RequestTemplate[] }>('/api/staff/admin/templates/request').catch(() => ({
             items: [],
           })),

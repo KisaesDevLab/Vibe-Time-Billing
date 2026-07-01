@@ -183,6 +183,8 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           ),
         );
 
+      // "Needs attention" = requests with an UNREAD client response (client
+      // replied, still open, staff hasn't opened it) — not every open request.
       const requests = await deps.db
         .select({ c: sql<number>`count(*)::int` })
         .from(clientRequests)
@@ -190,6 +192,8 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           and(
             eq(clientRequests.firmId, firmId),
             inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
+            sql`${clientRequests.clientReplyText} IS NOT NULL`,
+            isNull(clientRequests.clientReplySeenAt),
           ),
         );
 
