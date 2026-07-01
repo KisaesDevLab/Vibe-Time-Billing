@@ -50,6 +50,8 @@ import {
   renderLetterHtml,
 } from './letter-merge';
 import { combineStatementsHtml } from '@vibe/core/invoicing';
+import { buildStorageClient } from '@vibe/storage';
+import { createFileInClientFolder } from './create-file';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
@@ -545,6 +547,111 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'attachment; filename="mail-merge-letters.pdf"');
       res.send(pdf);
+    },
+  );
+
+  // Save one personalized letter PDF into each client's Files folder
+  // (Correspondence/). Renders per client (own PDF, not the combined one),
+  // so it's capped lower than the download path. Writes a `files` row per
+  // client via the shared create-file helper. Mutating → client:write.
+  const MailMergeSaveSchema = z.object({
+    templateId: z.string().uuid(),
+    clientIds: z.array(z.string().uuid()).min(1).max(100),
+  });
+  router.post(
+    '/mail-merge-save-to-files',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailMergeSaveSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const clientData = await loadClientLetterData(deps.db, firmId, parsed.data.clientIds);
+      if (clientData.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      let renderMod;
+      try {
+        renderMod = await import('../pdf/render');
+      } catch (err) {
+        logger.error({ err }, 'mail-merge save render import failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const { renderHtmlToPdf } = renderMod;
+      const storage = buildStorageClient(process.env);
+      const firm = await firmScope(deps.db, firmId);
+      const now = new Date();
+      const stamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${now.getFullYear()}`;
+      const results: Array<{
+        clientId: string;
+        clientName: string;
+        saved: boolean;
+        reason: string | null;
+      }> = [];
+      for (const client of clientData) {
+        try {
+          const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now));
+          const out = await createFileInClientFolder(deps.db, storage, {
+            firmId,
+            clientId: client.id,
+            actorId: session.appUserId,
+            category: 'correspondence',
+            originalFilename: `${tpl.name} - ${stamp}.pdf`,
+            body: pdf,
+            mimeType: 'application/pdf',
+            source: 'mail_merge',
+          });
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            saved: out.ok,
+            reason: out.ok ? null : out.code,
+          });
+        } catch (err) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            saved: false,
+            reason: err instanceof Error ? err.message : 'render_failed',
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'client',
+        entityId: clientData[0]!.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'mail_merge_save_to_files',
+          templateId: parsed.data.templateId,
+          savedCount: results.filter((r) => r.saved).length,
+          skippedCount: results.filter((r) => !r.saved).length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'mail-merge save audit failed'));
+      res.json({
+        results,
+        summary: {
+          requested: clientData.length,
+          saved: results.filter((r) => r.saved).length,
+          skipped: results.filter((r) => !r.saved).length,
+        },
+      });
     },
   );
 

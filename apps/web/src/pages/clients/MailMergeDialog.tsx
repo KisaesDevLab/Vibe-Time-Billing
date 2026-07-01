@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
 // Mail merge — pick a firm letter template, preview it against the first
-// selected client, then download one combined PDF (a page-run per
-// client). Modeled on BulkEmailDialog. Phase 1 output is download-only;
-// Save-to-Files and Email land in later phases.
+// selected client, then either download one combined PDF (a page-run per
+// client) or save a personalized PDF into each client's Files folder.
+// Modeled on BulkEmailDialog. Email output lands in a later phase.
 
 import { useEffect, useState } from 'react';
 
@@ -23,6 +23,11 @@ interface MailMergeTarget {
   name: string;
 }
 
+interface SaveResult {
+  results: Array<{ clientId: string; clientName: string; saved: boolean; reason: string | null }>;
+  summary: { requested: number; saved: number; skipped: number };
+}
+
 export function MailMergeDialog({
   targets,
   onClose,
@@ -38,6 +43,7 @@ export function MailMergeDialog({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
 
   // Load the active letter templates once.
   useEffect(() => {
@@ -114,6 +120,26 @@ export function MailMergeDialog({
     }
   }
 
+  async function saveToFiles(): Promise<void> {
+    if (!templateId) {
+      setError('Choose a letter template.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<SaveResult>('/api/staff/clients/mail-merge-save-to-files', {
+        method: 'POST',
+        body: JSON.stringify({ templateId, clientIds: targets.map((t) => t.id) }),
+      });
+      setSaveResult(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div
       role="dialog"
@@ -133,78 +159,123 @@ export function MailMergeDialog({
         style={{ width: 'min(900px, 94vw)', maxWidth: 900, maxHeight: '90vh', overflow: 'auto' }}
       >
         <Card title="Mail merge letter">
-          <div style={{ display: 'grid', gap: 12 }}>
-            <p style={{ fontSize: 13, margin: 0 }}>
-              Generate a personalized letter for each of <strong>{targets.length}</strong> selected
-              client{targets.length === 1 ? '' : 's'} and download them as one combined PDF (one
-              page-run per client).
-            </p>
-            <div style={{ display: 'grid', gap: 4 }}>
-              <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Letter template</label>
-              <select
-                value={templateId}
-                onChange={(e) => setTemplateId(e.target.value)}
+          {saveResult ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <p style={{ fontSize: 13, margin: 0 }}>
+                <strong>Done.</strong> {saveResult.summary.saved} saved to Files ·{' '}
+                {saveResult.summary.skipped} skipped.
+              </p>
+              <ul
                 style={{
-                  padding: '8px 10px',
-                  fontSize: 13,
-                  border: `1px solid ${tokens.color.border}`,
+                  margin: 0,
+                  padding: '8px 16px',
+                  background: tokens.color.surface,
                   borderRadius: tokens.radius.sm,
-                  background: tokens.color.bg,
-                  color: tokens.color.text,
+                  fontSize: 12,
+                  maxHeight: 300,
+                  overflow: 'auto',
                 }}
               >
-                <option value="">
-                  {templates === null ? 'Loading templates…' : 'Select a template…'}
-                </option>
-                {(templates ?? []).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
+                {saveResult.results.map((r) => (
+                  <li key={r.clientId} style={{ marginBottom: 4 }}>
+                    <strong>{r.clientName}</strong> —{' '}
+                    {r.saved ? (
+                      <span style={{ color: tokens.color.success }}>saved</span>
+                    ) : (
+                      <span style={{ color: tokens.color.warning }}>
+                        skipped ({r.reason ?? 'unknown'})
+                      </span>
+                    )}
+                  </li>
                 ))}
-              </select>
-              {templates !== null && templates.length === 0 && (
-                <span style={{ fontSize: 11, color: tokens.color.warning }}>
-                  No letter templates yet — create one in Admin → Templates → Letter.
-                </span>
-              )}
+              </ul>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Button onClick={onDone}>Done</Button>
+              </div>
             </div>
-
-            <div style={{ display: 'grid', gap: 4 }}>
-              <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                Preview — {targets[0]?.name ?? 'first client'}
-              </label>
-              <iframe
-                title="Letter preview"
-                srcDoc={
-                  previewLoading
-                    ? '<p style="font:13px sans-serif;color:#888;padding:16px">Loading preview…</p>'
-                    : (previewHtml ??
-                      '<p style="font:13px sans-serif;color:#888;padding:16px">Pick a template to preview.</p>')
-                }
-                style={{
-                  width: '100%',
-                  height: 360,
-                  border: `1px solid ${tokens.color.border}`,
-                  borderRadius: tokens.radius.sm,
-                  background: '#fff',
-                }}
-              />
-            </div>
-
-            {error && (
-              <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
-                {error}
+          ) : (
+            <div style={{ display: 'grid', gap: 12 }}>
+              <p style={{ fontSize: 13, margin: 0 }}>
+                Generate a personalized letter for each of <strong>{targets.length}</strong>{' '}
+                selected client{targets.length === 1 ? '' : 's'} — download them as one combined
+                PDF, or save a copy into each client&apos;s Files (Correspondence).
               </p>
-            )}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <Button variant="ghost" onClick={onClose} disabled={busy}>
-                Cancel
-              </Button>
-              <Button disabled={busy || !templateId} onClick={() => void downloadPdf()}>
-                {busy ? 'Generating…' : `Download PDF (${targets.length})`}
-              </Button>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  Letter template
+                </label>
+                <select
+                  value={templateId}
+                  onChange={(e) => setTemplateId(e.target.value)}
+                  style={{
+                    padding: '8px 10px',
+                    fontSize: 13,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.color.bg,
+                    color: tokens.color.text,
+                  }}
+                >
+                  <option value="">
+                    {templates === null ? 'Loading templates…' : 'Select a template…'}
+                  </option>
+                  {(templates ?? []).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                {templates !== null && templates.length === 0 && (
+                  <span style={{ fontSize: 11, color: tokens.color.warning }}>
+                    No letter templates yet — create one in Admin → Templates → Letter.
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  Preview — {targets[0]?.name ?? 'first client'}
+                </label>
+                <iframe
+                  title="Letter preview"
+                  srcDoc={
+                    previewLoading
+                      ? '<p style="font:13px sans-serif;color:#888;padding:16px">Loading preview…</p>'
+                      : (previewHtml ??
+                        '<p style="font:13px sans-serif;color:#888;padding:16px">Pick a template to preview.</p>')
+                  }
+                  style={{
+                    width: '100%',
+                    height: 360,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    background: '#fff',
+                  }}
+                />
+              </div>
+
+              {error && (
+                <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }} role="alert">
+                  {error}
+                </p>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Button variant="ghost" onClick={onClose} disabled={busy}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="secondary"
+                  disabled={busy || !templateId}
+                  onClick={() => void saveToFiles()}
+                >
+                  {busy ? 'Working…' : `Save to Files (${targets.length})`}
+                </Button>
+                <Button disabled={busy || !templateId} onClick={() => void downloadPdf()}>
+                  {busy ? 'Working…' : `Download PDF (${targets.length})`}
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
         </Card>
       </div>
     </div>
