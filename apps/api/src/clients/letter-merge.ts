@@ -201,14 +201,37 @@ export function buildLetterContext(
   };
 }
 
-/** Render one client's letter to a full HTML document. */
+// A stored body is a "full document" (ships its own letterhead/@page via
+// <style>/<head>) vs a fragment authored in the WYSIWYG editor. Fragments
+// get the default letter stylesheet so they render like a real letter
+// (1in margins, serif body, an <h1> firm name + <hr> letterhead rule).
+export function isFullHtmlDoc(html: string): boolean {
+  return /<!doctype|<html|<head|<style/i.test(html);
+}
+
+// Default letterhead/letter styling for fragment (WYSIWYG) letters. An
+// <h1> reads as the firm-name letterhead; <hr> is the rule under it.
+export const DEFAULT_LETTER_CSS = `
+@page { size: Letter; margin: 1in; }
+body { font: 12pt Georgia, "Times New Roman", serif; color: #1a1a1a; line-height: 1.5; }
+h1 { font-family: Arial, Helvetica, sans-serif; font-size: 20pt; margin: 0 0 4px; }
+h2 { font-size: 14pt; margin: 18px 0 6px; }
+h3 { font-size: 12pt; margin: 14px 0 6px; }
+p { margin: 0 0 12px; }
+hr { border: none; border-top: 2px solid #1a1a1a; margin: 8px 0 24px; }
+ul, ol { margin: 0 0 12px 22px; }
+`;
+
+/** Render one client's letter to a full HTML document. Fragment bodies get
+ *  the default letter stylesheet; full-document bodies self-style. */
 export function renderLetterHtml(
   bodyHtml: string,
   client: ClientLetterData,
   firm: Record<string, string>,
   now: Date,
 ): string {
-  return composeInvoiceHtml(bodyHtml, '', buildLetterContext(client, firm, now));
+  const css = isFullHtmlDoc(bodyHtml) ? '' : DEFAULT_LETTER_CSS;
+  return composeInvoiceHtml(bodyHtml, css, buildLetterContext(client, firm, now));
 }
 
 // Token catalog — drives the editor variable picker + docs.

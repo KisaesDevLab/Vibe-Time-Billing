@@ -69,4 +69,17 @@ describe('renderLetterHtml', () => {
     );
     expect(html).toContain('A &amp; B &lt;Co&gt;');
   });
+
+  it('applies the default letter stylesheet to fragment (WYSIWYG) letters', () => {
+    const html = renderLetterHtml('<h1>{{ firm.name }}</h1><p>Hi</p>', client, firm, now);
+    expect(html).toContain('@page { size: Letter; margin: 1in; }');
+  });
+
+  it('does not inject default CSS into a full-document letter (self-styled)', () => {
+    const fullDoc =
+      '<!doctype html><html><head><style>body{color:red}</style></head><body>{{ client.name }}</body></html>';
+    const html = renderLetterHtml(fullDoc, client, firm, now);
+    expect(html).not.toContain('@page { size: Letter; margin: 1in; }');
+    expect(html).toContain('body{color:red}');
+  });
 });

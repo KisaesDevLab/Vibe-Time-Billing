@@ -25,7 +25,53 @@ const FEE_OPTIONS = [
 import { api, getCsrfToken } from '../../api-client';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../../lib/money';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
-import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
+import {
+  RichTextEditor,
+  type RichTextApi,
+  type RichTextVariable,
+} from '../../proposal-editor/RichTextEditor';
+
+// One-click letter building blocks inserted into the editor. Use only
+// nodes the WYSIWYG understands (h1/p/strong/br/hr) so they survive Visual
+// mode; the address block uses the raw {{{ }}} token for the multi-line
+// block. Kept in sync with the server LETTER_TEMPLATE_TOKENS / DEFAULT_LETTER_CSS.
+const LETTER_BLOCKS: Array<{ label: string; snippet: string }> = [
+  {
+    label: 'Letterhead',
+    snippet:
+      '<h1>{{ firm.name }}</h1><p>{{ firm.support_phone }} · {{ firm.support_email }} · {{ firm.support_web }}</p><hr>',
+  },
+  {
+    label: 'Date',
+    snippet: '<p>{{ today }}</p>',
+  },
+  {
+    label: 'Address block',
+    snippet:
+      '<p><strong>{{ client.display_name }}</strong><br>{{{ client.address_block_html }}}</p>',
+  },
+  {
+    label: 'Greeting',
+    snippet: '<p>Dear {{ client.primary_contact }},</p>',
+  },
+  {
+    label: 'Closing',
+    snippet: '<p>Sincerely,</p><p>{{ firm.name }}</p>',
+  },
+];
+
+// Mirror of the server DEFAULT_LETTER_CSS (apps/api/src/clients/letter-merge.ts)
+// so the editor preview matches the merged output for fragment letters.
+const DEFAULT_LETTER_CSS = `
+@page { size: Letter; margin: 1in; }
+body { font: 12pt Georgia, "Times New Roman", serif; color: #1a1a1a; line-height: 1.5; }
+h1 { font-family: Arial, Helvetica, sans-serif; font-size: 20pt; margin: 0 0 4px; }
+h2 { font-size: 14pt; margin: 18px 0 6px; }
+h3 { font-size: 12pt; margin: 14px 0 6px; }
+p { margin: 0 0 12px; }
+hr { border: none; border-top: 2px solid #1a1a1a; margin: 8px 0 24px; }
+ul, ol { margin: 0 0 12px 22px; }
+`;
 
 // Merge tokens offered in the letter editor's variable picker. Mirrors the
 // server LETTER_TEMPLATE_TOKENS (apps/api/src/clients/letter-merge.ts) —
@@ -1118,12 +1164,31 @@ function LetterTab(): JSX.Element {
   const [editBody, setEditBody] = useState('');
   const [editMode, setEditMode] = useState<'visual' | 'html'>('visual');
   const [error, setError] = useState<string | null>(null);
+  const insertApiRef = useRef<RichTextApi | null>(null);
+  const htmlRef = useRef<HTMLTextAreaElement | null>(null);
 
   function startEdit(t: LetterTpl): void {
     setEditingId(t.id);
     setEditBody(t.bodyHtml);
     // Protect letterhead docs — WYSIWYG would drop <style>/<head>.
     setEditMode(isFullHtmlDoc(t.bodyHtml) ? 'html' : 'visual');
+  }
+
+  // Insert a building block at the cursor — via the editor API in Visual
+  // mode, or into the textarea selection in HTML mode.
+  function insertBlock(snippet: string): void {
+    if (editMode === 'visual') {
+      insertApiRef.current?.insertText(snippet);
+      return;
+    }
+    const ta = htmlRef.current;
+    if (!ta) {
+      setEditBody((b) => (b ? `${b}\n${snippet}` : snippet));
+      return;
+    }
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    setEditBody(editBody.slice(0, start) + snippet + editBody.slice(end));
   }
 
   async function load(): Promise<void> {
@@ -1226,18 +1291,36 @@ function LetterTab(): JSX.Element {
                       </span>
                     )}
                   </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Insert:</span>
+                    {LETTER_BLOCKS.map((b) => (
+                      <Button
+                        key={b.label}
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => insertBlock(b.snippet)}
+                        title={`Insert a ${b.label.toLowerCase()} block`}
+                      >
+                        {b.label}
+                      </Button>
+                    ))}
+                  </div>
                   {editMode === 'visual' ? (
                     <RichTextEditor
                       key={`${t.id}-visual`}
                       format="html"
                       value={editBody}
                       onChange={setEditBody}
+                      onReady={(apiRef) => {
+                        insertApiRef.current = apiRef;
+                      }}
                       variables={LETTER_VARIABLES}
                       minHeight={260}
-                      placeholder="Write the letter. Use Insert variable for merge fields."
+                      placeholder="Write the letter. Use Insert for letterhead / address / variables."
                     />
                   ) : (
                     <textarea
+                      ref={htmlRef}
                       value={editBody}
                       onChange={(e) => setEditBody(e.target.value)}
                       rows={14}
@@ -1247,7 +1330,11 @@ function LetterTab(): JSX.Element {
                   <div style={{ fontSize: 11, color: tokens.color.textMuted }}>Preview</div>
                   <iframe
                     title="Letter preview"
-                    srcDoc={editBody}
+                    srcDoc={
+                      isFullHtmlDoc(editBody)
+                        ? editBody
+                        : `<!doctype html><html><head><meta charset="utf-8" /><style>${DEFAULT_LETTER_CSS}</style></head><body>${editBody}</body></html>`
+                    }
                     style={{
                       width: '100%',
                       height: 320,
