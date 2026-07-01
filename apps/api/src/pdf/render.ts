@@ -83,26 +83,23 @@ export interface PdfRenderOptions {
   fetchImpl?: typeof fetch;
   // Render timeout in ms. Default 30s per addendum P14 spec.
   timeoutMs?: number;
-  // Override the default 0.5in page margins. Ignored when preferCSSPageSize
-  // is set (the CSS @page rule then controls the margins).
+  // Override the default 0.5in page margins (Chromium honors the page.pdf
+  // `margin` option, NOT the CSS `@page { margin }` rule). Per-side; omit a
+  // side to keep the 0.5in default for it.
   margin?: { top?: string; right?: string; bottom?: string; left?: string };
-  // Let the document's CSS `@page { size; margin }` rule drive page size AND
-  // margins (Puppeteer honors @page instead of the format/margin options).
-  // Used by the mail-merge letters so a template's `@page { margin }` works.
-  preferCSSPageSize?: boolean;
 }
 
 const DEFAULT_MARGIN = { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' };
 
 // The options object handed to page.pdf() (and the sidecar). Default =
-// Letter + 0.5in margins (unchanged for every existing caller). When
-// preferCSSPageSize is set we omit format+margin so the CSS @page rule wins.
-// Exported for tests.
+// Letter + 0.5in margins (unchanged for every existing caller); a caller
+// can override the margins (e.g. mail-merge letters use 1in). Exported for tests.
 export function pdfPageOptions(opts: PdfRenderOptions): Record<string, unknown> {
-  if (opts.preferCSSPageSize) {
-    return { printBackground: true, preferCSSPageSize: true };
-  }
-  return { format: 'Letter', printBackground: true, margin: opts.margin ?? DEFAULT_MARGIN };
+  return {
+    format: 'Letter',
+    printBackground: true,
+    margin: { ...DEFAULT_MARGIN, ...opts.margin },
+  };
 }
 
 async function renderViaSidecar(

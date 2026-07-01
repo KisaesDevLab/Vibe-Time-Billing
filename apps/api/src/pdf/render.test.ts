@@ -12,22 +12,18 @@ describe('pdfPageOptions', () => {
     });
   });
 
-  it('honors an explicit margin override', () => {
+  it('merges an explicit margin override per-side over the 0.5in default', () => {
     expect(pdfPageOptions({ margin: { top: '1in', bottom: '1in' } })).toEqual({
       format: 'Letter',
       printBackground: true,
-      margin: { top: '1in', bottom: '1in' },
+      // top/bottom overridden; left/right keep the 0.5in default.
+      margin: { top: '1in', right: '0.5in', bottom: '1in', left: '0.5in' },
     });
   });
 
-  it('omits format+margin when preferCSSPageSize is set (CSS @page controls the page)', () => {
-    expect(pdfPageOptions({ preferCSSPageSize: true })).toEqual({
-      printBackground: true,
-      preferCSSPageSize: true,
-    });
-    // margin is ignored in this mode.
-    expect(pdfPageOptions({ preferCSSPageSize: true, margin: { top: '2in' } })).not.toHaveProperty(
-      'margin',
-    );
+  it('applies a full 1in margin (mail-merge letters)', () => {
+    expect(
+      pdfPageOptions({ margin: { top: '1in', right: '1in', bottom: '1in', left: '1in' } }).margin,
+    ).toEqual({ top: '1in', right: '1in', bottom: '1in', left: '1in' });
   });
 });

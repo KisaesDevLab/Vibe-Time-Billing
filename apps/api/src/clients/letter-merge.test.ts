@@ -150,14 +150,16 @@ describe('renderLetterHtml', () => {
 
   it('applies the default letter stylesheet to fragment (WYSIWYG) letters', () => {
     const html = renderLetterHtml('<h1>{{ firm.name }}</h1><p>Hi</p>', client, firm, now);
-    expect(html).toContain('@page { size: Letter; margin: 1in; }');
+    // Page margin comes from the render LETTER_MARGIN option, not @page.
+    expect(html).toContain('@page { size: Letter; margin: 0; }');
+    expect(html).toContain('font: 12pt Georgia');
   });
 
   it('does not inject default CSS into a full-document letter (self-styled)', () => {
     const fullDoc =
       '<!doctype html><html><head><style>body{color:red}</style></head><body>{{ client.name }}</body></html>';
     const html = renderLetterHtml(fullDoc, client, firm, now);
-    expect(html).not.toContain('@page { size: Letter; margin: 1in; }');
+    expect(html).not.toContain('font: 12pt Georgia');
     expect(html).toContain('body{color:red}');
   });
 });

@@ -49,6 +49,7 @@ import { findOrCreatePerson } from './person-helpers';
 import { printClientMailing, type MailingKind } from './mailing-print';
 import {
   buildLetterContext,
+  LETTER_MARGIN,
   listLetterTemplates,
   loadAppointmentLetterData,
   loadClientLetterData,
@@ -644,9 +645,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       let pdf: Buffer;
       try {
         const { renderHtmlToPdf } = await import('../pdf/render');
-        // preferCSSPageSize → the letter template's `@page { margin }` controls
-        // the page margins (default DEFAULT_LETTER_CSS = 1in).
-        pdf = await renderHtmlToPdf(combined, { preferCSSPageSize: true });
+        // 1in letter margins (Chromium honors the render margin option, not
+        // CSS @page); change LETTER_MARGIN to change every letter's margin.
+        pdf = await renderHtmlToPdf(combined, { margin: LETTER_MARGIN });
       } catch (err) {
         logger.error({ err }, 'mail-merge pdf render failed');
         res.status(502).json({ error: 'render_failed' });
@@ -728,7 +729,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       for (const client of clientData) {
         try {
           const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now), {
-            preferCSSPageSize: true,
+            margin: LETTER_MARGIN,
           });
           const out = await createFileInClientFolder(deps.db, storage, {
             firmId,
@@ -867,7 +868,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
             ctx,
           ).output;
           const pdf = await renderHtmlToPdf(renderLetterHtml(tpl.bodyHtml, client, firm, now), {
-            preferCSSPageSize: true,
+            margin: LETTER_MARGIN,
           });
           await sendStaffMail({
             to: client.recipientEmail,
