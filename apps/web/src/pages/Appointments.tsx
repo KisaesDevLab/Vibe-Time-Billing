@@ -18,6 +18,7 @@ import {
   humanizeOffset,
   type ReminderStep,
 } from '../components/ReminderScheduleEditor';
+import { MailMergeDialog } from './clients/MailMergeDialog';
 import { BookingSettingsEditor } from './BookingSettingsEditor';
 import { BookingRequestsPage } from './BookingRequests';
 import { BookingPagesPage } from './admin/BookingPages';
@@ -333,6 +334,18 @@ function ListTab(): JSX.Element {
   const [rows, setRows] = useState<ApptListRow[]>([]);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Mail-merge selection — appointment ids. Only appointments with a client
+  // are selectable (a letter needs a recipient).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mergeOpen, setMergeOpen] = useState(false);
+  function toggleSelect(id: string): void {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   // BK + 0179 — turn an appointment into a time log. Deep-links to the
   // Time page with the client/engagement/subject/date pre-filled, the
@@ -621,7 +634,20 @@ function ListTab(): JSX.Element {
             Clear
           </Button>
         )}
-        <div style={{ marginLeft: 'auto' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          {selectedIds.size > 0 && (
+            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              {selectedIds.size} selected
+            </span>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={selectedIds.size === 0}
+            onClick={() => setMergeOpen(true)}
+          >
+            ✉ Mail merge letter
+          </Button>
           <Button size="sm" variant="secondary" onClick={() => void exportPdf()}>
             ↓ Export PDF
           </Button>
@@ -633,6 +659,41 @@ function ListTab(): JSX.Element {
       {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
       <Table<ApptListRow>
         columns={[
+          {
+            key: 'select',
+            header: (() => {
+              const selectable = visible.filter((r) => r.clientId);
+              const allSelected =
+                selectable.length > 0 && selectable.every((r) => selectedIds.has(r.id));
+              return (
+                <input
+                  type="checkbox"
+                  aria-label="Select all for mail merge"
+                  checked={allSelected}
+                  disabled={selectable.length === 0}
+                  onChange={() =>
+                    setSelectedIds(allSelected ? new Set() : new Set(selectable.map((r) => r.id)))
+                  }
+                />
+              ) as unknown as string;
+            })(),
+            render: (r) =>
+              r.clientId ? (
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${r.clientName ?? 'appointment'}`}
+                  checked={selectedIds.has(r.id)}
+                  onChange={() => toggleSelect(r.id)}
+                />
+              ) : (
+                <span
+                  title="No client on this appointment"
+                  style={{ color: tokens.color.textMuted }}
+                >
+                  —
+                </span>
+              ),
+          },
           {
             key: 'when',
             header: (
@@ -807,6 +868,23 @@ function ListTab(): JSX.Element {
         rowKey={(r) => r.id}
         empty="No appointments match these filters."
       />
+      {mergeOpen && (
+        <MailMergeDialog
+          mode="appointments"
+          targets={rows
+            .filter((r) => selectedIds.has(r.id) && r.clientId)
+            .map((r) => ({
+              id: r.clientId!,
+              name: r.clientName ?? 'Client',
+              appointmentId: r.id,
+            }))}
+          onClose={() => setMergeOpen(false)}
+          onDone={() => {
+            setMergeOpen(false);
+            setSelectedIds(new Set());
+          }}
+        />
+      )}
       {detailId &&
         (() => {
           const selected = rows.find((r) => r.id === detailId);

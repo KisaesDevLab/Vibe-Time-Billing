@@ -11,11 +11,25 @@
 // HTML document (with its own <style>/@page for letterhead + page size);
 // tokens are substituted in that HTML per client.
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientContacts, clients, engagementLetterTemplates, persons } from '@vibe/db/schema';
-import { composeInvoiceHtml, escapeHtml, type TemplateContext } from '@vibe/core/invoicing';
+import {
+  appointments,
+  clientContacts,
+  clientRequests,
+  clients,
+  engagementLetterTemplates,
+  engagements,
+  offices,
+  persons,
+} from '@vibe/db/schema';
+import {
+  composeInvoiceHtml,
+  escapeHtml,
+  formatDateUS,
+  type TemplateContext,
+} from '@vibe/core/invoicing';
 
 import { formatMailingAddress } from './mailing-print';
 
@@ -79,6 +93,21 @@ export interface ClientLetterData {
    *  that HAS an email. Null when none has an email (letter can't email). */
   recipientEmail: string | null;
   recipientName: string | null;
+  /** Soonest OPEN drop-off due date across the client's engagements,
+   *  formatted MM/DD/YYYY. Null when none. */
+  dropOffDate?: string | null;
+  /** Selected-appointment context — only set by loadAppointmentLetterData
+   *  (the Appointments-list mail merge), one letter per appointment. */
+  appointment?: AppointmentLetterCtx | null;
+}
+
+export interface AppointmentLetterCtx {
+  /** "MM/DD/YYYY at H:MM AM/PM" in the firm's default-office timezone. */
+  datetime: string;
+  date: string;
+  time: string;
+  title: string;
+  location: string;
 }
 
 /** Load the per-client data a letter needs (mailing address + primary
@@ -142,6 +171,32 @@ export async function loadClientLetterData(
     return pick?.email ? { email: pick.email, name: pick.fullName ?? null } : null;
   };
 
+  // Soonest OPEN drop-off due date per client (via engagement → client).
+  const dropRows = await db
+    .select({ clientId: engagements.clientId, dueDate: clientRequests.dueDate })
+    .from(clientRequests)
+    .innerJoin(engagements, eq(clientRequests.engagementId, engagements.id))
+    .where(
+      and(
+        eq(clientRequests.firmId, firmId),
+        inArray(
+          engagements.clientId,
+          rows.map((r) => r.id),
+        ),
+        eq(clientRequests.kind, 'DROP_OFF'),
+        eq(clientRequests.status, 'OPEN'),
+        isNotNull(clientRequests.dueDate),
+      ),
+    )
+    .orderBy(asc(clientRequests.dueDate));
+  const dropByClient = new Map<string, string>();
+  for (const d of dropRows) {
+    // Ordered asc by dueDate → first seen per client is the soonest.
+    if (d.dueDate && !dropByClient.has(d.clientId)) {
+      dropByClient.set(d.clientId, formatDateUS(d.dueDate));
+    }
+  }
+
   const byId = new Map(rows.map((r) => [r.id, r]));
   // Preserve caller order; drop ids that weren't found / not in firm.
   return clientIds
@@ -154,8 +209,89 @@ export async function loadClientLetterData(
         primaryContactName: pickName(r.id),
         recipientEmail: recipient?.email ?? null,
         recipientName: recipient?.name ?? null,
+        dropOffDate: dropByClient.get(r.id) ?? null,
       };
     });
+}
+
+/** Firm's default-office timezone (fallback America/Chicago) — used to
+ *  render appointment times in the letter. Mirrors email-jobs.ts. */
+async function firmTimezone(db: Database, firmId: string): Promise<string> {
+  const [row] = await db
+    .select({ tz: offices.timezone })
+    .from(offices)
+    .where(and(eq(offices.firmId, firmId), eq(offices.isDefault, true)))
+    .limit(1);
+  return row?.tz ?? 'America/Chicago';
+}
+
+const LOCATION_LABEL: Record<string, string> = {
+  VIDEO: 'Video',
+  PHONE: 'Phone',
+  IN_PERSON: 'In person',
+};
+
+function formatAppt(
+  startsAt: Date,
+  title: string,
+  location: string,
+  tz: string,
+): AppointmentLetterCtx {
+  const date = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).format(startsAt);
+  const time = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(startsAt);
+  return {
+    datetime: `${date} at ${time}`,
+    date,
+    time,
+    title,
+    location: LOCATION_LABEL[location] ?? location,
+  };
+}
+
+/** One letter row per selected appointment (Appointments-list mail merge):
+ *  the appointment's client + that appointment's date/time context. Skips
+ *  appointments with no client (internal meetings) or missing client.
+ *  Preserves the caller's appointment-id order. */
+export async function loadAppointmentLetterData(
+  db: Database,
+  firmId: string,
+  appointmentIds: string[],
+): Promise<ClientLetterData[]> {
+  const appts = await db
+    .select({
+      id: appointments.id,
+      clientId: appointments.clientId,
+      startsAt: appointments.startsAt,
+      title: appointments.title,
+      location: appointments.location,
+    })
+    .from(appointments)
+    .where(and(eq(appointments.firmId, firmId), inArray(appointments.id, appointmentIds)));
+  if (appts.length === 0) return [];
+  const clientIds = [
+    ...new Set(appts.map((a) => a.clientId).filter((x): x is string => Boolean(x))),
+  ];
+  const clientData = await loadClientLetterData(db, firmId, clientIds);
+  const clientById = new Map(clientData.map((c) => [c.id, c]));
+  const tz = await firmTimezone(db, firmId);
+  const rows: ClientLetterData[] = [];
+  for (const id of appointmentIds) {
+    const a = appts.find((x) => x.id === id);
+    if (!a || !a.clientId) continue;
+    const c = clientById.get(a.clientId);
+    if (!c) continue;
+    rows.push({ ...c, appointment: formatAppt(a.startsAt, a.title, a.location, tz) });
+  }
+  return rows;
 }
 
 /** MM/DD/YYYY for the `today` token, in the server's local time. */
@@ -197,6 +333,14 @@ export function buildLetterContext(
       postal: client.mailingPostal ?? '',
       country: client.mailingCountry ?? '',
       city_state_zip: cityStateZip,
+      drop_off_date: client.dropOffDate ?? '',
+    },
+    appointment: {
+      datetime: client.appointment?.datetime ?? '',
+      date: client.appointment?.date ?? '',
+      time: client.appointment?.time ?? '',
+      title: client.appointment?.title ?? '',
+      location: client.appointment?.location ?? '',
     },
   };
 }
@@ -252,6 +396,12 @@ export const LETTER_TEMPLATE_TOKENS: LetterTokenEntry[] = [
   { token: 'client.state', label: 'State' },
   { token: 'client.postal', label: 'ZIP / postal' },
   { token: 'client.city_state_zip', label: 'City, State ZIP' },
+  { token: 'client.drop_off_date', label: 'Drop-off due date' },
+  { token: 'appointment.datetime', label: 'Appointment date & time' },
+  { token: 'appointment.date', label: 'Appointment date' },
+  { token: 'appointment.time', label: 'Appointment time' },
+  { token: 'appointment.title', label: 'Appointment title' },
+  { token: 'appointment.location', label: 'Appointment location' },
   { token: 'firm.name', label: 'Firm name' },
   { token: 'firm.displayName', label: 'Firm display name' },
   { token: 'firm.support_email', label: 'Firm email' },

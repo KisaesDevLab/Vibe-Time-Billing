@@ -20,8 +20,11 @@ interface LetterTemplate {
 }
 
 interface MailMergeTarget {
+  /** Client id (both modes carry it for labeling). */
   id: string;
   name: string;
+  /** Set in appointments mode — the selected appointment id. */
+  appointmentId?: string;
 }
 
 // Unified per-client outcome view, shared by Save-to-Files and Email.
@@ -41,10 +44,14 @@ const inputStyle = {
 
 export function MailMergeDialog({
   targets,
+  mode = 'clients',
   onClose,
   onDone,
 }: {
   targets: MailMergeTarget[];
+  /** 'appointments' → one letter per selected appointment (appointment.*
+   *  tokens fill in); 'clients' → one letter per client. */
+  mode?: 'clients' | 'appointments';
   onClose: () => void;
   onDone: () => void;
 }): JSX.Element {
@@ -58,8 +65,16 @@ export function MailMergeDialog({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
 
-  const clientIds = targets.map((t) => t.id);
-
+  // The batch's target field: appointment ids (appointments mode) or
+  // client ids (clients mode).
+  const targetPayload: { appointmentIds: string[] } | { clientIds: string[] } =
+    mode === 'appointments'
+      ? {
+          appointmentIds: targets
+            .map((t) => t.appointmentId)
+            .filter((x): x is string => Boolean(x)),
+        }
+      : { clientIds: targets.map((t) => t.id) };
   // Load the active letter templates once.
   useEffect(() => {
     api<{ items: LetterTemplate[] }>('/api/staff/clients/mail-merge-templates')
@@ -76,9 +91,13 @@ export function MailMergeDialog({
     let cancelled = false;
     setPreviewLoading(true);
     setError(null);
+    const previewTarget =
+      mode === 'appointments'
+        ? { appointmentId: targets[0]?.appointmentId }
+        : { clientId: targets[0]?.id };
     api<{ html: string }>('/api/staff/clients/mail-merge-preview', {
       method: 'POST',
-      body: JSON.stringify({ templateId, clientId: targets[0]!.id }),
+      body: JSON.stringify({ templateId, ...previewTarget }),
     })
       .then((r) => {
         if (!cancelled) setPreviewHtml(r.html);
@@ -92,7 +111,7 @@ export function MailMergeDialog({
     return () => {
       cancelled = true;
     };
-  }, [templateId, targets]);
+  }, [templateId, targets, mode]);
 
   async function downloadPdf(): Promise<void> {
     if (!templateId) {
@@ -106,7 +125,7 @@ export function MailMergeDialog({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() ?? '' },
         credentials: 'same-origin',
-        body: JSON.stringify({ templateId, clientIds }),
+        body: JSON.stringify({ templateId, ...targetPayload }),
       });
       if (!res.ok) {
         let reason = res.statusText;
@@ -153,7 +172,7 @@ export function MailMergeDialog({
         summary: { saved: number; skipped: number };
       }>('/api/staff/clients/mail-merge-save-to-files', {
         method: 'POST',
-        body: JSON.stringify({ templateId, clientIds }),
+        body: JSON.stringify({ templateId, ...targetPayload }),
       });
       setResult({
         title: `${r.summary.saved} saved to Files · ${r.summary.skipped} skipped.`,
@@ -196,7 +215,7 @@ export function MailMergeDialog({
         method: 'POST',
         body: JSON.stringify({
           templateId,
-          clientIds,
+          ...targetPayload,
           subject: subject.trim(),
           body: coverNote.trim() || undefined,
         }),

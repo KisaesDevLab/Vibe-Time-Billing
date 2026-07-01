@@ -55,6 +55,16 @@ const LETTER_BLOCKS: Array<{ label: string; snippet: string }> = [
     snippet: '<p>Dear {{ client.primary_contact }},</p>',
   },
   {
+    label: 'Appointment',
+    snippet:
+      '<p>This confirms your appointment: <strong>{{ appointment.datetime }}</strong> ({{ appointment.location }}).</p>',
+  },
+  {
+    label: 'Drop-off',
+    snippet:
+      '<p>Please drop off your documents by <strong>{{ client.drop_off_date }}</strong>.</p>',
+  },
+  {
     label: 'Closing',
     snippet: '<p>Sincerely,</p><p>{{ firm.name }}</p>',
   },
@@ -87,6 +97,12 @@ const LETTER_VARIABLES: RichTextVariable[] = [
   { token: 'client.city', label: 'City' },
   { token: 'client.state', label: 'State' },
   { token: 'client.postal', label: 'ZIP / postal' },
+  { token: 'client.drop_off_date', label: 'Drop-off due date' },
+  { token: 'appointment.datetime', label: 'Appointment date & time' },
+  { token: 'appointment.date', label: 'Appointment date' },
+  { token: 'appointment.time', label: 'Appointment time' },
+  { token: 'appointment.title', label: 'Appointment title' },
+  { token: 'appointment.location', label: 'Appointment location' },
   { token: 'firm.name', label: 'Firm name' },
   { token: 'firm.support_email', label: 'Firm email' },
   { token: 'firm.support_phone', label: 'Firm phone' },

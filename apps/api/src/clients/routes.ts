@@ -46,9 +46,11 @@ import { printClientMailing, type MailingKind } from './mailing-print';
 import {
   buildLetterContext,
   listLetterTemplates,
+  loadAppointmentLetterData,
   loadClientLetterData,
   loadLetterTemplateBody,
   renderLetterHtml,
+  type ClientLetterData,
 } from './letter-merge';
 import { combineStatementsHtml } from '@vibe/core/invoicing';
 import { buildStorageClient } from '@vibe/storage';
@@ -457,10 +459,26 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     },
   );
 
-  const MailMergePreviewSchema = z.object({
-    templateId: z.string().uuid(),
-    clientId: z.string().uuid(),
-  });
+  // Resolve the per-letter rows for a merge run — one row per appointment
+  // when appointmentIds is given (Appointments-list flow), else one per
+  // client (Clients-list flow).
+  const resolveLetterRows = (
+    firmId: string,
+    data: { clientIds?: string[]; appointmentIds?: string[] },
+  ): Promise<ClientLetterData[]> =>
+    data.appointmentIds && data.appointmentIds.length > 0
+      ? loadAppointmentLetterData(deps.db!, firmId, data.appointmentIds)
+      : loadClientLetterData(deps.db!, firmId, data.clientIds ?? []);
+
+  const MailMergePreviewSchema = z
+    .object({
+      templateId: z.string().uuid(),
+      clientId: z.string().uuid().optional(),
+      appointmentId: z.string().uuid().optional(),
+    })
+    .refine((d) => Boolean(d.clientId) || Boolean(d.appointmentId), {
+      message: 'client_or_appointment_required',
+    });
   router.post(
     '/mail-merge-preview',
     requirePermission(deps, 'client:read'),
@@ -480,7 +498,10 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const [client] = await loadClientLetterData(deps.db, firmId, [parsed.data.clientId]);
+      const [client] = await resolveLetterRows(firmId, {
+        clientIds: parsed.data.clientId ? [parsed.data.clientId] : undefined,
+        appointmentIds: parsed.data.appointmentId ? [parsed.data.appointmentId] : undefined,
+      });
       if (!client) {
         res.status(404).json({ error: 'client_not_found' });
         return;
@@ -490,10 +511,15 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     },
   );
 
-  const MailMergePdfSchema = z.object({
-    templateId: z.string().uuid(),
-    clientIds: z.array(z.string().uuid()).min(1).max(200),
-  });
+  const MailMergePdfSchema = z
+    .object({
+      templateId: z.string().uuid(),
+      clientIds: z.array(z.string().uuid()).max(200).optional(),
+      appointmentIds: z.array(z.string().uuid()).max(200).optional(),
+    })
+    .refine((d) => (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) > 0, {
+      message: 'targets_required',
+    });
   router.post(
     '/mail-merge-pdf',
     requirePermission(deps, 'client:read'),
@@ -513,7 +539,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const clientData = await loadClientLetterData(deps.db, firmId, parsed.data.clientIds);
+      const clientData = await resolveLetterRows(firmId, parsed.data);
       if (clientData.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;
@@ -555,10 +581,15 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // (Correspondence/). Renders per client (own PDF, not the combined one),
   // so it's capped lower than the download path. Writes a `files` row per
   // client via the shared create-file helper. Mutating → client:write.
-  const MailMergeSaveSchema = z.object({
-    templateId: z.string().uuid(),
-    clientIds: z.array(z.string().uuid()).min(1).max(100),
-  });
+  const MailMergeSaveSchema = z
+    .object({
+      templateId: z.string().uuid(),
+      clientIds: z.array(z.string().uuid()).max(100).optional(),
+      appointmentIds: z.array(z.string().uuid()).max(100).optional(),
+    })
+    .refine((d) => (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) > 0, {
+      message: 'targets_required',
+    });
   router.post(
     '/mail-merge-save-to-files',
     requirePermission(deps, 'client:write'),
@@ -579,7 +610,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const clientData = await loadClientLetterData(deps.db, firmId, parsed.data.clientIds);
+      const clientData = await resolveLetterRows(firmId, parsed.data);
       if (clientData.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;
@@ -660,12 +691,17 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // resolve recipient (primary→billing→first with an email) → render the
   // letter → attach the PDF → sendStaffMail. Subject/body are merge-token
   // resolved per client. Outbound → client:write; capped at 100.
-  const MailMergeEmailSchema = z.object({
-    templateId: z.string().uuid(),
-    clientIds: z.array(z.string().uuid()).min(1).max(100),
-    subject: z.string().min(1).max(200),
-    body: z.string().max(20_000).optional(),
-  });
+  const MailMergeEmailSchema = z
+    .object({
+      templateId: z.string().uuid(),
+      clientIds: z.array(z.string().uuid()).max(100).optional(),
+      appointmentIds: z.array(z.string().uuid()).max(100).optional(),
+      subject: z.string().min(1).max(200),
+      body: z.string().max(20_000).optional(),
+    })
+    .refine((d) => (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) > 0, {
+      message: 'targets_required',
+    });
   router.post(
     '/mail-merge-email',
     requirePermission(deps, 'client:write'),
@@ -691,7 +727,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
-      const clientData = await loadClientLetterData(deps.db, firmId, parsed.data.clientIds);
+      const clientData = await resolveLetterRows(firmId, parsed.data);
       if (clientData.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;

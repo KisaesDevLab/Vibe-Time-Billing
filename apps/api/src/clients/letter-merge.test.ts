@@ -36,6 +36,36 @@ describe('buildLetterContext', () => {
     expect(ctx.today).toBe('02/03/2026');
   });
 
+  it('exposes appointment + drop-off tokens when present', () => {
+    const ctx = buildLetterContext(
+      {
+        ...client,
+        dropOffDate: '03/20/2026',
+        appointment: {
+          datetime: '03/15/2026 at 2:00 PM',
+          date: '03/15/2026',
+          time: '2:00 PM',
+          title: 'Tax review',
+          location: 'In person',
+        },
+      },
+      firm,
+      now,
+    ) as { client: Record<string, string>; appointment: Record<string, string> };
+    expect(ctx.client.drop_off_date).toBe('03/20/2026');
+    expect(ctx.appointment.datetime).toBe('03/15/2026 at 2:00 PM');
+    expect(ctx.appointment.location).toBe('In person');
+  });
+
+  it('renders appointment/drop-off tokens empty when absent', () => {
+    const ctx = buildLetterContext(client, firm, now) as {
+      client: Record<string, string>;
+      appointment: Record<string, string>;
+    };
+    expect(ctx.client.drop_off_date).toBe('');
+    expect(ctx.appointment.datetime).toBe('');
+  });
+
   it('falls back to legal name when no client-facing name', () => {
     const ctx = buildLetterContext({ ...client, clientFacingName: null }, firm, now) as {
       client: Record<string, string>;
