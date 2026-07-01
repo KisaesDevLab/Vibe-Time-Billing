@@ -368,6 +368,9 @@ export async function loadEngagementLetterData(
     if (a.engagementId && !apptByEng.has(a.engagementId)) apptByEng.set(a.engagementId, a);
   }
 
+  // When a date range is set, only keep engagements whose appointment
+  // falls in it (apptByEng already reflects the range filter).
+  const rangeActive = Boolean(apptRange?.from || apptRange?.to);
   const tz = await firmTimezone(db, firmId);
   const rows: ClientLetterData[] = [];
   for (const engId of engagementIds) {
@@ -376,6 +379,7 @@ export async function loadEngagementLetterData(
     const c = clientById.get(e.clientId);
     if (!c) continue;
     const a = apptByEng.get(engId);
+    if (rangeActive && !a) continue; // skip engagements with no in-range appointment
     rows.push({
       ...c,
       engagementName: e.name,

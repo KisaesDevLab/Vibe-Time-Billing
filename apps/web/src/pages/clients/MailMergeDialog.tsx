@@ -122,7 +122,18 @@ export function MailMergeDialog({
         if (!cancelled) setPreviewHtml(r.html);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Preview failed');
+        if (cancelled) return;
+        // In engagements mode with a date range, the first engagement may
+        // have no in-range appointment (it'll be skipped in the run) — show
+        // an informational preview instead of a scary error.
+        const msg = e instanceof Error ? e.message : 'Preview failed';
+        if (mode === 'engagements' && (apptFrom || apptTo) && msg === 'client_not_found') {
+          setPreviewHtml(
+            '<p style="font:13px sans-serif;color:#888;padding:16px">The first selected engagement has no appointment in this date range, so it would be skipped. Engagements with an in-range appointment will still generate letters.</p>',
+          );
+        } else {
+          setError(msg);
+        }
       })
       .finally(() => {
         if (!cancelled) setPreviewLoading(false);
