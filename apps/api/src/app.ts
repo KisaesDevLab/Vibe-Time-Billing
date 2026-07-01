@@ -241,6 +241,11 @@ export function createApp(deps: AppDeps): Express {
   app.disable('x-powered-by');
   app.set('trust proxy', true);
 
+  // Request logging first, before any body parser or webhook router, so every
+  // request — including the raw-body webhooks mounted below — is logged.
+  // pino-http only observes req/res; it never consumes the body stream.
+  app.use(pinoHttp({ logger }));
+
   // Q35 — OpenSign completion webhook. MUST be mounted before the global
   // express.json() so the raw request bytes survive for HMAC
   // verification (the global parser would otherwise consume the body).
@@ -294,12 +299,50 @@ export function createApp(deps: AppDeps): Express {
     );
   }
 
+  // Stripe webhooks — MUST be mounted before the global express.json() below,
+  // exactly like the OpenSign webhook above. Each router installs its own
+  // express.raw() parser so the raw request bytes survive for HMAC signature
+  // verification; if the global JSON parser ran first it would consume the
+  // body and every event would fail signature checks (401 invalid_signature).
+  app.use(
+    '/api/webhooks/stripe',
+    createStripeWebhookRouter({
+      db: deps.db,
+      stripe: deps.stripeProvider ?? null,
+      webhookSecret: deps.stripeWebhookSecret ?? null,
+      sendEmail: deps.sendPortalEmail,
+      portalBaseUrl: config.PORTAL_BASE_URL,
+      printQueue: bullPrintQueue,
+    }),
+  );
+
+  // P12 — separate webhook channel for Stripe Connect events about
+  // connected accounts (subscription.*, invoice.*, mandate.updated,
+  // account.updated, …). Distinct secret from the BYO-key stripe
+  // webhook above.
+  app.use(
+    '/api/webhooks/stripe-connect',
+    createStripeConnectWebhookRouter({
+      db: deps.db,
+      stripe: deps.stripeProvider ?? null,
+      webhookSecret: config.STRIPE_CONNECT_WEBHOOK_SECRET ?? null,
+    }),
+  );
+
+  app.use(
+    '/api/webhooks/cpacharge',
+    createCpaChargeWebhookRouter({
+      db: deps.db,
+      provider: null,
+      webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
+    }),
+  );
+
   // Logo/icon uploads carry image bytes (base64) through the API; allow a
   // larger body on just that path. express.json no-ops once a body is parsed,
   // so the global 1mb parser below skips these already-parsed requests.
   app.use('/api/staff/admin/branding', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
-  app.use(pinoHttp({ logger }));
 
   // Liveness — used by Docker HEALTHCHECK. Cheap, no I/O.
   //
@@ -1942,42 +1985,8 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/webhooks', auth.requireAuth, auth.requireCsrf, webhookRouter);
 
-  // Stripe webhook — mounted BEFORE the global JSON body parser would
-  // have run, so the raw body is preserved for signature verification.
-  // Express routes the call to this router's raw-body parser first.
-  app.use(
-    '/api/webhooks/stripe',
-    createStripeWebhookRouter({
-      db: deps.db,
-      stripe: deps.stripeProvider ?? null,
-      webhookSecret: deps.stripeWebhookSecret ?? null,
-      sendEmail: deps.sendPortalEmail,
-      portalBaseUrl: config.PORTAL_BASE_URL,
-      printQueue: bullPrintQueue,
-    }),
-  );
-
-  // P12 — separate webhook channel for Stripe Connect events about
-  // connected accounts (subscription.*, invoice.*, mandate.updated,
-  // account.updated, …). Distinct secret from the BYO-key stripe
-  // webhook above.
-  app.use(
-    '/api/webhooks/stripe-connect',
-    createStripeConnectWebhookRouter({
-      db: deps.db,
-      stripe: deps.stripeProvider ?? null,
-      webhookSecret: config.STRIPE_CONNECT_WEBHOOK_SECRET ?? null,
-    }),
-  );
-
-  app.use(
-    '/api/webhooks/cpacharge',
-    createCpaChargeWebhookRouter({
-      db: deps.db,
-      provider: null,
-      webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
-    }),
-  );
+  // (Stripe / Stripe-Connect / CPACharge webhooks are mounted earlier, before
+  // the global express.json(), so their raw bodies survive for HMAC checks.)
 
   // H.8 follow-up — mail + SMS provider delivery callbacks update
   // notification_log.status. Each provider expects a separate sub-path
