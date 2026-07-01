@@ -22,6 +22,7 @@ import {
   invoiceLineItems,
   invoices,
   timeEntries,
+  workCodes,
 } from '@vibe/db/schema';
 import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billing';
 
@@ -353,10 +354,12 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           // without a second roundtrip.
           staffName: appUsers.fullName,
           description: timeEntries.description,
+          workCode: workCodes.name,
         })
         .from(billingBatchEntries)
         .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
         .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .leftJoin(workCodes, eq(workCodes.id, timeEntries.workCodeId))
         .where(eq(billingBatchEntries.billingBatchId, batch.id));
 
       // 0086 — load every engagement on the batch (primary + extras)

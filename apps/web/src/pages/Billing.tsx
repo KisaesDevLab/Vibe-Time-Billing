@@ -57,6 +57,7 @@ interface BatchEntry {
   action: 'INCLUDE' | 'DEFER' | 'WRITE_OFF';
   staffName?: string | null;
   description?: string | null;
+  workCode?: string | null;
   // Per-entry amount after adjustments (0 for deferred / written-off).
   billedAmountCents?: number;
 }
@@ -597,6 +598,10 @@ function BatchDetailPage(): JSX.Element {
   // return_type, feature_enabled false, etc.) still decide whether an
   // offer actually lands. Starts true as a pre-load placeholder.
   const [offerRetainerOnGenerate, setOfferRetainerOnGenerate] = useState(true);
+  const [entrySort, setEntrySort] = useState<{ key: string; dir: 'asc' | 'desc' }>({
+    key: 'date',
+    dir: 'asc',
+  });
   const [invoiceDescription, setInvoiceDescription] = useState('');
   const [invoiceLines, setInvoiceLines] = useState<Array<{ description: string; dollars: string }>>(
     [],
@@ -1222,32 +1227,94 @@ function BatchDetailPage(): JSX.Element {
           const totalStandard = detail.entries.reduce((s, e) => s + e.standardAmountCents, 0);
           const totalBilled = detail.entries.reduce((s, e) => s + (e.billedAmountCents ?? 0), 0);
           const money = (cents: number): string => `$${(cents / 100).toLocaleString()}`;
+          const sortVal = (e: BatchEntry): string | number => {
+            switch (entrySort.key) {
+              case 'date':
+                return e.entryDate;
+              case 'staff':
+                return e.staffName ?? '';
+              case 'workCode':
+                return e.workCode ?? '';
+              case 'hours':
+                return Number(e.hours);
+              case 'amt':
+                return e.standardAmountCents;
+              case 'billed':
+                return e.billedAmountCents ?? 0;
+              case 'desc':
+                return e.description ?? '';
+              case 'action':
+                return e.action;
+              default:
+                return '';
+            }
+          };
+          const sortedEntries = [...detail.entries].sort((a, b) => {
+            const av = sortVal(a);
+            const bv = sortVal(b);
+            const cmp =
+              typeof av === 'number' && typeof bv === 'number'
+                ? av - bv
+                : String(av).localeCompare(String(bv));
+            return entrySort.dir === 'asc' ? cmp : -cmp;
+          });
+          const sortHeader = (key: string, label: string): JSX.Element => (
+            <button
+              type="button"
+              onClick={() =>
+                setEntrySort((s) => ({
+                  key,
+                  dir: s.key === key && s.dir === 'asc' ? 'desc' : 'asc',
+                }))
+              }
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                font: 'inherit',
+                color: 'inherit',
+                padding: 0,
+              }}
+            >
+              {label}
+              {entrySort.key === key ? (entrySort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+            </button>
+          );
           return (
             <Table<BatchEntry>
               columns={[
-                { key: 'date', header: 'Date', render: (e) => e.entryDate },
-                { key: 'staff', header: 'Staff', render: (e) => e.staffName ?? '—' },
+                { key: 'date', header: sortHeader('date', 'Date'), render: (e) => e.entryDate },
+                {
+                  key: 'staff',
+                  header: sortHeader('staff', 'Staff'),
+                  render: (e) => e.staffName ?? '—',
+                },
+                {
+                  key: 'workCode',
+                  header: sortHeader('workCode', 'Work code'),
+                  render: (e) => e.workCode ?? '—',
+                },
                 {
                   key: 'hours',
-                  header: 'Hours',
+                  header: sortHeader('hours', 'Hours'),
                   align: 'right',
                   render: (e) => Number(e.hours).toFixed(2),
                 },
                 {
                   key: 'amt',
-                  header: 'Standard',
+                  header: sortHeader('amt', 'Standard'),
                   align: 'right',
                   render: (e) => money(e.standardAmountCents),
                 },
                 {
                   key: 'billed',
-                  header: 'Billed',
+                  header: sortHeader('billed', 'Billed'),
                   align: 'right',
                   render: (e) => (e.billedAmountCents != null ? money(e.billedAmountCents) : '—'),
                 },
                 {
                   key: 'desc',
-                  header: 'Description',
+                  header: sortHeader('desc', 'Description'),
                   render: (e) => e.description ?? '',
                 },
                 {
@@ -1266,7 +1333,7 @@ function BatchDetailPage(): JSX.Element {
                   ),
                 },
               ]}
-              rows={detail.entries}
+              rows={sortedEntries}
               rowKey={(e) => e.timeEntryId}
               empty="No entries in this batch."
               footer={[
