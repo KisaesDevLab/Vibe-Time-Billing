@@ -48,6 +48,7 @@ import {
   listLetterTemplates,
   loadAppointmentLetterData,
   loadClientLetterData,
+  loadEngagementLetterData,
   loadLetterTemplateBody,
   renderLetterHtml,
   type ClientLetterData,
@@ -460,24 +461,61 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   );
 
   // Resolve the per-letter rows for a merge run — one row per appointment
-  // when appointmentIds is given (Appointments-list flow), else one per
-  // client (Clients-list flow).
+  // (Appointments flow), per engagement (Engagements flow — pulls the
+  // engagement's drop-off date + its appointment in [apptFrom, apptTo]),
+  // else one per client (Clients flow).
   const resolveLetterRows = (
     firmId: string,
-    data: { clientIds?: string[]; appointmentIds?: string[] },
-  ): Promise<ClientLetterData[]> =>
-    data.appointmentIds && data.appointmentIds.length > 0
-      ? loadAppointmentLetterData(deps.db!, firmId, data.appointmentIds)
-      : loadClientLetterData(deps.db!, firmId, data.clientIds ?? []);
+    data: {
+      clientIds?: string[];
+      appointmentIds?: string[];
+      engagementIds?: string[];
+      apptFrom?: string;
+      apptTo?: string;
+    },
+  ): Promise<ClientLetterData[]> => {
+    if (data.appointmentIds && data.appointmentIds.length > 0) {
+      return loadAppointmentLetterData(deps.db!, firmId, data.appointmentIds);
+    }
+    if (data.engagementIds && data.engagementIds.length > 0) {
+      return loadEngagementLetterData(deps.db!, firmId, data.engagementIds, {
+        from: data.apptFrom,
+        to: data.apptTo,
+      });
+    }
+    return loadClientLetterData(deps.db!, firmId, data.clientIds ?? []);
+  };
+
+  // Shared target fields for the pdf/save/email schemas — one of clientIds /
+  // appointmentIds / engagementIds, plus an optional appointment date range
+  // (engagements flow only).
+  const YMD = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+  const targetFields = {
+    clientIds: z.array(z.string().uuid()).max(200).optional(),
+    appointmentIds: z.array(z.string().uuid()).max(200).optional(),
+    engagementIds: z.array(z.string().uuid()).max(200).optional(),
+    apptFrom: YMD.optional(),
+    apptTo: YMD.optional(),
+  };
+  const hasTarget = (d: {
+    clientIds?: string[];
+    appointmentIds?: string[];
+    engagementIds?: string[];
+  }): boolean =>
+    (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) + (d.engagementIds?.length ?? 0) >
+    0;
 
   const MailMergePreviewSchema = z
     .object({
       templateId: z.string().uuid(),
       clientId: z.string().uuid().optional(),
       appointmentId: z.string().uuid().optional(),
+      engagementId: z.string().uuid().optional(),
+      apptFrom: YMD.optional(),
+      apptTo: YMD.optional(),
     })
-    .refine((d) => Boolean(d.clientId) || Boolean(d.appointmentId), {
-      message: 'client_or_appointment_required',
+    .refine((d) => Boolean(d.clientId) || Boolean(d.appointmentId) || Boolean(d.engagementId), {
+      message: 'target_required',
     });
   router.post(
     '/mail-merge-preview',
@@ -501,6 +539,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       const [client] = await resolveLetterRows(firmId, {
         clientIds: parsed.data.clientId ? [parsed.data.clientId] : undefined,
         appointmentIds: parsed.data.appointmentId ? [parsed.data.appointmentId] : undefined,
+        engagementIds: parsed.data.engagementId ? [parsed.data.engagementId] : undefined,
+        apptFrom: parsed.data.apptFrom,
+        apptTo: parsed.data.apptTo,
       });
       if (!client) {
         res.status(404).json({ error: 'client_not_found' });
@@ -512,14 +553,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   );
 
   const MailMergePdfSchema = z
-    .object({
-      templateId: z.string().uuid(),
-      clientIds: z.array(z.string().uuid()).max(200).optional(),
-      appointmentIds: z.array(z.string().uuid()).max(200).optional(),
-    })
-    .refine((d) => (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) > 0, {
-      message: 'targets_required',
-    });
+    .object({ templateId: z.string().uuid(), ...targetFields })
+    .refine(hasTarget, { message: 'targets_required' });
   router.post(
     '/mail-merge-pdf',
     requirePermission(deps, 'client:read'),
@@ -582,14 +617,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // so it's capped lower than the download path. Writes a `files` row per
   // client via the shared create-file helper. Mutating → client:write.
   const MailMergeSaveSchema = z
-    .object({
-      templateId: z.string().uuid(),
-      clientIds: z.array(z.string().uuid()).max(100).optional(),
-      appointmentIds: z.array(z.string().uuid()).max(100).optional(),
-    })
-    .refine((d) => (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) > 0, {
-      message: 'targets_required',
-    });
+    .object({ templateId: z.string().uuid(), ...targetFields })
+    .refine(hasTarget, { message: 'targets_required' });
   router.post(
     '/mail-merge-save-to-files',
     requirePermission(deps, 'client:write'),
@@ -694,14 +723,11 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   const MailMergeEmailSchema = z
     .object({
       templateId: z.string().uuid(),
-      clientIds: z.array(z.string().uuid()).max(100).optional(),
-      appointmentIds: z.array(z.string().uuid()).max(100).optional(),
+      ...targetFields,
       subject: z.string().min(1).max(200),
       body: z.string().max(20_000).optional(),
     })
-    .refine((d) => (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) > 0, {
-      message: 'targets_required',
-    });
+    .refine(hasTarget, { message: 'targets_required' });
   router.post(
     '/mail-merge-email',
     requirePermission(deps, 'client:write'),

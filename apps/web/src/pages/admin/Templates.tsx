@@ -103,6 +103,7 @@ const LETTER_VARIABLES: RichTextVariable[] = [
   { token: 'appointment.time', label: 'Appointment time' },
   { token: 'appointment.title', label: 'Appointment title' },
   { token: 'appointment.location', label: 'Appointment location' },
+  { token: 'engagement.name', label: 'Engagement name' },
   { token: 'firm.name', label: 'Firm name' },
   { token: 'firm.support_email', label: 'Firm email' },
   { token: 'firm.support_phone', label: 'Firm phone' },

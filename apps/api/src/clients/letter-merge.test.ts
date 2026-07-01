@@ -61,9 +61,18 @@ describe('buildLetterContext', () => {
     const ctx = buildLetterContext(client, firm, now) as {
       client: Record<string, string>;
       appointment: Record<string, string>;
+      engagement: Record<string, string>;
     };
     expect(ctx.client.drop_off_date).toBe('');
     expect(ctx.appointment.datetime).toBe('');
+    expect(ctx.engagement.name).toBe('');
+  });
+
+  it('exposes the engagement name token (engagements flow)', () => {
+    const ctx = buildLetterContext({ ...client, engagementName: '2025 Form 1040' }, firm, now) as {
+      engagement: Record<string, string>;
+    };
+    expect(ctx.engagement.name).toBe('2025 Form 1040');
   });
 
   it('falls back to legal name when no client-facing name', () => {

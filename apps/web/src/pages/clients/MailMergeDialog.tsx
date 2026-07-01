@@ -20,11 +20,13 @@ interface LetterTemplate {
 }
 
 interface MailMergeTarget {
-  /** Client id (both modes carry it for labeling). */
+  /** Client id (all modes carry it for labeling). */
   id: string;
   name: string;
   /** Set in appointments mode — the selected appointment id. */
   appointmentId?: string;
+  /** Set in engagements mode — the selected engagement id. */
+  engagementId?: string;
 }
 
 // Unified per-client outcome view, shared by Save-to-Files and Email.
@@ -49,9 +51,10 @@ export function MailMergeDialog({
   onDone,
 }: {
   targets: MailMergeTarget[];
-  /** 'appointments' → one letter per selected appointment (appointment.*
-   *  tokens fill in); 'clients' → one letter per client. */
-  mode?: 'clients' | 'appointments';
+  /** 'appointments' → one letter per selected appointment; 'engagements' →
+   *  one per engagement (pulls its drop-off date + in-range appointment);
+   *  'clients' → one per client. */
+  mode?: 'clients' | 'appointments' | 'engagements';
   onClose: () => void;
   onDone: () => void;
 }): JSX.Element {
@@ -59,22 +62,32 @@ export function MailMergeDialog({
   const [templateId, setTemplateId] = useState<string>('');
   const [subject, setSubject] = useState('');
   const [coverNote, setCoverNote] = useState('');
+  // Engagements mode — optional appointment date-range filter.
+  const [apptFrom, setApptFrom] = useState('');
+  const [apptTo, setApptTo] = useState('');
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
 
-  // The batch's target field: appointment ids (appointments mode) or
-  // client ids (clients mode).
-  const targetPayload: { appointmentIds: string[] } | { clientIds: string[] } =
+  // The batch's target field per mode, plus the engagements-only date range.
+  const targetPayload: Record<string, unknown> =
     mode === 'appointments'
       ? {
           appointmentIds: targets
             .map((t) => t.appointmentId)
             .filter((x): x is string => Boolean(x)),
         }
-      : { clientIds: targets.map((t) => t.id) };
+      : mode === 'engagements'
+        ? {
+            engagementIds: targets
+              .map((t) => t.engagementId)
+              .filter((x): x is string => Boolean(x)),
+            ...(apptFrom ? { apptFrom } : {}),
+            ...(apptTo ? { apptTo } : {}),
+          }
+        : { clientIds: targets.map((t) => t.id) };
   // Load the active letter templates once.
   useEffect(() => {
     api<{ items: LetterTemplate[] }>('/api/staff/clients/mail-merge-templates')
@@ -94,7 +107,13 @@ export function MailMergeDialog({
     const previewTarget =
       mode === 'appointments'
         ? { appointmentId: targets[0]?.appointmentId }
-        : { clientId: targets[0]?.id };
+        : mode === 'engagements'
+          ? {
+              engagementId: targets[0]?.engagementId,
+              ...(apptFrom ? { apptFrom } : {}),
+              ...(apptTo ? { apptTo } : {}),
+            }
+          : { clientId: targets[0]?.id };
     api<{ html: string }>('/api/staff/clients/mail-merge-preview', {
       method: 'POST',
       body: JSON.stringify({ templateId, ...previewTarget }),
@@ -111,7 +130,7 @@ export function MailMergeDialog({
     return () => {
       cancelled = true;
     };
-  }, [templateId, targets, mode]);
+  }, [templateId, targets, mode, apptFrom, apptTo]);
 
   async function downloadPdf(): Promise<void> {
     if (!templateId) {
@@ -315,6 +334,30 @@ export function MailMergeDialog({
                   </span>
                 )}
               </div>
+
+              {mode === 'engagements' && (
+                <div style={{ display: 'grid', gap: 4 }}>
+                  <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                    Appointment date range (optional) — only an appointment starting in this range
+                    fills the <code>{'{{ appointment.* }}'}</code> tokens
+                  </label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="date"
+                      value={apptFrom}
+                      onChange={(e) => setApptFrom(e.target.value)}
+                      style={inputStyle}
+                    />
+                    <span style={{ fontSize: 12, color: tokens.color.textMuted }}>to</span>
+                    <input
+                      type="date"
+                      value={apptTo}
+                      onChange={(e) => setApptTo(e.target.value)}
+                      style={inputStyle}
+                    />
+                  </div>
+                </div>
+              )}
 
               <div style={{ display: 'grid', gap: 4 }}>
                 <label style={{ fontSize: 11, color: tokens.color.textMuted }}>

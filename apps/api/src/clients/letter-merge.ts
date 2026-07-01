@@ -11,7 +11,7 @@
 // HTML document (with its own <style>/@page for letterhead + page size);
 // tokens are substituted in that HTML per client.
 
-import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -99,6 +99,8 @@ export interface ClientLetterData {
   /** Selected-appointment context — only set by loadAppointmentLetterData
    *  (the Appointments-list mail merge), one letter per appointment. */
   appointment?: AppointmentLetterCtx | null;
+  /** Engagement name — only set by loadEngagementLetterData. */
+  engagementName?: string | null;
 }
 
 export interface AppointmentLetterCtx {
@@ -294,6 +296,96 @@ export async function loadAppointmentLetterData(
   return rows;
 }
 
+export interface AppointmentRange {
+  /** 'YYYY-MM-DD' inclusive bounds; either may be omitted. */
+  from?: string;
+  to?: string;
+}
+
+/** One letter row per selected engagement (Engagements-list mail merge):
+ *  the engagement's client + engagement name + THIS engagement's drop-off
+ *  due date + the engagement's appointment (soonest; optionally restricted
+ *  to a starts-at date range). Preserves the caller's engagement-id order. */
+export async function loadEngagementLetterData(
+  db: Database,
+  firmId: string,
+  engagementIds: string[],
+  apptRange?: AppointmentRange,
+): Promise<ClientLetterData[]> {
+  // engagement has no firm_id — firm-scope via its client.
+  const engs = await db
+    .select({ id: engagements.id, clientId: engagements.clientId, name: engagements.name })
+    .from(engagements)
+    .innerJoin(clients, eq(engagements.clientId, clients.id))
+    .where(and(eq(clients.firmId, firmId), inArray(engagements.id, engagementIds)));
+  if (engs.length === 0) return [];
+  const clientData = await loadClientLetterData(db, firmId, [
+    ...new Set(engs.map((e) => e.clientId)),
+  ]);
+  const clientById = new Map(clientData.map((c) => [c.id, c]));
+
+  // Per-engagement OPEN drop-off due date (soonest).
+  const drops = await db
+    .select({ engagementId: clientRequests.engagementId, dueDate: clientRequests.dueDate })
+    .from(clientRequests)
+    .where(
+      and(
+        eq(clientRequests.firmId, firmId),
+        inArray(clientRequests.engagementId, engagementIds),
+        eq(clientRequests.kind, 'DROP_OFF'),
+        eq(clientRequests.status, 'OPEN'),
+        isNotNull(clientRequests.dueDate),
+      ),
+    )
+    .orderBy(asc(clientRequests.dueDate));
+  const dropByEng = new Map<string, string>();
+  for (const d of drops) {
+    if (d.dueDate && !dropByEng.has(d.engagementId))
+      dropByEng.set(d.engagementId, formatDateUS(d.dueDate));
+  }
+
+  // Per-engagement appointment (soonest), optionally within [from, to].
+  const apptConds = [
+    eq(appointments.firmId, firmId),
+    inArray(appointments.engagementId, engagementIds),
+  ];
+  if (apptRange?.from)
+    apptConds.push(gte(appointments.startsAt, new Date(`${apptRange.from}T00:00:00`)));
+  if (apptRange?.to)
+    apptConds.push(lte(appointments.startsAt, new Date(`${apptRange.to}T23:59:59.999`)));
+  const appts = await db
+    .select({
+      engagementId: appointments.engagementId,
+      startsAt: appointments.startsAt,
+      title: appointments.title,
+      location: appointments.location,
+    })
+    .from(appointments)
+    .where(and(...apptConds))
+    .orderBy(asc(appointments.startsAt));
+  const apptByEng = new Map<string, (typeof appts)[number]>();
+  for (const a of appts) {
+    if (a.engagementId && !apptByEng.has(a.engagementId)) apptByEng.set(a.engagementId, a);
+  }
+
+  const tz = await firmTimezone(db, firmId);
+  const rows: ClientLetterData[] = [];
+  for (const engId of engagementIds) {
+    const e = engs.find((x) => x.id === engId);
+    if (!e) continue;
+    const c = clientById.get(e.clientId);
+    if (!c) continue;
+    const a = apptByEng.get(engId);
+    rows.push({
+      ...c,
+      engagementName: e.name,
+      dropOffDate: dropByEng.get(engId) ?? null,
+      appointment: a ? formatAppt(a.startsAt, a.title, a.location, tz) : null,
+    });
+  }
+  return rows;
+}
+
 /** MM/DD/YYYY for the `today` token, in the server's local time. */
 function todayUS(now: Date): string {
   const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -341,6 +433,9 @@ export function buildLetterContext(
       time: client.appointment?.time ?? '',
       title: client.appointment?.title ?? '',
       location: client.appointment?.location ?? '',
+    },
+    engagement: {
+      name: client.engagementName ?? '',
     },
   };
 }
@@ -402,6 +497,7 @@ export const LETTER_TEMPLATE_TOKENS: LetterTokenEntry[] = [
   { token: 'appointment.time', label: 'Appointment time' },
   { token: 'appointment.title', label: 'Appointment title' },
   { token: 'appointment.location', label: 'Appointment location' },
+  { token: 'engagement.name', label: 'Engagement name' },
   { token: 'firm.name', label: 'Firm name' },
   { token: 'firm.displayName', label: 'Firm display name' },
   { token: 'firm.support_email', label: 'Firm email' },

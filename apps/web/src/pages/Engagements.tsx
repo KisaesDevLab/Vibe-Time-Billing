@@ -14,6 +14,7 @@ import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { filterStatuses, filterStatusesForMany } from '../status-filter';
 import { EngagementsKanban, type StatusColumn } from './EngagementsKanban';
+import { MailMergeDialog } from './clients/MailMergeDialog';
 import { KanbanViewsMenu } from './engagements/KanbanViewsMenu';
 
 type WorkflowState =
@@ -238,6 +239,7 @@ export function EngagementsPage(): JSX.Element {
     saved.sortBy ?? { col: '', dir: null },
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mergeOpen, setMergeOpen] = useState(false);
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -788,11 +790,28 @@ export function EngagementsPage(): JSX.Element {
                 onPick={(w) => void bulkSetWorkflow(w)}
               />
               <BulkPriorityButton onPick={(p) => void bulkSetPriority(p)} />
+              <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)}>
+                ✉ Mail merge letter
+              </Button>
               <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
                 Cancel
               </Button>
             </span>
           </div>
+        )}
+
+        {mergeOpen && (
+          <MailMergeDialog
+            mode="engagements"
+            targets={rows
+              .filter((r) => selectedIds.has(r.id))
+              .map((r) => ({ id: r.clientId, name: r.clientName, engagementId: r.id }))}
+            onClose={() => setMergeOpen(false)}
+            onDone={() => {
+              setMergeOpen(false);
+              setSelectedIds(new Set());
+            }}
+          />
         )}
 
         {loading ? (
