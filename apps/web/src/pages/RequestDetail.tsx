@@ -30,6 +30,7 @@ interface RequestRow {
   createdAt: string;
   reminderDaysBefore: number | null;
   clientReplyText: string | null;
+  activationDate: string | null;
 }
 
 interface RequestItem {
@@ -298,6 +299,19 @@ export function RequestDetailPage(): JSX.Element {
     }
   }
 
+  async function activateRequest(): Promise<void> {
+    if (!window.confirm('Open this request now and make it visible to the client?')) return;
+    setBusy('activate');
+    try {
+      await api(`/api/staff/requests/${id}/activate`, { method: 'POST' });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'activate_failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function fulfillRequest(): Promise<void> {
     setBusy('fulfill');
     try {
@@ -377,7 +391,12 @@ export function RequestDetailPage(): JSX.Element {
               </div>
             )}
             <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-              <Pill tone={statusTone(request.status)}>{request.status}</Pill>
+              <Pill tone={statusTone(request.status)}>
+                {request.status === 'PENDING' ? 'SCHEDULED' : request.status}
+              </Pill>
+              {request.status === 'PENDING' && request.activationDate && (
+                <Pill tone="warning">opens {request.activationDate}</Pill>
+              )}
               <Pill tone={priorityTone(request.priority)}>{request.priority}</Pill>
               {request.dueDate && <Pill tone="neutral">due {request.dueDate}</Pill>}
               {request.reminderDaysBefore != null && (
@@ -411,6 +430,11 @@ export function RequestDetailPage(): JSX.Element {
             {!editing && (
               <Button variant="secondary" onClick={startEdit}>
                 Edit
+              </Button>
+            )}
+            {request.status === 'PENDING' && (
+              <Button onClick={() => void activateRequest()} disabled={busy != null}>
+                Activate now
               </Button>
             )}
             {request.status === 'OPEN' && (

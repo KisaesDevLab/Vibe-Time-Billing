@@ -275,6 +275,12 @@ export async function commitRollforwardBatch(
           .from(clientRequests)
           .where(and(eq(clientRequests.engagementId, src.id), eq(clientRequests.kind, 'DROP_OFF')))
           .limit(1);
+        // 0198 — rolled-forward drop-offs start PENDING (hidden) and the worker
+        // opens + submits them 14 days before the new due date.
+        const dueMs = Date.parse(`${c.suggestedDropoffDate}T00:00:00Z`);
+        const activationDate = Number.isFinite(dueMs)
+          ? new Date(dueMs - 14 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+          : c.suggestedDropoffDate;
         await tx.insert(clientRequests).values({
           firmId: opts.firmId,
           engagementId: targetId,
@@ -282,7 +288,9 @@ export async function commitRollforwardBatch(
           kind: 'DROP_OFF',
           dueDate: c.suggestedDropoffDate,
           reminderDaysBefore: srcDrop?.reminderDaysBefore ?? null,
-          status: 'OPEN',
+          reminderSchedule: srcDrop?.reminderSchedule ?? null,
+          status: 'PENDING',
+          activationDate,
         });
       }
 

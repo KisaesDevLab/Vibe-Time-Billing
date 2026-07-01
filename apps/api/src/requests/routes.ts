@@ -22,7 +22,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -81,6 +81,9 @@ const CreateSchema = z.object({
   reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
   // 0194 — drop-off multi-reminder schedule (offsetMinutes + channel steps).
   reminderSchedule: ReminderScheduleSchema.nullable().optional(),
+  // 0198 — when set, the request is created PENDING (hidden) and the worker
+  // opens + submits it to the client on this date.
+  activationDate: z.string().regex(DATE_RE).nullable().optional(),
   items: z.array(ItemInputSchema).max(100).optional(),
 });
 
@@ -240,7 +243,10 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         );
       }
     }
+    // 0198 — PENDING (scheduled) requests are hidden from the default queue;
+    // the "Scheduled" view opts in with an explicit status=PENDING.
     if (status) conds.push(eq(clientRequests.status, status));
+    else conds.push(ne(clientRequests.status, 'PENDING'));
     if (engagementIdParam) conds.push(eq(clientRequests.engagementId, engagementIdParam));
     if (assignedParam) conds.push(eq(clientRequests.assignedAppUserId, assignedParam));
     if (priorityParam) conds.push(eq(clientRequests.priority, priorityParam));
@@ -608,6 +614,10 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             templateId: parsed.data.templateId ?? null,
             reminderDaysBefore: resolvedReminder,
             reminderSchedule: resolvedSchedule,
+            // 0198 — an activation date makes the request start hidden (PENDING).
+            ...(parsed.data.activationDate
+              ? { status: 'PENDING' as const, activationDate: parsed.data.activationDate }
+              : {}),
           })
           .returning({ id: clientRequests.id });
         if (!row) throw new Error('insert_failed');
@@ -866,6 +876,52 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         entityType: 'client_request',
         entityId: req.params['id']!,
         actorAppUserId: session.appUserId,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // 0198 — activate a PENDING (scheduled) request now: make it visible/OPEN.
+  // The client then sees it in the portal and enters the reminder schedule;
+  // scheduled activation by the worker also emails a "new request" submit.
+  router.post(
+    '/:id/activate',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const updated = await deps.db
+        .update(clientRequests)
+        .set({
+          status: 'OPEN',
+          activatedAt: new Date(),
+          activationDate: today,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(clientRequests.id, req.params['id']!),
+            eq(clientRequests.firmId, session.firmId),
+            eq(clientRequests.status, 'PENDING'),
+          ),
+        )
+        .returning({ id: clientRequests.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found_or_not_pending' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client_request',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'OPEN', activated: 'manual' },
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));

@@ -79,7 +79,15 @@ interface RequestTemplate {
   }>;
 }
 
-const STATUS_OPTIONS = ['ALL', 'OPEN', 'NEEDS_INFO', 'FULFILLED', 'DISMISSED', 'EXPIRED'] as const;
+const STATUS_OPTIONS = [
+  'ALL',
+  'OPEN',
+  'NEEDS_INFO',
+  'PENDING',
+  'FULFILLED',
+  'DISMISSED',
+  'EXPIRED',
+] as const;
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
 
 const PRIORITIES: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
@@ -99,6 +107,8 @@ function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger
       return 'success';
     case 'NEEDS_INFO':
       return 'accent';
+    case 'PENDING':
+      return 'neutral';
     case 'DISMISSED':
     case 'EXPIRED':
       return 'neutral';
@@ -244,6 +254,7 @@ export function RequestsPage(): JSX.Element {
   const [createPriority, setCreatePriority] = useState<Priority>('MEDIUM');
   const [createTags, setCreateTags] = useState('');
   const [createDue, setCreateDue] = useState('');
+  const [createActivationDate, setCreateActivationDate] = useState('');
   const [createReminder, setCreateReminder] = useState('');
   const [createAssignee, setCreateAssignee] = useState('');
   const [createItems, setCreateItems] = useState<NewItemDraft[]>([]);
@@ -375,6 +386,7 @@ export function RequestsPage(): JSX.Element {
     setCreatePriority('MEDIUM');
     setCreateTags('');
     setCreateDue('');
+    setCreateActivationDate('');
     setCreateReminder('');
     setCreateAssignee('');
     setCreateItems([]);
@@ -453,6 +465,7 @@ export function RequestsPage(): JSX.Element {
             priority: createPriority,
             tags: tagsArr.length > 0 ? tagsArr : undefined,
             dueDate: createDue || undefined,
+            activationDate: createActivationDate || undefined,
             reminderDaysBefore: createReminder ? Number(createReminder) : undefined,
             assignedAppUserId: createAssignee || undefined,
             items: itemsPayload.length > 0 ? itemsPayload : undefined,
@@ -533,7 +546,7 @@ export function RequestsPage(): JSX.Element {
                     setOffset(0);
                   }}
                 >
-                  {s}
+                  {s === 'PENDING' ? 'SCHEDULED' : s}
                 </Button>
               ))}
             </div>
@@ -827,6 +840,16 @@ export function RequestsPage(): JSX.Element {
                   value={createDue}
                   onChange={(e) => setCreateDue(e.target.value)}
                   style={fieldStyle()}
+                />
+              </label>
+              <label style={fieldLabel()}>
+                <span>Hide until (schedule / activation date — optional)</span>
+                <input
+                  type="date"
+                  value={createActivationDate}
+                  onChange={(e) => setCreateActivationDate(e.target.value)}
+                  style={fieldStyle()}
+                  title="If set, the request stays hidden (Scheduled) until this date, then opens and is submitted to the client."
                 />
               </label>
               <label style={fieldLabel()}>

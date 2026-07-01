@@ -27,6 +27,7 @@ export interface RequestReminderResult {
   sent: number;
   skipped: number;
   smsSent: number;
+  activated: number;
 }
 
 export async function runRequestReminderTick(
@@ -40,7 +41,33 @@ export async function runRequestReminderTick(
   now = new Date(),
 ): Promise<RequestReminderResult> {
   const today = now.toISOString().slice(0, 10);
-  const result: RequestReminderResult = { scanned: 0, sent: 0, skipped: 0, smsSent: 0 };
+  const result: RequestReminderResult = {
+    scanned: 0,
+    sent: 0,
+    skipped: 0,
+    smsSent: 0,
+    activated: 0,
+  };
+
+  // 0198 — activation pass: open PENDING (scheduled) requests whose
+  // activation_date has arrived, so they become visible to the client and
+  // enter the reminder schedule. Runs before the reminder pass so a same-day
+  // reminder step can fire immediately.
+  const activated = await db
+    .update(clientRequests)
+    .set({ status: 'OPEN', activatedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(clientRequests.status, 'PENDING'),
+        isNotNull(clientRequests.activationDate),
+        sql`${clientRequests.activationDate} <= ${today}::date`,
+      ),
+    )
+    .returning({ id: clientRequests.id });
+  result.activated = activated.length;
+  if (activated.length > 0) {
+    log.info({ activated: activated.length }, 'request-reminder: activated PENDING requests');
+  }
 
   // Single SQL pass: due-soon, not-recently-reminded, eligible status.
   //

@@ -4187,6 +4187,10 @@ export const clientRequests = pgTable(
     // responds (portal reply/needs-info); stamped when staff opens the detail.
     // Unread client response = clientReplyText set AND clientReplySeenAt IS NULL.
     clientReplySeenAt: timestamp('client_reply_seen_at', { withTimezone: true }),
+    // 0198 — PENDING requests (e.g. rolled forward) are hidden until this date,
+    // when the worker flips them OPEN + submits to the client.
+    activationDate: date('activation_date'),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
   },
   (t) => ({
     firmStatusIdx: index('client_request_firm_status_idx').on(t.firmId, t.status),
@@ -4194,7 +4198,7 @@ export const clientRequests = pgTable(
     priorityIdx: index('client_request_priority_idx').on(t.firmId, t.priority, t.status),
     statusCk: check(
       'client_request_status_ck',
-      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED', 'NEEDS_INFO')`,
+      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED', 'NEEDS_INFO', 'PENDING')`,
     ),
     reminderDaysCk: check(
       'client_request_reminder_days_ck',
