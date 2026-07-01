@@ -14,6 +14,7 @@ import {
 import { EngagementMessagesCard } from './messaging/EngagementMessagesCard';
 import { EngagementStatusHistoryCard } from './EngagementStatusHistoryCard';
 import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlansCard';
+import { RecurringEngagementsCard } from './clients/RecurringEngagementsCard';
 import { DropOffCard } from './engagements/DropOffCard';
 import { PricingSuggestionPanel } from './engagements/PricingSuggestionPanel';
 
@@ -825,6 +826,10 @@ export function EngagementDetailPage(): JSX.Element {
 
       {id && engagement && (
         <EngagementRecurringPlansCard engagementId={id} engagementName={engagement.name} />
+      )}
+
+      {id && engagement && (
+        <RecurringEngagementsCard clientId={engagement.clientId} lastEngagementId={id} />
       )}
 
       {id && <DropOffCard engagementId={id} />}

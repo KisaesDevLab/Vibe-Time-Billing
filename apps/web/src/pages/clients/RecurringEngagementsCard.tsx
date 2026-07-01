@@ -59,9 +59,13 @@ interface BulkResult {
 
 interface Props {
   clientId: string;
+  // When rendered from an engagement's detail page, new recurrences are
+  // back-pointed at that engagement so the first spawn advances from its
+  // period (and the seed inputs are hidden).
+  lastEngagementId?: string;
 }
 
-export function RecurringEngagementsCard({ clientId }: Props): JSX.Element {
+export function RecurringEngagementsCard({ clientId, lastEngagementId }: Props): JSX.Element {
   const [rows, setRows] = useState<RecurrenceRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -157,6 +161,7 @@ export function RecurringEngagementsCard({ clientId }: Props): JSX.Element {
         body: JSON.stringify({
           clientId,
           templateId: addTemplateId,
+          ...(lastEngagementId ? { lastEngagementId } : {}),
           ...recurrenceDraftToPayload(addDraft),
         }),
       });
@@ -253,7 +258,11 @@ export function RecurringEngagementsCard({ clientId }: Props): JSX.Element {
                 ))}
               </select>
             </div>
-            <RecurrenceComposer value={addDraft} onChange={setAddDraft} />
+            <RecurrenceComposer
+              value={addDraft}
+              onChange={setAddDraft}
+              showSeedFields={!lastEngagementId}
+            />
             <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 size="sm"

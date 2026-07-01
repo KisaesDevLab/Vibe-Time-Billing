@@ -53,6 +53,9 @@ const CreateSchema = z
     seedPeriodLabel: z.string().max(80).optional(),
     spawnStatus: z.enum(SPAWN_STATUSES).optional(),
     notes: z.string().max(2000).optional(),
+    // Optional back-pointer so the first spawn advances from an existing
+    // engagement's period (used when adding a recurrence from a detail page).
+    lastEngagementId: z.string().uuid().optional(),
   })
   .refine((v) => (v.triggerMode === 'SCHEDULE' ? !!v.nextRunDate : true), {
     message: 'nextRunDate is required when triggerMode=SCHEDULE',
@@ -200,6 +203,24 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
         res.status(404).json({ error: 'template_not_found' });
         return;
       }
+      // Validate the optional last-engagement back-pointer belongs to this
+      // firm + client; ignore silently if it doesn't.
+      let resolvedLastEngagementId: string | null = null;
+      if (parsed.data.lastEngagementId) {
+        // The client is already firm-verified above, so matching clientId
+        // firm-scopes this lookup.
+        const [eng] = await deps.db
+          .select({ id: engagements.id })
+          .from(engagements)
+          .where(
+            and(
+              eq(engagements.id, parsed.data.lastEngagementId),
+              eq(engagements.clientId, parsed.data.clientId),
+            ),
+          )
+          .limit(1);
+        if (eng) resolvedLastEngagementId = eng.id;
+      }
       const [row] = await deps.db
         .insert(engagementRecurrences)
         .values({
@@ -214,6 +235,7 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           seedPeriodLabel: parsed.data.seedPeriodLabel ?? null,
           spawnStatus: parsed.data.spawnStatus ?? null,
           notes: parsed.data.notes ?? null,
+          lastEngagementId: resolvedLastEngagementId,
           createdById: session.appUserId,
         })
         .returning({ id: engagementRecurrences.id });
