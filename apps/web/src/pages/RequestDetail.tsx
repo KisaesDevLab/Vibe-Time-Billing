@@ -215,6 +215,19 @@ export function RequestDetailPage(): JSX.Element {
     }
   }
 
+  async function deleteItem(itemId: string): Promise<void> {
+    if (!window.confirm('Remove this checklist item?')) return;
+    setBusy(itemId);
+    try {
+      await api(`/api/staff/requests/${id}/items/${itemId}`, { method: 'DELETE' });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'delete_failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function addItem(): Promise<void> {
     if (!newItemLabel.trim()) return;
     setBusy('add');
@@ -633,6 +646,15 @@ export function RequestDetailPage(): JSX.Element {
                       Fulfill
                     </Button>
                   )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void deleteItem(it.id)}
+                    disabled={busy === it.id}
+                    aria-label="Delete item"
+                  >
+                    ✕
+                  </Button>
                 </div>
               ))}
             </div>

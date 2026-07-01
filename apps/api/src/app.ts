@@ -30,6 +30,7 @@ import { requireStepUpWithLockout } from './auth/step-up-middleware';
 import { createEngagementMessagingRouter } from './engagement-messaging/routes';
 import { createInternalMessagingRouter } from './internal-messaging/routes';
 import { createRequestRouter } from './requests/routes';
+import { createFirmUsersRouter } from './staff/firm-users';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createTemplateRouter } from './admin/templates';
@@ -823,6 +824,10 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/requests', auth.requireAuth, auth.requireCsrf, requestRouter);
+
+  // Active-staff list for assignment pickers (was referenced by the frontend
+  // but never defined — assignee dropdowns came back empty).
+  app.use('/api/staff/firm-users', auth.requireAuth, createFirmUsersRouter({ db: deps.db }));
 
   const timeEntryRouter = createTimeEntryRouter({
     db: deps.db,

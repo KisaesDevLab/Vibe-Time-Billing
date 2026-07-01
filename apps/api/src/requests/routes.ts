@@ -1133,6 +1133,51 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
     },
   );
 
+  // Delete a checklist item from a request.
+  router.delete(
+    '/:id/items/:itemId',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [parent] = await deps.db
+        .select({ id: clientRequests.id })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!parent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const deleted = await deps.db
+        .delete(clientRequestItems)
+        .where(
+          and(
+            eq(clientRequestItems.id, req.params['itemId']!),
+            eq(clientRequestItems.clientRequestId, parent.id),
+          ),
+        )
+        .returning({ id: clientRequestItems.id });
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'item_not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client_request',
+        entityId: parent.id,
+        actorAppUserId: session.appUserId,
+        after: { deletedItemId: req.params['itemId'] },
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
   router.post(
     '/:id/items/:itemId/fulfill',
     requirePermission(deps, 'requests:manage'),
