@@ -575,9 +575,15 @@ export const paymentMethod = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
 
-    portalIdentityId: uuid('portal_identity_id')
-      .notNull()
-      .references(() => portalIdentity.id, { onDelete: 'cascade' }),
+    // 0191 — nullable: staff-saved methods are client-scoped (firm_id +
+    // client_id) with no portal identity; portal-saved keep the identity.
+    portalIdentityId: uuid('portal_identity_id').references(() => portalIdentity.id, {
+      onDelete: 'cascade',
+    }),
+    // 0191 — FKs to client/firm (enforced in SQL; bare here to avoid a
+    // cross-schema import cycle with core.ts).
+    firmId: uuid('firm_id'),
+    clientId: uuid('client_id'),
 
     kind: paymentMethodKind('kind').notNull(),
     provider: paymentProvider('provider').notNull(),
@@ -613,6 +619,7 @@ export const paymentMethod = pgTable(
       t.isDefault,
     ),
     statusIdx: index('payment_method_status_idx').on(t.status),
+    firmClientIdx: index('payment_method_firm_client_idx').on(t.firmId, t.clientId, t.status),
   }),
 );
 

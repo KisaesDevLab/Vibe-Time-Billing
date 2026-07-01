@@ -21,6 +21,8 @@ import { loadFirmStripeConfig } from './stripe-resolver';
 
 export interface FirmStripeCreds {
   secretKey: string;
+  /** Publishable key for the browser Stripe.js (matches the account model). */
+  publishableKey: string;
   /** '' for direct firm keys; the connected account id for Connect OAuth. */
   stripeAccountId: string;
 }
@@ -31,26 +33,38 @@ export async function resolveFirmStripe(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<FirmStripeCreds | null> {
   const platformKey = env['STRIPE_SECRET_KEY'] || '';
+  const platformPub = env['STRIPE_PUBLISHABLE_KEY'] || '';
 
   // 1. Connect OAuth — platform key + the firm's connected account.
   const [conn] = await db
-    .select({ acct: firmSettingsProposals.stripeAccountId })
+    .select({
+      acct: firmSettingsProposals.stripeAccountId,
+      pub: firmSettingsProposals.stripePublishableKey,
+    })
     .from(firmSettingsProposals)
     .where(and(eq(firmSettingsProposals.firmId, firmId)))
     .limit(1);
   if (conn?.acct && platformKey) {
-    return { secretKey: platformKey, stripeAccountId: conn.acct };
+    return {
+      secretKey: platformKey,
+      publishableKey: conn.pub || platformPub,
+      stripeAccountId: conn.acct,
+    };
   }
 
   // 2. Direct firm keys (pasted secret key, encrypted at rest).
   const cfg = await loadFirmStripeConfig(db, firmId);
   if (cfg?.secretKey) {
-    return { secretKey: cfg.secretKey, stripeAccountId: '' };
+    return {
+      secretKey: cfg.secretKey,
+      publishableKey: cfg.publishableKey || platformPub,
+      stripeAccountId: '',
+    };
   }
 
   // 3. Fallback — the appliance env key is the firm's own account key.
   if (platformKey) {
-    return { secretKey: platformKey, stripeAccountId: '' };
+    return { secretKey: platformKey, publishableKey: platformPub, stripeAccountId: '' };
   }
   return null;
 }
