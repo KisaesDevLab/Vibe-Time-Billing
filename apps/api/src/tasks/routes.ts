@@ -97,6 +97,10 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
       typeof req.query['clientId'] === 'string' && req.query['clientId']
         ? req.query['clientId']
         : null;
+    const engagementId =
+      typeof req.query['engagementId'] === 'string' && req.query['engagementId']
+        ? req.query['engagementId']
+        : null;
     const priorityRaw = String(req.query['priority'] ?? '').toUpperCase();
     const priority = (PRIORITIES as readonly string[]).includes(priorityRaw) ? priorityRaw : null;
     const overdue = req.query['overdue'] === '1' || req.query['overdue'] === 'true';
@@ -122,6 +126,7 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
     }
 
     if (clientId) conds.push(eq(clientTasks.clientId, clientId));
+    if (engagementId) conds.push(eq(clientTasks.engagementId, engagementId));
     if (priority) conds.push(eq(clientTasks.priority, priority as (typeof PRIORITIES)[number]));
 
     // 0165 — hide tasks of restricted clients the caller can't access.

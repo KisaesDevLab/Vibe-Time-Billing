@@ -81,6 +81,20 @@ interface DayTotal {
   amountCents: number;
 }
 
+type TaskStatus = 'OPEN' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' | 'CANCELED';
+interface EngagementTask {
+  id: string;
+  title: string;
+  status: TaskStatus;
+}
+const TASK_STATUS_OPTIONS: Array<{ value: TaskStatus; label: string }> = [
+  { value: 'OPEN', label: 'Open' },
+  { value: 'IN_PROGRESS', label: 'In progress' },
+  { value: 'BLOCKED', label: 'Blocked' },
+  { value: 'DONE', label: 'Done' },
+  { value: 'CANCELED', label: 'Canceled' },
+];
+
 interface MonthTotal {
   month: string;
   hours: number;
@@ -426,6 +440,9 @@ function LogView({
   );
   // Progress status to set on save; preselected to the engagement's current.
   const [workflowState, setWorkflowState] = useState('');
+  // Open tasks on the selected engagement — their status can be changed inline
+  // as part of logging time.
+  const [engagementTasks, setEngagementTasks] = useState<EngagementTask[]>([]);
   // Process-project print dialog (opened from the green-box button).
   const [processOpen, setProcessOpen] = useState(false);
   const [entryDate, setEntryDate] = useState(
@@ -556,6 +573,41 @@ function LogView({
   useEffect(() => {
     setWorkflowState(currentWorkflowState);
   }, [engagementId, currentWorkflowState]);
+
+  // Load the selected engagement's open tasks so their status can be updated
+  // while logging time. Cleared when no engagement is selected.
+  useEffect(() => {
+    if (!engagementId) {
+      setEngagementTasks([]);
+      return;
+    }
+    let alive = true;
+    void api<{ items: EngagementTask[] }>(
+      `/api/staff/tasks?engagementId=${engagementId}&scope=all&pageSize=100`,
+    )
+      .then((r) => {
+        if (alive) setEngagementTasks(r.items ?? []);
+      })
+      .catch(() => {
+        if (alive) setEngagementTasks([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [engagementId]);
+
+  async function setTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
+    const prev = engagementTasks;
+    setEngagementTasks((ts) => ts.map((t) => (t.id === taskId ? { ...t, status } : t)));
+    try {
+      await api(`/api/staff/tasks/${taskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+    } catch {
+      setEngagementTasks(prev); // revert on failure
+    }
+  }
 
   // Persist last-used client.
   useEffect(() => {
@@ -812,6 +864,75 @@ function LogView({
                   }))}
                   placeholder="— status —"
                 />
+              </div>
+            )}
+            {engagementId && engagementTasks.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Tasks on this engagement
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 6,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.md,
+                    padding: '8px 10px',
+                    background: tokens.color.surface,
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {engagementTasks.map((t) => (
+                    <div
+                      key={t.id}
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: tokens.color.text,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          textDecoration:
+                            t.status === 'DONE' || t.status === 'CANCELED'
+                              ? 'line-through'
+                              : 'none',
+                          opacity: t.status === 'DONE' || t.status === 'CANCELED' ? 0.6 : 1,
+                        }}
+                        title={t.title}
+                      >
+                        {t.title}
+                      </span>
+                      <select
+                        value={t.status}
+                        onChange={(e) => void setTaskStatus(t.id, e.target.value as TaskStatus)}
+                        aria-label={`Status for ${t.title}`}
+                        style={{
+                          flexShrink: 0,
+                          padding: '3px 6px',
+                          fontSize: 12,
+                          borderRadius: tokens.radius.sm,
+                          border: `1px solid ${tokens.color.border}`,
+                          background: tokens.color.bg,
+                          color: tokens.color.text,
+                        }}
+                      >
+                        {TASK_STATUS_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             <Input

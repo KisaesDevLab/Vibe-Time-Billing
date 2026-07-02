@@ -136,6 +136,7 @@ function router(roles: RoleSlug[] = ['admin']) {
 
 async function seedTask(opts: {
   clientId?: string;
+  engagementId?: string | null;
   assigneeUserId?: string | null;
   title: string;
   status?: 'OPEN' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' | 'CANCELED';
@@ -148,6 +149,7 @@ async function seedTask(opts: {
     .values({
       firmId: opts.firmId ?? seed.firmId,
       clientId: opts.clientId ?? seed.clientId,
+      engagementId: opts.engagementId ?? null,
       assigneeUserId: opts.assigneeUserId ?? null,
       title: opts.title,
       status: opts.status ?? 'OPEN',
@@ -189,6 +191,26 @@ describe('GET /api/staff/tasks', () => {
     expect(
       (all.jsonBody as { items: { title: string }[] }).items.map((t) => t.title).sort(),
     ).toEqual(['Done one', 'Open one']);
+  });
+
+  it('engagementId filter returns only that engagement’s tasks', async () => {
+    await seedTask({
+      title: 'On the engagement',
+      assigneeUserId: seed.appUserId,
+      engagementId: seed.engagementId,
+    });
+    await seedTask({ title: 'No engagement', assigneeUserId: seed.appUserId });
+    const r = router();
+    const res = await invoke(
+      r,
+      'get',
+      '/',
+      req({ query: { scope: 'all', engagementId: seed.engagementId } }),
+    );
+    const items = (res.jsonBody as { items: { title: string; engagementId: string | null }[] })
+      .items;
+    expect(items.map((t) => t.title)).toEqual(['On the engagement']);
+    expect(items[0]!.engagementId).toBe(seed.engagementId);
   });
 
   it('clientId filter and overdue filter narrow results, and names are joined', async () => {
