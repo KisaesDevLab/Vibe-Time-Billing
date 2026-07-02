@@ -38,6 +38,8 @@ export interface TableProps<T> {
   footer?: ReactNode[];
   /** When set, renders a page-size dropdown + prev/next below the table. */
   pagination?: TablePagination;
+  /** Optional per-row <tr> style — e.g. highlight the selected row. */
+  rowStyle?: (row: T) => CSSProperties | undefined;
 }
 
 const DEFAULT_PAGE_SIZE_OPTIONS = [50, 100, 250];
@@ -134,6 +136,7 @@ export function Table<T>({
   empty,
   footer,
   pagination,
+  rowStyle,
 }: TableProps<T>): JSX.Element {
   if (rows.length === 0) {
     return (
@@ -186,7 +189,7 @@ export function Table<T>({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={rowKey(row)}>
+          <tr key={rowKey(row)} style={rowStyle?.(row)}>
             {columns.map((c) => (
               <td
                 key={c.key}
