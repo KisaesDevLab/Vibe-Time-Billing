@@ -206,6 +206,23 @@ export function EngagementsPage(): JSX.Element {
   // Show/hide DRAFT-workflow engagements (applies to both list + kanban via
   // the `visible` memo). Default true = no behavior change.
   const [showDrafts, setShowDrafts] = useState(true);
+  // "Active only" — hide COMPLETED / CANCELED engagements. Persisted; default
+  // off (no behavior change).
+  const [activeOnly, setActiveOnly] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('__vibe_eng_active_only') === 'on';
+    } catch {
+      return false;
+    }
+  });
+  function toggleActiveOnly(next: boolean): void {
+    setActiveOnly(next);
+    try {
+      localStorage.setItem('__vibe_eng_active_only', next ? 'on' : 'off');
+    } catch {
+      // Storage may be disabled — in-memory state still drives the session.
+    }
+  }
   // Tint each list row by its status color. On by default; persisted so the
   // preference survives reloads.
   const [colorRows, setColorRows] = useState<boolean>(() => {
@@ -446,6 +463,9 @@ export function EngagementsPage(): JSX.Element {
     if (!showDrafts) {
       r = r.filter((row) => row.workflowState !== 'DRAFT');
     }
+    if (activeOnly) {
+      r = r.filter((row) => row.workflowState !== 'COMPLETED' && row.workflowState !== 'CANCELED');
+    }
     if (nameQuery.trim()) {
       const q = nameQuery.trim().toLowerCase();
       r = r.filter((row) => row.name.toLowerCase().includes(q));
@@ -512,6 +532,7 @@ export function EngagementsPage(): JSX.Element {
   }, [
     rows,
     showDrafts,
+    activeOnly,
     nameQuery,
     typeFilter,
     assigneeFilter,
@@ -938,6 +959,23 @@ export function EngagementsPage(): JSX.Element {
                 onChange={(e) => setShowDrafts(e.target.checked)}
               />
               Show drafts
+            </label>
+            <label
+              style={{
+                fontSize: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                color: tokens.color.textMuted,
+              }}
+              title="Hide Completed and Canceled engagements"
+            >
+              <input
+                type="checkbox"
+                checked={activeOnly}
+                onChange={(e) => toggleActiveOnly(e.target.checked)}
+              />
+              Active only
             </label>
             {view === 'list' && (
               <label
