@@ -7,7 +7,17 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 
-import { Button, Card, Combobox, Input, tokens, type ComboboxOption } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  Combobox,
+  Input,
+  Table,
+  type TableColumn,
+  tokens,
+  type ComboboxOption,
+} from '@vibe/ui';
+import { useClientPage } from '../lib/use-paged-list';
 
 import { api } from '../api-client';
 
@@ -47,12 +57,6 @@ function dollars(cents: number): string {
   });
 }
 
-const cellStyle: React.CSSProperties = {
-  padding: '6px 8px',
-  borderBottom: `1px solid ${tokens.color.border}`,
-  fontSize: 13,
-  verticalAlign: 'top',
-};
 const inlineInputStyle: React.CSSProperties = {
   padding: '4px 6px',
   background: tokens.color.surface,
@@ -196,6 +200,122 @@ export function ExpensesView({
     await load();
   }
 
+  const { paged, pagination } = useClientPage(rows);
+
+  const columns: TableColumn<ExpenseRow>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      render: (r) =>
+        editingId === r.id ? (
+          <input
+            type="date"
+            value={editDate}
+            onChange={(e) => setEditDate(e.target.value)}
+            style={inlineInputStyle}
+          />
+        ) : (
+          r.expenseDate
+        ),
+    },
+    {
+      key: 'client',
+      header: 'Client',
+      render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
+    },
+    {
+      key: 'engagement',
+      header: 'Engagement',
+      render: (r) => <a href={`/engagements/${r.engagementId}`}>{r.engagementName}</a>,
+    },
+    {
+      key: 'description',
+      header: 'Description',
+      render: (r) =>
+        editingId === r.id ? (
+          <input
+            value={editDesc}
+            onChange={(e) => setEditDesc(e.target.value)}
+            style={inlineInputStyle}
+          />
+        ) : (
+          r.description
+        ),
+    },
+    {
+      key: 'category',
+      header: 'Category',
+      render: (r) =>
+        editingId === r.id ? (
+          <input
+            value={editCategory}
+            onChange={(e) => setEditCategory(e.target.value)}
+            style={inlineInputStyle}
+          />
+        ) : (
+          (r.category ?? '—')
+        ),
+    },
+    {
+      key: 'cost',
+      header: 'Cost',
+      align: 'right',
+      render: (r) =>
+        editingId === r.id ? (
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={editCost}
+            onChange={(e) => setEditCost(e.target.value)}
+            style={{ ...inlineInputStyle, textAlign: 'right' }}
+          />
+        ) : (
+          `$${dollars(r.costCents)}`
+        ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (r) =>
+        r.billingBatchId != null ? (
+          <span style={{ color: tokens.color.textMuted }}>In batch</span>
+        ) : (
+          'Open'
+        ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      render: (r) => {
+        const billed = r.billingBatchId != null;
+        const editing = editingId === r.id;
+        return billed ? (
+          <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>Locked</span>
+        ) : editing ? (
+          <span style={{ display: 'inline-flex', gap: 6 }}>
+            <Button type="button" onClick={() => void saveEdit(r.id)}>
+              Save
+            </Button>
+            <Button type="button" variant="ghost" onClick={cancelEdit}>
+              Cancel
+            </Button>
+          </span>
+        ) : (
+          <span style={{ display: 'inline-flex', gap: 6 }}>
+            <Button type="button" variant="ghost" onClick={() => beginEdit(r)}>
+              Edit
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => void remove(r.id)}>
+              Delete
+            </Button>
+          </span>
+        );
+      },
+    },
+  ];
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
       <Card title="Add expense">
@@ -335,130 +455,12 @@ export function ExpensesView({
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No expenses.</p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  {[
-                    'Date',
-                    'Client',
-                    'Engagement',
-                    'Description',
-                    'Category',
-                    'Cost',
-                    'Status',
-                    '',
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      style={{
-                        ...cellStyle,
-                        textAlign: h === 'Cost' ? 'right' : 'left',
-                        color: tokens.color.textMuted,
-                        fontWeight: 600,
-                      }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const editing = editingId === r.id;
-                  const billed = r.billingBatchId != null;
-                  return (
-                    <tr key={r.id}>
-                      <td style={cellStyle}>
-                        {editing ? (
-                          <input
-                            type="date"
-                            value={editDate}
-                            onChange={(e) => setEditDate(e.target.value)}
-                            style={inlineInputStyle}
-                          />
-                        ) : (
-                          r.expenseDate
-                        )}
-                      </td>
-                      <td style={cellStyle}>
-                        <a href={`/clients/${r.clientId}`}>{r.clientName}</a>
-                      </td>
-                      <td style={cellStyle}>
-                        <a href={`/engagements/${r.engagementId}`}>{r.engagementName}</a>
-                      </td>
-                      <td style={cellStyle}>
-                        {editing ? (
-                          <input
-                            value={editDesc}
-                            onChange={(e) => setEditDesc(e.target.value)}
-                            style={inlineInputStyle}
-                          />
-                        ) : (
-                          r.description
-                        )}
-                      </td>
-                      <td style={cellStyle}>
-                        {editing ? (
-                          <input
-                            value={editCategory}
-                            onChange={(e) => setEditCategory(e.target.value)}
-                            style={inlineInputStyle}
-                          />
-                        ) : (
-                          (r.category ?? '—')
-                        )}
-                      </td>
-                      <td style={{ ...cellStyle, textAlign: 'right' }}>
-                        {editing ? (
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={editCost}
-                            onChange={(e) => setEditCost(e.target.value)}
-                            style={{ ...inlineInputStyle, textAlign: 'right' }}
-                          />
-                        ) : (
-                          `$${dollars(r.costCents)}`
-                        )}
-                      </td>
-                      <td style={cellStyle}>
-                        {billed ? (
-                          <span style={{ color: tokens.color.textMuted }}>In batch</span>
-                        ) : (
-                          'Open'
-                        )}
-                      </td>
-                      <td style={{ ...cellStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {billed ? (
-                          <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
-                            Locked
-                          </span>
-                        ) : editing ? (
-                          <span style={{ display: 'inline-flex', gap: 6 }}>
-                            <Button type="button" onClick={() => void saveEdit(r.id)}>
-                              Save
-                            </Button>
-                            <Button type="button" variant="ghost" onClick={cancelEdit}>
-                              Cancel
-                            </Button>
-                          </span>
-                        ) : (
-                          <span style={{ display: 'inline-flex', gap: 6 }}>
-                            <Button type="button" variant="ghost" onClick={() => beginEdit(r)}>
-                              Edit
-                            </Button>
-                            <Button type="button" variant="ghost" onClick={() => void remove(r.id)}>
-                              Delete
-                            </Button>
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <Table<ExpenseRow>
+              columns={columns}
+              rows={paged}
+              rowKey={(r) => r.id}
+              pagination={pagination}
+            />
           </div>
         )}
       </Card>
