@@ -8,7 +8,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, ColumnFilter, Combobox, Pill, Tabs, tokens, type SortDir } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  ColumnFilter,
+  Combobox,
+  Pill,
+  Table,
+  type TableColumn,
+  Tabs,
+  tokens,
+  type SortDir,
+} from '@vibe/ui';
+import { useClientPage } from '../lib/use-paged-list';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -469,6 +481,8 @@ export function EngagementsPage(): JSX.Element {
     sortBy,
   ]);
 
+  const { paged, pagination } = useClientPage(visible);
+
   const clientOptions = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of rows) map.set(r.clientId, r.clientName);
@@ -591,6 +605,212 @@ export function EngagementsPage(): JSX.Element {
     value: sl.id,
     label: `${sl.name} (${sl.category})`,
   }));
+
+  const engagementColumns: TableColumn<EngagementRow>[] = [
+    {
+      key: 'select',
+      header: (
+        <input
+          type="checkbox"
+          checked={selectedIds.size > 0 && selectedIds.size === visible.length}
+          onChange={toggleAll}
+          aria-label="Select all"
+        />
+      ),
+      render: (r) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.has(r.id)}
+          onChange={() => toggleRow(r.id)}
+          aria-label={`Select ${r.name}`}
+        />
+      ),
+    },
+    {
+      key: 'workflowState',
+      header: (
+        <>
+          Status{' '}
+          <ColumnFilter
+            ariaLabel="Filter workflow state"
+            values={(Object.keys(WORKFLOW_LABELS) as WorkflowState[]).map((w) => ({
+              value: w,
+              label: WORKFLOW_LABELS[w],
+            }))}
+            selected={workflowFilter}
+            sort={sortBy.col === 'workflowState' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setWorkflowFilter(sel);
+              if (dir) setSortBy({ col: 'workflowState', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (
+        <InlineWorkflowEdit
+          value={r.workflowState}
+          options={statusOptionsFor(r.serviceLineId, r.workflowState)}
+          onChange={(v) => void setRowWorkflow(r.id, v)}
+        />
+      ),
+    },
+    {
+      key: 'name',
+      header: (
+        <>
+          Name{' '}
+          <ColumnFilter
+            ariaLabel="Sort by name"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortBy.col === 'name' ? sortBy.dir : null}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'name', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => <a href={`/engagements/${r.id}`}>{r.name}</a>,
+    },
+    {
+      key: 'client',
+      header: (
+        <>
+          Client{' '}
+          <ColumnFilter
+            ariaLabel="Filter client"
+            values={clientOptions}
+            selected={clientFilter}
+            sort={sortBy.col === 'client' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setClientFilter(sel);
+              if (dir) setSortBy({ col: 'client', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
+    },
+    {
+      key: 'type',
+      header: (
+        <>
+          Type{' '}
+          <ColumnFilter
+            ariaLabel="Filter type"
+            values={typeOptions}
+            selected={typeFilter}
+            sort={null}
+            onApply={(sel) => setTypeFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => types.find((t) => t.id === r.engagementTypeId)?.name ?? '—',
+    },
+    {
+      key: 'serviceLine',
+      header: (
+        <>
+          Service line{' '}
+          <ColumnFilter
+            ariaLabel="Filter service line"
+            values={serviceLineOptions}
+            selected={serviceLineFilter}
+            sort={null}
+            onApply={(sel) => setServiceLineFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => (
+        <span title={r.serviceLineCategory ?? undefined}>{r.serviceLineName ?? '—'}</span>
+      ),
+    },
+    {
+      key: 'assignee',
+      header: (
+        <>
+          Assignee(s){' '}
+          <ColumnFilter
+            ariaLabel="Filter assignee"
+            values={userOptions}
+            selected={assigneeFilter}
+            sort={null}
+            onApply={(sel) => setAssigneeFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => {
+        const assigneeNames = [
+          users.find((u) => u.id === r.partnerId)?.fullName,
+          users.find((u) => u.id === r.managerId)?.fullName,
+        ].filter(Boolean);
+        return assigneeNames.length > 0 ? assigneeNames.join(', ') : '—';
+      },
+    },
+    {
+      key: 'startDate',
+      header: (
+        <>
+          Start{' '}
+          <ColumnFilter
+            ariaLabel="Sort by start date"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortBy.col === 'startDate' ? sortBy.dir : null}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'startDate', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.startDate ?? '—',
+    },
+    {
+      key: 'dueDate',
+      header: (
+        <>
+          Due{' '}
+          <ColumnFilter
+            ariaLabel="Sort by due date"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortBy.col === 'dueDate' ? sortBy.dir : null}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'dueDate', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.dueDate ?? '—',
+    },
+    {
+      key: 'priority',
+      header: (
+        <>
+          Priority{' '}
+          <ColumnFilter
+            ariaLabel="Filter priority"
+            values={(['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as Priority[]).map((p) => ({
+              value: p,
+              label: p,
+            }))}
+            selected={priorityFilter}
+            sort={sortBy.col === 'priority' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setPriorityFilter(sel);
+              if (dir) setSortBy({ col: 'priority', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (
+        <InlinePriorityEdit value={r.priority} onChange={(v) => void setRowPriority(r.id, v)} />
+      ),
+    },
+  ];
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
@@ -863,240 +1083,27 @@ export function EngagementsPage(): JSX.Element {
           />
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table
-              style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: 13,
-                fontFamily: tokens.font.body,
-              }}
-            >
-              <thead>
-                <tr style={{ background: tokens.color.surface }}>
-                  <th style={th()}>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.size > 0 && selectedIds.size === visible.length}
-                      onChange={toggleAll}
-                      aria-label="Select all"
-                    />
-                  </th>
-                  <th style={th()}>
-                    Status{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter workflow state"
-                      values={(Object.keys(WORKFLOW_LABELS) as WorkflowState[]).map((w) => ({
-                        value: w,
-                        label: WORKFLOW_LABELS[w],
-                      }))}
-                      selected={workflowFilter}
-                      sort={sortBy.col === 'workflowState' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setWorkflowFilter(sel);
-                        if (dir) setSortBy({ col: 'workflowState', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Name{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by name"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortBy.col === 'name' ? sortBy.dir : null}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'name', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Client{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter client"
-                      values={clientOptions}
-                      selected={clientFilter}
-                      sort={sortBy.col === 'client' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setClientFilter(sel);
-                        if (dir) setSortBy({ col: 'client', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Type{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter type"
-                      values={typeOptions}
-                      selected={typeFilter}
-                      sort={null}
-                      onApply={(sel) => setTypeFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Service line{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter service line"
-                      values={serviceLineOptions}
-                      selected={serviceLineFilter}
-                      sort={null}
-                      onApply={(sel) => setServiceLineFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Assignee(s){' '}
-                    <ColumnFilter
-                      ariaLabel="Filter assignee"
-                      values={userOptions}
-                      selected={assigneeFilter}
-                      sort={null}
-                      onApply={(sel) => setAssigneeFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Start{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by start date"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortBy.col === 'startDate' ? sortBy.dir : null}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'startDate', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Due{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by due date"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortBy.col === 'dueDate' ? sortBy.dir : null}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'dueDate', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Priority{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter priority"
-                      values={(['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as Priority[]).map((p) => ({
-                        value: p,
-                        label: p,
-                      }))}
-                      selected={priorityFilter}
-                      sort={sortBy.col === 'priority' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setPriorityFilter(sel);
-                        if (dir) setSortBy({ col: 'priority', dir });
-                      }}
-                    />
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={10}
-                      style={{
-                        textAlign: 'center',
-                        padding: 40,
-                        color: tokens.color.textMuted,
-                        fontSize: 13,
-                      }}
-                    >
-                      <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
-                      <strong>No Results</strong>
-                      <div>Please refine your filters.</div>
-                    </td>
-                  </tr>
-                ) : (
-                  visible.map((r) => {
-                    const assigneeNames = [
-                      users.find((u) => u.id === r.partnerId)?.fullName,
-                      users.find((u) => u.id === r.managerId)?.fullName,
-                    ].filter(Boolean);
-                    const typeName = types.find((t) => t.id === r.engagementTypeId)?.name;
-                    return (
-                      <tr
-                        key={r.id}
-                        style={{
-                          borderTop: `1px solid ${tokens.color.border}`,
-                          background: selectedIds.has(r.id) ? tokens.color.accentMuted : undefined,
-                        }}
-                      >
-                        <td style={td()}>
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(r.id)}
-                            onChange={() => toggleRow(r.id)}
-                            aria-label={`Select ${r.name}`}
-                          />
-                        </td>
-                        <td style={td()}>
-                          <InlineWorkflowEdit
-                            value={r.workflowState}
-                            options={statusOptionsFor(r.serviceLineId, r.workflowState)}
-                            onChange={(v) => void setRowWorkflow(r.id, v)}
-                          />
-                        </td>
-                        <td style={td()}>
-                          <a href={`/engagements/${r.id}`}>{r.name}</a>
-                        </td>
-                        <td style={td()}>
-                          <a href={`/clients/${r.clientId}`}>{r.clientName}</a>
-                        </td>
-                        <td style={td()}>{typeName ?? '—'}</td>
-                        <td style={td()} title={r.serviceLineCategory ?? undefined}>
-                          {r.serviceLineName ?? '—'}
-                        </td>
-                        <td style={td()}>
-                          {assigneeNames.length > 0 ? assigneeNames.join(', ') : '—'}
-                        </td>
-                        <td style={td()}>{r.startDate ?? '—'}</td>
-                        <td style={td()}>{r.dueDate ?? '—'}</td>
-                        <td style={td()}>
-                          <InlinePriorityEdit
-                            value={r.priority}
-                            onChange={(v) => void setRowPriority(r.id, v)}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+            <Table<EngagementRow>
+              columns={engagementColumns}
+              rows={paged}
+              rowKey={(r) => r.id}
+              rowStyle={(r) =>
+                selectedIds.has(r.id) ? { background: tokens.color.accentMuted } : undefined
+              }
+              empty={
+                <div style={{ padding: 40, textAlign: 'center' }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
+                  <strong>No Results</strong>
+                  <div>Please refine your filters.</div>
+                </div>
+              }
+              pagination={pagination}
+            />
           </div>
         )}
       </Card>
     </div>
   );
-}
-
-function th(): React.CSSProperties {
-  return {
-    textAlign: 'left',
-    padding: '10px 8px',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: tokens.color.textMuted,
-    fontWeight: 600,
-    borderBottom: `1px solid ${tokens.color.border}`,
-  };
-}
-
-function td(): React.CSSProperties {
-  return {
-    padding: '8px',
-    fontSize: 13,
-    verticalAlign: 'middle',
-  };
 }
 
 function InlineWorkflowEdit({
