@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
-import { Card, Pill, tokens } from '@vibe/ui';
+import { Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -101,6 +101,7 @@ function ClientMessagesPanel(): JSX.Element {
   const [threads, setThreads] = useState<ThreadRow[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   async function loadThreads(): Promise<void> {
     try {
@@ -146,9 +147,27 @@ function ClientMessagesPanel(): JSX.Element {
 
   const activeThread = threads.find((t) => t.threadId === activeId) ?? null;
 
+  const q = search.trim().toLowerCase();
+  const visibleThreads = q
+    ? threads.filter(
+        (t) =>
+          (t.clientName ?? '').toLowerCase().includes(q) ||
+          (t.title ?? '').toLowerCase().includes(q),
+      )
+    : threads;
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: tokens.space.lg }}>
-      <Card title={`Threads (${threads.length})`}>
+      <Card title={`Threads (${visibleThreads.length})`}>
+        <div style={{ marginBottom: tokens.space.sm }}>
+          <Input
+            type="search"
+            placeholder="Search client or engagement…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search threads by client or engagement"
+          />
+        </div>
         <div
           style={{
             display: 'flex',
@@ -158,7 +177,12 @@ function ClientMessagesPanel(): JSX.Element {
             overflowY: 'auto',
           }}
         >
-          {threads.map((t) => {
+          {visibleThreads.length === 0 ? (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, padding: '8px 4px' }}>
+              No threads match “{search}”.
+            </p>
+          ) : null}
+          {visibleThreads.map((t) => {
             const isActive = activeId === t.threadId;
             return (
               <button
