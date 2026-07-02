@@ -122,6 +122,45 @@ export function distinctOptions(values: string[]): { value: string; label: strin
     .map((v) => ({ value: v, label: v }));
 }
 
+/**
+ * Serialize a ColumnView's search + active sort + column filters into query
+ * params for a server-side paginated endpoint (see usePagedList). Use this
+ * when the row count outgrows a single capped fetch and filtering/sorting must
+ * run in SQL rather than in-memory (selectRows). The returned object is fed as
+ * usePagedList's `query`; a value change resets to page 1.
+ *
+ *   const query = useMemo(
+ *     () => viewToPagedQuery(view, {
+ *       sortMap: { owner: 'partnerName', type: 'clientType' },   // column → server sort key
+ *       filterMap: { owner: 'clientOwnerId', type: 'clientType' }, // column → server filter param
+ *     }),
+ *     [view],
+ *   );
+ *   const list = usePagedList<Row>('/api/staff/clients', { query });
+ *
+ * Multi-select filters are joined with commas — the endpoint splits and treats
+ * them as an IN(...) set. Filter values must be whatever the server matches on
+ * (e.g. owner/office by id, type/status by enum value), so wire the matching
+ * ColumnFilter `values` to use those as the option `value`.
+ */
+export function viewToPagedQuery(
+  view: ColumnView,
+  cfg: { sortMap?: Record<string, string>; filterMap?: Record<string, string> } = {},
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  const q = view.search.trim();
+  if (q) out['q'] = q;
+  if (view.sortCol && view.sortDir) {
+    out['sort'] = cfg.sortMap?.[view.sortCol] ?? view.sortCol;
+    out['dir'] = view.sortDir;
+  }
+  for (const [col, param] of Object.entries(cfg.filterMap ?? {})) {
+    const sel = view.filterFor(col);
+    if (sel.size > 0) out[param] = Array.from(sel).join(',');
+  }
+  return out;
+}
+
 export interface SelectRowsConfig<T> {
   /** col key → the row value matched against that column's selected filter set. */
   filters?: Record<string, (row: T) => string>;

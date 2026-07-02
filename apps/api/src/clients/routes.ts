@@ -194,14 +194,26 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       return;
     }
     const q = (req.query['q'] ?? '').toString().trim();
-    const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+    // Filters accept a comma-separated set (multi-select column headers) or a
+    // single value; both collapse to an IN(...) match.
+    const csv = (v: unknown): string[] =>
+      typeof v === 'string'
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
     const partnerId = typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : null;
     // 0050 — new filters
-    const clientOwnerId =
-      typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+    const clientOwnerIds = csv(req.query['clientOwnerId']);
     const externalId = typeof req.query['externalId'] === 'string' ? req.query['externalId'] : null;
-    const clientType = typeof req.query['clientType'] === 'string' ? req.query['clientType'] : null;
-    const officeId = typeof req.query['officeId'] === 'string' ? req.query['officeId'] : null;
+    const clientTypes = csv(req.query['clientType']).filter(
+      (t) => t === 'INDIVIDUAL' || t === 'BUSINESS',
+    );
+    const statuses = csv(req.query['status']).filter(
+      (s) => s === 'ACTIVE' || s === 'ARCHIVED' || s === 'PROSPECT' || s === 'INACTIVE',
+    );
+    const officeIds = csv(req.query['officeId']);
 
     const conds = [eq(clients.firmId, firmId)];
     if (q) {
@@ -226,23 +238,12 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       );
       if (expr) conds.push(expr);
     }
-    if (
-      status === 'ACTIVE' ||
-      status === 'ARCHIVED' ||
-      status === 'PROSPECT' ||
-      status === 'INACTIVE'
-    ) {
-      conds.push(eq(clients.status, status));
-    }
+    if (statuses.length > 0) conds.push(inArray(clients.status, statuses));
     if (partnerId) conds.push(eq(clients.partnerInChargeId, partnerId));
-    if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
+    if (clientOwnerIds.length > 0) conds.push(inArray(clients.partnerInChargeId, clientOwnerIds));
     if (externalId) conds.push(eq(clients.externalId, externalId));
-    if (clientType === 'INDIVIDUAL' || clientType === 'BUSINESS') {
-      conds.push(eq(clients.clientType, clientType));
-    }
-    if (officeId) {
-      conds.push(eq(clients.officeId, officeId));
-    }
+    if (clientTypes.length > 0) conds.push(inArray(clients.clientType, clientTypes));
+    if (officeIds.length > 0) conds.push(inArray(clients.officeId, officeIds));
 
     // Pagination + sort. If no `page` is supplied, we keep the legacy
     // shape (just `items`, limit 500) so existing callers don't break.
