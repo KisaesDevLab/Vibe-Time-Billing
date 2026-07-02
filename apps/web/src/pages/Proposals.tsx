@@ -17,9 +17,12 @@ import {
   Input,
   Pill,
   SectionHeading,
+  Table,
+  type TableColumn,
   tokens,
   type SortDir,
 } from '@vibe/ui';
+import { useClientPage } from '../lib/use-paged-list';
 
 import { api } from '../api-client';
 
@@ -79,23 +82,6 @@ const STATUS_TONE: Record<Status, 'accent' | 'success' | 'warning' | 'danger' | 
   CANCELLED: 'neutral',
   COUNTERED: 'warning',
 };
-
-function th(): React.CSSProperties {
-  return {
-    textAlign: 'left',
-    padding: '10px 8px',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: tokens.color.textMuted,
-    fontWeight: 600,
-    borderBottom: `1px solid ${tokens.color.border}`,
-    whiteSpace: 'nowrap',
-  };
-}
-function td(): React.CSSProperties {
-  return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
-}
 
 // ── Session-persisted view state ────────────────────────────────────
 // Survives navigation + reload within the browser session. Sets are
@@ -274,6 +260,129 @@ export function ProposalsListPage(): JSX.Element {
     </>
   );
 
+  const { paged, pagination } = useClientPage(view);
+
+  const columns: TableColumn<ProposalRow>[] = [
+    {
+      key: 'title',
+      header: sortOnly('title', 'Title'),
+      render: (r) => (
+        <Link
+          to={`/proposals/${r.id}/edit`}
+          style={{ color: tokens.color.accent, textDecoration: 'none' }}
+        >
+          {r.title}
+        </Link>
+      ),
+    },
+    {
+      key: 'client',
+      header: (
+        <>
+          Client{' '}
+          <ColumnFilter
+            ariaLabel="Filter client"
+            values={clientOptions}
+            selected={clientFilter}
+            sort={sortBy.col === 'client' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setClientFilter(sel);
+              if (dir) setSortBy({ col: 'client', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (r.clientName ? <a href={`/clients/${r.clientId}`}>{r.clientName}</a> : '—'),
+    },
+    {
+      key: 'createdBy',
+      header: (
+        <>
+          Created by{' '}
+          <ColumnFilter
+            ariaLabel="Filter creator"
+            values={creatorOptions}
+            selected={creatorFilter}
+            sort={sortBy.col === 'createdBy' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setCreatorFilter(sel);
+              if (dir) setSortBy({ col: 'createdBy', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.createdByName ?? '—',
+    },
+    {
+      key: 'status',
+      header: (
+        <>
+          Status{' '}
+          <ColumnFilter
+            ariaLabel="Filter status"
+            values={statusOptions}
+            selected={statusFilter}
+            sort={sortBy.col === 'status' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setStatusFilter(sel);
+              if (dir) setSortBy({ col: 'status', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => <Pill tone={STATUS_TONE[r.status]}>{r.status}</Pill>,
+    },
+    {
+      key: 'fees',
+      header: sortOnly('fees', 'Fees'),
+      align: 'right',
+      render: (r) => (
+        <div style={{ fontSize: 12 }}>
+          {Number(r.totalOneTimeCents) > 0 && (
+            <div>{dollars(Number(r.totalOneTimeCents))} one-time</div>
+          )}
+          {Number(r.totalRecurringCents) > 0 && (
+            <div style={{ color: tokens.color.textMuted }}>
+              {dollars(Number(r.totalRecurringCents))} / {r.recurringInterval}
+            </div>
+          )}
+          {Number(r.totalOneTimeCents) === 0 && Number(r.totalRecurringCents) === 0 && (
+            <span style={{ color: tokens.color.textMuted }}>—</span>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'rev',
+      header: 'Rev',
+      align: 'right',
+      render: (r) => `v${r.draftRevision}`,
+    },
+    {
+      key: 'updated',
+      header: sortOnly('updated', 'Last update'),
+      render: (r) => new Date(r.updatedAt).toLocaleString(),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      render: (r) =>
+        r.status === 'ACCEPTED' ? (
+          <span style={{ fontSize: 11, color: tokens.color.textMuted }}>—</span>
+        ) : (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busyId === r.id}
+            onClick={() => void remove(r)}
+          >
+            {busyId === r.id ? 'Deleting…' : 'Delete'}
+          </Button>
+        ),
+    },
+  ];
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <SectionHeading
@@ -320,134 +429,19 @@ export function ProposalsListPage(): JSX.Element {
           </p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table
-              style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: 13,
-                fontFamily: tokens.font.body,
-              }}
-            >
-              <thead>
-                <tr style={{ background: tokens.color.surface }}>
-                  <th style={th()}>{sortOnly('title', 'Title')}</th>
-                  <th style={th()}>
-                    Client{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter client"
-                      values={clientOptions}
-                      selected={clientFilter}
-                      sort={sortBy.col === 'client' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setClientFilter(sel);
-                        if (dir) setSortBy({ col: 'client', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Created by{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter creator"
-                      values={creatorOptions}
-                      selected={creatorFilter}
-                      sort={sortBy.col === 'createdBy' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setCreatorFilter(sel);
-                        if (dir) setSortBy({ col: 'createdBy', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Status{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter status"
-                      values={statusOptions}
-                      selected={statusFilter}
-                      sort={sortBy.col === 'status' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setStatusFilter(sel);
-                        if (dir) setSortBy({ col: 'status', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={{ ...th(), textAlign: 'right' }}>{sortOnly('fees', 'Fees')}</th>
-                  <th style={{ ...th(), textAlign: 'right' }}>Rev</th>
-                  <th style={th()}>{sortOnly('updated', 'Last update')}</th>
-                  <th style={th()} />
-                </tr>
-              </thead>
-              <tbody>
-                {view.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={8}
-                      style={{
-                        textAlign: 'center',
-                        padding: 40,
-                        color: tokens.color.textMuted,
-                        fontSize: 13,
-                      }}
-                    >
-                      <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
-                      <strong>No Results</strong>
-                      <div>Please refine your filters.</div>
-                    </td>
-                  </tr>
-                ) : (
-                  view.map((r) => (
-                    <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-                      <td style={td()}>
-                        <Link
-                          to={`/proposals/${r.id}/edit`}
-                          style={{ color: tokens.color.accent, textDecoration: 'none' }}
-                        >
-                          {r.title}
-                        </Link>
-                      </td>
-                      <td style={td()}>
-                        {r.clientName ? <a href={`/clients/${r.clientId}`}>{r.clientName}</a> : '—'}
-                      </td>
-                      <td style={td()}>{r.createdByName ?? '—'}</td>
-                      <td style={td()}>
-                        <Pill tone={STATUS_TONE[r.status]}>{r.status}</Pill>
-                      </td>
-                      <td style={{ ...td(), textAlign: 'right' }}>
-                        <div style={{ fontSize: 12 }}>
-                          {Number(r.totalOneTimeCents) > 0 && (
-                            <div>{dollars(Number(r.totalOneTimeCents))} one-time</div>
-                          )}
-                          {Number(r.totalRecurringCents) > 0 && (
-                            <div style={{ color: tokens.color.textMuted }}>
-                              {dollars(Number(r.totalRecurringCents))} / {r.recurringInterval}
-                            </div>
-                          )}
-                          {Number(r.totalOneTimeCents) === 0 &&
-                            Number(r.totalRecurringCents) === 0 && (
-                              <span style={{ color: tokens.color.textMuted }}>—</span>
-                            )}
-                        </div>
-                      </td>
-                      <td style={{ ...td(), textAlign: 'right' }}>v{r.draftRevision}</td>
-                      <td style={td()}>{new Date(r.updatedAt).toLocaleString()}</td>
-                      <td style={{ ...td(), textAlign: 'right' }}>
-                        {r.status === 'ACCEPTED' ? (
-                          <span style={{ fontSize: 11, color: tokens.color.textMuted }}>—</span>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={busyId === r.id}
-                            onClick={() => void remove(r)}
-                          >
-                            {busyId === r.id ? 'Deleting…' : 'Delete'}
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <Table<ProposalRow>
+              columns={columns}
+              rows={paged}
+              rowKey={(r) => r.id}
+              empty={
+                <div style={{ padding: 40, textAlign: 'center' }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
+                  <strong>No Results</strong>
+                  <div>Please refine your filters.</div>
+                </div>
+              }
+              pagination={pagination}
+            />
           </div>
         )}
       </Card>
