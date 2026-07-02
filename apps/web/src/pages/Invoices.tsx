@@ -5,6 +5,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe
 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { TableSearch } from '../components/TableSearch';
 
 interface Invoice {
@@ -159,6 +160,8 @@ export function InvoicesPage(): JSX.Element {
       }),
     [items, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
@@ -433,7 +436,8 @@ export function InvoicesPage(): JSX.Element {
                 },
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(i) => i.id}
             empty="No invoices match the current filters."
           />

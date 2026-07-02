@@ -20,6 +20,7 @@ import { api } from '../api-client';
 import { usePermission } from '../auth-context';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 
 interface PersonRow {
   key: string;
@@ -111,6 +112,8 @@ export function PeopleDirectoryPage(): JSX.Element {
       }),
     [rows, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
@@ -286,7 +289,8 @@ export function PeopleDirectoryPage(): JSX.Element {
                   p.kind === 'portal_identity' ? <Pill tone="warning">Portal-only</Pill> : null,
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(p) => p.key}
             empty="No people match the current filters."
           />

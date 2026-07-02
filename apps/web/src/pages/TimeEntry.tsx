@@ -19,6 +19,7 @@ import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { filterStatuses } from '../status-filter';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
 import { ProcessProjectDialog } from './clients/ProcessProjectDialog';
 import { ExpensesView } from './ExpensesView';
@@ -630,6 +631,7 @@ function LogView({
       }),
     [entries, view],
   );
+  const { paged, pagination } = useClientPage(visible);
   const totalHours = visible.reduce((s, e) => s + Number(e.hours), 0);
   const totalAmount = visible.reduce((s, e) => s + e.standardAmountCents, 0);
 
@@ -1309,7 +1311,8 @@ function LogView({
                 },
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(e) => e.id}
             empty="No time logged yet."
           />

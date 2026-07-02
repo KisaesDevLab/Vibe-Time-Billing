@@ -14,6 +14,7 @@ import { Button, Card, ColumnFilter, Pill, SectionHeading, Table, tokens } from 
 import { api } from '../api-client';
 import { ReceiptActions } from '../components/ReceiptActions';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { AchReturnsPage } from './admin/AchReturns';
 import { PaymentImportTab } from './payments/PaymentImportTab';
 
@@ -192,6 +193,8 @@ export function PaymentsPage(): JSX.Element {
       }),
     [rows, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   // Recording a payment now happens on the full /payments/new screen
   // (terminal / manual / card), which also offers print + email receipt.
@@ -630,7 +633,8 @@ export function PaymentsPage(): JSX.Element {
                     ),
                   },
                 ]}
-                rows={visible}
+                rows={paged}
+                pagination={pagination}
                 rowKey={(r) => r.paymentId}
                 empty="No payments in this range."
               />

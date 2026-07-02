@@ -5,6 +5,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe
 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { TableSearch } from '../components/TableSearch';
 
 type Bucket = '0-30' | '31-60' | '61-90' | '90+';
@@ -221,6 +222,8 @@ export function ArPage(): JSX.Element {
       }),
     [clients, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   function toggleAll(): void {
     if (selected.size === visible.length) setSelected(new Set());
@@ -521,7 +524,8 @@ export function ArPage(): JSX.Element {
               ),
             },
           ]}
-          rows={visible}
+          rows={paged}
+          pagination={pagination}
           rowKey={(c) => c.clientId}
           empty="No outstanding AR matches the current filters."
         />

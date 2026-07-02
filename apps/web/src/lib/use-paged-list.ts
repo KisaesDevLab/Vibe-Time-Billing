@@ -55,6 +55,50 @@ function buildQuery(page: number, pageSize: number, query: Options['query']): st
   return params.toString();
 }
 
+/**
+ * Client-side pagination for pages that already hold the full (filtered/
+ * sorted) array in memory — e.g. the `useColumnView`-backed list pages.
+ * Slices locally and produces a `pagination` object for the shared <Table>.
+ * Snaps back a page when filtering shrinks the set below the current page.
+ */
+export function useClientPage<T>(
+  rows: T[],
+  initialPageSize = 50,
+): {
+  paged: T[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    onPageChange: (page: number) => void;
+    onPageSizeChange: (size: number) => void;
+  };
+} {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(initialPageSize);
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(rows.length / pageSize));
+    if (page > maxPage) setPage(maxPage);
+  }, [rows.length, pageSize, page]);
+  const paged = useMemo(
+    () => rows.slice((page - 1) * pageSize, page * pageSize),
+    [rows, page, pageSize],
+  );
+  return {
+    paged,
+    pagination: {
+      page,
+      pageSize,
+      total: rows.length,
+      onPageChange: setPage,
+      onPageSizeChange: (s: number) => {
+        setPageSize(s);
+        setPage(1);
+      },
+    },
+  };
+}
+
 export function usePagedList<T>(path: string, opts: Options = {}): PagedListResult<T> {
   const enabled = opts.enabled ?? true;
   const [page, setPageRaw] = useState(1);

@@ -7,6 +7,7 @@ import { Button, Card, ColumnFilter, Pill, Printer, Table, tokens } from '@vibe/
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
@@ -126,20 +127,9 @@ export function ClientsPage(): JSX.Element {
     [clients, view],
   );
 
-  // Client-side pagination of the filtered/sorted set. The rich column
-  // filtering above runs in-memory, so we page the result locally with the
-  // shared Table pager (50 / 100 / 250).
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const pagedVisible = useMemo(
-    () => visible.slice((page - 1) * pageSize, page * pageSize),
-    [visible, page, pageSize],
-  );
-  // Snap back when filtering shrinks the set below the current page.
-  useEffect(() => {
-    const maxPage = Math.max(1, Math.ceil(visible.length / pageSize));
-    if (page > maxPage) setPage(maxPage);
-  }, [visible.length, pageSize, page]);
+  // Client-side pagination of the filtered/sorted set (column filtering runs
+  // in-memory) via the shared Table pager (50 / 100 / 250).
+  const { paged: pagedVisible, pagination } = useClientPage(visible);
 
   const ownerValues = useMemo(
     () => distinctOptions(clients.map((c) => c.partnerName ?? '—')),
@@ -538,16 +528,7 @@ export function ClientsPage(): JSX.Element {
             rows={pagedVisible}
             rowKey={(c) => c.id}
             empty="No clients match the current filters."
-            pagination={{
-              page,
-              pageSize,
-              total: visible.length,
-              onPageChange: setPage,
-              onPageSizeChange: (s) => {
-                setPageSize(s);
-                setPage(1);
-              },
-            }}
+            pagination={pagination}
           />
         )}
       </Card>
