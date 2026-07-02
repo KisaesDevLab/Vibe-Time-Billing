@@ -12,7 +12,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Table, type TableColumn, tokens } from '@vibe/ui';
+import { useClientPage } from '../../lib/use-paged-list';
 
 import { api } from '../../api-client';
 
@@ -125,6 +126,91 @@ export function TaxPaymentsTab(): JSX.Element {
     () => selectedRows.reduce((acc, r) => acc + r.amountCents, 0),
     [selectedRows],
   );
+
+  const { paged, pagination } = useClientPage(rows);
+
+  const columns: TableColumn<PaymentRow>[] = [
+    {
+      key: 'select',
+      header: (
+        <input
+          type="checkbox"
+          checked={selected.size === rows.length && rows.length > 0}
+          ref={(el) => {
+            if (el) el.indeterminate = selected.size > 0 && selected.size < rows.length;
+          }}
+          onChange={toggleAll}
+          aria-label="Select all"
+        />
+      ),
+      render: (r) => (
+        <input
+          type="checkbox"
+          checked={selected.has(r.id)}
+          onChange={() => toggleRow(r.id)}
+          aria-label={`Select ${r.clientName} ${r.paymentType}`}
+        />
+      ),
+    },
+    {
+      key: 'client',
+      header: (
+        <SortableHeader label="Client" k="client" current={sortBy} dir={dir} onSort={setSort} />
+      ),
+      render: (r) => (
+        <Link
+          to={`/clients/${r.clientId}`}
+          style={{ color: tokens.color.accent, textDecoration: 'none' }}
+        >
+          {r.clientName}
+        </Link>
+      ),
+    },
+    {
+      key: 'jurisdiction',
+      header: (
+        <SortableHeader
+          label="Jurisdiction"
+          k="jurisdiction"
+          current={sortBy}
+          dir={dir}
+          onSort={setSort}
+        />
+      ),
+      render: (r) => r.jurisdiction,
+    },
+    {
+      key: 'type',
+      header: <SortableHeader label="Type" k="type" current={sortBy} dir={dir} onSort={setSort} />,
+      render: (r) => r.paymentType,
+    },
+    {
+      key: 'amount',
+      align: 'right',
+      header: (
+        <SortableHeader label="Amount" k="amount" current={sortBy} dir={dir} onSort={setSort} />
+      ),
+      render: (r) => `$${(r.amountCents / 100).toFixed(2)}`,
+    },
+    {
+      key: 'dueDate',
+      header: (
+        <SortableHeader label="Due" k="dueDate" current={sortBy} dir={dir} onSort={setSort} />
+      ),
+      render: (r) => new Date(r.dueDate).toLocaleDateString(),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (r) => (
+        <Pill
+          tone={r.status === 'SCHEDULED' ? 'warning' : r.status === 'PAID' ? 'success' : 'neutral'}
+        >
+          {r.status}
+        </Pill>
+      ),
+    },
+  ];
 
   return (
     <Card
@@ -247,97 +333,13 @@ export function TaxPaymentsTab(): JSX.Element {
           No tax payments match the current filters.
         </p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
-              <th style={th()}>
-                <input
-                  type="checkbox"
-                  checked={selected.size === rows.length && rows.length > 0}
-                  ref={(el) => {
-                    if (el) {
-                      el.indeterminate = selected.size > 0 && selected.size < rows.length;
-                    }
-                  }}
-                  onChange={toggleAll}
-                  aria-label="Select all"
-                />
-              </th>
-              <SortableHeader
-                label="Client"
-                k="client"
-                current={sortBy}
-                dir={dir}
-                onSort={setSort}
-              />
-              <SortableHeader
-                label="Jurisdiction"
-                k="jurisdiction"
-                current={sortBy}
-                dir={dir}
-                onSort={setSort}
-              />
-              <SortableHeader label="Type" k="type" current={sortBy} dir={dir} onSort={setSort} />
-              <SortableHeader
-                label="Amount"
-                k="amount"
-                current={sortBy}
-                dir={dir}
-                onSort={setSort}
-                align="right"
-              />
-              <SortableHeader label="Due" k="dueDate" current={sortBy} dir={dir} onSort={setSort} />
-              <th style={th()}>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                key={r.id}
-                style={{
-                  borderBottom: `1px solid ${tokens.color.border}`,
-                  background: selected.has(r.id) ? tokens.color.surface : 'transparent',
-                }}
-              >
-                <td style={td()}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(r.id)}
-                    onChange={() => toggleRow(r.id)}
-                    aria-label={`Select ${r.clientName} ${r.paymentType}`}
-                  />
-                </td>
-                <td style={td()}>
-                  <Link
-                    to={`/clients/${r.clientId}`}
-                    style={{ color: tokens.color.accent, textDecoration: 'none' }}
-                  >
-                    {r.clientName}
-                  </Link>
-                </td>
-                <td style={td()}>{r.jurisdiction}</td>
-                <td style={td()}>{r.paymentType}</td>
-                <td style={{ ...td(), textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                  ${(r.amountCents / 100).toFixed(2)}
-                </td>
-                <td style={td()}>{new Date(r.dueDate).toLocaleDateString()}</td>
-                <td style={td()}>
-                  <Pill
-                    tone={
-                      r.status === 'SCHEDULED'
-                        ? 'warning'
-                        : r.status === 'PAID'
-                          ? 'success'
-                          : 'neutral'
-                    }
-                  >
-                    {r.status}
-                  </Pill>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<PaymentRow>
+          columns={columns}
+          rows={paged}
+          rowKey={(r) => r.id}
+          rowStyle={(r) => (selected.has(r.id) ? { background: tokens.color.surface } : undefined)}
+          pagination={pagination}
+        />
       )}
 
       {reminderOpen && (
@@ -360,38 +362,34 @@ function SortableHeader({
   current,
   dir,
   onSort,
-  align = 'left',
 }: {
   label: string;
   k: SortKey;
   current: SortKey;
   dir: SortDir;
   onSort: (k: SortKey) => void;
-  align?: 'left' | 'right';
 }): JSX.Element {
   const active = current === k;
   return (
-    <th style={th(align)}>
-      <button
-        type="button"
-        onClick={() => onSort(k)}
-        style={{
-          background: 'none',
-          border: 'none',
-          color: active ? tokens.color.accent : tokens.color.textMuted,
-          font: 'inherit',
-          fontWeight: 600,
-          fontSize: 11,
-          textTransform: 'uppercase',
-          letterSpacing: 0.4,
-          cursor: 'pointer',
-          padding: 0,
-        }}
-      >
-        {label}
-        {active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
-      </button>
-    </th>
+    <button
+      type="button"
+      onClick={() => onSort(k)}
+      style={{
+        background: 'none',
+        border: 'none',
+        color: active ? tokens.color.accent : tokens.color.textMuted,
+        font: 'inherit',
+        fontWeight: 600,
+        fontSize: 11,
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+        cursor: 'pointer',
+        padding: 0,
+      }}
+    >
+      {label}
+      {active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
+    </button>
   );
 }
 
@@ -629,20 +627,6 @@ function ReminderDialog({
   );
 }
 
-function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
-  return {
-    textAlign: align,
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    color: tokens.color.textMuted,
-    padding: '6px 8px',
-  };
-}
-function td(): React.CSSProperties {
-  return { padding: '6px 8px', verticalAlign: 'middle' };
-}
 function selStyle(): React.CSSProperties {
   return {
     padding: '6px 8px',
