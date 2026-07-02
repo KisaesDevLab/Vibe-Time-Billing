@@ -21,6 +21,8 @@ import {
   Combobox,
   EmptyState,
   Pill,
+  Table,
+  type TableColumn,
   Tabs,
   tokens,
   type ComboboxOption,
@@ -28,6 +30,7 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useClientPage } from '../lib/use-paged-list';
 import {
   PRIORITY_TONE,
   RECURRENCE_LABEL,
@@ -596,11 +599,221 @@ function TaskTable(props: {
     onRemove,
   } = props;
 
+  const { paged, pagination } = useClientPage(rows);
+
   if (total === 0) {
     return (
       <EmptyState title="No tasks" body="Create a task or adjust the scope / filters above." />
     );
   }
+
+  const columns: TableColumn<TaskRow>[] = [
+    {
+      key: 'title',
+      header: (
+        <>
+          Task{' '}
+          <ColumnFilter
+            ariaLabel="Sort by task"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortFor('title')}
+            onApply={(_, dir) => dir && setSortBy({ col: 'title', dir })}
+          />
+        </>
+      ),
+      render: (t) => (
+        <button
+          onClick={() => onEdit(t)}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            padding: 0,
+            textAlign: 'left',
+            cursor: 'pointer',
+          }}
+        >
+          <strong style={{ fontSize: 13, color: tokens.color.accent }}>
+            {t.title}
+            {t.recurrence && (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 400,
+                  color: tokens.color.textMuted,
+                  marginLeft: 6,
+                }}
+                title={`Repeats ${RECURRENCE_LABEL[t.recurrence]}`}
+              >
+                ↻ {RECURRENCE_LABEL[t.recurrence]}
+              </span>
+            )}
+          </strong>
+          {t.description && (
+            <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              {t.description.length > 80 ? `${t.description.slice(0, 80)}…` : t.description}
+            </div>
+          )}
+        </button>
+      ),
+    },
+    {
+      key: 'client',
+      header: (
+        <>
+          Client{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort client"
+            values={clientValues}
+            selected={clientFilter}
+            sort={sortFor('client')}
+            onApply={(sel, dir) => {
+              setClientFilter(sel);
+              if (dir) setSortBy({ col: 'client', dir });
+            }}
+          />
+        </>
+      ),
+      render: (t) => (
+        <button
+          onClick={() => onOpenClient(t.clientId)}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: tokens.color.accent,
+            cursor: 'pointer',
+            fontSize: 13,
+            padding: 0,
+          }}
+        >
+          {t.clientName ?? '—'}
+        </button>
+      ),
+    },
+    {
+      key: 'assignee',
+      header: (
+        <>
+          Assignee{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort assignee"
+            values={assigneeValues}
+            selected={assigneeFilter}
+            sort={sortFor('assignee')}
+            onApply={(sel, dir) => {
+              setAssigneeFilter(sel);
+              if (dir) setSortBy({ col: 'assignee', dir });
+            }}
+          />
+        </>
+      ),
+      render: (t) => t.assigneeName ?? 'Unassigned',
+    },
+    {
+      key: 'priority',
+      header: (
+        <>
+          Priority{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort priority"
+            values={PRIORITY_VALUES}
+            selected={priorityFilter}
+            searchable={false}
+            sort={sortFor('priority')}
+            onApply={(sel, dir) => {
+              setPriorityFilter(sel);
+              if (dir) setSortBy({ col: 'priority', dir });
+            }}
+          />
+        </>
+      ),
+      render: (t) => <Pill tone={PRIORITY_TONE[t.priority]}>{t.priority}</Pill>,
+    },
+    {
+      key: 'status',
+      header: (
+        <>
+          Status{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort status"
+            values={STATUS_VALUES}
+            selected={statusFilter}
+            searchable={false}
+            sort={sortFor('status')}
+            onApply={(sel, dir) => {
+              setStatusFilter(sel);
+              if (dir) setSortBy({ col: 'status', dir });
+            }}
+          />
+        </>
+      ),
+      render: (t) => <Pill tone={STATUS_TONE[t.status]}>{t.status.replace('_', ' ')}</Pill>,
+    },
+    {
+      key: 'due',
+      header: (
+        <>
+          Due{' '}
+          <ColumnFilter
+            ariaLabel="Sort by due date"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortFor('due')}
+            onApply={(_, dir) => dir && setSortBy({ col: 'due', dir })}
+          />
+        </>
+      ),
+      render: (t) => {
+        const overdue =
+          t.dueDate != null && t.dueDate < today && t.status !== 'DONE' && t.status !== 'CANCELED';
+        return t.dueDate ? (
+          <span
+            style={{
+              fontSize: 12,
+              color: overdue ? tokens.color.danger : tokens.color.textMuted,
+              fontWeight: overdue ? 600 : 400,
+            }}
+          >
+            {t.dueDate}
+          </span>
+        ) : (
+          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>—</span>
+        );
+      },
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      align: 'right',
+      render: (t) => (
+        <span style={{ display: 'inline-flex', gap: 4 }}>
+          <Button size="sm" variant="ghost" onClick={() => onEdit(t)}>
+            Edit
+          </Button>
+          {t.status !== 'DONE' && t.status !== 'CANCELED' && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busyId === t.id}
+              onClick={() => onSetStatus(t.id, 'DONE')}
+            >
+              Done
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busyId === t.id}
+            onClick={() => onRemove(t.id)}
+          >
+            Remove
+          </Button>
+        </span>
+      ),
+    },
+  ];
 
   return (
     <>
@@ -608,224 +821,14 @@ function TaskTable(props: {
         {rows.length === total ? `${total} tasks` : `${rows.length} of ${total}`}
       </div>
       <div style={{ overflowX: 'auto' }}>
-        <table
-          style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: 13,
-            fontFamily: tokens.font.body,
-          }}
-        >
-          <thead>
-            <tr style={{ background: tokens.color.surface }}>
-              <th style={th()}>
-                Task{' '}
-                <ColumnFilter
-                  ariaLabel="Sort by task"
-                  values={[]}
-                  selected={new Set()}
-                  searchable={false}
-                  sort={sortFor('title')}
-                  onApply={(_, dir) => dir && setSortBy({ col: 'title', dir })}
-                />
-              </th>
-              <th style={th()}>
-                Client{' '}
-                <ColumnFilter
-                  ariaLabel="Filter / sort client"
-                  values={clientValues}
-                  selected={clientFilter}
-                  sort={sortFor('client')}
-                  onApply={(sel, dir) => {
-                    setClientFilter(sel);
-                    if (dir) setSortBy({ col: 'client', dir });
-                  }}
-                />
-              </th>
-              <th style={th()}>
-                Assignee{' '}
-                <ColumnFilter
-                  ariaLabel="Filter / sort assignee"
-                  values={assigneeValues}
-                  selected={assigneeFilter}
-                  sort={sortFor('assignee')}
-                  onApply={(sel, dir) => {
-                    setAssigneeFilter(sel);
-                    if (dir) setSortBy({ col: 'assignee', dir });
-                  }}
-                />
-              </th>
-              <th style={th()}>
-                Priority{' '}
-                <ColumnFilter
-                  ariaLabel="Filter / sort priority"
-                  values={PRIORITY_VALUES}
-                  selected={priorityFilter}
-                  searchable={false}
-                  sort={sortFor('priority')}
-                  onApply={(sel, dir) => {
-                    setPriorityFilter(sel);
-                    if (dir) setSortBy({ col: 'priority', dir });
-                  }}
-                />
-              </th>
-              <th style={th()}>
-                Status{' '}
-                <ColumnFilter
-                  ariaLabel="Filter / sort status"
-                  values={STATUS_VALUES}
-                  selected={statusFilter}
-                  searchable={false}
-                  sort={sortFor('status')}
-                  onApply={(sel, dir) => {
-                    setStatusFilter(sel);
-                    if (dir) setSortBy({ col: 'status', dir });
-                  }}
-                />
-              </th>
-              <th style={th()}>
-                Due{' '}
-                <ColumnFilter
-                  ariaLabel="Sort by due date"
-                  values={[]}
-                  selected={new Set()}
-                  searchable={false}
-                  sort={sortFor('due')}
-                  onApply={(_, dir) => dir && setSortBy({ col: 'due', dir })}
-                />
-              </th>
-              <th style={th('right')}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={7}
-                  style={{ textAlign: 'center', padding: 32, color: tokens.color.textMuted }}
-                >
-                  No tasks match these filters.
-                </td>
-              </tr>
-            ) : (
-              rows.map((t) => {
-                const overdue =
-                  t.dueDate != null &&
-                  t.dueDate < today &&
-                  t.status !== 'DONE' &&
-                  t.status !== 'CANCELED';
-                return (
-                  <tr
-                    key={t.id}
-                    style={{
-                      borderTop: `1px solid ${tokens.color.border}`,
-                      background: priorityRowBg(t.priority),
-                    }}
-                  >
-                    <td style={td()}>
-                      <button
-                        onClick={() => onEdit(t)}
-                        style={{
-                          border: 'none',
-                          background: 'transparent',
-                          padding: 0,
-                          textAlign: 'left',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <strong style={{ fontSize: 13, color: tokens.color.accent }}>
-                          {t.title}
-                          {t.recurrence && (
-                            <span
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 400,
-                                color: tokens.color.textMuted,
-                                marginLeft: 6,
-                              }}
-                              title={`Repeats ${RECURRENCE_LABEL[t.recurrence]}`}
-                            >
-                              ↻ {RECURRENCE_LABEL[t.recurrence]}
-                            </span>
-                          )}
-                        </strong>
-                        {t.description && (
-                          <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                            {t.description.length > 80
-                              ? `${t.description.slice(0, 80)}…`
-                              : t.description}
-                          </div>
-                        )}
-                      </button>
-                    </td>
-                    <td style={td()}>
-                      <button
-                        onClick={() => onOpenClient(t.clientId)}
-                        style={{
-                          border: 'none',
-                          background: 'transparent',
-                          color: tokens.color.accent,
-                          cursor: 'pointer',
-                          fontSize: 13,
-                          padding: 0,
-                        }}
-                      >
-                        {t.clientName ?? '—'}
-                      </button>
-                    </td>
-                    <td style={td()}>{t.assigneeName ?? 'Unassigned'}</td>
-                    <td style={td()}>
-                      <Pill tone={PRIORITY_TONE[t.priority]}>{t.priority}</Pill>
-                    </td>
-                    <td style={td()}>
-                      <Pill tone={STATUS_TONE[t.status]}>{t.status.replace('_', ' ')}</Pill>
-                    </td>
-                    <td style={td()}>
-                      {t.dueDate ? (
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: overdue ? tokens.color.danger : tokens.color.textMuted,
-                            fontWeight: overdue ? 600 : 400,
-                          }}
-                        >
-                          {t.dueDate}
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: 12, color: tokens.color.textMuted }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ ...td(), textAlign: 'right' }}>
-                      <span style={{ display: 'inline-flex', gap: 4 }}>
-                        <Button size="sm" variant="ghost" onClick={() => onEdit(t)}>
-                          Edit
-                        </Button>
-                        {t.status !== 'DONE' && t.status !== 'CANCELED' && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={busyId === t.id}
-                            onClick={() => onSetStatus(t.id, 'DONE')}
-                          >
-                            Done
-                          </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={busyId === t.id}
-                          onClick={() => onRemove(t.id)}
-                        >
-                          Remove
-                        </Button>
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+        <Table<TaskRow>
+          columns={columns}
+          rows={paged}
+          rowKey={(t) => t.id}
+          rowStyle={(t) => ({ background: priorityRowBg(t.priority) })}
+          empty="No tasks match these filters."
+          pagination={pagination}
+        />
       </div>
     </>
   );
@@ -1291,24 +1294,6 @@ function TaskDialog({
       </div>
     </div>
   );
-}
-
-function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
-  return {
-    textAlign: align,
-    padding: '10px 8px',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: tokens.color.textMuted,
-    fontWeight: 600,
-    borderBottom: `1px solid ${tokens.color.border}`,
-    whiteSpace: 'nowrap',
-  };
-}
-
-function td(): React.CSSProperties {
-  return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
 }
 
 // A light tint of the priority pill color for the whole row — only the
