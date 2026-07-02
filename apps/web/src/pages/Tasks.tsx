@@ -45,6 +45,8 @@ interface TaskRow {
   id: string;
   clientId: string;
   clientName: string | null;
+  engagementId: string | null;
+  engagementName: string | null;
   assigneeUserId: string | null;
   assigneeName: string | null;
   title: string;
@@ -676,19 +678,25 @@ function TaskTable(props: {
         </>
       ),
       render: (t) => (
-        <button
-          onClick={() => onOpenClient(t.clientId)}
-          style={{
-            border: 'none',
-            background: 'transparent',
-            color: tokens.color.accent,
-            cursor: 'pointer',
-            fontSize: 13,
-            padding: 0,
-          }}
-        >
-          {t.clientName ?? '—'}
-        </button>
+        <div style={{ display: 'grid', gap: 2 }}>
+          <button
+            onClick={() => onOpenClient(t.clientId)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: tokens.color.accent,
+              cursor: 'pointer',
+              fontSize: 13,
+              padding: 0,
+              textAlign: 'left',
+            }}
+          >
+            {t.clientName ?? '—'}
+          </button>
+          {t.engagementName && (
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.engagementName}</span>
+          )}
+        </div>
       ),
     },
     {
@@ -957,6 +965,9 @@ function KanbanBoard(props: {
                   </div>
                   <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                     {t.clientName ?? '—'}
+                    {t.engagementName && (
+                      <span style={{ opacity: 0.8 }}> · {t.engagementName}</span>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                     <Pill tone={PRIORITY_TONE[t.priority]}>{t.priority}</Pill>
@@ -1011,6 +1022,12 @@ function TaskDialog({
   const [clientHits, setClientHits] = useState<ClientHit[]>([]);
   const [clientId, setClientId] = useState(task?.clientId ?? '');
   const [clientLabel, setClientLabel] = useState(task?.clientName ?? '');
+  // Optional engagement association — options are the selected client's
+  // engagements (loaded on demand).
+  const [engagementId, setEngagementId] = useState(task?.engagementId ?? '');
+  const [engagementOptions, setEngagementOptions] = useState<Array<{ id: string; name: string }>>(
+    [],
+  );
   const [title, setTitle] = useState(task?.title ?? '');
   const [description, setDescription] = useState(task?.description ?? '');
   const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? 'MEDIUM');
@@ -1044,6 +1061,25 @@ function TaskDialog({
     };
   }, [clientQuery, clientId, editing]);
 
+  // Load the selected client's engagements for the association dropdown.
+  useEffect(() => {
+    if (!clientId) {
+      setEngagementOptions([]);
+      return;
+    }
+    let alive = true;
+    void api<{ items: Array<{ id: string; name: string }> }>(
+      `/api/staff/engagements?clientId=${clientId}&pageSize=200`,
+    )
+      .then((r) => {
+        if (alive) setEngagementOptions(r.items ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [clientId]);
+
   async function save(): Promise<void> {
     if (!title.trim() || (!editing && !clientId)) return;
     setBusy(true);
@@ -1060,6 +1096,7 @@ function TaskDialog({
             dueDate: dueDate || null,
             assigneeUserId: assigneeUserId || null,
             recurrence: recurrence || null,
+            engagementId: engagementId || null,
           }),
         });
       } else {
@@ -1073,6 +1110,7 @@ function TaskDialog({
             dueDate: dueDate || null,
             assigneeUserId: assigneeUserId || null,
             recurrence: recurrence || null,
+            engagementId: engagementId || null,
           }),
         });
       }
@@ -1131,6 +1169,7 @@ function TaskDialog({
                         setClientId('');
                         setClientLabel('');
                         setClientQuery('');
+                        setEngagementId('');
                       }}
                     >
                       Change
@@ -1162,6 +1201,7 @@ function TaskDialog({
                             setClientId(c.id);
                             setClientLabel(c.name);
                             setClientHits([]);
+                            setEngagementId('');
                           }}
                           style={{
                             display: 'block',
@@ -1183,6 +1223,25 @@ function TaskDialog({
                 </>
               )}
             </div>
+
+            {clientId && (
+              <div>
+                <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Engagement</label>
+                <select
+                  value={engagementId}
+                  onChange={(e) => setEngagementId(e.target.value)}
+                  style={fieldStyle}
+                  aria-label="Associated engagement"
+                >
+                  <option value="">— None —</option>
+                  {engagementOptions.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label style={{ fontSize: 12, color: tokens.color.textMuted }}>Title *</label>

@@ -13,7 +13,7 @@ import { type Request, type Response, type Router } from 'express';
 import express from 'express';
 
 import type { Database } from '@vibe/db';
-import { appUsers, clientTasks, clients } from '@vibe/db/schema';
+import { appUsers, clientTasks, clients, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -163,6 +163,7 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
         clientId: clientTasks.clientId,
         clientName: clients.name,
         engagementId: clientTasks.engagementId,
+        engagementName: engagements.name,
         assigneeUserId: clientTasks.assigneeUserId,
         assigneeName: appUsers.fullName,
         title: clientTasks.title,
@@ -176,6 +177,7 @@ export function createTaskRouter(deps: TaskListRoutesDeps): Router {
       })
       .from(clientTasks)
       .leftJoin(clients, eq(clients.id, clientTasks.clientId))
+      .leftJoin(engagements, eq(engagements.id, clientTasks.engagementId))
       .leftJoin(appUsers, eq(appUsers.id, clientTasks.assigneeUserId))
       .where(where)
       .orderBy(
