@@ -6,7 +6,7 @@
 // filter would silently merge two firms' people.
 
 import { and, eq, sql } from 'drizzle-orm';
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { persons } from '@vibe/db/schema';
 import { normalizeEmail, normalizePhone } from '@vibe/core/auth';
@@ -15,7 +15,7 @@ import { normalizeEmail, normalizePhone } from '@vibe/core/auth';
 // across call sites; widen to the base PgDatabase like the seed helpers so
 // both `db` and a `db.transaction(tx => …)` handle work.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Db = PgDatabase<QueryResultHKT, any, any>;
+type Db = PgDatabase<PgQueryResultHKT, any, any>;
 
 export interface PersonInput {
   firmId: string;

@@ -5,7 +5,12 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql, eq } from 'drizzle-orm';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  expectDbReject,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import { folderLinkAttempts, folderSyncEvents } from '@vibe/db/schema';
 
 let harness: PgliteHarness;
@@ -65,7 +70,7 @@ describe('FMv2 — folder_link_attempts schema', () => {
 
   it('outcome CHECK rejects bogus values', async () => {
     const seed = await seedMinimalFirm(harness.db);
-    await expect(
+    await expectDbReject(
       harness.db.insert(folderLinkAttempts).values({
         firmId: seed.firmId,
         clientId: seed.clientId,
@@ -73,12 +78,13 @@ describe('FMv2 — folder_link_attempts schema', () => {
         attemptedBy: seed.appUserId,
         outcome: 'BOGUS',
       }),
-    ).rejects.toThrow(/folder_link_attempts_outcome_chk/);
+      /folder_link_attempts_outcome_chk/,
+    );
   });
 
   it('confidence CHECK rejects > 1', async () => {
     const seed = await seedMinimalFirm(harness.db);
-    await expect(
+    await expectDbReject(
       harness.db.insert(folderLinkAttempts).values({
         firmId: seed.firmId,
         clientId: seed.clientId,
@@ -86,7 +92,8 @@ describe('FMv2 — folder_link_attempts schema', () => {
         attemptedBy: seed.appUserId,
         matchConfidence: '1.500',
       }),
-    ).rejects.toThrow(/folder_link_attempts_confidence_range/);
+      /folder_link_attempts_confidence_range/,
+    );
   });
 
   it('expanded event_type CHECK accepts link_* values', async () => {
@@ -116,12 +123,13 @@ describe('FMv2 — folder_link_attempts schema', () => {
 
   it('expanded event_type CHECK rejects bogus values', async () => {
     const seed = await seedMinimalFirm(harness.db);
-    await expect(
+    await expectDbReject(
       harness.db.insert(folderSyncEvents).values({
         firmId: seed.firmId,
         eventType: 'bogus_event',
       }),
-    ).rejects.toThrow(/folder_sync_events_event_chk/);
+      /folder_sync_events_event_chk/,
+    );
   });
 
   it('partial-unique indexes — multiple open attempts allowed per firm', async () => {

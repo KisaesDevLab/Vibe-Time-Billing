@@ -8,7 +8,12 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 
-import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
+import {
+  buildPgliteHarness,
+  expectDbReject,
+  seedMinimalFirm,
+  type PgliteHarness,
+} from './_pglite-harness';
 import {
   taxReturns,
   taxReturnSections,
@@ -88,7 +93,7 @@ describe('TR-1 — schema migration', () => {
         title: 'T',
       })
       .returning();
-    await expect(
+    await expectDbReject(
       harness.db.insert(taxReturnSections).values({
         returnId: r!.id,
         ordinal: 0,
@@ -97,12 +102,13 @@ describe('TR-1 — schema migration', () => {
         startPage: 5,
         endPage: 3, // bad
       }),
-    ).rejects.toThrow(/tax_return_sections_page_range/);
+      /tax_return_sections_page_range/,
+    );
   });
 
   it('CHECK constraint rejects tax_year out of range', async () => {
     const seed = await seedMinimalFirm(harness.db);
-    await expect(
+    await expectDbReject(
       harness.db.insert(taxReturns).values({
         firmId: seed.firmId,
         clientId: seed.clientId,
@@ -110,7 +116,8 @@ describe('TR-1 — schema migration', () => {
         formCode: '1040',
         title: 'T',
       }),
-    ).rejects.toThrow(/tax_returns_tax_year_range/);
+      /tax_returns_tax_year_range/,
+    );
   });
 
   it('release with FULL scope rejects non-empty section_ids', async () => {
@@ -125,7 +132,7 @@ describe('TR-1 — schema migration', () => {
         title: 'T',
       })
       .returning();
-    await expect(
+    await expectDbReject(
       harness.db.insert(taxReturnReleases).values({
         returnId: r!.id,
         releasedToClientId: seed.clientId,
@@ -133,7 +140,8 @@ describe('TR-1 — schema migration', () => {
         sectionIds: ['00000000-0000-4000-8000-000000000001'],
         releasedByUserId: seed.appUserId,
       }),
-    ).rejects.toThrow(/tax_return_releases_scope_sections/);
+      /tax_return_releases_scope_sections/,
+    );
   });
 
   it('partial-unique index allows two revoked releases plus one live', async () => {

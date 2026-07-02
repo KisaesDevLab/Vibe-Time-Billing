@@ -19,6 +19,7 @@ import type { Database } from '@vibe/db';
 import { serviceTags } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
+import { pgErrorCode } from '../db-error';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -98,8 +99,11 @@ export function createServiceTagRouter(deps: ServiceTagRoutesDeps): Router {
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
         res.status(201).json({ id: row.id });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (/firm_name_uk|unique/i.test(message)) {
+        // 23505 = unique_violation on the (firm_id, lower(name)) tag index.
+        // drizzle wraps the driver error, so read the code from the cause
+        // chain rather than message-matching (the wrapper message no longer
+        // contains the constraint name).
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'tag_name_taken' });
           return;
         }
@@ -152,8 +156,11 @@ export function createServiceTagRouter(deps: ServiceTagRoutesDeps): Router {
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
         res.json({ ok: true });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (/firm_name_uk|unique/i.test(message)) {
+        // 23505 = unique_violation on the (firm_id, lower(name)) tag index.
+        // drizzle wraps the driver error, so read the code from the cause
+        // chain rather than message-matching (the wrapper message no longer
+        // contains the constraint name).
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'tag_name_taken' });
           return;
         }

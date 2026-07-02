@@ -35,6 +35,7 @@ import {
   workCodes,
 } from '@vibe/db/schema';
 import { createSnapshot } from '../rates/routes';
+import { pgErrorCode } from '../db-error';
 import {
   PERMISSION_KEYS,
   ROLE_TEMPLATES,
@@ -673,12 +674,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
       } catch (err) {
         // Map Postgres unique-violation on (firm_id, display_id) to 409
-        // instead of bubbling up as a generic 500.
-        const pgCode =
-          err && typeof err === 'object' && 'code' in err
-            ? (err as { code: unknown }).code
-            : undefined;
-        if (pgCode === '23505') {
+        // instead of bubbling up as a generic 500. drizzle wraps the
+        // driver error, so read the code from the cause chain.
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'display_id_taken' });
           return;
         }

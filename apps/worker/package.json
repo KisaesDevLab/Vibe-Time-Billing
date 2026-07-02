@@ -21,7 +21,7 @@
     "@vibe/types": "workspace:*",
     "adm-zip": "^0.5.17",
     "bullmq": "^5.7.0",
-    "drizzle-orm": "^0.30.10",
+    "drizzle-orm": "^0.45.2",
     "fuse.js": "^7.0.0",
     "ioredis": "^5.4.1",
     "nodemailer": "^9.0.1",

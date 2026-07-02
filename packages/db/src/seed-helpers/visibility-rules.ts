@@ -5,7 +5,7 @@
 // and the seed script; the one-time backfill for existing firms lives
 // in migration 0047.
 
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { firmFolderVisibilityRules } from '../schema/core';
 
@@ -61,7 +61,7 @@ const RULES: SeedRule[] = [
  * invoke during the create-firm transaction.
  */
 export async function seedFirmVisibilityRules<
-  TQueryResult extends QueryResultHKT,
+  TQueryResult extends PgQueryResultHKT,
   TFullSchema extends Record<string, unknown>,
 >(db: PgDatabase<TQueryResult, TFullSchema>, firmId: string): Promise<void> {
   await db.insert(firmFolderVisibilityRules).values(

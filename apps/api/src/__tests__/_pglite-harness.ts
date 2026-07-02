@@ -37,6 +37,22 @@ export async function buildPgliteHarness(): Promise<PgliteHarness> {
   // postgres-js's; the runtime is the same, so cast for helper-fn
   // compatibility. The schema import is the source of truth.
   const db = drizzle(pglite, { schema }) as unknown as Database;
+  // drizzle-orm >= 0.31 wraps a failed query in a DrizzleQueryError
+  // ("Failed query: …") and hangs the original driver error — which names
+  // the violated constraint — off `.cause`. Our constraint-invariant tests
+  // assert `.rejects.toThrow(/constraint_name/)` against `db.execute(...)`,
+  // so unwrap to the driver error here to preserve that assertion surface.
+  // Production code reads error codes via pgErrorCode() (db-error.ts), which
+  // walks the same cause chain, so this shim is test-only and does not mask
+  // a production behavior change.
+  const rawExecute = db.execute.bind(db) as (query: unknown) => Promise<unknown>;
+  (db as unknown as { execute: (query: unknown) => Promise<unknown> }).execute = async (query) => {
+    try {
+      return await rawExecute(query);
+    } catch (err) {
+      throw (err as { cause?: unknown })?.cause ?? err;
+    }
+  };
   return {
     pglite,
     db,
@@ -58,6 +74,38 @@ async function applyAllMigrations(pglite: PGlite): Promise<void> {
       .replace(/DO \$\$\s*BEGIN\s*IF NOT EXISTS[\s\S]*?END\s*\$\$;?/g, '-- skipped role bootstrap')
       .replace(/^(REVOKE|GRANT) .*$/gim, '-- skipped grant/revoke');
     await pglite.exec(cleaned);
+  }
+}
+
+/**
+ * Assert that a Drizzle query-builder operation rejects with a driver
+ * error whose message matches `pattern` (e.g. a violated constraint name).
+ * Needed for builder calls (`db.insert(...).values(...)`) because
+ * drizzle-orm >= 0.31 wraps the driver error in a DrizzleQueryError and
+ * hangs the original off `.cause`; this walks the cause chain so the
+ * constraint name is matched regardless of wrapping. (Raw `db.execute`
+ * calls are already unwrapped by the harness shim in buildPgliteHarness.)
+ */
+export async function expectDbReject(op: Promise<unknown>, pattern: RegExp): Promise<void> {
+  let thrown: unknown;
+  try {
+    await op;
+  } catch (e) {
+    thrown = e;
+  }
+  if (thrown === undefined) {
+    throw new Error(`expected rejection matching ${pattern}, but the query resolved`);
+  }
+  const messages: string[] = [];
+  let cur: unknown = thrown;
+  for (let i = 0; i < 5 && cur != null; i++) {
+    const m = (cur as { message?: unknown }).message;
+    if (typeof m === 'string') messages.push(m);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  const joined = messages.join(' | ');
+  if (!pattern.test(joined)) {
+    throw new Error(`rejection message ${JSON.stringify(joined)} did not match ${pattern}`);
   }
 }
 

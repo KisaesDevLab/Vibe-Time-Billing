@@ -16,7 +16,7 @@
 // about what clients receive until an admin edits them.
 
 import { sql } from 'drizzle-orm';
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { notificationTemplates } from '../schema/core';
 
@@ -29,7 +29,7 @@ import { notificationTemplates } from '../schema/core';
 // across call sites; widening to the base PgDatabase keeps the helper
 // usable from both.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Tx = PgDatabase<QueryResultHKT, any, any>;
+type Tx = PgDatabase<PgQueryResultHKT, any, any>;
 
 interface TemplateDef {
   kind: string;

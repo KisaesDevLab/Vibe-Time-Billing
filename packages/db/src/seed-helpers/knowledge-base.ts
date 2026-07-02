@@ -10,7 +10,7 @@
 // by a firm admin (is_system=false, distinct slugs) are never touched.
 
 import { and, eq, inArray, notInArray } from 'drizzle-orm';
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { kbArticles, kbCategories } from '../schema/core';
 import { md, type ArticleDef } from './kb-types';
@@ -22,7 +22,7 @@ import { CLIENT_GAP_ARTICLES } from './kb-gap-client';
 // reason: drizzle's per-schema Tx generics aren't assignment-compatible
 // across call sites; widen to the base PgDatabase like the other helpers.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Tx = PgDatabase<QueryResultHKT, any, any>;
+type Tx = PgDatabase<PgQueryResultHKT, any, any>;
 
 interface CategoryDef {
   slug: string;
