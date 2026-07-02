@@ -89,8 +89,12 @@ interface ThreadRow {
   threadId: string;
   engagementId: string | null;
   title: string | null;
+  clientName: string | null;
   status: string;
   updatedAt: string;
+  lastReplyBy: string | null;
+  lastReplyKind: 'staff' | 'client' | null;
+  lastReplyAt: string | null;
 }
 
 function ClientMessagesPanel(): JSX.Element {
@@ -174,7 +178,12 @@ function ClientMessagesPanel(): JSX.Element {
                   gap: 4,
                 }}
               >
-                <div style={{ fontWeight: 500 }}>{t.title ?? 'Engagement thread'}</div>
+                {/* Client name is the primary label; the engagement name
+                    (thread title) is the secondary line. */}
+                <div style={{ fontWeight: 600 }}>{t.clientName ?? 'Client'}</div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {t.title ?? 'Engagement thread'}
+                </div>
                 <div
                   style={{
                     fontSize: 11,
@@ -186,6 +195,11 @@ function ClientMessagesPanel(): JSX.Element {
                 >
                   {t.status === 'ARCHIVED' ? (
                     <Pill tone="neutral">Archived</Pill>
+                  ) : t.lastReplyBy ? (
+                    <span>
+                      {t.lastReplyKind === 'client' ? '↩ ' : ''}
+                      {t.lastReplyBy} · {new Date(t.lastReplyAt ?? t.updatedAt).toLocaleString()}
+                    </span>
                   ) : (
                     <span>Updated {new Date(t.updatedAt).toLocaleString()}</span>
                   )}
@@ -197,7 +211,12 @@ function ClientMessagesPanel(): JSX.Element {
       </Card>
 
       <Card
-        title={activeThread ? (activeThread.title ?? 'Engagement thread') : 'Pick a thread'}
+        title={
+          activeThread
+            ? [activeThread.clientName, activeThread.title].filter(Boolean).join(' — ') ||
+              'Engagement thread'
+            : 'Pick a thread'
+        }
         action={
           activeThread?.engagementId ? (
             <a
