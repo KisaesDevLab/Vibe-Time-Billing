@@ -2341,8 +2341,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
         res.status(201).json({ id: row?.id });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'insert_failed';
-        if (/unique|duplicate/i.test(msg)) {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'duplicate_code' });
           return;
         }
@@ -2404,8 +2403,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
         res.json({ ok: true });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'update_failed';
-        if (/unique|duplicate/i.test(msg)) {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'duplicate_code' });
           return;
         }
@@ -2594,8 +2592,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
         res.status(201).json({ id });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'insert_failed';
-        if (/unique|duplicate/i.test(msg)) {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'snapshot_for_date_exists' });
           return;
         }

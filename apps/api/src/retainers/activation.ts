@@ -23,6 +23,7 @@ import {
 import { computeExpiryDate } from '@vibe/core/retainers';
 
 import { emitAudit } from '../auth/audit';
+import { pgErrorCode } from '../db-error';
 import { logger } from '../logger';
 import type { RetainerMailDispatch } from './notifications';
 
@@ -294,7 +295,11 @@ export async function activateRetainerFromPaidInvoice(
     // above, but the constraint is the suspender. Treat as idempotent
     // by looking up the existing retainer.
     const msg = err instanceof Error ? err.message : String(err);
-    if (/retainer_engagement_uk|duplicate key/.test(msg)) {
+    // 23505 = unique_violation on retainer_engagement_uk (D2 double-activate).
+    // drizzle wraps the driver error, so match the pg code via the cause
+    // chain, not the (now wrapper) message. `msg` is still used for the
+    // error-reason return below.
+    if (pgErrorCode(err) === '23505') {
       const [existing] = await db
         .select({ id: retainers.id })
         .from(retainers)
