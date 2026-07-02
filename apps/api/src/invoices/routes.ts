@@ -376,7 +376,10 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
              SELECT ili.engagement_id FROM invoice_line_item ili
              WHERE ili.invoice_id = ${invoices.id} AND ili.engagement_id IS NOT NULL
            ))
-          AND et.name = ANY(${engagementTypeNames})
+          AND et.name IN (${sql.join(
+            engagementTypeNames.map((n) => sql`${n}`),
+            sql`, `,
+          )})
       )`);
     }
     if (clientId) conds.push(eq(invoices.clientId, clientId));

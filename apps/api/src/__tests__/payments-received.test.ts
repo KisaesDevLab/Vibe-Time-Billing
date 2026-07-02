@@ -162,4 +162,34 @@ describe('GET /payments/received', () => {
     expect(body.summary.count).toBe(1);
     expect(body.items[0]!.channel).toBe('Terminal');
   });
+
+  it('paginates but keeps the summary + total spanning the whole set', async () => {
+    const { firmId, appUserId } = await seed();
+    const p1 = (
+      await get(router(), firmId, appUserId, {
+        page: '1',
+        pageSize: '2',
+        sort: 'amount',
+        dir: 'asc',
+      })
+    ).jsonBody as Body & { total: number; page: number; pageSize: number };
+    // Page holds 2 rows, but total + summary reflect all 4.
+    expect(p1.items).toHaveLength(2);
+    expect(p1.total).toBe(4);
+    expect(p1.summary.count).toBe(4);
+    expect(p1.summary.grossCents).toBe(245000);
+
+    const p2 = (await get(router(), firmId, appUserId, { page: '2', pageSize: '2' })).jsonBody as {
+      items: { channel: string }[];
+    };
+    expect(p2.items).toHaveLength(2);
+  });
+
+  it('multi-value channel filter matches an IN set', async () => {
+    const { firmId, appUserId } = await seed();
+    const res = await get(router(), firmId, appUserId, { channel: 'Terminal,Check' });
+    const body = res.jsonBody as Body & { total: number };
+    expect(body.total).toBe(2);
+    expect(body.items.map((i) => i.channel).sort()).toEqual(['Check', 'Terminal']);
+  });
 });

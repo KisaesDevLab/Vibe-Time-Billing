@@ -13,10 +13,30 @@ import { Button, Card, ColumnFilter, Pill, SectionHeading, Table, tokens } from 
 
 import { api } from '../api-client';
 import { ReceiptActions } from '../components/ReceiptActions';
-import { selectRows, useColumnView } from '../lib/column-view';
-import { useClientPage } from '../lib/use-paged-list';
+import { useColumnView, viewToPagedQuery } from '../lib/column-view';
 import { AchReturnsPage } from './admin/AchReturns';
 import { PaymentImportTab } from './payments/PaymentImportTab';
+
+// deriveChannel() outputs — used as the Channel column filter options
+// (bounded set, independent of the loaded page).
+const CHANNEL_VALUES = [
+  'Terminal',
+  'Credit',
+  'Check',
+  'Cash',
+  'ACH (manual)',
+  'Manual',
+  'ACH',
+  'Card',
+].map((c) => ({ value: c, label: c }));
+const STATUS_VALUES = [
+  { value: 'SUCCEEDED', label: 'SUCCEEDED' },
+  { value: 'PENDING', label: 'PROCESSING' },
+  { value: 'FAILED', label: 'FAILED' },
+  { value: 'REFUNDED', label: 'REFUNDED' },
+  { value: 'PARTIALLY_REFUNDED', label: 'PARTIALLY REFUNDED' },
+  { value: 'VOIDED', label: 'VOIDED' },
+];
 
 interface Row {
   paymentId: string;
@@ -88,11 +108,17 @@ export function PaymentsPage(): JSX.Element {
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(today());
   const [q, setQ] = useState('');
+  const [appliedQ, setAppliedQ] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const view = useColumnView('vibe.payments.view', { sortCol: 'date', sortDir: 'desc' });
+  // Filter/sort/paging run SERVER-side (payments accumulate past the old
+  // 1000-row cap and the summary must span the whole range, not a page).
+  const view = useColumnView('vibe.payments.view.v2', { sortCol: 'date', sortDir: 'desc' });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
 
   // Drawer (edit + reapply + receipt drill-in). Recording a new payment
   // happens on the full /payments/new screen.
@@ -125,76 +151,60 @@ export function PaymentsPage(): JSX.Element {
     [allocLines],
   );
 
+  // Server query params from the date range + search + column view.
+  const params = useMemo(() => {
+    const p = new URLSearchParams({ start: from, end: to });
+    if (appliedQ.trim()) p.set('q', appliedQ.trim());
+    const vq = viewToPagedQuery(view, { filterMap: { status: 'status', channel: 'channel' } });
+    for (const [k, v] of Object.entries(vq)) if (v != null) p.set(k, v);
+    return p;
+  }, [from, to, appliedQ, view]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const qs = new URLSearchParams({ start: from, end: to });
-      if (q.trim()) qs.set('q', q.trim());
-      const r = await api<{ items: Row[]; summary: Summary }>(
+      const qs = new URLSearchParams(params);
+      qs.set('page', String(page));
+      qs.set('pageSize', String(pageSize));
+      const r = await api<{ items: Row[]; total: number; summary: Summary }>(
         `/api/staff/payments/received?${qs.toString()}`,
       );
       setRows(r.items);
+      setTotal(r.total ?? r.items.length);
       setSummary(r.summary);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'load_failed');
     } finally {
       setLoading(false);
     }
-  }, [from, to, q]);
+  }, [params, page, pageSize]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to]);
+  }, [load]);
 
-  // Distinct channel values, built from the loaded rows.
-  const channelValues = useMemo(
-    () =>
-      Array.from(new Set(rows.map((r) => r.channel)))
-        .sort((a, b) => a.localeCompare(b))
-        .map((c) => ({ value: c, label: c })),
-    [rows],
+  // Any filter/range/search change snaps back to page 1.
+  useEffect(() => {
+    setPage(1);
+  }, [params]);
+
+  const pagination = useMemo(
+    () => ({
+      page,
+      pageSize,
+      total,
+      onPageChange: setPage,
+      onPageSizeChange: (s: number) => {
+        setPageSize(s);
+        setPage(1);
+      },
+    }),
+    [page, pageSize, total],
   );
 
-  // Distinct displayed status values (incl. the VOIDED pseudo-status).
-  const statusValues = useMemo(
-    () =>
-      Array.from(new Set(rows.map((r) => (r.voided ? 'VOIDED' : r.status))))
-        .sort((a, b) => a.localeCompare(b))
-        .map((s) => ({ value: s, label: s === 'PENDING' ? 'PROCESSING' : s.replace(/_/g, ' ') })),
-    [rows],
-  );
-
-  // Distinct client values, built from the loaded rows.
-  const clientValues = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of rows) map.set(r.clientId, r.clientName);
-    return Array.from(map.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [rows]);
-
-  const visible = useMemo(
-    () =>
-      selectRows(rows, view, {
-        filters: {
-          client: (r) => r.clientId,
-          channel: (r) => r.channel,
-          status: (r) => (r.voided ? 'VOIDED' : r.status),
-        },
-        sortValues: {
-          date: (r) => r.receivedAt,
-          client: (r) => r.clientName,
-          channel: (r) => r.channel,
-          amount: (r) => r.amountCents,
-          status: (r) => (r.voided ? 'VOIDED' : r.status),
-        },
-      }),
-    [rows, view],
-  );
-
-  const { paged, pagination } = useClientPage(visible);
+  const channelValues = CHANNEL_VALUES;
+  const statusValues = STATUS_VALUES;
 
   // Recording a payment now happens on the full /payments/new screen
   // (terminal / manual / card), which also offers print + email receipt.
@@ -314,7 +324,7 @@ export function PaymentsPage(): JSX.Element {
     }
   }
 
-  function exportCsv(): void {
+  async function exportCsv(): Promise<void> {
     const head = [
       'Date',
       'Client',
@@ -327,8 +337,18 @@ export function PaymentsPage(): JSX.Element {
       'Status',
       'Refunded',
     ];
+    // Export the WHOLE filtered set, not just the current page.
+    let all: Row[] = rows;
+    try {
+      const qs = new URLSearchParams(params);
+      qs.set('all', '1');
+      const r = await api<{ items: Row[] }>(`/api/staff/payments/received?${qs.toString()}`);
+      all = r.items ?? rows;
+    } catch {
+      // Fall back to the current page on failure.
+    }
     const lines = [head.join(',')];
-    for (const r of visible) {
+    for (const r of all) {
       lines.push(
         [
           r.receivedAt.slice(0, 10),
@@ -403,7 +423,12 @@ export function PaymentsPage(): JSX.Element {
                 <Button size="sm" onClick={openCreate}>
                   + Record payment
                 </Button>
-                <Button size="sm" variant="ghost" onClick={exportCsv} disabled={rows.length === 0}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void exportCsv()}
+                  disabled={total === 0}
+                >
                   ⤓ CSV
                 </Button>
                 <Link to="/reports/payments-received">
@@ -455,13 +480,13 @@ export function PaymentsPage(): JSX.Element {
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void load();
+                    if (e.key === 'Enter') setAppliedQ(q);
                   }}
                   placeholder="client or invoice #"
                   style={{ ...inputStyle, width: 200 }}
                 />
               </Field>
-              <Button size="sm" variant="ghost" onClick={() => void load()}>
+              <Button size="sm" variant="ghost" onClick={() => setAppliedQ(q)}>
                 Apply
               </Button>
               <Button
@@ -469,6 +494,7 @@ export function PaymentsPage(): JSX.Element {
                 variant="ghost"
                 onClick={() => {
                   setQ('');
+                  setAppliedQ('');
                   setFrom(monthStart());
                   setTo(today());
                   view.clearFilters();
@@ -511,11 +537,12 @@ export function PaymentsPage(): JSX.Element {
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                         Client{' '}
                         <ColumnFilter
-                          ariaLabel="Filter / sort client"
-                          values={clientValues}
-                          selected={view.filterFor('client')}
+                          ariaLabel="Sort by client (filter via search)"
+                          values={[]}
+                          selected={new Set()}
+                          searchable={false}
                           sort={view.sortFor('client')}
-                          onApply={(sel, dir) => view.apply('client', sel, dir)}
+                          onApply={(_, dir) => view.apply('client', new Set(), dir)}
                         />
                       </span>
                     ) as unknown as string,
@@ -633,7 +660,7 @@ export function PaymentsPage(): JSX.Element {
                     ),
                   },
                 ]}
-                rows={paged}
+                rows={rows}
                 pagination={pagination}
                 rowKey={(r) => r.paymentId}
                 empty="No payments in this range."

@@ -158,36 +158,6 @@ const PAYMENT_METHOD_LABELS = {
 } as const;
 
 /** Derive a human payment channel for the Billing → Payments listing. */
-function deriveChannel(
-  provider: string,
-  pmKind: string | null,
-  receiptMethod: string | null,
-  storedChannel?: string | null,
-): string {
-  // An explicit channel stamped at collect time wins (e.g. in-person Terminal).
-  if (storedChannel === 'TERMINAL') return 'Terminal';
-  if (storedChannel) return storedChannel;
-  if (provider === 'CREDIT') return 'Credit';
-  if (provider === 'MANUAL') {
-    switch ((receiptMethod ?? '').toUpperCase()) {
-      case 'CHECK':
-        return 'Check';
-      case 'CASH':
-        return 'Cash';
-      case 'ACH_MANUAL':
-        return 'ACH (manual)';
-      default:
-        return 'Manual';
-    }
-  }
-  // Stripe (online or Terminal). We can't always distinguish card-present from
-  // online without a stored method type, so an unlabeled Stripe card reads as
-  // "Card"; ACH PMs read as "ACH".
-  if (pmKind === 'ACH') return 'ACH';
-  if (pmKind === 'CARD') return 'Card';
-  return 'Card';
-}
-
 function emptyReceivedSummary(): {
   count: number;
   grossCents: number;
@@ -1378,31 +1348,55 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       }
       const start = typeof req.query['start'] === 'string' ? req.query['start'] : null;
       const end = typeof req.query['end'] === 'string' ? req.query['end'] : null;
-      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
-      const channel = typeof req.query['channel'] === 'string' ? req.query['channel'] : null;
+      const csv = (v: unknown): string[] =>
+        typeof v === 'string'
+          ? v
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [];
+      const statuses = csv(req.query['status']);
+      const channels = csv(req.query['channel']);
+      const clientIds = csv(req.query['clientId']);
       const q = (req.query['q'] ?? '').toString().trim();
+
+      // deriveChannel() as SQL so channel can filter/sort/paginate in the DB.
+      const channelExpr = sql<string>`CASE
+        WHEN ${payments.channel} = 'TERMINAL' THEN 'Terminal'
+        WHEN ${payments.channel} IS NOT NULL AND ${payments.channel} <> '' THEN ${payments.channel}
+        WHEN ${payments.provider} = 'CREDIT' THEN 'Credit'
+        WHEN ${payments.provider} = 'MANUAL' THEN
+          CASE UPPER(COALESCE(${paymentReceipts.paymentMethod}, ''))
+            WHEN 'CHECK' THEN 'Check'
+            WHEN 'CASH' THEN 'Cash'
+            WHEN 'ACH_MANUAL' THEN 'ACH (manual)'
+            ELSE 'Manual'
+          END
+        WHEN ${paymentMethod.kind} = 'ACH' THEN 'ACH'
+        WHEN ${paymentMethod.kind} = 'CARD' THEN 'Card'
+        ELSE 'Card'
+      END`;
+      // Displayed status folds voided rows into a VOIDED pseudo-status (mirrors
+      // the UI), so the Status filter/sort match what the user sees.
+      const displayStatusExpr = sql<string>`CASE
+        WHEN ${payments.voidedAt} IS NOT NULL THEN 'VOIDED'
+        ELSE ${payments.status}::text
+      END`;
 
       const conds = [eq(invoices.firmId, session.firmId)];
       if (start && DATE_RE.test(start)) conds.push(gte(payments.receivedAt, new Date(start)));
       if (end && DATE_RE.test(end))
         conds.push(lte(payments.receivedAt, new Date(`${end}T23:59:59.999Z`)));
-      const STATUSES = [
-        'PENDING',
-        'SUCCEEDED',
-        'FAILED',
-        'REFUNDED',
-        'PARTIALLY_REFUNDED',
-      ] as const;
-      if (status && (STATUSES as readonly string[]).includes(status)) {
-        conds.push(eq(payments.status, status as (typeof STATUSES)[number]));
-      }
+      if (statuses.length > 0) conds.push(inArray(displayStatusExpr, statuses));
+      if (channels.length > 0) conds.push(inArray(channelExpr, channels));
+      if (clientIds.length > 0) conds.push(inArray(invoices.clientId, clientIds));
       if (q) {
         const like = `%${q}%`;
         const expr = or(ilike(clients.name, like), ilike(invoices.invoiceNumber, like));
         if (expr) conds.push(expr);
       }
 
-      const rows = await deps.db
+      const from = deps.db
         .select({
           paymentId: payments.id,
           receivedAt: payments.receivedAt,
@@ -1415,22 +1409,68 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           provider: payments.provider,
           status: payments.status,
           refundedAmountCents: payments.refundedAmountCents,
-          storedChannel: payments.channel,
           voidedAt: payments.voidedAt,
           receiptId: payments.receiptId,
-          pmKind: paymentMethod.kind,
-          receiptMethod: paymentReceipts.paymentMethod,
+          channel: channelExpr.as('channel'),
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
+        .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId));
+
+      // Sort. Default: most-recent first.
+      const sortCol = String(req.query['sort'] ?? 'date');
+      const sortDir = String(req.query['dir'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+      const sortMap: Record<string, ReturnType<typeof sql>> = {
+        date: sql`${payments.receivedAt}`,
+        client: sql`${clients.name}`,
+        channel: channelExpr,
+        amount: sql`${payments.amountCents}`,
+        status: displayStatusExpr,
+      };
+      const orderExpr = sortMap[sortCol] ?? sortMap['date']!;
+
+      // Pagination. `all=1` (CSV export) lifts the page window to a large cap.
+      const all = req.query['all'] === '1';
+      const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+      const pageSize = all
+        ? 100000
+        : Math.min(250, Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50));
+
+      const [totalRow] = await deps.db
+        .select({ total: sql<number>`COUNT(*)`.as('total') })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
+        .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+        .where(and(...conds));
+      const total = Number(totalRow?.total ?? 0);
+
+      // Summary over the WHOLE filtered set (not the page), computed in SQL so
+      // it's correct regardless of pagination.
+      const [sumRow] = await deps.db
+        .select({
+          grossCents: sql<number>`COALESCE(SUM(${payments.amountCents}) FILTER (WHERE ${payments.status} = 'SUCCEEDED' AND ${payments.voidedAt} IS NULL), 0)`,
+          feesCents: sql<number>`COALESCE(SUM(${payments.feeCents}) FILTER (WHERE ${payments.status} = 'SUCCEEDED' AND ${payments.voidedAt} IS NULL), 0)`,
+          refundsCents: sql<number>`COALESCE(SUM(${payments.refundedAmountCents}), 0)`,
+          pendingCount: sql<number>`COUNT(*) FILTER (WHERE ${payments.status} = 'PENDING' AND ${payments.voidedAt} IS NULL)`,
         })
         .from(payments)
         .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
         .innerJoin(clients, eq(clients.id, invoices.clientId))
         .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
         .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
-        .where(and(...conds))
-        .orderBy(desc(payments.receivedAt))
-        .limit(1000);
+        .where(and(...conds));
 
-      const withChannel = rows.map((r) => ({
+      const rows = await from
+        .where(and(...conds))
+        .orderBy(sortDir === 'asc' ? asc(orderExpr) : desc(orderExpr))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+
+      const items = rows.map((r) => ({
         paymentId: r.paymentId,
         receivedAt: r.receivedAt,
         clientId: r.clientId,
@@ -1443,7 +1483,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         provider: r.provider,
         status: r.status,
         refundedAmountCents: Number(r.refundedAmountCents ?? 0),
-        channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod, r.storedChannel),
+        channel: r.channel,
         receiptId: r.receiptId,
         voided: r.voidedAt != null,
         // Only manually-recorded payments are editable/voidable from the UI;
@@ -1451,25 +1491,23 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         canEdit: r.provider === 'MANUAL' && r.voidedAt == null,
         canVoid: (r.provider === 'MANUAL' || r.provider === 'CREDIT') && r.voidedAt == null,
       }));
-      const filtered = channel ? withChannel.filter((r) => r.channel === channel) : withChannel;
 
-      const summary = filtered.reduce(
-        (s, r) => {
-          if (r.status === 'SUCCEEDED' && !r.voided) {
-            s.grossCents += r.amountCents;
-            s.feesCents += r.feeCents;
-          }
-          s.refundsCents += r.refundedAmountCents;
-          if (r.status === 'PENDING' && !r.voided) s.pendingCount += 1;
-          return s;
-        },
-        { count: filtered.length, grossCents: 0, feesCents: 0, refundsCents: 0, pendingCount: 0 },
-      );
+      const grossCents = Number(sumRow?.grossCents ?? 0);
+      const feesCents = Number(sumRow?.feesCents ?? 0);
+      const refundsCents = Number(sumRow?.refundsCents ?? 0);
       res.json({
-        items: filtered,
+        rows: items,
+        items,
+        total,
+        page,
+        pageSize,
         summary: {
-          ...summary,
-          netCents: summary.grossCents - summary.feesCents - summary.refundsCents,
+          count: total,
+          grossCents,
+          feesCents,
+          refundsCents,
+          pendingCount: Number(sumRow?.pendingCount ?? 0),
+          netCents: grossCents - feesCents - refundsCents,
         },
       });
     },
