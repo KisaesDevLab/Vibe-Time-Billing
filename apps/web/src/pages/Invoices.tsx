@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
-import { selectRows, useColumnView } from '../lib/column-view';
-import { useClientPage } from '../lib/use-paged-list';
+import { useColumnView, viewToPagedQuery } from '../lib/column-view';
+import { usePagedList } from '../lib/use-paged-list';
 import { TableSearch } from '../components/TableSearch';
 
 interface Invoice {
@@ -56,112 +56,76 @@ function hoursSince(iso: string | null): number | null {
 }
 
 export function InvoicesPage(): JSX.Element {
-  const [items, setItems] = useState<Invoice[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Engagement-type names for the Type column filter — bounded taxonomy,
+  // sourced independently of the loaded page.
+  const [typeNames, setTypeNames] = useState<string[]>([]);
 
   // Server-side filters with no per-column equivalent.
   const [clientOwnerId, setClientOwnerId] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
-  // Per-column filter + sort (client-side over the loaded rows).
-  const view = useColumnView('vibe.invoices.view', { sortCol: 'issued', sortDir: 'desc' });
-
-  async function load(): Promise<void> {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (clientOwnerId) params.set('clientOwnerId', clientOwnerId);
-      if (startDate) params.set('startDate', startDate);
-      if (endDate) params.set('endDate', endDate);
-      // No `page`/`pageSize` → legacy non-paginated mode (returns up to
-      // 500 rows under `items`); filter + sort run client-side.
-      const r = await api<{ items: Invoice[] }>(`/api/staff/invoices?${params.toString()}`);
-      setItems(r.items ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientOwnerId, startDate, endDate]);
+  // Filter/sort/search state (sessionStorage-persisted); filtering, sorting,
+  // and paging run SERVER-side. `.v2` drops stale pre-migration filters (the
+  // Type filter now holds engagement-type names; Client is search-only).
+  const view = useColumnView('vibe.invoices.view.v2', { sortCol: 'issued', sortDir: 'desc' });
+  const query = useMemo(
+    () => ({
+      ...viewToPagedQuery(view, {
+        sortMap: {
+          invoice: 'invoiceNumber',
+          client: 'clientName',
+          type: 'engagementTypes',
+          issued: 'issueDate',
+          due: 'dueDate',
+          total: 'total',
+          paid: 'paid',
+          status: 'status',
+        },
+        filterMap: { status: 'status', type: 'engagementType' },
+      }),
+      clientOwnerId: clientOwnerId || undefined,
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+    }),
+    [view, clientOwnerId, startDate, endDate],
+  );
+  const list = usePagedList<Invoice>('/api/staff/invoices', { query });
+  const loading = list.loading;
 
   useEffect(() => {
     void (async () => {
-      try {
-        const u = await api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({
-          users: [],
-        }));
-        setUsers(u.users ?? []);
-      } catch {
-        // Non-fatal.
-      }
+      const [u, t] = await Promise.all([
+        api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
+        api<{ items: Array<{ id: string; name: string }> }>(
+          '/api/staff/taxonomy/engagement-types',
+        ).catch(() => ({ items: [] })),
+      ]);
+      setUsers(u.users ?? []);
+      setTypeNames((t.items ?? []).map((x) => x.name));
     })();
   }, []);
 
   async function send(id: string): Promise<void> {
     await api(`/api/staff/invoices/${id}/send`, { method: 'POST' });
-    await load();
+    list.reload();
   }
 
   async function remind(id: string): Promise<void> {
     try {
       await api(`/api/staff/invoices/${id}/remind`, { method: 'POST' });
-      await load();
+      list.reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'reminder_failed');
     }
   }
 
-  // Distinct client values for the Client column dropdown.
-  const clientValues = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of items) map.set(i.clientId, i.clientName);
-    return Array.from(map.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [items]);
-
-  // Distinct engagement-type strings for the Type column dropdown.
-  const typeValues = useMemo(() => {
-    const set = new Set<string>();
-    for (const i of items) if (i.engagementTypes) set.add(i.engagementTypes);
-    return Array.from(set)
-      .sort((a, b) => a.localeCompare(b))
-      .map((v) => ({ value: v, label: v }));
-  }, [items]);
-
-  const visible = useMemo(
-    () =>
-      selectRows(items, view, {
-        searchText: (i) =>
-          `${i.invoiceNumber} ${i.clientName} ${i.engagementTypes ?? ''} ${i.status}`,
-        filters: {
-          client: (i) => i.clientId,
-          type: (i) => i.engagementTypes ?? '',
-          status: (i) => i.status,
-        },
-        sortValues: {
-          invoice: (i) => i.invoiceNumber,
-          client: (i) => i.clientName,
-          type: (i) => i.engagementTypes ?? '',
-          issued: (i) => i.issueDate,
-          due: (i) => i.dueDate ?? '',
-          total: (i) => i.totalCents,
-          paid: (i) => i.paidCents,
-          status: (i) => i.status,
-        },
-      }),
-    [items, view],
+  const typeValues = useMemo(
+    () => [...typeNames].sort((a, b) => a.localeCompare(b)).map((v) => ({ value: v, label: v })),
+    [typeNames],
   );
-
-  const { paged, pagination } = useClientPage(visible);
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
@@ -174,11 +138,11 @@ export function InvoicesPage(): JSX.Element {
         title={
           <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <span>Invoices</span>
-            {items.length > 0 && (
+            {list.total > 0 && (
               <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
-                {visible.length === items.length
-                  ? `${items.length} invoice${items.length === 1 ? '' : 's'}`
-                  : `${visible.length} of ${items.length}`}
+                {view.anyFilterActive
+                  ? `${list.total} match${list.total === 1 ? '' : 'es'}`
+                  : `${list.total} invoice${list.total === 1 ? '' : 's'}`}
               </span>
             )}
           </span>
@@ -265,11 +229,12 @@ export function InvoicesPage(): JSX.Element {
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Client{' '}
                     <ColumnFilter
-                      ariaLabel="Filter / sort client"
-                      values={clientValues}
-                      selected={view.filterFor('client')}
+                      ariaLabel="Sort by client (filter via search)"
+                      values={[]}
+                      selected={new Set()}
+                      searchable={false}
                       sort={view.sortFor('client')}
-                      onApply={(sel, dir) => view.apply('client', sel, dir)}
+                      onApply={(_, dir) => view.apply('client', new Set(), dir)}
                     />
                   </span>
                 ) as unknown as string,
@@ -436,8 +401,8 @@ export function InvoicesPage(): JSX.Element {
                 },
               },
             ]}
-            rows={paged}
-            pagination={pagination}
+            rows={list.rows}
+            pagination={list.pagination}
             rowKey={(i) => i.id}
             empty="No invoices match the current filters."
           />

@@ -328,7 +328,18 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       return;
     }
     const q = String(req.query['q'] ?? '').trim();
-    const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+    const csv = (v: unknown): string[] =>
+      typeof v === 'string'
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+    const statuses = csv(req.query['status']).filter(
+      (s): s is 'DRAFT' | 'SENT' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'VOIDED' =>
+        ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'VOIDED'].includes(s),
+    );
+    const engagementTypeNames = csv(req.query['engagementType']);
     const clientId = uuidQueryParam(req.query['clientId']);
     if (clientId === 'invalid') {
       res.status(400).json({ error: 'invalid_client_id' });
@@ -353,15 +364,20 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       );
       if (search) conds.push(search);
     }
-    if (
-      status === 'DRAFT' ||
-      status === 'SENT' ||
-      status === 'PARTIALLY_PAID' ||
-      status === 'PAID' ||
-      status === 'OVERDUE' ||
-      status === 'VOIDED'
-    ) {
-      conds.push(eq(invoices.status, status));
+    if (statuses.length > 0) conds.push(inArray(invoices.status, statuses));
+    if (engagementTypeNames.length > 0) {
+      // Invoices billing ANY of the named engagement types — via the primary
+      // engagement or a line-item-tagged engagement. Mirrors the projection.
+      conds.push(sql`EXISTS (
+        SELECT 1 FROM engagement e
+        JOIN engagement_type et ON et.id = e.engagement_type_id
+        WHERE (e.id = ${invoices.primaryEngagementId}
+           OR e.id IN (
+             SELECT ili.engagement_id FROM invoice_line_item ili
+             WHERE ili.invoice_id = ${invoices.id} AND ili.engagement_id IS NOT NULL
+           ))
+          AND et.name = ANY(${engagementTypeNames})
+      )`);
     }
     if (clientId) conds.push(eq(invoices.clientId, clientId));
     if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
@@ -387,6 +403,16 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       total: sql`${invoices.totalCents}`,
       paid: sql`${invoices.paidCents}`,
       status: sql`${invoices.status}`,
+      engagementTypes: sql`(
+        SELECT string_agg(DISTINCT et.name, ', ')
+        FROM engagement e
+        JOIN engagement_type et ON et.id = e.engagement_type_id
+        WHERE e.id = ${invoices.primaryEngagementId}
+           OR e.id IN (
+             SELECT ili.engagement_id FROM invoice_line_item ili
+             WHERE ili.invoice_id = ${invoices.id} AND ili.engagement_id IS NOT NULL
+           )
+      )`,
     };
     const orderExpr = sortMap[sortCol] ?? sortMap['issueDate']!;
 
