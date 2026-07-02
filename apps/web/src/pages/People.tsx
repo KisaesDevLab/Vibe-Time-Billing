@@ -11,7 +11,7 @@
 // TableSearch (see apps/web/src/lib/column-view.ts). Backed by
 // GET /api/staff/people.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Button, Card, ColumnFilter, Pill, Table, tokens } from '@vibe/ui';
@@ -19,8 +19,8 @@ import { Button, Card, ColumnFilter, Pill, Table, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
 import { TableSearch } from '../components/TableSearch';
-import { selectRows, useColumnView } from '../lib/column-view';
-import { useClientPage } from '../lib/use-paged-list';
+import { useColumnView, viewToPagedQuery } from '../lib/column-view';
+import { usePagedList } from '../lib/use-paged-list';
 
 interface PersonRow {
   key: string;
@@ -46,13 +46,19 @@ const KIND_VALUES = [
 
 export function PeopleDirectoryPage(): JSX.Element {
   const navigate = useNavigate();
-  const [rows, setRows] = useState<PersonRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [viewAsBusy, setViewAsBusy] = useState<string | null>(null);
   // Mirrors the impersonate endpoint's gate (engagement:read).
   const canViewAs = usePermission('engagement:read');
 
-  const view = useColumnView('vibe.people.view', { sortCol: 'name', sortDir: 'asc' });
+  // Filter/sort/search state (sessionStorage-persisted); filtering, sorting,
+  // and paging run SERVER-side. `.v2` drops stale pre-migration state.
+  const view = useColumnView('vibe.people.view.v2', { sortCol: 'name', sortDir: 'asc' });
+  const query = useMemo(
+    () => viewToPagedQuery(view, { filterMap: { portal: 'portal', kind: 'kind' } }),
+    [view],
+  );
+  const list = usePagedList<PersonRow>('/api/staff/people', { query });
+  const loading = list.loading;
 
   // The list row doesn't carry access ids, so resolve them on demand:
   // exactly one ACTIVE access → open the portal directly; several →
@@ -82,50 +88,17 @@ export function PeopleDirectoryPage(): JSX.Element {
     }
   }
 
-  useEffect(() => {
-    void (async () => {
-      setLoading(true);
-      try {
-        const r = await api<{ rows: PersonRow[] }>('/api/staff/people?pageSize=1000');
-        setRows(r.rows ?? []);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  const visible = useMemo(
-    () =>
-      selectRows(rows, view, {
-        searchText: (p) => `${p.fullName} ${p.email ?? ''} ${p.phone ?? ''} ${p.mobile ?? ''}`,
-        filters: {
-          portal: (p) => (p.hasPortalAccess ? 'yes' : 'no'),
-          kind: (p) => p.kind,
-        },
-        sortValues: {
-          name: (p) => p.fullName,
-          email: (p) => p.email ?? '',
-          phone: (p) => p.phone ?? '',
-          clients: (p) => p.clientCount,
-        },
-        tieBreak: (a, b) => a.fullName.localeCompare(b.fullName),
-      }),
-    [rows, view],
-  );
-
-  const { paged, pagination } = useClientPage(visible);
-
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <Card
         title={
           <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <span>People</span>
-            {rows.length > 0 && (
+            {list.total > 0 && (
               <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
-                {visible.length === rows.length
-                  ? `${rows.length} ${rows.length === 1 ? 'person' : 'people'}`
-                  : `${visible.length} of ${rows.length}`}
+                {view.anyFilterActive
+                  ? `${list.total} match${list.total === 1 ? '' : 'es'}`
+                  : `${list.total} ${list.total === 1 ? 'person' : 'people'}`}
               </span>
             )}
           </span>
@@ -289,8 +262,8 @@ export function PeopleDirectoryPage(): JSX.Element {
                   p.kind === 'portal_identity' ? <Pill tone="warning">Portal-only</Pill> : null,
               },
             ]}
-            rows={paged}
-            pagination={pagination}
+            rows={list.rows}
+            pagination={list.pagination}
             rowKey={(p) => p.key}
             empty="No people match the current filters."
           />
