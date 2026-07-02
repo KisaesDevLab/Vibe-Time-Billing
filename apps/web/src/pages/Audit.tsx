@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useClientPage } from '../lib/use-paged-list';
 
 interface AuditRow {
   id: string;
@@ -96,6 +97,8 @@ export function AuditPage(): JSX.Element {
       setLoading(false);
     }
   }
+
+  const { paged, pagination } = useClientPage(items);
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
@@ -204,7 +207,8 @@ export function AuditPage(): JSX.Element {
             },
             { key: 'ip', header: 'IP', render: (r) => r.ip ?? '—' },
           ]}
-          rows={items}
+          rows={paged}
+          pagination={pagination}
           rowKey={(r) => r.id}
           empty="No events match these filters."
         />
