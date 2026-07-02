@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Button, Card, Pill, Stat, tokens } from '@vibe/ui';
+import { Button, Card, Pill, Stat, Table, type TableColumn, tokens } from '@vibe/ui';
+import { useClientPage } from '../../lib/use-paged-list';
 
 import { api } from '../../api-client';
 import { formatCents } from '../../lib/money';
@@ -155,6 +156,60 @@ export function PaymentsReceivedReportPage(): JSX.Element {
   }
 
   const totalCents = useMemo(() => data?.summary.totalCents ?? 0, [data]);
+
+  const { paged, pagination } = useClientPage(data?.rows ?? []);
+
+  const detailColumns: TableColumn<RowResp>[] = [
+    {
+      key: 'date',
+      header: (
+        <SortableHeader label="Date" k="date" sortBy={sortBy} dir={dir} onSort={toggleSort} />
+      ),
+      render: (r) => new Date(r.paymentDate).toLocaleDateString(),
+    },
+    {
+      key: 'client',
+      header: (
+        <SortableHeader label="Client" k="client" sortBy={sortBy} dir={dir} onSort={toggleSort} />
+      ),
+      render: (r) => (
+        <Link
+          to={`/clients/${r.clientId}`}
+          style={{ color: tokens.color.accent, textDecoration: 'none' }}
+        >
+          {r.clientName}
+        </Link>
+      ),
+    },
+    {
+      key: 'office',
+      header: (
+        <SortableHeader label="Office" k="office" sortBy={sortBy} dir={dir} onSort={toggleSort} />
+      ),
+      render: (r) => r.officeName ?? '—',
+    },
+    {
+      key: 'method',
+      header: (
+        <SortableHeader label="Method" k="method" sortBy={sortBy} dir={dir} onSort={toggleSort} />
+      ),
+      render: (r) => r.paymentMethod,
+    },
+    { key: 'reference', header: 'Reference', render: (r) => r.reference ?? '—' },
+    {
+      key: 'amount',
+      align: 'right',
+      header: (
+        <SortableHeader label="Amount" k="amount" sortBy={sortBy} dir={dir} onSort={toggleSort} />
+      ),
+      render: (r) => formatCents(r.totalCents),
+    },
+    {
+      key: 'mode',
+      header: 'Mode',
+      render: (r) => <Pill tone={r.mode === 'CHARGE' ? 'accent' : 'neutral'}>{r.mode}</Pill>,
+    },
+  ];
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1280 }}>
@@ -330,74 +385,12 @@ export function PaymentsReceivedReportPage(): JSX.Element {
             No payments received in this window.
           </p>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
-                <SortableHeader
-                  label="Date"
-                  k="date"
-                  sortBy={sortBy}
-                  dir={dir}
-                  onSort={toggleSort}
-                />
-                <SortableHeader
-                  label="Client"
-                  k="client"
-                  sortBy={sortBy}
-                  dir={dir}
-                  onSort={toggleSort}
-                />
-                <SortableHeader
-                  label="Office"
-                  k="office"
-                  sortBy={sortBy}
-                  dir={dir}
-                  onSort={toggleSort}
-                />
-                <SortableHeader
-                  label="Method"
-                  k="method"
-                  sortBy={sortBy}
-                  dir={dir}
-                  onSort={toggleSort}
-                />
-                <th style={th()}>Reference</th>
-                <SortableHeader
-                  label="Amount"
-                  k="amount"
-                  sortBy={sortBy}
-                  dir={dir}
-                  onSort={toggleSort}
-                  align="right"
-                />
-                <th style={th()}>Mode</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.rows.map((r) => (
-                <tr key={r.id} style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
-                  <td style={td()}>{new Date(r.paymentDate).toLocaleDateString()}</td>
-                  <td style={td()}>
-                    <Link
-                      to={`/clients/${r.clientId}`}
-                      style={{ color: tokens.color.accent, textDecoration: 'none' }}
-                    >
-                      {r.clientName}
-                    </Link>
-                  </td>
-                  <td style={td()}>{r.officeName ?? '—'}</td>
-                  <td style={td()}>{r.paymentMethod}</td>
-                  <td style={td()}>{r.reference ?? '—'}</td>
-                  <td style={{ ...td(), textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatCents(r.totalCents)}
-                  </td>
-                  <td style={td()}>
-                    <Pill tone={r.mode === 'CHARGE' ? 'accent' : 'neutral'}>{r.mode}</Pill>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table<RowResp>
+            columns={detailColumns}
+            rows={paged}
+            rowKey={(r) => r.id}
+            pagination={pagination}
+          />
         )}
       </Card>
     </div>
@@ -450,55 +443,37 @@ function SortableHeader({
   sortBy,
   dir,
   onSort,
-  align = 'left',
 }: {
   label: string;
   k: SortKey;
   sortBy: SortKey;
   dir: SortDir;
   onSort: (k: SortKey) => void;
-  align?: 'left' | 'right';
 }): JSX.Element {
   const active = sortBy === k;
   return (
-    <th style={th(align)}>
-      <button
-        type="button"
-        onClick={() => onSort(k)}
-        style={{
-          background: 'none',
-          border: 'none',
-          color: active ? tokens.color.accent : tokens.color.textMuted,
-          font: 'inherit',
-          fontWeight: 600,
-          fontSize: 11,
-          textTransform: 'uppercase',
-          letterSpacing: 0.4,
-          cursor: 'pointer',
-          padding: 0,
-        }}
-      >
-        {label}
-        {active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
-      </button>
-    </th>
+    <button
+      type="button"
+      onClick={() => onSort(k)}
+      style={{
+        background: 'none',
+        border: 'none',
+        color: active ? tokens.color.accent : tokens.color.textMuted,
+        font: 'inherit',
+        fontWeight: 600,
+        fontSize: 11,
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+        cursor: 'pointer',
+        padding: 0,
+      }}
+    >
+      {label}
+      {active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
+    </button>
   );
 }
 
-function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
-  return {
-    textAlign: align,
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    color: tokens.color.textMuted,
-    padding: '6px 8px',
-  };
-}
-function td(): React.CSSProperties {
-  return { padding: '6px 8px', verticalAlign: 'middle' };
-}
 function lblStyle(): React.CSSProperties {
   return { fontSize: 11, color: tokens.color.textMuted };
 }
