@@ -29,7 +29,7 @@ import { emitAudit } from '../auth/audit';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
-import { recomputeInvoicePaidReturnsFullyPaid } from '../payments/recompute';
+import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from '../payments/recompute';
 import { materializeReceiptIfPending } from '../payments/settle-receipt';
 import {
   promoteEscrowFilesForInvoice,
@@ -88,6 +88,10 @@ interface StripeEvent {
     object: {
       id: string;
       amount?: number;
+      // Cumulative amount refunded on the Charge (cents). Present on
+      // charge.refunded; this — NOT `amount` (the original charge total) —
+      // is the value to record as the refund.
+      amount_refunded?: number;
       // Checkout Session total (cents). Present on checkout.session.* events.
       amount_total?: number;
       payment_intent?: string;
@@ -527,32 +531,57 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         .where(eq(payments.providerChargeId, chargeId))
         .limit(1);
       if (!pay) return;
-      const refundedAmount = event.data.object.amount ?? pay.amountCents;
-      await deps.db
-        .update(payments)
-        .set({
-          status: 'REFUNDED',
-          refundedAt: new Date(),
-          refundedAmountCents: refundedAmount,
-        })
-        .where(eq(payments.id, pay.id));
+      // Idempotency: this one `case` fires for charge.refunded AND the two
+      // dispute events for the same charge, and Stripe re-delivers each.
+      // Skip once the payment is already in a refunded state so redeliveries
+      // never re-run the recompute or re-mint the excess credit.
+      if (pay.status === 'REFUNDED' || pay.status === 'PARTIALLY_REFUNDED') return;
+      // Cumulative refunded amount from the Charge (NOT `amount`, the
+      // original total). Falls back to the full payment for dispute events
+      // that don't carry amount_refunded (a dispute reverses the whole charge).
+      const refundedAmount = Number(event.data.object.amount_refunded ?? pay.amountCents);
+      const fullyRefunded = refundedAmount >= Number(pay.amountCents);
 
-      // 0056 — REFUND_EXCESS auto-credit. If the refund is greater than
-      // what was needed to bring the invoice back to a non-negative
-      // open balance (i.e., other payments had already covered some of
-      // this invoice), the surplus becomes a credit on the client's
-      // account so the firm doesn't owe untracked money.
-      const [inv] = await deps.db
-        .select({
-          id: invoices.id,
-          firmId: invoices.firmId,
-          clientId: invoices.clientId,
-          totalCents: invoices.totalCents,
-          paidCents: invoices.paidCents,
-        })
-        .from(invoices)
-        .where(eq(invoices.id, pay.invoiceId))
-        .limit(1);
+      // Reopen the invoice under a ROW LOCK, recomputing paid_cents from the
+      // net-of-refunds payment set (absolute value, lost-update-safe). An
+      // atomic status claim (WHERE status is a non-refunded state) makes the
+      // side effects below run exactly once across redeliveries.
+      const applied = await deps.db.transaction(async (tx) => {
+        const [lockedInv] = await tx
+          .select({
+            id: invoices.id,
+            firmId: invoices.firmId,
+            clientId: invoices.clientId,
+            totalCents: invoices.totalCents,
+            paidCents: invoices.paidCents,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, pay.invoiceId))
+          .for('update')
+          .limit(1);
+        const claim = await tx
+          .update(payments)
+          .set({
+            status: fullyRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+            refundedAt: new Date(),
+            refundedAmountCents: refundedAmount,
+          })
+          .where(
+            and(
+              eq(payments.id, pay.id),
+              ne(payments.status, 'REFUNDED'),
+              ne(payments.status, 'PARTIALLY_REFUNDED'),
+            ),
+          )
+          .returning({ id: payments.id });
+        if (claim.length === 0) return null; // concurrent delivery won the claim
+        // paid_cents captured BEFORE recompute drives the excess calc below.
+        const priorPaid = lockedInv ? Number(lockedInv.paidCents) : 0;
+        if (lockedInv) await recomputeInvoicePaid(tx, lockedInv.id);
+        return { inv: lockedInv, priorPaid };
+      });
+      if (!applied) return; // duplicate delivery — already refunded
+      const inv = applied.inv;
       if (inv) {
         // Stage 3 — revert any escrow files previously auto-promoted by
         // this invoice's payment. Best-effort.
@@ -564,38 +593,55 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         } catch (err) {
           logger.error({ err, invoiceId: inv.id }, 'escrow revert failed');
         }
-        // After this refund clears, the invoice's effective recoverable
-        // need = totalCents - (otherPaid). If the refund > what this
-        // payment had actually applied to the invoice's needed amount,
-        // the excess is credit. Simple definition: if (paidCents - refundedAmount) < 0,
-        // those negative cents are the credit.
-        const postRefundPaid = Number(inv.paidCents) - Number(refundedAmount);
+        // 0056 — REFUND_EXCESS auto-credit. If we refunded more than this
+        // invoice's paid balance needed (other payments had already covered
+        // part of it), the surplus becomes client credit. Based on the
+        // pre-refund paid_cents captured under the lock.
+        const postRefundPaid = applied.priorPaid - refundedAmount;
         const excess = postRefundPaid < 0 ? -postRefundPaid : 0;
         if (excess > 0) {
           try {
-            const today = new Date().toISOString().slice(0, 10);
-            await deps.db.insert(creditMemos).values({
-              firmId: inv.firmId,
-              clientId: inv.clientId,
-              issuedDate: today,
-              originalAmountCents: excess,
-              source: 'REFUND_EXCESS',
-              reference: `Refund excess from payment ${pay.id}`,
-              status: 'OPEN',
-              sourcePaymentId: pay.id,
-            });
-            await emitAudit(deps.db, {
-              action: 'PAYMENT',
-              entityType: 'credit_memo',
-              after: {
-                kind: 'credit_auto_refund_excess',
+            // Dedup: one REFUND_EXCESS memo per source payment. (The atomic
+            // claim above already gates this; this is defense in depth in
+            // case of any pre-existing memo.)
+            const [existing] = await deps.db
+              .select({ id: creditMemos.id })
+              .from(creditMemos)
+              .where(
+                and(
+                  eq(creditMemos.sourcePaymentId, pay.id),
+                  eq(creditMemos.source, 'REFUND_EXCESS'),
+                ),
+              )
+              .limit(1);
+            if (!existing) {
+              const today = new Date().toISOString().slice(0, 10);
+              await deps.db.insert(creditMemos).values({
+                firmId: inv.firmId,
                 clientId: inv.clientId,
-                amountCents: excess,
+                issuedDate: today,
+                originalAmountCents: excess,
+                source: 'REFUND_EXCESS',
+                reference: `Refund excess from payment ${pay.id}`,
+                status: 'OPEN',
                 sourcePaymentId: pay.id,
-              },
-            }).catch((err: unknown) =>
-              logger.error({ err, payId: pay.id }, 'audit emit failed (credit_auto_refund_excess)'),
-            );
+              });
+              await emitAudit(deps.db, {
+                action: 'PAYMENT',
+                entityType: 'credit_memo',
+                after: {
+                  kind: 'credit_auto_refund_excess',
+                  clientId: inv.clientId,
+                  amountCents: excess,
+                  sourcePaymentId: pay.id,
+                },
+              }).catch((err: unknown) =>
+                logger.error(
+                  { err, payId: pay.id },
+                  'audit emit failed (credit_auto_refund_excess)',
+                ),
+              );
+            }
           } catch (err) {
             logger.warn({ err, payId: pay.id }, 'refund-excess credit creation failed');
           }

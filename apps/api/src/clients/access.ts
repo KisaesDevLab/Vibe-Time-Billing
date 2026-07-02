@@ -43,13 +43,18 @@ export async function getBlockedClientIds(
   firmId: string,
 ): Promise<string[]> {
   if (!deps.db) return [];
-  if (await userIsAdmin(deps, appUserId)) return [];
 
   const restricted = await deps.db
     .select({ id: clients.id, partnerInChargeId: clients.partnerInChargeId })
     .from(clients)
     .where(and(eq(clients.firmId, firmId), eq(clients.restricted, true)));
   if (restricted.length === 0) return [];
+
+  // A missing user id (e.g. an MCP token with no creator) has no special
+  // access — block every restricted client. Guarded here so the empty
+  // string never reaches a uuid-typed WHERE (which would raise 22P02).
+  if (!appUserId) return restricted.map((c) => c.id);
+  if (await userIsAdmin(deps, appUserId)) return [];
 
   const grants = await deps.db
     .select({ clientId: clientAccessGrants.clientId })

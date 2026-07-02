@@ -1154,12 +1154,20 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       } else if (mode === 'full-detail') {
         // Read time entries linked through batch_entry rows.
         const { sql: drz } = await import('drizzle-orm');
+        // Scope to the time entries in the batch(es) that produced THIS
+        // invoice — resolved via invoice_line_item.source_ref (billing_batch)
+        // — NOT every batch on the engagement (which would leak entries from
+        // other periods' invoices onto this one).
         const detail = await deps.db.execute(drz`
           SELECT te.entry_date::text AS d, te.hours, te.description, te.standard_amount_cents AS amt
           FROM time_entry te
           JOIN billing_batch_entry bbe ON bbe.time_entry_id = te.id
-          JOIN billing_batch bb ON bb.id = bbe.billing_batch_id
-          WHERE bb.engagement_id = ${inv.primaryEngagementId}
+          WHERE bbe.billing_batch_id IN (
+            SELECT ili.source_ref_id FROM invoice_line_item ili
+            WHERE ili.invoice_id = ${inv.id}
+              AND ili.source_ref_type = 'billing_batch'
+              AND ili.source_ref_id IS NOT NULL
+          )
           ORDER BY te.entry_date
           LIMIT 500
         `);

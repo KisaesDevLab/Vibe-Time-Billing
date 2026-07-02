@@ -29,15 +29,30 @@ export async function recomputeInvoicePaidReturnsFullyPaid(
   tx: Database,
   invoiceId: string,
 ): Promise<boolean> {
+  // Serialize concurrent recomputes on the same invoice: take the invoice
+  // ROW LOCK BEFORE reading the payment sum, so a void/edit/reapply that
+  // races a webhook settlement can't compute paid_cents from a stale
+  // snapshot and clobber the other's write (lost update). Re-entrant when
+  // the caller already holds the lock (e.g. the webhook succeeded path).
+  await tx
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .for('update')
+    .limit(1);
+  // Net-of-refunds paid amount: a payment contributes (amount − refunded).
+  // SUCCEEDED with no refund → full amount; PARTIALLY_REFUNDED → the
+  // un-refunded remainder; REFUNDED → 0 (amount − amount). This is what
+  // reopens an invoice when a refund/ACH-return/dispute posts.
   const [agg] = await tx
     .select({
-      paidCents: sql<number>`COALESCE(SUM(${payments.amountCents}), 0)::bigint`,
+      paidCents: sql<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)::bigint`,
     })
     .from(payments)
     .where(
       and(
         eq(payments.invoiceId, invoiceId),
-        eq(payments.status, 'SUCCEEDED'),
+        sql`${payments.status} IN ('SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED')`,
         sql`${payments.voidedAt} IS NULL`,
       ),
     );

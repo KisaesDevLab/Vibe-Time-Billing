@@ -7,7 +7,7 @@
 // surface (Time ▸ Expenses tab); the billing batch pulls them in and
 // applies INCLUDE / DEFER / WRITE_OFF the same way it does time.
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { and, desc, eq, gte, isNull, lte, notInArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
@@ -16,7 +16,7 @@ import { clients, engagementExpenses, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { getBlockedClientIdsCached } from '../clients/access';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 
 export interface ExpenseRoutesDeps extends RbacDeps {
@@ -49,6 +49,35 @@ function clientIp(req: Request): string {
 export function createExpensesRouter(deps: ExpenseRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // 0165 — enforce client-access restriction on the per-expense mutations
+  // (patch/delete via :id). The list filters blocked clients itself; create
+  // is guarded inline (it carries the engagement in the body, not :id).
+  router.param('id', (req: Request, res: Response, next: NextFunction, id: string) => {
+    if (!deps.db || !req.staffSession) {
+      next();
+      return;
+    }
+    void (async () => {
+      const [row] = await deps
+        .db!.select({ clientId: engagements.clientId })
+        .from(engagementExpenses)
+        .innerJoin(engagements, eq(engagements.id, engagementExpenses.engagementId))
+        .where(
+          and(
+            eq(engagementExpenses.id, id),
+            eq(engagementExpenses.firmId, req.staffSession!.firmId),
+          ),
+        )
+        .limit(1);
+      if (!row) {
+        next();
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, row.clientId)) return;
+      next();
+    })().catch(next);
+  });
 
   // ---- List ----------------------------------------------------------
   router.get(
@@ -134,6 +163,8 @@ export function createExpensesRouter(deps: ExpenseRoutesDeps): Router {
       res.status(404).json({ error: 'engagement_not_found' });
       return;
     }
+    // 0165 — a staffer restricted from this client can't add expenses to it.
+    if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
     const [row] = await deps.db
       .insert(engagementExpenses)
       .values({

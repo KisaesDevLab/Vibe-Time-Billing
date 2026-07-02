@@ -20,7 +20,7 @@
 //   POST   /suggestions/:id/accept   accept (creates time entry)
 //   POST   /suggestions/:id/dismiss  dismiss
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 
@@ -31,6 +31,7 @@ import {
   clientRequestTimeEntryLinks,
   clientRequests,
   clients,
+  engagementAssignments,
   engagements,
   firmConfig,
   requestTemplateItems,
@@ -43,7 +44,7 @@ import { ReminderScheduleSchema } from '../appointments/reminders-validation';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { getBlockedClientIdsCached } from '../clients/access';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -87,6 +88,15 @@ const CreateSchema = z.object({
   items: z.array(ItemInputSchema).max(100).optional(),
 });
 
+const REQUEST_STATUSES = [
+  'OPEN',
+  'PENDING',
+  'NEEDS_INFO',
+  'FULFILLED',
+  'DISMISSED',
+  'EXPIRED',
+] as const;
+
 const PatchSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   body: z.string().max(5000).optional(),
@@ -94,6 +104,7 @@ const PatchSchema = z.object({
   dueDate: z.string().regex(DATE_RE).nullable().optional(),
   engagementId: z.string().uuid().optional(),
   priority: z.enum(PRIORITIES).optional(),
+  status: z.enum(REQUEST_STATUSES).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
 });
@@ -162,6 +173,34 @@ async function getSuggestionExpirationDays(db: Database, firmId: string): Promis
 export function createRequestRouter(deps: RequestRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // 0165 — enforce client-access restriction on every single-request route
+  // (detail + all mutations: activate, needs-info, fulfill, items, delete).
+  // The list endpoint filters blocked clients itself; this closes the
+  // detail/mutation gap uniformly via the shared `:id` param. Runs after
+  // the UUID guard (which next('route')s non-UUIDs), so `id` is a valid
+  // UUID here. A request that doesn't resolve falls through to the
+  // handler's own 404.
+  router.param('id', (req: Request, res: Response, next: NextFunction, id: string) => {
+    if (!deps.db || !req.staffSession) {
+      next();
+      return;
+    }
+    void (async () => {
+      const [row] = await deps
+        .db!.select({ clientId: engagements.clientId })
+        .from(clientRequests)
+        .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+        .where(and(eq(clientRequests.id, id), eq(clientRequests.firmId, req.staffSession!.firmId)))
+        .limit(1);
+      if (!row) {
+        next();
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, row.clientId)) return;
+      next();
+    })().catch(next);
+  });
 
   router.get('/', requirePermission(deps, 'requests:read'), async (req: Request, res: Response) => {
     const session = req.staffSession!;
@@ -359,17 +398,38 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         res.json({ count: 0 });
         return;
       }
+      // 0165 — exclude requests on clients this staffer is restricted from,
+      // so the nav badge never counts hidden clients' responses.
+      const countConds = [
+        eq(clientRequests.firmId, session.firmId),
+        sql`${clientRequests.clientReplyText} IS NOT NULL`,
+        isNull(clientRequests.clientReplySeenAt),
+        inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
+      ];
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) {
+        const blockedEngs = await deps.db
+          .select({ id: engagements.id })
+          .from(engagements)
+          .where(inArray(engagements.clientId, blockedClientIds));
+        if (blockedEngs.length) {
+          countConds.push(
+            notInArray(
+              clientRequests.engagementId,
+              blockedEngs.map((e) => e.id),
+            ),
+          );
+        }
+      }
       const [row] = await deps.db
         .select({ c: sql<number>`COUNT(*)::int` })
         .from(clientRequests)
-        .where(
-          and(
-            eq(clientRequests.firmId, session.firmId),
-            sql`${clientRequests.clientReplyText} IS NOT NULL`,
-            isNull(clientRequests.clientReplySeenAt),
-            inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
-          ),
-        );
+        .where(and(...countConds));
       res.json({ count: row?.c ?? 0 });
     },
   );
@@ -595,6 +655,18 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
           res.status(400).json({ error: 'reminder_required_for_drop_off' });
           return;
         }
+        // Default the assignee to the engagement's first-listed assignee
+        // (earliest assignedAt — the order the engagement detail shows them)
+        // when the caller didn't set one explicitly / via template.
+        if (!resolvedAssignee) {
+          const [firstAssignee] = await deps.db
+            .select({ appUserId: engagementAssignments.appUserId })
+            .from(engagementAssignments)
+            .where(eq(engagementAssignments.engagementId, parsed.data.engagementId))
+            .orderBy(asc(engagementAssignments.assignedAt))
+            .limit(1);
+          if (firstAssignee) resolvedAssignee = firstAssignee.appUserId;
+        }
       }
 
       const newId = await deps.db.transaction(async (tx) => {
@@ -678,6 +750,23 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
           return;
         }
       }
+      // Load the current row for firm-scope + PENDING activation math.
+      const [existing] = await deps.db
+        .select({
+          id: clientRequests.id,
+          status: clientRequests.status,
+          dueDate: clientRequests.dueDate,
+          reminderDaysBefore: clientRequests.reminderDaysBefore,
+        })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (parsed.data.title !== undefined) patch['title'] = parsed.data.title;
       if (parsed.data.body !== undefined) patch['body'] = parsed.data.body;
@@ -690,6 +779,36 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       if (parsed.data.tags !== undefined) patch['tags'] = parsed.data.tags;
       if (parsed.data.reminderDaysBefore !== undefined)
         patch['reminderDaysBefore'] = parsed.data.reminderDaysBefore;
+      // Status edit. PENDING = scheduled/hidden: compute an activation date
+      // (due date minus the reminder lead) so the worker later flips it OPEN;
+      // moving to any other status clears the schedule and stamps activation.
+      if (parsed.data.status !== undefined && parsed.data.status !== existing.status) {
+        patch['status'] = parsed.data.status;
+        if (parsed.data.status === 'PENDING') {
+          const effDue =
+            parsed.data.dueDate !== undefined
+              ? parsed.data.dueDate
+              : existing.dueDate
+                ? String(existing.dueDate)
+                : null;
+          const effReminder =
+            parsed.data.reminderDaysBefore !== undefined
+              ? parsed.data.reminderDaysBefore
+              : (existing.reminderDaysBefore ?? 0);
+          let activationDate: string | null = null;
+          if (effDue) {
+            const dueMs = Date.parse(`${effDue}T00:00:00Z`);
+            activationDate = Number.isFinite(dueMs)
+              ? new Date(dueMs - (effReminder ?? 0) * 86_400_000).toISOString().slice(0, 10)
+              : effDue;
+          }
+          patch['activationDate'] = activationDate;
+          patch['activatedAt'] = null;
+        } else {
+          patch['activationDate'] = null;
+          if (existing.status === 'PENDING') patch['activatedAt'] = new Date();
+        }
+      }
       const updated = await deps.db
         .update(clientRequests)
         .set(patch)

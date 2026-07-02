@@ -143,11 +143,46 @@ describe('runRecurringEngagementTick — SCHEDULE pass', () => {
       .from(approvalRequests)
       .where(eq(approvalRequests.entityType, 'ENGAGEMENT_RENEWAL'));
     expect(apprs).toHaveLength(1);
-    // Recurrence next_run_date NOT bumped — we want to re-fire (and
-    // re-queue) on the next sweep so the partner sees the latest
-    // suggestedPeriod if they keep ignoring it.
+    // Recurrence next_run_date NOT bumped — we re-fire on the next sweep so
+    // the collision stays visible until the partner acts.
     const [rec] = await harness.db.select().from(engagementRecurrences);
     expect(rec!.nextRunDate).toBe('2026-04-01');
+  });
+
+  it('Q23 collision: re-firing does NOT pile up duplicate approvals (dedup)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const tplId = await seedTemplate(seed.firmId);
+    const [prevEng] = await harness.db
+      .insert(engagements)
+      .values({
+        clientId: seed.clientId,
+        name: 'Bookkeeping 3/2026',
+        feeStructure: 'FIXED_FEE',
+        status: 'ACTIVE',
+        periodYear: 2026,
+        periodMonth: 3,
+      })
+      .returning({ id: engagements.id });
+    await harness.db.insert(engagementRecurrences).values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      templateId: tplId,
+      frequency: 'MONTHLY',
+      triggerMode: 'SCHEDULE',
+      nextRunDate: '2026-04-01',
+      lastEngagementId: prevEng!.id,
+      createdById: seed.appUserId,
+    });
+    // Three daily sweeps while the previous engagement stays open.
+    await runRecurringEngagementTick(harness.db, silentLog, new Date('2026-04-02T10:00:00Z'));
+    await runRecurringEngagementTick(harness.db, silentLog, new Date('2026-04-03T10:00:00Z'));
+    await runRecurringEngagementTick(harness.db, silentLog, new Date('2026-04-04T10:00:00Z'));
+    // Exactly ONE pending approval — not one per day.
+    const apprs = await harness.db
+      .select()
+      .from(approvalRequests)
+      .where(eq(approvalRequests.entityType, 'ENGAGEMENT_RENEWAL'));
+    expect(apprs).toHaveLength(1);
   });
 
   it('advances period on subsequent runs based on previous engagement period', async () => {

@@ -572,17 +572,21 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       return;
     }
 
-    // CAPTCHA (fails closed when required).
+    // CAPTCHA — fails CLOSED when required. If the link demands CAPTCHA but
+    // Turnstile isn't configured / can't be decrypted, reject rather than
+    // silently letting the unauthenticated request through.
     if (link.requireCaptcha) {
       const turnstile = await loadTurnstile(d, link.firmId);
-      if (turnstile) {
-        const ok = captchaToken
-          ? await verifyTurnstile(turnstile.secret, captchaToken, clientIp(req), fetchImpl)
-          : false;
-        if (!ok) {
-          res.status(400).json({ error: 'captcha_failed' });
-          return;
-        }
+      if (!turnstile) {
+        res.status(503).json({ error: 'captcha_unavailable' });
+        return;
+      }
+      const ok = captchaToken
+        ? await verifyTurnstile(turnstile.secret, captchaToken, clientIp(req), fetchImpl)
+        : false;
+      if (!ok) {
+        res.status(400).json({ error: 'captcha_failed' });
+        return;
       }
     }
 
@@ -615,6 +619,10 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
     }).format(startsAt);
 
     if (link.dailyCap != null) {
+      // Cap the number of bookings on the requested APPOINTMENT day. The
+      // window must key off starts_at, not created_at — a future-dated
+      // request is always created "today", so counting created_at in the
+      // appointment-day window returned 0 and the cap never fired.
       const dayStart = new Date(startsAt);
       dayStart.setUTCHours(0, 0, 0, 0);
       const dayEnd = new Date(dayStart.getTime() + 24 * 3600_000);
@@ -625,8 +633,8 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
           and(
             eq(bookingRequests.bookingLinkId, link.id),
             inArray(bookingRequests.status, ['PENDING', 'APPROVED']),
-            gte(bookingRequests.createdAt, dayStart),
-            lt(bookingRequests.createdAt, dayEnd),
+            gte(bookingRequests.startsAt, dayStart),
+            lt(bookingRequests.startsAt, dayEnd),
           ),
         )) as [{ n: number }];
       if (n >= link.dailyCap) {

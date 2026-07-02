@@ -997,6 +997,24 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         res.status(400).json({ error: 'allocation_sum_mismatch' });
         return;
       }
+      // Every allocated invoice must belong to the PAYER client (and firm).
+      // Without this, a staffer could charge client A's saved card and apply
+      // the payment to client B's invoices.
+      const allocInvoiceIds = Array.from(new Set(body.allocations.map((a) => a.invoiceId)));
+      const ownedInvoices = await deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(
+          and(
+            inArray(invoices.id, allocInvoiceIds),
+            eq(invoices.firmId, session.firmId),
+            eq(invoices.clientId, body.payerClientId),
+          ),
+        );
+      if (ownedInvoices.length !== allocInvoiceIds.length) {
+        res.status(400).json({ error: 'allocation_invoice_not_payer_client' });
+        return;
+      }
       // The method must be this firm+client's, ACTIVE, and verified.
       const [pm] = await deps.db
         .select({

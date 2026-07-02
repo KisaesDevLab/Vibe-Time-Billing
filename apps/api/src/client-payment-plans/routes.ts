@@ -8,7 +8,7 @@
 // an immediate "run now". Mounted at /api/staff/client-payment-plans.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -398,12 +398,27 @@ export function createClientPaymentPlansRouter(deps: ClientPaymentPlansDeps): Ro
       const amount = Math.min(plan.installmentCents, outstanding);
       const allocations = buildAllocations(open, amount);
 
-      // Share the cron idempotency key so a same-day scheduled tick can't
-      // double-charge, and claim the run by stamping lastRunAt now.
-      await deps.db
+      // Atomic same-day claim — mirrors the worker so a run-now can't
+      // double-charge alongside the cron tick or a concurrent second click.
+      // (The shared Stripe idempotency key is a second line of defense.)
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const claimed = await deps.db
         .update(clientPaymentPlans)
         .set({ lastRunAt: new Date(), updatedAt: new Date() })
-        .where(eq(clientPaymentPlans.id, plan.id));
+        .where(
+          and(
+            eq(clientPaymentPlans.id, plan.id),
+            or(
+              isNull(clientPaymentPlans.lastRunAt),
+              lt(sql`${clientPaymentPlans.lastRunAt}::date`, sql`${todayIso}::date`),
+            ),
+          ),
+        )
+        .returning({ id: clientPaymentPlans.id });
+      if (claimed.length === 0) {
+        res.status(409).json({ error: 'already_charged_today' });
+        return;
+      }
 
       const result = await chargeClientBalanceOffSession({
         db: deps.db,

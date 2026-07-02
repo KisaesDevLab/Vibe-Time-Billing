@@ -838,6 +838,22 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       if (patch.retentionDays !== undefined) {
         patch.retentionDays = validateRetentionDays(patch.retentionDays).retentionDays;
       }
+      // Confine the backup destination to the appliance's known roots and
+      // reject path traversal — the executor does `mkdir -p` + writes a
+      // full-client-data dump there, so an arbitrary path would let an admin
+      // drop client data anywhere the api container can write.
+      if (patch.destinationPath !== undefined) {
+        const dp = patch.destinationPath;
+        const allowed =
+          dp === '/backups' ||
+          dp.startsWith('/backups/') ||
+          dp.startsWith('/mnt/') ||
+          dp.startsWith('/media/');
+        if (!dp.startsWith('/') || dp.includes('..') || !allowed) {
+          res.status(400).json({ error: 'invalid_destination_path' });
+          return;
+        }
+      }
       const session = req.staffSession!;
       await deps.db
         .update(backupConfig)
