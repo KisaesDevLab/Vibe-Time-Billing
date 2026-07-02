@@ -12,6 +12,7 @@ import { Button, Card, ColumnFilter, Pill, Stat, Table, tokens } from '@vibe/ui'
 
 import { api } from '../../api-client';
 import { selectRows, useColumnView } from '../../lib/column-view';
+import { useClientPage } from '../../lib/use-paged-list';
 import { TableSearch } from '../../components/TableSearch';
 
 function fmtCents(c: number | null | undefined): string {
@@ -314,6 +315,8 @@ export function RetainerDashboardPage(): JSX.Element {
     [items, view],
   );
 
+  const { paged, pagination } = useClientPage(visible);
+
   const visibleOffers = useMemo(
     () =>
       selectRows(offers, offerView, {
@@ -595,7 +598,8 @@ export function RetainerDashboardPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(r) => r.id}
           />
         )}

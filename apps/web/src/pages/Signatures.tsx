@@ -14,6 +14,7 @@ import { api } from '../api-client';
 import { usePermission } from '../auth-context';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 
 interface RequestRow {
   id: string;
@@ -151,6 +152,8 @@ export function SignaturesPage(): JSX.Element {
     [rows, view],
   );
 
+  const { paged, pagination } = useClientPage(visible);
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
       <Card
@@ -266,7 +269,8 @@ export function SignaturesPage(): JSX.Element {
                 render: (r) => (r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : '—'),
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(r) => r.id}
             empty={
               rows.length === 0

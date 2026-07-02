@@ -17,6 +17,7 @@ import { Button, Card, ColumnFilter, Pill, Table, tokens } from '@vibe/ui';
 import { api } from '../../api-client';
 import { TableSearch } from '../../components/TableSearch';
 import { selectRows, useColumnView } from '../../lib/column-view';
+import { useClientPage } from '../../lib/use-paged-list';
 
 interface SignedFormRow {
   id: string;
@@ -148,6 +149,8 @@ export function SignedFormsReportPage(): JSX.Element {
       }),
     [rows, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   function downloadCsv(): void {
     const qs = new URLSearchParams({ from, to, status: STATUS, format: 'csv' });
@@ -371,7 +374,8 @@ export function SignedFormsReportPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(r) => r.id}
             empty={
               rows.length === 0

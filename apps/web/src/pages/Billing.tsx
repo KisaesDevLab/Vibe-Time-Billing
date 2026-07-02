@@ -8,6 +8,7 @@ import { api } from '../api-client';
 import { AdjustmentDialog } from './AdjustmentDialog';
 import { PricingSuggestionPanel } from './engagements/PricingSuggestionPanel';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { TableSearch } from '../components/TableSearch';
 
 interface BatchRow {
@@ -209,6 +210,8 @@ function BatchListPage(): JSX.Element {
       }),
     [items, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -580,7 +583,8 @@ function BatchListPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={visible}
+            rows={paged}
+            pagination={pagination}
             rowKey={(b) => b.id}
             empty="No billing batches yet."
           />

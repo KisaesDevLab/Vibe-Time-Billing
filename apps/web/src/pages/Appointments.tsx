@@ -12,6 +12,7 @@ import { Button, Card, ColumnFilter, Combobox, Input, Pill, Table, Tabs, tokens 
 import { api, getCsrfToken } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { useAuth } from '../auth-context';
 import {
   ReminderScheduleEditor,
@@ -439,6 +440,7 @@ function ListTab(): JSX.Element {
       }),
     [rows, view],
   );
+  const { paged, pagination } = useClientPage(visible);
   const clientValues = useMemo(() => distinctOptions(rows.map((r) => r.clientName ?? '—')), [rows]);
   const engagementValues = useMemo(
     () => distinctOptions(rows.map((r) => r.engagementName ?? '—')),
@@ -864,7 +866,8 @@ function ListTab(): JSX.Element {
             ),
           },
         ]}
-        rows={visible}
+        rows={paged}
+        pagination={pagination}
         rowKey={(r) => r.id}
         empty="No appointments match these filters."
       />
