@@ -254,6 +254,21 @@ const inlineInputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 
+// Date filters in the "My entries" toolbar. Fill their grid cell and match the
+// other controls' height so the full mm/dd/yyyy value + calendar icon show
+// (the shared inlineInputStyle is 80px — too narrow, it truncates to "mm/dd,").
+const dateFilterStyle: React.CSSProperties = {
+  padding: '7px 10px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 13,
+  width: '100%',
+  boxSizing: 'border-box',
+  colorScheme: 'light dark',
+};
+
 // 0050 — sortable column-header button style. Looks like a plain header
 // label but is keyboard-focusable and triggers toggleSort.
 function ViewTabs({
@@ -1039,7 +1054,7 @@ function LogView({
             onChange={(e) => {
               setFilterStart(e.target.value);
             }}
-            style={inlineInputStyle}
+            style={dateFilterStyle}
           />
           <input
             type="date"
@@ -1048,7 +1063,7 @@ function LogView({
             onChange={(e) => {
               setFilterEnd(e.target.value);
             }}
-            style={inlineInputStyle}
+            style={dateFilterStyle}
           />
           <Combobox
             ariaLabel="Filter billable"
