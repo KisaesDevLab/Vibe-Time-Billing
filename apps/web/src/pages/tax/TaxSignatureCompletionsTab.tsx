@@ -11,7 +11,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Card, ColumnFilter, EmptyState, Pill, tokens, type SortDir } from '@vibe/ui';
+import {
+  Card,
+  ColumnFilter,
+  EmptyState,
+  Pill,
+  Table,
+  type TableColumn,
+  tokens,
+  type SortDir,
+} from '@vibe/ui';
+import { useClientPage } from '../../lib/use-paged-list';
 
 import { api } from '../../api-client';
 import { TableSearch } from '../../components/TableSearch';
@@ -259,6 +269,236 @@ export function TaxSignatureCompletionsTab(): JSX.Element {
     }
   }
 
+  const { paged, pagination } = useClientPage(visible);
+
+  const columns: TableColumn<CompletionRow>[] = [
+    {
+      key: 'client',
+      header: (
+        <>
+          Client{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort client"
+            values={clientValues}
+            selected={clientFilter}
+            sort={sortFor('client')}
+            onApply={(sel, dir) => {
+              setClientFilter(sel);
+              if (dir) setSortBy({ col: 'client', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.clientName ?? '—',
+    },
+    {
+      key: 'title',
+      header: (
+        <>
+          Document{' '}
+          <ColumnFilter
+            ariaLabel="Sort by document"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortFor('title')}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'title', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (
+        <Link
+          to={`/signatures/${r.id}`}
+          style={{ color: tokens.color.accent, textDecoration: 'none' }}
+        >
+          {r.title}
+        </Link>
+      ),
+    },
+    {
+      key: 'form',
+      header: (
+        <>
+          Form{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort form"
+            values={formValues}
+            selected={formFilter}
+            sort={sortFor('form')}
+            onApply={(sel, dir) => {
+              setFormFilter(sel);
+              if (dir) setSortBy({ col: 'form', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.formType ?? '—',
+    },
+    {
+      key: 'taxReturn',
+      header: 'Tax return',
+      render: (r) =>
+        r.taxReturnId ? (
+          <Link
+            to={`/tax/returns/${r.taxReturnId}`}
+            style={{ color: tokens.color.accent, textDecoration: 'none' }}
+          >
+            {r.taxReturnTitle ?? 'Return'}
+          </Link>
+        ) : (
+          '—'
+        ),
+    },
+    {
+      key: 'signers',
+      align: 'right',
+      header: (
+        <>
+          Signers{' '}
+          <ColumnFilter
+            ariaLabel="Sort by signers"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortFor('signers')}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'signers', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => `${r.signedCount}/${r.signerCount}`,
+    },
+    {
+      key: 'mode',
+      header: (
+        <>
+          Mode{' '}
+          <ColumnFilter
+            ariaLabel="Filter mode"
+            values={MODE_VALUES}
+            selected={modeFilter}
+            searchable={false}
+            sort={null}
+            onApply={(sel) => setModeFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => (r.signingMode === 'in_person' ? 'In office' : 'Remote'),
+    },
+    {
+      key: 'status',
+      header: (
+        <>
+          Status{' '}
+          <ColumnFilter
+            ariaLabel="Filter / sort status"
+            values={STATUS_VALUES}
+            selected={statusFilter}
+            searchable={false}
+            sort={sortFor('status')}
+            onApply={(sel, dir) => {
+              setStatusFilter(sel);
+              if (dir) setSortBy({ col: 'status', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>,
+    },
+    {
+      key: 'completed',
+      header: (
+        <>
+          Completed{' '}
+          <ColumnFilter
+            ariaLabel="Sort by completed date"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortFor('completed')}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'completed', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (r.completedAt ? new Date(r.completedAt).toLocaleDateString() : '—'),
+    },
+    {
+      key: 'engagement',
+      header: 'Engagement',
+      render: (r) => r.engagementName ?? '—',
+    },
+    {
+      key: 'engagementStatus',
+      header: 'Engagement status',
+      render: (r) =>
+        r.engagementId ? (
+          <select
+            aria-label={`Engagement status for ${r.title}`}
+            value={r.engagementWorkflowState ?? ''}
+            disabled={savingEng === r.engagementId}
+            onChange={(e) => void changeEngagementStatus(r, e.target.value)}
+            style={{
+              fontSize: 13,
+              padding: '4px 6px',
+              borderRadius: tokens.radius.sm,
+              border: `1px solid ${tokens.color.border}`,
+              background: tokens.color.bg,
+              color: tokens.color.text,
+              maxWidth: 200,
+            }}
+          >
+            {r.engagementWorkflowState &&
+              !statusOptions.some((o) => o.workflowState === r.engagementWorkflowState) && (
+                <option value={r.engagementWorkflowState}>{r.engagementWorkflowState}</option>
+              )}
+            {statusOptions.map((o) => (
+              <option key={o.workflowState} value={o.workflowState}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+            Link an engagement on the return
+          </span>
+        ),
+    },
+    {
+      key: 'inOffice',
+      align: 'right',
+      header: 'In-office',
+      render: (r) =>
+        SIG_TERMINAL.has(r.status) ? (
+          <span style={{ color: tokens.color.textMuted }}>—</span>
+        ) : (
+          <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
+            <Link
+              to={`/signatures/${r.id}`}
+              title="Collect in-office signature — set up / sign on this device"
+              aria-label={`Collect in-office signature for ${r.title}`}
+              style={iconBtn}
+            >
+              <PenGlyph />
+            </Link>
+            <button
+              type="button"
+              title="View / print the in-office QR sheet"
+              aria-label={`Show in-office QR sheet for ${r.title}`}
+              onClick={() => window.open(`/api/staff/signatures/${r.id}/qr-sheet.pdf`, '_blank')}
+              style={{ ...iconBtn, cursor: 'pointer' }}
+            >
+              <QrGlyph />
+            </button>
+          </span>
+        ),
+    },
+  ];
+
   return (
     <Card
       title={
@@ -314,261 +554,24 @@ export function TaxSignatureCompletionsTab(): JSX.Element {
             />
           </div>
           <div style={{ overflowX: 'auto' }}>
-            <table
-              style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: 13,
-                fontFamily: tokens.font.body,
-              }}
-            >
-              <thead>
-                <tr style={{ background: tokens.color.surface }}>
-                  <th style={th()}>
-                    Client{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter / sort client"
-                      values={clientValues}
-                      selected={clientFilter}
-                      sort={sortFor('client')}
-                      onApply={(sel, dir) => {
-                        setClientFilter(sel);
-                        if (dir) setSortBy({ col: 'client', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Document{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by document"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortFor('title')}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'title', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Form{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter / sort form"
-                      values={formValues}
-                      selected={formFilter}
-                      sort={sortFor('form')}
-                      onApply={(sel, dir) => {
-                        setFormFilter(sel);
-                        if (dir) setSortBy({ col: 'form', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>Tax return</th>
-                  <th style={th('right')}>
-                    Signers{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by signers"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortFor('signers')}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'signers', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Mode{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter mode"
-                      values={MODE_VALUES}
-                      selected={modeFilter}
-                      searchable={false}
-                      sort={null}
-                      onApply={(sel) => setModeFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Status{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter / sort status"
-                      values={STATUS_VALUES}
-                      selected={statusFilter}
-                      searchable={false}
-                      sort={sortFor('status')}
-                      onApply={(sel, dir) => {
-                        setStatusFilter(sel);
-                        if (dir) setSortBy({ col: 'status', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Completed{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by completed date"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortFor('completed')}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'completed', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>Engagement</th>
-                  <th style={th()}>Engagement status</th>
-                  <th style={th('right')}>In-office</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={11}
-                      style={{
-                        textAlign: 'center',
-                        padding: 40,
-                        color: tokens.color.textMuted,
-                        fontSize: 13,
-                      }}
-                    >
-                      <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
-                      <strong>No results</strong>
-                      <div>Please refine your filters.</div>
-                    </td>
-                  </tr>
-                ) : (
-                  visible.map((r) => (
-                    <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-                      <td style={td()}>{r.clientName ?? '—'}</td>
-                      <td style={td()}>
-                        <Link
-                          to={`/signatures/${r.id}`}
-                          style={{ color: tokens.color.accent, textDecoration: 'none' }}
-                        >
-                          {r.title}
-                        </Link>
-                      </td>
-                      <td style={td()}>{r.formType ?? '—'}</td>
-                      <td style={td()}>
-                        {r.taxReturnId ? (
-                          <Link
-                            to={`/tax/returns/${r.taxReturnId}`}
-                            style={{ color: tokens.color.accent, textDecoration: 'none' }}
-                          >
-                            {r.taxReturnTitle ?? 'Return'}
-                          </Link>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td
-                        style={{ ...td(), textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
-                      >
-                        {r.signedCount}/{r.signerCount}
-                      </td>
-                      <td style={td()}>{r.signingMode === 'in_person' ? 'In office' : 'Remote'}</td>
-                      <td style={td()}>
-                        <Pill tone={statusTone(r.status)}>{statusLabel(r.status)}</Pill>
-                      </td>
-                      <td style={td()}>
-                        {r.completedAt ? new Date(r.completedAt).toLocaleDateString() : '—'}
-                      </td>
-                      <td style={td()}>{r.engagementName ?? '—'}</td>
-                      <td style={td()}>
-                        {r.engagementId ? (
-                          <select
-                            aria-label={`Engagement status for ${r.title}`}
-                            value={r.engagementWorkflowState ?? ''}
-                            disabled={savingEng === r.engagementId}
-                            onChange={(e) => void changeEngagementStatus(r, e.target.value)}
-                            style={{
-                              fontSize: 13,
-                              padding: '4px 6px',
-                              borderRadius: tokens.radius.sm,
-                              border: `1px solid ${tokens.color.border}`,
-                              background: tokens.color.bg,
-                              color: tokens.color.text,
-                              maxWidth: 200,
-                            }}
-                          >
-                            {r.engagementWorkflowState &&
-                              !statusOptions.some(
-                                (o) => o.workflowState === r.engagementWorkflowState,
-                              ) && (
-                                <option value={r.engagementWorkflowState}>
-                                  {r.engagementWorkflowState}
-                                </option>
-                              )}
-                            {statusOptions.map((o) => (
-                              <option key={o.workflowState} value={o.workflowState}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                            Link an engagement on the return
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ ...td(), textAlign: 'right' }}>
-                        {SIG_TERMINAL.has(r.status) ? (
-                          <span style={{ color: tokens.color.textMuted }}>—</span>
-                        ) : (
-                          <span
-                            style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}
-                          >
-                            <Link
-                              to={`/signatures/${r.id}`}
-                              title="Collect in-office signature — set up / sign on this device"
-                              aria-label={`Collect in-office signature for ${r.title}`}
-                              style={iconBtn}
-                            >
-                              <PenGlyph />
-                            </Link>
-                            <button
-                              type="button"
-                              title="View / print the in-office QR sheet"
-                              aria-label={`Show in-office QR sheet for ${r.title}`}
-                              onClick={() =>
-                                window.open(`/api/staff/signatures/${r.id}/qr-sheet.pdf`, '_blank')
-                              }
-                              style={{ ...iconBtn, cursor: 'pointer' }}
-                            >
-                              <QrGlyph />
-                            </button>
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <Table<CompletionRow>
+              columns={columns}
+              rows={paged}
+              rowKey={(r) => r.id}
+              empty={
+                <div style={{ padding: 40, textAlign: 'center' }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
+                  <strong>No results</strong>
+                  <div>Please refine your filters.</div>
+                </div>
+              }
+              pagination={pagination}
+            />
           </div>
         </>
       )}
     </Card>
   );
-}
-
-function th(align: 'left' | 'right' = 'left'): React.CSSProperties {
-  return {
-    textAlign: align,
-    padding: '10px 8px',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: tokens.color.textMuted,
-    fontWeight: 600,
-    borderBottom: `1px solid ${tokens.color.border}`,
-    whiteSpace: 'nowrap',
-  };
-}
-
-function td(): React.CSSProperties {
-  return { padding: '8px', fontSize: 13, verticalAlign: 'middle' };
 }
 
 const iconBtn: React.CSSProperties = {
