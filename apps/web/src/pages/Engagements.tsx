@@ -34,9 +34,11 @@ type WorkflowState =
   | 'NOT_STARTED'
   | 'READY'
   | 'IN_PROGRESS'
+  | 'IN_REVIEW'
   | 'ON_HOLD'
   | 'NEEDS_REVIEW'
   | 'WITH_CLIENT'
+  | 'WAITING_ON_CLIENT'
   | 'COMPLETED'
   | 'CANCELED'
   | 'DRAFT';
@@ -88,9 +90,11 @@ const WORKFLOW_LABELS: Record<WorkflowState, string> = {
   NOT_STARTED: 'Not started',
   READY: 'Ready',
   IN_PROGRESS: 'In progress',
+  IN_REVIEW: 'In Review',
   ON_HOLD: 'On hold',
   NEEDS_REVIEW: 'Needs review',
   WITH_CLIENT: 'With client',
+  WAITING_ON_CLIENT: 'Waiting on Client',
   COMPLETED: 'Completed',
   CANCELED: 'Canceled',
   DRAFT: 'Draft',
@@ -104,13 +108,24 @@ const WORKFLOW_TONE: Record<
   NOT_STARTED: 'neutral',
   READY: 'accent',
   IN_PROGRESS: 'accent',
+  IN_REVIEW: 'warning',
   ON_HOLD: 'warning',
   NEEDS_REVIEW: 'warning',
   WITH_CLIENT: 'warning',
+  WAITING_ON_CLIENT: 'warning',
   COMPLETED: 'success',
   CANCELED: 'neutral',
   DRAFT: 'neutral',
 };
+
+// A light, readable row tint from a status hex color (#rrggbb → rgba). Falls
+// back to no tint on an unparseable color.
+function tintFromHex(hex: string, alpha = 0.14): string | undefined {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return undefined;
+  const n = parseInt(m[1]!, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
 
 const PRIORITY_TONE: Record<Priority, 'neutral' | 'accent' | 'warning' | 'danger'> = {
   LOW: 'neutral',
@@ -119,7 +134,14 @@ const PRIORITY_TONE: Record<Priority, 'neutral' | 'accent' | 'warning' | 'danger
   URGENT: 'danger',
 };
 
-const ACTIVE_WORK = new Set<WorkflowState>(['READY', 'IN_PROGRESS', 'NEEDS_REVIEW', 'WITH_CLIENT']);
+const ACTIVE_WORK = new Set<WorkflowState>([
+  'READY',
+  'IN_PROGRESS',
+  'IN_REVIEW',
+  'NEEDS_REVIEW',
+  'WITH_CLIENT',
+  'WAITING_ON_CLIENT',
+]);
 const QUEUED_WORK = new Set<WorkflowState>(['NO_STATUS', 'NOT_STARTED', 'DRAFT']);
 
 type Tab = 'active' | 'all' | 'mine' | 'queued';
@@ -184,6 +206,23 @@ export function EngagementsPage(): JSX.Element {
   // Show/hide DRAFT-workflow engagements (applies to both list + kanban via
   // the `visible` memo). Default true = no behavior change.
   const [showDrafts, setShowDrafts] = useState(true);
+  // Tint each list row by its status color. On by default; persisted so the
+  // preference survives reloads.
+  const [colorRows, setColorRows] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('__vibe_eng_row_color') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  function toggleColorRows(next: boolean): void {
+    setColorRows(next);
+    try {
+      localStorage.setItem('__vibe_eng_row_color', next ? 'on' : 'off');
+    } catch {
+      // Storage may be disabled — in-memory state still drives the session.
+    }
+  }
   // 0050 — filter by client owner (client.partnerInChargeId).
   const [clientOwnerId, setClientOwnerId] = useState<string>(saved.clientOwnerId ?? '');
   // 0050 — List | Kanban view toggle. Persisted in localStorage so users
@@ -606,6 +645,14 @@ export function EngagementsPage(): JSX.Element {
     label: `${sl.name} (${sl.category})`,
   }));
 
+  // workflow_state → status color, from the firm's status catalog. Drives the
+  // per-row background tint in list view.
+  const statusColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of statuses) m.set(s.workflowState, s.color);
+    return m;
+  }, [statuses]);
+
   const engagementColumns: TableColumn<EngagementRow>[] = [
     {
       key: 'select',
@@ -892,6 +939,24 @@ export function EngagementsPage(): JSX.Element {
               />
               Show drafts
             </label>
+            {view === 'list' && (
+              <label
+                style={{
+                  fontSize: 12,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  color: tokens.color.textMuted,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={colorRows}
+                  onChange={(e) => toggleColorRows(e.target.checked)}
+                />
+                Color rows by status
+              </label>
+            )}
             {view === 'kanban' && (
               <KanbanViewsMenu
                 columns={statusCols}
@@ -1087,9 +1152,13 @@ export function EngagementsPage(): JSX.Element {
               columns={engagementColumns}
               rows={paged}
               rowKey={(r) => r.id}
-              rowStyle={(r) =>
-                selectedIds.has(r.id) ? { background: tokens.color.accentMuted } : undefined
-              }
+              rowStyle={(r) => {
+                if (selectedIds.has(r.id)) return { background: tokens.color.accentMuted };
+                if (!colorRows) return undefined;
+                const hex = statusColorMap.get(r.workflowState);
+                const bg = hex ? tintFromHex(hex) : undefined;
+                return bg ? { background: bg } : undefined;
+              }}
               empty={
                 <div style={{ padding: 40, textAlign: 'center' }}>
                   <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
