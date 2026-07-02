@@ -36,7 +36,13 @@ export { Stat, type StatProps, type StatTone } from './Stat';
 export { SectionHeading, type SectionHeadingProps } from './SectionHeading';
 export { EmptyState, type EmptyStateProps } from './EmptyState';
 export { useIsNarrow } from './useIsNarrow';
-export { Table, type TableColumn, type TableProps } from './Table';
+export {
+  Table,
+  PaginationBar,
+  type TableColumn,
+  type TableProps,
+  type TablePagination,
+} from './Table';
 export { Sparkline, type SparklineProps } from './Sparkline';
 export { AiPanel, type AiPanelProps } from './AiPanel';
 export { AppShell, type AppShellProps, type NavItem } from './AppShell';

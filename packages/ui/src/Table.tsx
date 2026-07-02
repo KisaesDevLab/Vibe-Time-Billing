@@ -44,7 +44,13 @@ export interface TableProps<T> {
 
 const DEFAULT_PAGE_SIZE_OPTIONS = [50, 100, 250];
 
-function PaginationBar({
+/**
+ * Standalone pagination controls. `Table` renders this itself when given a
+ * `pagination` prop, but it's exported for the raw `<table>` views that can't
+ * adopt the column model (stateful row components, ColumnFilter headers) yet
+ * still want the same pager — pair it with `useClientPage`.
+ */
+export function PaginationBar({
   page,
   pageSize,
   total,
