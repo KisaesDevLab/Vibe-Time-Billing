@@ -26,6 +26,8 @@ import {
   makeDefaultRecurrenceDraft,
   recurrenceDraftToPayload,
   type RecurrenceDraft,
+  type RecurrenceFrequency,
+  type RecurrenceSpawnStatus,
 } from '../engagements/RecurrenceComposer';
 
 interface RecurrenceRow {
@@ -37,11 +39,33 @@ interface RecurrenceRow {
   frequency: string;
   triggerMode: 'SCHEDULE' | 'ON_COMPLETION';
   nextRunDate: string | null;
+  seedPeriodYear: number | null;
+  seedPeriodMonth: number | null;
+  seedPeriodLabel: string | null;
+  spawnStatus: string | null;
+  rollforwardAppointment: boolean;
+  rollforwardDropoff: boolean;
+  notes: string | null;
   status: 'ACTIVE' | 'PAUSED' | 'CANCELLED';
   lastEngagementId: string | null;
   lastEngagementName: string | null;
   lastEngagementStatus: string | null;
   isDue: boolean;
+}
+
+function rowToDraft(r: RecurrenceRow): RecurrenceDraft {
+  return {
+    frequency: r.frequency as RecurrenceFrequency,
+    triggerMode: r.triggerMode,
+    nextRunDate: r.nextRunDate ?? '',
+    seedPeriodYear: r.seedPeriodYear != null ? String(r.seedPeriodYear) : '',
+    seedPeriodMonth: r.seedPeriodMonth != null ? String(r.seedPeriodMonth) : '',
+    seedPeriodLabel: r.seedPeriodLabel ?? '',
+    spawnStatus: (r.spawnStatus ?? '') as '' | RecurrenceSpawnStatus,
+    rollforwardAppointment: r.rollforwardAppointment,
+    rollforwardDropoff: r.rollforwardDropoff,
+    notes: r.notes ?? '',
+  };
 }
 
 interface TemplateOption {
@@ -78,6 +102,11 @@ export function RecurringEngagementsCard({ clientId, lastEngagementId }: Props):
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
   const [addTemplateId, setAddTemplateId] = useState('');
   const [addDraft, setAddDraft] = useState<RecurrenceDraft>(() => makeDefaultRecurrenceDraft());
+
+  // Edit an existing recurrence (frequency, trigger, spawn status, rollforward
+  // toggles, notes). The template itself is fixed once created.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<RecurrenceDraft | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -171,6 +200,32 @@ export function RecurringEngagementsCard({ clientId, lastEngagementId }: Props):
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'add_failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function startEdit(r: RecurrenceRow): void {
+    setShowAdd(false);
+    setEditDraft(rowToDraft(r));
+    setEditingId(r.id);
+    setError(null);
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (!editingId || !editDraft) return;
+    setBusy(editingId);
+    setError(null);
+    try {
+      await api(`/api/staff/engagement-recurrences/${editingId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(recurrenceDraftToPayload(editDraft)),
+      });
+      setEditingId(null);
+      setEditDraft(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_failed');
     } finally {
       setBusy(null);
     }
@@ -274,6 +329,38 @@ export function RecurringEngagementsCard({ clientId, lastEngagementId }: Props):
             </div>
           </div>
         )}
+        {editingId && editDraft && (
+          <div
+            style={{
+              border: `1px solid ${tokens.color.accent}`,
+              borderRadius: tokens.radius.sm,
+              padding: 12,
+              marginBottom: 8,
+              display: 'grid',
+              gap: 10,
+              background: tokens.color.surface,
+            }}
+          >
+            <strong style={{ fontSize: 13 }}>Edit recurrence</strong>
+            <RecurrenceComposer value={editDraft} onChange={setEditDraft} showSeedFields={false} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button size="sm" disabled={busy === editingId} onClick={() => void saveEdit()}>
+                {busy === editingId ? 'Saving…' : 'Save changes'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy === editingId}
+                onClick={() => {
+                  setEditingId(null);
+                  setEditDraft(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
         {rows == null ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>Loading…</p>
         ) : rows.length === 0 ? (
@@ -290,9 +377,22 @@ export function RecurringEngagementsCard({ clientId, lastEngagementId }: Props):
                 key: 'freq',
                 header: 'Frequency',
                 render: (r) => (
-                  <Pill>
-                    {r.frequency} · {r.triggerMode === 'SCHEDULE' ? 'sched' : 'on close'}
-                  </Pill>
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                    <Pill>
+                      {r.frequency} · {r.triggerMode === 'SCHEDULE' ? 'sched' : 'on close'}
+                    </Pill>
+                    {(r.rollforwardAppointment || r.rollforwardDropoff) && (
+                      <Pill tone="accent">
+                        ↻{' '}
+                        {[
+                          r.rollforwardAppointment ? 'appt' : null,
+                          r.rollforwardDropoff ? 'drop-off' : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' + ')}
+                      </Pill>
+                    )}
+                  </span>
                 ),
               },
               {
@@ -342,14 +442,24 @@ export function RecurringEngagementsCard({ clientId, lastEngagementId }: Props):
                 header: '',
                 align: 'right',
                 render: (r) => (
-                  <Button
-                    size="sm"
-                    variant={r.isDue ? 'secondary' : 'ghost'}
-                    disabled={r.status !== 'ACTIVE' || busy === r.id}
-                    onClick={() => void runOne(r.id)}
-                  >
-                    {busy === r.id ? '…' : 'Run now'}
-                  </Button>
+                  <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={r.status === 'CANCELLED' || busy === r.id}
+                      onClick={() => startEdit(r)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={r.isDue ? 'secondary' : 'ghost'}
+                      disabled={r.status !== 'ACTIVE' || busy === r.id}
+                      onClick={() => void runOne(r.id)}
+                    >
+                      {busy === r.id ? '…' : 'Run now'}
+                    </Button>
+                  </span>
                 ),
               },
             ]}

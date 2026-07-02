@@ -60,10 +60,29 @@ const PutSchema = z.object({
   minio: MinioSchema.optional(),
 });
 
+// Test payloads may omit BOTH the key id and the secret: the UI leaves
+// them blank ("saved — leave blank to keep") when re-testing already-
+// stored credentials. The handler unwraps the sealed key id / secret in
+// that case. So keyId/accessKey are optional (blank allowed) and the
+// secret stays optional — validation must not block the stored-cred path.
+const B2TestSchema = z.object({
+  endpoint: z.string().url(),
+  region: z.string().min(1).max(40),
+  bucket: z.string().min(1).max(120),
+  keyId: z.string().max(200).optional(),
+  applicationKey: z.string().max(500).optional(),
+});
+const MinioTestSchema = z.object({
+  endpoint: z.string().url(),
+  region: z.string().min(1).max(40),
+  bucket: z.string().min(1).max(120),
+  accessKey: z.string().max(200).optional(),
+  secretKey: z.string().max(500).optional(),
+});
 const TestSchema = z.object({
   provider: z.enum(['b2', 'minio']),
-  b2: B2Schema.extend({ applicationKey: z.string().min(1).max(500) }).optional(),
-  minio: MinioSchema.extend({ secretKey: z.string().min(1).max(500) }).optional(),
+  b2: B2TestSchema.optional(),
+  minio: MinioTestSchema.optional(),
 });
 
 function hint(s: string): string {
@@ -254,6 +273,14 @@ export function createStorageSettingsRouter(deps: StorageSettingsRoutesDeps): Ro
       try {
         if (parsed.data.provider === 'b2' && parsed.data.b2) {
           const b = parsed.data.b2;
+          // Both the key id and the secret fall back to the sealed stored
+          // value when the admin re-tests without re-pasting them.
+          const keyId =
+            b.keyId ||
+            (existing?.b2KeyIdEncrypted
+              ? fromUtf8(keyMgr.unwrapTDek(session.firmId, existing.b2KeyIdEncrypted))
+              : '');
+          if (!keyId) throw new Error('key_id_required');
           const secret =
             b.applicationKey ||
             (existing?.b2ApplicationKeyEncrypted
@@ -264,12 +291,18 @@ export function createStorageSettingsRouter(deps: StorageSettingsRoutesDeps): Ro
             endpoint: b.endpoint,
             region: b.region,
             bucket: b.bucket,
-            accessKeyId: b.keyId,
+            accessKeyId: keyId,
             secretAccessKey: secret,
             forcePathStyle: true,
           });
         } else if (parsed.data.provider === 'minio' && parsed.data.minio) {
           const m = parsed.data.minio;
+          const accessKey =
+            m.accessKey ||
+            (existing?.minioAccessKeyEncrypted
+              ? fromUtf8(keyMgr.unwrapTDek(session.firmId, existing.minioAccessKeyEncrypted))
+              : '');
+          if (!accessKey) throw new Error('access_key_required');
           const secret =
             m.secretKey ||
             (existing?.minioSecretKeyEncrypted
@@ -280,7 +313,7 @@ export function createStorageSettingsRouter(deps: StorageSettingsRoutesDeps): Ro
             endpoint: m.endpoint,
             region: m.region,
             bucket: m.bucket,
-            accessKeyId: m.accessKey,
+            accessKeyId: accessKey,
             secretAccessKey: secret,
             forcePathStyle: true,
           });
@@ -318,7 +351,19 @@ export function createStorageSettingsRouter(deps: StorageSettingsRoutesDeps): Ro
           .catch(() => undefined);
         res.json({ ok: true, latencyMs });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        let msg = err instanceof Error ? err.message : String(err);
+        // The AWS S3 client parses response bodies as XML. A JSON body
+        // (first char '{') means the endpoint is not the S3-compatible
+        // host — almost always B2's native JSON API was entered instead
+        // of s3.<region>.backblazeb2.com. Translate the opaque parser
+        // error into an actionable hint.
+        if (/is not expected|Deserialization error/i.test(msg)) {
+          msg =
+            'The storage endpoint returned a non-S3 (JSON) response. ' +
+            'Check that the endpoint is the S3-compatible host ' +
+            '(e.g. https://s3.<region>.backblazeb2.com), not the native B2 API. ' +
+            `(raw: ${msg.slice(0, 200)})`;
+        }
         // Persist the error so the GET surface can show "last test
         // failed at … because …" even after the admin walks away.
         await deps.db

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
@@ -46,6 +46,7 @@ interface Engagement {
   clientId: string;
   name: string;
   status: string;
+  workflowState: string | null;
   feeStructure: string;
   feeAmountCents: number | null;
   budgetHours: string | null;
@@ -219,6 +220,9 @@ export function EngagementDetailPage(): JSX.Element {
   const [firmUsers, setFirmUsers] = useState<FirmUser[]>([]);
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [engagementTypes, setEngagementTypes] = useState<EngagementType[]>([]);
+  // 0101 — firm's board/workflow status catalog (Draft, In progress, …).
+  const [wfStatuses, setWfStatuses] = useState<{ workflowState: string; label: string }[]>([]);
+  const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -229,7 +233,7 @@ export function EngagementDetailPage(): JSX.Element {
   async function reload(): Promise<void> {
     if (!id) return;
     try {
-      const [e, s, m, b, u, rc, et, sl] = await Promise.all([
+      const [e, s, m, b, u, rc, et, sl, ws] = await Promise.all([
         api<{
           engagement: Engagement;
           client?: { id: string; name: string } | null;
@@ -248,6 +252,9 @@ export function EngagementDetailPage(): JSX.Element {
         api<{ items: ServiceLine[] }>(`/api/staff/taxonomy/service-lines`).catch(() => ({
           items: [],
         })),
+        api<{ items: { workflowState: string; label: string }[] }>(
+          `/api/staff/engagement-statuses`,
+        ).catch(() => ({ items: [] })),
       ]);
       setEngagement(e.engagement);
       setClient(e.client ?? null);
@@ -259,6 +266,7 @@ export function EngagementDetailPage(): JSX.Element {
       setRateCodes((rc.items ?? []).filter((x) => x.active));
       setEngagementTypes(et.items ?? []);
       setServiceLines(sl.items ?? []);
+      setWfStatuses(ws.items ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     }
@@ -385,6 +393,23 @@ export function EngagementDetailPage(): JSX.Element {
     }
   }
 
+  async function changeWorkflowState(next: string): Promise<void> {
+    if (!id || !next) return;
+    setSavingWorkflow(true);
+    setError(null);
+    try {
+      await api(`/api/staff/engagements/${id}/workflow-state`, {
+        method: 'PATCH',
+        body: JSON.stringify({ workflowState: next }),
+      });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'workflow_status_failed');
+    } finally {
+      setSavingWorkflow(false);
+    }
+  }
+
   if (error) {
     return (
       <Card title="Error">
@@ -430,6 +455,21 @@ export function EngagementDetailPage(): JSX.Element {
         }
         action={
           <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {wfStatuses.length > 0 && (
+              <div style={{ width: 190 }}>
+                <Combobox
+                  ariaLabel="Engagement workflow status"
+                  value={engagement.workflowState ?? ''}
+                  onChange={(v) => void changeWorkflowState(v)}
+                  disabled={savingWorkflow || editing}
+                  options={wfStatuses.map<ComboboxOption>((s) => ({
+                    value: s.workflowState,
+                    label: s.label,
+                  }))}
+                  size="sm"
+                />
+              </div>
+            )}
             <div style={{ width: 160 }}>
               <Combobox
                 ariaLabel="Engagement status"
@@ -937,6 +977,7 @@ interface EngagementApptRow {
   title: string;
   startsAt: string;
   status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  rollforwardInclude: boolean;
   staff: { id: string; name: string }[];
 }
 
@@ -948,13 +989,33 @@ function EngagementAppointmentsCard({
   clientId: string;
 }): JSX.Element {
   const [rows, setRows] = useState<EngagementApptRow[]>([]);
-  useEffect(() => {
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const load = useCallback(() => {
     void api<{ items: EngagementApptRow[] }>(
       `/api/staff/appointments/list?engagementId=${engagementId}&pageSize=50`,
     )
       .then((r) => setRows(r.items ?? []))
       .catch(() => undefined);
   }, [engagementId]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function toggleRollforward(id: string, include: boolean): Promise<void> {
+    setSavingId(id);
+    // Optimistic update.
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, rollforwardInclude: include } : r)));
+    try {
+      await api(`/api/staff/appointments/${id}/rollforward-include`, {
+        method: 'PATCH',
+        body: JSON.stringify({ include }),
+      });
+    } catch {
+      load(); // revert to server truth on failure
+    } finally {
+      setSavingId(null);
+    }
+  }
 
   return (
     <Card
@@ -1000,6 +1061,27 @@ function EngagementAppointmentsCard({
                 {r.status.toLowerCase()}
               </Pill>
             ),
+          },
+          {
+            key: 'rollforward',
+            header: 'Roll forward',
+            render: (r) =>
+              r.status === 'SCHEDULED' ? (
+                <label
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+                  title="Include this appointment when the recurring engagement rolls to the next period"
+                >
+                  <input
+                    type="checkbox"
+                    checked={r.rollforwardInclude}
+                    disabled={savingId === r.id}
+                    onChange={(e) => void toggleRollforward(r.id, e.target.checked)}
+                  />
+                  {r.rollforwardInclude ? 'Included' : 'Excluded'}
+                </label>
+              ) : (
+                <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>—</span>
+              ),
           },
         ]}
         rows={rows}

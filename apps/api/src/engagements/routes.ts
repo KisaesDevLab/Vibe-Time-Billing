@@ -26,6 +26,7 @@ import {
 } from '@vibe/db/schema';
 import { resolveEngagementName, type Period } from '@vibe/core/engagements';
 import { desc } from 'drizzle-orm';
+import { onEngagementCompleted } from './completion-hooks';
 import { queryStatusHistory } from './status-history';
 
 import { emitAudit } from '../auth/audit';
@@ -1057,6 +1058,19 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // Completing an engagement via the workflow status ('COMPLETED') fires
+      // the same side effects as the lifecycle Close: fulfill its drop-off(s)
+      // and spawn/roll-forward any ON_COMPLETION recurrence anchored to it.
+      if (ws === 'COMPLETED' && eng.prev !== 'COMPLETED') {
+        await onEngagementCompleted(deps.db, {
+          engagementId: eng.id,
+          firmId: session.firmId,
+          actorAppUserId: session.appUserId,
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+          reason: 'engagement_completed',
+        });
+      }
       // 0146 — stage/send the configured client notification for the new
       // status. Fire-and-forget: a notification failure must not fail the
       // transition itself.
@@ -1240,6 +1254,20 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      // Closing/archiving an engagement resolves its still-open drop-off(s)
+      // and fires any ON_COMPLETION recurrence anchored to it (spawn + roll
+      // forward). Best-effort — never blocks the status change.
+      if (parsed.data.status === 'CLOSED' || parsed.data.status === 'ARCHIVED') {
+        await onEngagementCompleted(deps.db, {
+          engagementId: req.params['id']!,
+          firmId: session.firmId,
+          actorAppUserId: session.appUserId,
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+          reason: 'engagement_closed',
+        });
+      }
 
       // Stage 2 — archive thread when engagement closes/archives.
       if (

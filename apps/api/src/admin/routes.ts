@@ -106,6 +106,8 @@ const ALLOCATION_METHODS = [
 const FirmSettingsPatchSchema = z.object({
   adjustmentApprovalThresholdCents: z.number().int().nonnegative().optional(),
   aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
+  // 0202 — estimated labor % of a target fee (rollforward budgeting).
+  estimatedLaborPct: z.number().int().min(1).max(100).optional(),
   timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
   stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
   // 0151 — firm-level staff second-factor toggle (revises decision #5).

@@ -10,6 +10,7 @@
 import type { Logger } from 'pino';
 import { eq } from 'drizzle-orm';
 
+import { crypto as core } from '@vibe/core';
 import type { Database } from '@vibe/db';
 import { firmSettings, firms } from '@vibe/db/schema';
 import {
@@ -91,11 +92,45 @@ export function withEmailBranding(
   };
 }
 
-export async function buildMailDispatch(log: Logger): Promise<MailDispatch | undefined> {
-  const provider = process.env['MAIL_PROVIDER'] ?? 'console';
-  const from = process.env['MAIL_FROM'] ?? 'no-reply@example.com';
-  if (provider === 'postmark' && process.env['MAIL_POSTMARK_TOKEN']) {
-    const token = process.env['MAIL_POSTMARK_TOKEN'];
+// Normalized mail-provider config the worker's dispatch is built from —
+// sourced either from env (buildMailDispatch) or the firm's DB-saved
+// Admin → Messaging config (resolveFirmMailConfig).
+export interface WorkerMailConfig {
+  provider: string;
+  from: string;
+  postmarkToken?: string;
+  resendKey?: string;
+  emailitKey?: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+  smtpUser?: string;
+  smtpPass?: string;
+}
+
+export function buildMailDispatch(log: Logger): MailDispatch | undefined {
+  return dispatchFromConfig(
+    {
+      provider: process.env['MAIL_PROVIDER'] ?? 'console',
+      from: process.env['MAIL_FROM'] ?? 'no-reply@example.com',
+      postmarkToken: process.env['MAIL_POSTMARK_TOKEN'],
+      resendKey: process.env['MAIL_RESEND_API_KEY'],
+      emailitKey: process.env['MAIL_EMAILIT_API_KEY'],
+      smtpHost: process.env['MAIL_SMTP_HOST'],
+      smtpPort: process.env['MAIL_SMTP_PORT'] ? Number(process.env['MAIL_SMTP_PORT']) : undefined,
+      smtpSecure: process.env['MAIL_SMTP_SECURE'] === 'true',
+      smtpUser: process.env['MAIL_SMTP_USER'],
+      smtpPass: process.env['MAIL_SMTP_PASS'],
+    },
+    log,
+  );
+}
+
+function dispatchFromConfig(cfg: WorkerMailConfig, log: Logger): MailDispatch | undefined {
+  const provider = cfg.provider;
+  const from = cfg.from;
+  if (provider === 'postmark' && cfg.postmarkToken) {
+    const token = cfg.postmarkToken;
     return async (args) => {
       const r = await fetch('https://api.postmarkapp.com/email', {
         method: 'POST',
@@ -126,8 +161,8 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
       if (!r.ok) throw new Error(`postmark_${r.status}`);
     };
   }
-  if (provider === 'resend' && process.env['MAIL_RESEND_API_KEY']) {
-    const key = process.env['MAIL_RESEND_API_KEY'];
+  if (provider === 'resend' && cfg.resendKey) {
+    const key = cfg.resendKey;
     return async (args) => {
       const r = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -150,8 +185,8 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
       if (!r.ok) throw new Error(`resend_${r.status}`);
     };
   }
-  if (provider === 'emailit' && process.env['MAIL_EMAILIT_API_KEY']) {
-    const key = process.env['MAIL_EMAILIT_API_KEY'];
+  if (provider === 'emailit' && cfg.emailitKey) {
+    const key = cfg.emailitKey;
     return async (args) => {
       // EmailIt takes `to` as an array; mirrors createEmailItProvider. ICS
       // attachments are omitted (not part of the provider's send shape).
@@ -169,18 +204,20 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
       if (!r.ok) throw new Error(`emailit_${r.status}`);
     };
   }
-  if (provider === 'smtp' && process.env['MAIL_SMTP_HOST']) {
-    const nodemailer = await import('nodemailer');
-    const transport = nodemailer.default.createTransport({
-      host: process.env['MAIL_SMTP_HOST'],
-      port: Number(process.env['MAIL_SMTP_PORT'] ?? 1025),
-      secure: process.env['MAIL_SMTP_SECURE'] === 'true',
-      auth:
-        process.env['MAIL_SMTP_USER'] && process.env['MAIL_SMTP_PASS']
-          ? { user: process.env['MAIL_SMTP_USER'], pass: process.env['MAIL_SMTP_PASS'] }
-          : undefined,
-    });
+  if (provider === 'smtp' && cfg.smtpHost) {
+    const host = cfg.smtpHost;
+    const port = cfg.smtpPort ?? 1025;
+    const secure = cfg.smtpSecure ?? false;
+    const user = cfg.smtpUser;
+    const pass = cfg.smtpPass;
     return async (args) => {
+      const nodemailer = await import('nodemailer');
+      const transport = nodemailer.default.createTransport({
+        host,
+        port,
+        secure,
+        auth: user && pass ? { user, pass } : undefined,
+      });
       await transport.sendMail({
         from,
         to: args.to,
@@ -199,6 +236,103 @@ export async function buildMailDispatch(log: Logger): Promise<MailDispatch | und
   }
   log.info({ provider }, 'worker mail dispatcher disabled (no provider configured)');
   return undefined;
+}
+
+interface StoredEmailConfig {
+  provider: 'smtp' | 'postmark' | 'resend' | 'ses' | 'emailit';
+  from?: string;
+  host?: string;
+  port?: number;
+  secure?: boolean;
+  user?: string;
+  pass?: string;
+  token?: string;
+  apiKey?: string;
+}
+
+// Read + decrypt the firm's Admin → Messaging email config (encrypted under
+// KMS_KEY, same envelope the API writes) into a worker dispatch. Mirrors
+// ../api sms-resolver: decrypts with @vibe/core directly. Returns undefined
+// when there's no usable DB config so the caller keeps the env dispatch.
+async function resolveFirmMailDispatch(
+  db: Database,
+  log: Logger,
+): Promise<MailDispatch | undefined> {
+  const [firm] = await db.select({ id: firms.id }).from(firms).limit(1);
+  if (!firm) return undefined;
+  const [row] = await db
+    .select({ enc: firmSettings.mailConfigEncrypted })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firm.id))
+    .limit(1);
+  if (!row?.enc) return undefined; // no DB config → env fallback
+  const keyRaw = process.env['KMS_KEY'];
+  if (!keyRaw) {
+    log.warn('mail config present but KMS_KEY unset; cannot decrypt');
+    return undefined;
+  }
+  let cfg: StoredEmailConfig;
+  try {
+    cfg = core.decryptJson<StoredEmailConfig>(row.enc, core.resolveKey(keyRaw));
+  } catch (err) {
+    log.warn({ err }, 'mail config decrypt failed');
+    return undefined;
+  }
+  if (!cfg.from || cfg.provider === 'ses') {
+    // SES has no worker path yet; missing from-address is unusable.
+    return undefined;
+  }
+  return dispatchFromConfig(
+    {
+      provider: cfg.provider,
+      from: cfg.from,
+      postmarkToken: cfg.token,
+      resendKey: cfg.apiKey,
+      emailitKey: cfg.apiKey,
+      smtpHost: cfg.host,
+      smtpPort: cfg.port,
+      smtpSecure: cfg.secure,
+      smtpUser: cfg.user,
+      smtpPass: cfg.pass,
+    },
+    log,
+  );
+}
+
+/**
+ * Wrap the env-configured mail dispatch so every send first tries the firm's
+ * DB-saved provider (Admin → Messaging) and falls back to the env dispatch
+ * when none is configured. Mirrors withEmailBranding / the API's
+ * wrapMailWithFirmConfig: resolution is cached briefly so an admin config
+ * change takes effect within the TTL without a per-message decrypt.
+ */
+export function withFirmMailConfig(
+  base: MailDispatch | undefined,
+  db: Database | null,
+  log: Logger,
+): MailDispatch | undefined {
+  if (!db) return base;
+  let cached: MailDispatch | undefined;
+  let cachedAt = 0;
+  let resolvedOnce = false;
+  async function resolve(): Promise<MailDispatch | undefined> {
+    const now = Date.now();
+    if (resolvedOnce && now - cachedAt < 60_000) return cached ?? base;
+    try {
+      cached = await resolveFirmMailDispatch(db!, log);
+    } catch (err) {
+      log.warn({ err }, 'firm mail dispatch resolve failed; using env fallback');
+      cached = undefined;
+    }
+    cachedAt = now;
+    resolvedOnce = true;
+    return cached ?? base;
+  }
+  return async (args) => {
+    const d = await resolve();
+    if (!d) return; // no provider anywhere → silent no-op (same as env-undefined)
+    await d(args);
+  };
 }
 
 export function buildSmsDispatch(log: Logger): SmsDispatch | undefined {

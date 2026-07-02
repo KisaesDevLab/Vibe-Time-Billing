@@ -90,6 +90,8 @@ function idempotencyKey(e: OpenSignWebhookEvent): string {
 }
 
 function verifyHmac(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
+  // TODO(security): no replay-window; the OpenSign signature covers only the
+  // raw body (no timestamp), so we rely on event-id idempotency instead.
   const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
   // Normalize an optional "sha256=" prefix some senders use.
   const claimed = signatureHeader.startsWith('sha256=')

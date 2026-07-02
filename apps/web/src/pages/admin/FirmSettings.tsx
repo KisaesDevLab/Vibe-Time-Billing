@@ -37,6 +37,7 @@ interface Firm {
 interface Settings {
   adjustmentApprovalThresholdCents: number;
   aiMonthlyBudgetCents: number;
+  estimatedLaborPct: number;
   stepUpTimeoutMinutes: number;
   staffSecondFactorRequired: boolean;
   lateEntryAlertDays: number;
@@ -179,6 +180,7 @@ export function FirmSettingsPage(): JSX.Element {
         body: JSON.stringify({
           adjustmentApprovalThresholdCents: s.adjustmentApprovalThresholdCents,
           aiMonthlyBudgetCents: s.aiMonthlyBudgetCents,
+          estimatedLaborPct: s.estimatedLaborPct,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
           staffSecondFactorRequired: s.staffSecondFactorRequired,
           lateEntryAlertDays: s.lateEntryAlertDays,
@@ -385,6 +387,16 @@ export function FirmSettingsPage(): JSX.Element {
               { value: 'local', label: 'Force local (Ollama)' },
               { value: 'cloud', label: 'Force cloud (Anthropic)' },
             ]}
+          />
+          <Input
+            label="Estimated labor % (recurring rollforward budgeting)"
+            type="number"
+            min={1}
+            max={100}
+            value={s.estimatedLaborPct}
+            onChange={(e) =>
+              setS({ ...s, estimatedLaborPct: Math.max(1, Math.min(100, Number(e.target.value))) })
+            }
           />
           <Input
             label="Step-up TOTP timeout (minutes) — Q4"

@@ -365,6 +365,45 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
     },
   );
 
+  // 0201 — toggle whether this appointment is carried forward when its
+  // recurring engagement rolls to the next period. Dedicated endpoint (no
+  // calendar side effects); permitted while the appointment is SCHEDULED.
+  router.patch(
+    '/:id/rollforward-include',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const include = (req.body as { include?: unknown })?.include;
+      if (typeof include !== 'boolean') {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const updated = await deps.db
+        .update(appointments)
+        .set({ rollforwardInclude: include, updatedAt: new Date() })
+        .where(and(eq(appointments.id, req.params['id']!), eq(appointments.firmId, session.firmId)))
+        .returning({ id: appointments.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'appointment',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { rollforwardInclude: include },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   router.post(
     '/:id/cancel',
     requirePermission(deps, 'appointment:write'),

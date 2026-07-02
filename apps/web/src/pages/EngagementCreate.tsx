@@ -446,6 +446,12 @@ export function EngagementCreatePage(): JSX.Element {
             body: JSON.stringify({
               clientId,
               templateId: pickedTemplateId,
+              // Anchor the recurrence to the engagement just created so it is
+              // treated as the current period: the NEXT period spawns when this
+              // one completes (or on schedule), rolling this engagement's
+              // appointment/drop-off forward. Without this the first spawn has
+              // no source engagement to roll anything from.
+              lastEngagementId: r.id,
               ...recurrenceDraftToPayload(recurrenceDraft),
             }),
           });

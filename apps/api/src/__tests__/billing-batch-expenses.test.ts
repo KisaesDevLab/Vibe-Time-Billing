@@ -205,6 +205,31 @@ describe('billing-batch expenses (0199)', () => {
     expect(body.expenses[0]!.action).toBe('INCLUDE');
   });
 
+  it('GET /:id returns per-entry cost of labor + the firm estimated labor %', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    // 4h at $50/hr cost = $200 cost of labor, in the batch period.
+    await harness.db.execute(
+      sql`INSERT INTO time_entry
+            (engagement_id, app_user_id, work_code_id, entry_date, hours,
+             standard_rate_snapshot_cents, standard_amount_cents, cost_rate_snapshot_cents,
+             in_scope_flag, description, status)
+          VALUES (${seed.engagementId}, ${seed.appUserId}, ${seed.workCodeId}, '2026-04-15',
+                  '4.00', 20000, 80000, 5000, false, 'work', 'SUBMITTED')`,
+    );
+    const router = batchRouter(seed);
+    const batchId = await createBatch(router, seed);
+    const r = await invoke(router, 'get', '/:id', {
+      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId, params: { id: batchId } }),
+    });
+    const body = r.jsonBody as {
+      entries: { costOfLaborCents: number; action: string }[];
+      estimatedLaborPct: number;
+    };
+    expect(body.estimatedLaborPct).toBe(40); // default when no firm_settings row
+    const included = body.entries.find((e) => e.action === 'INCLUDE');
+    expect(included?.costOfLaborCents).toBe(20000); // 4 * 5000
+  });
+
   it('set-target carves expenses out first; the FEE delta targets time only', async () => {
     const seed = await seedMinimalFirm(harness.db);
     await seedTimeEntry(harness.db, {

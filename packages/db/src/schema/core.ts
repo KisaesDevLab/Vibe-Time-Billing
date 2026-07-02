@@ -360,6 +360,10 @@ export const firmSettings = pgTable('firm_settings', {
     .notNull()
     .default(10000),
   aiWarnThresholdPct: integer('ai_warn_threshold_pct').notNull().default(80),
+  // 0202 — assumed labor share of a target fee. On recurring-engagement
+  // rollforward, the spawned engagement's budgeted fee = prior cost of labor
+  // ÷ (estimatedLaborPct / 100).
+  estimatedLaborPct: integer('estimated_labor_pct').notNull().default(40),
 
   // Time entry rounding — Q19
   timeEntryRoundingHours: numeric('time_entry_rounding_hours', { precision: 4, scale: 2 })
@@ -3782,6 +3786,12 @@ export const engagementRecurrences = pgTable(
     // 0172 — per-recurrence override for the spawned engagement's lifecycle
     // status. NULL inherits the template default, then falls back to 'ACTIVE'.
     spawnStatus: engagementStatus('spawn_status'),
+    // 0200 — on spawn, also roll the source engagement's appointment(s) /
+    // drop-off(s) forward (ISO week-of-year + weekday preserved). Rolled-
+    // forward drop-offs start PENDING; the spawned engagement is set to the
+    // DRAFT workflow state when either toggle is on.
+    rollforwardAppointment: boolean('rollforward_appointment').notNull().default(false),
+    rollforwardDropoff: boolean('rollforward_dropoff').notNull().default(false),
     notes: text('notes'),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -4911,6 +4921,10 @@ export const appointments = pgTable(
       onDelete: 'set null',
     }),
     status: appointmentStatus('status').notNull().default('SCHEDULED'),
+    // 0201 — include this appointment when a recurring engagement rolls
+    // forward (only applies when the recurrence's rollforward_appointment
+    // toggle is on). Default true preserves the roll-all behavior.
+    rollforwardInclude: boolean('rollforward_include').notNull().default(true),
     cancelledReason: text('cancelled_reason'),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     cancelledById: uuid('cancelled_by_id').references(() => appUsers.id, {

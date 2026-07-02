@@ -114,6 +114,7 @@ import {
   buildSmsDispatch,
   buildVoiceDispatch,
   withEmailBranding,
+  withFirmMailConfig,
 } from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
 import type { SmsProvider } from '../../api/src/sms/provider';
@@ -247,7 +248,14 @@ const chargeInvoice = stripe
     }
   : undefined;
 
-const dunningSendEmail = withEmailBranding(await buildMailDispatch(logger), db);
+// Prefer the firm's DB-saved email provider (Admin → Messaging) over the env
+// dispatch, then apply firm branding. Mirrors the API's wrapMailWithFirmConfig
+// so worker-originated mail (dunning, reminders, staged notifications) honors
+// the same UI config as everything else.
+const dunningSendEmail = withEmailBranding(
+  withFirmMailConfig(buildMailDispatch(logger), db, logger),
+  db,
+);
 const dunningSendSms = buildSmsDispatch(logger);
 const voiceDispatch = buildVoiceDispatch(logger);
 

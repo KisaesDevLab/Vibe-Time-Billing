@@ -106,6 +106,7 @@ export function RequestDetailPage(): JSX.Element {
   const [editTitle, setEditTitle] = useState('');
   const [editBody, setEditBody] = useState('');
   const [editPriority, setEditPriority] = useState<Priority>('MEDIUM');
+  const [editStatus, setEditStatus] = useState<string>('OPEN');
   const [editDue, setEditDue] = useState('');
   const [editReminder, setEditReminder] = useState('');
   const [editTags, setEditTags] = useState('');
@@ -167,6 +168,7 @@ export function RequestDetailPage(): JSX.Element {
     setEditTitle(request.title);
     setEditBody(request.body ?? '');
     setEditPriority(request.priority);
+    setEditStatus(request.status);
     setEditDue(request.dueDate ?? '');
     setEditReminder(request.reminderDaysBefore != null ? String(request.reminderDaysBefore) : '');
     setEditTags(request.tags.join(', '));
@@ -185,6 +187,7 @@ export function RequestDetailPage(): JSX.Element {
         title: editTitle.trim(),
         body: editBody,
         priority: editPriority,
+        status: editStatus,
         dueDate: editDue || null,
         reminderDaysBefore: editReminder.trim() ? Number(editReminder) : null,
         tags: editTags
@@ -503,6 +506,22 @@ export function RequestDetailPage(): JSX.Element {
                       {p}
                     </option>
                   ))}
+                </select>
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Status
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  style={{ display: 'block', padding: 6, marginTop: 4 }}
+                >
+                  {['OPEN', 'PENDING', 'NEEDS_INFO', 'FULFILLED', 'DISMISSED', 'EXPIRED'].map(
+                    (s) => (
+                      <option key={s} value={s}>
+                        {s === 'PENDING' ? 'PENDING (scheduled)' : s}
+                      </option>
+                    ),
+                  )}
                 </select>
               </label>
               <label style={{ fontSize: 12 }}>

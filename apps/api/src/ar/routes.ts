@@ -34,7 +34,28 @@ interface ClientAging {
   clientName: string;
   buckets: Record<AgingBucket, number>;
   total: number;
+  /** Balance-weighted average days past the due date across outstanding
+   *  invoices (not-yet-due invoices count as 0). */
+  avgDaysPastDue: number;
   partnerId?: string;
+}
+
+/** Balance-weighted mean of days-past-due; not-yet-due invoices count as 0. */
+function weightedAvgDaysPastDue(
+  rows: { entryDate: string; amountCents: number }[],
+  today: string,
+): number {
+  let weighted = 0;
+  let weight = 0;
+  for (const r of rows) {
+    const days = Math.max(
+      0,
+      Math.floor((Date.parse(today) - Date.parse(r.entryDate)) / 86_400_000),
+    );
+    weighted += days * r.amountCents;
+    weight += r.amountCents;
+  }
+  return weight > 0 ? Math.round(weighted / weight) : 0;
 }
 
 export function createArRouter(deps: ArRoutesDeps): Router {
@@ -596,6 +617,7 @@ async function loadAging(
       clientName: v.name,
       buckets: b,
       total,
+      avgDaysPastDue: weightedAvgDaysPastDue(v.rows, today),
       partnerId: v.partnerId,
     });
     totals['0-30'] += b['0-30'];

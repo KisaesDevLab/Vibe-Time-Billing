@@ -49,6 +49,9 @@ function statusTone(s: string): 'success' | 'warning' | 'neutral' | 'accent' {
       return 'success';
     case 'NEEDS_INFO':
       return 'accent';
+    case 'PENDING':
+      // Rolled-forward / future-scheduled drop-off, awaiting activation.
+      return 'accent';
     default:
       return 'neutral';
   }

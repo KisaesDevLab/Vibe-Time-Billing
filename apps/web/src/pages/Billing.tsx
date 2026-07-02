@@ -60,6 +60,8 @@ interface BatchEntry {
   workCode?: string | null;
   // Per-entry amount after adjustments (0 for deferred / written-off).
   billedAmountCents?: number;
+  // Cost of labor for this entry (hours × snapshotted cost rate).
+  costOfLaborCents?: number;
 }
 
 // 0199 — an expense line on the batch (cost + markup billed item, no
@@ -85,6 +87,8 @@ interface BatchDetail {
   // 0086 — full engagement list (primary first) for the batch header.
   engagements?: Array<{ id: string; name: string; clientId: string; clientName: string }>;
   adjustmentTotalCents?: number;
+  // 0202 — firm estimated labor % (minimum-estimate-fee card divisor).
+  estimatedLaborPct?: number;
   // Invoice id once the batch is INVOICED (for print / send / unfinalize).
   invoiceId?: string | null;
   // R2 — firm retainer feature flag + biller-toggle default, so the
@@ -876,6 +880,16 @@ function BatchDetailPage(): JSX.Element {
     return s + (expenseBilled.get(x.expenseId) ?? x.billedAmountCents);
   }, 0);
   const grandTotalCents = billedCents + expenseBilledTotal;
+  // 0202 — minimum estimate fee: cost of labor on INCLUDED time ÷ the firm's
+  // estimated labor %. A pricing floor for the target fee. Reactive to the
+  // include/defer/write-off selections.
+  const includedLaborCostCents = detail.entries.reduce((s, e) => {
+    const a = actions.get(e.timeEntryId) ?? e.action;
+    return a === 'INCLUDE' ? s + (e.costOfLaborCents ?? 0) : s;
+  }, 0);
+  const laborPct = detail.estimatedLaborPct ?? 40;
+  const minEstimateFeeCents =
+    laborPct > 0 ? Math.round((includedLaborCostCents * 100) / laborPct) : 0;
   const lineSumCents = invoiceLines.reduce(
     (s, l) => s + (Number.isFinite(Number(l.dollars)) ? Math.round(Number(l.dollars) * 100) : 0),
     0,
@@ -1002,6 +1016,15 @@ function BatchDetailPage(): JSX.Element {
               )}
             </div>
           )}
+        </div>
+      </Card>
+
+      <Card title="Minimum estimate fee">
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <strong style={{ fontSize: 22 }}>{fmtCents(minEstimateFeeCents)}</strong>
+          <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+            cost of labor on included time ({fmtCents(includedLaborCostCents)}) ÷ {laborPct}%
+          </span>
         </div>
       </Card>
 

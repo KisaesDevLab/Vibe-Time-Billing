@@ -21,6 +21,7 @@ import {
   engagementExpenses,
   engagements,
   firmRetainerSettings,
+  firmSettings,
   invoiceLineItems,
   invoices,
   timeEntries,
@@ -403,6 +404,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           entryDate: timeEntries.entryDate,
           hours: timeEntries.hours,
           standardAmountCents: timeEntries.standardAmountCents,
+          costRateSnapshotCents: timeEntries.costRateSnapshotCents,
           action: billingBatchEntries.action,
           appUserId: timeEntries.appUserId,
           // 0050 — surface timekeeper name + engagement client on each row
@@ -537,7 +539,10 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
             ? (adjByEntry.get(e.timeEntryId) ?? 0) + (proRata.get(e.timeEntryId) ?? 0)
             : 0;
         const billedAmountCents = e.action === 'INCLUDE' ? e.standardAmountCents + adj : 0;
-        return { ...e, adjustmentAmountCents: adj, billedAmountCents };
+        // Cost of labor for this entry (hours × snapshotted cost rate); drives
+        // the minimum-estimate-fee card on the billing screen.
+        const costOfLaborCents = Math.round(Number(e.hours) * (e.costRateSnapshotCents ?? 0));
+        return { ...e, adjustmentAmountCents: adj, billedAmountCents, costOfLaborCents };
       });
 
       // 0199 — expenses on this batch (cost + markup billed items). No
@@ -582,6 +587,13 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         invoiceId = li?.invoiceId ?? null;
       }
 
+      // 0202 — firm's estimated labor % drives the minimum-estimate-fee card.
+      const [laborCfg] = await deps.db
+        .select({ pct: firmSettings.estimatedLaborPct })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+
       res.json({
         batch,
         entries: entriesWithBilled,
@@ -592,6 +604,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         adjustmentTotalCents,
         invoiceId,
         retainer,
+        estimatedLaborPct: laborCfg?.pct ?? 40,
       });
     },
   );

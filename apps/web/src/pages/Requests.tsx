@@ -546,7 +546,7 @@ export function RequestsPage(): JSX.Element {
                     setOffset(0);
                   }}
                 >
-                  {s === 'PENDING' ? 'SCHEDULED' : s}
+                  {s}
                 </Button>
               ))}
             </div>

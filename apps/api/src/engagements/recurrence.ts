@@ -52,6 +52,8 @@ const CreateSchema = z
     seedPeriodMonth: z.number().int().min(1).max(12).optional(),
     seedPeriodLabel: z.string().max(80).optional(),
     spawnStatus: z.enum(SPAWN_STATUSES).optional(),
+    rollforwardAppointment: z.boolean().optional(),
+    rollforwardDropoff: z.boolean().optional(),
     notes: z.string().max(2000).optional(),
     // Optional back-pointer so the first spawn advances from an existing
     // engagement's period (used when adding a recurrence from a detail page).
@@ -76,6 +78,8 @@ const PatchSchema = z
     seedPeriodLabel: z.string().max(80).nullable().optional(),
     status: z.enum(['ACTIVE', 'PAUSED']).optional(),
     spawnStatus: z.enum(SPAWN_STATUSES).nullable().optional(),
+    rollforwardAppointment: z.boolean().optional(),
+    rollforwardDropoff: z.boolean().optional(),
     notes: z.string().max(2000).nullable().optional(),
   })
   .strict()
@@ -132,6 +136,8 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           lastRunAt: engagementRecurrences.lastRunAt,
           status: engagementRecurrences.status,
           spawnStatus: engagementRecurrences.spawnStatus,
+          rollforwardAppointment: engagementRecurrences.rollforwardAppointment,
+          rollforwardDropoff: engagementRecurrences.rollforwardDropoff,
           notes: engagementRecurrences.notes,
           createdAt: engagementRecurrences.createdAt,
         })
@@ -234,6 +240,8 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
           seedPeriodMonth: parsed.data.seedPeriodMonth ?? null,
           seedPeriodLabel: parsed.data.seedPeriodLabel ?? null,
           spawnStatus: parsed.data.spawnStatus ?? null,
+          rollforwardAppointment: parsed.data.rollforwardAppointment ?? false,
+          rollforwardDropoff: parsed.data.rollforwardDropoff ?? false,
           notes: parsed.data.notes ?? null,
           lastEngagementId: resolvedLastEngagementId,
           createdById: session.appUserId,
@@ -300,6 +308,10 @@ export function createEngagementRecurrenceRouter(deps: EngagementRecurrenceRoute
         patch['seedPeriodLabel'] = parsed.data.seedPeriodLabel;
       if (parsed.data.status !== undefined) patch['status'] = parsed.data.status;
       if (parsed.data.spawnStatus !== undefined) patch['spawnStatus'] = parsed.data.spawnStatus;
+      if (parsed.data.rollforwardAppointment !== undefined)
+        patch['rollforwardAppointment'] = parsed.data.rollforwardAppointment;
+      if (parsed.data.rollforwardDropoff !== undefined)
+        patch['rollforwardDropoff'] = parsed.data.rollforwardDropoff;
       if (parsed.data.notes !== undefined) patch['notes'] = parsed.data.notes;
       // When trigger flips to ON_COMPLETION, drop the date so the
       // schema CHECK (schedule = has-date) is satisfied.

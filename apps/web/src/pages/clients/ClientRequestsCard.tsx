@@ -74,7 +74,14 @@ interface FirmUser {
   fullName: string;
 }
 
-const STATUS_FILTERS = ['OPEN_ONLY', 'ALL', 'FULFILLED', 'DISMISSED'] as const;
+const STATUS_FILTERS = [
+  'OPEN_ONLY',
+  'ALL',
+  'PENDING',
+  'NEEDS_INFO',
+  'FULFILLED',
+  'DISMISSED',
+] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 const PRIORITIES: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
@@ -119,6 +126,8 @@ export function ClientRequestsCard({ clientId }: { clientId: string }): JSX.Elem
     try {
       const qs = new URLSearchParams({ clientId, limit: '100' });
       if (statusFilter === 'OPEN_ONLY') qs.set('status', 'OPEN');
+      else if (statusFilter === 'PENDING') qs.set('status', 'PENDING');
+      else if (statusFilter === 'NEEDS_INFO') qs.set('status', 'NEEDS_INFO');
       else if (statusFilter === 'FULFILLED') qs.set('status', 'FULFILLED');
       else if (statusFilter === 'DISMISSED') qs.set('status', 'DISMISSED');
       const r = await api<{ items: RequestRow[]; total: number }>(
@@ -179,6 +188,8 @@ export function ClientRequestsCard({ clientId }: { clientId: string }): JSX.Elem
             >
               <option value="OPEN_ONLY">Open only</option>
               <option value="ALL">All</option>
+              <option value="PENDING">Pending</option>
+              <option value="NEEDS_INFO">Needs info</option>
               <option value="FULFILLED">Fulfilled</option>
               <option value="DISMISSED">Dismissed</option>
             </select>

@@ -366,18 +366,24 @@ function LogView({
   // Selected client's outstanding A/R (cents) — shown in the log-time box so
   // staff see the balance while working. Same figure as the client header.
   const [outstandingCents, setOutstandingCents] = useState<number | null>(null);
+  const [avgDaysPastDue, setAvgDaysPastDue] = useState<number | null>(null);
   useEffect(() => {
     if (!clientId) {
       setOutstandingCents(null);
+      setAvgDaysPastDue(null);
       return;
     }
     let alive = true;
     setOutstandingCents(null);
-    void api<{ summary: { outstandingCents: number } | null }>(
+    setAvgDaysPastDue(null);
+    void api<{ summary: { outstandingCents: number; avgDaysPastDue?: number } | null }>(
       `/api/staff/stats/client/${clientId}`,
     )
       .then((r) => {
-        if (alive) setOutstandingCents(r.summary?.outstandingCents ?? 0);
+        if (alive) {
+          setOutstandingCents(r.summary?.outstandingCents ?? 0);
+          setAvgDaysPastDue(r.summary?.avgDaysPastDue ?? 0);
+        }
       })
       .catch(() => {
         if (alive) setOutstandingCents(-1); // sentinel: unavailable → render "—"
@@ -842,6 +848,14 @@ function LogView({
                           minimumFractionDigits: 2,
                         })}`}
               </strong>
+              {clientId && outstandingCents != null && outstandingCents > 0 && (
+                <div
+                  style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 2 }}
+                  title="Balance-weighted average days past the due date across outstanding invoices"
+                >
+                  AVG Days: {avgDaysPastDue ?? '…'}
+                </div>
+              )}
             </div>
             <Button
               type="button"
