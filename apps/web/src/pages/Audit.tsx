@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { useEffect, useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
-import { api } from '../api-client';
-import { useClientPage } from '../lib/use-paged-list';
+import { usePagedList } from '../lib/use-paged-list';
 
 interface AuditRow {
   id: string;
@@ -22,21 +21,20 @@ interface AuditRow {
 
 const FILTER_KEY = '__vibe_audit_filters';
 
-export function AuditPage(): JSX.Element {
-  const [items, setItems] = useState<AuditRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface AppliedFilters {
+  entityType: string;
+  entityId: string;
+  start: string;
+  end: string;
+  q: string;
+}
 
+export function AuditPage(): JSX.Element {
   // Full-text search (matches entity_type / entity_id / ip / user-agent).
   const [searchQ, setSearchQ] = useState('');
 
   // Filters — persisted to localStorage so the page survives reloads.
-  const saved = ((): {
-    entityType?: string;
-    entityId?: string;
-    start?: string;
-    end?: string;
-  } => {
+  const saved = ((): Partial<AppliedFilters> => {
     try {
       const raw = localStorage.getItem(FILTER_KEY);
       return raw ? (JSON.parse(raw) as Record<string, string>) : {};
@@ -49,56 +47,45 @@ export function AuditPage(): JSX.Element {
   const [start, setStart] = useState(saved.start ?? '');
   const [end, setEnd] = useState(saved.end ?? '');
 
-  async function load(): Promise<void> {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      if (entityType) params.set('entityType', entityType);
-      if (entityId) params.set('entityId', entityId);
-      if (start) params.set('start', start);
-      if (end) params.set('end', end);
-      params.set('limit', '200');
-      const r = await api<{ items: AuditRow[] }>(`/api/staff/audit?${params.toString()}`);
-      setItems(r.items ?? []);
-      try {
-        localStorage.setItem(FILTER_KEY, JSON.stringify({ entityType, entityId, start, end }));
-      } catch {
-        // ignore localStorage failures
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed');
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Committed filter/search state — drives the server query. Filtering,
+  // sorting, paging, and full-text all run SERVER-side (the audit log grows
+  // without bound across staff × years).
+  const [applied, setApplied] = useState<AppliedFilters>({
+    entityType: saved.entityType ?? '',
+    entityId: saved.entityId ?? '',
+    start: saved.start ?? '',
+    end: saved.end ?? '',
+    q: '',
+  });
+
+  const query = useMemo(
+    () => ({
+      entityType: applied.entityType || undefined,
+      entityId: applied.entityId || undefined,
+      start: applied.start || undefined,
+      end: applied.end || undefined,
+      q: applied.q || undefined,
+    }),
+    [applied],
+  );
+  const list = usePagedList<AuditRow>('/api/staff/audit', { query });
+  const loading = list.loading;
+  const error = list.error;
 
   function submit(e: FormEvent): void {
     e.preventDefault();
-    void load();
-  }
-
-  async function fullText(): Promise<void> {
-    if (searchQ.length < 2) return;
-    setLoading(true);
-    setError(null);
+    setApplied((prev) => ({ entityType, entityId, start, end, q: prev.q }));
     try {
-      const r = await api<{ items: AuditRow[] }>(
-        `/api/staff/audit/search?q=${encodeURIComponent(searchQ)}`,
-      );
-      setItems(r.items ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed');
-    } finally {
-      setLoading(false);
+      localStorage.setItem(FILTER_KEY, JSON.stringify({ entityType, entityId, start, end }));
+    } catch {
+      // ignore localStorage failures
     }
   }
 
-  const { paged, pagination } = useClientPage(items);
+  function fullText(): void {
+    if (searchQ.length < 2) return;
+    setApplied((prev) => ({ ...prev, q: searchQ }));
+  }
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
@@ -146,17 +133,13 @@ export function AuditPage(): JSX.Element {
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
           />
-          <Button
-            type="button"
-            disabled={loading || searchQ.length < 2}
-            onClick={() => void fullText()}
-          >
+          <Button type="button" disabled={loading || searchQ.length < 2} onClick={fullText}>
             Search
           </Button>
         </div>
       </Card>
 
-      <Card title={`Events (${items.length})`}>
+      <Card title={`Events (${list.total})`}>
         <Table<AuditRow>
           columns={[
             {
@@ -207,8 +190,8 @@ export function AuditPage(): JSX.Element {
             },
             { key: 'ip', header: 'IP', render: (r) => r.ip ?? '—' },
           ]}
-          rows={paged}
-          pagination={pagination}
+          rows={list.rows}
+          pagination={list.pagination}
           rowKey={(r) => r.id}
           empty="No events match these filters."
         />

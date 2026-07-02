@@ -6,7 +6,19 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { csvField } from '../lib/csv';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, lte, notInArray, type SQL } from 'drizzle-orm';
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  lte,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -66,7 +78,12 @@ const QuerySchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}/)
     .optional(),
+  // Free-text match across entity type / id / ip / user-agent (folds in the
+  // old /search endpoint so the list can page + name-enrich a text search).
+  q: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(250).optional(),
 });
 
 type AuditRowLike = {
@@ -184,14 +201,48 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
       if (q.action) conds.push(eq(auditLog.action, q.action));
       if (q.start) conds.push(gte(auditLog.occurredAt, new Date(q.start)));
       if (q.end) conds.push(lte(auditLog.occurredAt, new Date(q.end)));
+      // Free-text match (entity type / id / ip / user-agent). entityId is a
+      // uuid → cast to text before ILIKE (no uuid ILIKE operator).
+      if (q.q && q.q.length >= 2) {
+        const like = `%${q.q.replace(/[%_]/g, '\\$&')}%`;
+        const match = or(
+          ilike(auditLog.entityType, like),
+          sql`${auditLog.entityId}::text ILIKE ${like}`,
+          ilike(auditLog.ip, like),
+          ilike(auditLog.userAgent, like),
+        );
+        if (match) conds.push(match);
+      }
 
-      const builder = deps.db.select().from(auditLog);
-      const items = await (conds.length === 0
-        ? builder.orderBy(desc(auditLog.occurredAt)).limit(q.limit)
-        : builder
-            .where(and(...conds))
-            .orderBy(desc(auditLog.occurredAt))
-            .limit(q.limit));
+      const where = conds.length === 0 ? undefined : and(...conds);
+
+      // Paginated envelope when `page` is supplied; else the legacy capped
+      // `{ items }` shape (back-compat for other callers).
+      if (q.page != null) {
+        const pageSize = q.pageSize ?? 50;
+        const [totalRow] = await deps.db
+          .select({ total: sql<number>`COUNT(*)`.as('total') })
+          .from(auditLog)
+          .where(where);
+        const total = Number(totalRow?.total ?? 0);
+        const rows = await deps.db
+          .select()
+          .from(auditLog)
+          .where(where)
+          .orderBy(desc(auditLog.occurredAt))
+          .limit(pageSize)
+          .offset((q.page - 1) * pageSize);
+        const enriched = await enrichWithNames(deps.db, rows);
+        res.json({ rows: enriched, items: enriched, total, page: q.page, pageSize });
+        return;
+      }
+
+      const items = await deps.db
+        .select()
+        .from(auditLog)
+        .where(where)
+        .orderBy(desc(auditLog.occurredAt))
+        .limit(q.limit);
       res.json({ items: await enrichWithNames(deps.db, items) });
     },
   );
