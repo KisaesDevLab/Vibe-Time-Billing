@@ -38,6 +38,7 @@ interface Settings {
   adjustmentApprovalThresholdCents: number;
   aiMonthlyBudgetCents: number;
   estimatedLaborPct: number;
+  dropoffDueOffsetDays: number | null;
   stepUpTimeoutMinutes: number;
   staffSecondFactorRequired: boolean;
   lateEntryAlertDays: number;
@@ -181,6 +182,7 @@ export function FirmSettingsPage(): JSX.Element {
           adjustmentApprovalThresholdCents: s.adjustmentApprovalThresholdCents,
           aiMonthlyBudgetCents: s.aiMonthlyBudgetCents,
           estimatedLaborPct: s.estimatedLaborPct,
+          dropoffDueOffsetDays: s.dropoffDueOffsetDays,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
           staffSecondFactorRequired: s.staffSecondFactorRequired,
           lateEntryAlertDays: s.lateEntryAlertDays,
@@ -396,6 +398,21 @@ export function FirmSettingsPage(): JSX.Element {
             value={s.estimatedLaborPct}
             onChange={(e) =>
               setS({ ...s, estimatedLaborPct: Math.max(1, Math.min(100, Number(e.target.value))) })
+            }
+          />
+          <Input
+            label="Auto due date: days after drop-off (blank = off)"
+            type="number"
+            min={0}
+            max={365}
+            value={s.dropoffDueOffsetDays ?? ''}
+            placeholder="e.g. 14"
+            onChange={(e) =>
+              setS({
+                ...s,
+                dropoffDueOffsetDays:
+                  e.target.value === '' ? null : Math.max(0, Math.min(365, Number(e.target.value))),
+              })
             }
           />
           <Input

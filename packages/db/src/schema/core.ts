@@ -365,6 +365,11 @@ export const firmSettings = pgTable('firm_settings', {
   // ÷ (estimatedLaborPct / 100).
   estimatedLaborPct: integer('estimated_labor_pct').notNull().default(40),
 
+  // 0204 — when a drop-off date is entered for an engagement with no due date,
+  // the due date is auto-set to this many days after the drop-off. NULL =
+  // disabled (no automatic due date).
+  dropoffDueOffsetDays: integer('dropoff_due_offset_days'),
+
   // Time entry rounding — Q19
   timeEntryRoundingHours: numeric('time_entry_rounding_hours', { precision: 4, scale: 2 })
     .notNull()

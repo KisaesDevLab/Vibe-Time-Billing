@@ -108,6 +108,9 @@ const FirmSettingsPatchSchema = z.object({
   aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
   // 0202 — estimated labor % of a target fee (rollforward budgeting).
   estimatedLaborPct: z.number().int().min(1).max(100).optional(),
+  // 0204 — days after a drop-off date to auto-set an engagement's due date
+  // (only when it has none). null = disabled.
+  dropoffDueOffsetDays: z.number().int().min(0).max(365).nullable().optional(),
   timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
   stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
   // 0151 — firm-level staff second-factor toggle (revises decision #5).

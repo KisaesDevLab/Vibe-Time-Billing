@@ -34,6 +34,7 @@ import {
   engagementAssignments,
   engagements,
   firmConfig,
+  firmSettings,
   requestTemplateItems,
   requestTemplates,
   timeEntries,
@@ -168,6 +169,38 @@ async function getSuggestionExpirationDays(db: Database, firmId: string): Promis
     .where(eq(firmConfig.firmId, firmId))
     .limit(1);
   return row?.days ?? 7;
+}
+
+// 0204 — when a drop-off date is entered for an engagement that has no due date
+// yet, set the due date to firm_settings.dropoff_due_offset_days after the
+// drop-off. No-op when the offset is unset (feature disabled) or the engagement
+// already has a due date. Runs inside the caller's transaction.
+async function applyDropoffDueDate(
+  db: Database,
+  firmId: string,
+  engagementId: string,
+  dropDate: string,
+): Promise<void> {
+  const [settings] = await db
+    .select({ offset: firmSettings.dropoffDueOffsetDays })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firmId))
+    .limit(1);
+  const offset = settings?.offset;
+  if (offset == null) return; // feature disabled
+  const [eng] = await db
+    .select({ dueDate: engagements.dueDate })
+    .from(engagements)
+    .where(eq(engagements.id, engagementId))
+    .limit(1);
+  if (!eng || eng.dueDate) return; // no engagement, or it already has a due date
+  const d = new Date(`${dropDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return;
+  d.setUTCDate(d.getUTCDate() + offset);
+  await db
+    .update(engagements)
+    .set({ dueDate: d.toISOString().slice(0, 10) })
+    .where(eq(engagements.id, engagementId));
 }
 
 export function createRequestRouter(deps: RequestRoutesDeps): Router {
@@ -706,6 +739,16 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             })),
           );
         }
+        // 0204 — a drop-off's due date is the "drop date"; back-fill the
+        // engagement's due date from it when the engagement has none.
+        if (parsed.data.kind === 'DROP_OFF' && resolvedDueDate) {
+          await applyDropoffDueDate(
+            tx as unknown as Database,
+            session.firmId,
+            parsed.data.engagementId,
+            resolvedDueDate,
+          );
+        }
         return row.id;
       });
       await emitAudit(deps.db, {
@@ -755,6 +798,8 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         .select({
           id: clientRequests.id,
           status: clientRequests.status,
+          kind: clientRequests.kind,
+          engagementId: clientRequests.engagementId,
           dueDate: clientRequests.dueDate,
           reminderDaysBefore: clientRequests.reminderDaysBefore,
         })
@@ -819,6 +864,16 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       if (updated.length === 0) {
         res.status(404).json({ error: 'not_found' });
         return;
+      }
+      // 0204 — editing a drop-off's date back-fills the engagement due date
+      // when it has none (same rule as create).
+      if (existing.kind === 'DROP_OFF' && parsed.data.dueDate) {
+        const engId = parsed.data.engagementId ?? existing.engagementId;
+        if (engId) {
+          await applyDropoffDueDate(deps.db, session.firmId, engId, parsed.data.dueDate).catch(
+            (err: unknown) => logger.error({ err }, 'dropoff due-date backfill failed'),
+          );
+        }
       }
       await emitAudit(deps.db, {
         action: 'UPDATE',
