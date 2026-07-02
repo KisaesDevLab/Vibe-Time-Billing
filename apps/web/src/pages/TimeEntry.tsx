@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
@@ -18,8 +18,7 @@ import {
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { filterStatuses } from '../status-filter';
-import { selectRows, useColumnView } from '../lib/column-view';
-import { useClientPage } from '../lib/use-paged-list';
+import { useColumnView, viewToPagedQuery } from '../lib/column-view';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
 import { ProcessProjectDialog } from './clients/ProcessProjectDialog';
 import { ExpensesView } from './ExpensesView';
@@ -451,7 +450,14 @@ function LogView({
   const [filterEnd, setFilterEnd] = useState('');
   const [filterBillable, setFilterBillable] = useState<'' | 'true' | 'false'>('');
   const [filterOOS, setFilterOOS] = useState<'' | 'true' | 'false'>('');
-  const view = useColumnView('vibe.time.view', { sortCol: 'entryDate', sortDir: 'desc' });
+  // Search + sort run SERVER-side now (entries accumulate past the old 500
+  // cap); `.v2` drops stale pre-migration state.
+  const view = useColumnView('vibe.time.view.v2', { sortCol: 'entryDate', sortDir: 'desc' });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [sumHours, setSumHours] = useState(0);
+  const [sumAmountCents, setSumAmountCents] = useState(0);
 
   function beginEdit(e: TimeEntry): void {
     setEditingId(e.id);
@@ -547,31 +553,51 @@ function LogView({
     }
   }, [clientId]);
 
-  async function load(): Promise<void> {
+  // Broad pre-filters + the column view's search/sort, serialized once.
+  const listParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (filterClientId) params.set('clientId', filterClientId);
+    if (filterEngagementId) params.set('engagementId', filterEngagementId);
+    if (filterStart) params.set('startDate', filterStart);
+    if (filterEnd) params.set('endDate', filterEnd);
+    if (filterBillable) params.set('billable', filterBillable);
+    if (filterOOS) params.set('outOfScope', filterOOS);
+    const vq = viewToPagedQuery(view);
+    for (const [k, v] of Object.entries(vq)) if (v != null) params.set(k, v);
+    return params;
+  }, [filterClientId, filterEngagementId, filterStart, filterEnd, filterBillable, filterOOS, view]);
+
+  const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (filterClientId) params.set('clientId', filterClientId);
-      if (filterEngagementId) params.set('engagementId', filterEngagementId);
-      if (filterStart) params.set('startDate', filterStart);
-      if (filterEnd) params.set('endDate', filterEnd);
-      if (filterBillable) params.set('billable', filterBillable);
-      if (filterOOS) params.set('outOfScope', filterOOS);
-      params.set('pageSize', '500');
-      const t = await api<{ rows: TimeEntry[] }>(
-        `/api/staff/time-entries/list?${params.toString()}`,
-      );
+      const params = new URLSearchParams(listParams);
+      params.set('page', String(page));
+      params.set('pageSize', String(pageSize));
+      const t = await api<{
+        rows: TimeEntry[];
+        total: number;
+        sumHours: number;
+        sumAmountCents: number;
+      }>(`/api/staff/time-entries/list?${params.toString()}`);
       setEntries(t.rows ?? []);
+      setTotal(t.total ?? 0);
+      setSumHours(t.sumHours ?? 0);
+      setSumAmountCents(t.sumAmountCents ?? 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'load_failed');
     } finally {
       setLoading(false);
     }
-  }
+  }, [listParams, page, pageSize]);
+
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterClientId, filterEngagementId, filterStart, filterEnd, filterBillable, filterOOS]);
+  }, [load]);
+
+  // Any filter/search/sort change snaps back to page 1.
+  useEffect(() => {
+    setPage(1);
+  }, [listParams]);
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -614,26 +640,22 @@ function LogView({
     }
   }
 
-  const visible = useMemo(
-    () =>
-      selectRows(entries, view, {
-        searchText: (e) => `${e.description ?? ''} ${e.clientName ?? ''} ${e.engagementName ?? ''}`,
-        sortValues: {
-          entryDate: (e) => e.entryDate,
-          client: (e) => e.clientName ?? '',
-          engagement: (e) => e.engagementName ?? '',
-          hours: (e) => Number(e.hours),
-          amount: (e) => e.standardAmountCents,
-          billable: (e) => (e.billableFlag ? '1' : '0'),
-          description: (e) => e.description ?? '',
-        },
-        tieBreak: (a, b) => b.entryDate.localeCompare(a.entryDate),
-      }),
-    [entries, view],
+  const pagination = useMemo(
+    () => ({
+      page,
+      pageSize,
+      total,
+      onPageChange: setPage,
+      onPageSizeChange: (s: number) => {
+        setPageSize(s);
+        setPage(1);
+      },
+    }),
+    [page, pageSize, total],
   );
-  const { paged, pagination } = useClientPage(visible);
-  const totalHours = visible.reduce((s, e) => s + Number(e.hours), 0);
-  const totalAmount = visible.reduce((s, e) => s + e.standardAmountCents, 0);
+  // Totals span the whole filtered set (server aggregate), not just the page.
+  const totalHours = sumHours;
+  const totalAmount = sumAmountCents;
 
   const clientHasNoActive = clientId && filteredEngagements.length === 0;
   const activeClients = clients.filter((c) => c.status !== 'ARCHIVED');
@@ -946,11 +968,9 @@ function LogView({
         title={
           <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <span>My entries</span>
-            {entries.length > 0 && (
+            {total > 0 && (
               <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
-                {visible.length === entries.length
-                  ? `${entries.length}`
-                  : `${visible.length} of ${entries.length}`}
+                {view.anyFilterActive ? `${total} match${total === 1 ? '' : 'es'}` : `${total}`}
               </span>
             )}
           </span>
@@ -1311,7 +1331,7 @@ function LogView({
                 },
               },
             ]}
-            rows={paged}
+            rows={entries}
             pagination={pagination}
             rowKey={(e) => e.id}
             empty="No time logged yet."
