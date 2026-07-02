@@ -1352,6 +1352,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // Security-sensitive permission-key prefixes that must never be granted
+  // to a lower role via the matrix editor — these are admin-reserved.
+  const PROTECTED_PREFIXES = ['app_user:', 'crypto:', 'admin:'] as const;
+
   // 0147 — toggle one cell. granted matching the template clears the
   // override row (back to default); differing upserts a delta. The
   // admin column is locked: it always holds every key.
@@ -1375,6 +1379,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         typeof granted !== 'boolean'
       ) {
         res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (PROTECTED_PREFIXES.some((p) => key.startsWith(p))) {
+        res.status(400).json({ error: 'protected_key' });
         return;
       }
       // reason: narrowed by the editable/PERMISSION_KEYS guards above.

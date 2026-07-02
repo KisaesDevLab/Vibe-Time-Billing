@@ -161,6 +161,11 @@ export async function verifyRegistration(
 
 export interface BuildAuthenticationOptionsInput {
   candidates: StoredCredentialRow[];
+  // Passwordless primary sign-in passes 'required' — when the passkey is
+  // the SOLE factor it must carry user verification (biometric/PIN) to be
+  // genuine two-factor (possession + inherence). Step-up (password already
+  // proven) keeps the default 'preferred'.
+  userVerification?: 'preferred' | 'required';
 }
 
 export async function buildAuthenticationOptions(
@@ -169,7 +174,7 @@ export async function buildAuthenticationOptions(
   return generateAuthenticationOptions({
     rpID: rpId(),
     timeout: 60_000,
-    userVerification: 'preferred',
+    userVerification: input.userVerification ?? 'preferred',
     allowCredentials: input.candidates.map((c) => ({
       id: c.credentialId,
       transports: splitTransports(c.transports),
@@ -181,6 +186,10 @@ export interface VerifyAuthenticationInput {
   response: AuthenticationResponseJSON;
   expectedChallenge: string;
   credential: StoredCredentialRow;
+  // Passwordless primary sign-in passes true so a sole-factor passkey
+  // assertion is rejected unless the authenticator performed user
+  // verification. Step-up leaves it false (password already supplied).
+  requireUserVerification?: boolean;
 }
 
 export interface VerifiedAuthenticationOutcome {
@@ -208,7 +217,7 @@ export async function verifyAuthentication(
       expectedOrigin: rpOrigin(),
       expectedRPID: rpId(),
       credential,
-      requireUserVerification: false,
+      requireUserVerification: input.requireUserVerification ?? false,
     });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'verify_failed' };

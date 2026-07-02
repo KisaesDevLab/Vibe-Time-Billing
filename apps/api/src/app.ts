@@ -512,7 +512,7 @@ export function createApp(deps: AppDeps): Express {
   // appliance is locked (existing TLS termination shouldn't break
   // mid-incident). No auth: Caddy is a separate process; the route
   // is constrained by a `@internal` host matcher in the Caddy config.
-  const caddyRouter = createCaddyRouter({ db: deps.db });
+  const caddyRouter = createCaddyRouter({ db: deps.db, redis: deps.redis });
   app.use('/v1/internal', caddyRouter);
 
   // Stage 1B — lock middleware. Once mounted, every request below this
@@ -527,6 +527,9 @@ export function createApp(deps: AppDeps): Express {
     sendEmailOtp: deps.sendEmailOtp,
     sendSmsOtp: deps.sendSmsOtp,
     requireAuth: auth.requireAuth,
+    // CSRF for the authenticated mutating endpoints (factor enroll/disable,
+    // password change, logout). Public login endpoints skip it.
+    requireCsrf: auth.requireCsrf,
   });
   app.use('/api/auth', authRouter);
 

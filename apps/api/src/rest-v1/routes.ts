@@ -127,6 +127,19 @@ export function createRestV1Router(deps: RestRoutesDeps): Router {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
+      // The target engagement must belong to the token's firm before we
+      // insert — mirrors the MCP create_time_entry firm-scope guard so a
+      // caller can't write time against another firm's engagement.
+      const [eng] = await deps.db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(engagements.id, parsed.data.engagementId), eq(clients.firmId, token.firmId)))
+        .limit(1);
+      if (!eng) {
+        res.status(400).json({ error: 'engagement_not_in_firm' });
+        return;
+      }
       const [row] = await deps.db
         .insert(timeEntries)
         .values({

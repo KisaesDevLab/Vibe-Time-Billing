@@ -13,6 +13,9 @@ import { loadConfig } from '../config';
 import { readSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
 
+// Hard ceiling on a staff session's age regardless of activity.
+const ABSOLUTE_SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -37,6 +40,15 @@ export function staffAuthDeps(store: SessionStore): {
       const session = await store.get('staff', sid);
       if (!session || session.realm !== 'staff') {
         res.status(401).json({ error: 'invalid_session' });
+        return;
+      }
+      // Absolute lifetime cap. The store's 7-day TTL is a sliding
+      // inactivity window that a stolen-but-active cookie could ride
+      // indefinitely; this is the hard ceiling that forces periodic
+      // re-authentication regardless of activity.
+      if (Date.now() - session.createdAt > ABSOLUTE_SESSION_MAX_MS) {
+        await store.destroy('staff', sid);
+        res.status(401).json({ error: 'session_expired' });
         return;
       }
       await store.touch('staff', sid);

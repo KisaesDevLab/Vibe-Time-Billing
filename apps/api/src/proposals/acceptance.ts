@@ -27,7 +27,7 @@
 
 import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, lt } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -181,17 +181,48 @@ export function createAcceptanceRouter(deps: AcceptanceDeps): Router {
           };
         }
 
-        // Resolve the target roster row. The magic link (when present)
-        // points at the signer being represented.
-        let targetSignatureId: string | null = null;
-        if (parsed.data.magicLinkId) {
-          const [ml] = await tx
-            .select({ signatureId: magicLinks.signatureId })
-            .from(magicLinks)
-            .where(eq(magicLinks.id, parsed.data.magicLinkId))
-            .limit(1);
-          targetSignatureId = ml?.signatureId ?? null;
+        // Resolve + validate the signer credential. The per-signer magic
+        // link IS the credential (minted per signer, superseded on
+        // re-send). We re-check its guards HERE, inside the proposal lock:
+        // /accept is a public route and the magicLinkId that /redeem hands
+        // back is replayable, so the earlier redeem-time check is not
+        // sufficient. A request with no valid credential must never mint a
+        // signature or advance the proposal.
+        if (!parsed.data.magicLinkId) {
+          return {
+            kind: 'error' as const,
+            status: 401,
+            body: { error: 'credential_required' },
+          };
         }
+        const [ml] = await tx
+          .select({
+            signatureId: magicLinks.signatureId,
+            proposalId: magicLinks.proposalId,
+            purpose: magicLinks.purpose,
+            expiresAt: magicLinks.expiresAt,
+            supersededAt: magicLinks.supersededAt,
+          })
+          .from(magicLinks)
+          .where(eq(magicLinks.id, parsed.data.magicLinkId))
+          .limit(1);
+        if (
+          !ml ||
+          ml.purpose !== 'PROPOSAL' ||
+          ml.proposalId !== proposal.id ||
+          ml.supersededAt != null ||
+          ml.expiresAt.getTime() <= now.getTime()
+        ) {
+          return {
+            kind: 'error' as const,
+            status: 401,
+            body: { error: 'invalid_credential' },
+          };
+        }
+        // A legacy single-signer proposal carries a link whose
+        // signatureId is null; that legitimately falls through to the
+        // PRIMARY-mint path below with a validated credential.
+        const targetSignatureId: string | null = ml.signatureId ?? null;
 
         // Mint the e-sign envelope + sign (NativeProvider flips to
         // SIGNED inline).
@@ -232,6 +263,31 @@ export function createAcceptanceRouter(deps: AcceptanceDeps): Router {
               status: 409,
               body: { error: rosterRow.state === 'SIGNED' ? 'already_signed' : 'declined' },
             };
+          }
+          // SEQUENTIAL proposals must sign in order. Mirror the /redeem
+          // turn-order gate so a later signer holding a valid link can't
+          // sign ahead of an earlier required signer by calling /accept
+          // directly.
+          if (rosterRow && proposal.signingOrderMode === 'SEQUENTIAL') {
+            const earlier = await tx
+              .select({ id: signatures.id })
+              .from(signatures)
+              .where(
+                and(
+                  eq(signatures.proposalId, proposal.id),
+                  eq(signatures.required, true),
+                  eq(signatures.state, 'PENDING'),
+                  lt(signatures.sequence, rosterRow.sequence),
+                ),
+              )
+              .limit(1);
+            if (earlier.length > 0) {
+              return {
+                kind: 'error' as const,
+                status: 409,
+                body: { error: 'not_your_turn' },
+              };
+            }
           }
         }
 
@@ -446,21 +502,38 @@ export function createAcceptanceRouter(deps: AcceptanceDeps): Router {
         return;
       }
 
+      // Validate the signer credential (expiry / supersession / proposal
+      // binding) before minting an OpenSign envelope. StartOpenSignSchema
+      // already requires magicLinkId.
       let rosterRow: typeof signatures.$inferSelect | null = null;
-      if (parsed.data.magicLinkId) {
-        const [ml] = await deps.db
-          .select({ signatureId: magicLinks.signatureId })
-          .from(magicLinks)
-          .where(eq(magicLinks.id, parsed.data.magicLinkId))
+      const [ml] = await deps.db
+        .select({
+          signatureId: magicLinks.signatureId,
+          proposalId: magicLinks.proposalId,
+          purpose: magicLinks.purpose,
+          expiresAt: magicLinks.expiresAt,
+          supersededAt: magicLinks.supersededAt,
+        })
+        .from(magicLinks)
+        .where(eq(magicLinks.id, parsed.data.magicLinkId))
+        .limit(1);
+      if (
+        !ml ||
+        ml.purpose !== 'PROPOSAL' ||
+        ml.proposalId !== proposal.id ||
+        ml.supersededAt != null ||
+        ml.expiresAt.getTime() <= now.getTime()
+      ) {
+        res.status(401).json({ error: 'invalid_credential' });
+        return;
+      }
+      if (ml.signatureId) {
+        const [r] = await deps.db
+          .select()
+          .from(signatures)
+          .where(and(eq(signatures.id, ml.signatureId), eq(signatures.proposalId, proposal.id)))
           .limit(1);
-        if (ml?.signatureId) {
-          const [r] = await deps.db
-            .select()
-            .from(signatures)
-            .where(and(eq(signatures.id, ml.signatureId), eq(signatures.proposalId, proposal.id)))
-            .limit(1);
-          rosterRow = r ?? null;
-        }
+        rosterRow = r ?? null;
       }
       if (!rosterRow) {
         res.status(404).json({ error: 'signer_not_found' });
@@ -562,11 +635,28 @@ export function createAcceptanceRouter(deps: AcceptanceDeps): Router {
       | { kind: 'ok'; signatureId: string };
     const result: DeclineResult = await deps.db.transaction(async (tx: Tx) => {
       const [ml] = await tx
-        .select({ signatureId: magicLinks.signatureId })
+        .select({
+          signatureId: magicLinks.signatureId,
+          proposalId: magicLinks.proposalId,
+          purpose: magicLinks.purpose,
+          expiresAt: magicLinks.expiresAt,
+          supersededAt: magicLinks.supersededAt,
+        })
         .from(magicLinks)
         .where(eq(magicLinks.id, parsed.data.magicLinkId))
         .limit(1);
-      const signatureId = ml?.signatureId ?? null;
+      // Validate the credential (expiry / supersession / proposal binding)
+      // before acting — /decline is a public route like /accept.
+      if (
+        !ml ||
+        ml.purpose !== 'PROPOSAL' ||
+        ml.proposalId !== proposalId ||
+        ml.supersededAt != null ||
+        ml.expiresAt.getTime() <= now.getTime()
+      ) {
+        return { kind: 'error', status: 401, body: { error: 'invalid_credential' } };
+      }
+      const signatureId = ml.signatureId ?? null;
       if (!signatureId) {
         return { kind: 'error', status: 400, body: { error: 'not_a_signer_link' } };
       }

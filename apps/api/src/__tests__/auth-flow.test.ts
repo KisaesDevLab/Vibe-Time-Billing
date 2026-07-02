@@ -184,19 +184,27 @@ describe('TOTP step-up', () => {
     harness = await buildTestApp({ db });
   });
 
-  it('verifies a fresh TOTP code and sets lastStepUpAt', async () => {
+  it('challenges the second factor at magic-link login and sets lastStepUpAt', async () => {
+    // A user with TOTP enrolled no longer gets a session straight from the
+    // magic link — verify returns a pending token and the second factor is
+    // completed via /2fa/verify (which mints the session, already
+    // stepped-up). This is the security fix for the magic-link 2FA bypass.
     await request(harness.app).post('/api/auth/login').send({ email: user.email });
     const token = new URL(harness.capturedMagicLinks[0]!.link).searchParams.get('token')!;
     const verify = await request(harness.app).post('/api/auth/verify-magic-link').send({ token });
-    const cookie = getCookie(verify, '__vibe_app_session')!;
+    expect(verify.status).toBe(200);
+    expect(verify.body.needsSecondFactor).toBe(true);
+    // No session is issued by the magic link alone.
+    expect(getCookie(verify, '__vibe_app_session')).toBeNull();
+    expect(verify.body.availableFactors).toContain('TOTP');
 
     const code = authenticator.generate(SECRET);
     const stepUp = await request(harness.app)
-      .post('/api/auth/totp/verify')
-      .set('Cookie', `__vibe_app_session=${cookie}`)
-      .send({ code });
+      .post('/api/auth/2fa/verify')
+      .send({ pendingToken: verify.body.pendingToken, factor: 'TOTP', code });
     expect(stepUp.status).toBe(200);
-    expect(stepUp.body.ok).toBe(true);
+    expect(stepUp.body.csrfToken).toBeTruthy();
+    const cookie = getCookie(stepUp, '__vibe_app_session')!;
 
     const me = await request(harness.app)
       .get('/api/auth/me')
@@ -204,17 +212,18 @@ describe('TOTP step-up', () => {
     expect(typeof me.body.lastStepUpAt).toBe('number');
   });
 
-  it('rejects an incorrect TOTP code', async () => {
+  it('rejects an incorrect second-factor code', async () => {
     await request(harness.app).post('/api/auth/login').send({ email: user.email });
     const token = new URL(harness.capturedMagicLinks[0]!.link).searchParams.get('token')!;
     const verify = await request(harness.app).post('/api/auth/verify-magic-link').send({ token });
-    const cookie = getCookie(verify, '__vibe_app_session')!;
+    expect(verify.body.needsSecondFactor).toBe(true);
 
     const stepUp = await request(harness.app)
-      .post('/api/auth/totp/verify')
-      .set('Cookie', `__vibe_app_session=${cookie}`)
-      .send({ code: '000000' });
+      .post('/api/auth/2fa/verify')
+      .send({ pendingToken: verify.body.pendingToken, factor: 'TOTP', code: '000000' });
     expect(stepUp.status).toBe(401);
+    // A failed factor must not mint a session.
+    expect(getCookie(stepUp, '__vibe_app_session')).toBeNull();
   });
 });
 

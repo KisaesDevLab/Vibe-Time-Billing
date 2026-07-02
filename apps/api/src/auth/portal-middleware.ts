@@ -4,6 +4,7 @@
 // share. Distinct cookie name, distinct JWT key, distinct session prefix.
 
 import type { NextFunction, Request, Response } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 
 import type { PortalSession } from '@vibe/core/auth';
@@ -110,9 +111,30 @@ export function portalAuthDeps(store: SessionStore, db?: Database | null) {
         }
       }
 
+      // CSRF: synchronizer-token check on mutating methods. The portal SPA
+      // echoes the session's csrfToken (minted at login, refreshed from
+      // /auth/me) in the X-CSRF-Token header. SameSite=Strict already
+      // blocks cross-site sends; this matches the staff realm and
+      // CLAUDE.md's double-submit mandate so both realms are consistent.
+      const csrfMethod = req.method.toUpperCase();
+      if (csrfMethod !== 'GET' && csrfMethod !== 'HEAD' && csrfMethod !== 'OPTIONS') {
+        const header = req.header('x-csrf-token') ?? '';
+        if (!portalCsrfEquals(header, s.csrfToken)) {
+          res.status(403).json({ error: 'csrf_mismatch' });
+          return;
+        }
+      }
+
       await store.touch('portal', sid);
       req.portalSession = s;
       next();
     },
   };
+}
+
+function portalCsrfEquals(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }

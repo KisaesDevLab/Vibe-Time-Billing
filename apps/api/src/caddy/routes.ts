@@ -22,12 +22,15 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
+import type { Redis } from 'ioredis';
 import { firmSettingsProposals } from '@vibe/db/schema';
+import { checkAndIncrement } from '@vibe/core/auth';
 
 import { logger } from '../logger';
 
 export interface CaddyAskDeps {
   db: Database | null;
+  redis?: Redis;
 }
 
 // RFC 1035-compatible hostname. We intentionally do not accept raw
@@ -43,6 +46,24 @@ export function createCaddyRouter(deps: CaddyAskDeps): Router {
   const router = express.Router();
 
   router.get('/caddy-ask', async (req: Request, res: Response) => {
+    // Per-source-IP sliding window. Fail open if redis is unavailable so
+    // cert provisioning never breaks on a limiter outage.
+    if (deps.redis) {
+      try {
+        const ip = req.ip ?? 'unknown';
+        const rl = await checkAndIncrement(deps.redis, {
+          key: `caddy-ask:${ip}`,
+          windowSeconds: 60,
+          max: 30,
+        });
+        if (!rl.allowed) {
+          res.status(429).json({ error: 'rate_limited', retryAfterSeconds: rl.retryAfterSeconds });
+          return;
+        }
+      } catch (err) {
+        logger.warn({ err }, 'caddy-ask: rate-limit check failed, allowing');
+      }
+    }
     const parsed = Schema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: 'bad_request' });

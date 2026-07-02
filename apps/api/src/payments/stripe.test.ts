@@ -59,7 +59,12 @@ describe('stripe provider', () => {
     const sig = createHmac('sha256', 'whsec_test').update(`${ts}.${payload}`).digest('hex');
     const header = `t=${ts},v1=${sig}`;
     expect(
-      provider.verifyWebhookSignature({ payload, signature: header, secret: 'whsec_test' }),
+      provider.verifyWebhookSignature({
+        payload,
+        signature: header,
+        secret: 'whsec_test',
+        nowMs: ts * 1000,
+      }),
     ).toBe(true);
   });
 
@@ -129,6 +134,7 @@ describe('stripe provider', () => {
         payload: payload + 'X',
         signature: header,
         secret: 'whsec_test',
+        nowMs: ts * 1000,
       }),
     ).toBe(false);
   });

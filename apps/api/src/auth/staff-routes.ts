@@ -24,7 +24,7 @@ import {
   type StaffSession,
 } from '@vibe/core/auth';
 import { SignJWT, jwtVerify } from 'jose';
-import { verifyPassword } from './password';
+import { timingEqualizingVerify, verifyPassword } from './password';
 import type { RoleSlug } from '@vibe/core/rbac';
 import { resolveUserPermissions } from './rbac-middleware';
 import type { Database } from '@vibe/db';
@@ -36,6 +36,7 @@ import { logger } from '../logger';
 import { emitAudit } from './audit';
 import { clearSessionCookie, writeSessionCookie } from './cookies';
 import { isSecondFactorRequired } from './second-factor-policy';
+import { isSealedTotpSecret, openTotpSecret, sealTotpSecret } from './totp-secret';
 import type { SessionStore } from './session-store';
 import {
   buildAuthenticationOptions,
@@ -56,6 +57,11 @@ export interface StaffRoutesDeps {
   sendEmailOtp?: (args: { email: string; firmId: string; code: string }) => Promise<void>;
   sendSmsOtp?: (args: { phone: string; firmId: string; code: string }) => Promise<void>;
   requireAuth: (req: Request, res: Response, next: () => void) => Promise<void> | void;
+  // Double-submit CSRF check for the AUTHENTICATED mutating endpoints in
+  // this router (factor enroll/disable, password change, preferred-factor,
+  // logout). Optional so tests can omit it; when present it is a no-op on
+  // GET/HEAD/OPTIONS. The unauthenticated login endpoints never see it.
+  requireCsrf?: (req: Request, res: Response, next: () => void) => void;
   // Test seam — explicit user→roles map overrides DB lookup when provided.
   // Used by `/me` to surface effective permissions to the FE without
   // touching a real DB in unit tests.
@@ -116,6 +122,14 @@ const ENUM_RESPONSE = {
 
 export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
   const router = express.Router();
+
+  // Authenticated-route guard chain: prove the session, then enforce CSRF
+  // on mutating methods. requireCsrf is GET-exempt, so applying `authed`
+  // uniformly to authenticated routes (including the GET /me + credential
+  // listing) is safe. The public login endpoints below use neither.
+  const requireCsrf =
+    deps.requireCsrf ?? ((_req: Request, _res: Response, next: () => void) => next());
+  const authed = [deps.requireAuth, requireCsrf] as express.RequestHandler[];
 
   router.post('/login', async (req: Request, res: Response) => {
     const parsed = LoginSchema.safeParse(req.body);
@@ -207,6 +221,27 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
       return;
     }
 
+    // Second-factor gate. Magic-link possession (the email inbox) is the
+    // FIRST factor; per CLAUDE.md non-negotiable #5 a staff sign-in must
+    // also clear an enrolled second factor. When the user has one
+    // enrolled we challenge it through the SAME pending-token → /2fa/verify
+    // flow the password path uses (TOTP / email OTP / SMS OTP / passkey);
+    // the browser already renders that step. We deliberately do NOT mint a
+    // session here in that case — the session is created only after
+    // /2fa/verify succeeds, so email-inbox access alone is not enough.
+    const secondFactorRequired = await isSecondFactorRequired(deps.db, user.firmId);
+    const available = secondFactorRequired ? await availableFactorsFor(user) : [];
+    if (secondFactorRequired && available.length > 0) {
+      const pendingToken = await issuePendingToken(user.id, user.firmId, cfg);
+      res.status(200).json({
+        needsSecondFactor: true,
+        pendingToken,
+        availableFactors: available,
+        preferredFactor: pickPreferredFactor(user, available),
+      });
+      return;
+    }
+
     const session: StaffSession = {
       realm: 'staff',
       sid: generateSessionId(),
@@ -214,7 +249,11 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
       firmId: user.firmId,
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
-      lastStepUpAt: null,
+      // Firm opted out of second factors → the magic link itself is the
+      // step-up. Firm requires one but none is enrolled yet → session is
+      // issued un-stepped-up and the UI pushes factor enrollment (a rare
+      // edge; every staff user is expected to hold at least one factor).
+      lastStepUpAt: secondFactorRequired ? null : Date.now(),
       csrfToken: generateCsrfToken(),
       ip: clientIp(req),
       userAgent: req.header('user-agent') ?? null,
@@ -234,13 +273,10 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json({
       ok: true,
       csrfToken: session.csrfToken,
-      // Per CLAUDE.md non-negotiable #5 (revised by migration 0087), any
-      // of TOTP / email OTP / SMS OTP / passkey satisfies the second-factor
-      // requirement. We no longer force TOTP-specific enrollment after
-      // magic-link sign-in — the staff member lands on the dashboard and
-      // can enroll any of the four factor types from Account → Two-factor
-      // when they're ready. A separate nudge banner highlights the gap.
       needsTotpEnrollment: false,
+      // True only when the firm requires a factor but the user has none
+      // enrolled — the SPA should route them straight to enrollment.
+      needsFactorEnrollment: secondFactorRequired && available.length === 0,
     });
   });
 
@@ -378,6 +414,9 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     // Same generic error for "no such user" + "wrong password" to keep
     // the password path enumeration-safe just like the magic-link path.
     if (!user || !user.passwordHash) {
+      // Spend the same argon2 time a real verify would, so response
+      // latency doesn't reveal whether the account exists.
+      await timingEqualizingVerify(parsed.data.password);
       res.status(401).json({ error: 'invalid_credentials' });
       return;
     }
@@ -576,9 +615,24 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
         res.status(400).json({ error: 'totp_not_enrolled' });
         return;
       }
+      const totpSeed = openTotpSecret(user.totpSecretEncrypted);
       factorVerified =
-        verifyTotp({ token: parsed.data.code, secret: user.totpSecretEncrypted }) ||
+        verifyTotp({ token: parsed.data.code, secret: totpSeed }) ||
         (await tryRecoveryCode(deps, user.id, parsed.data.code));
+      // Lazy at-rest migration: a legacy row still holds the seed in
+      // plaintext. Now that a TOTP code has proven the seed is valid,
+      // re-seal it so the plaintext stops sitting in the table. Best
+      // effort — a failure here must not block the sign-in.
+      if (factorVerified && deps.db && !isSealedTotpSecret(user.totpSecretEncrypted)) {
+        try {
+          await deps.db
+            .update(appUsers)
+            .set({ totpSecretEncrypted: sealTotpSecret(totpSeed) })
+            .where(eq(appUsers.id, user.id));
+        } catch (err) {
+          logger.error({ err }, 'totp secret re-seal failed');
+        }
+      }
     } else if (parsed.data.factor === 'PASSKEY') {
       const challenge = await deps.redis.get(`webauthn:2fa:${user.id}`);
       if (!challenge) {
@@ -703,7 +757,13 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     }
     let options;
     try {
-      options = await buildAuthenticationOptions({ candidates: [] });
+      // Passwordless primary sign-in: the passkey is the sole factor, so
+      // require user verification (biometric/PIN) — possession alone is
+      // not enough.
+      options = await buildAuthenticationOptions({
+        candidates: [],
+        userVerification: 'required',
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
       res.status(503).json({ error: msg });
@@ -750,6 +810,8 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
       response: parsed.data.response as unknown as AuthenticationResponseJSON,
       expectedChallenge: challenge,
       credential: cred,
+      // Sole-factor sign-in — reject an assertion without user verification.
+      requireUserVerification: true,
     });
     if (!outcome.ok) {
       res.status(401).json({ error: 'invalid_credential' });
@@ -792,7 +854,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     });
   });
 
-  router.post('/totp/enroll', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/totp/enroll', ...authed, async (req: Request, res: Response) => {
     TotpEnrollSchema.parse(req.body);
     const session = req.staffSession;
     if (!session) {
@@ -824,7 +886,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     });
   });
 
-  router.post('/totp/verify', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/totp/verify', ...authed, async (req: Request, res: Response) => {
     const parsed = TotpVerifySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid_payload' });
@@ -856,7 +918,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     let enrollmentCompleted = false;
 
     if (user.totpEnrolledAt && user.totpSecretEncrypted) {
-      secret = user.totpSecretEncrypted;
+      secret = openTotpSecret(user.totpSecretEncrypted);
     } else {
       const pendingRaw = await deps.redis.get(`totp:pending:${session.appUserId}`);
       if (!pendingRaw) {
@@ -870,7 +932,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
         await deps.db
           .update(appUsers)
           .set({
-            totpSecretEncrypted: pending.secret,
+            totpSecretEncrypted: sealTotpSecret(pending.secret),
             recoveryCodesEncrypted: JSON.stringify(pending.recoveryHashes),
             totpEnrolledAt: new Date(),
           })
@@ -933,93 +995,85 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
   // sign_count + last_used_at.
   // -------------------------------------------------------------------
 
-  router.post(
-    '/webauthn/registration/options',
-    deps.requireAuth,
-    async (req: Request, res: Response) => {
-      const session = req.staffSession;
-      if (!session) {
-        res.status(401).json({ error: 'no_session' });
-        return;
-      }
-      const user = await findStaffById(deps.db, session.appUserId);
-      if (!user) {
-        res.status(401).json({ error: 'unknown_user' });
-        return;
-      }
-      const existing = await listCredentials(deps.db, session.appUserId);
-      let options;
-      try {
-        options = await buildRegistrationOptions({
-          appUserId: session.appUserId,
-          email: user.email,
-          fullName: user.email,
-          existing,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
-        res.status(503).json({ error: msg });
-        return;
-      }
-      await deps.redis.set(`webauthn:reg:${session.appUserId}`, options.challenge, 'EX', 5 * 60);
-      res.status(200).json(options);
-    },
-  );
-
-  router.post(
-    '/webauthn/registration/verify',
-    deps.requireAuth,
-    async (req: Request, res: Response) => {
-      const session = req.staffSession;
-      if (!session) {
-        res.status(401).json({ error: 'no_session' });
-        return;
-      }
-      const parsed = WebAuthnRegistrationVerifySchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload' });
-        return;
-      }
-      const challenge = await deps.redis.get(`webauthn:reg:${session.appUserId}`);
-      if (!challenge) {
-        res.status(400).json({ error: 'no_pending_registration' });
-        return;
-      }
-      const outcome = await verifyRegistration({
-        response: parsed.data.response as unknown as RegistrationResponseJSON,
-        expectedChallenge: challenge,
+  router.post('/webauthn/registration/options', ...authed, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const user = await findStaffById(deps.db, session.appUserId);
+    if (!user) {
+      res.status(401).json({ error: 'unknown_user' });
+      return;
+    }
+    const existing = await listCredentials(deps.db, session.appUserId);
+    let options;
+    try {
+      options = await buildRegistrationOptions({
+        appUserId: session.appUserId,
+        email: user.email,
+        fullName: user.email,
+        existing,
       });
-      await deps.redis.del(`webauthn:reg:${session.appUserId}`);
-      if (!outcome.ok || !outcome.credential) {
-        res.status(400).json({ error: outcome.error ?? 'verify_failed' });
-        return;
-      }
-      if (deps.db) {
-        await deps.db.insert(appUserCredentials).values({
-          appUserId: session.appUserId,
-          credentialId: outcome.credential.credentialId,
-          publicKey: outcome.credential.publicKey,
-          signCount: outcome.credential.signCount,
-          transports: outcome.credential.transports,
-          label: parsed.data.label ?? null,
-          aaguid: outcome.credential.aaguid,
-          deviceType: outcome.credential.deviceType,
-          backedUp: outcome.credential.backedUp,
-        });
-      }
-      await emitAudit(deps.db, {
-        action: 'CREATE',
-        entityType: 'app_user_credential',
-        entityId: outcome.credential.credentialId,
-        actorAppUserId: session.appUserId,
-        ip: clientIp(req),
-        userAgent: req.header('user-agent') ?? null,
-      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.status(201).json({ ok: true });
-    },
-  );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'webauthn_unavailable';
+      res.status(503).json({ error: msg });
+      return;
+    }
+    await deps.redis.set(`webauthn:reg:${session.appUserId}`, options.challenge, 'EX', 5 * 60);
+    res.status(200).json(options);
+  });
 
-  router.post('/webauthn/auth/options', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/webauthn/registration/verify', ...authed, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    const parsed = WebAuthnRegistrationVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const challenge = await deps.redis.get(`webauthn:reg:${session.appUserId}`);
+    if (!challenge) {
+      res.status(400).json({ error: 'no_pending_registration' });
+      return;
+    }
+    const outcome = await verifyRegistration({
+      response: parsed.data.response as unknown as RegistrationResponseJSON,
+      expectedChallenge: challenge,
+    });
+    await deps.redis.del(`webauthn:reg:${session.appUserId}`);
+    if (!outcome.ok || !outcome.credential) {
+      res.status(400).json({ error: outcome.error ?? 'verify_failed' });
+      return;
+    }
+    if (deps.db) {
+      await deps.db.insert(appUserCredentials).values({
+        appUserId: session.appUserId,
+        credentialId: outcome.credential.credentialId,
+        publicKey: outcome.credential.publicKey,
+        signCount: outcome.credential.signCount,
+        transports: outcome.credential.transports,
+        label: parsed.data.label ?? null,
+        aaguid: outcome.credential.aaguid,
+        deviceType: outcome.credential.deviceType,
+        backedUp: outcome.credential.backedUp,
+      });
+    }
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'app_user_credential',
+      entityId: outcome.credential.credentialId,
+      actorAppUserId: session.appUserId,
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.status(201).json({ ok: true });
+  });
+
+  router.post('/webauthn/auth/options', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session) {
       res.status(401).json({ error: 'no_session' });
@@ -1042,7 +1096,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json(options);
   });
 
-  router.post('/webauthn/auth/verify', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/webauthn/auth/verify', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session) {
       res.status(401).json({ error: 'no_session' });
@@ -1094,7 +1148,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json({ ok: true });
   });
 
-  router.get('/webauthn/credentials', deps.requireAuth, async (req: Request, res: Response) => {
+  router.get('/webauthn/credentials', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session) {
       res.status(401).json({ error: 'no_session' });
@@ -1129,41 +1183,37 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     });
   });
 
-  router.delete(
-    '/webauthn/credentials/:id',
-    deps.requireAuth,
-    async (req: Request, res: Response) => {
-      const session = req.staffSession;
-      if (!session) {
-        res.status(401).json({ error: 'no_session' });
-        return;
-      }
-      if (!deps.db) {
-        res.status(503).json({ error: 'db_unavailable' });
-        return;
-      }
-      const id = req.params['id']!;
-      const deleted = await deps.db
-        .delete(appUserCredentials)
-        .where(
-          and(eq(appUserCredentials.id, id), eq(appUserCredentials.appUserId, session.appUserId)),
-        )
-        .returning({ id: appUserCredentials.id });
-      if (deleted.length === 0) {
-        res.status(404).json({ error: 'credential_not_found' });
-        return;
-      }
-      await emitAudit(deps.db, {
-        action: 'ARCHIVE',
-        entityType: 'app_user_credential',
-        entityId: id,
-        actorAppUserId: session.appUserId,
-        ip: clientIp(req),
-        userAgent: req.header('user-agent') ?? null,
-      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-      res.status(200).json({ ok: true });
-    },
-  );
+  router.delete('/webauthn/credentials/:id', ...authed, async (req: Request, res: Response) => {
+    const session = req.staffSession;
+    if (!session) {
+      res.status(401).json({ error: 'no_session' });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const id = req.params['id']!;
+    const deleted = await deps.db
+      .delete(appUserCredentials)
+      .where(
+        and(eq(appUserCredentials.id, id), eq(appUserCredentials.appUserId, session.appUserId)),
+      )
+      .returning({ id: appUserCredentials.id });
+    if (deleted.length === 0) {
+      res.status(404).json({ error: 'credential_not_found' });
+      return;
+    }
+    await emitAudit(deps.db, {
+      action: 'ARCHIVE',
+      entityType: 'app_user_credential',
+      entityId: id,
+      actorAppUserId: session.appUserId,
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+    res.status(200).json({ ok: true });
+  });
 
   // ===================================================================
   // 0087 — sign-in settings. Authenticated user manages their password
@@ -1187,7 +1237,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     factor: z.enum(['TOTP', 'EMAIL', 'SMS']).nullable(),
   });
 
-  router.post('/password', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/password', ...authed, async (req: Request, res: Response) => {
     const parsed = PasswordSetSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid_payload' });
@@ -1245,7 +1295,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
-  router.post('/email-otp/enroll', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/email-otp/enroll', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session || !deps.db) {
       res.status(401).json({ error: 'no_session' });
@@ -1265,7 +1315,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
-  router.post('/email-otp/disable', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/email-otp/disable', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session || !deps.db) {
       res.status(401).json({ error: 'no_session' });
@@ -1284,7 +1334,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
-  router.post('/sms-otp/enroll/start', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/sms-otp/enroll/start', ...authed, async (req: Request, res: Response) => {
     const parsed = SmsEnrollStartSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid_payload' });
@@ -1332,7 +1382,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true, sentTo: maskPhone(parsed.data.phone) });
   });
 
-  router.post('/sms-otp/enroll/verify', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/sms-otp/enroll/verify', ...authed, async (req: Request, res: Response) => {
     const parsed = SmsEnrollVerifySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid_payload' });
@@ -1366,7 +1416,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
-  router.post('/sms-otp/disable', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/sms-otp/disable', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session || !deps.db) {
       res.status(401).json({ error: 'no_session' });
@@ -1384,7 +1434,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
-  router.post('/totp/disable', deps.requireAuth, async (req: Request, res: Response) => {
+  router.post('/totp/disable', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session || !deps.db) {
       res.status(401).json({ error: 'no_session' });
@@ -1403,7 +1453,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
-  router.patch('/preferred-factor', deps.requireAuth, async (req: Request, res: Response) => {
+  router.patch('/preferred-factor', ...authed, async (req: Request, res: Response) => {
     const parsed = PreferredFactorSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid_payload' });
@@ -1434,6 +1484,9 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({ ok: true });
   });
 
+  // Logout is intentionally NOT CSRF-gated: forcing a victim to log out is
+  // not a meaningful attack, and keeping it token-free avoids breaking the
+  // logout contract for any client. requireAuth still applies.
   router.post('/logout', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (session) {
@@ -1451,7 +1504,7 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.status(200).json({ ok: true });
   });
 
-  router.get('/me', deps.requireAuth, async (req: Request, res: Response) => {
+  router.get('/me', ...authed, async (req: Request, res: Response) => {
     const session = req.staffSession;
     if (!session) {
       res.status(401).json({ error: 'no_session' });
