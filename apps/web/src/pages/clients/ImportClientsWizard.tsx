@@ -33,9 +33,10 @@ interface Props {
 
 interface RowOutcome {
   row: number;
-  action: 'create' | 'skip';
+  action: 'create' | 'update' | 'skip';
   name: string;
   reason?: string;
+  contactCount?: number;
 }
 
 interface PreviewResult {
@@ -43,12 +44,16 @@ interface PreviewResult {
   mappedColumns: string[];
   total: number;
   willCreate: number;
+  willUpdate: number;
   willSkip: number;
   rows: RowOutcome[];
 }
 
+// Client columns + multiple contacts. Each contact slot (taxpayer / spouse /
+// contactN, plus the legacy billing_contact) accepts _name/_email/_phone/_mobile
+// and _role. The taxpayer is the primary contact; billing_contact is billing.
 const TEMPLATE_HEADER =
-  'name,client_owner_email,office,client_type,external_id,filing_status,pipeline_stage,terms_days,invoice_consolidation_preference,tags,mailing_street1,mailing_city,mailing_state,mailing_postal,billing_contact_name,billing_contact_email,billing_contact_phone';
+  'name,client_owner_email,office,client_type,external_id,filing_status,pipeline_stage,terms_days,invoice_consolidation_preference,tags,mailing_street1,mailing_city,mailing_state,mailing_postal,taxpayer_name,taxpayer_email,taxpayer_phone,taxpayer_mobile,spouse_name,spouse_email,spouse_mobile,contact3_name,contact3_email,contact3_role,billing_contact_name,billing_contact_email';
 
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
@@ -72,7 +77,12 @@ export function ImportClientsWizard({
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [done, setDone] = useState<{ created: number; skipped: number } | null>(null);
+  const [done, setDone] = useState<{
+    created: number;
+    updated: number;
+    contactsAdded: number;
+    skipped: number;
+  } | null>(null);
 
   function reset(): void {
     setStep('upload');
@@ -137,11 +147,18 @@ export function ImportClientsWizard({
       const body: Record<string, unknown> = { csv: csvText };
       if (defaultOwnerId) body['defaultOwnerId'] = defaultOwnerId;
       if (defaultOfficeName) body['defaultOfficeName'] = defaultOfficeName;
-      const r = await api<{ created: number; skipped: unknown[] }>(
-        '/api/staff/clients/import/commit',
-        { method: 'POST', body: JSON.stringify(body) },
-      );
-      setDone({ created: r.created, skipped: r.skipped.length });
+      const r = await api<{
+        created: number;
+        updated?: number;
+        contactsAdded?: number;
+        skipped: unknown[];
+      }>('/api/staff/clients/import/commit', { method: 'POST', body: JSON.stringify(body) });
+      setDone({
+        created: r.created,
+        updated: r.updated ?? 0,
+        contactsAdded: r.contactsAdded ?? 0,
+        skipped: r.skipped.length,
+      });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'import_failed');
@@ -157,8 +174,11 @@ export function ImportClientsWizard({
       <div style={{ display: 'grid', gap: tokens.space.md, maxWidth: 560 }}>
         <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
           Upload a CSV of clients. The only required column is <code>name</code>. Columns are
-          matched by header name; unknown columns are ignored. Rows matching an existing client (by{' '}
-          <code>external_id</code>, or by name) are skipped.
+          matched by header name; unknown columns are ignored. Each client can carry multiple people
+          — <code>taxpayer_*</code>, <code>spouse_*</code>, <code>contact3_*</code> … and the legacy{' '}
+          <code>billing_contact_*</code> — with <code>_name/_email/_phone/_mobile/_role</code>. A
+          row matching an existing client (by <code>external_id</code>, else by name){' '}
+          <strong>adds any new contacts to it</strong> rather than being skipped.
         </p>
         <div>
           <button
@@ -223,6 +243,10 @@ export function ImportClientsWizard({
       <div style={{ display: 'grid', gap: tokens.space.md }}>
         <p style={{ fontSize: 15 }}>
           Imported <strong>{done.created}</strong> client{done.created === 1 ? '' : 's'}.
+          {done.updated > 0 &&
+            ` Updated ${done.updated} existing client${done.updated === 1 ? '' : 's'}.`}
+          {done.contactsAdded > 0 &&
+            ` ${done.contactsAdded} contact${done.contactsAdded === 1 ? '' : 's'} linked.`}
           {done.skipped > 0 && ` ${done.skipped} row${done.skipped === 1 ? '' : 's'} skipped.`}
         </p>
         <div>
@@ -231,12 +255,15 @@ export function ImportClientsWizard({
       </div>
     ) : preview ? (
       <div style={{ display: 'grid', gap: tokens.space.md }}>
-        <div style={{ display: 'flex', gap: 16, fontSize: 14 }}>
+        <div style={{ display: 'flex', gap: 16, fontSize: 14, flexWrap: 'wrap' }}>
           <span>
             Total rows: <strong>{preview.total}</strong>
           </span>
           <span style={{ color: tokens.color.success }}>
             Will create: <strong>{preview.willCreate}</strong>
+          </span>
+          <span style={{ color: tokens.color.accent }}>
+            Will update: <strong>{preview.willUpdate}</strong>
           </span>
           <span style={{ color: tokens.color.textMuted }}>
             Will skip: <strong>{preview.willSkip}</strong>
@@ -252,9 +279,16 @@ export function ImportClientsWizard({
               render: (r) =>
                 r.action === 'create' ? (
                   <Pill tone="success">create</Pill>
+                ) : r.action === 'update' ? (
+                  <Pill tone="accent">update</Pill>
                 ) : (
                   <Pill tone="neutral">skip</Pill>
                 ),
+            },
+            {
+              key: 'contacts',
+              header: 'Contacts',
+              render: (r) => (r.contactCount ? String(r.contactCount) : ''),
             },
             { key: 'reason', header: 'Reason', render: (r) => r.reason ?? '' },
           ]}
@@ -279,9 +313,13 @@ export function ImportClientsWizard({
       : done
         ? { label: 'Done', onClick: close }
         : {
-            label: busy ? 'Importing…' : `Import ${preview?.willCreate ?? 0} client(s)`,
+            label: busy
+              ? 'Importing…'
+              : `Import ${preview?.willCreate ?? 0} new${
+                  preview?.willUpdate ? ` + update ${preview.willUpdate}` : ''
+                }`,
             onClick: () => void commit(),
-            disabled: busy || !preview || preview.willCreate === 0,
+            disabled: busy || !preview || (preview.willCreate === 0 && preview.willUpdate === 0),
           };
 
   const secondaryAction =
