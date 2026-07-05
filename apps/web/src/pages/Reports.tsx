@@ -196,7 +196,8 @@ function FilterBar({
           </Button>
         )}
         <span style={{ fontSize: 11, color: tokens.color.textMuted, marginLeft: 'auto' }}>
-          Filters apply to realization. Share this URL — settings persist via query string.
+          Filters apply to realization by billed (invoice) date — the industry convention. Share
+          this URL — settings persist via query string.
         </span>
       </div>
     </Card>
@@ -302,8 +303,11 @@ function RealizationCard({
         firmSummary ? (
           <div>
             <div style={{ display: 'flex', gap: 32 }}>
-              <Stat label="Standard WIP" value={formatCents(firmSummary.originalValueCents)} />
-              <Stat label="After adjustments" value={formatCents(firmSummary.adjustedValueCents)} />
+              <Stat
+                label="Billed WIP (standard)"
+                value={formatCents(firmSummary.originalValueCents)}
+              />
+              <Stat label="Amount billed" value={formatCents(firmSummary.adjustedValueCents)} />
               <Stat
                 label="Realization"
                 value={formatPct(firmSummary.realizationPct)}
@@ -347,13 +351,13 @@ function RealizationCard({
             },
             {
               key: 'wip',
-              header: 'Standard WIP',
+              header: 'Billed WIP (standard)',
               align: 'right',
               render: (r) => formatCents(r.originalValueCents),
             },
             {
               key: 'adj',
-              header: 'After adjustments',
+              header: 'Amount billed',
               align: 'right',
               render: (r) => formatCents(r.adjustedValueCents),
             },

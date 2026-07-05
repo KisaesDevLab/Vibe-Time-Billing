@@ -42,7 +42,8 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'realization-by-partner',
     label: 'Realization by partner',
-    description: 'Write-up / write-down realization grouped by partner in charge.',
+    description:
+      'Billing realization (amount billed ÷ billed WIP at standard) grouped by partner in charge; window = invoice date.',
     params: DATE_PARAMS,
   },
   {

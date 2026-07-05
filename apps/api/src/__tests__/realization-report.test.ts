@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
-// Regression: the realization rollup must join allocations → adjustments →
-// billing_batches. A prior bug joined adjustment_allocations.adjustment_id
-// directly to billing_batches.id, but that column is an adjustments.id (per
-// the schema FK and both the demo seed and the live adjustment flow). The
-// inner join therefore matched nothing and every realization report rendered
-// empty on real/sample data. These tests seed one applied write-down and
-// assert the rollup is non-empty and arithmetically correct.
+// Industry-standard billing realization (CCH/Practice CS/Canopy method):
+//   realization = (standard value of ALL billed WIP + net write-up/down)
+//               ÷ (standard value of ALL billed WIP)
+// Universe = INCLUDE entries of INVOICED batches with a posted invoice
+// (plus realization-only close-out batches); periods keyed to the invoice
+// issue date. These tests seed a billed batch with an applied write-down
+// and assert the rollup, the unadjusted-at-100% base, the unbilled-WIP
+// exclusion, multi-adjustment netting, and the relief-date window.
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -99,13 +100,24 @@ function rows<T = { id: string }>(r: unknown): T[] {
   return (r as { rows: T[] }).rows;
 }
 
-// Seed one APPROVED billing batch with a single $1,000 time entry and an
-// APPLIED $400 write-down allocated to the seeded user.
-async function seedRealization(): Promise<{ firmId: string; appUserId: string }> {
+// Seed one INVOICED billing batch (posted invoice issued 2026-02-01) with a
+// single $1,000 INCLUDE time entry and an APPLIED $400 write-down allocated
+// to the seeded user. Returns ids so tests can extend the fixture.
+async function seedRealization(opts: { issueDate?: string } = {}): Promise<{
+  firmId: string;
+  appUserId: string;
+  clientId: string;
+  engagementId: string;
+  workCodeId: string;
+  batchId: string;
+  teId: string;
+  reasonId: string;
+}> {
   const seed = await seedMinimalFirm(harness.db);
+  const issueDate = opts.issueDate ?? '2026-02-01';
   const batch = await harness.db.execute(sql`
     INSERT INTO billing_batch (engagement_id, period_start, period_end, status, created_by_id, approved_by_id)
-    VALUES (${seed.engagementId}, '2026-01-01', '2026-01-31', 'APPROVED', ${seed.appUserId}, ${seed.appUserId})
+    VALUES (${seed.engagementId}, '2026-01-01', '2026-01-31', 'INVOICED', ${seed.appUserId}, ${seed.appUserId})
     RETURNING id`);
   const batchId = rows(batch)[0]!.id;
   const te = await harness.db.execute(sql`
@@ -115,6 +127,22 @@ async function seedRealization(): Promise<{ firmId: string; appUserId: string }>
       50000, 100000, ${batchId})
     RETURNING id`);
   const teId = rows(te)[0]!.id;
+  await harness.db.execute(sql`
+    INSERT INTO billing_batch_entry (billing_batch_id, time_entry_id, action)
+    VALUES (${batchId}, ${teId}, 'INCLUDE')`);
+  // Posted invoice carrying the batch's line (the WIP-relief event).
+  const inv = await harness.db.execute(sql`
+    INSERT INTO invoice (firm_id, client_id, primary_engagement_id, invoice_number,
+      issue_date, due_date, subtotal_cents, total_cents, status)
+    VALUES (${seed.firmId}, ${seed.clientId}, ${seed.engagementId}, 'INV-R1',
+      ${issueDate}, ${issueDate}, 60000, 60000, 'SENT')
+    RETURNING id`);
+  const invId = rows(inv)[0]!.id;
+  await harness.db.execute(sql`
+    INSERT INTO invoice_line_item (invoice_id, kind, description, amount_cents,
+      engagement_id, source_ref_type, source_ref_id)
+    VALUES (${invId}, 'TIME_AGGREGATE', 'January services', 60000,
+      ${seed.engagementId}, 'billing_batch', ${batchId})`);
   const rc = await harness.db.execute(sql`
     INSERT INTO reason_code (firm_id, category, label)
     VALUES (${seed.firmId}, 'WRITE_DOWN', 'Scope creep') RETURNING id`);
@@ -129,7 +157,16 @@ async function seedRealization(): Promise<{ firmId: string; appUserId: string }>
     INSERT INTO adjustment_allocation (adjustment_id, time_entry_id, app_user_id,
       original_value_cents, adjusted_value_cents, adjustment_amount_cents)
     VALUES (${adjId}, ${teId}, ${seed.appUserId}, 100000, 60000, -40000)`);
-  return { firmId: seed.firmId, appUserId: seed.appUserId };
+  return {
+    firmId: seed.firmId,
+    appUserId: seed.appUserId,
+    clientId: seed.clientId,
+    engagementId: seed.engagementId,
+    workCodeId: seed.workCodeId,
+    batchId,
+    teId,
+    reasonId,
+  };
 }
 
 describe('GET /realization', () => {
@@ -200,6 +237,170 @@ describe('GET /realization', () => {
     expect(body.items[0]!.key).toBe(appUserId);
     expect(body.items[0]!.originalValueCents).toBe(100000);
     expect(body.items[0]!.adjustedValueCents).toBe(60000);
+  });
+
+  it('unadjusted billed time enters the base at exactly 100%', async () => {
+    const s = await seedRealization();
+    // Second INVOICED batch, $500 entry, NO adjustment at all.
+    const b2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO billing_batch (engagement_id, period_start, period_end, status, created_by_id)
+        VALUES (${s.engagementId}, '2026-02-01', '2026-02-28', 'INVOICED', ${s.appUserId})
+        RETURNING id`),
+    )[0]!.id;
+    const te2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO time_entry (engagement_id, app_user_id, work_code_id, entry_date, hours,
+          standard_rate_snapshot_cents, standard_amount_cents, billing_batch_id)
+        VALUES (${s.engagementId}, ${s.appUserId}, ${s.workCodeId}, '2026-02-10', 1.0,
+          50000, 50000, ${b2}) RETURNING id`),
+    )[0]!.id;
+    await harness.db.execute(sql`
+      INSERT INTO billing_batch_entry (billing_batch_id, time_entry_id, action)
+      VALUES (${b2}, ${te2}, 'INCLUDE')`);
+    const inv2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO invoice (firm_id, client_id, primary_engagement_id, invoice_number,
+          issue_date, due_date, subtotal_cents, total_cents, status)
+        VALUES (${s.firmId}, ${s.clientId}, ${s.engagementId}, 'INV-R2',
+          '2026-03-01', '2026-03-31', 50000, 50000, 'SENT') RETURNING id`),
+    )[0]!.id;
+    await harness.db.execute(sql`
+      INSERT INTO invoice_line_item (invoice_id, kind, description, amount_cents,
+        engagement_id, source_ref_type, source_ref_id)
+      VALUES (${inv2}, 'TIME_AGGREGATE', 'February services', 50000,
+        ${s.engagementId}, 'billing_batch', ${b2})`);
+
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/realization', makeReq(s.firmId, s.appUserId, {}));
+    const body = res.jsonBody as {
+      summary: { originalValueCents: number; adjustedValueCents: number; realizationPct: number };
+    };
+    // ($1,000 → $600) + ($500 billed at standard, 100%) = 1500/1100 base.
+    expect(body.summary.originalValueCents).toBe(150000);
+    expect(body.summary.adjustedValueCents).toBe(110000);
+    expect(body.summary.realizationPct).toBeCloseTo(110000 / 150000);
+  });
+
+  it('excludes unbilled WIP: adjusted-but-never-invoiced batches do not count', async () => {
+    const s = await seedRealization();
+    // DRAFT batch with an APPLIED write-down but no invoice — a pre-bill
+    // adjustment. Industry timing: nothing hits realization until posted.
+    const b2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO billing_batch (engagement_id, period_start, period_end, status, created_by_id)
+        VALUES (${s.engagementId}, '2026-02-01', '2026-02-28', 'DRAFT', ${s.appUserId})
+        RETURNING id`),
+    )[0]!.id;
+    const te2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO time_entry (engagement_id, app_user_id, work_code_id, entry_date, hours,
+          standard_rate_snapshot_cents, standard_amount_cents, billing_batch_id)
+        VALUES (${s.engagementId}, ${s.appUserId}, ${s.workCodeId}, '2026-02-10', 1.0,
+          50000, 50000, ${b2}) RETURNING id`),
+    )[0]!.id;
+    await harness.db.execute(sql`
+      INSERT INTO billing_batch_entry (billing_batch_id, time_entry_id, action)
+      VALUES (${b2}, ${te2}, 'INCLUDE')`);
+    const adj2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO adjustment (billing_batch_id, method, allocation_method, total_amount_cents,
+          reason_code_id, status, created_by_id)
+        VALUES (${b2}, 'TIME', 'HIERARCHICAL_CASCADE', -25000, ${s.reasonId}, 'APPLIED', ${s.appUserId})
+        RETURNING id`),
+    )[0]!.id;
+    await harness.db.execute(sql`
+      INSERT INTO adjustment_allocation (adjustment_id, time_entry_id, app_user_id,
+        original_value_cents, adjusted_value_cents, adjustment_amount_cents)
+      VALUES (${adj2}, ${te2}, ${s.appUserId}, 50000, 25000, -25000)`);
+
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/realization', makeReq(s.firmId, s.appUserId, {}));
+    const body = res.jsonBody as {
+      summary: { originalValueCents: number; adjustedValueCents: number };
+    };
+    // Only the invoiced batch counts: still 1000/600.
+    expect(body.summary.originalValueCents).toBe(100000);
+    expect(body.summary.adjustedValueCents).toBe(60000);
+  });
+
+  it('nets multiple adjustments on one batch without double-counting the WIP base', async () => {
+    const s = await seedRealization();
+    // Second APPLIED write-down on the SAME batch, covering the same entry.
+    const adj2 = rows(
+      await harness.db.execute(sql`
+        INSERT INTO adjustment (billing_batch_id, method, allocation_method, total_amount_cents,
+          reason_code_id, status, created_by_id)
+        VALUES (${s.batchId}, 'TIME', 'HIERARCHICAL_CASCADE', -10000, ${s.reasonId}, 'APPLIED', ${s.appUserId})
+        RETURNING id`),
+    )[0]!.id;
+    await harness.db.execute(sql`
+      INSERT INTO adjustment_allocation (adjustment_id, time_entry_id, app_user_id,
+        original_value_cents, adjusted_value_cents, adjustment_amount_cents)
+      VALUES (${adj2}, ${s.teId}, ${s.appUserId}, 100000, 90000, -10000)`);
+
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/realization', makeReq(s.firmId, s.appUserId, {}));
+    const body = res.jsonBody as {
+      summary: { originalValueCents: number; adjustedValueCents: number; realizationPct: number };
+    };
+    // Base counted ONCE ($1,000), deltas net (−400 −100): 500/1000 = 50%.
+    // The old allocation-sum method reported 2000/1500 = 75%.
+    expect(body.summary.originalValueCents).toBe(100000);
+    expect(body.summary.adjustedValueCents).toBe(50000);
+    expect(body.summary.realizationPct).toBeCloseTo(0.5);
+  });
+
+  it('pro-rates allocation-less (set-target) adjustments into realization', async () => {
+    const s = await seedRealization();
+    // APPROVED adjustment with NO allocation rows — the set-target path.
+    await harness.db.execute(sql`
+      INSERT INTO adjustment (billing_batch_id, method, allocation_method, total_amount_cents,
+        reason_code_id, status, created_by_id)
+      VALUES (${s.batchId}, 'FEE', 'PRO_RATA_BY_VALUE', -20000, ${s.reasonId}, 'APPROVED', ${s.appUserId})`);
+
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/realization', makeReq(s.firmId, s.appUserId, {}));
+    const body = res.jsonBody as {
+      summary: { originalValueCents: number; adjustedValueCents: number };
+    };
+    // −400 allocated + −200 set-target pro-rated: 1000 → 400.
+    expect(body.summary.originalValueCents).toBe(100000);
+    expect(body.summary.adjustedValueCents).toBe(40000);
+  });
+
+  it('windows by invoice (WIP-relief) date, not work date', async () => {
+    const s = await seedRealization({ issueDate: '2026-02-01' });
+    const router = createReportRouter({ db: harness.db });
+    // Work happened in January, invoice posted 2026-02-01. A February
+    // window catches it; a January window (which contains the work date)
+    // does not.
+    const feb = await invoke(
+      router,
+      '/realization',
+      makeReq(s.firmId, s.appUserId, { start: '2026-02-01', end: '2026-02-28' }),
+    );
+    const febBody = feb.jsonBody as { summary: { originalValueCents: number } };
+    expect(febBody.summary.originalValueCents).toBe(100000);
+
+    const jan = await invoke(
+      router,
+      '/realization',
+      makeReq(s.firmId, s.appUserId, { start: '2026-01-01', end: '2026-01-31' }),
+    );
+    const janBody = jan.jsonBody as { summary: { originalValueCents: number } };
+    expect(janBody.summary.originalValueCents).toBe(0);
+  });
+
+  it('a voided invoice un-bills its batch (drops from realization)', async () => {
+    const s = await seedRealization();
+    await harness.db.execute(
+      sql`UPDATE invoice SET status = 'VOIDED' WHERE invoice_number = 'INV-R1'`,
+    );
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(router, '/realization', makeReq(s.firmId, s.appUserId, {}));
+    const body = res.jsonBody as { summary: { originalValueCents: number } };
+    expect(body.summary.originalValueCents).toBe(0);
   });
 });
 

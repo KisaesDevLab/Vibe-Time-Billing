@@ -22,9 +22,9 @@ The **Reports** workspace (left-nav **Reports**, at `/reports`) is the firm's an
 
 ## Fields
 
-- **Start** / **End** — date-range filter (note: these apply to realization; other cards use their own fixed windows).
+- **Start** / **End** — date-range filter on the **billed (invoice) date**, not the work date (note: these apply to realization; other cards use their own fixed windows).
 - Realization dimension buttons — **firm**, **timekeeper**, **engagement**, **client**, **service line**.
-- **Standard WIP** — original standard value; **After adjustments** — adjusted value; **Realization** — adjusted ÷ original, as a percent (green at ≥ 90%, otherwise amber).
+- **Billed WIP (standard)** — the standard-rate value of all time billed on posted invoices (unadjusted billed time counts at 100%); **Amount billed** — that value net of write-ups/write-downs; **Realization** — billed ÷ standard, as a percent (green at ≥ 90%, otherwise amber; write-ups can exceed 100%). This is the industry-standard billing-realization method (CCH Axcess / Practice CS / Canopy). Collection realization (invoiced → collected) is the separate **Collection realization** report.
 
 ## What you'll see
 

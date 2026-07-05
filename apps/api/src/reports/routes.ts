@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
-// Reporting endpoints — Phase 17. Realization rollups straight off
-// `adjustment_allocation`. No materialized view yet — the query joins to
-// engagement→client to scope by firm and groups in SQL, then rolls per
-// dimension via @vibe/core/reporting.
+// Reporting endpoints — Phase 17. Realization follows the industry-standard
+// billing-realization method (see loadBilledRealization): all billed WIP at
+// standard value + net write-up/down, windowed by WIP-relief (invoice) date,
+// rolled per dimension via @vibe/core/reporting.
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, ne, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, notInArray, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -15,6 +15,7 @@ import {
   adjustments,
   appUsers,
   approvalRequests,
+  billingBatchEntries,
   billingBatches,
   clients,
   engagementTypes,
@@ -327,6 +328,229 @@ async function cashByEngagement(
   return out;
 }
 
+// ---------------------------------------------------------------------
+// Industry-standard billing realization (2026-07 alignment).
+//
+// Formula (CCH Axcess / Practice CS / Canopy consensus):
+//   realization = (standard value of ALL billed WIP + net write-up/down)
+//               ÷ (standard value of ALL billed WIP)
+//
+// Universe = time entries billed on a posted invoice: INCLUDE entries of
+// billing batches that are INVOICED with a non-DRAFT/VOIDED invoice —
+// plus realization-only close-out batches (0182), which relieve WIP by
+// design without an invoice. Unadjusted billed time enters at exactly
+// 100%; write-ups can push a group above 100%; unbilled WIP, DEFER /
+// WRITE_OFF-held entries, and pre-bill draft adjustments never appear.
+//
+// Timing: the ?start/?end window filters on the WIP-RELIEF date (the
+// invoice issue date; close-out batches use the batch creation date),
+// not the work date — matching how CCH ("BilledDate"), Practice CS
+// ("items billed in the specified date range"), and Canopy (invoice
+// date) assign realization to periods.
+//
+// Per-entry net adjustment = Σ allocation deltas across APPROVED/APPLIED
+// adjustments (summing the signed deltas — not adjusted values — so a
+// batch with several sequential adjustments counts its WIP base once).
+// Adjustments without allocation rows (the set-target path) are pro-rated
+// across the batch's INCLUDE entries by standard value, so target-billing
+// write-downs finally reach realization.
+// ---------------------------------------------------------------------
+
+interface EngagementMeta {
+  clientId: string;
+  partnerId: string | null;
+  serviceLineId: string | null;
+  serviceLineCategory: string | null;
+}
+
+async function loadBilledRealization(
+  db: Database,
+  firmId: string,
+  range: { start: string | null; end: string | null },
+): Promise<{ rows: AllocationRow[]; engagementMeta: Map<string, EngagementMeta> }> {
+  const engagementMeta = new Map<string, EngagementMeta>();
+  const firmEngs = await db
+    .select({
+      id: engagements.id,
+      clientId: engagements.clientId,
+      partnerId: engagements.partnerId,
+      serviceLineId: serviceLines.id,
+      serviceLineCategory: serviceLines.category,
+    })
+    .from(engagements)
+    .innerJoin(clients, eq(clients.id, engagements.clientId))
+    .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
+    .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
+    .where(eq(clients.firmId, firmId));
+  if (firmEngs.length === 0) return { rows: [], engagementMeta };
+  for (const e of firmEngs) {
+    engagementMeta.set(e.id, {
+      clientId: e.clientId,
+      partnerId: e.partnerId,
+      serviceLineId: e.serviceLineId,
+      serviceLineCategory: e.serviceLineCategory,
+    });
+  }
+
+  // WIP-relief universe. billing_batch.engagement_id is the primary
+  // pointer (multi-engagement batches list the rest in the join table),
+  // and multi-engagement batches are same-client, so firm scoping via the
+  // primary engagement is safe.
+  const batches = await db
+    .select({
+      id: billingBatches.id,
+      realizationOnly: billingBatches.realizationOnly,
+      createdAt: billingBatches.createdAt,
+    })
+    .from(billingBatches)
+    .where(
+      and(
+        inArray(
+          billingBatches.engagementId,
+          firmEngs.map((e) => e.id),
+        ),
+        or(eq(billingBatches.status, 'INVOICED'), eq(billingBatches.realizationOnly, true)),
+      ),
+    );
+  if (batches.length === 0) return { rows: [], engagementMeta };
+  const batchIds = batches.map((b) => b.id);
+
+  // Relief date per batch: the posted invoice's issue date (via the
+  // source_ref='billing_batch' line), else the close-out batch's creation
+  // date. An INVOICED batch whose only invoice is DRAFT or VOIDED has no
+  // relief date and drops out — voided invoices un-bill their WIP.
+  const lineRows = await db
+    .select({
+      batchId: invoiceLineItems.sourceRefId,
+      issueDate: invoices.issueDate,
+    })
+    .from(invoiceLineItems)
+    .innerJoin(invoices, eq(invoices.id, invoiceLineItems.invoiceId))
+    .where(
+      and(
+        eq(invoiceLineItems.sourceRefType, 'billing_batch'),
+        inArray(invoiceLineItems.sourceRefId, batchIds),
+        notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+      ),
+    );
+  const reliefDateByBatch = new Map<string, string>();
+  for (const l of lineRows) {
+    if (!l.batchId) continue;
+    const cur = reliefDateByBatch.get(l.batchId);
+    if (!cur || l.issueDate < cur) reliefDateByBatch.set(l.batchId, l.issueDate);
+  }
+  for (const b of batches) {
+    if (b.realizationOnly && !reliefDateByBatch.has(b.id)) {
+      reliefDateByBatch.set(b.id, b.createdAt.toISOString().slice(0, 10));
+    }
+  }
+  const inWindow = (d: string): boolean =>
+    (!range.start || d >= range.start) && (!range.end || d <= range.end);
+  const liveBatchIds = batchIds.filter((id) => {
+    const d = reliefDateByBatch.get(id);
+    return d != null && inWindow(d);
+  });
+  if (liveBatchIds.length === 0) return { rows: [], engagementMeta };
+
+  // Billed WIP base: INCLUDE entries at standard value. The time entry's
+  // own engagement_id is authoritative (a multi-engagement batch's primary
+  // pointer would misattribute the other engagements' hours).
+  const entryRows = await db
+    .select({
+      batchId: billingBatchEntries.billingBatchId,
+      timeEntryId: timeEntries.id,
+      appUserId: timeEntries.appUserId,
+      engagementId: timeEntries.engagementId,
+      standardAmountCents: timeEntries.standardAmountCents,
+    })
+    .from(billingBatchEntries)
+    .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
+    .where(
+      and(
+        inArray(billingBatchEntries.billingBatchId, liveBatchIds),
+        eq(billingBatchEntries.action, 'INCLUDE'),
+      ),
+    );
+
+  // Net adjustment deltas. APPROVED is included alongside APPLIED because
+  // the invoice math bakes both into the billed total (set-target inserts
+  // APPROVED and never transitions).
+  const adjRows = await db
+    .select({
+      id: adjustments.id,
+      billingBatchId: adjustments.billingBatchId,
+      totalAmountCents: adjustments.totalAmountCents,
+    })
+    .from(adjustments)
+    .where(
+      and(
+        inArray(adjustments.billingBatchId, liveBatchIds),
+        inArray(adjustments.status, ['APPROVED', 'APPLIED']),
+      ),
+    );
+  const allocRows = adjRows.length
+    ? await db
+        .select({
+          adjustmentId: adjustmentAllocations.adjustmentId,
+          timeEntryId: adjustmentAllocations.timeEntryId,
+          amountCents: adjustmentAllocations.adjustmentAmountCents,
+        })
+        .from(adjustmentAllocations)
+        .where(
+          inArray(
+            adjustmentAllocations.adjustmentId,
+            adjRows.map((a) => a.id),
+          ),
+        )
+    : [];
+  const deltaByEntry = new Map<string, number>();
+  const allocatedAdjIds = new Set<string>();
+  for (const a of allocRows) {
+    allocatedAdjIds.add(a.adjustmentId);
+    deltaByEntry.set(a.timeEntryId, (deltaByEntry.get(a.timeEntryId) ?? 0) + Number(a.amountCents));
+  }
+  // Pro-rate allocation-less adjustments (set-target) by standard value,
+  // pushing the rounding remainder onto the last entry so the batch total
+  // is preserved exactly.
+  const entriesByBatch = new Map<string, typeof entryRows>();
+  for (const e of entryRows) {
+    const arr = entriesByBatch.get(e.batchId) ?? [];
+    arr.push(e);
+    entriesByBatch.set(e.batchId, arr);
+  }
+  for (const adj of adjRows) {
+    if (allocatedAdjIds.has(adj.id)) continue;
+    const entries = entriesByBatch.get(adj.billingBatchId) ?? [];
+    const base = entries.reduce((s, e) => s + Number(e.standardAmountCents), 0);
+    if (entries.length === 0 || base <= 0) continue;
+    const total = Number(adj.totalAmountCents);
+    let assigned = 0;
+    entries.forEach((e, i) => {
+      const share =
+        i === entries.length - 1
+          ? total - assigned
+          : Math.round((total * Number(e.standardAmountCents)) / base);
+      assigned += share;
+      deltaByEntry.set(e.timeEntryId, (deltaByEntry.get(e.timeEntryId) ?? 0) + share);
+    });
+  }
+
+  const rows: AllocationRow[] = [];
+  for (const e of entryRows) {
+    const meta = engagementMeta.get(e.engagementId);
+    if (!meta) continue;
+    const std = Number(e.standardAmountCents);
+    rows.push({
+      appUserId: e.appUserId,
+      engagementId: e.engagementId,
+      clientId: meta.clientId,
+      originalValueCents: std,
+      adjustedValueCents: std + (deltaByEntry.get(e.timeEntryId) ?? 0),
+    });
+  }
+  return { rows, engagementMeta };
+}
+
 export function createReportRouter(deps: ReportRoutesDeps): Router {
   const router = express.Router();
 
@@ -345,113 +569,29 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
 
-      // Scope: firm's clients → engagements → billing_batches → allocations.
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, session.firmId));
-      if (firmClients.length === 0) {
-        res.json({ dimension: parsed.data.dimension, items: [] });
-        return;
-      }
-      // Pull engagements with their service-line dimension already joined,
-      // so service-line filters + the new dimension keyFn don't need a
-      // separate roundtrip per allocation. Left-joins because not every
-      // engagement has an engagement_type / service_line set.
-      const firmEngagements = await deps.db
-        .select({
-          id: engagements.id,
-          clientId: engagements.clientId,
-          serviceLineId: serviceLines.id,
-          serviceLineCategory: serviceLines.category,
-        })
-        .from(engagements)
-        .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
-        .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
-        .where(
-          inArray(
-            engagements.clientId,
-            firmClients.map((c) => c.id),
-          ),
-        );
-      if (firmEngagements.length === 0) {
-        res.json({ dimension: parsed.data.dimension, items: [] });
-        return;
-      }
-      const firmBatches = await deps.db
-        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
-        .from(billingBatches)
-        .where(
-          inArray(
-            billingBatches.engagementId,
-            firmEngagements.map((e) => e.id),
-          ),
-        );
-      if (firmBatches.length === 0) {
-        res.json({ dimension: parsed.data.dimension, items: [] });
-        return;
-      }
-
-      // Date filter (#28) + drill filters (#20): always join to
-      // time_entries so we can scope on entry date and drill into
-      // specific timekeepers/engagements/clients.
-      // Scope to this firm's billing batches in SQL (not merely via the JS
-      // filter below), and count only APPLIED adjustments. Allocation rows
-      // are written while an adjustment is still PENDING_APPROVAL, and a
-      // reversal flips status to REVERSED without deleting allocations — so
-      // both would otherwise pollute realization with non-realized billing.
-      const conds = [
-        inArray(
-          adjustments.billingBatchId,
-          firmBatches.map((b) => b.id),
-        ),
-        eq(adjustments.status, 'APPLIED'),
-      ];
-      if (parsed.data.start)
-        conds.push(drz`${timeEntries.entryDate} >= ${parsed.data.start}::date`);
-      if (parsed.data.end) conds.push(drz`${timeEntries.entryDate} <= ${parsed.data.end}::date`);
-      if (parsed.data.appUserId)
-        conds.push(eq(adjustmentAllocations.appUserId, parsed.data.appUserId));
-      if (parsed.data.engagementId)
-        conds.push(eq(billingBatches.engagementId, parsed.data.engagementId));
-      const rows = await deps.db
-        .select({
-          appUserId: adjustmentAllocations.appUserId,
-          timeEntryId: adjustmentAllocations.timeEntryId,
-          originalValueCents: adjustmentAllocations.originalValueCents,
-          adjustedValueCents: adjustmentAllocations.adjustedValueCents,
-          engagementId: billingBatches.engagementId,
-          entryDate: timeEntries.entryDate,
-        })
-        .from(adjustmentAllocations)
-        // allocation → adjustment → billing_batch. adjustment_allocations.adjustment_id
-        // is an adjustments.id (NOT a billing_batch id), so we must hop through the
-        // adjustments table to reach the batch and its engagement.
-        .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
-        .innerJoin(billingBatches, eq(billingBatches.id, adjustments.billingBatchId))
-        .innerJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
-        .where(and(...conds));
-
-      const enginToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
-      // Service-line lookup map — populated for engagements that have an
-      // assigned type with a service line. Engagements without one stay
+      // Industry-standard billing realization: all billed WIP at standard
+      // value + net adjustments, windowed by WIP-relief (invoice) date.
+      const { rows: billedRows, engagementMeta } = await loadBilledRealization(
+        deps.db,
+        session.firmId,
+        { start: parsed.data.start ?? null, end: parsed.data.end ?? null },
+      );
+      // Service-line lookup map — engagements without a service line stay
       // absent, which naturally drops them from service-line filters and
-      // the service_line dimension.
+      // groups them under the unassigned sentinel in the dimension.
       const enginToServiceLine = new Map<string, { serviceLineId: string; category: string }>();
-      for (const e of firmEngagements) {
-        if (e.serviceLineId && e.serviceLineCategory) {
-          enginToServiceLine.set(e.id, {
-            serviceLineId: e.serviceLineId,
-            category: e.serviceLineCategory,
+      for (const [engId, meta] of engagementMeta) {
+        if (meta.serviceLineId && meta.serviceLineCategory) {
+          enginToServiceLine.set(engId, {
+            serviceLineId: meta.serviceLineId,
+            category: meta.serviceLineCategory,
           });
         }
       }
-      const allocationRows: AllocationRow[] = rows
-        .filter((r) => enginToClient.has(r.engagementId))
-        .filter(
-          (r) =>
-            !parsed.data.clientId || enginToClient.get(r.engagementId) === parsed.data.clientId,
-        )
+      const allocationRows: AllocationRow[] = billedRows
+        .filter((r) => !parsed.data.appUserId || r.appUserId === parsed.data.appUserId)
+        .filter((r) => !parsed.data.engagementId || r.engagementId === parsed.data.engagementId)
+        .filter((r) => !parsed.data.clientId || r.clientId === parsed.data.clientId)
         .filter((r) => {
           if (!parsed.data.serviceLineId) return true;
           return (
@@ -463,14 +603,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           return (
             enginToServiceLine.get(r.engagementId)?.category === parsed.data.serviceLineCategory
           );
-        })
-        .map((r) => ({
-          appUserId: r.appUserId,
-          engagementId: r.engagementId,
-          clientId: enginToClient.get(r.engagementId)!,
-          originalValueCents: r.originalValueCents,
-          adjustedValueCents: r.adjustedValueCents,
-        }));
+        });
 
       if (parsed.data.dimension === 'firm') {
         const summary = rollup(allocationRows);
@@ -597,62 +730,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: dStart, end: dEnd } = optionalRange(req);
-      // Group adjustment_allocations by engagement.partnerId.
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, session.firmId));
-      const cIds = firmClients.map((c) => c.id);
-      if (cIds.length === 0) {
-        res.json({ items: [] });
-        return;
-      }
-      const firmEngs = await deps.db
-        .select({ id: engagements.id, partnerId: engagements.partnerId })
-        .from(engagements)
-        .where(inArray(engagements.clientId, cIds));
-      const partnerByEng = new Map(firmEngs.map((e) => [e.id, e.partnerId]));
-      const batches = await deps.db
-        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
-        .from(billingBatches)
-        .where(inArray(billingBatches.engagementId, Array.from(partnerByEng.keys())));
-      const engByBatch = new Map(batches.map((b) => [b.id, b.engagementId]));
-      const batchIds = batches.map((b) => b.id);
-      const rows = batchIds.length
-        ? await deps.db
-            .select({
-              // The batch id lives on the adjustment, not the allocation — join
-              // through adjustments to recover it (adjustment_id ≠ billing_batch id).
-              batchId: adjustments.billingBatchId,
-              original: adjustmentAllocations.originalValueCents,
-              adjusted: adjustmentAllocations.adjustedValueCents,
-            })
-            .from(adjustmentAllocations)
-            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
-            // Left-join the originating time entry only to support the optional
-            // date window; without a bound the predicates are skipped and every
-            // allocation (incl. those with no time entry) is still counted.
-            .leftJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
-            // Scope to this firm's batches in SQL, and only realized (APPLIED)
-            // adjustments — mirrors /realization.
-            .where(
-              and(
-                inArray(adjustments.billingBatchId, batchIds),
-                eq(adjustments.status, 'APPLIED'),
-                dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
-                dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
-              ),
-            )
-        : [];
+      // Industry-standard billing realization grouped by engagement.partnerId
+      // (billed WIP at standard + net adjustments, windowed by relief date).
+      const { rows, engagementMeta } = await loadBilledRealization(deps.db, session.firmId, {
+        start: dStart,
+        end: dEnd,
+      });
       const byPartner = new Map<string, { originalCents: number; adjustedCents: number }>();
       for (const r of rows) {
-        const engId = engByBatch.get(r.batchId);
-        if (!engId) continue;
-        const partnerId = partnerByEng.get(engId);
+        const partnerId = engagementMeta.get(r.engagementId)?.partnerId;
         if (!partnerId) continue;
         const cur = byPartner.get(partnerId) ?? { originalCents: 0, adjustedCents: 0 };
-        cur.originalCents += Number(r.original);
-        cur.adjustedCents += Number(r.adjusted);
+        cur.originalCents += r.originalValueCents;
+        cur.adjustedCents += r.adjustedValueCents;
         byPartner.set(partnerId, cur);
       }
       const partnerNames = await namesByIds(deps.db, Array.from(byPartner.keys()), 'partner');
@@ -1008,65 +1098,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.send('appUserId,engagementId,clientId,original,adjusted,realizationPct\n');
         return;
       }
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, session.firmId));
-      const clientIds = firmClients.map((c) => c.id);
-      if (clientIds.length === 0) {
-        res.setHeader('Content-Type', 'text/csv');
-        res.send('appUserId,engagementId,clientId,originalCents,adjustedCents,realizationPct\n');
-        return;
-      }
-      const firmEngagements = await deps.db
-        .select({ id: engagements.id, clientId: engagements.clientId })
-        .from(engagements)
-        .where(inArray(engagements.clientId, clientIds));
-      const engIds = firmEngagements.map((e) => e.id);
-      if (engIds.length === 0) {
-        res.setHeader('Content-Type', 'text/csv');
-        res.send('appUserId,engagementId,clientId,originalCents,adjustedCents,realizationPct\n');
-        return;
-      }
-      const batches = await deps.db
-        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
-        .from(billingBatches)
-        .where(inArray(billingBatches.engagementId, engIds));
-      const batchIds = batches.map((b) => b.id);
-      const batchToEng = new Map(batches.map((b) => [b.id, b.engagementId]));
-      const engToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
-      // Optional ?start/?end window on the originating time entry's date —
-      // the JSON /realization endpoint honoured these but the CSV ignored
-      // them, so exports never matched the filtered on-screen view.
+      // Industry-standard billing realization at per-entry grain: all billed
+      // WIP at standard value + net adjustments (firm-scoped inside the
+      // loader), optional ?start/?end window on the WIP-relief date.
       const { start: dStart, end: dEnd } = optionalRange(req);
-      const rows = batchIds.length
-        ? await deps.db
-            .select({
-              appUserId: adjustmentAllocations.appUserId,
-              originalValueCents: adjustmentAllocations.originalValueCents,
-              adjustedValueCents: adjustmentAllocations.adjustedValueCents,
-              // Recover the batch id from the adjustment (adjustment_id ≠ batch id).
-              billingBatchId: adjustments.billingBatchId,
-            })
-            .from(adjustmentAllocations)
-            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
-            // Left-join the time entry only to support the optional window
-            // (mirrors /realization-by-partner): with no bounds, allocations
-            // without a time entry are still emitted.
-            .leftJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
-            // SECURITY: scope to THIS firm's batches in SQL. Without this the
-            // query read every firm's allocations and emitted the unmatched
-            // ones (blank engagement/client but real appUserId + dollar
-            // amounts) — a cross-firm data leak. Also restrict to APPLIED.
-            .where(
-              and(
-                inArray(adjustments.billingBatchId, batchIds),
-                eq(adjustments.status, 'APPLIED'),
-                dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
-                dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
-              ),
-            )
-        : [];
+      const { rows } = await loadBilledRealization(deps.db, session.firmId, {
+        start: dStart,
+        end: dEnd,
+      });
       const header = [
         'appUserId',
         'engagementId',
@@ -1077,18 +1116,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       ];
       const lines = [header.join(',')];
       for (const r of rows) {
-        const engId = batchToEng.get(r.billingBatchId);
-        // Defense-in-depth: skip any row whose batch isn't in this firm's set
-        // (the SQL scope above already guarantees this, but never emit a row
-        // we can't attribute to a firm engagement/client).
-        if (!engId) continue;
-        const cliId = engToClient.get(engId) ?? '';
-        const orig = Number(r.originalValueCents);
-        const adj = Number(r.adjustedValueCents);
+        const orig = r.originalValueCents;
+        const adj = r.adjustedValueCents;
         // 0–1 ratio to match the JSON /realization endpoint.
         const pct = orig > 0 ? (adj / orig).toFixed(4) : '0';
         lines.push(
-          [csvField(r.appUserId), csvField(engId), csvField(cliId), orig, adj, pct].join(','),
+          [
+            csvField(r.appUserId),
+            csvField(r.engagementId),
+            csvField(r.clientId),
+            orig,
+            adj,
+            pct,
+          ].join(','),
         );
       }
       res.setHeader('Content-Type', 'text/csv');
