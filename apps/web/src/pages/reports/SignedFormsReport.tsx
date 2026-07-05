@@ -50,7 +50,9 @@ function defaultRange(): { from: string; to: string } {
   };
 }
 
-const STATUS = 'completed';
+// Backend supports both; the page used to hard-code 'completed', leaving
+// partially-signed requests unreachable from the UI.
+type ReportStatus = 'completed' | 'partially_signed';
 
 function modeLabel(m: string): string {
   return m === 'in_person' ? 'In office' : 'Remote';
@@ -90,6 +92,7 @@ export function SignedFormsReportPage(): JSX.Element {
   const init = defaultRange();
   const [from, setFrom] = useState(init.from);
   const [to, setTo] = useState(init.to);
+  const [status, setStatus] = useState<ReportStatus>('completed');
   const [rows, setRows] = useState<SignedFormRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +102,7 @@ export function SignedFormsReportPage(): JSX.Element {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const qs = new URLSearchParams({ from, to, status: STATUS });
+    const qs = new URLSearchParams({ from, to, status });
     api<Report>(`/api/staff/reports/signed-forms?${qs.toString()}`)
       .then((r) => {
         if (!cancelled) setRows(r.rows ?? []);
@@ -113,7 +116,7 @@ export function SignedFormsReportPage(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [from, to]);
+  }, [from, to, status]);
 
   const clientValues = useMemo(() => {
     const names = Array.from(new Set(rows.map((r) => r.clientName ?? '(no client)')));
@@ -153,7 +156,7 @@ export function SignedFormsReportPage(): JSX.Element {
   const { paged, pagination } = useClientPage(visible);
 
   function downloadCsv(): void {
-    const qs = new URLSearchParams({ from, to, status: STATUS, format: 'csv' });
+    const qs = new URLSearchParams({ from, to, status, format: 'csv' });
     window.open(`/api/staff/reports/signed-forms?${qs.toString()}`, '_blank');
   }
 
@@ -209,7 +212,7 @@ export function SignedFormsReportPage(): JSX.Element {
             gap: 12,
             padding: 12,
             marginBottom: 12,
-            gridTemplateColumns: 'minmax(180px, 1fr) minmax(180px, 1fr) auto',
+            gridTemplateColumns: 'minmax(180px, 1fr) minmax(180px, 1fr) minmax(160px, auto) auto',
             alignItems: 'end',
             border: `1px solid ${tokens.color.border}`,
             borderRadius: tokens.radius.md,
@@ -233,6 +236,17 @@ export function SignedFormsReportPage(): JSX.Element {
               onChange={(e) => setTo(e.target.value)}
               style={inputStyle()}
             />
+          </div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            <label style={lblStyle()}>Status</label>
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as ReportStatus)}
+              style={inputStyle()}
+            >
+              <option value="completed">Completed</option>
+              <option value="partially_signed">Partially signed</option>
+            </select>
           </div>
           <Button
             size="sm"

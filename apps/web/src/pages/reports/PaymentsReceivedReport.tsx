@@ -34,6 +34,9 @@ interface Report {
   from: string;
   to: string;
   rows: RowResp[];
+  // True when the detail list hit the server's 2000-row cap; the summary
+  // and splits still cover the full set.
+  rowsTruncated?: boolean;
   summary: { count: number; totalCents: number };
   byMethod: Array<{ method: string; count: number; totalCents: number }>;
   byOffice: Array<{
@@ -346,6 +349,13 @@ export function PaymentsReceivedReportPage(): JSX.Element {
             <Stat label="Total" value={formatCents(totalCents)} />
             <Stat label="Date range" value={`${data.from} → ${data.to}`} />
           </div>
+        )}
+        {data?.rowsTruncated && (
+          <p style={{ fontSize: 12, color: tokens.color.warning ?? tokens.color.textMuted }}>
+            Showing the first {data.rows.length.toLocaleString()} of{' '}
+            {data.summary.count.toLocaleString()} receipts — totals above cover all of them. Narrow
+            the date range to see every row.
+          </p>
         )}
 
         {/* Breakdown cards */}
