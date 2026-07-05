@@ -28,12 +28,12 @@ The **Reports** workspace (left-nav **Reports**, at `/reports`) is the firm's an
 
 ## What you'll see
 
-- **Revenue operations (last 90 days)**: **Billed**, **Paid**, **DSO**, **Collection rate**, **MRR (N plans)**, with sparklines and prior-period deltas. DSO turns amber above 60 days; collection rate amber below 80%.
+- **Revenue operations (last 90 days)**: **Billed**, **Paid**, **DSO**, **Collection rate**, **MRR (N plans)**, with sparklines and prior-period deltas. DSO turns amber above 60 days; collection rate amber below 80%. An **Accrual / Cash** toggle switches the 12-month sparkline trend between billed-by-issue-month and net-cash-collected-by-receipt-month.
 - **Subscription profitability (trailing 90 days)**: per recurring plan, trailing revenue, in-scope/OOS hours, and a **Margin** pill (green ≥ 50%, amber ≥ 25%, else red).
 - **Billable-hour targets · current month**: per-timekeeper **Hours**, **Variance**, **Attainment** (firm target default 130h).
 - **Capacity forecast · next 4 weeks**: weekly average, projected 4-week hours, and a **Variance** pill vs the weekly target (default 32h).
 - **Realization**: firm summary stats or a drillable dimension table sorted worst-realization first.
-- Dedicated pages: **Payments Received** (`/reports/payments-received`) and **Engagement profitability** (`/reports/profitability`).
+- Dedicated pages: **Payments Received** (`/reports/payments-received`) and **Engagement profitability** (`/reports/profitability`). Engagement profitability has its own **Accrual / Cash** basis toggle plus **Start**/**End** dates: accrual margin = billed − cost; cash margin = collected-in-window − cost.
 
 ## Detailed reports (the report viewer)
 

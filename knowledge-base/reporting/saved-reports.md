@@ -35,7 +35,7 @@ A saved report stores a report configuration — a name, a report kind, and a `p
 
 ## Tips
 
-- Scheduling is via the params payload, not a dedicated UI: a background worker scans saved reports for a `schedule` block of the shape `{ "schedule": { "enabled": true, "recipients": ["a@firm.com"], "cron": "..." } }` and emails the named recipients. Add that block to **Params JSON** to enable it.
+- Scheduling is via the params payload, not a dedicated UI: a background worker scans saved reports for a `schedule` block of the shape `{ "schedule": { "enabled": true, "recipients": ["a@firm.com"], "cron": "..." } }` and emails the named recipients a deep link that opens the report with the saved filters applied. The cron's day-of-month/month/day-of-week fields are honored (minute/hour follow the worker's own schedule), and a report sends at most once per day.
 - Scheduled emails send only when a mail provider is configured; otherwise the worker logs a no-op.
 - To rerun, recreate the filters in the report itself using the saved **Params JSON** as your guide — the keys mirror the report's own query parameters (e.g. `dimension` for realization, `days` for windowed reports).
 - Keep shared reports generic; private reports are best for ad-hoc param experiments.

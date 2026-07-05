@@ -23,6 +23,40 @@ interface KindSpec {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const dateField = z.string().regex(DATE_RE);
 
+const START_FIELD: ParamField = {
+  name: 'start',
+  type: 'date',
+  description: 'Inclusive start date YYYY-MM-DD.',
+};
+const END_FIELD: ParamField = {
+  name: 'end',
+  type: 'date',
+  description: 'Inclusive end date YYYY-MM-DD.',
+};
+const BASIS_FIELD: ParamField = {
+  name: 'basis',
+  type: 'enum',
+  enum: ['accrual', 'cash'],
+  description:
+    'Revenue basis: accrual = amounts billed (invoice issue date), cash = amounts actually collected (payment receipt date).',
+};
+
+// Spec for a report that takes an optional start/end window (and optionally
+// the accrual/cash basis toggle).
+function dateWindowSpec(description: string, opts: { basis?: boolean } = {}): KindSpec {
+  return {
+    description,
+    fields: [START_FIELD, END_FIELD, ...(opts.basis ? [BASIS_FIELD] : [])],
+    schema: z
+      .object({
+        start: dateField.optional(),
+        end: dateField.optional(),
+        ...(opts.basis ? { basis: z.enum(['accrual', 'cash']).optional() } : {}),
+      })
+      .strict(),
+  };
+}
+
 export const REPORT_PARAM_SPECS: Record<string, KindSpec> = {
   realization: {
     description: 'Write-up / write-down realization rollup.',
@@ -48,8 +82,18 @@ export const REPORT_PARAM_SPECS: Record<string, KindSpec> = {
   },
   'capacity-forecast': {
     description: 'Projected billable hours vs target.',
-    fields: [{ name: 'weeklyTarget', type: 'number', description: 'Target billable hours/week.' }],
-    schema: z.object({ weeklyTarget: z.number().positive().optional() }).strict(),
+    fields: [
+      { name: 'weeklyTarget', type: 'number', description: 'Target billable hours/week.' },
+      START_FIELD,
+      END_FIELD,
+    ],
+    schema: z
+      .object({
+        weeklyTarget: z.number().positive().optional(),
+        start: dateField.optional(),
+        end: dateField.optional(),
+      })
+      .strict(),
   },
   'productivity-by-office': {
     description: 'Hours and utilization per office.',
@@ -63,8 +107,16 @@ export const REPORT_PARAM_SPECS: Record<string, KindSpec> = {
   },
   'subscription-profitability': {
     description: 'Retainer revenue vs cost-to-serve.',
-    fields: [{ name: 'days', type: 'number', description: 'Trailing window in days (30–365).' }],
-    schema: z.object({ days: z.number().int().min(30).max(365).optional() }).strict(),
+    fields: [
+      { name: 'days', type: 'number', description: 'Trailing window in days (30–365).' },
+      { ...START_FIELD, description: 'Window start YYYY-MM-DD (alternative to days).' },
+    ],
+    schema: z
+      .object({
+        days: z.number().int().min(30).max(365).optional(),
+        start: dateField.optional(),
+      })
+      .strict(),
   },
   'client-request-capture': {
     description: 'Billable time captured against fulfilled client requests.',
@@ -81,25 +133,42 @@ export const REPORT_PARAM_SPECS: Record<string, KindSpec> = {
   },
 };
 
-// Report kinds that take no parameters — the only valid output is {}.
-const NO_PARAM_KINDS = [
-  'profitability',
-  'utilization',
-  'effective-rate',
-  'mrr',
-  'book-of-business',
-  'clv',
-  'scope-creep',
-  'revenue-period-over-period',
-  'revenue-by-month',
-  'realization-by-partner',
-  'time-by-engagement',
-  'time-by-client',
-  'collection-realization',
-  'firm-profitability',
-  'approval-metrics',
-  'time-anomalies',
-];
+// Windowed reports (previously mislabeled NO_PARAM, which prevented AI-
+// suggested saved reports from ever carrying a date range the backend
+// actually supports). `basis: true` marks the reports with the accrual/cash
+// collection toggle.
+REPORT_PARAM_SPECS['profitability'] = dateWindowSpec('Profit per engagement.', { basis: true });
+REPORT_PARAM_SPECS['firm-profitability'] = dateWindowSpec(
+  'Firm-wide engagement cost/revenue/margin.',
+  { basis: true },
+);
+REPORT_PARAM_SPECS['revenue-by-month'] = dateWindowSpec('Monthly revenue.', { basis: true });
+REPORT_PARAM_SPECS['revenue-period-over-period'] = dateWindowSpec(
+  'Month-over-month revenue change.',
+  { basis: true },
+);
+REPORT_PARAM_SPECS['collection-realization'] = dateWindowSpec(
+  'Collections vs billings per partner.',
+  { basis: true },
+);
+REPORT_PARAM_SPECS['book-of-business'] = dateWindowSpec('Partner book of business.', {
+  basis: true,
+});
+REPORT_PARAM_SPECS['utilization'] = dateWindowSpec('Billable vs total hours per timekeeper.');
+REPORT_PARAM_SPECS['effective-rate'] = dateWindowSpec('Billed value per billable hour.');
+REPORT_PARAM_SPECS['scope-creep'] = dateWindowSpec('Out-of-scope hours on mixed engagements.');
+REPORT_PARAM_SPECS['realization-by-partner'] = dateWindowSpec('Realization per partner.');
+REPORT_PARAM_SPECS['time-by-engagement'] = dateWindowSpec('Hours + value per engagement.');
+REPORT_PARAM_SPECS['time-by-client'] = dateWindowSpec('Hours + value per client.');
+REPORT_PARAM_SPECS['time-anomalies'] = dateWindowSpec('Outlier daily-hours detection.');
+REPORT_PARAM_SPECS['approval-metrics'] = {
+  description: 'Approval throughput per approver.',
+  fields: [{ name: 'days', type: 'number', description: 'Trailing window in days (7–365).' }],
+  schema: z.object({ days: z.number().int().min(7).max(365).optional() }).strict(),
+};
+
+// Report kinds that genuinely take no parameters — the only valid output is {}.
+const NO_PARAM_KINDS = ['mrr', 'clv'];
 for (const k of NO_PARAM_KINDS) {
   REPORT_PARAM_SPECS[k] = {
     description: `${k} report.`,

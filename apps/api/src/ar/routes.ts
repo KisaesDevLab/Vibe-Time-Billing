@@ -515,7 +515,11 @@ export function createArRouter(deps: ArRoutesDeps): Router {
           serviceLineName: serviceLines.name,
         })
         .from(invoices)
-        .innerJoin(engagements, eq(engagements.id, invoices.primaryEngagementId))
+        // LEFT joins all the way down: an invoice with no primary engagement
+        // (e.g. consolidated/manual) used to vanish from this report, so the
+        // service-line totals never reconciled with /aging. Those balances
+        // now land in the "(no service line)" bucket.
+        .leftJoin(engagements, eq(engagements.id, invoices.primaryEngagementId))
         .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
         .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
         .where(
@@ -634,6 +638,9 @@ function agingToCsv(data: {
   clients: ClientAging[];
   totals: Record<AgingBucket, number>;
 }): string {
+  // Dollar amounts (2dp), matching the XLSX export — the CSV used to emit
+  // raw cents, which read as 100× the true balance next to the Excel file.
+  const usd = (cents: number): string => (cents / 100).toFixed(2);
   const header = ['Client', 'PartnerId', '0-30', '31-60', '61-90', '90+', 'Total'];
   const lines = [header.join(',')];
   for (const c of data.clients) {
@@ -641,11 +648,11 @@ function agingToCsv(data: {
       [
         csvCell(c.clientName),
         c.partnerId ?? '',
-        c.buckets['0-30'],
-        c.buckets['31-60'],
-        c.buckets['61-90'],
-        c.buckets['90+'],
-        c.total,
+        usd(c.buckets['0-30']),
+        usd(c.buckets['31-60']),
+        usd(c.buckets['61-90']),
+        usd(c.buckets['90+']),
+        usd(c.total),
       ].join(','),
     );
   }
@@ -653,11 +660,11 @@ function agingToCsv(data: {
     [
       'TOTAL',
       '',
-      data.totals['0-30'],
-      data.totals['31-60'],
-      data.totals['61-90'],
-      data.totals['90+'],
-      data.totals['0-30'] + data.totals['31-60'] + data.totals['61-90'] + data.totals['90+'],
+      usd(data.totals['0-30']),
+      usd(data.totals['31-60']),
+      usd(data.totals['61-90']),
+      usd(data.totals['90+']),
+      usd(data.totals['0-30'] + data.totals['31-60'] + data.totals['61-90'] + data.totals['90+']),
     ].join(','),
   );
   return lines.join('\n') + '\n';

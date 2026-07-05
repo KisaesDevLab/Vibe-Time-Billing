@@ -16,6 +16,8 @@ export interface ParamSpec {
   name: string;
   label: string;
   placeholder?: string;
+  /** When set, render a segmented toggle over these values instead of a text input. */
+  options?: readonly string[];
 }
 export interface ReportSpec {
   kind: string;
@@ -28,6 +30,10 @@ const DATE_PARAMS: ParamSpec[] = [
   { name: 'start', label: 'Start (YYYY-MM-DD)' },
   { name: 'end', label: 'End (YYYY-MM-DD)' },
 ];
+
+// MyBooks-style revenue-basis toggle: accrual = billed on invoice issue
+// date; cash = actually collected, dated by payment receipt.
+const BASIS_PARAM: ParamSpec = { name: 'basis', label: 'Basis', options: ['accrual', 'cash'] };
 
 // API-only reports surfaced through the generic viewer. Reports that have a
 // dedicated page (realization, dso/mrr/revenue-ops, profitability,
@@ -42,8 +48,16 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'revenue-by-month',
     label: 'Revenue by month',
-    description: 'Billed + paid totals per calendar month (last 24).',
-    params: DATE_PARAMS,
+    description:
+      'Per calendar month (last 24): billed + paid on accrual basis, or net cash collected on cash basis.',
+    params: [...DATE_PARAMS, BASIS_PARAM],
+  },
+  {
+    kind: 'revenue-period-over-period',
+    label: 'Revenue period-over-period',
+    description:
+      'Month-over-month revenue change — billed on accrual basis, net cash collected on cash basis.',
+    params: [...DATE_PARAMS, BASIS_PARAM],
   },
   {
     kind: 'utilization',
@@ -55,7 +69,7 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     kind: 'effective-rate',
     label: 'Effective rate',
     description: 'Billed value ÷ billable hours per timekeeper (default 90 days).',
-    params: [{ name: 'start', label: 'Start (YYYY-MM-DD)' }],
+    params: DATE_PARAMS,
   },
   {
     kind: 'time-by-engagement',
@@ -72,14 +86,16 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'collection-realization',
     label: 'Collection realization',
-    description: 'Paid ÷ billed per partner (default 90 days).',
-    params: DATE_PARAMS,
+    description:
+      'Paid ÷ billed per partner (default 90 days). Cash basis counts money received in the window; accrual uses lifetime paid on invoices issued in it.',
+    params: [...DATE_PARAMS, BASIS_PARAM],
   },
   {
     kind: 'book-of-business',
     label: 'Book of business',
-    description: 'Active clients + billed/paid per partner (default 365 days).',
-    params: DATE_PARAMS,
+    description:
+      'Active clients + billed/paid per partner (default 365 days). Cash basis dates "paid" by payment receipt.',
+    params: [...DATE_PARAMS, BASIS_PARAM],
   },
   {
     kind: 'clv',
@@ -89,8 +105,9 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'firm-profitability',
     label: 'Firm profitability',
-    description: 'Cost, billed, paid, and margin per engagement.',
-    params: DATE_PARAMS,
+    description:
+      'Cost, billed, paid, and margin per engagement. Margin = billed − cost on accrual basis, collected − cost on cash basis.',
+    params: [...DATE_PARAMS, BASIS_PARAM],
   },
   {
     kind: 'capacity-forecast',
@@ -98,7 +115,7 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     description: 'Projected next-4-week billable hours vs target and per-user capacity.',
     params: [
       { name: 'weeklyTarget', label: 'Weekly target hrs', placeholder: '32' },
-      { name: 'start', label: 'Start (YYYY-MM-DD)' },
+      ...DATE_PARAMS,
     ],
   },
   {
@@ -122,14 +139,14 @@ export const VIEWER_REPORTS: ReportSpec[] = [
   {
     kind: 'approval-metrics',
     label: 'Approval metrics',
-    description: 'Approval counts, rates, and response time per approver (default 30 days).',
-    params: [{ name: 'days', label: 'Window (days)', placeholder: '30' }],
+    description: 'Approval counts, rates, and response time per approver (default 90 days).',
+    params: [{ name: 'days', label: 'Window (days)', placeholder: '90' }],
   },
   {
     kind: 'time-anomalies',
     label: 'Time anomalies',
     description: 'Per-timekeeper daily-hours outliers (z-score, default 90 days).',
-    params: [{ name: 'start', label: 'Start (YYYY-MM-DD)' }],
+    params: DATE_PARAMS,
   },
   {
     kind: 'subscription-profitability',
@@ -325,16 +342,45 @@ export function ReportViewerPage(): JSX.Element {
               flexWrap: 'wrap',
             }}
           >
-            {spec.params.map((p) => (
-              <Input
-                key={p.name}
-                label={p.label}
-                value={paramVals[p.name] ?? ''}
-                placeholder={p.placeholder}
-                onChange={(e) => setParamVals((s) => ({ ...s, [p.name]: e.target.value }))}
-                style={{ width: 160 }}
-              />
-            ))}
+            {spec.params.map((p) =>
+              p.options ? (
+                <div key={p.name} style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 11, color: tokens.color.textMuted }}>{p.label}</span>
+                  <span style={{ display: 'inline-flex', gap: 4 }}>
+                    {p.options.map((opt) => {
+                      const active = (paramVals[p.name] || p.options![0]) === opt;
+                      return (
+                        <Button
+                          key={opt}
+                          size="sm"
+                          variant={active ? 'primary' : 'secondary'}
+                          onClick={() => {
+                            const vals = { ...paramVals, [p.name]: opt };
+                            setParamVals(vals);
+                            const next = new URLSearchParams();
+                            for (const sp of spec.params ?? [])
+                              if (vals[sp.name]) next.set(sp.name, vals[sp.name]!);
+                            setSearch(next);
+                            void run(vals);
+                          }}
+                        >
+                          {opt.charAt(0).toUpperCase() + opt.slice(1)}
+                        </Button>
+                      );
+                    })}
+                  </span>
+                </div>
+              ) : (
+                <Input
+                  key={p.name}
+                  label={p.label}
+                  value={paramVals[p.name] ?? ''}
+                  placeholder={p.placeholder}
+                  onChange={(e) => setParamVals((s) => ({ ...s, [p.name]: e.target.value }))}
+                  style={{ width: 160 }}
+                />
+              ),
+            )}
             <Button
               size="sm"
               onClick={() => {

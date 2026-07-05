@@ -20,10 +20,13 @@ function openHref(kind: string, params: Record<string, unknown>): string {
     qs.set(key, String(v));
   }
   const q = qs.toString() ? `?${qs.toString()}` : '';
-  if (kind === 'profitability') return '/reports/profitability';
+  // Preserve the saved params everywhere — dedicated pages read them from
+  // the query string too (they used to be silently dropped for
+  // profitability / dso / revenue-period-over-period).
+  if (kind === 'profitability') return `/reports/profitability${q}`;
   if (kind === 'realization') return `/reports${q}`;
   if (VIEWER_KINDS.has(kind)) return `/reports/view/${kind}${q}`;
-  return '/reports';
+  return `/reports${q}`;
 }
 
 interface SavedReport {

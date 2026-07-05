@@ -29,9 +29,13 @@ interface DimResponse {
 
 interface PeriodRow {
   month: string;
-  billedCents: number;
-  paidCents: number;
-  pctChangeBilled: number | null;
+  // Accrual basis: billed + paid by invoice issue month.
+  billedCents?: number;
+  paidCents?: number;
+  pctChangeBilled?: number | null;
+  // Cash basis: net cash collected by payment-receipt month.
+  collectedCents?: number;
+  pctChangeCollected?: number | null;
 }
 
 const formatPct = (p: number): string => `${(p * 100).toFixed(1)}%`;
@@ -52,6 +56,7 @@ export function ReportsPage(): JSX.Element {
   const drillUser = search.get('userId') ?? '';
   const drillEng = search.get('engagementId') ?? '';
   const drillClient = search.get('clientId') ?? '';
+  const drillServiceLine = search.get('serviceLineId') ?? '';
 
   function setParam(name: string, value: string | null): void {
     const next = new URLSearchParams(search);
@@ -65,10 +70,11 @@ export function ReportsPage(): JSX.Element {
     next.delete('userId');
     next.delete('engagementId');
     next.delete('clientId');
+    next.delete('serviceLineId');
     setSearch(next, { replace: false });
   }
 
-  const drillActive = Boolean(drillUser || drillEng || drillClient);
+  const drillActive = Boolean(drillUser || drillEng || drillClient || drillServiceLine);
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
@@ -95,12 +101,17 @@ export function ReportsPage(): JSX.Element {
           drillUser={drillUser}
           drillEng={drillEng}
           drillClient={drillClient}
+          drillServiceLine={drillServiceLine}
           onDrill={(d, key) => {
-            // Drill from firm → timekeeper / engagement / client view.
+            // Drill from a dimension row into the filtered firm summary.
+            // (service_line rows used to be a dead click — the handler had
+            // no branch for them, so the user just landed on the unfiltered
+            // firm view.)
             const next = new URLSearchParams(search);
             if (d === 'timekeeper') next.set('userId', key);
             else if (d === 'engagement') next.set('engagementId', key);
             else if (d === 'client') next.set('clientId', key);
+            else if (d === 'service_line') next.set('serviceLineId', key);
             next.set('dim', 'firm');
             setSearch(next);
           }}
@@ -200,6 +211,7 @@ function RealizationCard({
   drillUser,
   drillEng,
   drillClient,
+  drillServiceLine,
   onDrill,
 }: {
   dim: Dimension;
@@ -209,6 +221,7 @@ function RealizationCard({
   drillUser: string;
   drillEng: string;
   drillClient: string;
+  drillServiceLine: string;
   onDrill: (d: Exclude<Dimension, 'firm'>, key: string) => void;
 }): JSX.Element {
   const [firmSummary, setFirmSummary] = useState<FirmSummary['summary'] | null>(null);
@@ -223,8 +236,9 @@ function RealizationCard({
     if (drillUser) p.set('appUserId', drillUser);
     if (drillEng) p.set('engagementId', drillEng);
     if (drillClient) p.set('clientId', drillClient);
+    if (drillServiceLine) p.set('serviceLineId', drillServiceLine);
     return `/api/staff/reports/realization?${p.toString()}`;
-  }, [dim, start, end, drillUser, drillEng, drillClient]);
+  }, [dim, start, end, drillUser, drillEng, drillClient, drillServiceLine]);
 
   useEffect(() => {
     setLoading(true);
@@ -250,7 +264,7 @@ function RealizationCard({
 
   return (
     <Card
-      title={`Realization${drillUser || drillEng || drillClient ? ' (drilled)' : ''}`}
+      title={`Realization${drillUser || drillEng || drillClient || drillServiceLine ? ' (drilled)' : ''}`}
       action={
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {(['firm', 'timekeeper', 'engagement', 'client', 'service_line'] as const).map((d) => (
@@ -307,24 +321,29 @@ function RealizationCard({
             {
               key: 'label',
               header: dim.charAt(0).toUpperCase() + dim.slice(1),
-              render: (r) => (
-                <button
-                  type="button"
-                  onClick={() => onDrill(dim, r.key)}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: tokens.color.accent,
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    fontSize: 'inherit',
-                    padding: 0,
-                  }}
-                  title={`Drill into ${dim} ${r.label ?? r.key.slice(0, 8)}`}
-                >
-                  {r.label ?? r.key.slice(0, 8)}
-                </button>
-              ),
+              render: (r) =>
+                // The unassigned service-line bucket is a sentinel, not a
+                // UUID — it can't be drilled into.
+                r.key === '__unassigned__' ? (
+                  <span>{r.label ?? '(No service line)'}</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onDrill(dim, r.key)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: tokens.color.accent,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      fontSize: 'inherit',
+                      padding: 0,
+                    }}
+                    title={`Drill into ${dim} ${r.label ?? r.key.slice(0, 8)}`}
+                  >
+                    {r.label ?? r.key.slice(0, 8)}
+                  </button>
+                ),
             },
             {
               key: 'wip',
@@ -749,6 +768,9 @@ function RevenueOpsCard(): JSX.Element {
   const [mrr, setMrr] = useState<MrrResp | null>(null);
   const [trend, setTrend] = useState<PeriodRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // MyBooks-style basis toggle for the monthly trend: accrual = billed/paid
+  // by invoice issue month; cash = net collected by payment-receipt month.
+  const [basis, setBasis] = useState<'accrual' | 'cash'>('accrual');
 
   useEffect(() => {
     void (async () => {
@@ -756,7 +778,9 @@ function RevenueOpsCard(): JSX.Element {
         const [d, m, p] = await Promise.all([
           api<DsoResp>('/api/staff/reports/dso?days=90'),
           api<MrrResp>('/api/staff/reports/mrr'),
-          api<{ items: PeriodRow[] }>('/api/staff/reports/revenue-period-over-period'),
+          api<{ items: PeriodRow[] }>(
+            `/api/staff/reports/revenue-period-over-period?basis=${basis}`,
+          ),
         ]);
         setDso(d);
         setMrr(m);
@@ -765,26 +789,44 @@ function RevenueOpsCard(): JSX.Element {
         setError(err instanceof Error ? err.message : 'failed');
       }
     })();
-  }, []);
+  }, [basis]);
 
-  // Sparkline series — last 12 months of billed totals.
-  const billedTrend = trend.slice(-12).map((r) => r.billedCents);
-  const paidTrend = trend.slice(-12).map((r) => r.paidCents);
+  // Sparkline series — last 12 months. On cash basis both stats track the
+  // collected series (there is no meaningful "billed" cash series).
+  const billedTrend = trend
+    .slice(-12)
+    .map((r) => (basis === 'cash' ? (r.collectedCents ?? 0) : (r.billedCents ?? 0)));
+  const paidTrend = trend
+    .slice(-12)
+    .map((r) => (basis === 'cash' ? (r.collectedCents ?? 0) : (r.paidCents ?? 0)));
 
   return (
     <Card
-      title="Revenue operations (last 90 days)"
+      title={`Revenue operations (last 90 days)${basis === 'cash' ? ' · cash trend' : ''}`}
       action={
-        <a
-          href="/api/staff/invoices/export.csv?format=xlsx"
-          style={{
-            fontSize: 12,
-            color: tokens.color.accent,
-            textDecoration: 'none',
-          }}
-        >
-          ⬇ Excel
-        </a>
+        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          {(['accrual', 'cash'] as const).map((b) => (
+            <Button
+              key={b}
+              size="sm"
+              variant={basis === b ? 'primary' : 'secondary'}
+              onClick={() => setBasis(b)}
+            >
+              {b === 'accrual' ? 'Accrual' : 'Cash'}
+            </Button>
+          ))}
+          <a
+            href="/api/staff/invoices/export.csv?format=xlsx"
+            title="Exports the invoice register, not this card"
+            style={{
+              fontSize: 12,
+              color: tokens.color.accent,
+              textDecoration: 'none',
+            }}
+          >
+            ⬇ Invoices (Excel)
+          </a>
+        </span>
       }
     >
       {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
@@ -995,7 +1037,7 @@ const REPORT_CARDS: CardSpec[] = [
   {
     key: 'subscriptions',
     title: 'Subscription profitability',
-    blurb: 'Recurring MRR + churn + ARPU.',
+    blurb: 'Per-plan retainer revenue vs cost-to-serve margin.',
     scrollTo: 'subscription-profitability-card',
   },
   {
@@ -1007,7 +1049,7 @@ const REPORT_CARDS: CardSpec[] = [
   {
     key: 'capacity',
     title: 'Capacity forecast',
-    blurb: 'Open WIP + scheduled engagements vs available hours.',
+    blurb: 'Projected billable hours vs target from the 90-day trailing average.',
     scrollTo: 'capacity-forecast-card',
   },
   {

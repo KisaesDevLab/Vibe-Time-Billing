@@ -540,7 +540,12 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'saved-report-email: no DB configured');
       return;
     }
-    const result = await runSavedReportEmail(db, logger, dunningSendEmail);
+    const result = await runSavedReportEmail(
+      db,
+      logger,
+      dunningSendEmail,
+      process.env['APP_BASE_URL'],
+    );
     logger.info({ jobId: job.id, ...result }, 'saved-report-email complete');
   },
   'email-in': async (job) => {

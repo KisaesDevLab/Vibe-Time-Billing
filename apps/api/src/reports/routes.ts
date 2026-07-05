@@ -22,6 +22,7 @@ import {
   firmSettings,
   invoiceLineItems,
   invoices,
+  paymentReceipts,
   payments,
   recurringBillingPlans,
   serviceLines,
@@ -84,6 +85,15 @@ function rangeFromQuery(req: Request, defaultDays: number): { start: string; end
   const start =
     pick('start') ?? new Date(Date.now() - defaultDays * 86_400_000).toISOString().slice(0, 10);
   return { start, end: pick('end') };
+}
+
+// Actual length (in days) of a resolved report window; `end` defaults to
+// today. Date-only difference so the default trailing-N-day window reports
+// exactly N. Used so responses echo the window that was really queried
+// instead of a hardcoded default.
+function windowDaysOf(start: string, end: string | null): number {
+  const endStr = end ?? new Date().toISOString().slice(0, 10);
+  return Math.max(1, Math.round((Date.parse(endStr) - Date.parse(start)) / 86_400_000));
 }
 
 // For all-time reports: parse ?start=/?end= without imposing a default window,
@@ -173,6 +183,148 @@ async function billedByEngagement(
     }
   }
   return billedBy;
+}
+
+// ---------------------------------------------------------------------
+// Cash-basis (collections) helpers — the "Cash" side of the accrual/cash
+// report toggle. Cash = payment rows net of refunds (a refund is netted
+// into its original payment, not dated separately), SUCCEEDED or
+// PARTIALLY_REFUNDED, not voided, dated by COALESCE(receipt.payment_date,
+// received_at::date) — the same idiom as the Payments Received report.
+// Credit applications (provider='CREDIT') are included, consistent with
+// that report.
+// ---------------------------------------------------------------------
+
+type ReportBasis = 'accrual' | 'cash';
+
+function parseBasis(req: Request): ReportBasis {
+  return req.query['basis'] === 'cash' ? 'cash' : 'accrual';
+}
+
+// Effective cash date of a payment row; requires payments + paymentReceipts
+// in the query's FROM/JOIN set.
+function cashDateExpr() {
+  return drz`COALESCE(${paymentReceipts.paymentDate}, (${payments.receivedAt} AT TIME ZONE 'UTC')::date)`;
+}
+
+function cashConds(firmId: string, range: { start: string | null; end: string | null }) {
+  return [
+    eq(invoices.firmId, firmId),
+    inArray(payments.status, ['SUCCEEDED', 'PARTIALLY_REFUNDED']),
+    isNull(payments.voidedAt),
+    range.start ? drz`${cashDateExpr()} >= ${range.start}::date` : undefined,
+    range.end ? drz`${cashDateExpr()} <= ${range.end}::date` : undefined,
+  ];
+}
+
+// Net cash grouped by receipt month.
+async function cashByMonth(
+  db: Database,
+  firmId: string,
+  range: { start: string | null; end: string | null },
+): Promise<Array<{ month: string; collectedCents: number; count: number }>> {
+  const monthCol = drz<string>`to_char(${cashDateExpr()}, 'YYYY-MM')`;
+  const rows = await db
+    .select({
+      month: monthCol.as('month'),
+      collected: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+      count: drz<number>`COUNT(*)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+    .where(and(...cashConds(firmId, range)))
+    .groupBy(monthCol)
+    .orderBy(monthCol);
+  return rows.map((r) => ({
+    month: r.month,
+    collectedCents: Number(r.collected),
+    count: Number(r.count),
+  }));
+}
+
+// Net cash grouped by the invoice's client partner-in-charge.
+async function cashByPartner(
+  db: Database,
+  firmId: string,
+  range: { start: string | null; end: string | null },
+): Promise<Map<string | null, number>> {
+  const rows = await db
+    .select({
+      partnerId: clients.partnerInChargeId,
+      collected: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+    .where(and(...cashConds(firmId, range)))
+    .groupBy(clients.partnerInChargeId);
+  return new Map(rows.map((r) => [r.partnerId, Number(r.collected)]));
+}
+
+// Net cash attributed to engagements. Payments are invoice-level, so a
+// consolidated invoice's cash is split pro-rata by each engagement's share
+// of the engagement-tagged line-item amounts — the same attribution rule
+// as billedByEngagement, applied to collections.
+async function cashByEngagement(
+  db: Database,
+  firmId: string,
+  engIdSet: Set<string>,
+  range: { start: string | null; end: string | null },
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (engIdSet.size === 0) return out;
+  const payRows = await db
+    .select({
+      invoiceId: payments.invoiceId,
+      primaryEngagementId: invoices.primaryEngagementId,
+      collected: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+    .where(and(...cashConds(firmId, range)))
+    .groupBy(payments.invoiceId, invoices.primaryEngagementId);
+  const invIds = payRows.map((p) => p.invoiceId);
+  const liRows = invIds.length
+    ? await db
+        .select({
+          invoiceId: invoiceLineItems.invoiceId,
+          engagementId: invoiceLineItems.engagementId,
+          amountCents: invoiceLineItems.amountCents,
+        })
+        .from(invoiceLineItems)
+        .where(inArray(invoiceLineItems.invoiceId, invIds))
+    : [];
+  const linesByInvoice = new Map<string, Map<string, number>>();
+  for (const li of liRows) {
+    if (!li.engagementId || !engIdSet.has(li.engagementId)) continue;
+    const byEng = linesByInvoice.get(li.invoiceId) ?? new Map<string, number>();
+    byEng.set(li.engagementId, (byEng.get(li.engagementId) ?? 0) + Number(li.amountCents));
+    linesByInvoice.set(li.invoiceId, byEng);
+  }
+  const add = (engId: string, cents: number) => out.set(engId, (out.get(engId) ?? 0) + cents);
+  for (const p of payRows) {
+    const collected = Number(p.collected);
+    const byEng = linesByInvoice.get(p.invoiceId);
+    if (!byEng || byEng.size <= 1) {
+      const [onlyEng] = byEng ? Array.from(byEng.keys()) : [];
+      const targetEng = onlyEng ?? p.primaryEngagementId;
+      if (targetEng && engIdSet.has(targetEng)) add(targetEng, collected);
+      continue;
+    }
+    const attributed = Array.from(byEng.values()).reduce((a, b) => a + b, 0);
+    if (attributed <= 0) {
+      if (p.primaryEngagementId && engIdSet.has(p.primaryEngagementId))
+        add(p.primaryEngagementId, collected);
+      continue;
+    }
+    for (const [engId, amt] of byEng) {
+      add(engId, Math.round(collected * (amt / attributed)));
+    }
+  }
+  return out;
 }
 
 export function createReportRouter(deps: ReportRoutesDeps): Router {
@@ -552,8 +704,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }
       const engIdSet = new Set(engIds);
       const { start: dStart, end: dEnd } = optionalRange(req);
-      const [billedBy, cost] = await Promise.all([
+      const basis = parseBasis(req);
+      const [billedBy, collectedBy, cost] = await Promise.all([
         billedByEngagement(deps.db, session.firmId, engIdSet, { start: dStart, end: dEnd }),
+        // basis=cash: net cash received in the window, pro-rated to
+        // engagements by line-item share (replaces lifetime paidCents).
+        basis === 'cash'
+          ? cashByEngagement(deps.db, session.firmId, engIdSet, { start: dStart, end: dEnd })
+          : Promise.resolve(null),
         deps.db
           .select({
             engagementId: timeEntries.engagementId,
@@ -575,21 +733,28 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       for (const r of cost) {
         costBy.set(r.engagementId, Number(r.costCents));
       }
-      const allEngIds = new Set<string>([...billedBy.keys(), ...costBy.keys()]);
+      const allEngIds = new Set<string>([
+        ...billedBy.keys(),
+        ...costBy.keys(),
+        ...(collectedBy ? collectedBy.keys() : []),
+      ]);
       const items = Array.from(allEngIds).map((engId) => {
         const br = billedBy.get(engId) ?? { billed: 0, paid: 0 };
         const cc = costBy.get(engId) ?? 0;
-        const marginCents = br.billed - cc;
+        const paid = collectedBy ? (collectedBy.get(engId) ?? 0) : br.paid;
+        // Margin follows the basis: accrual = billed − cost, cash = collected − cost.
+        const revenue = basis === 'cash' ? paid : br.billed;
+        const marginCents = revenue - cc;
         return {
           engagementId: engId,
           billedCents: br.billed,
-          paidCents: br.paid,
+          paidCents: paid,
           costCents: cc,
           marginCents,
-          marginPct: br.billed > 0 ? (marginCents / br.billed) * 100 : null,
+          marginPct: revenue > 0 ? (marginCents / revenue) * 100 : null,
         };
       });
-      res.json({ items });
+      res.json({ basis, items });
     },
   );
 
@@ -605,6 +770,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const { invoices: inv } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
       const { start: dStart, end: dEnd } = optionalRange(req);
+      // basis=cash → months keyed by payment-receipt date with net cash
+      // collected, instead of invoice issue months with lifetime paidCents.
+      if (parseBasis(req) === 'cash') {
+        const months = await cashByMonth(deps.db, session.firmId, { start: dStart, end: dEnd });
+        res.json({
+          basis: 'cash',
+          items: months
+            .slice(-24)
+            .reverse()
+            .map((m) => ({ month: m.month, collectedCents: m.collectedCents, count: m.count })),
+        });
+        return;
+      }
       const rows = await deps.db
         .select({
           month: drz<string>`to_char(${inv.issueDate}, 'YYYY-MM')`.as('month'),
@@ -626,6 +804,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .orderBy(drz`to_char(${inv.issueDate}, 'YYYY-MM') DESC`)
         .limit(24);
       res.json({
+        basis: 'accrual',
         items: rows.map((r) => ({
           month: r.month,
           totalCents: Number(r.totalCents),
@@ -646,6 +825,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: since, end: until } = rangeFromQuery(req, 30);
+      const winDays = windowDaysOf(since, until);
       const { timeEntries: te, appUsers: au } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
       const rows = await deps.db
@@ -670,13 +850,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .groupBy(te.appUserId, au.fullName, au.standardHoursPerWeek);
       res.json({
         asOf: new Date().toISOString().slice(0, 10),
-        windowDays: 30,
+        // Echo the ACTUAL window (was hardcoded 30 even when ?start/?end set).
+        windowDays: winDays,
         items: rows.map((r) => {
           const billable = Number(r.billableHours);
           const total = Number(r.totalHours);
-          // Capacity over the 30-day window = standard weekly hours × 30/7.
+          // Capacity over the queried window = standard weekly hours × days/7.
           const availableHours =
-            Math.round(((Number(r.standardHoursPerWeek) * 30) / 7) * 100) / 100;
+            Math.round(((Number(r.standardHoursPerWeek) * winDays) / 7) * 100) / 100;
           return {
             appUserId: r.appUserId,
             fullName: r.fullName,
@@ -854,6 +1035,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const batchIds = batches.map((b) => b.id);
       const batchToEng = new Map(batches.map((b) => [b.id, b.engagementId]));
       const engToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
+      // Optional ?start/?end window on the originating time entry's date —
+      // the JSON /realization endpoint honoured these but the CSV ignored
+      // them, so exports never matched the filtered on-screen view.
+      const { start: dStart, end: dEnd } = optionalRange(req);
       const rows = batchIds.length
         ? await deps.db
             .select({
@@ -865,12 +1050,21 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             })
             .from(adjustmentAllocations)
             .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
+            // Left-join the time entry only to support the optional window
+            // (mirrors /realization-by-partner): with no bounds, allocations
+            // without a time entry are still emitted.
+            .leftJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
             // SECURITY: scope to THIS firm's batches in SQL. Without this the
             // query read every firm's allocations and emitted the unmatched
             // ones (blank engagement/client but real appUserId + dollar
             // amounts) — a cross-firm data leak. Also restrict to APPLIED.
             .where(
-              and(inArray(adjustments.billingBatchId, batchIds), eq(adjustments.status, 'APPLIED')),
+              and(
+                inArray(adjustments.billingBatchId, batchIds),
+                eq(adjustments.status, 'APPLIED'),
+                dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
+                dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
+              ),
             )
         : [];
       const header = [
@@ -1036,6 +1230,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: since, end: until } = rangeFromQuery(req, 90);
+      const basis = parseBasis(req);
       const rows = await deps.db
         .select({
           partnerId: clients.partnerInChargeId,
@@ -1053,19 +1248,32 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           ),
         )
         .groupBy(clients.partnerInChargeId);
-      const crPartnerNames = await namesByIds(
-        deps.db,
-        rows.map((r) => r.partnerId),
-        'partner',
+      // basis=cash: "paid" = net cash RECEIVED in the window (receipt-dated),
+      // not lifetime paidCents of invoices issued in the window. Billings
+      // stay issue-dated, so the rate compares in-window collections to
+      // in-window billings.
+      const cashMap =
+        basis === 'cash'
+          ? await cashByPartner(deps.db, session.firmId, { start: since, end: until })
+          : null;
+      const partnerIds = new Set<string | null>(rows.map((r) => r.partnerId));
+      if (cashMap) for (const k of cashMap.keys()) partnerIds.add(k);
+      const billedBy = new Map<string | null, number>(
+        rows.map((r) => [r.partnerId, Number(r.billed)]),
       );
+      const accrualPaidBy = new Map<string | null, number>(
+        rows.map((r) => [r.partnerId, Number(r.paid)]),
+      );
+      const crPartnerNames = await namesByIds(deps.db, Array.from(partnerIds), 'partner');
       res.json({
-        windowDays: 90,
-        items: rows.map((r) => {
-          const b = Number(r.billed);
-          const p = Number(r.paid);
+        windowDays: windowDaysOf(since, until),
+        basis,
+        items: Array.from(partnerIds).map((partnerId) => {
+          const b = billedBy.get(partnerId) ?? 0;
+          const p = cashMap ? (cashMap.get(partnerId) ?? 0) : (accrualPaidBy.get(partnerId) ?? 0);
           return {
-            partnerId: r.partnerId,
-            partnerName: r.partnerId ? (crPartnerNames.get(r.partnerId) ?? null) : null,
+            partnerId,
+            partnerName: partnerId ? (crPartnerNames.get(partnerId) ?? null) : null,
             billedCents: b,
             paidCents: p,
             collectionRatePct: b > 0 ? (p / b) * 100 : null,
@@ -1087,7 +1295,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { start: since } = rangeFromQuery(req, 90);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
       // Billed (post-write-down) value per time entry: the APPLIED adjusted
       // value where the entry was adjusted, otherwise its standard amount. A
       // time entry belongs to a single billing batch/adjustment, so the SUM
@@ -1122,11 +1330,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             eq(appUsers.firmId, session.firmId),
             ne(timeEntries.status, 'ARCHIVED'),
             drz`${timeEntries.entryDate} >= ${since}::date`,
+            // ?end= was accepted but silently dropped before — apply it.
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
           ),
         )
         .groupBy(timeEntries.appUserId, appUsers.fullName);
       res.json({
-        windowDays: 90,
+        windowDays: windowDaysOf(since, until),
         items: rows.map((r) => {
           const h = Number(r.hours);
           // Billed (post-adjustment) value of billable work for this user.
@@ -1156,6 +1366,24 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: dStart, end: dEnd } = optionalRange(req);
+      // basis=cash → month-over-month net cash collected (receipt-dated).
+      if (parseBasis(req) === 'cash') {
+        const months = await cashByMonth(deps.db, session.firmId, { start: dStart, end: dEnd });
+        const items = months.map((m, i) => {
+          const prev = months[i - 1];
+          const pctChange =
+            prev && prev.collectedCents > 0
+              ? ((m.collectedCents - prev.collectedCents) / prev.collectedCents) * 100
+              : null;
+          return {
+            month: m.month,
+            collectedCents: m.collectedCents,
+            pctChangeCollected: pctChange,
+          };
+        });
+        res.json({ basis: 'cash', items });
+        return;
+      }
       const monthCol = drz<string>`to_char(date_trunc('month', ${invoices.issueDate})::date, 'YYYY-MM')`;
       const rows = await deps.db
         .select({
@@ -1187,7 +1415,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           pctChangeBilled: pctChange,
         };
       });
-      res.json({ items });
+      res.json({ basis: 'accrual', items });
     },
   );
 
@@ -1260,6 +1488,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: since, end: until } = rangeFromQuery(req, 365);
+      const basis = parseBasis(req);
       const rows = await deps.db
         .select({
           partnerId: clients.partnerInChargeId,
@@ -1280,19 +1509,25 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // A partner's "book" is their ACTIVE clients — exclude archived.
         .where(and(eq(clients.firmId, session.firmId), ne(clients.status, 'ARCHIVED')))
         .groupBy(clients.partnerInChargeId);
+      // basis=cash: paid = net cash received in the window per partner.
+      const bobCash =
+        basis === 'cash'
+          ? await cashByPartner(deps.db, session.firmId, { start: since, end: until })
+          : null;
       const bobPartnerNames = await namesByIds(
         deps.db,
         rows.map((r) => r.partnerId),
         'partner',
       );
       res.json({
-        windowDays: 365,
+        windowDays: windowDaysOf(since, until),
+        basis,
         items: rows.map((r) => ({
           partnerId: r.partnerId,
           partnerName: r.partnerId ? (bobPartnerNames.get(r.partnerId) ?? null) : null,
           clientCount: Number(r.clientCount),
           billedCents: Number(r.billedCents),
-          paidCents: Number(r.paidCents),
+          paidCents: bobCash ? (bobCash.get(r.partnerId) ?? 0) : Number(r.paidCents),
         })),
       });
     },
@@ -1388,18 +1623,25 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .groupBy(engagements.id, engagements.name, clients.name);
       // Attribute revenue per engagement (consolidated invoices split by line
       // item; DRAFT/VOIDED excluded) — same helper as /profitability.
-      const billMap = await billedByEngagement(
-        deps.db,
-        session.firmId,
-        new Set(rows.map((r) => r.engagementId)),
-        { start: dStart, end: dEnd },
-      );
+      const basis = parseBasis(req);
+      const fpEngIds = new Set(rows.map((r) => r.engagementId));
+      const [billMap, fpCash] = await Promise.all([
+        billedByEngagement(deps.db, session.firmId, fpEngIds, { start: dStart, end: dEnd }),
+        basis === 'cash'
+          ? cashByEngagement(deps.db, session.firmId, fpEngIds, { start: dStart, end: dEnd })
+          : Promise.resolve(null),
+      ]);
       const items = rows
         .map((r) => {
           const inv = billMap.get(r.engagementId);
           const billedCents = inv ? inv.billed : 0;
-          const paidCents = inv ? inv.paid : 0;
+          const paidCents = fpCash ? (fpCash.get(r.engagementId) ?? 0) : inv ? inv.paid : 0;
           const costCents = Number(r.costCents);
+          // Margin follows the basis: accrual = billed − cost (aligned with
+          // /profitability — this report used paid−cost while its sibling
+          // used billed−cost, so the two disagreed on the same engagement);
+          // cash = collected-in-window − cost.
+          const revenue = basis === 'cash' ? paidCents : billedCents;
           return {
             engagementId: r.engagementId,
             engagementName: r.engagementName,
@@ -1407,11 +1649,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             costCents,
             billedCents,
             paidCents,
-            marginCents: paidCents - costCents,
-            marginPct: paidCents > 0 ? ((paidCents - costCents) / paidCents) * 100 : null,
+            marginCents: revenue - costCents,
+            marginPct: revenue > 0 ? ((revenue - costCents) / revenue) * 100 : null,
           };
         })
-        .filter((r) => r.costCents > 0 || r.billedCents > 0)
+        .filter((r) => r.costCents > 0 || r.billedCents > 0 || r.paidCents > 0)
         .sort((a, b) => b.marginCents - a.marginCents);
       const totals = items.reduce(
         (acc, r) => ({
@@ -1422,7 +1664,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         }),
         { costCents: 0, billedCents: 0, paidCents: 0, marginCents: 0 },
       );
-      res.json({ items, totals });
+      res.json({ basis, items, totals });
     },
   );
 
@@ -1441,7 +1683,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const weeklyTarget = parseFloat(String(req.query['weeklyTarget'] ?? '32')) || 32;
-      const { start: since } = rangeFromQuery(req, 90);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
+      // Weeks in the ACTUAL queried window (was a fixed ÷13 even when the
+      // caller narrowed ?start=, which skewed the weekly average).
+      const windowWeeks = windowDaysOf(since, until) / 7;
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -1457,16 +1702,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             // Exclude soft-deleted (ARCHIVED) entries.
             ne(timeEntries.status, 'ARCHIVED'),
             drz`${timeEntries.entryDate} >= ${since}::date`,
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
           ),
         )
         .groupBy(timeEntries.appUserId, appUsers.fullName, appUsers.standardHoursPerWeek);
-      // 90 days ≈ 13 weeks; weekly average × 4 weeks = projection.
+      // Weekly average over the queried window × 4 weeks = projection.
       res.json({
         weeklyTargetHours: weeklyTarget,
         projectionWeeks: 4,
+        windowDays: windowDaysOf(since, until),
         items: rows.map((r) => {
           const billable = Number(r.totalBillableHours);
-          const weeklyAvg = billable / 13;
+          const weeklyAvg = billable / windowWeeks;
           const projectedNext4Weeks = weeklyAvg * 4;
           // Per-user capacity basis (their standard work week) alongside the
           // flat firm-wide weeklyTarget — a more honest variance than a single
@@ -1755,7 +2002,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { start: since } = rangeFromQuery(req, 90);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -1769,6 +2016,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           and(
             eq(clients.firmId, session.firmId),
             drz`${timeEntries.entryDate} >= ${since}::date`,
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
             drz`${timeEntries.status} <> 'ARCHIVED'`,
           ),
         )
@@ -1829,11 +2077,17 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const trailingDays = Math.min(
-        Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 30),
-        365,
-      );
-      const since = new Date(Date.now() - trailingDays * 86_400_000).toISOString().slice(0, 10);
+      // Window: either ?days=N (30–365) or an explicit ?start=YYYY-MM-DD —
+      // the report viewer sends `start`, which used to be silently ignored.
+      const startParam =
+        typeof req.query['start'] === 'string' && DATE_RE.test(req.query['start'])
+          ? req.query['start']
+          : null;
+      const trailingDays = startParam
+        ? Math.min(Math.max(windowDaysOf(startParam, null), 1), 365)
+        : Math.min(Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 30), 365);
+      const since =
+        startParam ?? new Date(Date.now() - trailingDays * 86_400_000).toISOString().slice(0, 10);
 
       const plans = await deps.db
         .select({
@@ -2131,24 +2385,63 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         status: r.status,
       }));
 
-      const summary = rows.reduce(
-        (acc, r) => ({ count: acc.count + 1, totalCents: acc.totalCents + r.totalCents }),
+      // Aggregate in SQL over the FULL filtered set — the detail rows above
+      // are capped at 2000, and summing the capped list silently understated
+      // the totals for busy windows.
+      const aggRows = await deps.db.execute(drz`
+        SELECT
+          COALESCE(pr.payment_method, p.provider)                 AS method,
+          c.office_id::text                                       AS office_id,
+          o.name                                                  AS office_name,
+          COUNT(*)::int                                           AS count,
+          SUM(p.amount_cents - COALESCE(p.refunded_amount_cents, 0))::bigint AS total_cents
+        FROM vibetb.payment p
+        INNER JOIN vibetb.invoice  i ON i.id = p.invoice_id
+        INNER JOIN vibetb.client   c ON c.id = i.client_id
+        LEFT  JOIN vibetb.office   o ON o.id = c.office_id
+        LEFT  JOIN vibetb.payment_receipt pr ON pr.id = p.receipt_id
+        WHERE c.firm_id = ${session.firmId}
+          AND p.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')
+          AND p.voided_at IS NULL
+          AND COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date)
+              BETWEEN ${from} AND ${to}
+          ${officeId ? drz`AND c.office_id = ${officeId}` : drz``}
+          ${paymentMethod ? drz`AND COALESCE(pr.payment_method, p.provider) ILIKE ${paymentMethod}` : drz``}
+        GROUP BY 1, 2, 3
+      `);
+      const aggList = (
+        ((aggRows as unknown as { rows: unknown[] }).rows ?? aggRows) as Array<{
+          method: string | null;
+          office_id: string | null;
+          office_name: string | null;
+          count: number;
+          total_cents: string | number;
+        }>
+      ).map((r) => ({
+        method: r.method ?? '—',
+        officeId: r.office_id,
+        officeName: r.office_name,
+        count: Number(r.count),
+        totalCents: Number(r.total_cents),
+      }));
+      const summary = aggList.reduce(
+        (acc, r) => ({ count: acc.count + r.count, totalCents: acc.totalCents + r.totalCents }),
         { count: 0, totalCents: 0 },
       );
       const byMethodMap = new Map<string, { count: number; totalCents: number }>();
       const byOfficeMap = new Map<string, { name: string; count: number; totalCents: number }>();
-      for (const r of rows) {
-        const m = byMethodMap.get(r.paymentMethod) ?? { count: 0, totalCents: 0 };
-        m.count += 1;
+      for (const r of aggList) {
+        const m = byMethodMap.get(r.method) ?? { count: 0, totalCents: 0 };
+        m.count += r.count;
         m.totalCents += r.totalCents;
-        byMethodMap.set(r.paymentMethod, m);
+        byMethodMap.set(r.method, m);
         const oKey = r.officeId ?? 'none';
         const o = byOfficeMap.get(oKey) ?? {
           name: r.officeName ?? '— no office —',
           count: 0,
           totalCents: 0,
         };
-        o.count += 1;
+        o.count += r.count;
         o.totalCents += r.totalCents;
         byOfficeMap.set(oKey, o);
       }
@@ -2185,6 +2478,9 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         from,
         to,
         rows,
+        // Detail rows are capped at 2000; summary/byMethod/byOffice above are
+        // computed over the full set, so flag when the list is incomplete.
+        rowsTruncated: summary.count > rows.length,
         summary,
         byMethod: Array.from(byMethodMap.entries()).map(([method, v]) => ({
           method,
