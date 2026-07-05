@@ -180,8 +180,10 @@ function fmtCell(key: string, val: unknown): string {
         maximumFractionDigits: 2,
       })}`;
     if (/Pct$/.test(key)) {
-      // Some endpoints return 0–1 ratios, others 0–100. Normalize for display.
-      const pct = Math.abs(val) <= 1.5 ? val * 100 : val;
+      // realizationPct is ALWAYS a 0–1 ratio (a 1.6 write-up used to slip
+      // past the magnitude heuristic and render as "1.6%"); other *Pct
+      // fields are 0–100 unless small enough to be an obvious ratio.
+      const pct = key === 'realizationPct' || Math.abs(val) <= 1.5 ? val * 100 : val;
       return `${pct.toFixed(1)}%`;
     }
     return Number.isInteger(val)

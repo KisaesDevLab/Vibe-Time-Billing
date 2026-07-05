@@ -8,7 +8,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type express from 'express';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { invoices, payments, timeEntries } from '@vibe/db/schema';
+import { creditApplications, creditMemos, invoices, payments, timeEntries } from '@vibe/db/schema';
 import { createReportRouter } from '../reports/routes';
 
 let harness: PgliteHarness;
@@ -162,6 +162,82 @@ describe('Reports — ?basis=cash', () => {
     const body = r.jsonBody as { items: Array<{ month: string; collectedCents: number }> };
     // Still only the $800 net receipt — the voided $555 payment is invisible.
     expect(body.items.find((i) => i.month === '2026-05')?.collectedCents).toBe(80000);
+  });
+
+  it('cash excludes MANUAL credit-memo applications but keeps cash-backed ones', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const invId = await seedMarchInvoicePaidInMay(seed);
+    // Courtesy write-off applied as a CREDIT payment — no money arrived.
+    const [manualPay] = await harness.db
+      .insert(payments)
+      .values({
+        invoiceId: invId,
+        provider: 'CREDIT',
+        amountCents: 15000,
+        status: 'SUCCEEDED',
+        receivedAt: new Date('2026-05-12T12:00:00Z'),
+      })
+      .returning({ id: payments.id });
+    const [manualMemo] = await harness.db
+      .insert(creditMemos)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        issuedDate: '2026-05-12',
+        originalAmountCents: 15000,
+        source: 'MANUAL',
+      })
+      .returning({ id: creditMemos.id });
+    await harness.db.insert(creditApplications).values({
+      creditMemoId: manualMemo!.id,
+      invoiceId: invId,
+      paymentId: manualPay!.id,
+      amountCents: 15000,
+    });
+    // Overpayment-funded credit — real cash, stays in.
+    const [opPay] = await harness.db
+      .insert(payments)
+      .values({
+        invoiceId: invId,
+        provider: 'CREDIT',
+        amountCents: 5000,
+        status: 'SUCCEEDED',
+        receivedAt: new Date('2026-05-18T12:00:00Z'),
+      })
+      .returning({ id: payments.id });
+    const [opMemo] = await harness.db
+      .insert(creditMemos)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        issuedDate: '2026-04-20',
+        originalAmountCents: 5000,
+        source: 'OVERPAYMENT',
+      })
+      .returning({ id: creditMemos.id });
+    await harness.db.insert(creditApplications).values({
+      creditMemoId: opMemo!.id,
+      invoiceId: invId,
+      paymentId: opPay!.id,
+      amountCents: 5000,
+    });
+
+    const router = createReportRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, '/revenue-by-month', {
+      body: {},
+      params: {},
+      query: { basis: 'cash' },
+      staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    const body = r.jsonBody as { items: Array<{ month: string; collectedCents: number }> };
+    // $800 net real payment + $50 overpayment-backed credit; the $150
+    // courtesy write-off is not cash and must not inflate collections.
+    expect(body.items.find((i) => i.month === '2026-05')?.collectedCents).toBe(85000);
   });
 
   it('profitability: cash basis windows revenue by receipt date and drives margin', async () => {

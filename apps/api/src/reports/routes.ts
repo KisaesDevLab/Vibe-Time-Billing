@@ -18,6 +18,8 @@ import {
   billingBatchEntries,
   billingBatches,
   clients,
+  creditApplications,
+  creditMemos,
   engagementTypes,
   engagements,
   firmSettings,
@@ -213,6 +215,15 @@ function cashConds(firmId: string, range: { start: string | null; end: string | 
     eq(invoices.firmId, firmId),
     inArray(payments.status, ['SUCCEEDED', 'PARTIALLY_REFUNDED']),
     isNull(payments.voidedAt),
+    // A credit application funded by a MANUAL credit memo (a courtesy
+    // write-off) is not cash — no money ever arrived. OVERPAYMENT /
+    // REFUND_EXCESS memos ARE cash-backed and stay in (dated at
+    // application, the closest observable event).
+    drz`NOT EXISTS (
+      SELECT 1 FROM ${creditApplications}
+      INNER JOIN ${creditMemos} ON ${creditMemos.id} = ${creditApplications.creditMemoId}
+      WHERE ${creditApplications.paymentId} = ${payments.id} AND ${creditMemos.source} = 'MANUAL'
+    )`,
     range.start ? drz`${cashDateExpr()} >= ${range.start}::date` : undefined,
     range.end ? drz`${cashDateExpr()} <= ${range.end}::date` : undefined,
   ];
@@ -1987,6 +1998,9 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         365,
       );
       const since = new Date(Date.now() - days * 86_400_000);
+      // Firm-scope via the requester (NOT NULL) so unassigned requests
+      // (approverId null) still count — the old approver-side scope
+      // silently dropped them, understating the pending backlog.
       const rows = await deps.db
         .select({
           approverId: approvalRequests.approverId,
@@ -1998,10 +2012,20 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           avgResponseSeconds: drz<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${approvalRequests.respondedAt} - ${approvalRequests.requestedAt}))) FILTER (WHERE ${approvalRequests.respondedAt} IS NOT NULL), 0)`,
         })
         .from(approvalRequests)
+        // Approver join is only for the display name — the firm scope runs
+        // through the requester (NOT NULL) so unassigned requests
+        // (approverId null) still count; the old approver-side scope
+        // silently dropped them, understating the pending backlog.
         .leftJoin(appUsers, eq(appUsers.id, approvalRequests.approverId))
         .where(
           and(
-            eq(appUsers.firmId, session.firmId),
+            inArray(
+              approvalRequests.requesterId,
+              deps.db
+                .select({ id: appUsers.id })
+                .from(appUsers)
+                .where(eq(appUsers.firmId, session.firmId)),
+            ),
             drz`${approvalRequests.requestedAt} >= ${since.toISOString()}::timestamptz`,
           ),
         )
@@ -2177,7 +2201,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           // outOfScopeOverride. The user veto was previously ignored, so
           // vetoed entries were mis-counted as in-scope retainer cost.
           inScopeHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN ${timeEntries.hours} ELSE 0 END), 0)`,
-          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
+          // True cost-to-serve: hours × the timekeeper's locked cost-rate
+          // snapshot (same basis as /profitability). This used to sum
+          // standardAmountCents — the BILLING value — which overstated cost
+          // and understated every retainer's margin.
+          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN (${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)) ELSE 0 END), 0)::bigint`,
           oosHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN 0 ELSE ${timeEntries.hours} END), 0)`,
           oosBilledCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
         })

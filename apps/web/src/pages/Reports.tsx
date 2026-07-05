@@ -932,8 +932,8 @@ function SubscriptionProfitabilityCard(): JSX.Element {
   return (
     <Card title="Subscription profitability (trailing 90 days)">
       <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '0 0 8px' }}>
-        Revenue = retainer (normalized to 90d) + out-of-scope billed. Cost = standard cost of
-        in-scope hours absorbed by the retainer. Sorted worst-margin first.
+        Revenue = retainer (normalized to 90d) + out-of-scope billed. Cost = timekeeper cost-rate
+        value of in-scope hours absorbed by the retainer. Sorted worst-margin first.
       </p>
       <Table<SubProfitRow>
         columns={[

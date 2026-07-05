@@ -1835,6 +1835,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(409).json({ error: 'locked' });
         return;
       }
+      // An entry already claimed by a billing batch cannot be split: the
+      // original would be archived while its hours re-entered open WIP as
+      // fresh unbatched children — the same time billed (and realized)
+      // twice. Remove it from the batch first.
+      if (prior.billingBatchId) {
+        res.status(409).json({ error: 'entry_in_billing_batch' });
+        return;
+      }
       const totalHours = splits.reduce((a, s) => a + s.hours, 0);
       if (Math.abs(totalHours - Number(prior.hours)) > 0.001) {
         res.status(400).json({
@@ -1986,6 +1994,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
       if (prior.lockedAt || prior.status === 'BILLED' || prior.status === 'LOCKED') {
         res.status(409).json({ error: 'locked' });
+        return;
+      }
+      // Mirrors the staff guarded-delete: an entry claimed by a billing
+      // batch can't be self-deleted — archiving it would leave the batch
+      // (and any realization/invoice math built on it) pointing at hours
+      // the owner made disappear.
+      if (prior.billingBatchId) {
+        res.status(409).json({ error: 'entry_in_billing_batch' });
         return;
       }
       const [maxVersion] = await deps.db
