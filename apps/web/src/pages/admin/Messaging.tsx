@@ -60,6 +60,31 @@ interface SendResult {
   callSid?: string;
 }
 
+// 0206 follow-up — recent voice-call outcomes.
+interface VoiceCallRow {
+  id: string;
+  createdAt: string;
+  kind: string;
+  toNumber: string;
+  status: string;
+  fallbackSmsSent: boolean;
+  clientName: string | null;
+  error: string | null;
+}
+
+const CALL_STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
+  answered: 'success',
+  voicemail: 'success',
+  busy: 'warning',
+  no_answer: 'warning',
+  failed: 'danger',
+  opted_out: 'neutral',
+  placed: 'neutral',
+  queued: 'neutral',
+  canceled: 'neutral',
+  fallback_sms: 'warning',
+};
+
 // 0206 — automated voice calls (separate Twilio account from SMS).
 interface VoiceDraft {
   from: string;
@@ -258,7 +283,17 @@ export function MessagingPage(): JSX.Element {
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [smsStatus, setSmsStatus] = useState<string | null>(null);
   const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
+  const [recentCalls, setRecentCalls] = useState<VoiceCallRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  async function loadRecentCalls(): Promise<void> {
+    try {
+      const r = await api<{ items: VoiceCallRow[] }>('/api/staff/voice/calls?days=14');
+      setRecentCalls(r.items ?? []);
+    } catch {
+      // Non-fatal — the card just stays empty.
+    }
+  }
 
   async function load(): Promise<void> {
     try {
@@ -280,6 +315,7 @@ export function MessagingPage(): JSX.Element {
 
   useEffect(() => {
     void load();
+    void loadRecentCalls();
   }, []);
 
   async function saveEmail(): Promise<void> {
@@ -850,6 +886,68 @@ export function MessagingPage(): JSX.Element {
             <p style={{ fontSize: 12, color: tokens.color.textMuted }}>{voiceStatus}</p>
           )}
         </div>
+      </Card>
+
+      <Card
+        title="Recent voice calls (14 days)"
+        action={
+          <Button size="sm" variant="ghost" onClick={() => void loadRecentCalls()}>
+            Refresh
+          </Button>
+        }
+      >
+        {recentCalls.length === 0 ? (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No automated calls yet.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                {['When', 'Client', 'Kind', 'To', 'Outcome', ''].map((h) => (
+                  <th
+                    key={h}
+                    style={{
+                      textAlign: 'left',
+                      padding: '6px 8px',
+                      color: tokens.color.textMuted,
+                      fontSize: 11,
+                      borderBottom: `1px solid ${tokens.color.border}`,
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {recentCalls.map((c) => (
+                <tr key={c.id}>
+                  <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                    {new Date(c.createdAt).toLocaleString()}
+                  </td>
+                  <td style={{ padding: '6px 8px' }}>{c.clientName ?? '—'}</td>
+                  <td style={{ padding: '6px 8px' }}>
+                    {c.kind === 'appointment_reminder'
+                      ? 'Appt reminder'
+                      : c.kind.startsWith('engagement_status:')
+                        ? `Status: ${c.kind.slice('engagement_status:'.length)}`
+                        : c.kind}
+                  </td>
+                  <td style={{ padding: '6px 8px', fontFamily: tokens.font.mono, fontSize: 12 }}>
+                    {c.toNumber}
+                  </td>
+                  <td style={{ padding: '6px 8px' }} title={c.error ?? undefined}>
+                    <Pill tone={CALL_STATUS_TONE[c.status] ?? 'neutral'}>
+                      {c.status.replace('_', ' ')}
+                    </Pill>
+                  </td>
+                  <td style={{ padding: '6px 8px', fontSize: 11, color: tokens.color.textMuted }}>
+                    {c.fallbackSmsSent ? 'fell back to SMS' : ''}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Card>
     </div>
   );

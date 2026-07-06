@@ -17,6 +17,7 @@ import {
   appointmentStaff,
   appointmentTypes,
   appointments,
+  clientCommunications,
   clientContacts,
   clients,
   engagements,
@@ -746,6 +747,28 @@ export async function runAppointmentReminderTick(
             channel,
           })
           .onConflictDoNothing();
+        // 0206 follow-up — reminders now appear on the client's
+        // Communications timeline like every other client-facing send
+        // (previously only the idempotency ledger recorded them, so staff
+        // could see a client's reply without the reminder that caused it).
+        if (p.clientId) {
+          await db
+            .insert(clientCommunications)
+            .values({
+              firmId: appt.firmId,
+              clientId: p.clientId,
+              channel,
+              direction: 'OUTBOUND',
+              subject: channel === 'EMAIL' ? subject : 'Appointment reminder',
+              body,
+              occurredAt: now,
+              relatedEntityType: 'appointment',
+              relatedEntityId: appt.id,
+            })
+            .catch((err: unknown) =>
+              logger.warn({ err, appointmentId: appt.id }, 'reminder timeline log failed'),
+            );
+        }
         sentSet.add(key);
         sent++;
       }

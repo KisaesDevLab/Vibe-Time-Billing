@@ -85,6 +85,7 @@ import { createSharePublicRouter } from './share-public';
 import { createShareRecipientRouter } from './share-public/tax-recipient';
 import { createIntakePublicRouter } from './intake/public-routes';
 import { createIntakeStaffRouter } from './intake/staff-routes';
+import { createVoiceRouter } from './voice/routes';
 import { createSignaturesRouter } from './signatures/routes';
 import { createInOfficePublicRouter } from './signatures/in-office-public-routes';
 import { createSignatureConfigRouter } from './signatures/admin-config-routes';
@@ -639,6 +640,10 @@ export function createApp(deps: AppDeps): Express {
   // per-client task CRUD stays on the clients router above.
   const taskRouter = createTaskRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/tasks', auth.requireAuth, auth.requireCsrf, taskRouter);
+
+  // 0206 — voice-call outcome log (Admin → Messaging card + client history).
+  const voiceRouter = createVoiceRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/voice', auth.requireAuth, auth.requireCsrf, voiceRouter);
 
   // 0103 — Document Intake staff inbox + disposition + send-a-link.
   const intakeStaffRouter = createIntakeStaffRouter({

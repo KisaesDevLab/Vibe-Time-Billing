@@ -11,6 +11,7 @@ import {
   appointmentRemindersSent,
   appointmentStaff,
   appointments,
+  clientCommunications,
   notificationTemplates,
 } from '@vibe/db/schema';
 
@@ -349,6 +350,12 @@ describe('multi-channel reminders', () => {
     expect(ch.sms[0]!.to).toBe('+15551234567');
     expect(ch.calls).toHaveLength(1);
     expect(ch.calls[0]!.confirmUrl).toContain('/api/public/appointments/twilio/voice-gather');
+    // 0206 follow-up — each reminder send lands on the client timeline.
+    const comms = await harness.db
+      .select({ channel: clientCommunications.channel, direction: clientCommunications.direction })
+      .from(clientCommunications);
+    expect(comms.filter((c) => c.direction === 'OUTBOUND')).toHaveLength(3);
+    expect(new Set(comms.map((c) => c.channel))).toEqual(new Set(['EMAIL', 'SMS', 'CALL']));
     // Second tick: nothing new.
     const r2 = await runAppointmentReminderTick(
       { db: harness.db, sendEmail: recorder().send, ...chanRecorders() },
