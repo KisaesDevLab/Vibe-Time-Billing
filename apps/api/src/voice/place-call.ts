@@ -20,8 +20,12 @@ import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { firmSettings, persons, voiceCalls } from '@vibe/db/schema';
+import { crypto as core } from '@vibe/core';
 
-import { decryptVoiceConfig, type VoiceConfig } from '../messaging/config';
+// TYPE-ONLY import (erased at compile time). This module is shared with the
+// worker, whose production image has no `zod` — do NOT import runtime values
+// from messaging/config here (same constraint as messaging/sms-resolver).
+import type { VoiceConfig } from '../messaging/config';
 import { logger } from '../logger';
 
 export interface PlaceVoiceCallArgs {
@@ -75,7 +79,9 @@ function xmlEscape(s: string): string {
     .replace(/'/g, '&apos;');
 }
 
-/** Resolve the firm's voice config: DB first, env VOICE_TWILIO_* fallback. */
+/** Resolve the firm's voice config: DB first, env VOICE_TWILIO_* fallback.
+ *  Decrypts zod-free (KMS_KEY + @vibe/core AES envelope, mirroring
+ *  sms-resolver) so the worker can share this module. */
 export async function resolveFirmVoiceConfig(
   db: Database,
   firmId: string,
@@ -86,8 +92,24 @@ export async function resolveFirmVoiceConfig(
     .where(eq(firmSettings.firmId, firmId))
     .limit(1);
   if (row?.enc) {
+    const keyRaw = process.env['KMS_KEY'];
+    if (!keyRaw) {
+      logger.warn({ firmId }, 'voice config present but KMS_KEY unset; cannot decrypt');
+      return null;
+    }
     try {
-      return decryptVoiceConfig(row.enc);
+      const raw = core.decryptJson<Partial<VoiceConfig>>(row.enc, core.resolveKey(keyRaw));
+      if (!raw.accountSid || !raw.authToken || !raw.from) return null;
+      return {
+        provider: 'twilio',
+        from: raw.from,
+        accountSid: raw.accountSid,
+        authToken: raw.authToken,
+        defaultVoice: raw.defaultVoice ?? 'Polly.Joanna',
+        language: raw.language ?? 'en-US',
+        windowStart: raw.windowStart ?? '09:00',
+        windowEnd: raw.windowEnd ?? '20:00',
+      };
     } catch (err) {
       logger.warn({ err, firmId }, 'voice config decrypt failed');
       return null;
