@@ -78,7 +78,6 @@ export function ReportsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <ReportLibraryCards />
       <FilterBar
         start={start}
         end={end}
@@ -121,6 +120,7 @@ export function ReportsPage(): JSX.Element {
         <SubscriptionProfitabilityCard />
       </div>
       <PlainEnglishCard />
+      <ReportLibraryCards />
       <div id="billable-targets-card">
         <BillableTargetsCard />
       </div>

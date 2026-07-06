@@ -8,12 +8,12 @@ tags: ['reports', 'realization', 'utilization', 'profitability', 'mrr']
 
 # Reports & analytics
 
-The **Reports** workspace (left-nav **Reports**, at `/reports`) is the firm's analytics hub. It opens with a **Report library** card of jump-to tiles, a **Filters** card, and a stack of live report cards.
+The **Reports** workspace (left-nav **Reports**, at `/reports`) is the firm's analytics hub. It opens with a **Filters** card and a stack of live report cards; the **Report library** card of jump-to tiles sits below **Ask in plain English**.
 
 ## Steps
 
 1. Open **Reports** from the left navigation.
-2. In the **Report library** card, pick a tile: **Payments received ★**, **Realization**, **Revenue ops**, **Engagement profitability**, **Subscription profitability**, **Billable targets**, **Capacity forecast**, **WIP dashboard**, **AR aging**, **AR snapshots**, or **Audit log**.
+2. Scroll to the **Report library** card (below **Ask in plain English**) and pick a tile: **Payments received ★**, **Realization**, **Revenue ops**, **Engagement profitability**, **Subscription profitability**, **Billable targets**, **Capacity forecast**, **WIP dashboard**, **AR aging**, **AR snapshots**, or **Audit log**.
 3. Set a date window in **Filters**: type a **Start** and **End** date, or click a preset — **7d**, **30d**, **90d**, **12m**. Use **Clear dates** to reset.
 4. In the **Realization** card, switch the lens with the **firm**, **timekeeper**, **engagement**, **client**, or **service line** buttons.
 5. Click any row label in a dimension table to drill in (the card title shows "Realization (drilled)"). Click **✕ Clear drill** in **Filters** to exit.
