@@ -12,9 +12,14 @@
 
 import { resolveMergeTokens, type MergeContext, type TokenEntry } from '../proposals/merge-tokens';
 
-export type StatusNotificationChannel = 'EMAIL' | 'SMS' | 'PORTAL';
+export type StatusNotificationChannel = 'EMAIL' | 'SMS' | 'PORTAL' | 'CALL';
 
-export const STATUS_NOTIFICATION_CHANNELS: StatusNotificationChannel[] = ['EMAIL', 'SMS', 'PORTAL'];
+export const STATUS_NOTIFICATION_CHANNELS: StatusNotificationChannel[] = [
+  'EMAIL',
+  'SMS',
+  'PORTAL',
+  'CALL',
+];
 
 /** notification_template.kind for a given workflow state. */
 export function statusTemplateKind(workflowState: string): string {
@@ -48,6 +53,14 @@ export const DEFAULT_STATUS_TEMPLATES: Record<StatusNotificationChannel, StatusT
   PORTAL: {
     subject: '{{engagement.name}} is now {{status.client_label}}',
     body: '{{status.client_description}}',
+  },
+  // 0206 — spoken by the automated voice call. Keep it short and free of
+  // anything that reads poorly aloud (no URLs, no abbreviations).
+  CALL: {
+    body:
+      'Hello {{recipient.name}}. This is an automated update from {{firm.name}}. ' +
+      'Your {{engagement.name}} is now {{status.client_label}}. ' +
+      'If you have any questions, please call our office.',
   },
 };
 

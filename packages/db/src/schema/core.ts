@@ -470,6 +470,10 @@ export const firmSettings = pgTable('firm_settings', {
   // at rest with AES-256-GCM. NULL = inherit from env vars.
   mailConfigEncrypted: text('mail_config_encrypted'),
   smsConfigEncrypted: text('sms_config_encrypted'),
+  // 0206 — separate Twilio VOICE account + call settings (encrypted JSON
+  // envelope, same KMS_KEY AES-GCM scheme as sms_config_encrypted).
+  voiceConfigEncrypted: text('voice_config_encrypted'),
+  voiceConfigUpdatedAt: timestamp('voice_config_updated_at', { withTimezone: true }),
   // 0173 — firm-owned Stripe keys (secret/publishable/webhook), encrypted.
   stripeConfigEncrypted: text('stripe_config_encrypted'),
   // 0174 — inbound webhook signing secrets per notification provider, encrypted.
@@ -609,6 +613,9 @@ export const notificationTemplates = pgTable(
     body: text('body').notNull(),
     variablesJson: jsonb('variables_json'),
     enabled: boolean('enabled').notNull().default(true),
+    // 0206 — CALL channel only: per-template Twilio voice override
+    // (e.g. 'Polly.Joanna'); NULL = the firm's default voice.
+    voice: text('voice'),
     // 0188 — PRINT channel: which gateway printer this notification prints to.
     // 'specific' (printerId) or 'client_office' (the client office's printer).
     printerMode: text('printer_mode'),
@@ -1460,6 +1467,9 @@ export const persons = pgTable(
     email: text('email'),
     phone: text('phone'),
     mobile: text('mobile'),
+    // 0206 — global voice opt-out: set by pressing 9 on any automated call
+    // or by staff on the contact card. Flagged people get SMS instead.
+    doNotCall: boolean('do_not_call').notNull().default(false),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3953,6 +3963,60 @@ export const stagedNotifications = pgTable(
     activeSupersedeUk: uniqueIndex('staged_notification_active_supersede_uk')
       .on(t.supersedeKey)
       .where(sql`status IN ('PENDING_APPROVAL', 'SCHEDULED')`),
+  }),
+);
+
+// 0206 — outbound voice-call log. One row per automated call (appointment
+// reminder, staged status notification, admin test). Holds the rendered
+// script + the SMS body to fall back to when the call can't connect;
+// status is driven by the Twilio status callback (answered / voicemail /
+// busy / no_answer / failed) or set locally (opted_out, fallback_sms).
+export const voiceCalls = pgTable(
+  'voice_call',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    toNumber: text('to_number').notNull(),
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'set null' }),
+    appointmentId: uuid('appointment_id').references(() => appointments.id, {
+      onDelete: 'set null',
+    }),
+    stagedNotificationId: uuid('staged_notification_id').references(() => stagedNotifications.id, {
+      onDelete: 'set null',
+    }),
+    script: text('script').notNull(),
+    fallbackSmsBody: text('fallback_sms_body'),
+    voice: text('voice'),
+    status: text('status', {
+      enum: [
+        'queued',
+        'placed',
+        'answered',
+        'voicemail',
+        'no_answer',
+        'busy',
+        'failed',
+        'opted_out',
+        'fallback_sms',
+        'canceled',
+      ],
+    })
+      .notNull()
+      .default('queued'),
+    providerCallSid: text('provider_call_sid'),
+    error: text('error'),
+    fallbackSmsSent: boolean('fallback_sms_sent').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    placedAt: timestamp('placed_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    firmCreatedIdx: index('voice_call_firm_created_idx').on(t.firmId, t.createdAt),
+    sidIdx: index('voice_call_sid_idx').on(t.providerCallSid),
   }),
 );
 

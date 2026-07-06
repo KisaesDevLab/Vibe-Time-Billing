@@ -20,6 +20,7 @@ interface Template {
   enabled: boolean;
   printerMode: string | null;
   printerId: number | null;
+  voice: string | null;
   updatedAt: string;
 }
 
@@ -200,6 +201,7 @@ export function NotificationTemplatesPage(): JSX.Element {
     body: string;
     printerMode: 'specific' | 'client_office';
     printerId: number | '';
+    voice: string;
   } | null>(null);
   const [printers, setPrinters] = useState<GatewayPrinter[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -238,7 +240,7 @@ export function NotificationTemplatesPage(): JSX.Element {
       ...statuses.map((st) => ({
         key: `engagement_status:${st.workflowState}`,
         label: `Status: ${st.label}`,
-        channels: ['EMAIL', 'SMS', 'PORTAL', 'PRINT'] as Channel[],
+        channels: ['EMAIL', 'SMS', 'CALL', 'PORTAL', 'PRINT'] as Channel[],
       })),
     ],
     [statuses],
@@ -265,6 +267,7 @@ export function NotificationTemplatesPage(): JSX.Element {
       body: existing?.body ?? '',
       printerMode: existing?.printerMode === 'client_office' ? 'client_office' : 'specific',
       printerId: existing?.printerId ?? '',
+      voice: existing?.voice ?? '',
     });
     setStatus(null);
     setError(null);
@@ -282,6 +285,7 @@ export function NotificationTemplatesPage(): JSX.Element {
           body: JSON.stringify({
             subject: active.channel === 'EMAIL' ? active.subject : null,
             body: active.body,
+            ...(active.channel === 'CALL' ? { voice: active.voice || null } : {}),
             ...(active.channel === 'PRINT'
               ? {
                   printerMode: active.printerMode,
@@ -368,8 +372,47 @@ export function NotificationTemplatesPage(): JSX.Element {
                   />
                 </label>
               )}
+              {active.channel === 'CALL' && (
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    Voice (blank = firm default from Admin → Messaging)
+                  </span>
+                  <select
+                    value={active.voice}
+                    onChange={(e) => setActive({ ...active, voice: e.target.value })}
+                    style={{
+                      padding: '8px 10px',
+                      background: tokens.color.surface,
+                      color: tokens.color.text,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.md,
+                      fontSize: 13,
+                    }}
+                  >
+                    <option value="">Firm default</option>
+                    {[
+                      'Polly.Joanna',
+                      'Polly.Matthew',
+                      'Polly.Salli',
+                      'Polly.Joey',
+                      'Polly.Kimberly',
+                      'Polly.Kendra',
+                      'Polly.Ivy',
+                      'alice',
+                      'man',
+                      'woman',
+                    ].map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <div style={{ display: 'grid', gap: 4 }}>
-                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Body</span>
+                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {active.channel === 'CALL' ? 'Spoken script' : 'Body'}
+                </span>
                 {isEmail ? (
                   // Rich-text email body. Reads/writes the same {{ token }}
                   // text the dispatcher resolves; the toolbar's "Variable"

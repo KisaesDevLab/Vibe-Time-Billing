@@ -29,14 +29,19 @@ import { logger } from '../logger';
 import {
   EmailConfig,
   SmsConfig,
+  VoiceConfig,
   decryptEmailConfig,
   decryptSmsConfig,
+  decryptVoiceConfig,
   encryptEmailConfig,
   encryptSmsConfig,
+  encryptVoiceConfig,
   maskEmailConfig,
   maskSmsConfig,
+  maskVoiceConfig,
 } from './config';
 import { buildMailProvider, buildSmsProvider } from './factory';
+import { placeVoiceCall } from '../voice/place-call';
 
 export interface MessagingRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -45,16 +50,17 @@ export interface MessagingRoutesDeps extends RbacDeps {
 async function loadCurrentEnvelopes(
   db: Database,
   firmId: string,
-): Promise<{ mail: string | null; sms: string | null }> {
+): Promise<{ mail: string | null; sms: string | null; voice: string | null }> {
   const [row] = await db
     .select({
       mail: firmSettings.mailConfigEncrypted,
       sms: firmSettings.smsConfigEncrypted,
+      voice: firmSettings.voiceConfigEncrypted,
     })
     .from(firmSettings)
     .where(eq(firmSettings.firmId, firmId))
     .limit(1);
-  return { mail: row?.mail ?? null, sms: row?.sms ?? null };
+  return { mail: row?.mail ?? null, sms: row?.sms ?? null, voice: row?.voice ?? null };
 }
 
 export function createMessagingRouter(deps: MessagingRoutesDeps): Router {
@@ -72,7 +78,8 @@ export function createMessagingRouter(deps: MessagingRoutesDeps): Router {
       const envelopes = await loadCurrentEnvelopes(deps.db, firmId);
       const email = envelopes.mail ? maskEmailConfig(decryptEmailConfig(envelopes.mail)) : null;
       const sms = envelopes.sms ? maskSmsConfig(decryptSmsConfig(envelopes.sms)) : null;
-      res.json({ email, sms });
+      const voice = envelopes.voice ? maskVoiceConfig(decryptVoiceConfig(envelopes.voice)) : null;
+      res.json({ email, sms, voice });
     },
   );
 
@@ -188,6 +195,121 @@ export function createMessagingRouter(deps: MessagingRoutesDeps): Router {
         actorAppUserId: req.staffSession!.appUserId,
       }).catch(() => undefined);
       res.json({ ok: true });
+    },
+  );
+
+  // ----- Voice (0206) — separate Twilio account for automated calls -----
+
+  router.put(
+    '/voice',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const parsed = VoiceConfig.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_voice_config', issues: parsed.error.issues });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const envelope = encryptVoiceConfig(parsed.data);
+      await deps.db
+        .update(firmSettings)
+        .set({
+          voiceConfigEncrypted: envelope,
+          voiceConfigUpdatedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(firmSettings.firmId, firmId));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'messaging_config',
+        entityId: `${firmId}:voice`,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: {
+          provider: 'twilio',
+          from: parsed.data.from,
+          defaultVoice: parsed.data.defaultVoice,
+          window: `${parsed.data.windowStart}-${parsed.data.windowEnd}`,
+        },
+      }).catch(() => undefined);
+      res.json({ ok: true, masked: maskVoiceConfig(parsed.data) });
+    },
+  );
+
+  router.delete(
+    '/voice',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      await deps.db
+        .update(firmSettings)
+        .set({ voiceConfigEncrypted: null, voiceConfigUpdatedAt: new Date() })
+        .where(eq(firmSettings.firmId, firmId));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'messaging_config',
+        entityId: `${firmId}:voice`,
+        actorAppUserId: req.staffSession!.appUserId,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
+  // Place a live test call so the admin can hear the configured voice.
+  // Body: { to: string, config?: VoiceConfig } — when config is supplied
+  // it is persisted-first semantics NOT used; we save nothing and pass
+  // the proposed creds straight to the dialer. Test calls bypass the
+  // window and do-not-call gates.
+  router.post(
+    '/voice/test',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      const to = typeof req.body?.to === 'string' ? req.body.to.trim() : '';
+      if (!to) {
+        res.status(400).json({ error: 'missing_to' });
+        return;
+      }
+      if (!firmId || !deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      // Proposed (unsaved) config: stash it temporarily by encrypting to a
+      // scratch object the dialer can use — placeVoiceCall reads the saved
+      // config, so for proposed-config tests we save-then-test is avoided
+      // by passing through a one-off resolution here.
+      let proposed: VoiceConfig | null = null;
+      if (req.body?.config != null) {
+        const parsed = VoiceConfig.safeParse(req.body.config);
+        if (!parsed.success) {
+          res.status(400).json({ error: 'invalid_voice_config', issues: parsed.error.issues });
+          return;
+        }
+        proposed = parsed.data;
+      }
+      const script = `Hello. This is a test call from your Vibe Time and Billing appliance. The configured voice is working.`;
+      const result = await placeVoiceCall(deps.db, {
+        firmId,
+        kind: 'test',
+        to,
+        script,
+        voice: proposed?.defaultVoice ?? null,
+        bypassGates: true,
+        publicBaseUrl: process.env['APP_BASE_URL'],
+        configOverride: proposed ?? undefined,
+      });
+      if (!result.ok) {
+        res.status(502).json({ error: result.code, detail: result.detail ?? null });
+        return;
+      }
+      res.json({ ok: true, callSid: result.callSid });
     },
   );
 

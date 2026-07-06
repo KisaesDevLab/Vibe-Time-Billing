@@ -91,6 +91,8 @@ export interface PersonFieldUpdate {
   email?: string | null;
   phone?: string | null;
   mobile?: string | null;
+  // 0206 — global voice opt-out (press 9 on a call, or staff-set).
+  doNotCall?: boolean;
 }
 
 /**
@@ -113,6 +115,7 @@ export async function updatePerson(
   if (input.email !== undefined) fields['email'] = input.email;
   if (input.phone !== undefined) fields['phone'] = input.phone;
   if (input.mobile !== undefined) fields['mobile'] = input.mobile;
+  if (input.doNotCall !== undefined) fields['doNotCall'] = input.doNotCall;
   if (Object.keys(fields).length === 0) return;
   fields['updatedAt'] = new Date();
   await db.update(persons).set(fields).where(eq(persons.id, personId));

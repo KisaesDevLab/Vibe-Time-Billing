@@ -33,6 +33,7 @@ interface PersonContact {
   isBilling: boolean;
   receiveAppointmentReminders?: boolean;
   receiveStatusNotifications?: boolean;
+  doNotCall?: boolean;
   // 0115 — other clients this same person is also a contact of.
   alsoOn?: { clientId: string; name: string }[];
 }
@@ -522,6 +523,24 @@ function ManagePanel({
     }
   }
 
+  // 0206 — person-global do-not-call (also set when they press 9 on a call).
+  async function toggleDoNotCall(next: boolean): Promise<void> {
+    if (!c) return;
+    setSaving(true);
+    onError('');
+    try {
+      await api(`/api/staff/clients/${clientId}/contacts/${c.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ doNotCall: next }),
+      });
+      onChanged('Updated.');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'flag_failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function removeContact(): Promise<void> {
     if (!c || !window.confirm('Remove this contact from the directory?')) return;
     setSaving(true);
@@ -671,6 +690,22 @@ function ManagePanel({
               onChange={(e) => void toggleStatusNotifications(e.target.checked)}
             />
             Send status notifications to this contact
+          </label>
+          <label
+            style={{
+              display: 'inline-flex',
+              gap: 6,
+              alignItems: 'center',
+              fontSize: 12,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={c.doNotCall === true}
+              disabled={saving}
+              onChange={(e) => void toggleDoNotCall(e.target.checked)}
+            />
+            Do not call (no automated voice calls — texts are sent instead)
           </label>
         </form>
       )}

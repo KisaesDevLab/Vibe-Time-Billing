@@ -65,7 +65,7 @@ export function statusSupersedeKey(engagementId: string): string {
   return `engagement_status:${engagementId}`;
 }
 
-const CHANNEL_SET: ReadonlySet<string> = new Set(['EMAIL', 'SMS', 'PORTAL', 'PRINT']);
+const CHANNEL_SET: ReadonlySet<string> = new Set(['EMAIL', 'SMS', 'PORTAL', 'PRINT', 'CALL']);
 
 export async function stageStatusNotification(
   db: Database,
@@ -114,6 +114,9 @@ export async function stageStatusNotification(
       name: persons.fullName,
       email: persons.email,
       phone: persons.phone,
+      // 0206 — prefer the mobile for SMS/voice; person.phone is often a
+      // landline (which voice can still reach, so either works as fallback).
+      mobile: persons.mobile,
       isBilling: clientContacts.isBilling,
       receiveStatusNotifications: clientContacts.receiveStatusNotifications,
     })
@@ -130,7 +133,7 @@ export async function stageStatusNotification(
     personId: c.personId,
     name: c.name,
     email: c.email,
-    phone: c.phone,
+    phone: c.mobile ?? c.phone,
   }));
 
   // Render snapshot per channel: firm template (enabled) else default.

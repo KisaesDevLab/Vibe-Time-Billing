@@ -41,11 +41,63 @@ interface MaskedSms {
   secretAccessKeyMasked?: string | null;
 }
 
+interface MaskedVoice {
+  provider: 'twilio';
+  from: string;
+  accountSidMasked: string | null;
+  authTokenMasked: string | null;
+  defaultVoice: string;
+  language: string;
+  windowStart: string;
+  windowEnd: string;
+}
+
 interface SendResult {
   ok: boolean;
   error?: string;
   messageId?: string;
   providerMessageId?: string;
+  callSid?: string;
+}
+
+// 0206 — automated voice calls (separate Twilio account from SMS).
+interface VoiceDraft {
+  from: string;
+  accountSid: string;
+  authToken: string;
+  defaultVoice: string;
+  language: string;
+  windowStart: string;
+  windowEnd: string;
+}
+
+const VOICE_OPTIONS = [
+  'Polly.Joanna',
+  'Polly.Matthew',
+  'Polly.Salli',
+  'Polly.Joey',
+  'Polly.Kimberly',
+  'Polly.Kendra',
+  'Polly.Ivy',
+  'alice',
+  'man',
+  'woman',
+];
+
+function emptyVoiceDraft(masked?: MaskedVoice | null): VoiceDraft {
+  return {
+    from: masked?.from ?? '',
+    accountSid: '',
+    authToken: '',
+    defaultVoice: masked?.defaultVoice ?? 'Polly.Joanna',
+    language: masked?.language ?? 'en-US',
+    windowStart: masked?.windowStart ?? '09:00',
+    windowEnd: masked?.windowEnd ?? '20:00',
+  };
+}
+
+function buildVoiceBody(draft: VoiceDraft): unknown {
+  return { provider: 'twilio', ...draft };
 }
 
 type EmailDraft =
@@ -196,23 +248,31 @@ const labelStyle: React.CSSProperties = { fontSize: 12, color: tokens.color.text
 export function MessagingPage(): JSX.Element {
   const [email, setEmail] = useState<MaskedEmail | null>(null);
   const [sms, setSms] = useState<MaskedSms | null>(null);
+  const [voice, setVoice] = useState<MaskedVoice | null>(null);
   const [emailDraft, setEmailDraft] = useState<EmailDraft>(emptyEmailDraft('smtp'));
   const [smsDraft, setSmsDraft] = useState<SmsDraft>(emptySmsDraft('textlink'));
+  const [voiceDraft, setVoiceDraft] = useState<VoiceDraft>(emptyVoiceDraft());
   const [emailTo, setEmailTo] = useState('');
   const [smsTo, setSmsTo] = useState('');
+  const [voiceTo, setVoiceTo] = useState('');
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [smsStatus, setSmsStatus] = useState<string | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     try {
-      const r = await api<{ email: MaskedEmail | null; sms: MaskedSms | null }>(
-        '/api/staff/admin/messaging',
-      );
+      const r = await api<{
+        email: MaskedEmail | null;
+        sms: MaskedSms | null;
+        voice: MaskedVoice | null;
+      }>('/api/staff/admin/messaging');
       setEmail(r.email);
       setSms(r.sms);
+      setVoice(r.voice);
       if (r.email) setEmailDraft(emptyEmailDraft(r.email.provider));
       if (r.sms) setSmsDraft(emptySmsDraft(r.sms.provider));
+      if (r.voice) setVoiceDraft(emptyVoiceDraft(r.voice));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
     }
@@ -292,6 +352,52 @@ export function MessagingPage(): JSX.Element {
       );
     } catch (e) {
       setEmailStatus(`Failed: ${formatConfigError(e)}`);
+    }
+  }
+
+  async function saveVoice(): Promise<void> {
+    setError(null);
+    setVoiceStatus(null);
+    try {
+      await api('/api/staff/admin/messaging/voice', {
+        method: 'PUT',
+        body: JSON.stringify(buildVoiceBody(voiceDraft)),
+      });
+      setVoiceStatus('Saved.');
+      await load();
+    } catch (e) {
+      setError(formatConfigError(e));
+    }
+  }
+
+  async function clearVoice(): Promise<void> {
+    if (!confirm('Clear saved voice config? Automated calls fall back to env vars (or off).'))
+      return;
+    try {
+      await api('/api/staff/admin/messaging/voice', { method: 'DELETE' });
+      setVoice(null);
+      setVoiceStatus('Cleared.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'clear_failed');
+    }
+  }
+
+  async function testVoice(): Promise<void> {
+    if (!voiceTo) {
+      setVoiceStatus('Enter a number to call first.');
+      return;
+    }
+    setVoiceStatus('Placing call…');
+    try {
+      // Only pass the draft as a proposed config when the secret was typed.
+      const config = voiceDraft.authToken ? buildVoiceBody(voiceDraft) : undefined;
+      const r = await api<SendResult>('/api/staff/admin/messaging/voice/test', {
+        method: 'POST',
+        body: JSON.stringify(config ? { to: voiceTo, config } : { to: voiceTo }),
+      });
+      setVoiceStatus(r.ok ? `Calling… (sid ${r.callSid ?? 'n/a'})` : `Failed: ${r.error}`);
+    } catch (e) {
+      setVoiceStatus(`Failed: ${formatConfigError(e)}`);
     }
   }
 
@@ -628,6 +734,121 @@ export function MessagingPage(): JSX.Element {
             )}
           </div>
           {smsStatus && <p style={{ fontSize: 12, color: tokens.color.textMuted }}>{smsStatus}</p>}
+        </div>
+      </Card>
+
+      <Card
+        title={
+          <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span>Voice calls (Twilio)</span>
+            {voice ? (
+              <Pill tone="success">configured</Pill>
+            ) : (
+              <Pill tone="neutral">Not configured</Pill>
+            )}
+          </span>
+        }
+      >
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 12 }}>
+          A separate Twilio account for automated voice calls — appointment reminders and status
+          notifications with a CALL channel. Calls only place inside the calling window; clients can
+          press 9 on any call to opt out (they get texts instead), and unanswered calls fall back to
+          SMS automatically.
+        </p>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span style={labelStyle}>From number (E.164, voice-capable)</span>
+            <input
+              value={voiceDraft.from}
+              onChange={(e) => setVoiceDraft({ ...voiceDraft, from: e.target.value })}
+              placeholder="+12025551212"
+              style={fieldStyle}
+            />
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={labelStyle}>
+                Account SID{voice?.accountSidMasked ? ` (saved: ${voice.accountSidMasked})` : ''}
+              </span>
+              <input
+                type="password"
+                value={voiceDraft.accountSid}
+                onChange={(e) => setVoiceDraft({ ...voiceDraft, accountSid: e.target.value })}
+                style={fieldStyle}
+              />
+            </label>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={labelStyle}>
+                Auth token{voice?.authTokenMasked ? ` (saved: ${voice.authTokenMasked})` : ''}
+              </span>
+              <input
+                type="password"
+                value={voiceDraft.authToken}
+                onChange={(e) => setVoiceDraft({ ...voiceDraft, authToken: e.target.value })}
+                style={fieldStyle}
+              />
+            </label>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div style={{ display: 'grid', gap: 4 }}>
+              <span style={labelStyle}>Default voice</span>
+              <Combobox
+                ariaLabel="Default voice"
+                value={voiceDraft.defaultVoice}
+                onChange={(v) => setVoiceDraft({ ...voiceDraft, defaultVoice: v })}
+                options={VOICE_OPTIONS.map((v) => ({ value: v, label: v }))}
+              />
+            </div>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={labelStyle}>Language</span>
+              <input
+                value={voiceDraft.language}
+                onChange={(e) => setVoiceDraft({ ...voiceDraft, language: e.target.value })}
+                placeholder="en-US"
+                style={fieldStyle}
+              />
+            </label>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={labelStyle}>Calling window start</span>
+              <input
+                type="time"
+                value={voiceDraft.windowStart}
+                onChange={(e) => setVoiceDraft({ ...voiceDraft, windowStart: e.target.value })}
+                style={fieldStyle}
+              />
+            </label>
+            <label style={{ display: 'grid', gap: 4 }}>
+              <span style={labelStyle}>Calling window end</span>
+              <input
+                type="time"
+                value={voiceDraft.windowEnd}
+                onChange={(e) => setVoiceDraft({ ...voiceDraft, windowEnd: e.target.value })}
+                style={fieldStyle}
+              />
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+            <input
+              value={voiceTo}
+              onChange={(e) => setVoiceTo(e.target.value)}
+              placeholder="Test call number (+12025551212)"
+              style={{ ...fieldStyle, flex: 1 }}
+            />
+            <Button variant="secondary" onClick={() => void testVoice()}>
+              Test call
+            </Button>
+            <Button onClick={() => void saveVoice()}>Save</Button>
+            {voice && (
+              <Button variant="ghost" onClick={() => void clearVoice()}>
+                Clear
+              </Button>
+            )}
+          </div>
+          {voiceStatus && (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted }}>{voiceStatus}</p>
+          )}
         </div>
       </Card>
     </div>

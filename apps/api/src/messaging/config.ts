@@ -90,6 +90,45 @@ export const SmsConfig = z.discriminatedUnion('provider', [
 ]);
 export type SmsConfig = z.infer<typeof SmsConfig>;
 
+// ----- Voice (0206) -----
+//
+// A SEPARATE Twilio account for automated voice calls (appointment
+// reminders + staged status notifications), configured under Admin →
+// Messaging → Voice. Carries the call settings alongside the creds:
+// default Say voice + language, and the firm-local calling window.
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Curated Twilio <Say> voices (Amazon Polly + legacy). The UI offers this
+// list; the schema accepts any string so new Twilio voices work without a
+// deploy.
+export const SUGGESTED_VOICES = [
+  'Polly.Joanna',
+  'Polly.Matthew',
+  'Polly.Salli',
+  'Polly.Joey',
+  'Polly.Kimberly',
+  'Polly.Kendra',
+  'Polly.Ivy',
+  'alice',
+  'man',
+  'woman',
+] as const;
+
+export const VoiceConfig = z.object({
+  provider: z.literal('twilio'),
+  from: z.string().min(3).max(32),
+  accountSid: z.string().min(8).max(255),
+  authToken: z.string().min(8).max(255),
+  defaultVoice: z.string().min(1).max(64).default('Polly.Joanna'),
+  language: z.string().min(2).max(16).default('en-US'),
+  // Firm-local calling window (HH:MM, 24h). Calls due outside it wait for
+  // the window to open; the SMS fallback is not window-restricted.
+  windowStart: z.string().regex(TIME_RE).default('09:00'),
+  windowEnd: z.string().regex(TIME_RE).default('20:00'),
+});
+export type VoiceConfig = z.infer<typeof VoiceConfig>;
+
 // ----- Encryption helpers (singleton key cached per process) -----
 
 let cachedKey: Buffer | null = null;
@@ -123,6 +162,15 @@ export function encryptSmsConfig(cfg: SmsConfig): string {
 export function decryptSmsConfig(envelope: string): SmsConfig {
   const raw = core.decryptJson(envelope, getKey());
   return SmsConfig.parse(raw);
+}
+
+export function encryptVoiceConfig(cfg: VoiceConfig): string {
+  return core.encryptJson(cfg, getKey());
+}
+
+export function decryptVoiceConfig(envelope: string): VoiceConfig {
+  const raw = core.decryptJson(envelope, getKey());
+  return VoiceConfig.parse(raw);
 }
 
 // ----- Masking for read responses -----
@@ -190,6 +238,30 @@ export interface MaskedSmsConfig {
   authTokenMasked?: string | null;
   accessKeyIdMasked?: string | null;
   secretAccessKeyMasked?: string | null;
+}
+
+export interface MaskedVoiceConfig {
+  provider: 'twilio';
+  from: string;
+  accountSidMasked: string | null;
+  authTokenMasked: string | null;
+  defaultVoice: string;
+  language: string;
+  windowStart: string;
+  windowEnd: string;
+}
+
+export function maskVoiceConfig(cfg: VoiceConfig): MaskedVoiceConfig {
+  return {
+    provider: 'twilio',
+    from: cfg.from,
+    accountSidMasked: mask(cfg.accountSid),
+    authTokenMasked: mask(cfg.authToken),
+    defaultVoice: cfg.defaultVoice,
+    language: cfg.language,
+    windowStart: cfg.windowStart,
+    windowEnd: cfg.windowEnd,
+  };
 }
 
 export function maskSmsConfig(cfg: SmsConfig): MaskedSmsConfig {

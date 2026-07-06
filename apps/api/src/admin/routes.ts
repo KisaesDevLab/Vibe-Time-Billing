@@ -1712,6 +1712,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         enabled?: boolean;
         printerMode?: string | null;
         printerId?: number | null;
+        voice?: string | null;
       };
       if (typeof body.body !== 'string' || body.body.length === 0) {
         res.status(400).json({ error: 'body_required' });
@@ -1738,6 +1739,11 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       while ((m = re.exec(sources))) seen.add(m[1]!);
       const variables = Array.from(seen).sort();
 
+      // 0206 — CALL templates may carry a per-template voice override.
+      const voice =
+        channel === 'CALL' && typeof body.voice === 'string' && body.voice.trim()
+          ? body.voice.trim().slice(0, 64)
+          : null;
       const values = {
         firmId,
         kind,
@@ -1748,6 +1754,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         enabled: body.enabled ?? true,
         printerMode,
         printerId,
+        voice,
         updatedAt: new Date(),
       };
       await deps.db

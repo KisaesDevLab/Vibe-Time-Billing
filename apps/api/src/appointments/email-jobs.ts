@@ -43,6 +43,8 @@ export type AppointmentEmailEvent =
 interface Template {
   subject: string;
   body: string;
+  // 0206 — CALL templates may carry a per-template voice override.
+  voice?: string | null;
 }
 
 const DEFAULTS: Record<AppointmentEmailEvent, Template> = {
@@ -144,11 +146,20 @@ export type SendAppointmentSms = (msg: {
   body: string;
   firmId: string;
 }) => Promise<void>;
+// 0206 — the dialer is the shared voice engine (placeVoiceCall): it applies
+// the calling window, do-not-call, per-template voice, AMD + SMS fallback,
+// and returns a coded result instead of throwing on gate refusals.
 export type PlaceAppointmentCall = (msg: {
+  firmId: string;
   to: string;
   script: string;
   confirmUrl?: string;
-}) => Promise<void>;
+  fallbackSmsBody?: string;
+  voice?: string | null;
+  personId?: string | null;
+  clientId?: string | null;
+  appointmentId?: string;
+}) => Promise<{ ok: boolean; code?: string }>;
 
 export interface EmailJobDeps {
   db: Database;
@@ -226,6 +237,7 @@ async function loadTemplate(
       subject: notificationTemplates.subject,
       body: notificationTemplates.body,
       enabled: notificationTemplates.enabled,
+      voice: notificationTemplates.voice,
     })
     .from(notificationTemplates)
     .where(
@@ -237,7 +249,11 @@ async function loadTemplate(
     )
     .limit(1);
   if (override && override.enabled && override.body) {
-    return { subject: override.subject ?? fallback.subject, body: override.body };
+    return {
+      subject: override.subject ?? fallback.subject,
+      body: override.body,
+      voice: override.voice ?? null,
+    };
   }
   return fallback;
 }
@@ -604,11 +620,14 @@ export async function runAppointmentReminderTick(
     const parts = await db
       .select({
         contactId: appointmentParticipants.clientContactId,
+        personId: persons.id,
+        clientId: clientContacts.clientId,
         email: persons.email,
         mobile: persons.mobile,
         phone: persons.phone,
         name: persons.fullName,
         optIn: clientContacts.receiveAppointmentReminders,
+        doNotCall: persons.doNotCall,
       })
       .from(appointmentParticipants)
       .innerJoin(clientContacts, eq(clientContacts.id, appointmentParticipants.clientContactId))
@@ -665,11 +684,51 @@ export async function runAppointmentReminderTick(
             if (!deps.sendSms || !phone || !canSendQuiet) continue;
             await deps.sendSms({ to: phone, body, firmId: appt.firmId });
           } else {
-            if (!deps.placeCall || !phone || !canSendQuiet) continue;
-            const confirmUrl = deps.appBaseUrl
-              ? `${deps.appBaseUrl}/api/public/appointments/twilio/voice-gather?a=${appt.id}&c=${p.contactId}`
-              : undefined;
-            await deps.placeCall({ to: phone, script: body, confirmUrl });
+            if (!phone || !canSendQuiet) continue;
+            // Rendered SMS version doubles as the do-not-call delivery and
+            // the can't-connect fallback body.
+            const skey = `${appt.firmId}:SMS`;
+            let smsTpl = tplCache.get(skey);
+            if (!smsTpl) {
+              smsTpl = await loadTemplate(db, appt.firmId, 'appointment_reminder', 'SMS');
+              tplCache.set(skey, smsTpl);
+            }
+            const smsBody = renderTemplate(smsTpl, {
+              ...ctx,
+              client: { name: p.name ?? loaded.clientName ?? 'there' },
+            }).body;
+            if (p.doNotCall) {
+              // 0206 — opted out of automated calls: deliver the SMS version
+              // and record the step so it isn't retried.
+              if (!deps.sendSms) continue;
+              await deps.sendSms({ to: phone, body: smsBody, firmId: appt.firmId });
+            } else {
+              if (!deps.placeCall) continue;
+              const confirmUrl = deps.appBaseUrl
+                ? `${deps.appBaseUrl}/api/public/appointments/twilio/voice-gather?a=${appt.id}&c=${p.contactId}`
+                : undefined;
+              const result = await deps.placeCall({
+                firmId: appt.firmId,
+                to: phone,
+                script: body,
+                confirmUrl,
+                fallbackSmsBody: smsBody,
+                voice: tpl.voice ?? null,
+                personId: p.personId,
+                clientId: p.clientId,
+                appointmentId: appt.id,
+              });
+              // Gate refusals: outside the calling window (or transient
+              // failure) → skip WITHOUT recording so a later tick retries.
+              // do_not_call raced a fresh press-9 → send the SMS instead.
+              if (!result.ok) {
+                if (result.code === 'do_not_call' && deps.sendSms) {
+                  await deps.sendSms({ to: phone, body: smsBody, firmId: appt.firmId });
+                } else {
+                  continue;
+                }
+              }
+            }
           }
         } catch (err) {
           logger.warn(

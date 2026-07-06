@@ -11,7 +11,7 @@ import request from 'supertest';
 import { eq, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
-import { appointmentParticipants, appointments } from '@vibe/db/schema';
+import { appointmentParticipants, appointments, clientCommunications } from '@vibe/db/schema';
 
 import {
   buildPgliteHarness,
@@ -119,6 +119,32 @@ describe('twilio inbound SMS confirm', () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('confirmed');
     expect(await rsvp(apptId)).toBe('confirmed');
+  });
+
+  it('logs any inbound text from a known contact to the client timeline (0206)', async () => {
+    await seedApptWithContact('+15551230009');
+    const params = { From: '+15551230009', Body: 'Can we do 3pm instead?' };
+    const res = await request(app())
+      .post(`${MOUNT}/sms`)
+      .set('X-Twilio-Signature', sign(`${BASE}${MOUNT}/sms`, params))
+      .type('form')
+      .send(params);
+    expect(res.status).toBe(200);
+    const rows = await harness.db
+      .select({
+        direction: clientCommunications.direction,
+        channel: clientCommunications.channel,
+        body: clientCommunications.body,
+        clientId: clientCommunications.clientId,
+      })
+      .from(clientCommunications);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!).toMatchObject({
+      direction: 'INBOUND',
+      channel: 'SMS',
+      body: 'Can we do 3pm instead?',
+      clientId: seed.clientId,
+    });
   });
 
   it('rejects a bad signature with 403', async () => {

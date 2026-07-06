@@ -43,14 +43,32 @@ import { renderHtmlToPdf } from '../../../api/src/pdf/render';
 import { resolveOfficePrinter } from '../../../api/src/print-gateway/assignments';
 import { resolvePrintGateway } from '../../../api/src/print-gateway/config';
 import { sendToPrinter } from '../../../api/src/print-gateway/send';
+import {
+  msUntilCallWindow,
+  placeVoiceCall,
+  resolveFirmVoiceConfig,
+} from '../../../api/src/voice/place-call';
 
 export interface StagedNotificationSendDeps {
   sendEmail?: MailDispatch;
   sendSms?: SmsDispatch;
+  /** Public app origin for the voice status-callback / gather webhooks. */
+  appBaseUrl?: string;
+  /** Re-enqueue THIS notification after `delayMs` (0206 — calls due outside
+   *  the firm's calling window wait for it). `callOnly` marks a voice-only
+   *  pass over an already-SENT row; false replays the full send (used when
+   *  CALL was the only channel and the row went back to SCHEDULED). */
+  enqueueCallRetry?: (
+    stagedNotificationId: string,
+    delayMs: number,
+    callOnly: boolean,
+  ) => Promise<void>;
 }
 
 export interface StagedNotificationSendPayload {
   stagedNotificationId: string;
+  /** 0206 — deferred voice pass: the row is already SENT; only place calls. */
+  callOnly?: boolean;
 }
 
 interface ChannelResult {
@@ -79,6 +97,39 @@ export async function runStagedNotificationSend(
     .from(stagedNotifications)
     .where(eq(stagedNotifications.id, payload.stagedNotificationId))
     .limit(1);
+
+  // 0206 — deferred call-only pass: the other channels already went out and
+  // the row is SENT; this pass only places the queued voice calls (and may
+  // defer itself again if the window still hasn't opened, e.g. DST edges).
+  if (payload.callOnly) {
+    if (!row || row.status !== 'SENT') {
+      log.info({ stagedNotificationId: payload.stagedNotificationId }, 'call-only pass skipped');
+      return { outcome: 'skipped' };
+    }
+    const callResult = await sendCallChannel(
+      db,
+      log,
+      deps,
+      row,
+      row.recipients as RecipientSnapshot[],
+      row.rendered as Rendered,
+    );
+    if (callResult.deferred && deps.enqueueCallRetry) {
+      const cfg = await resolveFirmVoiceConfig(db, row.firmId);
+      await deps.enqueueCallRetry(row.id, cfg ? msUntilCallWindow(cfg) : 60 * 60 * 1000, true);
+      return { outcome: 'skipped' };
+    }
+    const merged = {
+      ...((row.channelResults as Record<string, ChannelResult> | null) ?? {}),
+      CALL: { ok: callResult.ok, sentTo: callResult.sentTo, error: callResult.error },
+    };
+    await db
+      .update(stagedNotifications)
+      .set({ channelResults: merged, updatedAt: new Date() })
+      .where(eq(stagedNotifications.id, row.id));
+    return { outcome: callResult.ok ? 'sent' : 'failed' };
+  }
+
   // Cancel/supersede races and double-fires resolve here: only a row
   // still in SCHEDULED is sendable.
   if (!row || row.status !== 'SCHEDULED') {
@@ -152,6 +203,7 @@ export async function runStagedNotificationSend(
   const rendered = row.rendered as Rendered;
   const results: Record<string, ChannelResult> = {};
 
+  let callDeferred = false;
   for (const channel of row.channels) {
     if (channel === 'EMAIL') {
       results['EMAIL'] = await sendEmailChannel(db, log, deps, row, recipients, rendered['EMAIL']);
@@ -161,7 +213,35 @@ export async function runStagedNotificationSend(
       results['PORTAL'] = await sendPortalChannel(db, log, row, rendered['PORTAL']);
     } else if (channel === 'PRINT') {
       results['PRINT'] = await sendPrintChannel(db, log, row, rendered['PRINT']);
+    } else if (channel === 'CALL') {
+      const call = await sendCallChannel(db, log, deps, row, recipients, rendered);
+      if (call.deferred) {
+        callDeferred = true;
+        results['CALL'] = { ok: false, sentTo: [], error: 'deferred_to_call_window' };
+      } else {
+        results['CALL'] = { ok: call.ok, sentTo: call.sentTo, error: call.error };
+      }
     }
+  }
+
+  // 0206 — the calling window is closed: park the voice pass until it opens.
+  // If CALL was the only channel, put the row back to SCHEDULED (nothing was
+  // sent); otherwise send everything else now and re-enqueue a call-only pass.
+  if (callDeferred) {
+    const cfg = await resolveFirmVoiceConfig(db, row.firmId);
+    const delayMs = cfg ? msUntilCallWindow(cfg) : 60 * 60 * 1000;
+    const otherChannels = row.channels.filter((c) => c !== 'CALL');
+    if (otherChannels.length === 0) {
+      await db
+        .update(stagedNotifications)
+        .set({ status: 'SCHEDULED', updatedAt: new Date() })
+        .where(eq(stagedNotifications.id, row.id));
+      // Full replay: the row is SCHEDULED again, so this is NOT call-only.
+      if (deps.enqueueCallRetry) await deps.enqueueCallRetry(row.id, delayMs, false);
+      log.info({ stagedNotificationId: row.id, delayMs }, 'staged call deferred to window');
+      return { outcome: 'skipped' };
+    }
+    if (deps.enqueueCallRetry) await deps.enqueueCallRetry(row.id, delayMs, true);
   }
 
   // One client_communication row per successful channel (timeline view).
@@ -174,9 +254,9 @@ export async function runStagedNotificationSend(
       .values({
         firmId: row.firmId,
         clientId: row.clientId,
-        // reason: channel is constrained to EMAIL/SMS/PORTAL by the row's
-        // channels column; all three are in the client_communication enum.
-        channel: channel as 'EMAIL' | 'SMS' | 'PORTAL',
+        // reason: channel is constrained to EMAIL/SMS/PORTAL/CALL by the
+        // row's channels column; all four are in the client_communication enum.
+        channel: channel as 'EMAIL' | 'SMS' | 'PORTAL' | 'CALL',
         direction: 'OUTBOUND',
         subject: r?.subject ?? null,
         body: r?.body ?? '',
@@ -286,6 +366,86 @@ async function sendSmsChannel(
     : { ok: false, sentTo: [], error: lastError ?? 'send_failed' };
 }
 
+// 0206 — CALL channel: place one automated voice call per recipient with a
+// phone, via the shared placement engine (separate voice Twilio account,
+// per-template voice, press-9 opt-out, AMD + status callback, voice_call
+// log). Recipients flagged do-not-call get the SMS body instead; when the
+// calling window is closed the whole channel defers (`deferred: true`) and
+// the caller re-enqueues.
+async function sendCallChannel(
+  db: Database,
+  log: Logger,
+  deps: StagedNotificationSendDeps,
+  row: StagedRow,
+  recipients: RecipientSnapshot[],
+  rendered: Rendered,
+): Promise<ChannelResult & { deferred?: boolean }> {
+  const content = rendered['CALL'];
+  if (!content) return { ok: false, sentTo: [], error: 'no_rendered_content' };
+  const targets = recipients.filter((r) => r.phone);
+  if (targets.length === 0) return { ok: false, sentTo: [], error: 'no_recipient_handle' };
+  // Per-template voice override, if the firm customized the CALL template.
+  const [tpl] = await db
+    .select({ voice: notificationTemplates.voice })
+    .from(notificationTemplates)
+    .where(
+      and(
+        eq(notificationTemplates.firmId, row.firmId),
+        eq(notificationTemplates.kind, row.templateKind),
+        eq(notificationTemplates.channel, 'CALL'),
+      ),
+    )
+    .limit(1);
+  const fallbackBody = rendered['SMS']?.body ?? content.body;
+  const sentTo: string[] = [];
+  let lastError: string | undefined;
+  for (const r of targets) {
+    try {
+      const result = await placeVoiceCall(db, {
+        firmId: row.firmId,
+        kind: row.templateKind,
+        to: r.phone!,
+        script: content.body,
+        fallbackSmsBody: fallbackBody,
+        voice: tpl?.voice ?? null,
+        personId: r.personId,
+        clientId: row.clientId,
+        stagedNotificationId: row.id,
+        publicBaseUrl: deps.appBaseUrl,
+      });
+      if (result.ok) {
+        sentTo.push(r.phone!);
+        await logSend(db, log, row, 'call', r.phone!, null, null);
+        continue;
+      }
+      if (result.code === 'outside_window') {
+        // Same firm-wide window for every target — defer the whole channel.
+        return { ok: false, sentTo, deferred: true };
+      }
+      if (result.code === 'do_not_call') {
+        // Opted out of calls → deliver the SMS version instead.
+        if (deps.sendSms) {
+          await deps.sendSms({ to: r.phone!, body: fallbackBody });
+          sentTo.push(r.phone!);
+          await logSend(db, log, row, 'sms', r.phone!, null, null);
+        } else {
+          lastError = 'do_not_call_no_sms';
+        }
+        continue;
+      }
+      lastError = result.code;
+      await logSend(db, log, row, 'call', r.phone!, null, lastError);
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'call_failed';
+      log.error({ err, stagedNotificationId: row.id, to: r.phone }, 'staged call failed');
+      await logSend(db, log, row, 'call', r.phone!, null, lastError);
+    }
+  }
+  return sentTo.length > 0
+    ? { ok: true, sentTo }
+    : { ok: false, sentTo: [], error: lastError ?? 'call_failed' };
+}
+
 async function sendPortalChannel(
   db: Database,
   log: Logger,
@@ -344,7 +504,7 @@ async function logSend(
   db: Database,
   log: Logger,
   row: StagedRow,
-  channel: 'email' | 'sms',
+  channel: 'email' | 'sms' | 'call',
   recipient: string,
   subject: string | null,
   errorMessage: string | null,

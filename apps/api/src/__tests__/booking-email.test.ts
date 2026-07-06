@@ -312,7 +312,10 @@ function chanRecorders() {
     sms,
     calls,
     sendSms: async (m: { to: string; body: string }) => void sms.push(m),
-    placeCall: async (m: { to: string; script: string; confirmUrl?: string }) => void calls.push(m),
+    placeCall: async (m: { to: string; script: string; confirmUrl?: string }) => {
+      calls.push(m);
+      return { ok: true };
+    },
   };
 }
 

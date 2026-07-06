@@ -36,6 +36,9 @@ const ContactBaseSchema = z.object({
   receiveAppointmentReminders: z.boolean().optional(),
   // 0166 — per-contact engagement status-notification opt-out.
   receiveStatusNotifications: z.boolean().optional(),
+  // 0206 — person-global automated-voice-call opt-out (canonical on person,
+  // written via updatePerson so it propagates across every client).
+  doNotCall: z.boolean().optional(),
   // Link an EXISTING firm person instead of creating one from the typed
   // name/email. When set, name/email/phone are ignored (canonical values
   // come from the person) and we skip findOrCreatePerson — this is how the
@@ -106,6 +109,7 @@ export function mountContactRoutes(router: Router, deps: ContactRoutesDeps): voi
           isPortalIdentity: clientContacts.isPortalIdentity,
           receiveAppointmentReminders: clientContacts.receiveAppointmentReminders,
           receiveStatusNotifications: clientContacts.receiveStatusNotifications,
+          doNotCall: persons.doNotCall,
           status: clientContacts.status,
           createdAt: clientContacts.createdAt,
           updatedAt: clientContacts.updatedAt,

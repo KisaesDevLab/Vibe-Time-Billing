@@ -112,11 +112,11 @@ import { incCounter, observeDurationSeconds, renderPrometheusText } from './metr
 import {
   buildMailDispatch,
   buildSmsDispatch,
-  buildVoiceDispatch,
   withEmailBranding,
   withFirmMailConfig,
 } from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
+import { placeVoiceCall } from '../../api/src/voice/place-call';
 import type { SmsProvider } from '../../api/src/sms/provider';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 // Cross-app reuse (same pattern as the sms-resolver import above): the
@@ -257,7 +257,8 @@ const dunningSendEmail = withEmailBranding(
   db,
 );
 const dunningSendSms = buildSmsDispatch(logger);
-const voiceDispatch = buildVoiceDispatch(logger);
+// 0206 — the env-only buildVoiceDispatch dialer was replaced by the shared
+// placeVoiceCall engine (DB-configured account, window, opt-out, AMD).
 
 // Hydrate UI-configured storage credentials from the DB before building
 // the storage client. Mirrors the api boot sequence (server.ts): unseal
@@ -755,8 +756,17 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       db,
       sendEmail,
       sendSms,
-      // Voice is env-configured (no admin UI yet); undefined → tick skips CALL.
-      placeCall: voiceDispatch ? (m) => voiceDispatch(m) : undefined,
+      // 0206 — the shared voice engine: DB-configured Twilio account (env
+      // fallback), calling window, do-not-call, per-template voice, AMD +
+      // SMS fallback, voice_call outcome log.
+      placeCall: async (m) => {
+        const r = await placeVoiceCall(liveDb, {
+          ...m,
+          kind: 'appointment_reminder',
+          publicBaseUrl: process.env['APP_BASE_URL'],
+        });
+        return { ok: r.ok, code: r.ok ? undefined : r.code };
+      },
       appBaseUrl: process.env['APP_BASE_URL'],
     });
     logger.info({ jobId: job.id, ...result }, 'appointment-reminders complete');
@@ -1400,7 +1410,20 @@ function setupStagedNotificationQueue(): void {
       const result = await runStagedNotificationSend(
         db!,
         logger,
-        { sendEmail: dunningSendEmail, sendSms: dunningSendSms },
+        {
+          sendEmail: dunningSendEmail,
+          sendSms: dunningSendSms,
+          // 0206 — CALL channel support: public origin for the Twilio
+          // webhooks + self re-enqueue when the calling window is closed.
+          appBaseUrl: process.env['APP_BASE_URL'],
+          enqueueCallRetry: async (stagedNotificationId, delayMs, callOnly) => {
+            await stagedNotifQueueRef?.add(
+              'send',
+              { stagedNotificationId, callOnly },
+              { delay: Math.max(delayMs, 1000), removeOnComplete: 100, removeOnFail: 100 },
+            );
+          },
+        },
         job.data,
       );
       logger.info({ jobId: job.id, ...result }, 'staged-notification-send complete');
