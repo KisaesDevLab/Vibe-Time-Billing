@@ -23,6 +23,7 @@ import { firmScope, renderTemplate } from '../notifications/templating';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
 import { createFileInClientFolder } from '../clients/create-file';
+import { ensureClientFolderBound } from '../clients/folder-link';
 import { CATEGORY_VALUES, type Category } from '../clients/files';
 import { unwrapIntakeRecordKey, decField } from './crypto';
 import { suggestClients } from './auto-match';
@@ -76,21 +77,22 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
     return true;
   }
 
-  // GET /count — received-session badge.
+  // GET /count — received-session badge. `unread` (received AND not yet
+  // marked read) drives the nav highlight; `received` is the full open set.
   router.get(
     '/count',
     requirePermission(deps, 'storage:folder:view'),
     async (req: Request, res: Response) => {
       const firmId = req.staffSession!.firmId;
       if (!deps.db) {
-        res.json({ received: 0 });
+        res.json({ received: 0, unread: 0 });
         return;
       }
       const rows = await deps.db
-        .select({ id: intakeSessions.id })
+        .select({ id: intakeSessions.id, readAt: intakeSessions.readAt })
         .from(intakeSessions)
         .where(and(eq(intakeSessions.firmId, firmId), eq(intakeSessions.status, 'received')));
-      res.json({ received: rows.length });
+      res.json({ received: rows.length, unread: rows.filter((r) => !r.readAt).length });
     },
   );
 
@@ -182,6 +184,7 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           id: intakeSessions.id,
           status: intakeSessions.status,
           createdAt: intakeSessions.createdAt,
+          readAt: intakeSessions.readAt,
           wrappedDek: intakeSessions.wrappedDek,
           clientNameEnc: intakeSessions.clientNameEnc,
           clientEmailEnc: intakeSessions.clientEmailEnc,
@@ -224,6 +227,7 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
             id: r.id,
             status: r.status,
             createdAt: r.createdAt,
+            readAt: r.readAt,
             clientName: decField(dek, r.clientNameEnc),
             clientEmail: decField(dek, r.clientEmailEnc),
             message: decField(dek, r.messageEnc),
@@ -291,6 +295,7 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           id: s.id,
           status: s.status,
           createdAt: s.createdAt,
+          readAt: s.readAt,
           source: s.source,
           clientName: name,
           clientEmail: email,
@@ -549,6 +554,43 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
     },
   );
 
+  // POST /sessions/:id/read — toggle the read flag on an open submission.
+  // Body: { read: boolean }. Marking read takes the session out of the nav
+  // badge's unread count without disposing it; unread puts it back.
+  router.post(
+    '/sessions/:id/read',
+    requirePermission(deps, 'storage:folder:edit'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actorId = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const read = req.body?.read !== false;
+      const [s] = await deps.db
+        .select({ id: intakeSessions.id })
+        .from(intakeSessions)
+        .where(
+          and(
+            eq(intakeSessions.id, req.params['id']!),
+            eq(intakeSessions.firmId, firmId),
+            inArray(intakeSessions.status, ['received', 'processing']),
+          ),
+        )
+        .limit(1);
+      if (!s) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await deps.db
+        .update(intakeSessions)
+        .set(read ? { readAt: new Date(), readById: actorId } : { readAt: null, readById: null })
+        .where(eq(intakeSessions.id, s.id));
+      res.json({ ok: true, read });
+    },
+  );
+
   // POST /sessions/:id/dispose — move file(s) into a client folder.
   router.post(
     '/sessions/:id/dispose',
@@ -598,6 +640,23 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
         : allFiles;
       if (selected.length === 0) {
         res.status(400).json({ error: 'no_files' });
+        return;
+      }
+
+      // Only ~6% of imported clients arrive with a bound storage folder;
+      // "File to client" used to 502 with client_folder_not_bound for the
+      // rest. Auto-provision the folder (sentinel + client_folders row,
+      // named after the client) so filing always works.
+      const bound = await ensureClientFolderBound(deps.db, storage, {
+        firmId,
+        clientId: parsed.data.clientId,
+        actorId,
+      });
+      if (!bound.ok) {
+        res.status(bound.code === 'client_not_found' ? 404 : 502).json({
+          error: 'folder_provision_failed',
+          code: bound.code,
+        });
         return;
       }
 

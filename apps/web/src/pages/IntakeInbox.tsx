@@ -15,11 +15,24 @@ interface SessionListItem {
   id: string;
   status: string;
   createdAt: string;
+  readAt: string | null;
   clientName: string | null;
   clientEmail: string | null;
   message: string | null;
   targetStaffName: string;
   fileCount: number;
+}
+
+// Server error codes → messages a human can act on.
+const ERROR_TEXT: Record<string, string> = {
+  move_failed: 'Filing failed — the file(s) could not be copied into the client folder.',
+  folder_provision_failed: 'Could not create a storage folder for this client.',
+  no_files: 'No clean files to file — files may still be scanning.',
+  storage_unavailable: 'File storage is not reachable right now.',
+  appliance_locked: 'The appliance is locked — unlock it under Admin before filing.',
+};
+function friendly(err: ApiError): string {
+  return ERROR_TEXT[err.message] ?? err.message;
 }
 
 interface FileItem {
@@ -119,6 +132,24 @@ export function IntakeInboxPage(): JSX.Element {
       setSelected(null);
       await loadList();
     } catch (err) {
+      setError(friendly(err as ApiError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Toggle the read flag without disposing — updates the list highlight and
+  // the nav badge's unread count.
+  async function setRead(id: string, read: boolean): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/intake/sessions/${id}/read`, {
+        method: 'POST',
+        body: JSON.stringify({ read }),
+      });
+      await loadList();
+    } catch (err) {
       setError((err as ApiError).message);
     } finally {
       setBusy(false);
@@ -178,29 +209,78 @@ export function IntakeInboxPage(): JSX.Element {
             <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No new submissions.</p>
           )}
           {list.map((s) => (
-            <button
+            <div
               key={s.id}
-              type="button"
-              onClick={() => void openSession(s.id)}
               style={{
-                textAlign: 'left',
                 padding: 12,
                 border: `1px solid ${selected === s.id ? tokens.color.accent : tokens.color.border}`,
                 borderRadius: tokens.radius.md,
                 background: tokens.color.surface,
-                cursor: 'pointer',
+                // Read submissions render dimmed so the unread ones pop.
+                opacity: s.readAt ? 0.65 : 1,
               }}
             >
-              <div style={{ fontWeight: 600, fontSize: 14 }}>
-                {s.clientName ?? 'Unknown sender'}
-              </div>
-              <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                {s.fileCount} file{s.fileCount === 1 ? '' : 's'} · for {s.targetStaffName}
-              </div>
-              <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                {new Date(s.createdAt).toLocaleString()}
-              </div>
-            </button>
+              <button
+                type="button"
+                onClick={() => void openSession(s.id)}
+                style={{
+                  textAlign: 'left',
+                  border: 'none',
+                  background: 'transparent',
+                  padding: 0,
+                  cursor: 'pointer',
+                  width: '100%',
+                  color: tokens.color.text,
+                }}
+              >
+                <div
+                  style={{
+                    fontWeight: s.readAt ? 500 : 700,
+                    fontSize: 14,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                >
+                  {!s.readAt && (
+                    <span
+                      aria-label="Unread"
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: tokens.color.accent,
+                        display: 'inline-block',
+                        flex: '0 0 auto',
+                      }}
+                    />
+                  )}
+                  {s.clientName ?? 'Unknown sender'}
+                </div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {s.fileCount} file{s.fileCount === 1 ? '' : 's'} · for {s.targetStaffName}
+                </div>
+                <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                  {new Date(s.createdAt).toLocaleString()}
+                </div>
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void setRead(s.id, !s.readAt)}
+                style={{
+                  marginTop: 6,
+                  border: 'none',
+                  background: 'transparent',
+                  color: tokens.color.accent,
+                  fontSize: 12,
+                  padding: 0,
+                  cursor: busy ? 'default' : 'pointer',
+                }}
+              >
+                {s.readAt ? 'Mark unread' : 'Mark read'}
+              </button>
+            </div>
           ))}
         </div>
 

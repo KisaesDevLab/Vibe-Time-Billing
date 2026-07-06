@@ -87,6 +87,102 @@ async function tryReadSentinel(storage: StorageClient, path: string): Promise<Se
   }
 }
 
+// Ensure a client has a bound storage folder, auto-provisioning one from
+// the client's name when none exists. Used by flows that file documents to
+// a client (e.g. intake disposition) where "no folder yet" should mean
+// "create it", not a hard failure — only 6% of imported clients arrive
+// with a folder bound. Returns the folder id + path, or a failure code.
+export async function ensureClientFolderBound(
+  db: Database,
+  storage: StorageClient,
+  args: { firmId: string; clientId: string; actorId: string },
+): Promise<
+  | { ok: true; clientFolderId: string; storagePath: string; created: boolean }
+  | { ok: false; code: 'client_not_found' | 'folder_name_unavailable' | 'sentinel_write_failed' }
+> {
+  const [existing] = await db
+    .select({ id: clientFolders.id, storagePath: clientFolders.storagePath })
+    .from(clientFolders)
+    .where(and(eq(clientFolders.firmId, args.firmId), eq(clientFolders.clientId, args.clientId)))
+    .limit(1);
+  if (existing) {
+    return {
+      ok: true,
+      clientFolderId: existing.id,
+      storagePath: existing.storagePath,
+      created: false,
+    };
+  }
+  const [client] = await db
+    .select({ id: clients.id, name: clients.name })
+    .from(clients)
+    .where(and(eq(clients.id, args.clientId), eq(clients.firmId, args.firmId)))
+    .limit(1);
+  if (!client) return { ok: false, code: 'client_not_found' };
+
+  const base = sanitizeFolderName(client.name) || `Client ${client.id.slice(0, 8)}`;
+  // Find a free path: "Name/", then "Name (2)/" … — a sentinel belonging to
+  // another client means the name is taken. A sentinel already stamped with
+  // THIS client id (e.g. a prior half-finished link) is adopted as-is.
+  let storagePath: string | null = null;
+  for (let i = 1; i <= 9 && !storagePath; i++) {
+    const candidate = i === 1 ? `${base}/` : `${base} (${i})/`;
+    const sentinel = await tryReadSentinel(storage, candidate);
+    if (!sentinel) {
+      try {
+        await writeSentinel(storage, candidate, {
+          version: 1,
+          client_id: client.id,
+          firm_id: args.firmId,
+          tax_software_id: null,
+          created_at: new Date().toISOString(),
+          created_by: args.actorId,
+          display_name_at_creation: client.name,
+        });
+      } catch (err) {
+        logger.error({ err, candidate }, 'sentinel write failed (auto-provision)');
+        return { ok: false, code: 'sentinel_write_failed' };
+      }
+      storagePath = candidate;
+    } else if (sentinel.client_id === client.id) {
+      storagePath = candidate;
+    }
+  }
+  if (!storagePath) return { ok: false, code: 'folder_name_unavailable' };
+
+  const [folder] = await db
+    .insert(clientFolders)
+    .values({
+      firmId: args.firmId,
+      clientId: client.id,
+      storagePath,
+      status: 'active',
+      lastSyncedAt: new Date(),
+    })
+    .returning({ id: clientFolders.id });
+  await db
+    .insert(folderLinkAttempts)
+    .values({
+      firmId: args.firmId,
+      clientId: client.id,
+      storagePath,
+      attemptedBy: args.actorId,
+      outcome: 'linked',
+      notes: 'Auto-created while filing documents',
+    })
+    .catch(() => undefined);
+  await db
+    .insert(folderSyncEvents)
+    .values({
+      firmId: args.firmId,
+      clientFolderId: folder!.id,
+      eventType: 'link_attempted',
+      pathAfter: storagePath,
+    })
+    .catch(() => undefined);
+  return { ok: true, clientFolderId: folder!.id, storagePath, created: true };
+}
+
 async function loadClientForMatch(
   db: Database,
   clientId: string,

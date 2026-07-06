@@ -5469,6 +5469,10 @@ export const intakeSessions = pgTable(
     linkTokenId: uuid('link_token_id').references(() => intakeLinks.id, { onDelete: 'set null' }),
     status: text('status').notNull().default('pending_scan'),
     matchedClientId: uuid('matched_client_id').references(() => clients.id, { onDelete: 'set null' }),
+    // 0205 — read/unread flag, orthogonal to the status lifecycle. The nav
+    // badge counts received sessions with read_at IS NULL.
+    readAt: timestamp('read_at', { withTimezone: true }),
+    readById: uuid('read_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

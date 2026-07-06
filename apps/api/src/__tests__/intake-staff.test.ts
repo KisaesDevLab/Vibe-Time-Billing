@@ -7,7 +7,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { Readable } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -382,5 +382,66 @@ describe('inbox + disposition', () => {
       .from(intakeSessions)
       .where(eq(intakeSessions.id, sessionId));
     expect(sess!.status).toBe('rejected');
+  });
+
+  it('marks a session read/unread and the unread count follows', async () => {
+    const sessionId = await makeReceivedSession();
+    const app = buildApp();
+
+    let count = await request(app).get('/api/staff/intake/count');
+    expect(count.body).toMatchObject({ received: 1, unread: 1 });
+
+    const markRead = await request(app)
+      .post(`/api/staff/intake/sessions/${sessionId}/read`)
+      .send({ read: true });
+    expect(markRead.status).toBe(200);
+    count = await request(app).get('/api/staff/intake/count');
+    // Still an open (received) submission — just no longer unread.
+    expect(count.body).toMatchObject({ received: 1, unread: 0 });
+
+    const list = await request(app).get('/api/staff/intake/sessions?status=received');
+    expect(list.body.sessions[0].readAt).toBeTruthy();
+
+    const markUnread = await request(app)
+      .post(`/api/staff/intake/sessions/${sessionId}/read`)
+      .send({ read: false });
+    expect(markUnread.status).toBe(200);
+    count = await request(app).get('/api/staff/intake/count');
+    expect(count.body).toMatchObject({ received: 1, unread: 1 });
+  });
+
+  it('dispose auto-provisions a folder for a client without one', async () => {
+    // A second client with NO client_folders row — filing to them used to
+    // fail with client_folder_not_bound (502 move_failed).
+    // Clone the seeded client's required refs (partner/office) so only the
+    // name — and the absence of a folder — differs.
+    const created = await harness.db.execute(
+      sql`INSERT INTO client (firm_id, name, client_type, partner_in_charge_id, office_id)
+          SELECT firm_id, 'Folderless Client', 'INDIVIDUAL', partner_in_charge_id, office_id
+          FROM client WHERE id = ${seed.clientId} RETURNING id`,
+    );
+    const bareClientId = (created as unknown as { rows: { id: string }[] }).rows[0]!.id;
+
+    const sessionId = await makeReceivedSession();
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: bareClientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+    expect(res.body.moved).toBe(1);
+
+    // A folder was provisioned, named after the client, and the file landed
+    // under it.
+    const [folder] = await harness.db
+      .select({ storagePath: clientFolders.storagePath, status: clientFolders.status })
+      .from(clientFolders)
+      .where(eq(clientFolders.clientId, bareClientId));
+    expect(folder!.storagePath).toBe('Folderless Client/');
+    expect(folder!.status).toBe('active');
+    const filed = await harness.db
+      .select({ storageKey: files.storageKey })
+      .from(files)
+      .where(eq(files.clientId, bareClientId));
+    expect(filed).toHaveLength(1);
+    expect(filed[0]!.storageKey.startsWith('Folderless Client/')).toBe(true);
   });
 });

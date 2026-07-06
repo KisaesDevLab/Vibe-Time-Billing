@@ -308,9 +308,11 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           .catch(() => undefined);
       }
       if (can.intake) {
-        void api<{ sessions: unknown[] }>('/api/staff/intake/sessions?status=received')
+        // Unread received submissions — the lightweight count endpoint
+        // (the old poll fetched + decrypted the whole session list).
+        void api<{ received: number; unread: number }>('/api/staff/intake/count')
           .then((r) => {
-            if (alive) setIntakeNew(r.sessions?.length ?? 0);
+            if (alive) setIntakeNew(r.unread ?? r.received ?? 0);
           })
           .catch(() => undefined);
       }
