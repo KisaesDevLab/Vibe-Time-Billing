@@ -35,6 +35,7 @@ import {
   workCodes,
 } from '@vibe/db/schema';
 import { createSnapshot } from '../rates/routes';
+import { pgErrorCode } from '../db-error';
 import {
   PERMISSION_KEYS,
   ROLE_TEMPLATES,
@@ -105,6 +106,11 @@ const ALLOCATION_METHODS = [
 const FirmSettingsPatchSchema = z.object({
   adjustmentApprovalThresholdCents: z.number().int().nonnegative().optional(),
   aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
+  // 0202 — estimated labor % of a target fee (rollforward budgeting).
+  estimatedLaborPct: z.number().int().min(1).max(100).optional(),
+  // 0204 — days after a drop-off date to auto-set an engagement's due date
+  // (only when it has none). null = disabled.
+  dropoffDueOffsetDays: z.number().int().min(0).max(365).nullable().optional(),
   timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
   stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
   // 0151 — firm-level staff second-factor toggle (revises decision #5).
@@ -131,6 +137,13 @@ const FirmSettingsPatchSchema = z.object({
   brandSupportFax: z.string().max(40).nullable().optional(),
   brandSupportWeb: z.string().max(254).nullable().optional(),
   brandFooterHtml: z.string().max(4000).nullable().optional(),
+  // 0196 — firm mailing address (fed into the firm.address document token).
+  mailingStreet1: z.string().max(200).nullable().optional(),
+  mailingStreet2: z.string().max(200).nullable().optional(),
+  mailingCity: z.string().max(120).nullable().optional(),
+  mailingState: z.string().max(80).nullable().optional(),
+  mailingPostal: z.string().max(40).nullable().optional(),
+  mailingCountry: z.string().max(80).nullable().optional(),
   // 0053 — Billing + A/R block.
   arTermsText: z.string().max(4000).nullable().optional(),
   statementEmailMessage: z.string().max(4000).nullable().optional(),
@@ -666,12 +679,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           .where(and(eq(appUsers.id, req.params['id']!), eq(appUsers.firmId, firmId)));
       } catch (err) {
         // Map Postgres unique-violation on (firm_id, display_id) to 409
-        // instead of bubbling up as a generic 500.
-        const pgCode =
-          err && typeof err === 'object' && 'code' in err
-            ? (err as { code: unknown }).code
-            : undefined;
-        if (pgCode === '23505') {
+        // instead of bubbling up as a generic 500. drizzle wraps the
+        // driver error, so read the code from the cause chain.
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'display_id_taken' });
           return;
         }
@@ -832,6 +842,22 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       const patch = { ...parsed.data };
       if (patch.retentionDays !== undefined) {
         patch.retentionDays = validateRetentionDays(patch.retentionDays).retentionDays;
+      }
+      // Confine the backup destination to the appliance's known roots and
+      // reject path traversal — the executor does `mkdir -p` + writes a
+      // full-client-data dump there, so an arbitrary path would let an admin
+      // drop client data anywhere the api container can write.
+      if (patch.destinationPath !== undefined) {
+        const dp = patch.destinationPath;
+        const allowed =
+          dp === '/backups' ||
+          dp.startsWith('/backups/') ||
+          dp.startsWith('/mnt/') ||
+          dp.startsWith('/media/');
+        if (!dp.startsWith('/') || dp.includes('..') || !allowed) {
+          res.status(400).json({ error: 'invalid_destination_path' });
+          return;
+        }
       }
       const session = req.staffSession!;
       await deps.db
@@ -1345,6 +1371,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     },
   );
 
+  // Security-sensitive permission-key prefixes that must never be granted
+  // to a lower role via the matrix editor — these are admin-reserved.
+  const PROTECTED_PREFIXES = ['app_user:', 'crypto:', 'admin:'] as const;
+
   // 0147 — toggle one cell. granted matching the template clears the
   // override row (back to default); differing upserts a delta. The
   // admin column is locked: it always holds every key.
@@ -1368,6 +1398,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         typeof granted !== 'boolean'
       ) {
         res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (PROTECTED_PREFIXES.some((p) => key.startsWith(p))) {
+        res.status(400).json({ error: 'protected_key' });
         return;
       }
       // reason: narrowed by the editable/PERMISSION_KEYS guards above.
@@ -1669,17 +1703,31 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         return;
       }
       const kind = req.params['kind']!;
-      const channel =
-        req.params['channel'] === 'SMS'
-          ? 'SMS'
-          : req.params['channel'] === 'CALL'
-            ? 'CALL'
-            : req.params['channel'] === 'PORTAL'
-              ? 'PORTAL'
-              : 'EMAIL';
-      const body = (req.body ?? {}) as { subject?: string; body?: string; enabled?: boolean };
+      const channel = ['SMS', 'CALL', 'PORTAL', 'PRINT'].includes(req.params['channel'] ?? '')
+        ? (req.params['channel'] as 'SMS' | 'CALL' | 'PORTAL' | 'PRINT')
+        : 'EMAIL';
+      const body = (req.body ?? {}) as {
+        subject?: string;
+        body?: string;
+        enabled?: boolean;
+        printerMode?: string | null;
+        printerId?: number | null;
+      };
       if (typeof body.body !== 'string' || body.body.length === 0) {
         res.status(400).json({ error: 'body_required' });
+        return;
+      }
+      // PRINT requires a resolvable printer: 'specific' needs a printerId.
+      const printerMode =
+        channel === 'PRINT'
+          ? body.printerMode === 'client_office'
+            ? 'client_office'
+            : 'specific'
+          : null;
+      const printerId =
+        channel === 'PRINT' && printerMode === 'specific' ? (body.printerId ?? null) : null;
+      if (channel === 'PRINT' && printerMode === 'specific' && printerId == null) {
+        res.status(400).json({ error: 'printer_required' });
         return;
       }
       // Mine placeholder names so the UI variable picker can render them.
@@ -1693,11 +1741,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
       const values = {
         firmId,
         kind,
-        channel: channel as 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL',
+        channel: channel as 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL' | 'PRINT',
         subject: body.subject ?? null,
         body: body.body,
         variablesJson: variables,
         enabled: body.enabled ?? true,
+        printerMode,
+        printerId,
         updatedAt: new Date(),
       };
       await deps.db
@@ -1732,14 +1782,9 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         return;
       }
       const kind = req.params['kind']!;
-      const channel =
-        req.params['channel'] === 'SMS'
-          ? 'SMS'
-          : req.params['channel'] === 'CALL'
-            ? 'CALL'
-            : req.params['channel'] === 'PORTAL'
-              ? 'PORTAL'
-              : 'EMAIL';
+      const channel = ['SMS', 'CALL', 'PORTAL', 'PRINT'].includes(req.params['channel'] ?? '')
+        ? (req.params['channel'] as 'SMS' | 'CALL' | 'PORTAL' | 'PRINT')
+        : 'EMAIL';
       await deps.db
         .delete(notificationTemplates)
         .where(
@@ -2317,8 +2362,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
         res.status(201).json({ id: row?.id });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'insert_failed';
-        if (/unique|duplicate/i.test(msg)) {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'duplicate_code' });
           return;
         }
@@ -2380,8 +2424,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
         res.json({ ok: true });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'update_failed';
-        if (/unique|duplicate/i.test(msg)) {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'duplicate_code' });
           return;
         }
@@ -2570,8 +2613,7 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
         res.status(201).json({ id });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'insert_failed';
-        if (/unique|duplicate/i.test(msg)) {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'snapshot_for_date_exists' });
           return;
         }

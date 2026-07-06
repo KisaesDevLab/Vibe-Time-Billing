@@ -30,6 +30,7 @@ interface RequestRow {
   createdAt: string;
   reminderDaysBefore: number | null;
   clientReplyText: string | null;
+  activationDate: string | null;
 }
 
 interface RequestItem {
@@ -87,6 +88,8 @@ export function RequestDetailPage(): JSX.Element {
   const navigate = useNavigate();
   const id = params.id ?? '';
   const [request, setRequest] = useState<RequestRow | null>(null);
+  const [clientName, setClientName] = useState<string | null>(null);
+  const [clientId, setClientId] = useState<string | null>(null);
   const [items, setItems] = useState<RequestItem[]>([]);
   const [engagements, setEngagements] = useState<EngagementLite[]>([]);
   const [users, setUsers] = useState<FirmUser[]>([]);
@@ -98,17 +101,30 @@ export function RequestDetailPage(): JSX.Element {
   const [showNeedsInfo, setShowNeedsInfo] = useState(false);
   const [reassignEng, setReassignEng] = useState('');
   const [reassignUser, setReassignUser] = useState('');
+  // Full edit mode for the request's core fields.
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editBody, setEditBody] = useState('');
+  const [editPriority, setEditPriority] = useState<Priority>('MEDIUM');
+  const [editStatus, setEditStatus] = useState<string>('OPEN');
+  const [editDue, setEditDue] = useState('');
+  const [editReminder, setEditReminder] = useState('');
+  const [editTags, setEditTags] = useState('');
 
   async function load(): Promise<void> {
     setError(null);
     try {
       const [detail, itemList] = await Promise.all([
-        api<{ request: RequestRow }>(`/api/staff/requests/${id}`),
+        api<{ request: RequestRow; clientName?: string | null; clientId?: string | null }>(
+          `/api/staff/requests/${id}`,
+        ),
         api<{ items: RequestItem[] }>(`/api/staff/requests/${id}/items`).catch(() => ({
           items: [] as RequestItem[],
         })),
       ]);
       setRequest(detail.request);
+      setClientName(detail.clientName ?? null);
+      setClientId(detail.clientId ?? null);
       setItems(itemList.items ?? []);
       setReassignEng(detail.request.engagementId);
       setReassignUser(detail.request.assignedAppUserId ?? '');
@@ -147,6 +163,47 @@ export function RequestDetailPage(): JSX.Element {
     });
   }
 
+  function startEdit(): void {
+    if (!request) return;
+    setEditTitle(request.title);
+    setEditBody(request.body ?? '');
+    setEditPriority(request.priority);
+    setEditStatus(request.status);
+    setEditDue(request.dueDate ?? '');
+    setEditReminder(request.reminderDaysBefore != null ? String(request.reminderDaysBefore) : '');
+    setEditTags(request.tags.join(', '));
+    setEditing(true);
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (!editTitle.trim()) {
+      setError('Title is required.');
+      return;
+    }
+    setBusy('edit');
+    setError(null);
+    try {
+      await patchRequest({
+        title: editTitle.trim(),
+        body: editBody,
+        priority: editPriority,
+        status: editStatus,
+        dueDate: editDue || null,
+        reminderDaysBefore: editReminder.trim() ? Number(editReminder) : null,
+        tags: editTags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      });
+      setEditing(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function fulfillItem(itemId: string): Promise<void> {
     setBusy(itemId);
     try {
@@ -157,6 +214,19 @@ export function RequestDetailPage(): JSX.Element {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'fulfill_failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteItem(itemId: string): Promise<void> {
+    if (!window.confirm('Remove this checklist item?')) return;
+    setBusy(itemId);
+    try {
+      await api(`/api/staff/requests/${id}/items/${itemId}`, { method: 'DELETE' });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'delete_failed');
     } finally {
       setBusy(null);
     }
@@ -232,6 +302,19 @@ export function RequestDetailPage(): JSX.Element {
     }
   }
 
+  async function activateRequest(): Promise<void> {
+    if (!window.confirm('Open this request now and make it visible to the client?')) return;
+    setBusy('activate');
+    try {
+      await api(`/api/staff/requests/${id}/activate`, { method: 'POST' });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'activate_failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function fulfillRequest(): Promise<void> {
     setBusy('fulfill');
     try {
@@ -265,9 +348,14 @@ export function RequestDetailPage(): JSX.Element {
     }
   }
 
+  // Only the request's client's engagements (fall back to all if the client
+  // isn't resolved yet).
   const engOptions: ComboboxOption[] = useMemo(
-    () => engagements.map((e) => ({ value: e.id, label: e.name })),
-    [engagements],
+    () =>
+      engagements
+        .filter((e) => !clientId || e.clientId === clientId)
+        .map((e) => ({ value: e.id, label: e.name })),
+    [engagements, clientId],
   );
   const userOptions: ComboboxOption[] = useMemo(
     () => users.map((u) => ({ value: u.id, label: u.fullName })),
@@ -300,8 +388,18 @@ export function RequestDetailPage(): JSX.Element {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 18 }}>{request.title}</h2>
+            {clientName && (
+              <div style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 2 }}>
+                {clientId ? <a href={`/clients/${clientId}`}>{clientName}</a> : clientName}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-              <Pill tone={statusTone(request.status)}>{request.status}</Pill>
+              <Pill tone={statusTone(request.status)}>
+                {request.status === 'PENDING' ? 'SCHEDULED' : request.status}
+              </Pill>
+              {request.status === 'PENDING' && request.activationDate && (
+                <Pill tone="warning">opens {request.activationDate}</Pill>
+              )}
               <Pill tone={priorityTone(request.priority)}>{request.priority}</Pill>
               {request.dueDate && <Pill tone="neutral">due {request.dueDate}</Pill>}
               {request.reminderDaysBefore != null && (
@@ -332,6 +430,16 @@ export function RequestDetailPage(): JSX.Element {
             )}
           </div>
           <div style={{ display: 'flex', gap: 6, flexDirection: 'column' }}>
+            {!editing && (
+              <Button variant="secondary" onClick={startEdit}>
+                Edit
+              </Button>
+            )}
+            {request.status === 'PENDING' && (
+              <Button onClick={() => void activateRequest()} disabled={busy != null}>
+                Activate now
+              </Button>
+            )}
             {request.status === 'OPEN' && (
               <>
                 <Button onClick={() => void fulfillRequest()} disabled={busy != null}>
@@ -355,6 +463,106 @@ export function RequestDetailPage(): JSX.Element {
             )}
           </div>
         </div>
+
+        {editing && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              display: 'grid',
+              gap: 8,
+            }}
+          >
+            <label style={{ fontSize: 12 }}>
+              Title
+              <input
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                maxLength={200}
+                style={{ width: '100%', padding: 6, marginTop: 4 }}
+              />
+            </label>
+            <label style={{ fontSize: 12 }}>
+              Description
+              <textarea
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                rows={4}
+                style={{ width: '100%', padding: 6, marginTop: 4, fontFamily: 'inherit' }}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ fontSize: 12 }}>
+                Priority
+                <select
+                  value={editPriority}
+                  onChange={(e) => setEditPriority(e.target.value as Priority)}
+                  style={{ display: 'block', padding: 6, marginTop: 4 }}
+                >
+                  {(['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as Priority[]).map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Status
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  style={{ display: 'block', padding: 6, marginTop: 4 }}
+                >
+                  {['OPEN', 'PENDING', 'NEEDS_INFO', 'FULFILLED', 'DISMISSED', 'EXPIRED'].map(
+                    (s) => (
+                      <option key={s} value={s}>
+                        {s === 'PENDING' ? 'PENDING (scheduled)' : s}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Due date
+                <input
+                  type="date"
+                  value={editDue}
+                  onChange={(e) => setEditDue(e.target.value)}
+                  style={{ display: 'block', padding: 6, marginTop: 4 }}
+                />
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Remind (days before)
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={editReminder}
+                  onChange={(e) => setEditReminder(e.target.value)}
+                  style={{ display: 'block', padding: 6, marginTop: 4, width: 100 }}
+                />
+              </label>
+            </div>
+            <label style={{ fontSize: 12 }}>
+              Tags (comma-separated)
+              <input
+                value={editTags}
+                onChange={(e) => setEditTags(e.target.value)}
+                style={{ width: '100%', padding: 6, marginTop: 4 }}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <Button onClick={() => void saveEdit()} disabled={busy === 'edit'}>
+                {busy === 'edit' ? 'Saving…' : 'Save changes'}
+              </Button>
+              <Button variant="ghost" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
 
         {showNeedsInfo && (
           <div
@@ -481,6 +689,15 @@ export function RequestDetailPage(): JSX.Element {
                       Fulfill
                     </Button>
                   )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void deleteItem(it.id)}
+                    disabled={busy === it.id}
+                    aria-label="Delete item"
+                  >
+                    ✕
+                  </Button>
                 </div>
               ))}
             </div>

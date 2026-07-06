@@ -154,6 +154,18 @@ async function insertEntry(
   return (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
 }
 
+async function setAction(
+  db: PgliteHarness['db'],
+  batchId: string,
+  timeEntryId: string,
+  action: 'INCLUDE' | 'DEFER' | 'WRITE_OFF',
+): Promise<void> {
+  await db.execute(
+    sql`INSERT INTO billing_batch_entry (billing_batch_id, time_entry_id, action)
+        VALUES (${batchId}, ${timeEntryId}, ${action})`,
+  );
+}
+
 function buildRouter(db: PgliteHarness['db']): express.Router {
   return createAdjustmentRouter({
     db,
@@ -211,6 +223,65 @@ describe('adjustment preview — specific / weighted / partner-absorbs', () => {
     const byEntry = new Map(body.allocations.map((a) => [a.timeEntryId, a.adjustmentAmountCents]));
     expect(byEntry.get(e1)).toBe(-20000);
     expect(byEntry.get(e2)).toBe(-10000);
+  });
+
+  it('PRO_RATA excludes DEFER / WRITE_OFF entries (INCLUDE-only base)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const batchId = await insertBatch(harness.db, seed.engagementId, seed.appUserId);
+    const eInclude = await insertEntry(harness.db, {
+      engagementId: seed.engagementId,
+      appUserId: seed.appUserId,
+      workCodeId: seed.workCodeId,
+      batchId,
+      hours: '4.00',
+      standardAmountCents: 80000,
+    });
+    const eDefer = await insertEntry(harness.db, {
+      engagementId: seed.engagementId,
+      appUserId: seed.appUserId,
+      workCodeId: seed.workCodeId,
+      batchId,
+      hours: '2.00',
+      standardAmountCents: 40000,
+    });
+    const eWriteOff = await insertEntry(harness.db, {
+      engagementId: seed.engagementId,
+      appUserId: seed.appUserId,
+      workCodeId: seed.workCodeId,
+      batchId,
+      hours: '1.00',
+      standardAmountCents: 20000,
+    });
+    await setAction(harness.db, batchId, eInclude, 'INCLUDE');
+    await setAction(harness.db, batchId, eDefer, 'DEFER');
+    await setAction(harness.db, batchId, eWriteOff, 'WRITE_OFF');
+
+    const router = buildRouter(harness.db);
+    const r = await invoke(router, 'post', '/preview', {
+      ...makeReq({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          billingBatchId: batchId,
+          method: 'TIME',
+          allocationMethod: 'PRO_RATA_BY_VALUE',
+          totalAmountCents: -30000,
+          reasonCodeId: '00000000-0000-0000-0000-000000000000',
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.jsonBody as {
+      allocations: { timeEntryId: string; adjustmentAmountCents: number }[];
+    };
+    const ids = new Set(body.allocations.map((a) => a.timeEntryId));
+    // Only the INCLUDE entry is in the adjustment base.
+    expect(ids.has(eInclude)).toBe(true);
+    expect(ids.has(eDefer)).toBe(false);
+    expect(ids.has(eWriteOff)).toBe(false);
+    // The full write-down lands on the INCLUDE entry.
+    const total = body.allocations.reduce((s, a) => s + a.adjustmentAmountCents, 0);
+    expect(total).toBe(-30000);
   });
 
   it('CUSTOM_WEIGHTED: percent weights summing to 100 → split by timekeeper', async () => {

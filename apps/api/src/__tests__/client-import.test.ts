@@ -230,19 +230,19 @@ describe('client CSV import', () => {
     expect(body.skipped[0]!.reason).toBe('invalid_client_type');
   });
 
-  it('skip-existing dedupe: external_id then case-insensitive name', async () => {
+  it('existing clients (external_id then name) are upserted, not duplicated', async () => {
     const seed = await seedMinimalFirm(harness.db);
-    // Pre-existing client with external id and a known name.
     await harness.db.execute(
       sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id, external_id)
           VALUES (${seed.firmId}, 'Existing Co', ${seed.appUserId},
                   (SELECT id FROM office WHERE firm_id = ${seed.firmId} LIMIT 1), 'EXT-DUP')`,
     );
+    const before = await harness.db.select().from(clients).where(eq(clients.firmId, seed.firmId));
     const r = router(harness.db, seed.appUserId);
     const csv = [
       'name,client_owner_email,external_id',
-      'Brand New,sarah@test.example,EXT-DUP', // dup external_id → skip
-      'existing co,sarah@test.example,', // dup name (case-insensitive) → skip
+      'Brand New,sarah@test.example,EXT-DUP', // matches existing by external_id → update (no contacts)
+      'existing co,sarah@test.example,', // matches existing by name → update (no contacts)
       'Truly New,sarah@test.example,', // creates
     ].join('\n');
     const res = await invoke(
@@ -251,12 +251,99 @@ describe('client CSV import', () => {
       '/import/commit',
       req(seed.firmId, seed.appUserId, { csv }),
     );
-    const body = res.jsonBody as { created: number; skipped: Array<{ reason: string }> };
+    const body = res.jsonBody as { created: number; updated: number; skipped: unknown[] };
+    expect(body.created).toBe(1); // only Truly New
+    expect(body.skipped).toHaveLength(0); // matches are updates, not skips
+    const after = await harness.db.select().from(clients).where(eq(clients.firmId, seed.firmId));
+    expect(after.length).toBe(before.length + 1); // no duplicate clients created
+  });
+
+  it('imports multiple contacts per client (taxpayer primary + spouse) with mobile', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = [
+      'name,client_owner_email,taxpayer_name,taxpayer_email,taxpayer_mobile,spouse_name,spouse_email',
+      'The Does,sarah@test.example,John Doe,john@doe.example,555-111-2222,Jane Doe,jane@doe.example',
+    ].join('\n');
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, { csv }),
+    );
+    const body = res.jsonBody as { created: number; contactsAdded: number };
     expect(body.created).toBe(1);
-    expect(body.skipped.map((s) => s.reason).sort()).toEqual([
-      'duplicate_external_id',
-      'duplicate_name',
-    ]);
+    expect(body.contactsAdded).toBe(2);
+    const [client] = await harness.db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.firmId, seed.firmId), eq(clients.name, 'The Does')));
+    const contacts = await harness.db
+      .select({
+        fullName: persons.fullName,
+        email: persons.email,
+        mobile: persons.mobile,
+        isPrimary: clientContacts.isPrimary,
+        isBilling: clientContacts.isBilling,
+      })
+      .from(clientContacts)
+      .innerJoin(persons, eq(persons.id, clientContacts.personId))
+      .where(eq(clientContacts.clientId, client!.id));
+    expect(contacts).toHaveLength(2);
+    const john = contacts.find((c) => c.email === 'john@doe.example')!;
+    const jane = contacts.find((c) => c.email === 'jane@doe.example')!;
+    expect(john.isPrimary).toBe(true); // taxpayer is primary
+    expect(john.isBilling).toBe(true); // no billing slot → primary is billing
+    expect(john.mobile).toBe('+15551112222'); // normalized to E.164 on store
+    expect(jane.isPrimary).toBe(false);
+    expect(jane.isBilling).toBe(false);
+  });
+
+  it('upsert adds a new contact to an existing client without duplicating people', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    // Create the client with a taxpayer.
+    await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, {
+        csv: [
+          'name,client_owner_email,external_id,taxpayer_name,taxpayer_email',
+          'Acme Inc,sarah@test.example,ACME,Pat Owner,pat@acme.example',
+        ].join('\n'),
+      }),
+    );
+    // Re-import: same taxpayer (dedup) + a new spouse.
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, {
+        csv: [
+          'name,client_owner_email,external_id,taxpayer_email,spouse_name,spouse_email',
+          'Acme Inc,sarah@test.example,ACME,pat@acme.example,Sam Spouse,sam@acme.example',
+        ].join('\n'),
+      }),
+    );
+    const body = res.jsonBody as { created: number; updated: number; contactsAdded: number };
+    expect(body.created).toBe(0);
+    expect(body.updated).toBe(1);
+    expect(body.contactsAdded).toBe(1); // only Sam; Pat already linked
+    const [client] = await harness.db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.firmId, seed.firmId), eq(clients.name, 'Acme Inc')));
+    const emails = (
+      await harness.db
+        .select({ email: persons.email })
+        .from(clientContacts)
+        .innerJoin(persons, eq(persons.id, clientContacts.personId))
+        .where(eq(clientContacts.clientId, client!.id))
+    )
+      .map((c) => c.email)
+      .sort();
+    expect(emails).toEqual(['pat@acme.example', 'sam@acme.example']);
   });
 
   it('within-file duplicate external_id is skipped', async () => {

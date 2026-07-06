@@ -6,10 +6,12 @@ import { Button, Card, ColumnFilter, Pill, Printer, Table, tokens } from '@vibe/
 
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
-import { distinctOptions, selectRows, useColumnView } from '../lib/column-view';
+import { useColumnView, viewToPagedQuery } from '../lib/column-view';
+import { usePagedList } from '../lib/use-paged-list';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
+import { MailMergeDialog } from './clients/MailMergeDialog';
 import { RichTextEditor, type RichTextVariable } from '../proposal-editor/RichTextEditor';
 
 // Merge tokens available in a client email body/subject. Resolved per-recipient
@@ -54,102 +56,134 @@ interface AppUser {
 }
 
 export function ClientsPage(): JSX.Element {
-  const [clients, setClients] = useState<ClientRow[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   // 0092 — multi-select replaces the legacy pin column. The bulk-email
-  // toolbar action enables when at least one row is selected.
+  // toolbar action enables when at least one row is selected. Selection
+  // persists the minimal {id,name} per row so it survives server-side
+  // paging (rows on other pages aren't in memory).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedMeta, setSelectedMeta] = useState<Map<string, { id: string; name: string }>>(
+    new Map(),
+  );
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
+  const [mailMergeOpen, setMailMergeOpen] = useState(false);
   // Route-sheet printing — the client whose dialog is open (or null).
   const [routeSheetClient, setRouteSheetClient] = useState<ClientRow | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rollOpen, setRollOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [officeOptions, setOfficeOptions] = useState<
     Array<{ id: string; name: string; isDefault: boolean }>
   >([]);
 
-  // Standard table view: load the full firm set once, then filter / sort /
-  // search run client-side (sessionStorage-persisted) via useColumnView.
-  const view = useColumnView('vibe.clients.view', { sortCol: 'name', sortDir: 'asc' });
+  // Standard table view: filter / sort / search state (sessionStorage-
+  // persisted) via useColumnView; the actual filtering/sorting/paging runs
+  // SERVER-side (3000+ clients outgrow a single capped fetch). The `.v2` key
+  // discards stale pre-migration filters (owner/office now hold ids, not names).
+  const view = useColumnView('vibe.clients.view.v2', { sortCol: 'name', sortDir: 'asc' });
+  const query = useMemo(
+    () =>
+      viewToPagedQuery(view, {
+        // column key → server sort key (identity keys omitted)
+        sortMap: {
+          owner: 'partnerName',
+          type: 'clientType',
+          outstanding: 'outstandingBalanceCents',
+          office: 'officeName',
+        },
+        // column key → server filter param (values are ids for owner/office,
+        // enum strings for type/status — see the ColumnFilter `values` below)
+        filterMap: {
+          owner: 'clientOwnerId',
+          type: 'clientType',
+          office: 'officeId',
+          status: 'status',
+        },
+      }),
+    [view],
+  );
+  const list = usePagedList<ClientRow>('/api/staff/clients', { query });
+  const loading = list.loading;
 
-  async function load(): Promise<void> {
-    setLoading(true);
-    try {
-      // Fetch in parallel; tolerate the secondary calls failing (e.g.
-      // a staff user without app_user:read perm) so the client list
-      // still renders even if the create/import wizards lack their data.
-      const [r, u, o] = await Promise.all([
-        api<{ rows?: ClientRow[]; items?: ClientRow[] }>('/api/staff/clients'),
-        api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
-        api<{ offices: Array<{ id: string; name: string; isDefault: boolean }> }>(
-          '/api/staff/admin/offices',
-        ).catch(() => ({ offices: [] })),
-      ]);
-      setClients(r.rows ?? r.items ?? []);
-      setUsers(u.users ?? []);
-      setOfficeOptions(o.offices ?? []);
-    } finally {
-      setLoading(false);
-    }
+  // Aux data for the wizards + filter option lists. Loaded once; tolerate
+  // failure (e.g. a staff user without app_user:read perm) so the list still
+  // renders. Filter options are sourced HERE, not from the loaded page.
+  async function loadAux(): Promise<void> {
+    const [u, o] = await Promise.all([
+      api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
+      api<{ offices: Array<{ id: string; name: string; isDefault: boolean }> }>(
+        '/api/staff/admin/offices',
+      ).catch(() => ({ offices: [] })),
+    ]);
+    setUsers(u.users ?? []);
+    setOfficeOptions(o.offices ?? []);
   }
   useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void loadAux();
   }, []);
 
-  const visible = useMemo(
-    () =>
-      selectRows(clients, view, {
-        searchText: (c) =>
-          `${c.name} ${c.externalId ?? ''} ${c.partnerName ?? ''} ${c.officeName ?? ''}`,
-        filters: {
-          owner: (c) => c.partnerName ?? '—',
-          type: (c) => c.clientType,
-          office: (c) => c.officeName ?? '—',
-          status: (c) => c.status,
-        },
-        sortValues: {
-          name: (c) => c.name,
-          owner: (c) => c.partnerName ?? '',
-          externalId: (c) => c.externalId ?? '',
-          type: (c) => c.clientType,
-          outstanding: (c) => c.outstandingBalanceCents ?? 0,
-          office: (c) => c.officeName ?? '',
-          status: (c) => c.status,
-        },
-        tieBreak: (a, b) => a.name.localeCompare(b.name),
-      }),
-    [clients, view],
-  );
-
+  // Column-filter option lists — value is what the server matches on.
   const ownerValues = useMemo(
-    () => distinctOptions(clients.map((c) => c.partnerName ?? '—')),
-    [clients],
+    () =>
+      [...users]
+        .sort((a, b) => a.fullName.localeCompare(b.fullName))
+        .map((u) => ({ value: u.id, label: u.fullName })),
+    [users],
   );
   const officeValues = useMemo(
-    () => distinctOptions(clients.map((c) => c.officeName ?? '—')),
-    [clients],
+    () =>
+      [...officeOptions]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((o) => ({ value: o.id, label: o.name })),
+    [officeOptions],
   );
-  const typeValues = useMemo(() => distinctOptions(clients.map((c) => c.clientType)), [clients]);
-  const statusValues = useMemo(() => distinctOptions(clients.map((c) => c.status)), [clients]);
+  const typeValues = [
+    { value: 'INDIVIDUAL', label: 'INDIVIDUAL' },
+    { value: 'BUSINESS', label: 'BUSINESS' },
+  ];
+  const statusValues = [
+    { value: 'ACTIVE', label: 'ACTIVE' },
+    { value: 'ARCHIVED', label: 'ARCHIVED' },
+    { value: 'PROSPECT', label: 'PROSPECT' },
+    { value: 'INACTIVE', label: 'INACTIVE' },
+  ];
 
-  function toggleSelect(id: string): void {
+  function toggleSelect(c: ClientRow): void {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(c.id)) next.delete(c.id);
+      else next.add(c.id);
+      return next;
+    });
+    setSelectedMeta((prev) => {
+      const next = new Map(prev);
+      if (next.has(c.id)) next.delete(c.id);
+      else next.set(c.id, { id: c.id, name: c.name });
       return next;
     });
   }
+  // Select-all toggles the CURRENT page (other pages aren't loaded).
   function toggleSelectAll(): void {
-    setSelectedIds((prev) =>
-      prev.size === visible.length && visible.length > 0
-        ? new Set()
-        : new Set(visible.map((c) => c.id)),
-    );
+    const pageIds = list.rows.map((c) => c.id);
+    const allOnPage = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allOnPage) pageIds.forEach((id) => next.delete(id));
+      else pageIds.forEach((id) => next.add(id));
+      return next;
+    });
+    setSelectedMeta((prev) => {
+      const next = new Map(prev);
+      if (allOnPage) list.rows.forEach((c) => next.delete(c.id));
+      else list.rows.forEach((c) => next.set(c.id, { id: c.id, name: c.name }));
+      return next;
+    });
   }
+  function clearSelection(): void {
+    setSelectedIds(new Set());
+    setSelectedMeta(new Map());
+  }
+  const selectedTargets = Array.from(selectedMeta.values());
 
   async function viewAsClient(c: ClientRow): Promise<void> {
     if (!c.activePortalAccessId) return;
@@ -182,6 +216,13 @@ export function ClientsPage(): JSX.Element {
             >
               Send email
             </Button>
+            <Button
+              variant={selectedIds.size > 0 ? 'secondary' : 'ghost'}
+              disabled={selectedIds.size === 0}
+              onClick={() => setMailMergeOpen(true)}
+            >
+              Mail merge letter
+            </Button>
             <Button variant="secondary" onClick={() => setRollOpen(true)}>
               Roll due recurrences
             </Button>
@@ -202,14 +243,20 @@ export function ClientsPage(): JSX.Element {
       <CreateClientWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        onCreated={() => void load()}
+        onCreated={() => {
+          list.reload();
+          void loadAux();
+        }}
         users={users}
       />
 
       <ImportClientsWizard
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onCreated={() => void load()}
+        onCreated={() => {
+          list.reload();
+          void loadAux();
+        }}
         users={users}
         offices={officeOptions}
       />
@@ -226,11 +273,22 @@ export function ClientsPage(): JSX.Element {
 
       {bulkEmailOpen && (
         <BulkEmailDialog
-          targets={clients.filter((c) => selectedIds.has(c.id))}
+          targets={selectedTargets}
           onClose={() => setBulkEmailOpen(false)}
           onSent={() => {
             setBulkEmailOpen(false);
-            setSelectedIds(new Set());
+            clearSelection();
+          }}
+        />
+      )}
+
+      {mailMergeOpen && (
+        <MailMergeDialog
+          targets={selectedTargets}
+          onClose={() => setMailMergeOpen(false)}
+          onDone={() => {
+            setMailMergeOpen(false);
+            clearSelection();
           }}
         />
       )}
@@ -239,11 +297,11 @@ export function ClientsPage(): JSX.Element {
         title={
           <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <span>Results</span>
-            {clients.length > 0 && (
+            {list.total > 0 && (
               <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
-                {visible.length === clients.length
-                  ? `${clients.length} client${clients.length === 1 ? '' : 's'}`
-                  : `${visible.length} of ${clients.length}`}
+                {view.anyFilterActive
+                  ? `${list.total} match${list.total === 1 ? '' : 'es'}`
+                  : `${list.total} client${list.total === 1 ? '' : 's'}`}
               </span>
             )}
           </span>
@@ -276,12 +334,12 @@ export function ClientsPage(): JSX.Element {
                 header: (
                   <input
                     type="checkbox"
-                    aria-label="Select all visible clients"
-                    checked={selectedIds.size === visible.length && visible.length > 0}
+                    aria-label="Select all clients on this page"
+                    checked={list.rows.length > 0 && list.rows.every((c) => selectedIds.has(c.id))}
                     ref={(el) => {
                       if (el) {
-                        el.indeterminate =
-                          selectedIds.size > 0 && selectedIds.size < visible.length;
+                        const onPage = list.rows.filter((c) => selectedIds.has(c.id)).length;
+                        el.indeterminate = onPage > 0 && onPage < list.rows.length;
                       }
                     }}
                     onChange={toggleSelectAll}
@@ -292,7 +350,7 @@ export function ClientsPage(): JSX.Element {
                     type="checkbox"
                     aria-label={`Select ${c.name}`}
                     checked={selectedIds.has(c.id)}
-                    onChange={() => toggleSelect(c.id)}
+                    onChange={() => toggleSelect(c)}
                   />
                 ),
               },
@@ -498,9 +556,10 @@ export function ClientsPage(): JSX.Element {
                 ),
               },
             ]}
-            rows={visible}
+            rows={list.rows}
             rowKey={(c) => c.id}
             empty="No clients match the current filters."
+            pagination={list.pagination}
           />
         )}
       </Card>
@@ -531,7 +590,7 @@ function BulkEmailDialog({
   onClose,
   onSent,
 }: {
-  targets: ClientRow[];
+  targets: Array<{ id: string; name: string }>;
   onClose: () => void;
   onSent: () => void;
 }): JSX.Element {
@@ -580,7 +639,14 @@ function BulkEmailDialog({
         zIndex: 200,
       }}
     >
-      <div style={{ minWidth: 560, maxWidth: 720, maxHeight: '85vh', overflow: 'auto' }}>
+      <div
+        style={{
+          width: 'min(900px, 94vw)',
+          maxWidth: 900,
+          maxHeight: '90vh',
+          overflow: 'auto',
+        }}
+      >
         <Card title="Send email to selected clients">
           {!result ? (
             <div style={{ display: 'grid', gap: 12 }}>
@@ -607,7 +673,12 @@ function BulkEmailDialog({
               </div>
               <div style={{ display: 'grid', gap: 4 }}>
                 <label style={{ fontSize: 11, color: tokens.color.textMuted }}>Body</label>
-                <RichTextEditor value={body} onChange={setBody} variables={EMAIL_VARIABLES} />
+                <RichTextEditor
+                  value={body}
+                  onChange={setBody}
+                  variables={EMAIL_VARIABLES}
+                  minHeight={300}
+                />
                 <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
                   Format with the toolbar and insert variables like{' '}
                   <code>{'{{ client.name }}'}</code> — filled in per recipient when sent.

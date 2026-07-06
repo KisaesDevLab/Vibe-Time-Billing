@@ -14,7 +14,7 @@
 // its signers + placements are frozen (409). The send pipeline (P6) and
 // status reconciliation (P7) live in sibling files.
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import QRCode from 'qrcode';
 import { z } from 'zod';
 import { and, desc, eq, isNull, notInArray, or } from 'drizzle-orm';
@@ -38,7 +38,8 @@ import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { getBlockedClientIdsCached } from '../clients/access';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
+import { addUuidIdGuard } from '../lib/uuid-guard';
 import { openSignClientFromEnv, type OpenSignClient } from '../esign/opensign-client';
 import { capturePageGeometry, type PageGeometry } from './geometry';
 import { buildQrSheetHtml } from '../pdf-templates/signature-qr-sheet';
@@ -155,6 +156,34 @@ const SaveProfileSchema = z.object({
 
 export function createSignaturesRouter(deps: SignaturesDeps): Router {
   const router = express.Router();
+  addUuidIdGuard(router);
+
+  // 0165 — enforce client-access restriction on every single-request route
+  // (detail, patch, void, remind, download, send). The list endpoint filters
+  // blocked clients itself; this closes the detail/mutation gap via the
+  // shared `:id` param. A signature request with no linked client (clientId
+  // NULL) has no client to restrict and is allowed through.
+  router.param('id', (req: Request, res: Response, next: NextFunction, id: string) => {
+    if (!deps.db || !req.staffSession) {
+      next();
+      return;
+    }
+    void (async () => {
+      const [row] = await deps
+        .db!.select({ clientId: signatureRequests.clientId })
+        .from(signatureRequests)
+        .where(
+          and(eq(signatureRequests.id, id), eq(signatureRequests.firmId, req.staffSession!.firmId)),
+        )
+        .limit(1);
+      if (!row || !row.clientId) {
+        next();
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, row.clientId)) return;
+      next();
+    })().catch(next);
+  });
 
   function getStorage(): StorageClient | null {
     if (deps.storageClient) return deps.storageClient;

@@ -26,6 +26,7 @@ import {
 } from '@vibe/db/schema';
 import { resolveEngagementName, type Period } from '@vibe/core/engagements';
 import { desc } from 'drizzle-orm';
+import { onEngagementCompleted } from './completion-hooks';
 import { queryStatusHistory } from './status-history';
 
 import { emitAudit } from '../auth/audit';
@@ -137,6 +138,9 @@ const EngagementCreateSchema = z.object({
         .optional(),
     })
     .optional(),
+  // 0195 — initial lifecycle status. When omitted, falls back to the
+  // template's defaultEngagementStatus, then the DB default ('PROPOSED').
+  status: z.enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED']).optional(),
   // 0050 — staff assignments at create time (in addition to or instead
   // of partnerId/managerId). Inserted into engagement_assignment.
   assignments: z
@@ -464,12 +468,14 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       // + today. Period fields are persisted on the engagement row
       // regardless of whether the template uses them.
       let resolvedName = parsed.data.name?.trim() ?? '';
+      let templateDefaultStatus: (typeof engagements.$inferInsert)['status'] | null = null;
       if (parsed.data.templateId) {
         const [tpl] = await deps.db
           .select({
             id: engagementTemplates.id,
             name: engagementTemplates.name,
             namePattern: engagementTemplates.namePattern,
+            defaultEngagementStatus: engagementTemplates.defaultEngagementStatus,
           })
           .from(engagementTemplates)
           .where(
@@ -483,6 +489,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           res.status(404).json({ error: 'template_not_found' });
           return;
         }
+        templateDefaultStatus = tpl.defaultEngagementStatus ?? null;
         if (resolvedName.length === 0 && tpl.namePattern) {
           const [clientRow] = await deps.db
             .select({ name: clients.name })
@@ -512,7 +519,17 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         return;
       }
 
-      const { hourBank, assignments, templateId, period, ...engagementFields } = parsed.data;
+      const {
+        hourBank,
+        assignments,
+        templateId,
+        period,
+        status: bodyStatus,
+        ...engagementFields
+      } = parsed.data;
+      // Explicit body status wins, else the template default, else the DB
+      // default ('PROPOSED') by omitting the column.
+      const resolvedStatus = bodyStatus ?? templateDefaultStatus ?? undefined;
       // templateId + period are stripped from engagementFields here so
       // they don't bleed into the engagements insert; period is mapped
       // to the explicit period_year/month/label columns below.
@@ -536,6 +553,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         periodYear: period?.year ?? null,
         periodMonth: period?.month ?? null,
         periodLabel: period?.label ?? null,
+        ...(resolvedStatus ? { status: resolvedStatus } : {}),
       };
       const { engagementId, hourBankId } = await deps.db.transaction(async (tx) => {
         const [eng] = await tx
@@ -1040,6 +1058,19 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      // Completing an engagement via the workflow status ('COMPLETED') fires
+      // the same side effects as the lifecycle Close: fulfill its drop-off(s)
+      // and spawn/roll-forward any ON_COMPLETION recurrence anchored to it.
+      if (ws === 'COMPLETED' && eng.prev !== 'COMPLETED') {
+        await onEngagementCompleted(deps.db, {
+          engagementId: eng.id,
+          firmId: session.firmId,
+          actorAppUserId: session.appUserId,
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+          reason: 'engagement_completed',
+        });
+      }
       // 0146 — stage/send the configured client notification for the new
       // status. Fire-and-forget: a notification failure must not fail the
       // transition itself.
@@ -1223,6 +1254,20 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         ip: clientIp(req),
         userAgent: req.header('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+
+      // Closing/archiving an engagement resolves its still-open drop-off(s)
+      // and fires any ON_COMPLETION recurrence anchored to it (spawn + roll
+      // forward). Best-effort — never blocks the status change.
+      if (parsed.data.status === 'CLOSED' || parsed.data.status === 'ARCHIVED') {
+        await onEngagementCompleted(deps.db, {
+          engagementId: req.params['id']!,
+          firmId: session.firmId,
+          actorAppUserId: session.appUserId,
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+          reason: 'engagement_closed',
+        });
+      }
 
       // Stage 2 — archive thread when engagement closes/archives.
       if (

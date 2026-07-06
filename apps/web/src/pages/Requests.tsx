@@ -79,7 +79,15 @@ interface RequestTemplate {
   }>;
 }
 
-const STATUS_OPTIONS = ['ALL', 'OPEN', 'NEEDS_INFO', 'FULFILLED', 'DISMISSED', 'EXPIRED'] as const;
+const STATUS_OPTIONS = [
+  'ALL',
+  'OPEN',
+  'NEEDS_INFO',
+  'PENDING',
+  'FULFILLED',
+  'DISMISSED',
+  'EXPIRED',
+] as const;
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
 
 const PRIORITIES: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
@@ -99,6 +107,8 @@ function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger
       return 'success';
     case 'NEEDS_INFO':
       return 'accent';
+    case 'PENDING':
+      return 'neutral';
     case 'DISMISSED':
     case 'EXPIRED':
       return 'neutral';
@@ -244,6 +254,7 @@ export function RequestsPage(): JSX.Element {
   const [createPriority, setCreatePriority] = useState<Priority>('MEDIUM');
   const [createTags, setCreateTags] = useState('');
   const [createDue, setCreateDue] = useState('');
+  const [createActivationDate, setCreateActivationDate] = useState('');
   const [createReminder, setCreateReminder] = useState('');
   const [createAssignee, setCreateAssignee] = useState('');
   const [createItems, setCreateItems] = useState<NewItemDraft[]>([]);
@@ -375,6 +386,7 @@ export function RequestsPage(): JSX.Element {
     setCreatePriority('MEDIUM');
     setCreateTags('');
     setCreateDue('');
+    setCreateActivationDate('');
     setCreateReminder('');
     setCreateAssignee('');
     setCreateItems([]);
@@ -453,6 +465,7 @@ export function RequestsPage(): JSX.Element {
             priority: createPriority,
             tags: tagsArr.length > 0 ? tagsArr : undefined,
             dueDate: createDue || undefined,
+            activationDate: createActivationDate || undefined,
             reminderDaysBefore: createReminder ? Number(createReminder) : undefined,
             assignedAppUserId: createAssignee || undefined,
             items: itemsPayload.length > 0 ? itemsPayload : undefined,
@@ -492,6 +505,18 @@ export function RequestsPage(): JSX.Element {
     () => templates.map((t) => ({ value: t.id, label: t.name, description: t.key })),
     [templates],
   );
+  // engagementId → client name (a request is tied to an engagement, which
+  // belongs to a client) and appUserId → name, for the list columns.
+  const clientNameByEngagement = useMemo(() => {
+    const clientById = new Map(clients.map((c) => [c.id, c.name]));
+    const m = new Map<string, string>();
+    for (const e of engagements) {
+      const cn = clientById.get(e.clientId);
+      if (cn) m.set(e.id, cn);
+    }
+    return m;
+  }, [clients, engagements]);
+  const userNameById = useMemo(() => new Map(users.map((u) => [u.id, u.fullName])), [users]);
 
   const page = Math.floor(offset / limit) + 1;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -818,6 +843,16 @@ export function RequestsPage(): JSX.Element {
                 />
               </label>
               <label style={fieldLabel()}>
+                <span>Hide until (schedule / activation date — optional)</span>
+                <input
+                  type="date"
+                  value={createActivationDate}
+                  onChange={(e) => setCreateActivationDate(e.target.value)}
+                  style={fieldStyle()}
+                  title="If set, the request stays hidden (Scheduled) until this date, then opens and is submitted to the client."
+                />
+              </label>
+              <label style={fieldLabel()}>
                 <span>Reminder days before due</span>
                 <input
                   type="number"
@@ -1002,6 +1037,24 @@ export function RequestsPage(): JSX.Element {
                     </div>
                   )}
                 </div>
+              ),
+            },
+            {
+              key: 'client',
+              header: 'Client',
+              render: (r) => (
+                <span style={{ fontSize: 13 }}>
+                  {clientNameByEngagement.get(r.engagementId) ?? '—'}
+                </span>
+              ),
+            },
+            {
+              key: 'assigned',
+              header: 'Assigned',
+              render: (r) => (
+                <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                  {r.assignedAppUserId ? (userNameById.get(r.assignedAppUserId) ?? '—') : '—'}
+                </span>
               ),
             },
             {

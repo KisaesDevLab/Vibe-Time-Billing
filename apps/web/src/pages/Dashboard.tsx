@@ -750,6 +750,10 @@ interface UpcomingAppt {
   title: string;
   startsAt: string;
   status: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  clientName: string | null;
+  typeName: string | null;
+  location: string | null;
+  locationDetail: string | null;
 }
 
 function UpcomingBookingsPanel(): JSX.Element {
@@ -785,7 +789,13 @@ function UpcomingBookingsPanel(): JSX.Element {
         <Table<UpcomingAppt>
           columns={[
             { key: 'when', header: 'When', render: (r) => new Date(r.startsAt).toLocaleString() },
-            { key: 'title', header: 'Subject', render: (r) => r.title },
+            { key: 'client', header: 'Client', render: (r) => r.clientName ?? '—' },
+            { key: 'type', header: 'Type', render: (r) => r.typeName ?? r.title },
+            {
+              key: 'location',
+              header: 'Location',
+              render: (r) => r.locationDetail || r.location || '—',
+            },
           ]}
           rows={rows}
           rowKey={(r) => r.id}

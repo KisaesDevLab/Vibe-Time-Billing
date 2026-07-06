@@ -14,6 +14,7 @@ import { and, eq } from 'drizzle-orm';
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import {
   engagementScope,
+  magicLinks,
   packageServices,
   packages,
   proposalActivity,
@@ -197,6 +198,25 @@ async function createSentProposal(s: Seeded): Promise<string> {
   return proposalId;
 }
 
+// Mint a valid signer magic link — /accept now requires one (the security
+// hardening on the acceptance route). Legacy single-signer proposals carry
+// a link with signatureId = null, which the route accepts and mints a
+// PRIMARY signature for.
+async function mintProposalLink(s: Seeded, proposalId: string): Promise<string> {
+  const [ml] = await harness.db
+    .insert(magicLinks)
+    .values({
+      firmId: s.firmId,
+      tokenHash: `test-hash-${proposalId}`,
+      purpose: 'PROPOSAL',
+      proposalId,
+      clientId: s.clientId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    })
+    .returning({ id: magicLinks.id });
+  return ml!.id;
+}
+
 describe('proposal tier selection — send snapshot', () => {
   it('send populates proposal_packages with one row per offered tier', async () => {
     const s = await seedFirmWithTiers();
@@ -265,7 +285,9 @@ describe('proposal tier selection — accept captures and freezes the chosen tie
     const proposalId = await createSentProposal(s);
     const app = buildAcceptApp();
 
+    const magicLinkId = await mintProposalLink(s, proposalId);
     const res = await request(app).post(`/api/portal/proposals/${proposalId}/accept`).send({
+      magicLinkId,
       signerName: 'Jane Client',
       signerEmail: 'jane@example.com',
       typedName: 'Jane Client',
@@ -318,9 +340,11 @@ describe('proposal tier selection — accept captures and freezes the chosen tie
     const s = await seedFirmWithTiers();
     const proposalId = await createSentProposal(s);
     const app = buildAcceptApp();
+    const magicLinkId = await mintProposalLink(s, proposalId);
     await request(app)
       .post(`/api/portal/proposals/${proposalId}/accept`)
       .send({
+        magicLinkId,
         signerName: 'Jane Client',
         signerEmail: 'jane@example.com',
         typedName: 'Jane Client',
@@ -353,9 +377,11 @@ describe('proposal tier selection — accept captures and freezes the chosen tie
       .returning({ id: packages.id });
 
     const app = buildAcceptApp();
+    const magicLinkId = await mintProposalLink(s, proposalId);
     await request(app)
       .post(`/api/portal/proposals/${proposalId}/accept`)
       .send({
+        magicLinkId,
         signerName: 'Jane Client',
         signerEmail: 'jane@example.com',
         typedName: 'Jane Client',

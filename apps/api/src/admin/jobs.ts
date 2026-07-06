@@ -39,6 +39,7 @@ type JobName =
   | 'wip-age-alert'
   | 'audit-anomaly'
   | 'saved-report-email'
+  | 'payment-plan-charge'
   | 'email-in';
 
 const JOB_NAMES: readonly JobName[] = [
@@ -59,6 +60,7 @@ const JOB_NAMES: readonly JobName[] = [
   'wip-age-alert',
   'audit-anomaly',
   'saved-report-email',
+  'payment-plan-charge',
   'email-in',
 ];
 

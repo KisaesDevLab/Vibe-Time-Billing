@@ -52,11 +52,15 @@ export function ReminderScheduleEditor({
   value,
   onChange,
   helpText,
+  channels,
 }: {
   value: ReminderStep[];
   onChange: (next: ReminderStep[]) => void;
   helpText?: string;
+  /** Restrict the channel options (e.g. drop-offs: EMAIL/SMS only). */
+  channels?: ReminderChannel[];
 }): JSX.Element {
+  const channelOptions = channels ? CHANNELS.filter((c) => channels.includes(c.value)) : CHANNELS;
   function update(i: number, change: Partial<ReminderStep>): void {
     onChange(value.map((s, idx) => (idx === i ? { ...s, ...change } : s)));
   }
@@ -64,7 +68,7 @@ export function ReminderScheduleEditor({
     onChange(value.filter((_, idx) => idx !== i));
   }
   function add(): void {
-    onChange([...value, { offsetMinutes: 1440, channel: 'EMAIL' }]);
+    onChange([...value, { offsetMinutes: 1440, channel: channelOptions[0]?.value ?? 'EMAIL' }]);
   }
 
   return (
@@ -110,7 +114,7 @@ export function ReminderScheduleEditor({
             style={selectStyle}
             aria-label="Channel"
           >
-            {CHANNELS.map((c) => (
+            {channelOptions.map((c) => (
               <option key={c.value} value={c.value}>
                 {c.label}
               </option>

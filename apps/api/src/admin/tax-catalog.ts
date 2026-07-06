@@ -19,6 +19,7 @@ import type { Database } from '@vibe/db';
 import { taxJurisdictions, taxPaymentTypeCatalog } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
+import { pgErrorCode } from '../db-error';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -88,7 +89,7 @@ export function createTaxJurisdictionRouter(deps: TaxCatalogDeps): Router {
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
         res.status(201).json({ id: row?.id });
       } catch (err) {
-        if ((err as { code?: string }).code === '23505') {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'duplicate_name' });
           return;
         }
@@ -281,7 +282,7 @@ export function createTaxPaymentTypeRouter(deps: TaxCatalogDeps): Router {
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
         res.status(201).json({ id: row?.id });
       } catch (err) {
-        if ((err as { code?: string }).code === '23505') {
+        if (pgErrorCode(err) === '23505') {
           res.status(409).json({ error: 'duplicate_name_in_jurisdiction' });
           return;
         }

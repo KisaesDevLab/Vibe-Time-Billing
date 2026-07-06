@@ -8,7 +8,7 @@ import { api } from '../../api-client';
 import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
-type Channel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL';
+type Channel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL' | 'PRINT';
 
 interface Template {
   id: string;
@@ -18,8 +18,24 @@ interface Template {
   body: string;
   variablesJson: string[] | null;
   enabled: boolean;
+  printerMode: string | null;
+  printerId: number | null;
   updatedAt: string;
 }
+
+interface GatewayPrinter {
+  id: number;
+  name: string;
+}
+
+// Kinds that support the PRINT channel (transactional auto-print; status
+// kinds add it dynamically).
+const PRINT_KINDS = new Set([
+  'invoice_sent',
+  'payment_received',
+  'statement_sent',
+  'signature_complete',
+]);
 
 interface KindEntry {
   key: string;
@@ -182,7 +198,10 @@ export function NotificationTemplatesPage(): JSX.Element {
     channel: Channel;
     subject: string;
     body: string;
+    printerMode: 'specific' | 'client_office';
+    printerId: number | '';
   } | null>(null);
+  const [printers, setPrinters] = useState<GatewayPrinter[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -196,6 +215,9 @@ export function NotificationTemplatesPage(): JSX.Element {
   }
   useEffect(() => {
     void load();
+    void api<{ printers: GatewayPrinter[] }>('/api/staff/print/printers')
+      .then((r) => setPrinters(r.printers ?? []))
+      .catch(() => setPrinters([]));
     // 0146 — one editable template set per engagement status.
     void (async () => {
       try {
@@ -210,11 +232,13 @@ export function NotificationTemplatesPage(): JSX.Element {
   // 0146 — engagement-status kinds appended after the static catalog.
   const allKinds = useMemo<KindEntry[]>(
     () => [
-      ...KINDS,
+      ...KINDS.map((k) =>
+        PRINT_KINDS.has(k.key) ? { ...k, channels: [...k.channels, 'PRINT' as Channel] } : k,
+      ),
       ...statuses.map((st) => ({
         key: `engagement_status:${st.workflowState}`,
         label: `Status: ${st.label}`,
-        channels: ['EMAIL', 'SMS', 'PORTAL'] as Channel[],
+        channels: ['EMAIL', 'SMS', 'PORTAL', 'PRINT'] as Channel[],
       })),
     ],
     [statuses],
@@ -239,6 +263,8 @@ export function NotificationTemplatesPage(): JSX.Element {
       channel,
       subject: existing?.subject ?? '',
       body: existing?.body ?? '',
+      printerMode: existing?.printerMode === 'client_office' ? 'client_office' : 'specific',
+      printerId: existing?.printerId ?? '',
     });
     setStatus(null);
     setError(null);
@@ -256,6 +282,15 @@ export function NotificationTemplatesPage(): JSX.Element {
           body: JSON.stringify({
             subject: active.channel === 'EMAIL' ? active.subject : null,
             body: active.body,
+            ...(active.channel === 'PRINT'
+              ? {
+                  printerMode: active.printerMode,
+                  printerId:
+                    active.printerMode === 'specific' && active.printerId !== ''
+                      ? active.printerId
+                      : null,
+                }
+              : {}),
           }),
         },
       );
@@ -369,6 +404,52 @@ export function NotificationTemplatesPage(): JSX.Element {
                   />
                 )}
               </div>
+              {active.channel === 'PRINT' && (
+                <div style={{ display: 'grid', gap: 6, marginTop: 4 }}>
+                  <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Printer</span>
+                  <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                      type="radio"
+                      checked={active.printerMode === 'specific'}
+                      onChange={() => setActive({ ...active, printerMode: 'specific' })}
+                    />
+                    Specific printer:
+                    <select
+                      value={active.printerId}
+                      disabled={active.printerMode !== 'specific'}
+                      onChange={(e) =>
+                        setActive({
+                          ...active,
+                          printerId: e.target.value ? Number(e.target.value) : '',
+                        })
+                      }
+                      style={{
+                        padding: '6px 10px',
+                        background: tokens.color.surface,
+                        color: tokens.color.text,
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius: tokens.radius.md,
+                        fontSize: 13,
+                      }}
+                    >
+                      <option value="">— pick a printer —</option>
+                      {printers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} (#{p.id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                      type="radio"
+                      checked={active.printerMode === 'client_office'}
+                      onChange={() => setActive({ ...active, printerMode: 'client_office' })}
+                    />
+                    The client office&rsquo;s assigned printer
+                  </label>
+                </div>
+              )}
             </div>
             {!isEmail && (
               <div>

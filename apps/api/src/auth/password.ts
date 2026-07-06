@@ -45,3 +45,18 @@ export async function verifyPassword(plaintext: string, digest: string): Promise
     return false;
   }
 }
+
+// A throwaway argon2id digest, computed once. When a login attempt names
+// an account that doesn't exist (or has no password), the caller still
+// runs one verify against this digest so the response time is the same as
+// a wrong-password attempt — otherwise the fast "no such user" path leaks
+// which emails are registered staff.
+let dummyDigest: Promise<string> | null = null;
+export async function timingEqualizingVerify(plaintext: string): Promise<void> {
+  if (!dummyDigest) dummyDigest = hashPassword('unused-account-timing-equalizer');
+  try {
+    await verify(await dummyDigest, plaintext);
+  } catch {
+    // time-only; result is discarded
+  }
+}

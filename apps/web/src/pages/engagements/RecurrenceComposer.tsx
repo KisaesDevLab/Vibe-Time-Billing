@@ -51,6 +51,10 @@ export interface RecurrenceDraft {
   // '' = inherit the template's default_recurrence_status (which itself falls
   // back to ACTIVE). Otherwise the lifecycle status the spawned engagement gets.
   spawnStatus: '' | RecurrenceSpawnStatus;
+  // 0200 — on an annual spawn, also roll the source engagement's
+  // appointment(s) / drop-off(s) forward (same ISO week + weekday).
+  rollforwardAppointment: boolean;
+  rollforwardDropoff: boolean;
   notes: string;
 }
 
@@ -67,6 +71,8 @@ export function makeDefaultRecurrenceDraft(): RecurrenceDraft {
     seedPeriodMonth: '',
     seedPeriodLabel: '',
     spawnStatus: '',
+    rollforwardAppointment: false,
+    rollforwardDropoff: false,
     notes: '',
   };
 }
@@ -189,6 +195,61 @@ export function RecurrenceComposer({
         </p>
       </fieldset>
 
+      <fieldset
+        style={{
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.sm,
+          padding: 10,
+          display: 'grid',
+          gap: 6,
+        }}
+      >
+        <legend
+          style={{
+            padding: '0 6px',
+            fontSize: 11,
+            color: tokens.color.textMuted,
+            textTransform: 'uppercase',
+            letterSpacing: 0.4,
+          }}
+        >
+          Roll forward (annual)
+        </legend>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={value.rollforwardAppointment}
+            onChange={(e) => set('rollforwardAppointment', e.target.checked)}
+            disabled={disabled}
+            style={{ marginTop: 3 }}
+          />
+          <span>
+            Roll the appointment forward
+            <br />
+            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              Copies the engagement&apos;s appointment(s) to the same week/weekday next year.
+            </span>
+          </span>
+        </label>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={value.rollforwardDropoff}
+            onChange={(e) => set('rollforwardDropoff', e.target.checked)}
+            disabled={disabled}
+            style={{ marginTop: 3 }}
+          />
+          <span>
+            Roll the drop-off forward
+            <br />
+            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+              Recreates the drop-off next year (same week/weekday) as <strong>Pending</strong> until
+              its reminder window. The spawned engagement starts in <strong>Draft</strong>.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div style={{ display: 'grid', gap: 4 }}>
           <label style={{ fontSize: 11, color: tokens.color.textMuted }}>
@@ -271,6 +332,8 @@ export function recurrenceDraftToPayload(d: RecurrenceDraft): Record<string, unk
   if (d.seedPeriodMonth.trim()) body['seedPeriodMonth'] = Number(d.seedPeriodMonth);
   if (d.seedPeriodLabel.trim()) body['seedPeriodLabel'] = d.seedPeriodLabel.trim();
   if (d.spawnStatus) body['spawnStatus'] = d.spawnStatus;
+  body['rollforwardAppointment'] = d.rollforwardAppointment;
+  body['rollforwardDropoff'] = d.rollforwardDropoff;
   if (d.notes.trim()) body['notes'] = d.notes.trim();
   return body;
 }

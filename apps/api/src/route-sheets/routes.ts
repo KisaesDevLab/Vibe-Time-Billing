@@ -42,6 +42,7 @@ import { logger } from '../logger';
 import { stageStatusNotification } from '../notifications/staged/pipeline';
 import { renderHtmlToPdf } from '../pdf/render';
 import { renderRouteSheetHtml } from '../pdf-templates/route-sheet';
+import { sendToPrinter } from '../print-gateway/send';
 
 // Terminal states excluded from the "uncompleted" list. Shared with the
 // payments CSV import, which must not bill a completed/cancelled engagement.
@@ -567,6 +568,76 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
         logger.error({ err }, 'route-sheet reprint render failed');
         res.status(502).json({ error: 'render_failed' });
       }
+    },
+  );
+
+  // ── POST direct-print the stored snapshot to a gateway printer ──────
+  const DirectPrintSchema = z.object({
+    printerId: z.number().int().positive(),
+    copies: z.number().int().min(1).max(20).optional(),
+  });
+  router.post(
+    '/:printId/print',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = DirectPrintSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const [print] = await deps.db
+        .select({ id: routeSheetPrints.id })
+        .from(routeSheetPrints)
+        .where(
+          and(
+            eq(routeSheetPrints.id, req.params['printId']!),
+            eq(routeSheetPrints.firmId, session.firmId),
+          ),
+        )
+        .limit(1);
+      if (!print) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const items = await deps.db
+        .select({ snapshot: routeSheetPrintItems.snapshotJson })
+        .from(routeSheetPrintItems)
+        .where(eq(routeSheetPrintItems.routeSheetPrintId, print.id));
+      const snapshots = items
+        .map((i) => i.snapshot)
+        .filter((s): s is RouteSheetItemSnapshot => !!s);
+      if (snapshots.length === 0) {
+        res.status(404).json({ error: 'empty_print' });
+        return;
+      }
+      let pdf: Buffer;
+      try {
+        pdf = await renderPdf(renderRouteSheetHtml(snapshots));
+      } catch (err) {
+        logger.error({ err }, 'route-sheet print render failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const result = await sendToPrinter({
+        db: deps.db,
+        firmId: session.firmId,
+        appUserId: session.appUserId,
+        printableType: 'route_sheet',
+        printableId: print.id,
+        pdf,
+        printerId: parsed.data.printerId,
+        copies: parsed.data.copies ?? 1,
+      });
+      if (!result.ok) {
+        res.status(502).json({ error: result.error });
+        return;
+      }
+      res.json({ ok: true, jobId: result.jobId });
     },
   );
 

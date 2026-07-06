@@ -187,6 +187,10 @@ export const billingBatchEntryAction = pgEnum('billing_batch_entry_action', [
   'WRITE_OFF_HELD',
 ]);
 
+// 0199 — engagement expense lifecycle. ACTIVE expenses are billable /
+// pullable into a batch; ARCHIVED is the soft-delete state (CLAUDE.md #3).
+export const expenseStatus = pgEnum('expense_status', ['ACTIVE', 'ARCHIVED']);
+
 export const adjustmentMethod = pgEnum('adjustment_method', ['RATE', 'TIME', 'FEE']);
 
 export const adjustmentAllocationMethod = pgEnum('adjustment_allocation_method', [
@@ -356,6 +360,15 @@ export const firmSettings = pgTable('firm_settings', {
     .notNull()
     .default(10000),
   aiWarnThresholdPct: integer('ai_warn_threshold_pct').notNull().default(80),
+  // 0202 — assumed labor share of a target fee. On recurring-engagement
+  // rollforward, the spawned engagement's budgeted fee = prior cost of labor
+  // ÷ (estimatedLaborPct / 100).
+  estimatedLaborPct: integer('estimated_labor_pct').notNull().default(40),
+
+  // 0204 — when a drop-off date is entered for an engagement with no due date,
+  // the due date is auto-set to this many days after the drop-off. NULL =
+  // disabled (no automatic due date).
+  dropoffDueOffsetDays: integer('dropoff_due_offset_days'),
 
   // Time entry rounding — Q19
   timeEntryRoundingHours: numeric('time_entry_rounding_hours', { precision: 4, scale: 2 })
@@ -424,6 +437,14 @@ export const firmSettings = pgTable('firm_settings', {
   // 0053 — Billing + A/R block (legacy "Firm — Billing and A/R" tab).
   brandSupportFax: text('brand_support_fax'),
   brandSupportWeb: text('brand_support_web'),
+  // 0196 — firm mailing address, composed into the `firm.address` token used
+  // on invoices, statements, letters, and emails. Mirrors client.mailing*.
+  mailingStreet1: text('mailing_street1'),
+  mailingStreet2: text('mailing_street2'),
+  mailingCity: text('mailing_city'),
+  mailingState: text('mailing_state'),
+  mailingPostal: text('mailing_postal'),
+  mailingCountry: text('mailing_country'),
   arTermsText: text('ar_terms_text'),
   statementEmailMessage: text('statement_email_message'),
   defaultStatementFormat: text('default_statement_format')
@@ -453,6 +474,12 @@ export const firmSettings = pgTable('firm_settings', {
   stripeConfigEncrypted: text('stripe_config_encrypted'),
   // 0174 — inbound webhook signing secrets per notification provider, encrypted.
   webhookKeysEncrypted: text('webhook_keys_encrypted'),
+  // 0185 — Vibe Print LAN gateway config (baseUrl/apiKey/enabled/defaultPrinterId/
+  // autoPrintSignatureConfirmation), encrypted at rest under KMS_KEY.
+  printGatewayConfigEncrypted: text('print_gateway_config_encrypted'),
+  printGatewayConfigUpdatedAt: timestamp('print_gateway_config_updated_at', {
+    withTimezone: true,
+  }),
   mailConfigUpdatedAt: timestamp('mail_config_updated_at', { withTimezone: true }),
   smsConfigUpdatedAt: timestamp('sms_config_updated_at', { withTimezone: true }),
 
@@ -577,11 +604,15 @@ export const notificationTemplates = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
-    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'PORTAL'] }).notNull(),
+    channel: text('channel', { enum: ['EMAIL', 'SMS', 'CALL', 'PORTAL', 'PRINT'] }).notNull(),
     subject: text('subject'),
     body: text('body').notNull(),
     variablesJson: jsonb('variables_json'),
     enabled: boolean('enabled').notNull().default(true),
+    // 0188 — PRINT channel: which gateway printer this notification prints to.
+    // 'specific' (printerId) or 'client_office' (the client office's printer).
+    printerMode: text('printer_mode'),
+    printerId: integer('printer_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -621,6 +652,9 @@ export const appUsers = pgTable(
     email: text('email').notNull(),
     fullName: text('full_name').notNull(),
     defaultOfficeId: uuid('default_office_id').references(() => offices.id),
+    // 0185 — remembered Vibe Print gateway printer (numeric gateway id) for
+    // this user's interactive direct-print actions.
+    defaultPrinterId: integer('default_printer_id'),
     status: userStatus('status').notNull().default('ACTIVE'),
 
     // TOTP — was Q5 (mandatory) prior to 0087. Now one of three
@@ -1668,6 +1702,9 @@ export const engagementTemplates = pgTable(
     // 0172 — lifecycle status applied to a recurrence-spawned engagement.
     // NULL falls back to 'ACTIVE' at spawn time.
     defaultRecurrenceStatus: engagementStatus('default_recurrence_status'),
+    // 0195 — default lifecycle status for a NEW engagement created from this
+    // template. NULL falls back to the table default ('PROPOSED') at create.
+    defaultEngagementStatus: engagementStatus('default_engagement_status'),
     // FK added in 0033 after the letter table exists; declared here as
     // a plain uuid column so Drizzle can reference it.
     defaultLetterTemplateId: uuid('default_letter_template_id'),
@@ -1708,6 +1745,9 @@ export const engagementLetterTemplates = pgTable(
     }),
     bodyHtml: text('body_html').notNull(),
     variablesJson: jsonb('variables_json'),
+    // 0190 — per-template mail-merge page margin (CSS length, e.g. '1in' or
+    // '1in 0.75in'); NULL = the 1in default. Injected as `@page { margin }`.
+    pageMargin: text('page_margin'),
     isSystem: boolean('is_system').notNull().default(false),
     clonedFromSlug: text('cloned_from_slug'),
     clonedFromPackVersion: text('cloned_from_pack_version'),
@@ -1717,6 +1757,154 @@ export const engagementLetterTemplates = pgTable(
   },
   (t) => ({
     firmKeyUnique: uniqueIndex('engagement_letter_template_firm_key_uk').on(t.firmId, t.key),
+  }),
+);
+
+// =====================================================================
+// 0183 — invoice_template. One editable invoice document template per
+// firm (HTML body + CSS). When `builtinStyle` is set the legacy
+// modern/classic/minimal renderer is used; otherwise the custom body is
+// rendered through the invoice template engine. No row → shipped default
+// letterhead template.
+// =====================================================================
+
+export const invoiceTemplates = pgTable(
+  'invoice_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    bodyHtml: text('body_html'),
+    css: text('css'),
+    variablesJson: jsonb('variables_json'),
+    builtinStyle: text('builtin_style'),
+    updatedByAppUserId: uuid('updated_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUnique: uniqueIndex('invoice_template_firm_uk').on(t.firmId),
+  }),
+);
+
+// =====================================================================
+// 0184 — statement_template. One editable statement-of-account document
+// template per firm (HTML body + CSS); statement counterpart to
+// invoice_template. No row → shipped default statement template.
+// =====================================================================
+
+export const statementTemplates = pgTable(
+  'statement_template',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    bodyHtml: text('body_html'),
+    css: text('css'),
+    variablesJson: jsonb('variables_json'),
+    builtinStyle: text('builtin_style'),
+    updatedByAppUserId: uuid('updated_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmUnique: uniqueIndex('statement_template_firm_uk').on(t.firmId),
+  }),
+);
+
+// =====================================================================
+// 0185 — print_log. Audit of documents sent to the Vibe Print LAN
+// gateway for direct (silent) printing. app_user_id is null for
+// automated prints (e.g. signature-confirmation auto-print).
+// =====================================================================
+
+export const printLog = pgTable(
+  'print_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    appUserId: uuid('app_user_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    printableType: text('printable_type').notNull(),
+    printableId: text('printable_id'),
+    printerId: integer('printer_id').notNull(),
+    copies: integer('copies').notNull().default(1),
+    status: text('status').notNull(), // SENT | FAILED
+    gatewayJobId: text('gateway_job_id'),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmCreatedIdx: index('print_log_firm_created_idx').on(t.firmId, t.createdAt),
+  }),
+);
+
+// =====================================================================
+// 0186 — printer_assignment. Maps a Vibe Print gateway printer (numeric
+// id) to an office + friendly label, so the print picker can group
+// printers by location and staff pick the right one.
+// =====================================================================
+
+export const printerAssignments = pgTable(
+  'printer_assignment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    gatewayPrinterId: integer('gateway_printer_id').notNull(),
+    officeId: uuid('office_id').references(() => offices.id, { onDelete: 'set null' }),
+    label: text('label'),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmPrinterUk: uniqueIndex('printer_assignment_firm_printer_uk').on(
+      t.firmId,
+      t.gatewayPrinterId,
+    ),
+  }),
+);
+
+// =====================================================================
+// 0187 — signature_print_rule. Prioritized rules for auto-printing a
+// document when a tax-return signature completes. First enabled rule
+// (priority asc) whose filters match wins. Empty filter array = match
+// any. template_source: 'builtin' (app confirmation report) or 'gateway'
+// (a Vibe Print template rendered from data). printer_mode: 'specific'
+// (printer_id) or 'client_office' (the client office's assigned printer).
+// =====================================================================
+
+export const signaturePrintRules = pgTable(
+  'signature_print_rule',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    priority: integer('priority').notNull().default(100),
+    enabled: boolean('enabled').notNull().default(true),
+    formCodes: text('form_codes').array().notNull().default([]),
+    engagementTypeIds: uuid('engagement_type_ids').array().notNull().default([]),
+    templateSource: text('template_source').notNull().default('builtin'), // builtin | gateway
+    gatewayTemplateId: integer('gateway_template_id'),
+    printerMode: text('printer_mode').notNull().default('specific'), // specific | client_office
+    printerId: integer('printer_id'),
+    copies: integer('copies').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmPriorityIdx: index('signature_print_rule_firm_priority_idx').on(t.firmId, t.priority),
   }),
 );
 
@@ -2166,6 +2354,44 @@ export const recurringBillingPlanServices = pgTable('recurring_billing_plan_serv
   pk: primaryKey({ columns: [t.planId, t.serviceLineId] }),
 }));
 
+// 0192 — staff-managed recurring installment plan against a client's open
+// balance (charges a saved method a fixed amount per cycle, oldest-first).
+export const clientPaymentPlans = pgTable(
+  'client_payment_plan',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id').notNull(),
+    clientId: uuid('client_id').notNull(),
+    paymentMethodId: uuid('payment_method_id').notNull(),
+    // text + CHECK (see migration) — reuses the recurring_frequency value space.
+    frequency: text('frequency').$type<
+      'WEEKLY' | 'BIWEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'SEMIANNUAL' | 'ANNUAL'
+    >().notNull(),
+    nextRunDate: date('next_run_date').notNull(),
+    installmentCents: bigint('installment_cents', { mode: 'number' }).notNull(),
+    status: text('status')
+      .$type<'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED'>()
+      .notNull()
+      .default('ACTIVE'),
+    consecutiveFailureCount: integer('consecutive_failure_count').notNull().default(0),
+    pauseThreshold: integer('pause_threshold').notNull().default(3),
+    pausedReason: text('paused_reason'),
+    authorizedByAppUserId: uuid('authorized_by_app_user_id'),
+    authorizedAt: timestamp('authorized_at', { withTimezone: true }),
+    authorizationNote: text('authorization_note'),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+    notes: text('notes'),
+    createdByAppUserId: uuid('created_by_app_user_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dueIdx: index('client_payment_plan_due_idx').on(t.status, t.nextRunDate),
+    firmClientIdx: index('client_payment_plan_firm_client_idx').on(t.firmId, t.clientId),
+  }),
+);
+
 export const milestonePlans = pgTable('milestone_plan', {
   id: uuid('id').defaultRandom().primaryKey(),
   engagementId: uuid('engagement_id')
@@ -2348,6 +2574,71 @@ export const billingBatchEngagements = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.billingBatchId, t.engagementId] }),
     engagementIdx: index('billing_batch_engagement_engagement_idx').on(t.engagementId),
+  }),
+);
+
+// =====================================================================
+// ENGAGEMENT EXPENSE — out-of-pocket costs billed at cost + markup.
+//
+// Expenses are deliberately NOT time_entry rows and NEVER produce
+// adjustment_allocation rows, so they carry no timekeeper and stay out
+// of per-timekeeper realization (CLAUDE.md non-negotiable #4). Billed at
+// cost + markup%; a billing batch pulls them in and applies the same
+// INCLUDE / DEFER / WRITE_OFF actions as time entries.
+// =====================================================================
+
+export const engagementExpenses = pgTable(
+  'engagement_expense',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id').notNull(),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id),
+    expenseDate: date('expense_date').notNull(),
+    description: text('description').notNull(),
+    costCents: bigint('cost_cents', { mode: 'number' }).notNull(),
+    category: text('category'),
+    vendor: text('vendor'),
+    // Availability governor — mirrors time_entry.billing_batch_id. Set when
+    // the expense is claimed into a batch; cleared on DEFER/release so a
+    // future batch can re-claim it.
+    billingBatchId: uuid('billing_batch_id'),
+    status: expenseStatus('status').notNull().default('ACTIVE'),
+    createdById: uuid('created_by_id').references(() => appUsers.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmEngagementStatusIdx: index('engagement_expense_firm_engagement_status_idx').on(
+      t.firmId,
+      t.engagementId,
+      t.status,
+    ),
+    batchIdx: index('engagement_expense_batch_idx').on(t.billingBatchId),
+    costNonNegative: check('engagement_expense_cost_nonnegative', sql`${t.costCents} >= 0`),
+  }),
+);
+
+// Expense↔batch association — parallels billing_batch_entry. Reuses the
+// billing_batch_entry_action enum; billed_amount_cents is the resolved
+// cost+markup amount for this batch.
+export const billingBatchExpenses = pgTable(
+  'billing_batch_expense',
+  {
+    billingBatchId: uuid('billing_batch_id')
+      .notNull()
+      .references(() => billingBatches.id, { onDelete: 'cascade' }),
+    expenseId: uuid('expense_id')
+      .notNull()
+      .references(() => engagementExpenses.id),
+    action: billingBatchEntryAction('action').notNull().default('INCLUDE'),
+    billedAmountCents: bigint('billed_amount_cents', { mode: 'number' }),
+    comment: text('comment'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.billingBatchId, t.expenseId] }),
+    expenseIdx: index('billing_batch_expense_expense_idx').on(t.expenseId),
   }),
 );
 
@@ -2544,6 +2835,11 @@ export const paymentReceipts = pgTable(
       { invoiceId: string; amountCents: number }[]
     >(),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
+    // 0186 — the terminal reader this charge was taken on (set at collect
+    // time) so the completion webhook can auto-print to the reader's printer.
+    terminalReaderId: uuid('terminal_reader_id').references(() => terminalReaders.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -3495,6 +3791,12 @@ export const engagementRecurrences = pgTable(
     // 0172 — per-recurrence override for the spawned engagement's lifecycle
     // status. NULL inherits the template default, then falls back to 'ACTIVE'.
     spawnStatus: engagementStatus('spawn_status'),
+    // 0200 — on spawn, also roll the source engagement's appointment(s) /
+    // drop-off(s) forward (ISO week-of-year + weekday preserved). Rolled-
+    // forward drop-offs start PENDING; the spawned engagement is set to the
+    // DRAFT workflow state when either toggle is on.
+    rollforwardAppointment: boolean('rollforward_appointment').notNull().default(false),
+    rollforwardDropoff: boolean('rollforward_dropoff').notNull().default(false),
     notes: text('notes'),
     createdById: uuid('created_by_id').references(() => appUsers.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3619,7 +3921,7 @@ export const stagedNotifications = pgTable(
     supersedeKey: text('supersede_key').notNull(),
     mode: text('mode', { enum: ['IMMEDIATE', 'STAGED'] }).notNull(),
     status: text('status', {
-      enum: ['PENDING_APPROVAL', 'SCHEDULED', 'SENT', 'CANCELED', 'FAILED'],
+      enum: ['PENDING_APPROVAL', 'SCHEDULED', 'SENDING', 'SENT', 'CANCELED', 'FAILED'],
     }).notNull(),
     channels: text('channels').array().notNull(),
     recipientMode: text('recipient_mode', {
@@ -3960,7 +4262,19 @@ export const clientRequests = pgTable(
     templateId: uuid('template_id'),
     reminderDaysBefore: integer('reminder_days_before'),
     lastReminderSentAt: timestamp('last_reminder_sent_at', { withTimezone: true }),
+    // 0194 — multi-reminder scheduling for drop-offs. When present, the worker
+    // sends one reminder per step (see client_request_reminder_sent ledger)
+    // instead of the single reminder_days_before nudge.
+    reminderSchedule: jsonb('reminder_schedule').$type<ReminderStep[]>(),
     clientReplyText: text('client_reply_text'),
+    // 0197 — when staff last saw the client's reply. Cleared when a client
+    // responds (portal reply/needs-info); stamped when staff opens the detail.
+    // Unread client response = clientReplyText set AND clientReplySeenAt IS NULL.
+    clientReplySeenAt: timestamp('client_reply_seen_at', { withTimezone: true }),
+    // 0198 — PENDING requests (e.g. rolled forward) are hidden until this date,
+    // when the worker flips them OPEN + submits to the client.
+    activationDate: date('activation_date'),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
   },
   (t) => ({
     firmStatusIdx: index('client_request_firm_status_idx').on(t.firmId, t.status),
@@ -3968,7 +4282,7 @@ export const clientRequests = pgTable(
     priorityIdx: index('client_request_priority_idx').on(t.firmId, t.priority, t.status),
     statusCk: check(
       'client_request_status_ck',
-      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED', 'NEEDS_INFO')`,
+      sql`${t.status} IN ('OPEN', 'FULFILLED', 'DISMISSED', 'EXPIRED', 'NEEDS_INFO', 'PENDING')`,
     ),
     reminderDaysCk: check(
       'client_request_reminder_days_ck',
@@ -3976,6 +4290,31 @@ export const clientRequests = pgTable(
     ),
     // 0135 — kind discriminator; mirrors the migration's CHECK.
     kindCk: check('client_request_kind_ck', sql`${t.kind} IN ('GENERAL', 'DROP_OFF')`),
+  }),
+);
+
+// 0194 — per-offset/channel sent-ledger for drop-off scheduled reminders.
+// One row per (request × offset × channel); the unique index gives idempotency
+// (mirrors appointment_reminders_sent).
+export const clientRequestReminderSent = pgTable(
+  'client_request_reminder_sent',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientRequestId: uuid('client_request_id')
+      .notNull()
+      .references(() => clientRequests.id, { onDelete: 'cascade' }),
+    reminderOffsetMinutes: integer('reminder_offset_minutes').notNull(),
+    channel: text('channel').notNull().default('EMAIL'),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveryStatus: text('delivery_status').notNull().default('sent'),
+  },
+  (t) => ({
+    uniq: uniqueIndex('client_request_reminder_sent_uk').on(
+      t.clientRequestId,
+      t.reminderOffsetMinutes,
+      t.channel,
+    ),
+    reqIdx: index('client_request_reminder_sent_req_idx').on(t.clientRequestId),
   }),
 );
 
@@ -4587,6 +4926,10 @@ export const appointments = pgTable(
       onDelete: 'set null',
     }),
     status: appointmentStatus('status').notNull().default('SCHEDULED'),
+    // 0201 — include this appointment when a recurring engagement rolls
+    // forward (only applies when the recurrence's rollforward_appointment
+    // toggle is on). Default true preserves the roll-all behavior.
+    rollforwardInclude: boolean('rollforward_include').notNull().default(true),
     cancelledReason: text('cancelled_reason'),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     cancelledById: uuid('cancelled_by_id').references(() => appUsers.id, {
@@ -5276,6 +5619,10 @@ export const terminalReaders = pgTable(
     serialNumber: text('serial_number'),
     status: text('status').notNull().default('offline'), // online | offline
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    // 0186 — direct-print binding: which gateway printer this reader's
+    // receipts go to, and whether to auto-print on payment completion.
+    printerId: integer('printer_id'),
+    autoPrintReceipt: boolean('auto_print_receipt').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

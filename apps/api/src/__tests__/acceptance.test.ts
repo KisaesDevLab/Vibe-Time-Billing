@@ -11,6 +11,7 @@ import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pgli
 import {
   engagementScope,
   engagements,
+  magicLinks,
   proposalVersions,
   proposals,
   signatures,
@@ -31,6 +32,7 @@ async function seedSentProposal(): Promise<{
   firmId: string;
   clientId: string;
   proposalId: string;
+  magicLinkId: string;
 }> {
   const seed = await seedMinimalFirm(harness.db);
   const [p] = await harness.db
@@ -55,7 +57,21 @@ async function seedSentProposal(): Promise<{
     contentHash: 'a'.repeat(64),
     reason: 'SENT',
   });
-  return { firmId: seed.firmId, clientId: seed.clientId, proposalId: p!.id };
+  // A valid signer magic link is now the credential for /accept. Legacy
+  // single-signer proposals carry a link with signatureId=null, which the
+  // route accepts and mints a PRIMARY signature for.
+  const [ml] = await harness.db
+    .insert(magicLinks)
+    .values({
+      firmId: seed.firmId,
+      tokenHash: `test-hash-${p!.id}`,
+      purpose: 'PROPOSAL',
+      proposalId: p!.id,
+      clientId: seed.clientId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    })
+    .returning({ id: magicLinks.id });
+  return { firmId: seed.firmId, clientId: seed.clientId, proposalId: p!.id, magicLinkId: ml!.id };
 }
 
 function buildApp(): express.Express {
@@ -76,6 +92,7 @@ describe('P21 — acceptance happy path', () => {
     const f = await seedSentProposal();
     const app = buildApp();
     const res = await request(app).post(`/api/portal/proposals/${f.proposalId}/accept`).send({
+      magicLinkId: f.magicLinkId,
       signerName: 'Jane Doe',
       signerEmail: 'jane@example.com',
       typedName: 'Jane Doe',
@@ -133,6 +150,7 @@ describe('P21 — acceptance happy path', () => {
     const f = await seedSentProposal();
     const app = buildApp();
     const res = await request(app).post(`/api/portal/proposals/${f.proposalId}/accept`).send({
+      magicLinkId: f.magicLinkId,
       signerName: 'Jane',
       signerEmail: 'jane@x.com',
       typedName: 'Jane',
@@ -174,6 +192,38 @@ describe('P21 — guards', () => {
     expect(res.status).toBe(404);
   });
 
+  it('401 without a magic-link credential (accept requires one)', async () => {
+    // Regression guard for the acceptance auth-bypass: a request that knows
+    // the proposal id but presents no valid signer credential must be
+    // rejected and must not mint a signature or engagement.
+    const f = await seedSentProposal();
+    const app = buildApp();
+    const res = await request(app).post(`/api/portal/proposals/${f.proposalId}/accept`).send({
+      signerName: 'Mallory',
+      signerEmail: 'mallory@evil.example',
+      typedName: 'Mallory',
+    });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('credential_required');
+  });
+
+  it('401 with a superseded magic link', async () => {
+    const f = await seedSentProposal();
+    await harness.db
+      .update(magicLinks)
+      .set({ supersededAt: new Date() })
+      .where(eq(magicLinks.id, f.magicLinkId));
+    const app = buildApp();
+    const res = await request(app).post(`/api/portal/proposals/${f.proposalId}/accept`).send({
+      magicLinkId: f.magicLinkId,
+      signerName: 'Jane',
+      signerEmail: 'jane@x.com',
+      typedName: 'Jane',
+    });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('invalid_credential');
+  });
+
   it('400 on invalid payload (missing typedName)', async () => {
     const f = await seedSentProposal();
     const app = buildApp();
@@ -211,6 +261,7 @@ describe('P21 — engagement_scope materialization', () => {
     });
     const app = buildApp();
     const res = await request(app).post(`/api/portal/proposals/${f.proposalId}/accept`).send({
+      magicLinkId: f.magicLinkId,
       signerName: 'J',
       signerEmail: 'j@x.com',
       typedName: 'J',

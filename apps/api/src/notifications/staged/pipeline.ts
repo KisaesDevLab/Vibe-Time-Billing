@@ -65,7 +65,7 @@ export function statusSupersedeKey(engagementId: string): string {
   return `engagement_status:${engagementId}`;
 }
 
-const CHANNEL_SET: ReadonlySet<string> = new Set(['EMAIL', 'SMS', 'PORTAL']);
+const CHANNEL_SET: ReadonlySet<string> = new Set(['EMAIL', 'SMS', 'PORTAL', 'PRINT']);
 
 export async function stageStatusNotification(
   db: Database,

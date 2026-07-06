@@ -10,6 +10,8 @@
 // retry_count — keep firm-internal columns out of the input type so
 // the receipt can't leak them by accident.
 
+import { formatDateUS, formatMoneyCents } from '@vibe/core/invoicing';
+
 export interface ReceiptHtmlInput {
   firmName: string;
   clientName: string;
@@ -25,16 +27,16 @@ export interface ReceiptHtmlInput {
 }
 
 export function renderReceiptHtml(args: ReceiptHtmlInput): string {
-  const amount = (args.amountCents / 100).toFixed(2);
-  const when = toIsoDate(args.receivedAt);
+  const amount = formatMoneyCents(args.amountCents);
+  const when = formatDateUS(toIsoDate(args.receivedAt));
   const charge = args.providerChargeId
     ? `<p>Reference: ${escapeHtml(args.providerChargeId)}</p>`
     : '';
   const refundBanner =
     args.refundedAt && args.refundedAmountCents
-      ? `<div style="margin:16px 0;padding:12px 16px;border:1px solid #e0a200;border-radius:8px;background:#fff8e6;color:#665100"><strong>Refunded:</strong> $${(
-          args.refundedAmountCents / 100
-        ).toFixed(2)} on ${escapeHtml(toIsoDate(args.refundedAt))}.</div>`
+      ? `<div style="margin:16px 0;padding:12px 16px;border:1px solid #e0a200;border-radius:8px;background:#fff8e6;color:#665100"><strong>Refunded:</strong> ${formatMoneyCents(
+          args.refundedAmountCents,
+        )} on ${escapeHtml(formatDateUS(toIsoDate(args.refundedAt)))}.</div>`
       : '';
   const footer = args.refundedAt
     ? '<p>Contact your firm if you have questions about this refund.</p>'
@@ -49,7 +51,7 @@ ${refundBanner}
 <table>
 <tr><td>Invoice</td><td class="r">${escapeHtml(args.invoiceNumber)}</td></tr>
 <tr><td>Payment ID</td><td class="r">${escapeHtml(args.paymentId)}</td></tr>
-<tr><td>Amount</td><td class="r">$${amount}</td></tr>
+<tr><td>Amount</td><td class="r">${amount}</td></tr>
 </table>
 ${charge}
 ${footer}

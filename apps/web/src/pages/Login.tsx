@@ -482,23 +482,50 @@ function VerifyPage({ token }: { token: string }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  // When the firm requires a second factor and one is enrolled, the
+  // magic-link verify returns a pending token instead of a session — we
+  // hand it to the same FactorChallenge UI the password path uses.
+  const [pending, setPending] = useState<PendingState | null>(null);
 
   async function verify(): Promise<void> {
     setSubmitting(true);
     try {
-      const res = await api<{ csrfToken: string; needsTotpEnrollment: boolean }>(
-        '/api/auth/verify-magic-link',
-        { method: 'POST', body: JSON.stringify({ token }) },
-      );
+      const res = await api<
+        | ({ needsSecondFactor: true } & PendingState)
+        | {
+            ok: true;
+            csrfToken: string;
+            needsTotpEnrollment: boolean;
+            needsFactorEnrollment?: boolean;
+          }
+      >('/api/auth/verify-magic-link', { method: 'POST', body: JSON.stringify({ token }) });
+      if (!('ok' in res)) {
+        setPending({
+          pendingToken: res.pendingToken,
+          availableFactors: res.availableFactors,
+          preferredFactor: res.preferredFactor,
+        });
+        return;
+      }
       setCsrfToken(res.csrfToken);
       await refresh();
       setDone(true);
-      navigate(res.needsTotpEnrollment ? '/auth/totp' : '/', { replace: true });
+      navigate(res.needsTotpEnrollment || res.needsFactorEnrollment ? '/auth/totp' : '/', {
+        replace: true,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'verification failed');
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (pending) {
+    return (
+      <AuthLayout brand={BRAND} title="Confirm sign-in">
+        <FactorChallenge pending={pending} reset={() => setPending(null)} />
+      </AuthLayout>
+    );
   }
 
   return (

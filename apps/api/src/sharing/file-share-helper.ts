@@ -199,8 +199,10 @@ export async function resolveFileShareToken(
   return row ?? null;
 }
 
-export async function markFileShareViewed(db: Database, shareId: string): Promise<void> {
-  await db
+/** Bump view tracking; returns the new access count (1 on first access) so
+ *  callers can drop a one-time "opened" note without duplicating on refresh. */
+export async function markFileShareViewed(db: Database, shareId: string): Promise<number> {
+  const rows = await db
     .update(fileShares)
     .set({
       accessCount: sql`${fileShares.accessCount} + 1`,
@@ -209,7 +211,9 @@ export async function markFileShareViewed(db: Database, shareId: string): Promis
       lastViewedAt: new Date(),
       status: sql`CASE WHEN ${fileShares.status} = 'SENT' THEN 'VIEWED' ELSE ${fileShares.status} END`,
     })
-    .where(eq(fileShares.id, shareId));
+    .where(eq(fileShares.id, shareId))
+    .returning({ n: fileShares.accessCount });
+  return Number(rows[0]?.n ?? 0);
 }
 
 export async function revokeFileShare(db: Database, shareId: string): Promise<void> {

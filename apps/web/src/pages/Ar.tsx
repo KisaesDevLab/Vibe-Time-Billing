@@ -5,6 +5,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe
 
 import { api } from '../api-client';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 import { TableSearch } from '../components/TableSearch';
 
 type Bucket = '0-30' | '31-60' | '61-90' | '90+';
@@ -14,6 +15,7 @@ interface ClientAging {
   clientName: string;
   buckets: Record<Bucket, number>;
   total: number;
+  avgDaysPastDue: number;
 }
 
 interface ArResponse {
@@ -215,10 +217,13 @@ export function ArPage(): JSX.Element {
           b2: (c) => c.buckets['61-90'],
           b3: (c) => c.buckets['90+'],
           total: (c) => c.total,
+          avg: (c) => c.avgDaysPastDue,
         },
       }),
     [clients, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   function toggleAll(): void {
     if (selected.size === visible.length) setSelected(new Set());
@@ -486,6 +491,24 @@ export function ArPage(): JSX.Element {
               render: (c) => <strong>{formatCents(c.total)}</strong>,
             },
             {
+              key: 'avg',
+              header: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  Avg days past due{' '}
+                  <ColumnFilter
+                    ariaLabel="Sort by average days past due"
+                    values={[]}
+                    selected={new Set()}
+                    searchable={false}
+                    sort={view.sortFor('avg')}
+                    onApply={(_, dir) => view.apply('avg', new Set(), dir)}
+                  />
+                </span>
+              ) as unknown as string,
+              align: 'right',
+              render: (c) => <span>{c.avgDaysPastDue}</span>,
+            },
+            {
               key: 'stmt',
               header: '',
               align: 'right',
@@ -501,7 +524,8 @@ export function ArPage(): JSX.Element {
               ),
             },
           ]}
-          rows={visible}
+          rows={paged}
+          pagination={pagination}
           rowKey={(c) => c.clientId}
           empty="No outstanding AR matches the current filters."
         />

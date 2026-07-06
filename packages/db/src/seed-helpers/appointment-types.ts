@@ -5,7 +5,7 @@
 // only inserts when the firm has zero types, so operator edits survive.
 
 import { eq, sql } from 'drizzle-orm';
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { appointmentTypes } from '../schema/core';
 
@@ -73,7 +73,7 @@ export const DEFAULT_APPOINTMENT_TYPES: ReadonlyArray<AppointmentTypeDefault> = 
 // across call sites; widening keeps the helper usable from seed scripts,
 // the firm-creation transaction, and the admin seed-defaults route.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Tx = PgDatabase<QueryResultHKT, any, any>;
+type Tx = PgDatabase<PgQueryResultHKT, any, any>;
 
 /**
  * Seed the default appointment types for a firm — only when it has

@@ -11,7 +11,7 @@
 // the helper, project to JSON or CSV.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -56,6 +56,9 @@ async function loadBilledCents(
         eq(invoiceLineItems.engagementId, engagementId),
         eq(invoices.firmId, firmId),
         isNotNull(invoices.sentAt),
+        // A voided invoice keeps its sentAt — without this it still counted
+        // as billed and understated remaining WIP.
+        ne(invoices.status, 'VOIDED'),
       ),
     );
   const raw = rows[0]?.total ?? '0';
@@ -111,7 +114,9 @@ export function createWipRouter(deps: WipRoutesDeps): Router {
           outOfScopeOverride: timeEntries.outOfScopeOverride,
         })
         .from(timeEntries)
-        .where(eq(timeEntries.engagementId, engagementId));
+        // Exclude soft-deleted (ARCHIVED) entries — they inflated WIP here
+        // while every other report (incl. the WIP dashboard) excluded them.
+        .where(and(eq(timeEntries.engagementId, engagementId), ne(timeEntries.status, 'ARCHIVED')));
 
       const entries: TimeEntryForWip[] = entryRows.map((r) => ({
         appUserId: r.appUserId,

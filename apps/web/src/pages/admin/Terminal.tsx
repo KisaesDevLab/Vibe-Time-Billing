@@ -18,6 +18,8 @@ interface ReaderRow {
   serialNumber: string | null;
   status: string;
   locationId: string;
+  printerId: number | null;
+  autoPrintReceipt: boolean;
 }
 interface LocationRow {
   id: string;
@@ -29,6 +31,7 @@ interface LocationRow {
 export function TerminalPage(): JSX.Element {
   const [readers, setReaders] = useState<ReaderRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
+  const [printers, setPrinters] = useState<{ id: number; name: string }[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -58,8 +61,38 @@ export function TerminalPage(): JSX.Element {
       setErr(e instanceof Error ? e.message : 'load_failed');
     }
   }
+
+  // Gateway printers for the per-reader receipt-printer dropdown (best-effort).
+  async function loadPrinters(): Promise<void> {
+    try {
+      const r = await api<{ printers: { id: number; name: string }[] }>(
+        '/api/staff/print/printers',
+      );
+      setPrinters(r.printers);
+    } catch {
+      setPrinters([]);
+    }
+  }
+
+  async function savePrintConfig(
+    id: string,
+    printerId: number | null,
+    autoPrintReceipt: boolean,
+  ): Promise<void> {
+    try {
+      await api(`/api/staff/terminal/readers/${id}/print-config`, {
+        method: 'PATCH',
+        body: JSON.stringify({ printerId, autoPrintReceipt }),
+      });
+      setMsg('Reader print settings saved.');
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'save_failed');
+    }
+  }
   useEffect(() => {
     void load();
+    void loadPrinters();
   }, []);
 
   async function addLocation(e: FormEvent): Promise<void> {
@@ -278,6 +311,49 @@ export function TerminalPage(): JSX.Element {
               header: 'Status',
               render: (r) => (
                 <Pill tone={r.status === 'online' ? 'success' : 'neutral'}>{r.status}</Pill>
+              ),
+            },
+            {
+              key: 'printer',
+              header: 'Receipt printer',
+              render: (r) => (
+                <select
+                  value={r.printerId ?? ''}
+                  onChange={(e) =>
+                    void savePrintConfig(
+                      r.id,
+                      e.target.value ? Number(e.target.value) : null,
+                      r.autoPrintReceipt,
+                    )
+                  }
+                  style={{
+                    padding: '4px 8px',
+                    background: tokens.color.surface,
+                    color: tokens.color.text,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.sm,
+                    fontSize: 12,
+                  }}
+                >
+                  <option value="">— none —</option>
+                  {printers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              ),
+            },
+            {
+              key: 'autoprint',
+              header: 'Auto-print',
+              render: (r) => (
+                <input
+                  type="checkbox"
+                  checked={r.autoPrintReceipt}
+                  onChange={(e) => void savePrintConfig(r.id, r.printerId, e.target.checked)}
+                  title="Auto-print the receipt after a card payment completes"
+                />
               ),
             },
             {

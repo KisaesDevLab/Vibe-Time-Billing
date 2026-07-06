@@ -37,7 +37,12 @@ const inputStyle: React.CSSProperties = {
 };
 
 export function ShareFileDialog({ file, onClose, onShared }: Props): JSX.Element {
-  const isPdf = (file.mimeType ?? '').toLowerCase().includes('pdf');
+  // Detect PDF by mime type, falling back to the filename extension —
+  // some files were stored without a mime_type, which previously (wrongly)
+  // disabled the PDF-only watermark option for genuine PDFs.
+  const isPdf =
+    (file.mimeType ?? '').toLowerCase().includes('pdf') ||
+    file.originalFilename.toLowerCase().endsWith('.pdf');
   const [recipientName, setRecipientName] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
   const [organization, setOrganization] = useState('');

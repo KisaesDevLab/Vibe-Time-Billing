@@ -105,4 +105,54 @@ describe('Audit log name resolution', () => {
     expect(items[0]!.entityName).toBeTruthy(); // engagement name
     expect(items[0]!.actorName).toBeTruthy(); // app-user full name
   });
+
+  it('paginates with ?page and returns a { rows, total } envelope', async () => {
+    for (let i = 0; i < 5; i++) {
+      await harness.db.insert(auditLog).values({
+        action: 'UPDATE',
+        entityType: 'engagement',
+        entityId: seed.engagementId,
+        actorAppUserId: seed.appUserId,
+      });
+    }
+    const router = createAuditRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin'] as RoleSlug[]]]),
+    });
+    const r = req();
+    r['query'] = { page: '1', pageSize: '2' };
+    const res = await invoke(router, '/', r);
+    const body = res.jsonBody as { rows: unknown[]; total: number; page: number; pageSize: number };
+    expect(body.total).toBe(5);
+    expect(body.page).toBe(1);
+    expect(body.pageSize).toBe(2);
+    expect(body.rows).toHaveLength(2);
+  });
+
+  it('full-text q filters the list (folds in the old /search)', async () => {
+    await harness.db.insert(auditLog).values({
+      action: 'UPDATE',
+      entityType: 'invoice',
+      entityId: seed.engagementId,
+      actorAppUserId: seed.appUserId,
+      ip: '10.9.8.7',
+    });
+    await harness.db.insert(auditLog).values({
+      action: 'UPDATE',
+      entityType: 'client',
+      entityId: seed.clientId,
+      actorAppUserId: seed.appUserId,
+      ip: '127.0.0.1',
+    });
+    const router = createAuditRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin'] as RoleSlug[]]]),
+    });
+    const r = req();
+    r['query'] = { page: '1', pageSize: '50', q: '10.9.8.7' };
+    const res = await invoke(router, '/', r);
+    const body = res.jsonBody as { total: number; rows: Array<{ entityType: string }> };
+    expect(body.total).toBe(1);
+    expect(body.rows[0]!.entityType).toBe('invoice');
+  });
 });

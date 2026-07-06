@@ -38,6 +38,8 @@ export function RichTextEditor({
   placeholder,
   onReady,
   variables,
+  minHeight,
+  format = 'markdown',
 }: {
   value: string;
   onChange: (markdown: string) => void;
@@ -46,9 +48,17 @@ export function RichTextEditor({
   onReady?: (api: RichTextApi) => void;
   /** When provided, the toolbar shows an "Insert variable" dropdown of these. */
   variables?: RichTextVariable[];
+  /** Minimum height (px) of the editable area. Defaults to a compact box. */
+  minHeight?: number;
+  /** Output format. 'markdown' (default) preserves the historical proposal/
+   *  email behavior; 'html' emits HTML via getHTML() for document templates
+   *  (letters). Mount-time only — the parent should key the component when
+   *  switching format. */
+  format?: 'markdown' | 'html';
 }): JSX.Element {
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const isHtml = format === 'html';
   const [varOpen, setVarOpen] = useState(false);
   const varMenuRef = useRef<HTMLDivElement | null>(null);
   const editor = useEditor({
@@ -56,10 +66,23 @@ export function RichTextEditor({
     extensions: [
       StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
       Link.configure({ openOnClick: false, autolink: true }),
-      Markdown.configure({ html: false, linkify: true, transformPastedText: true }),
+      // Markdown storage only drives markdown mode; in HTML mode we read
+      // getHTML() directly and skip it (it would rewrite the HTML).
+      ...(isHtml
+        ? []
+        : [Markdown.configure({ html: false, linkify: true, transformPastedText: true })]),
     ],
+    editorProps: {
+      attributes: {
+        style: `min-height: ${minHeight ?? 120}px`,
+      },
+    },
     content: value || '',
     onUpdate: ({ editor: ed }) => {
+      if (isHtml) {
+        onChange(ed.getHTML());
+        return;
+      }
       const md = (
         ed.storage as { markdown?: { getMarkdown: () => string } }
       ).markdown?.getMarkdown();

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { PrintButton } from '../../components/PrintButton';
 import { filterStatuses } from '../../status-filter';
 
 interface EngagementRow {
@@ -284,14 +285,17 @@ export function RouteSheetDialog({
                           {h.engagementCount} eng.
                           {h.note ? ` · "${h.note.slice(0, 40)}"` : ''}
                         </span>
-                        <a
-                          href={`${BASE}/${h.id}/pdf`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ color: tokens.color.accent, textDecoration: 'none' }}
-                        >
-                          Reprint
-                        </a>
+                        <span style={{ display: 'inline-flex', gap: 10, alignItems: 'flex-start' }}>
+                          <a
+                            href={`${BASE}/${h.id}/pdf`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: tokens.color.accent, textDecoration: 'none' }}
+                          >
+                            Reprint
+                          </a>
+                          <PrintButton endpoint={`${BASE}/${h.id}/print`} label="Print" />
+                        </span>
                       </div>
                     ))}
                   </div>

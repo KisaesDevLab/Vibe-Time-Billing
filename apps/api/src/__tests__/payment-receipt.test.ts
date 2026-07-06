@@ -28,9 +28,9 @@ describe('renderReceiptHtml', () => {
     expect(html).toContain('Acme CPA');
     expect(html).toContain('Wile E. Co');
     expect(html).toContain('INV-2026-0042');
-    expect(html).toContain('$2500.00');
+    expect(html).toContain('$2,500.00');
     expect(html).toContain('ch_test_abc');
-    expect(html).toContain('2026-04-15');
+    expect(html).toContain('04/15/2026');
     expect(html).toContain('Thank you');
   });
 
@@ -48,7 +48,7 @@ describe('renderReceiptHtml', () => {
     });
     expect(html).toContain('Refunded');
     expect(html).toContain('$500.00');
-    expect(html).toContain('2026-05-01');
+    expect(html).toContain('05/01/2026');
     // "Thank you" replaced with refund-specific footer
     expect(html).not.toContain('Thank you');
     expect(html).toContain('Contact your firm');

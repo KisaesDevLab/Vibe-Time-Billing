@@ -187,16 +187,52 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       });
     }
 
+    // Column filters (multi-select → comma-separated) + sort, applied to the
+    // reconciled set before the page slice so paging is correct firm-wide.
+    const csv = (v: unknown): string[] =>
+      typeof v === 'string'
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+    const portalFilter = csv(req.query['portal']); // 'yes' | 'no'
+    const kindFilter = csv(req.query['kind']); // 'person' | 'portal_identity'
+
     let filtered = rows;
     if (q) {
-      filtered = rows.filter(
+      filtered = filtered.filter(
         (r) =>
           r.fullName.toLowerCase().includes(q) ||
           (r.email?.toLowerCase().includes(q) ?? false) ||
           (r.phone?.toLowerCase().includes(q) ?? false),
       );
     }
-    filtered.sort((a, b) => a.fullName.localeCompare(b.fullName));
+    if (portalFilter.length > 0) {
+      filtered = filtered.filter((r) => portalFilter.includes(r.hasPortalAccess ? 'yes' : 'no'));
+    }
+    if (kindFilter.length > 0) {
+      filtered = filtered.filter((r) => kindFilter.includes(r.kind));
+    }
+
+    const sortCol = String(req.query['sort'] ?? 'name');
+    const sortDir = String(req.query['dir'] ?? 'asc') === 'desc' ? -1 : 1;
+    const cmp = (a: Row, b: Row): number => {
+      switch (sortCol) {
+        case 'email':
+          return (a.email ?? '').localeCompare(b.email ?? '');
+        case 'phone':
+          return (a.phone ?? '').localeCompare(b.phone ?? '');
+        case 'clients':
+          return a.clientCount - b.clientCount;
+        default:
+          return a.fullName.localeCompare(b.fullName);
+      }
+    };
+    filtered.sort((a, b) => {
+      const c = cmp(a, b) * sortDir;
+      return c !== 0 ? c : a.fullName.localeCompare(b.fullName);
+    });
     const total = filtered.length;
     const pageRows = filtered.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize);
 

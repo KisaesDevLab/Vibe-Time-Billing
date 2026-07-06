@@ -10,7 +10,7 @@
 // by a firm admin (is_system=false, distinct slugs) are never touched.
 
 import { and, eq, inArray, notInArray } from 'drizzle-orm';
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { kbArticles, kbCategories } from '../schema/core';
 import { md, type ArticleDef } from './kb-types';
@@ -22,7 +22,7 @@ import { CLIENT_GAP_ARTICLES } from './kb-gap-client';
 // reason: drizzle's per-schema Tx generics aren't assignment-compatible
 // across call sites; widen to the base PgDatabase like the other helpers.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Tx = PgDatabase<QueryResultHKT, any, any>;
+type Tx = PgDatabase<PgQueryResultHKT, any, any>;
 
 interface CategoryDef {
   slug: string;
@@ -1151,27 +1151,51 @@ Related: [[fee-structures]], [[recurring-engagements]], [[creating-invoices]], [
   {
     slug: 'payment-setup',
     category: 'payments',
-    title: 'Setting up payment processing',
-    summary: 'Bring your own Stripe or CPACharge account.',
-    tags: ['payments', 'stripe', 'cpacharge', 'setup'],
+    title: 'Setting up payment processing (Stripe Connect + webhooks)',
+    summary:
+      'Connect your Stripe account, enable card/ACH, and — critically — configure the Stripe webhook so payments post to invoices.',
+    tags: ['payments', 'stripe', 'stripe-connect', 'webhook', 'ach', 'cards', 'setup'],
     sortOrder: 10,
     body: md(`
-# Setting up payment processing
+# Setting up payment processing (Stripe Connect + webhooks)
 
-Vibe is firm-owned: your firm supplies its own Stripe credentials and Stripe is the live processor. (CPACharge is scaffolded but not yet active — firm settings report it disabled.)
+Vibe is firm-owned: **your firm supplies its own Stripe account and keys**, and Stripe is the live processor. Kisaes never holds your credentials. (CPACharge is scaffolded but not active.)
 
-## Steps
-1. **Set the Stripe keys on the appliance.** Stripe credentials are read from environment variables on the API container, not a settings form: \`STRIPE_SECRET_KEY\` and \`STRIPE_PUBLISHABLE_KEY\`. An operator sets them and restarts the API.
-2. Go to **Admin → Firm settings → Billing and A/R**. Under **A/R options**, tick **Enable credit card processing** (lets staff charge cards on the Receive Payment page) and/or **Enable ACH processing**. Click **Save**.
-3. (Optional, for proposals/recurring) **Admin → Stripe Connect** → **Connect Stripe** to link an account via OAuth.
-4. To pass processor fees to a client, open the engagement, **Edit**, and turn on **Fee passthrough** ("Add processing fee line item on invoices").
+Setup is **three parts**: (1) connect Stripe, (2) turn on card/ACH, (3) **configure the Stripe webhook**. The webhook is what records a payment against an invoice — skipping it is the #1 mistake: cards charge in Stripe but invoices never show paid.
 
-## What you'll see
-On **Admin → Stripe Connect**: if platform credentials aren't set, a **Not configured** pill (set \`STRIPE_CONNECT_CLIENT_ID\` + \`STRIPE_SECRET_KEY\` and restart); once connected, a **Connected account** card with **Refresh from Stripe** / **Disconnect** and a **Capabilities** card (Charges / Payouts / Details).
+## 1. Connect your Stripe account (pick one)
 
-## Tips
-- Keys live in the appliance environment so credentials never pass through the browser — hand this to whoever manages the appliance.
-- The Receive Payment "Charge" mode is enabled only when Stripe is wired **and** credit card processing is on.
+**Option A — Direct keys (recommended, simplest).** Paste your own keys.
+1. In Stripe, switch to **Test mode** first (toggle, top-right). **Developers → API keys**.
+2. Copy the **Secret key** (\`sk_test_…\`/\`sk_live_…\`) and **Publishable key** (\`pk_test_…\`/\`pk_live_…\`).
+3. In Vibe: **Admin → Billing → Stripe Connect** → paste both → **Save** (encrypted at rest). The secret key already scopes to your account — no connected-account id needed.
+
+**Option B — Connect OAuth (Standard).** **Admin → Stripe Connect → Connect Stripe** links your account via OAuth. Requires the operator to have set \`STRIPE_CONNECT_CLIENT_ID\` (+ platform \`STRIPE_SECRET_KEY\`) on the appliance. No button = platform not configured; use Option A.
+
+**Appliance env alternative (operator):** \`STRIPE_SECRET_KEY\`, \`STRIPE_PUBLISHABLE_KEY\`, \`STRIPE_WEBHOOK_SECRET\` (+ Option B: \`STRIPE_CONNECT_CLIENT_ID\`, \`STRIPE_CONNECT_WEBHOOK_SECRET\`); set them and restart the API.
+
+## 2. Turn on card / ACH
+
+**Admin → Firm settings → Billing and A/R → A/R options:** tick **Enable credit card processing** and/or **Enable ACH processing** → **Save**. Receive Payment "Charge", pay-by-link, saved cards, and recurring payment plans need this on **and** Stripe wired. ACH is cheaper with no expiry (best for recurring) but settles over days and can **return** later.
+
+## 3. Configure the Stripe webhook (required)
+
+The webhook tells Vibe a payment succeeded/failed so the invoice ledger updates. **Everything that collects money depends on it:** pay-by-link, Receive Payment "Charge", saved-card / recurring plans, refunds, disputes, ACH returns. Without it, charges succeed in Stripe but invoices stay unpaid.
+
+1. In Stripe (same mode as your keys): **Developers → Webhooks → Add endpoint**.
+2. **Endpoint URL:** \`https://<your-app-domain>/api/webhooks/stripe\` — use the **staff app** domain (e.g. \`https://app.yourfirm.com/api/webhooks/stripe\`); it must be reachable from the internet. *(Option B / Connect OAuth only:* also add \`.../api/webhooks/stripe-connect\` set to **"Events on Connected accounts"**; its secret → \`STRIPE_CONNECT_WEBHOOK_SECRET\`.)
+3. **Select events** (at minimum): \`payment_intent.succeeded\`, \`payment_intent.payment_failed\`, \`charge.succeeded\`, \`charge.failed\`, \`charge.refunded\`, \`charge.dispute.created\`, \`charge.dispute.closed\`, \`checkout.session.completed\`. ("All events" is fine too.)
+4. **Add endpoint**, open it, **reveal the Signing secret** (\`whsec_…\`).
+5. Put it in Vibe: **Webhook signing secret** on **Admin → Billing → Stripe Connect** (or \`STRIPE_WEBHOOK_SECRET\` on the appliance + restart). A missing/wrong secret makes the app reject every event.
+
+**Verify:** in Test mode, the [Stripe CLI](https://stripe.com/docs/stripe-cli) — \`stripe listen --forward-to https://<your-app-domain>/api/webhooks/stripe\` then \`stripe trigger payment_intent.succeeded\` (expect \`200\`). Or take a test payment with card \`4242 4242 4242 4242\` and confirm the invoice flips to **Paid**. Stripe → Webhooks → your endpoint → **Recent deliveries** shows \`200\` or the error.
+
+## Troubleshooting
+- **Charge succeeds in Stripe but invoice stays unpaid** → webhook not configured / wrong URL / wrong signing secret / app not publicly reachable (most common).
+- **Every webhook 400 (signature)** → the \`whsec_…\` doesn't match, or Test/Live modes are mismatched.
+- **"Requires Stripe Connect to be set up" / collect_failed** → keys not saved, or the card/ACH toggle is off.
+- **Recurring plan / saved card can't charge** → the saved method/customer wasn't created (Stripe not wired at save time), or the webhook isn't delivering so charges never settle.
+- Keep **Test** and **Live** fully separate — matching keys + webhook secret per mode.
 `),
   },
   {

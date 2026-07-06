@@ -22,9 +22,18 @@ import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
 import { runBookingHoldExpiryTick } from './jobs/booking-hold-expiry';
+import { runPaymentPlanChargeTick } from './jobs/payment-plan-charge';
+import { chargeClientBalanceOffSession } from '../../api/src/payments/off-session-charge';
 import { runCloudflareTunnelStatusTick } from './jobs/cloudflare-tunnel-status';
 import { runOpenSignPollTick } from './jobs/opensign-poll';
 import { runSignaturesPollTick } from './jobs/signatures-poll';
+import { runSignatureConfirmationPrint } from './jobs/signature-confirmation-print';
+import { runTerminalReceiptPrint } from './jobs/terminal-receipt-print';
+import {
+  SIGNATURE_CONFIRMATION_PRINT_QUEUE,
+  TERMINAL_RECEIPT_PRINT_QUEUE,
+  bullPrintQueue,
+} from '../../api/src/print-gateway/queue';
 import { runCalendarSyncTick } from '../../api/src/calendar/sync-tick';
 import { runCalendarMatch } from '../../api/src/calendar/match';
 import { runCalendarReminderTick } from '../../api/src/calendar/reminder-tick';
@@ -105,6 +114,7 @@ import {
   buildSmsDispatch,
   buildVoiceDispatch,
   withEmailBranding,
+  withFirmMailConfig,
 } from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
 import type { SmsProvider } from '../../api/src/sms/provider';
@@ -238,7 +248,14 @@ const chargeInvoice = stripe
     }
   : undefined;
 
-const dunningSendEmail = withEmailBranding(await buildMailDispatch(logger), db);
+// Prefer the firm's DB-saved email provider (Admin → Messaging) over the env
+// dispatch, then apply firm branding. Mirrors the API's wrapMailWithFirmConfig
+// so worker-originated mail (dunning, reminders, staged notifications) honors
+// the same UI config as everything else.
+const dunningSendEmail = withEmailBranding(
+  withFirmMailConfig(buildMailDispatch(logger), db, logger),
+  db,
+);
 const dunningSendSms = buildSmsDispatch(logger);
 const voiceDispatch = buildVoiceDispatch(logger);
 
@@ -322,6 +339,9 @@ const QUEUES = [
   'appointment-reminders',
   // 0168 — expire stale public booking-request holds (frees the slot).
   'booking-hold-expiry',
+  // 0192 — recurring installment payment plans. Daily sweep charges each
+  // ACTIVE plan due today off-session against the saved method.
+  'payment-plan-charge',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -440,6 +460,33 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runPaymentRetry(db, logger, { chargeInvoice });
     logger.info({ jobId: job.id, ...result }, 'payment-retry complete');
   },
+  'payment-plan-charge': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'payment-plan-charge: no DB configured');
+      return;
+    }
+    const boundDb = db;
+    const result = await runPaymentPlanChargeTick(boundDb, logger, undefined, {
+      // Off-session charge resolves per-firm Stripe keys internally
+      // (resolveFirmStripe) and settles via the existing webhook.
+      charge: async (args) => {
+        const r = await chargeClientBalanceOffSession({
+          db: boundDb,
+          firmId: args.firmId,
+          clientId: args.clientId,
+          paymentMethodId: args.paymentMethodId,
+          amountCents: args.amountCents,
+          allocations: args.allocations,
+          idempotencyKey: args.idempotencyKey,
+          metadata: args.metadata,
+        });
+        return r.ok
+          ? { ok: true, paymentIntentId: r.paymentIntentId, requiresAction: r.requiresAction }
+          : { ok: false, error: r.error };
+      },
+    });
+    logger.info({ jobId: job.id, ...result }, 'payment-plan-charge complete');
+  },
   'webhook-dispatch': async (job) => {
     if (!db) {
       logger.warn({ jobId: job.id }, 'webhook-dispatch: no DB configured');
@@ -493,7 +540,12 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'saved-report-email: no DB configured');
       return;
     }
-    const result = await runSavedReportEmail(db, logger, dunningSendEmail);
+    const result = await runSavedReportEmail(
+      db,
+      logger,
+      dunningSendEmail,
+      process.env['APP_BASE_URL'],
+    );
     logger.info({ jobId: job.id, ...result }, 'saved-report-email complete');
   },
   'email-in': async (job) => {
@@ -622,6 +674,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     const result = await runSignaturesPollTick(db, logger, {
       storage,
       sendEmail: dunningSendEmail,
+      printQueue: bullPrintQueue,
     });
     logger.info({ jobId: job.id, ...result }, 'signatures-poll complete');
   },
@@ -758,6 +811,7 @@ const CRON: Record<QueueName, string> = {
   'approval-escalation': '20 * * * *',
   'approval-sla-monitor': '50 * * * *',
   'payment-retry': '15 2 * * *',
+  'payment-plan-charge': '30 3 * * *',
   'webhook-dispatch': '*/2 * * * *',
   'auto-rollover-scan': '30 2 * * *',
   'retention-enforcement': '45 3 * * *',
@@ -920,6 +974,12 @@ async function setup(): Promise<void> {
   setupFilerRouteQueue();
   setupZipImportQueue();
 
+  // 0185 — auto-print signature confirmation reports (tax-return signing).
+  setupSignatureConfirmationPrintQueue();
+
+  // 0186 — auto-print terminal payment receipts (card-present completion).
+  setupTerminalReceiptPrintQueue();
+
   // Staff-to-staff message notifications (debounced email/SMS fan-out).
   setupInternalMessageNotifyQueue();
 
@@ -1005,6 +1065,84 @@ function setupFilerRouteQueue(): void {
   filerQueueRef = q;
   filerEventsRef = events;
   logger.info({ queueName: FILER_ROUTE_QUEUE }, 'filer-route queue registered');
+}
+
+// 0185 — signature confirmation auto-print consumer.
+let sigPrintWorkerRef: Worker<{ requestId: string }> | null = null;
+let sigPrintQueueRef: Queue<{ requestId: string }> | null = null;
+let sigPrintEventsRef: QueueEvents | null = null;
+
+function setupSignatureConfirmationPrintQueue(): void {
+  if (!db) {
+    logger.warn('signature-confirmation-print queue not registered — db missing');
+    return;
+  }
+  const q = new Queue<{ requestId: string }>(SIGNATURE_CONFIRMATION_PRINT_QUEUE, { connection });
+  const events = new QueueEvents(SIGNATURE_CONFIRMATION_PRINT_QUEUE, { connection });
+  events.on('failed', ({ jobId, failedReason }) => {
+    logger.error(
+      { jobId, queue: SIGNATURE_CONFIRMATION_PRINT_QUEUE, failedReason },
+      'signature-confirmation-print job failed',
+    );
+  });
+  const w = new Worker<{ requestId: string }>(
+    SIGNATURE_CONFIRMATION_PRINT_QUEUE,
+    async (job) => {
+      const result = await runSignatureConfirmationPrint(db!, logger, job.data);
+      logger.info(
+        { jobId: job.id, requestId: job.data.requestId, ...result },
+        'signature-confirmation-print complete',
+      );
+    },
+    { connection, concurrency: 2 },
+  );
+  sigPrintWorkerRef = w;
+  sigPrintQueueRef = q;
+  sigPrintEventsRef = events;
+  logger.info(
+    { queueName: SIGNATURE_CONFIRMATION_PRINT_QUEUE },
+    'signature-confirmation-print queue registered',
+  );
+}
+
+// 0186 — terminal receipt auto-print consumer.
+let termPrintWorkerRef: Worker<{ receiptId: string; printerId: number }> | null = null;
+let termPrintQueueRef: Queue<{ receiptId: string; printerId: number }> | null = null;
+let termPrintEventsRef: QueueEvents | null = null;
+
+function setupTerminalReceiptPrintQueue(): void {
+  if (!db) {
+    logger.warn('terminal-receipt-print queue not registered — db missing');
+    return;
+  }
+  const q = new Queue<{ receiptId: string; printerId: number }>(TERMINAL_RECEIPT_PRINT_QUEUE, {
+    connection,
+  });
+  const events = new QueueEvents(TERMINAL_RECEIPT_PRINT_QUEUE, { connection });
+  events.on('failed', ({ jobId, failedReason }) => {
+    logger.error(
+      { jobId, queue: TERMINAL_RECEIPT_PRINT_QUEUE, failedReason },
+      'terminal-receipt-print job failed',
+    );
+  });
+  const w = new Worker<{ receiptId: string; printerId: number }>(
+    TERMINAL_RECEIPT_PRINT_QUEUE,
+    async (job) => {
+      const result = await runTerminalReceiptPrint(db!, logger, job.data);
+      logger.info(
+        { jobId: job.id, receiptId: job.data.receiptId, ...result },
+        'terminal-receipt-print complete',
+      );
+    },
+    { connection, concurrency: 2 },
+  );
+  termPrintWorkerRef = w;
+  termPrintQueueRef = q;
+  termPrintEventsRef = events;
+  logger.info(
+    { queueName: TERMINAL_RECEIPT_PRINT_QUEUE },
+    'terminal-receipt-print queue registered',
+  );
 }
 
 // 0153 — Vibe Filer zip import (extract a client document export).
@@ -1413,6 +1551,12 @@ async function shutdown(): Promise<void> {
   if (zipImportWorkerRef) await zipImportWorkerRef.close();
   if (zipImportQueueRef) await zipImportQueueRef.close();
   if (zipImportEventsRef) await zipImportEventsRef.close();
+  if (sigPrintWorkerRef) await sigPrintWorkerRef.close();
+  if (sigPrintQueueRef) await sigPrintQueueRef.close();
+  if (sigPrintEventsRef) await sigPrintEventsRef.close();
+  if (termPrintWorkerRef) await termPrintWorkerRef.close();
+  if (termPrintQueueRef) await termPrintQueueRef.close();
+  if (termPrintEventsRef) await termPrintEventsRef.close();
   if (imNotifyWorkerRef) await imNotifyWorkerRef.close();
   if (imNotifyQueueRef) await imNotifyQueueRef.close();
   if (imNotifyEventsRef) await imNotifyEventsRef.close();

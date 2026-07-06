@@ -24,9 +24,28 @@ let cached: AnyBrowser | null = null;
 // happily fetch it (cloud metadata, localhost services, LAN hosts). Block
 // requests to loopback / link-local / RFC-1918 / unique-local targets and
 // any non-http(s) scheme other than inlined data: URIs.
+// Internal service / cloud-metadata hostnames that resolve to private or
+// link-local IPs. A hostname (not a literal IP) sails past the numeric
+// checks below, so block the well-known ones by name too. Not exhaustive —
+// a resolve-then-check on the resolved IP would be complete — but it closes
+// the practical SSRF targets (metadata endpoints, compose service names).
+const BLOCKED_PDF_HOSTNAMES = new Set([
+  'metadata.google.internal',
+  'metadata',
+  'instance-data',
+  'redis',
+  'postgres',
+  'postgresql',
+  'db',
+  'database',
+  'vault',
+  'minio',
+]);
+
 function isBlockedPdfHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (BLOCKED_PDF_HOSTNAMES.has(h) || h.endsWith('.internal')) return true;
   if (h === '::1' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80:')) return true;
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {

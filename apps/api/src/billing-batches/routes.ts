@@ -15,13 +15,17 @@ import {
   appUsers,
   billingBatchEngagements,
   billingBatchEntries,
+  billingBatchExpenses,
   billingBatches,
   clients,
+  engagementExpenses,
   engagements,
   firmRetainerSettings,
+  firmSettings,
   invoiceLineItems,
   invoices,
   timeEntries,
+  workCodes,
 } from '@vibe/db/schema';
 import { applyEntryAction, bucketize, type EntryAction } from '@vibe/core/billing';
 
@@ -64,9 +68,29 @@ const EntryActionSchema = z.object({
   comment: z.string().max(500).optional(),
 });
 
+// 0199 — expense actions applied at finalize (parallels EntryActionSchema
+// but keyed on the expense + carries the resolved billed amount).
+const ExpenseActionSchema = z.object({
+  expenseId: z.string().uuid(),
+  action: z.enum(['INCLUDE', 'DEFER', 'WRITE_OFF', 'WRITE_OFF_HELD']),
+  billedAmountCents: z.number().int().nonnegative().optional(),
+  comment: z.string().max(500).optional(),
+});
+
 const FinalizeSchema = z.object({
   actions: z.array(EntryActionSchema).min(1).max(5000),
+  // 0199 — optional expense action set. Absent = expenses keep their
+  // current action/billed amount.
+  expenseActions: z.array(ExpenseActionSchema).max(5000).optional(),
 });
+
+// 0199 — default markup applied to a claimed expense's cost when it is
+// first pulled into a batch (cost + 15%). Editable on the billing screen.
+const DEFAULT_EXPENSE_MARKUP_PCT = 15;
+
+function billedFromCost(costCents: number, markupPct: number): number {
+  return Math.round(costCents * (1 + markupPct / 100));
+}
 
 export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   const router = express.Router();
@@ -235,6 +259,40 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
               .where(eq(timeEntries.id, r.id));
           }
         }
+
+        // 0199 — pull unbilled engagement expenses in the period the same
+        // way. Each is billed at cost + default markup; INCLUDE by default.
+        const expenseRows = await tx
+          .select({ id: engagementExpenses.id, costCents: engagementExpenses.costCents })
+          .from(engagementExpenses)
+          .where(
+            and(
+              inArray(engagementExpenses.engagementId, uniqEngIds),
+              isNull(engagementExpenses.billingBatchId),
+              eq(engagementExpenses.status, 'ACTIVE'),
+              between(
+                engagementExpenses.expenseDate,
+                parsed.data.periodStart,
+                parsed.data.periodEnd,
+              ),
+            ),
+          );
+        if (expenseRows.length > 0) {
+          await tx.insert(billingBatchExpenses).values(
+            expenseRows.map((e) => ({
+              billingBatchId: batch.id,
+              expenseId: e.id,
+              action: 'INCLUDE' as const,
+              billedAmountCents: billedFromCost(Number(e.costCents), DEFAULT_EXPENSE_MARKUP_PCT),
+            })),
+          );
+          for (const e of expenseRows) {
+            await tx
+              .update(engagementExpenses)
+              .set({ billingBatchId: batch.id, updatedAt: new Date() })
+              .where(eq(engagementExpenses.id, e.id));
+          }
+        }
         return batch.id;
       });
 
@@ -346,6 +404,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           entryDate: timeEntries.entryDate,
           hours: timeEntries.hours,
           standardAmountCents: timeEntries.standardAmountCents,
+          costRateSnapshotCents: timeEntries.costRateSnapshotCents,
           action: billingBatchEntries.action,
           appUserId: timeEntries.appUserId,
           // 0050 — surface timekeeper name + engagement client on each row
@@ -353,10 +412,12 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
           // without a second roundtrip.
           staffName: appUsers.fullName,
           description: timeEntries.description,
+          workCode: workCodes.name,
         })
         .from(billingBatchEntries)
         .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
         .leftJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .leftJoin(workCodes, eq(workCodes.id, timeEntries.workCodeId))
         .where(eq(billingBatchEntries.billingBatchId, batch.id));
 
       // 0086 — load every engagement on the batch (primary + extras)
@@ -478,8 +539,35 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
             ? (adjByEntry.get(e.timeEntryId) ?? 0) + (proRata.get(e.timeEntryId) ?? 0)
             : 0;
         const billedAmountCents = e.action === 'INCLUDE' ? e.standardAmountCents + adj : 0;
-        return { ...e, adjustmentAmountCents: adj, billedAmountCents };
+        // Cost of labor for this entry (hours × snapshotted cost rate); drives
+        // the minimum-estimate-fee card on the billing screen.
+        const costOfLaborCents = Math.round(Number(e.hours) * (e.costRateSnapshotCents ?? 0));
+        return { ...e, adjustmentAmountCents: adj, billedAmountCents, costOfLaborCents };
       });
+
+      // 0199 — expenses on this batch (cost + markup billed items). No
+      // timekeeper, so they never touch the per-entry allocation math above;
+      // billed = stored billed_amount_cents when INCLUDE, else 0.
+      const expenseRows = await deps.db
+        .select({
+          expenseId: engagementExpenses.id,
+          expenseDate: engagementExpenses.expenseDate,
+          description: engagementExpenses.description,
+          costCents: engagementExpenses.costCents,
+          category: engagementExpenses.category,
+          vendor: engagementExpenses.vendor,
+          engagementId: engagementExpenses.engagementId,
+          action: billingBatchExpenses.action,
+          billedAmountCents: billingBatchExpenses.billedAmountCents,
+        })
+        .from(billingBatchExpenses)
+        .innerJoin(engagementExpenses, eq(engagementExpenses.id, billingBatchExpenses.expenseId))
+        .where(eq(billingBatchExpenses.billingBatchId, batch.id));
+      const expenses = expenseRows.map((e) => ({
+        ...e,
+        costCents: Number(e.costCents),
+        billedAmountCents: e.action === 'INCLUDE' ? Number(e.billedAmountCents ?? 0) : 0,
+      }));
 
       // When the batch is invoiced, surface the invoice id so the UI can
       // print / send / unfinalize. The link lives on the invoice's line
@@ -499,15 +587,24 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         invoiceId = li?.invoiceId ?? null;
       }
 
+      // 0202 — firm's estimated labor % drives the minimum-estimate-fee card.
+      const [laborCfg] = await deps.db
+        .select({ pct: firmSettings.estimatedLaborPct })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+
       res.json({
         batch,
         entries: entriesWithBilled,
+        expenses,
         aging,
         engagement: eng,
         engagements: engs,
         adjustmentTotalCents,
         invoiceId,
         retainer,
+        estimatedLaborPct: laborCfg?.pct ?? 40,
       });
     },
   );
@@ -549,6 +646,33 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
               .where(eq(timeEntries.id, a.timeEntryId));
           }
         }
+        // 0199 — mirror the same lifecycle for expenses. Persist action +
+        // (optional) billed amount; DEFER / WRITE_OFF_HELD release the
+        // expense back to the pool for a future batch. WRITE_OFF stays in
+        // this batch billed 0.
+        for (const x of parsed.data.expenseActions ?? []) {
+          await tx
+            .update(billingBatchExpenses)
+            .set({
+              action: x.action,
+              comment: x.comment ?? null,
+              ...(x.billedAmountCents !== undefined
+                ? { billedAmountCents: x.billedAmountCents }
+                : {}),
+            })
+            .where(
+              and(
+                eq(billingBatchExpenses.billingBatchId, req.params['id']!),
+                eq(billingBatchExpenses.expenseId, x.expenseId),
+              ),
+            );
+          if (x.action === 'DEFER' || x.action === 'WRITE_OFF_HELD') {
+            await tx
+              .update(engagementExpenses)
+              .set({ billingBatchId: null, updatedAt: new Date() })
+              .where(eq(engagementExpenses.id, x.expenseId));
+          }
+        }
         await tx
           .update(billingBatches)
           .set({
@@ -584,6 +708,82 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
 
       res.json({ ok: true, summary });
+    },
+  );
+
+  // -----------------------------------------------------------------
+  // Draft-save per-entry / per-expense actions WITHOUT finalizing. The UI
+  // calls this whenever a biller flips an INCLUDE/DEFER/WRITE_OFF picker so
+  // that set-target and create-adjustment (both of which read
+  // billing_batch_entry.action from the DB to build the allocation universe)
+  // see the current selection. Unlike finalize this does NOT change batch
+  // status and does NOT release billing_batch_id — the entry/expense stays
+  // in the batch until finalize actually releases DEFER/held rows.
+  // -----------------------------------------------------------------
+  const SaveActionsSchema = z.object({
+    actions: z.array(EntryActionSchema).max(5000).optional(),
+    expenseActions: z.array(ExpenseActionSchema).max(5000).optional(),
+  });
+  router.patch(
+    '/:id/actions',
+    requirePermission(deps, 'billing_batch:write'),
+    async (req: Request, res: Response) => {
+      const parsed = SaveActionsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      // Draft action saves are transient (a biller may toggle a picker many
+      // times); the final set is audited at finalize, so we don't emit here.
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const [batch] = await deps.db
+        .select({ id: billingBatches.id, status: billingBatches.status })
+        .from(billingBatches)
+        .where(eq(billingBatches.id, req.params['id']!))
+        .limit(1);
+      if (!batch) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Actions are only editable while the batch is still a draft.
+      if (batch.status !== 'DRAFT' && batch.status !== 'IN_REVIEW') {
+        res.status(409).json({ error: 'batch_not_editable' });
+        return;
+      }
+      await deps.db.transaction(async (tx) => {
+        for (const a of parsed.data.actions ?? []) {
+          await tx
+            .update(billingBatchEntries)
+            .set({ action: a.action, comment: a.comment ?? null })
+            .where(
+              and(
+                eq(billingBatchEntries.billingBatchId, batch.id),
+                eq(billingBatchEntries.timeEntryId, a.timeEntryId),
+              ),
+            );
+        }
+        for (const x of parsed.data.expenseActions ?? []) {
+          await tx
+            .update(billingBatchExpenses)
+            .set({
+              action: x.action,
+              comment: x.comment ?? null,
+              ...(x.billedAmountCents !== undefined
+                ? { billedAmountCents: x.billedAmountCents }
+                : {}),
+            })
+            .where(
+              and(
+                eq(billingBatchExpenses.billingBatchId, batch.id),
+                eq(billingBatchExpenses.expenseId, x.expenseId),
+              ),
+            );
+        }
+      });
+      res.json({ ok: true });
     },
   );
 
@@ -1556,6 +1756,10 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         'CUSTOM_WEIGHTED',
       ])
       .optional(),
+    // 0199 — markup applied to INCLUDE expenses (cost + markup%). The
+    // resulting expense billed total is carved out of the target FIRST;
+    // only the remainder is allocated across time. Default 15%.
+    expenseMarkupPct: z.number().min(0).max(500).optional(),
   });
 
   router.post(
@@ -1607,10 +1811,47 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         );
       const includeCents = Number(includeSum?.total ?? 0);
       const currentBilled = includeCents + Number(adjSum?.total ?? 0);
-      // Signed delta — negative means write-down, positive means write-up.
-      const deltaCents = parsed.data.targetAmountCents - currentBilled;
+
+      // 0199 — expenses bill at cost + markup% and are carved out of the
+      // target BEFORE the time write-up/down is computed. Recompute every
+      // INCLUDE expense's billed amount from its cost + the supplied markup,
+      // persist it, and subtract the total so the FEE adjustment (which
+      // allocates across time only) targets just the remaining time portion.
+      const markupPct = parsed.data.expenseMarkupPct ?? DEFAULT_EXPENSE_MARKUP_PCT;
+      const includeExpenses = await deps.db
+        .select({
+          expenseId: billingBatchExpenses.expenseId,
+          costCents: engagementExpenses.costCents,
+        })
+        .from(billingBatchExpenses)
+        .innerJoin(engagementExpenses, eq(engagementExpenses.id, billingBatchExpenses.expenseId))
+        .where(
+          and(
+            eq(billingBatchExpenses.billingBatchId, batch.id),
+            eq(billingBatchExpenses.action, 'INCLUDE'),
+          ),
+        );
+      let expenseBilledTotal = 0;
+      for (const x of includeExpenses) {
+        const billed = billedFromCost(Number(x.costCents), markupPct);
+        expenseBilledTotal += billed;
+        await deps.db
+          .update(billingBatchExpenses)
+          .set({ billedAmountCents: billed })
+          .where(
+            and(
+              eq(billingBatchExpenses.billingBatchId, batch.id),
+              eq(billingBatchExpenses.expenseId, x.expenseId),
+            ),
+          );
+      }
+
+      // The time target is what remains of the invoice target after
+      // expenses. Signed delta — negative means write-down, positive write-up.
+      const timeTarget = parsed.data.targetAmountCents - expenseBilledTotal;
+      const deltaCents = timeTarget - currentBilled;
       if (deltaCents === 0) {
-        res.json({ ok: true, deltaCents: 0, message: 'already at target' });
+        res.json({ ok: true, deltaCents: 0, expenseBilledTotal, message: 'already at target' });
         return;
       }
       const [adj] = await deps.db
@@ -1646,6 +1887,7 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
         ok: true,
         adjustmentId: adj?.id,
         deltaCents,
+        expenseBilledTotal,
         direction: deltaCents < 0 ? 'WRITE_DOWN' : 'WRITE_UP',
       });
     },

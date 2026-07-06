@@ -12,6 +12,9 @@ import type { Database } from '@vibe/db';
 import { clients, engagementTypes, engagements, invoices, serviceLines } from '@vibe/db/schema';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { bucketize, type AgingBucket } from '@vibe/core/billing';
+import { formatDateUS, formatMoneyCents } from '@vibe/core/invoicing';
+
+import { printNotificationChannel } from '../notifications/print-channel';
 
 import { excelTable } from '../reports/excel';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -31,7 +34,28 @@ interface ClientAging {
   clientName: string;
   buckets: Record<AgingBucket, number>;
   total: number;
+  /** Balance-weighted average days past the due date across outstanding
+   *  invoices (not-yet-due invoices count as 0). */
+  avgDaysPastDue: number;
   partnerId?: string;
+}
+
+/** Balance-weighted mean of days-past-due; not-yet-due invoices count as 0. */
+function weightedAvgDaysPastDue(
+  rows: { entryDate: string; amountCents: number }[],
+  today: string,
+): number {
+  let weighted = 0;
+  let weight = 0;
+  for (const r of rows) {
+    const days = Math.max(
+      0,
+      Math.floor((Date.parse(today) - Date.parse(r.entryDate)) / 86_400_000),
+    );
+    weighted += days * r.amountCents;
+    weight += r.amountCents;
+  }
+  return weight > 0 ? Math.round(weighted / weight) : 0;
 }
 
 export function createArRouter(deps: ArRoutesDeps): Router {
@@ -371,19 +395,18 @@ export function createArRouter(deps: ArRoutesDeps): Router {
       const today = new Date().toISOString().slice(0, 10);
       const rows = open
         .map((o) => ({
-          line: `${o.invoiceNumber}  due ${o.dueDate}  balance $${(
-            (Number(o.totalCents) - Number(o.paidCents)) /
-            100
-          ).toFixed(2)}`,
+          line: `${o.invoiceNumber}  due ${formatDateUS(o.dueDate)}  balance ${formatMoneyCents(
+            Number(o.totalCents) - Number(o.paidCents),
+          )}`,
           amountCents: Number(o.totalCents) - Number(o.paidCents),
         }))
         .filter((r) => r.amountCents > 0);
       const balance = rows.reduce((s, r) => s + r.amountCents, 0);
       const body =
-        `Account statement for ${client.name} as of ${today}:\n\n` +
+        `Account statement for ${client.name} as of ${formatDateUS(today)}:\n\n` +
         rows.map((r) => r.line).join('\n') +
-        `\n\nTotal balance: $${(balance / 100).toFixed(2)}`;
-      const balanceStr = `$${(balance / 100).toFixed(2)}`;
+        `\n\nTotal balance: ${formatMoneyCents(balance)}`;
+      const balanceStr = formatMoneyCents(balance);
       const firm = await firmScope(deps.db, session.firmId);
       const rendered = await renderTemplate({
         db: deps.db,
@@ -416,6 +439,13 @@ export function createArRouter(deps: ArRoutesDeps): Router {
         res.status(502).json({ error: 'email_dispatch_failed' });
         return;
       }
+      await printNotificationChannel({
+        db: deps.db,
+        firmId: session.firmId,
+        kind: 'statement_sent',
+        clientId: client.id,
+        context: { client: { name: client.name }, firm, statement: { balance: balanceStr } },
+      }).catch(() => undefined);
       res.json({ ok: true, sentTo: billingEmail, balanceCents: balance });
     },
   );
@@ -485,7 +515,11 @@ export function createArRouter(deps: ArRoutesDeps): Router {
           serviceLineName: serviceLines.name,
         })
         .from(invoices)
-        .innerJoin(engagements, eq(engagements.id, invoices.primaryEngagementId))
+        // LEFT joins all the way down: an invoice with no primary engagement
+        // (e.g. consolidated/manual) used to vanish from this report, so the
+        // service-line totals never reconciled with /aging. Those balances
+        // now land in the "(no service line)" bucket.
+        .leftJoin(engagements, eq(engagements.id, invoices.primaryEngagementId))
         .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
         .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
         .where(
@@ -587,6 +621,7 @@ async function loadAging(
       clientName: v.name,
       buckets: b,
       total,
+      avgDaysPastDue: weightedAvgDaysPastDue(v.rows, today),
       partnerId: v.partnerId,
     });
     totals['0-30'] += b['0-30'];
@@ -603,6 +638,9 @@ function agingToCsv(data: {
   clients: ClientAging[];
   totals: Record<AgingBucket, number>;
 }): string {
+  // Dollar amounts (2dp), matching the XLSX export — the CSV used to emit
+  // raw cents, which read as 100× the true balance next to the Excel file.
+  const usd = (cents: number): string => (cents / 100).toFixed(2);
   const header = ['Client', 'PartnerId', '0-30', '31-60', '61-90', '90+', 'Total'];
   const lines = [header.join(',')];
   for (const c of data.clients) {
@@ -610,11 +648,11 @@ function agingToCsv(data: {
       [
         csvCell(c.clientName),
         c.partnerId ?? '',
-        c.buckets['0-30'],
-        c.buckets['31-60'],
-        c.buckets['61-90'],
-        c.buckets['90+'],
-        c.total,
+        usd(c.buckets['0-30']),
+        usd(c.buckets['31-60']),
+        usd(c.buckets['61-90']),
+        usd(c.buckets['90+']),
+        usd(c.total),
       ].join(','),
     );
   }
@@ -622,11 +660,11 @@ function agingToCsv(data: {
     [
       'TOTAL',
       '',
-      data.totals['0-30'],
-      data.totals['31-60'],
-      data.totals['61-90'],
-      data.totals['90+'],
-      data.totals['0-30'] + data.totals['31-60'] + data.totals['61-90'] + data.totals['90+'],
+      usd(data.totals['0-30']),
+      usd(data.totals['31-60']),
+      usd(data.totals['61-90']),
+      usd(data.totals['90+']),
+      usd(data.totals['0-30'] + data.totals['31-60'] + data.totals['61-90'] + data.totals['90+']),
     ].join(','),
   );
   return lines.join('\n') + '\n';

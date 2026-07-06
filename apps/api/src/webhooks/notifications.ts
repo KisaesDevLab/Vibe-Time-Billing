@@ -29,6 +29,8 @@
 //   Twilio  MessageStatus=delivered → delivered
 //   Twilio  MessageStatus=failed|undelivered → bounced
 
+import { timingSafeEqual } from 'node:crypto';
+
 import express, { type Request, type Response, type Router } from 'express';
 import { eq } from 'drizzle-orm';
 import type { Logger } from 'pino';
@@ -37,6 +39,15 @@ import type { Database } from '@vibe/db';
 import { notificationLog } from '@vibe/db/schema';
 
 import { resolveWebhookSecret } from './webhook-keys';
+
+// Constant-time shared-secret comparison so a wrong token can't be probed
+// byte-by-byte via response timing.
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
 
 export interface NotificationWebhookDeps {
   db: Database | null;
@@ -93,7 +104,8 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== secret) {
+    const provided = req.header('x-webhook-token') ?? '';
+    if (!secret || !safeEqual(provided, secret)) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }
@@ -127,7 +139,8 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== secret) {
+    const provided = req.header('x-webhook-token') ?? '';
+    if (!secret || !safeEqual(provided, secret)) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }
@@ -161,7 +174,8 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== secret) {
+    const provided = req.header('x-webhook-token') ?? '';
+    if (!secret || !safeEqual(provided, secret)) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }
@@ -193,7 +207,8 @@ export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): 
       res.status(503).json({ error: 'not_configured' });
       return;
     }
-    if (req.header('x-webhook-token') !== secret) {
+    const provided = req.header('x-webhook-token') ?? '';
+    if (!secret || !safeEqual(provided, secret)) {
       res.status(401).json({ error: 'bad_signature' });
       return;
     }

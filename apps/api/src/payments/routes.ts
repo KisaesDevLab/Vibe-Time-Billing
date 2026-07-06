@@ -18,7 +18,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -29,7 +29,6 @@ import {
   creditApplications,
   creditMemos,
   firmSettings,
-  firms,
   invoices,
   paymentMethod,
   paymentMethodTypes,
@@ -39,6 +38,7 @@ import {
   portalIdentity,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
+import { formatDateUS, formatMoneyCents } from '@vibe/core/invoicing';
 import {
   promoteEscrowFilesForInvoice,
   sendDeliverableUnlockedNotifications,
@@ -49,7 +49,33 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { recordOutbound } from '../clients/communications';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
-import { methodLabel, renderPaymentReceiptHtml, type PaymentReceiptDoc } from './receipt-doc';
+import { loadReceiptDoc, renderPaymentReceiptHtml } from './receipt-doc';
+import { sendToPrinter } from '../print-gateway/send';
+import { createStripeProvider } from './stripe';
+import { loadFirmStripeConfig } from './stripe-resolver';
+import { chargeClientBalanceOffSession } from './off-session-charge';
+import { getBlockedClientIdsCached } from '../clients/access';
+import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from './recompute';
+
+// Resolve the Stripe provider + publishable key for a firm, preferring the
+// firm's DB-stored keys (Admin → Billing → Stripe Connect) over the boot-time
+// env provider. This is what lets the Charge button / pay-links work from keys
+// pasted in the UI without setting appliance env vars.
+async function resolveStripeForFirm(
+  deps: PaymentRoutesDeps,
+  firmId: string,
+): Promise<{ provider: PaymentProvider | null; publishableKey: string | null }> {
+  if (deps.db) {
+    const cfg = await loadFirmStripeConfig(deps.db, firmId);
+    if (cfg?.secretKey) {
+      return {
+        provider: createStripeProvider({ secretKey: cfg.secretKey }),
+        publishableKey: cfg.publishableKey ?? deps.stripePublishableKey ?? null,
+      };
+    }
+  }
+  return { provider: deps.stripe ?? null, publishableKey: deps.stripePublishableKey ?? null };
+}
 
 export interface PaymentRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -132,36 +158,6 @@ const PAYMENT_METHOD_LABELS = {
 } as const;
 
 /** Derive a human payment channel for the Billing → Payments listing. */
-function deriveChannel(
-  provider: string,
-  pmKind: string | null,
-  receiptMethod: string | null,
-  storedChannel?: string | null,
-): string {
-  // An explicit channel stamped at collect time wins (e.g. in-person Terminal).
-  if (storedChannel === 'TERMINAL') return 'Terminal';
-  if (storedChannel) return storedChannel;
-  if (provider === 'CREDIT') return 'Credit';
-  if (provider === 'MANUAL') {
-    switch ((receiptMethod ?? '').toUpperCase()) {
-      case 'CHECK':
-        return 'Check';
-      case 'CASH':
-        return 'Cash';
-      case 'ACH_MANUAL':
-        return 'ACH (manual)';
-      default:
-        return 'Manual';
-    }
-  }
-  // Stripe (online or Terminal). We can't always distinguish card-present from
-  // online without a stored method type, so an unlabeled Stripe card reads as
-  // "Card"; ACH PMs read as "ACH".
-  if (pmKind === 'ACH') return 'ACH';
-  if (pmKind === 'CARD') return 'Card';
-  return 'Card';
-}
-
 function emptyReceivedSummary(): {
   count: number;
   grossCents: number;
@@ -187,7 +183,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
     requirePermission(deps, 'payment:read'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
-      const stripeEnabled = Boolean(deps.stripe);
+      const { provider, publishableKey } = await resolveStripeForFirm(deps, session.firmId);
+      const stripeEnabled = Boolean(provider);
       let achEnabled = false;
       let ccEnabled = false;
       if (deps.db) {
@@ -204,7 +201,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       }
       res.json({
         stripeEnabled,
-        stripePublishableKey: deps.stripePublishableKey ?? null,
+        stripePublishableKey: publishableKey,
         // ACH via Stripe is deferred (v1 = record-only). The flag is
         // surfaced so the UI can show ACH as a Record-mode option.
         achEnabled,
@@ -786,7 +783,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
-      if (!deps.stripe || !deps.stripe.createIntent) {
+      const { provider: firmStripe } = await resolveStripeForFirm(deps, session.firmId);
+      if (!firmStripe || !firmStripe.createIntent) {
         res.status(409).json({ error: 'stripe_not_configured' });
         return;
       }
@@ -879,8 +877,8 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         return;
       }
 
-      // Create the Stripe PaymentIntent.
-      const intent = await deps.stripe.createIntent({
+      // Create the Stripe PaymentIntent (firm's resolved provider).
+      const intent = await firmStripe.createIntent({
         amountCents: parsed.data.amountReceivedCents,
         currency: 'USD',
         description: `Receipt ${receipt.id} (${PAYMENT_METHOD_LABELS.CARD_STRIPE})`,
@@ -926,6 +924,148 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         receiptId: receipt.id,
         clientSecret: intent.clientSecret,
         providerChargeId: intent.providerChargeId,
+      });
+    },
+  );
+
+  // =================================================================
+  // POST /receive/charge-saved — charge a client's saved method off-session
+  // for a staff-specified amount/allocations. Settles via the same webhook as
+  // the Elements Charge flow; the UI polls GET /receive/:id.
+  // =================================================================
+  const ChargeSavedSchema = z.object({
+    payerClientId: z.string().uuid(),
+    paymentMethodId: z.string().uuid(),
+    paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    reference: z.string().max(200).nullish(),
+    amountReceivedCents: z.number().int().positive(),
+    allocations: z.array(AllocationSchema).min(1).max(200),
+  });
+  router.post(
+    '/receive/charge-saved',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ChargeSavedSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const body = parsed.data;
+      // 0165 restricted-client guard.
+      const blocked = await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId);
+      if (blocked.includes(body.payerClientId)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const allocSum = body.allocations.reduce((n, a) => n + a.amountCents, 0);
+      if (allocSum !== body.amountReceivedCents) {
+        res.status(400).json({ error: 'allocation_sum_mismatch' });
+        return;
+      }
+      // Every allocated invoice must belong to the PAYER client (and firm).
+      // Without this, a staffer could charge client A's saved card and apply
+      // the payment to client B's invoices.
+      const allocInvoiceIds = Array.from(new Set(body.allocations.map((a) => a.invoiceId)));
+      const ownedInvoices = await deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(
+          and(
+            inArray(invoices.id, allocInvoiceIds),
+            eq(invoices.firmId, session.firmId),
+            eq(invoices.clientId, body.payerClientId),
+          ),
+        );
+      if (ownedInvoices.length !== allocInvoiceIds.length) {
+        res.status(400).json({ error: 'allocation_invoice_not_payer_client' });
+        return;
+      }
+      // The method must be this firm+client's, ACTIVE, and verified.
+      const [pm] = await deps.db
+        .select({
+          kind: paymentMethod.kind,
+          verificationStatus: paymentMethod.verificationStatus,
+        })
+        .from(paymentMethod)
+        .where(
+          and(
+            eq(paymentMethod.id, body.paymentMethodId),
+            eq(paymentMethod.firmId, session.firmId),
+            eq(paymentMethod.clientId, body.payerClientId),
+            eq(paymentMethod.status, 'ACTIVE'),
+          ),
+        )
+        .limit(1);
+      if (!pm) {
+        res.status(404).json({ error: 'payment_method_not_found' });
+        return;
+      }
+      if (pm.verificationStatus) {
+        res.status(409).json({ error: 'payment_method_unverified' });
+        return;
+      }
+      // Firm-level processing toggle for the method kind.
+      const [fs] = await deps.db
+        .select({
+          cc: firmSettings.creditCardProcessingEnabled,
+          ach: firmSettings.achProcessingEnabled,
+        })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, session.firmId))
+        .limit(1);
+      if (pm.kind === 'CARD' && !fs?.cc) {
+        res.status(409).json({ error: 'credit_card_processing_disabled' });
+        return;
+      }
+      if (pm.kind === 'ACH' && !fs?.ach) {
+        res.status(409).json({ error: 'ach_processing_disabled' });
+        return;
+      }
+      let out;
+      try {
+        out = await chargeClientBalanceOffSession({
+          db: deps.db,
+          firmId: session.firmId,
+          clientId: body.payerClientId,
+          paymentMethodId: body.paymentMethodId,
+          amountCents: body.amountReceivedCents,
+          allocations: body.allocations,
+          paymentDate: body.paymentDate,
+          createdById: session.appUserId,
+          metadata: { source: 'receive_saved', reference: body.reference ?? '' },
+        });
+      } catch (err) {
+        logger.error({ err }, 'charge-saved failed');
+        res.status(502).json({ error: 'stripe_error' });
+        return;
+      }
+      if (!out.ok) {
+        res.status(400).json({ error: out.error, receiptId: out.receiptId });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'PAYMENT',
+        entityType: 'payment_receipt',
+        entityId: out.receiptId,
+        actorAppUserId: session.appUserId,
+        after: {
+          payerClientId: body.payerClientId,
+          amountCents: body.amountReceivedCents,
+          method: pm.kind === 'CARD' ? 'CARD_STRIPE' : 'ACH_STRIPE',
+          saved: true,
+        },
+      }).catch(() => undefined);
+      res.json({
+        ok: true,
+        receiptId: out.receiptId,
+        status: out.status,
+        requiresAction: out.requiresAction,
+        settled: out.settled,
       });
     },
   );
@@ -1208,31 +1348,55 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       }
       const start = typeof req.query['start'] === 'string' ? req.query['start'] : null;
       const end = typeof req.query['end'] === 'string' ? req.query['end'] : null;
-      const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
-      const channel = typeof req.query['channel'] === 'string' ? req.query['channel'] : null;
+      const csv = (v: unknown): string[] =>
+        typeof v === 'string'
+          ? v
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [];
+      const statuses = csv(req.query['status']);
+      const channels = csv(req.query['channel']);
+      const clientIds = csv(req.query['clientId']);
       const q = (req.query['q'] ?? '').toString().trim();
+
+      // deriveChannel() as SQL so channel can filter/sort/paginate in the DB.
+      const channelExpr = sql<string>`CASE
+        WHEN ${payments.channel} = 'TERMINAL' THEN 'Terminal'
+        WHEN ${payments.channel} IS NOT NULL AND ${payments.channel} <> '' THEN ${payments.channel}
+        WHEN ${payments.provider} = 'CREDIT' THEN 'Credit'
+        WHEN ${payments.provider} = 'MANUAL' THEN
+          CASE UPPER(COALESCE(${paymentReceipts.paymentMethod}, ''))
+            WHEN 'CHECK' THEN 'Check'
+            WHEN 'CASH' THEN 'Cash'
+            WHEN 'ACH_MANUAL' THEN 'ACH (manual)'
+            ELSE 'Manual'
+          END
+        WHEN ${paymentMethod.kind} = 'ACH' THEN 'ACH'
+        WHEN ${paymentMethod.kind} = 'CARD' THEN 'Card'
+        ELSE 'Card'
+      END`;
+      // Displayed status folds voided rows into a VOIDED pseudo-status (mirrors
+      // the UI), so the Status filter/sort match what the user sees.
+      const displayStatusExpr = sql<string>`CASE
+        WHEN ${payments.voidedAt} IS NOT NULL THEN 'VOIDED'
+        ELSE ${payments.status}::text
+      END`;
 
       const conds = [eq(invoices.firmId, session.firmId)];
       if (start && DATE_RE.test(start)) conds.push(gte(payments.receivedAt, new Date(start)));
       if (end && DATE_RE.test(end))
         conds.push(lte(payments.receivedAt, new Date(`${end}T23:59:59.999Z`)));
-      const STATUSES = [
-        'PENDING',
-        'SUCCEEDED',
-        'FAILED',
-        'REFUNDED',
-        'PARTIALLY_REFUNDED',
-      ] as const;
-      if (status && (STATUSES as readonly string[]).includes(status)) {
-        conds.push(eq(payments.status, status as (typeof STATUSES)[number]));
-      }
+      if (statuses.length > 0) conds.push(inArray(displayStatusExpr, statuses));
+      if (channels.length > 0) conds.push(inArray(channelExpr, channels));
+      if (clientIds.length > 0) conds.push(inArray(invoices.clientId, clientIds));
       if (q) {
         const like = `%${q}%`;
         const expr = or(ilike(clients.name, like), ilike(invoices.invoiceNumber, like));
         if (expr) conds.push(expr);
       }
 
-      const rows = await deps.db
+      const from = deps.db
         .select({
           paymentId: payments.id,
           receivedAt: payments.receivedAt,
@@ -1245,22 +1409,68 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
           provider: payments.provider,
           status: payments.status,
           refundedAmountCents: payments.refundedAmountCents,
-          storedChannel: payments.channel,
           voidedAt: payments.voidedAt,
           receiptId: payments.receiptId,
-          pmKind: paymentMethod.kind,
-          receiptMethod: paymentReceipts.paymentMethod,
+          channel: channelExpr.as('channel'),
+        })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
+        .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId));
+
+      // Sort. Default: most-recent first.
+      const sortCol = String(req.query['sort'] ?? 'date');
+      const sortDir = String(req.query['dir'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+      const sortMap: Record<string, ReturnType<typeof sql>> = {
+        date: sql`${payments.receivedAt}`,
+        client: sql`${clients.name}`,
+        channel: channelExpr,
+        amount: sql`${payments.amountCents}`,
+        status: displayStatusExpr,
+      };
+      const orderExpr = sortMap[sortCol] ?? sortMap['date']!;
+
+      // Pagination. `all=1` (CSV export) lifts the page window to a large cap.
+      const all = req.query['all'] === '1';
+      const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+      const pageSize = all
+        ? 100000
+        : Math.min(250, Math.max(1, parseInt(String(req.query['pageSize'] ?? '50'), 10) || 50));
+
+      const [totalRow] = await deps.db
+        .select({ total: sql<number>`COUNT(*)`.as('total') })
+        .from(payments)
+        .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+        .innerJoin(clients, eq(clients.id, invoices.clientId))
+        .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
+        .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+        .where(and(...conds));
+      const total = Number(totalRow?.total ?? 0);
+
+      // Summary over the WHOLE filtered set (not the page), computed in SQL so
+      // it's correct regardless of pagination.
+      const [sumRow] = await deps.db
+        .select({
+          grossCents: sql<number>`COALESCE(SUM(${payments.amountCents}) FILTER (WHERE ${payments.status} = 'SUCCEEDED' AND ${payments.voidedAt} IS NULL), 0)`,
+          feesCents: sql<number>`COALESCE(SUM(${payments.feeCents}) FILTER (WHERE ${payments.status} = 'SUCCEEDED' AND ${payments.voidedAt} IS NULL), 0)`,
+          refundsCents: sql<number>`COALESCE(SUM(${payments.refundedAmountCents}), 0)`,
+          pendingCount: sql<number>`COUNT(*) FILTER (WHERE ${payments.status} = 'PENDING' AND ${payments.voidedAt} IS NULL)`,
         })
         .from(payments)
         .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
         .innerJoin(clients, eq(clients.id, invoices.clientId))
         .leftJoin(paymentMethod, eq(paymentMethod.id, payments.paymentMethodId))
         .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
-        .where(and(...conds))
-        .orderBy(desc(payments.receivedAt))
-        .limit(1000);
+        .where(and(...conds));
 
-      const withChannel = rows.map((r) => ({
+      const rows = await from
+        .where(and(...conds))
+        .orderBy(sortDir === 'asc' ? asc(orderExpr) : desc(orderExpr))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+
+      const items = rows.map((r) => ({
         paymentId: r.paymentId,
         receivedAt: r.receivedAt,
         clientId: r.clientId,
@@ -1273,7 +1483,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         provider: r.provider,
         status: r.status,
         refundedAmountCents: Number(r.refundedAmountCents ?? 0),
-        channel: deriveChannel(r.provider, r.pmKind, r.receiptMethod, r.storedChannel),
+        channel: r.channel,
         receiptId: r.receiptId,
         voided: r.voidedAt != null,
         // Only manually-recorded payments are editable/voidable from the UI;
@@ -1281,25 +1491,23 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
         canEdit: r.provider === 'MANUAL' && r.voidedAt == null,
         canVoid: (r.provider === 'MANUAL' || r.provider === 'CREDIT') && r.voidedAt == null,
       }));
-      const filtered = channel ? withChannel.filter((r) => r.channel === channel) : withChannel;
 
-      const summary = filtered.reduce(
-        (s, r) => {
-          if (r.status === 'SUCCEEDED' && !r.voided) {
-            s.grossCents += r.amountCents;
-            s.feesCents += r.feeCents;
-          }
-          s.refundsCents += r.refundedAmountCents;
-          if (r.status === 'PENDING' && !r.voided) s.pendingCount += 1;
-          return s;
-        },
-        { count: filtered.length, grossCents: 0, feesCents: 0, refundsCents: 0, pendingCount: 0 },
-      );
+      const grossCents = Number(sumRow?.grossCents ?? 0);
+      const feesCents = Number(sumRow?.feesCents ?? 0);
+      const refundsCents = Number(sumRow?.refundsCents ?? 0);
       res.json({
-        items: filtered,
+        rows: items,
+        items,
+        total,
+        page,
+        pageSize,
         summary: {
-          ...summary,
-          netCents: summary.grossCents - summary.feesCents - summary.refundsCents,
+          count: total,
+          grossCents,
+          feesCents,
+          refundsCents,
+          pendingCount: Number(sumRow?.pendingCount ?? 0),
+          netCents: grossCents - feesCents - refundsCents,
         },
       });
     },
@@ -1561,59 +1769,6 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
 
   // ----- Receipt document (print / email) ----------------------------
 
-  async function loadReceiptDoc(
-    db: Database,
-    firmId: string,
-    receiptId: string,
-  ): Promise<{ doc: PaymentReceiptDoc; payerClientId: string } | null> {
-    const [receipt] = await db
-      .select({
-        id: paymentReceipts.id,
-        payerClientId: paymentReceipts.payerClientId,
-        paymentDate: paymentReceipts.paymentDate,
-        paymentMethod: paymentReceipts.paymentMethod,
-        reference: paymentReceipts.reference,
-        totalCents: paymentReceipts.totalCents,
-        payerName: clients.name,
-      })
-      .from(paymentReceipts)
-      .innerJoin(clients, eq(clients.id, paymentReceipts.payerClientId))
-      .where(and(eq(paymentReceipts.id, receiptId), eq(paymentReceipts.firmId, firmId)))
-      .limit(1);
-    if (!receipt) return null;
-    const [firm] = await db
-      .select({ name: firms.name })
-      .from(firms)
-      .where(eq(firms.id, firmId))
-      .limit(1);
-    const lineRows = await db
-      .select({ invoiceNumber: invoices.invoiceNumber, amountCents: payments.amountCents })
-      .from(payments)
-      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
-      .where(and(eq(payments.receiptId, receiptId), isNull(payments.voidedAt)))
-      .orderBy(asc(invoices.invoiceNumber));
-    const paymentDate =
-      typeof receipt.paymentDate === 'string'
-        ? receipt.paymentDate
-        : new Date(receipt.paymentDate as unknown as Date).toISOString().slice(0, 10);
-    return {
-      payerClientId: receipt.payerClientId,
-      doc: {
-        firmName: firm?.name ?? 'Your firm',
-        receiptId: receipt.id,
-        paymentDate,
-        methodLabel: methodLabel(receipt.paymentMethod),
-        reference: receipt.reference,
-        payerName: receipt.payerName,
-        totalCents: Number(receipt.totalCents),
-        lines: lineRows.map((l) => ({
-          invoiceNumber: l.invoiceNumber,
-          amountCents: Number(l.amountCents),
-        })),
-      },
-    };
-  }
-
   async function renderReceiptDoc(
     req: Request,
     res: Response,
@@ -1661,6 +1816,57 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
   );
   router.get('/receipt/:receiptId/print.pdf', requirePermission(deps, 'payment:read'), (req, res) =>
     renderReceiptDoc(req, res, 'pdf'),
+  );
+
+  // Direct-print the receipt to a Vibe Print gateway printer.
+  const ReceiptPrintSchema = z.object({
+    printerId: z.number().int().positive(),
+    copies: z.number().int().min(1).max(20).optional(),
+  });
+  router.post(
+    '/receipt/:receiptId/print',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = ReceiptPrintSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const loaded = await loadReceiptDoc(deps.db, session.firmId, req.params['receiptId']!);
+      if (!loaded) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      let pdf: Buffer;
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        pdf = await renderHtmlToPdf(renderPaymentReceiptHtml(loaded.doc));
+      } catch (err) {
+        logger.error({ err, receiptId: loaded.doc.receiptId }, 'receipt print render failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const result = await sendToPrinter({
+        db: deps.db,
+        firmId: session.firmId,
+        appUserId: session.appUserId,
+        printableType: 'payment_receipt',
+        printableId: loaded.doc.receiptId,
+        pdf,
+        printerId: parsed.data.printerId,
+        copies: parsed.data.copies ?? 1,
+      });
+      if (!result.ok) {
+        res.status(502).json({ error: result.error });
+        return;
+      }
+      res.json({ ok: true, jobId: result.jobId });
+    },
   );
 
   // Email the receipt to the payer client's billing contact (falling back
@@ -1725,7 +1931,7 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
       // Multi-invoice PDF receipt — distinct from the single-invoice
       // `payment_received` confirmation template, so this keeps its own copy.
       const subject = `Payment receipt — ${loaded.doc.firmName}`;
-      const body = `Thank you for your payment of $${(loaded.doc.totalCents / 100).toFixed(2)} received ${loaded.doc.paymentDate}. Your receipt is ${attachments ? 'attached' : 'below'}.`;
+      const body = `Thank you for your payment of ${formatMoneyCents(loaded.doc.totalCents)} received ${formatDateUS(loaded.doc.paymentDate)}. Your receipt is ${attachments ? 'attached' : 'below'}.`;
       try {
         await deps.sendStaffMail({ to: contact.email, subject, body, html, attachments });
       } catch (err) {
@@ -1836,74 +2042,11 @@ export function createPaymentRouter(deps: PaymentRoutesDeps): Router {
   return router;
 }
 
-/**
- * Idempotent recompute of invoice.paid_cents from successful payments.
- * Run inside a transaction that already holds the invoice row lock.
- *
- * Also updates status (PAID / PARTIALLY_PAID) and clears paidAt when the
- * row goes from PAID back to PARTIALLY_PAID (e.g., after a refund).
- */
-export async function recomputeInvoicePaid(tx: Database, invoiceId: string): Promise<void> {
-  await recomputeInvoicePaidReturnsFullyPaid(tx, invoiceId);
-}
-
-/**
- * Same as recomputeInvoicePaid but reports whether the invoice
- * transitioned to (or remains) PAID after recompute. Used by /receive
- * to decide which invoices to fire the escrow-promote hook on.
- */
-export async function recomputeInvoicePaidReturnsFullyPaid(
-  tx: Database,
-  invoiceId: string,
-): Promise<boolean> {
-  const [agg] = await tx
-    .select({
-      paidCents: sql<number>`COALESCE(SUM(${payments.amountCents}), 0)::bigint`,
-    })
-    .from(payments)
-    .where(
-      and(
-        eq(payments.invoiceId, invoiceId),
-        eq(payments.status, 'SUCCEEDED'),
-        sql`${payments.voidedAt} IS NULL`,
-      ),
-    );
-  const [inv] = await tx
-    .select({
-      total: invoices.totalCents,
-      currentStatus: invoices.status,
-      dueDate: invoices.dueDate,
-    })
-    .from(invoices)
-    .where(eq(invoices.id, invoiceId))
-    .limit(1);
-  if (!inv) return false;
-  const paidCents = Number(agg?.paidCents ?? 0);
-  const total = Number(inv.total);
-  let nextStatus: typeof inv.currentStatus;
-  if (paidCents >= total) {
-    nextStatus = 'PAID';
-  } else if (paidCents > 0) {
-    nextStatus = 'PARTIALLY_PAID';
-  } else if (inv.currentStatus === 'PAID' || inv.currentStatus === 'PARTIALLY_PAID') {
-    // Paid amount fell back to zero (e.g. a payment was voided) — return the
-    // invoice to the unpaid list as OVERDUE (if past due) or SENT. DRAFT /
-    // VOIDED invoices are left untouched.
-    const overdue = inv.dueDate != null && inv.dueDate < new Date().toISOString().slice(0, 10);
-    nextStatus = overdue ? 'OVERDUE' : 'SENT';
-  } else {
-    nextStatus = inv.currentStatus;
-  }
-  await tx
-    .update(invoices)
-    .set({
-      paidCents,
-      status: nextStatus,
-      paidAt: nextStatus === 'PAID' ? new Date() : null,
-    })
-    .where(eq(invoices.id, invoiceId));
-  return nextStatus === 'PAID';
-}
+// Recompute helpers live in ./recompute (Express-free) so the webhook +
+// off-session charge path can be imported by the worker without pulling this
+// Express-typed module into the worker's tsc program. Re-exported here for the
+// existing import sites.
+export { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid };
 
 /**
  * Inline credit-memo status recompute. Duplicates the helper in

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 //
-// Reporting endpoints — Phase 17. Realization rollups straight off
-// `adjustment_allocation`. No materialized view yet — the query joins to
-// engagement→client to scope by firm and groups in SQL, then rolls per
-// dimension via @vibe/core/reporting.
+// Reporting endpoints — Phase 17. Realization follows the industry-standard
+// billing-realization method (see loadBilledRealization): all billed WIP at
+// standard value + net write-up/down, windowed by WIP-relief (invoice) date,
+// rolled per dimension via @vibe/core/reporting.
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, ne, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, notInArray, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -15,13 +15,17 @@ import {
   adjustments,
   appUsers,
   approvalRequests,
+  billingBatchEntries,
   billingBatches,
   clients,
+  creditApplications,
+  creditMemos,
   engagementTypes,
   engagements,
   firmSettings,
   invoiceLineItems,
   invoices,
+  paymentReceipts,
   payments,
   recurringBillingPlans,
   serviceLines,
@@ -84,6 +88,15 @@ function rangeFromQuery(req: Request, defaultDays: number): { start: string; end
   const start =
     pick('start') ?? new Date(Date.now() - defaultDays * 86_400_000).toISOString().slice(0, 10);
   return { start, end: pick('end') };
+}
+
+// Actual length (in days) of a resolved report window; `end` defaults to
+// today. Date-only difference so the default trailing-N-day window reports
+// exactly N. Used so responses echo the window that was really queried
+// instead of a hardcoded default.
+function windowDaysOf(start: string, end: string | null): number {
+  const endStr = end ?? new Date().toISOString().slice(0, 10);
+  return Math.max(1, Math.round((Date.parse(endStr) - Date.parse(start)) / 86_400_000));
 }
 
 // For all-time reports: parse ?start=/?end= without imposing a default window,
@@ -175,6 +188,380 @@ async function billedByEngagement(
   return billedBy;
 }
 
+// ---------------------------------------------------------------------
+// Cash-basis (collections) helpers — the "Cash" side of the accrual/cash
+// report toggle. Cash = payment rows net of refunds (a refund is netted
+// into its original payment, not dated separately), SUCCEEDED or
+// PARTIALLY_REFUNDED, not voided, dated by COALESCE(receipt.payment_date,
+// received_at::date) — the same idiom as the Payments Received report.
+// Credit applications (provider='CREDIT') are included, consistent with
+// that report.
+// ---------------------------------------------------------------------
+
+type ReportBasis = 'accrual' | 'cash';
+
+function parseBasis(req: Request): ReportBasis {
+  return req.query['basis'] === 'cash' ? 'cash' : 'accrual';
+}
+
+// Effective cash date of a payment row; requires payments + paymentReceipts
+// in the query's FROM/JOIN set.
+function cashDateExpr() {
+  return drz`COALESCE(${paymentReceipts.paymentDate}, (${payments.receivedAt} AT TIME ZONE 'UTC')::date)`;
+}
+
+function cashConds(firmId: string, range: { start: string | null; end: string | null }) {
+  return [
+    eq(invoices.firmId, firmId),
+    inArray(payments.status, ['SUCCEEDED', 'PARTIALLY_REFUNDED']),
+    isNull(payments.voidedAt),
+    // A credit application funded by a MANUAL credit memo (a courtesy
+    // write-off) is not cash — no money ever arrived. OVERPAYMENT /
+    // REFUND_EXCESS memos ARE cash-backed and stay in (dated at
+    // application, the closest observable event).
+    drz`NOT EXISTS (
+      SELECT 1 FROM ${creditApplications}
+      INNER JOIN ${creditMemos} ON ${creditMemos.id} = ${creditApplications.creditMemoId}
+      WHERE ${creditApplications.paymentId} = ${payments.id} AND ${creditMemos.source} = 'MANUAL'
+    )`,
+    range.start ? drz`${cashDateExpr()} >= ${range.start}::date` : undefined,
+    range.end ? drz`${cashDateExpr()} <= ${range.end}::date` : undefined,
+  ];
+}
+
+// Net cash grouped by receipt month.
+async function cashByMonth(
+  db: Database,
+  firmId: string,
+  range: { start: string | null; end: string | null },
+): Promise<Array<{ month: string; collectedCents: number; count: number }>> {
+  const monthCol = drz<string>`to_char(${cashDateExpr()}, 'YYYY-MM')`;
+  const rows = await db
+    .select({
+      month: monthCol.as('month'),
+      collected: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+      count: drz<number>`COUNT(*)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+    .where(and(...cashConds(firmId, range)))
+    .groupBy(monthCol)
+    .orderBy(monthCol);
+  return rows.map((r) => ({
+    month: r.month,
+    collectedCents: Number(r.collected),
+    count: Number(r.count),
+  }));
+}
+
+// Net cash grouped by the invoice's client partner-in-charge.
+async function cashByPartner(
+  db: Database,
+  firmId: string,
+  range: { start: string | null; end: string | null },
+): Promise<Map<string | null, number>> {
+  const rows = await db
+    .select({
+      partnerId: clients.partnerInChargeId,
+      collected: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+    .where(and(...cashConds(firmId, range)))
+    .groupBy(clients.partnerInChargeId);
+  return new Map(rows.map((r) => [r.partnerId, Number(r.collected)]));
+}
+
+// Net cash attributed to engagements. Payments are invoice-level, so a
+// consolidated invoice's cash is split pro-rata by each engagement's share
+// of the engagement-tagged line-item amounts — the same attribution rule
+// as billedByEngagement, applied to collections.
+async function cashByEngagement(
+  db: Database,
+  firmId: string,
+  engIdSet: Set<string>,
+  range: { start: string | null; end: string | null },
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (engIdSet.size === 0) return out;
+  const payRows = await db
+    .select({
+      invoiceId: payments.invoiceId,
+      primaryEngagementId: invoices.primaryEngagementId,
+      collected: drz<number>`COALESCE(SUM(${payments.amountCents} - COALESCE(${payments.refundedAmountCents}, 0)), 0)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
+    .where(and(...cashConds(firmId, range)))
+    .groupBy(payments.invoiceId, invoices.primaryEngagementId);
+  const invIds = payRows.map((p) => p.invoiceId);
+  const liRows = invIds.length
+    ? await db
+        .select({
+          invoiceId: invoiceLineItems.invoiceId,
+          engagementId: invoiceLineItems.engagementId,
+          amountCents: invoiceLineItems.amountCents,
+        })
+        .from(invoiceLineItems)
+        .where(inArray(invoiceLineItems.invoiceId, invIds))
+    : [];
+  const linesByInvoice = new Map<string, Map<string, number>>();
+  for (const li of liRows) {
+    if (!li.engagementId || !engIdSet.has(li.engagementId)) continue;
+    const byEng = linesByInvoice.get(li.invoiceId) ?? new Map<string, number>();
+    byEng.set(li.engagementId, (byEng.get(li.engagementId) ?? 0) + Number(li.amountCents));
+    linesByInvoice.set(li.invoiceId, byEng);
+  }
+  const add = (engId: string, cents: number) => out.set(engId, (out.get(engId) ?? 0) + cents);
+  for (const p of payRows) {
+    const collected = Number(p.collected);
+    const byEng = linesByInvoice.get(p.invoiceId);
+    if (!byEng || byEng.size <= 1) {
+      const [onlyEng] = byEng ? Array.from(byEng.keys()) : [];
+      const targetEng = onlyEng ?? p.primaryEngagementId;
+      if (targetEng && engIdSet.has(targetEng)) add(targetEng, collected);
+      continue;
+    }
+    const attributed = Array.from(byEng.values()).reduce((a, b) => a + b, 0);
+    if (attributed <= 0) {
+      if (p.primaryEngagementId && engIdSet.has(p.primaryEngagementId))
+        add(p.primaryEngagementId, collected);
+      continue;
+    }
+    for (const [engId, amt] of byEng) {
+      add(engId, Math.round(collected * (amt / attributed)));
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------
+// Industry-standard billing realization (2026-07 alignment).
+//
+// Formula (CCH Axcess / Practice CS / Canopy consensus):
+//   realization = (standard value of ALL billed WIP + net write-up/down)
+//               ÷ (standard value of ALL billed WIP)
+//
+// Universe = time entries billed on a posted invoice: INCLUDE entries of
+// billing batches that are INVOICED with a non-DRAFT/VOIDED invoice —
+// plus realization-only close-out batches (0182), which relieve WIP by
+// design without an invoice. Unadjusted billed time enters at exactly
+// 100%; write-ups can push a group above 100%; unbilled WIP, DEFER /
+// WRITE_OFF-held entries, and pre-bill draft adjustments never appear.
+//
+// Timing: the ?start/?end window filters on the WIP-RELIEF date (the
+// invoice issue date; close-out batches use the batch creation date),
+// not the work date — matching how CCH ("BilledDate"), Practice CS
+// ("items billed in the specified date range"), and Canopy (invoice
+// date) assign realization to periods.
+//
+// Per-entry net adjustment = Σ allocation deltas across APPROVED/APPLIED
+// adjustments (summing the signed deltas — not adjusted values — so a
+// batch with several sequential adjustments counts its WIP base once).
+// Adjustments without allocation rows (the set-target path) are pro-rated
+// across the batch's INCLUDE entries by standard value, so target-billing
+// write-downs finally reach realization.
+// ---------------------------------------------------------------------
+
+interface EngagementMeta {
+  clientId: string;
+  partnerId: string | null;
+  serviceLineId: string | null;
+  serviceLineCategory: string | null;
+}
+
+async function loadBilledRealization(
+  db: Database,
+  firmId: string,
+  range: { start: string | null; end: string | null },
+): Promise<{ rows: AllocationRow[]; engagementMeta: Map<string, EngagementMeta> }> {
+  const engagementMeta = new Map<string, EngagementMeta>();
+  const firmEngs = await db
+    .select({
+      id: engagements.id,
+      clientId: engagements.clientId,
+      partnerId: engagements.partnerId,
+      serviceLineId: serviceLines.id,
+      serviceLineCategory: serviceLines.category,
+    })
+    .from(engagements)
+    .innerJoin(clients, eq(clients.id, engagements.clientId))
+    .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
+    .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
+    .where(eq(clients.firmId, firmId));
+  if (firmEngs.length === 0) return { rows: [], engagementMeta };
+  for (const e of firmEngs) {
+    engagementMeta.set(e.id, {
+      clientId: e.clientId,
+      partnerId: e.partnerId,
+      serviceLineId: e.serviceLineId,
+      serviceLineCategory: e.serviceLineCategory,
+    });
+  }
+
+  // WIP-relief universe. billing_batch.engagement_id is the primary
+  // pointer (multi-engagement batches list the rest in the join table),
+  // and multi-engagement batches are same-client, so firm scoping via the
+  // primary engagement is safe.
+  const batches = await db
+    .select({
+      id: billingBatches.id,
+      realizationOnly: billingBatches.realizationOnly,
+      createdAt: billingBatches.createdAt,
+    })
+    .from(billingBatches)
+    .where(
+      and(
+        inArray(
+          billingBatches.engagementId,
+          firmEngs.map((e) => e.id),
+        ),
+        or(eq(billingBatches.status, 'INVOICED'), eq(billingBatches.realizationOnly, true)),
+      ),
+    );
+  if (batches.length === 0) return { rows: [], engagementMeta };
+  const batchIds = batches.map((b) => b.id);
+
+  // Relief date per batch: the posted invoice's issue date (via the
+  // source_ref='billing_batch' line), else the close-out batch's creation
+  // date. An INVOICED batch whose only invoice is DRAFT or VOIDED has no
+  // relief date and drops out — voided invoices un-bill their WIP.
+  const lineRows = await db
+    .select({
+      batchId: invoiceLineItems.sourceRefId,
+      issueDate: invoices.issueDate,
+    })
+    .from(invoiceLineItems)
+    .innerJoin(invoices, eq(invoices.id, invoiceLineItems.invoiceId))
+    .where(
+      and(
+        eq(invoiceLineItems.sourceRefType, 'billing_batch'),
+        inArray(invoiceLineItems.sourceRefId, batchIds),
+        notInArray(invoices.status, ['DRAFT', 'VOIDED']),
+      ),
+    );
+  const reliefDateByBatch = new Map<string, string>();
+  for (const l of lineRows) {
+    if (!l.batchId) continue;
+    const cur = reliefDateByBatch.get(l.batchId);
+    if (!cur || l.issueDate < cur) reliefDateByBatch.set(l.batchId, l.issueDate);
+  }
+  for (const b of batches) {
+    if (b.realizationOnly && !reliefDateByBatch.has(b.id)) {
+      reliefDateByBatch.set(b.id, b.createdAt.toISOString().slice(0, 10));
+    }
+  }
+  const inWindow = (d: string): boolean =>
+    (!range.start || d >= range.start) && (!range.end || d <= range.end);
+  const liveBatchIds = batchIds.filter((id) => {
+    const d = reliefDateByBatch.get(id);
+    return d != null && inWindow(d);
+  });
+  if (liveBatchIds.length === 0) return { rows: [], engagementMeta };
+
+  // Billed WIP base: INCLUDE entries at standard value. The time entry's
+  // own engagement_id is authoritative (a multi-engagement batch's primary
+  // pointer would misattribute the other engagements' hours).
+  const entryRows = await db
+    .select({
+      batchId: billingBatchEntries.billingBatchId,
+      timeEntryId: timeEntries.id,
+      appUserId: timeEntries.appUserId,
+      engagementId: timeEntries.engagementId,
+      standardAmountCents: timeEntries.standardAmountCents,
+    })
+    .from(billingBatchEntries)
+    .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
+    .where(
+      and(
+        inArray(billingBatchEntries.billingBatchId, liveBatchIds),
+        eq(billingBatchEntries.action, 'INCLUDE'),
+      ),
+    );
+
+  // Net adjustment deltas. APPROVED is included alongside APPLIED because
+  // the invoice math bakes both into the billed total (set-target inserts
+  // APPROVED and never transitions).
+  const adjRows = await db
+    .select({
+      id: adjustments.id,
+      billingBatchId: adjustments.billingBatchId,
+      totalAmountCents: adjustments.totalAmountCents,
+    })
+    .from(adjustments)
+    .where(
+      and(
+        inArray(adjustments.billingBatchId, liveBatchIds),
+        inArray(adjustments.status, ['APPROVED', 'APPLIED']),
+      ),
+    );
+  const allocRows = adjRows.length
+    ? await db
+        .select({
+          adjustmentId: adjustmentAllocations.adjustmentId,
+          timeEntryId: adjustmentAllocations.timeEntryId,
+          amountCents: adjustmentAllocations.adjustmentAmountCents,
+        })
+        .from(adjustmentAllocations)
+        .where(
+          inArray(
+            adjustmentAllocations.adjustmentId,
+            adjRows.map((a) => a.id),
+          ),
+        )
+    : [];
+  const deltaByEntry = new Map<string, number>();
+  const allocatedAdjIds = new Set<string>();
+  for (const a of allocRows) {
+    allocatedAdjIds.add(a.adjustmentId);
+    deltaByEntry.set(a.timeEntryId, (deltaByEntry.get(a.timeEntryId) ?? 0) + Number(a.amountCents));
+  }
+  // Pro-rate allocation-less adjustments (set-target) by standard value,
+  // pushing the rounding remainder onto the last entry so the batch total
+  // is preserved exactly.
+  const entriesByBatch = new Map<string, typeof entryRows>();
+  for (const e of entryRows) {
+    const arr = entriesByBatch.get(e.batchId) ?? [];
+    arr.push(e);
+    entriesByBatch.set(e.batchId, arr);
+  }
+  for (const adj of adjRows) {
+    if (allocatedAdjIds.has(adj.id)) continue;
+    const entries = entriesByBatch.get(adj.billingBatchId) ?? [];
+    const base = entries.reduce((s, e) => s + Number(e.standardAmountCents), 0);
+    if (entries.length === 0 || base <= 0) continue;
+    const total = Number(adj.totalAmountCents);
+    let assigned = 0;
+    entries.forEach((e, i) => {
+      const share =
+        i === entries.length - 1
+          ? total - assigned
+          : Math.round((total * Number(e.standardAmountCents)) / base);
+      assigned += share;
+      deltaByEntry.set(e.timeEntryId, (deltaByEntry.get(e.timeEntryId) ?? 0) + share);
+    });
+  }
+
+  const rows: AllocationRow[] = [];
+  for (const e of entryRows) {
+    const meta = engagementMeta.get(e.engagementId);
+    if (!meta) continue;
+    const std = Number(e.standardAmountCents);
+    rows.push({
+      appUserId: e.appUserId,
+      engagementId: e.engagementId,
+      clientId: meta.clientId,
+      originalValueCents: std,
+      adjustedValueCents: std + (deltaByEntry.get(e.timeEntryId) ?? 0),
+    });
+  }
+  return { rows, engagementMeta };
+}
+
 export function createReportRouter(deps: ReportRoutesDeps): Router {
   const router = express.Router();
 
@@ -193,113 +580,29 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
 
-      // Scope: firm's clients → engagements → billing_batches → allocations.
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, session.firmId));
-      if (firmClients.length === 0) {
-        res.json({ dimension: parsed.data.dimension, items: [] });
-        return;
-      }
-      // Pull engagements with their service-line dimension already joined,
-      // so service-line filters + the new dimension keyFn don't need a
-      // separate roundtrip per allocation. Left-joins because not every
-      // engagement has an engagement_type / service_line set.
-      const firmEngagements = await deps.db
-        .select({
-          id: engagements.id,
-          clientId: engagements.clientId,
-          serviceLineId: serviceLines.id,
-          serviceLineCategory: serviceLines.category,
-        })
-        .from(engagements)
-        .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
-        .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
-        .where(
-          inArray(
-            engagements.clientId,
-            firmClients.map((c) => c.id),
-          ),
-        );
-      if (firmEngagements.length === 0) {
-        res.json({ dimension: parsed.data.dimension, items: [] });
-        return;
-      }
-      const firmBatches = await deps.db
-        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
-        .from(billingBatches)
-        .where(
-          inArray(
-            billingBatches.engagementId,
-            firmEngagements.map((e) => e.id),
-          ),
-        );
-      if (firmBatches.length === 0) {
-        res.json({ dimension: parsed.data.dimension, items: [] });
-        return;
-      }
-
-      // Date filter (#28) + drill filters (#20): always join to
-      // time_entries so we can scope on entry date and drill into
-      // specific timekeepers/engagements/clients.
-      // Scope to this firm's billing batches in SQL (not merely via the JS
-      // filter below), and count only APPLIED adjustments. Allocation rows
-      // are written while an adjustment is still PENDING_APPROVAL, and a
-      // reversal flips status to REVERSED without deleting allocations — so
-      // both would otherwise pollute realization with non-realized billing.
-      const conds = [
-        inArray(
-          adjustments.billingBatchId,
-          firmBatches.map((b) => b.id),
-        ),
-        eq(adjustments.status, 'APPLIED'),
-      ];
-      if (parsed.data.start)
-        conds.push(drz`${timeEntries.entryDate} >= ${parsed.data.start}::date`);
-      if (parsed.data.end) conds.push(drz`${timeEntries.entryDate} <= ${parsed.data.end}::date`);
-      if (parsed.data.appUserId)
-        conds.push(eq(adjustmentAllocations.appUserId, parsed.data.appUserId));
-      if (parsed.data.engagementId)
-        conds.push(eq(billingBatches.engagementId, parsed.data.engagementId));
-      const rows = await deps.db
-        .select({
-          appUserId: adjustmentAllocations.appUserId,
-          timeEntryId: adjustmentAllocations.timeEntryId,
-          originalValueCents: adjustmentAllocations.originalValueCents,
-          adjustedValueCents: adjustmentAllocations.adjustedValueCents,
-          engagementId: billingBatches.engagementId,
-          entryDate: timeEntries.entryDate,
-        })
-        .from(adjustmentAllocations)
-        // allocation → adjustment → billing_batch. adjustment_allocations.adjustment_id
-        // is an adjustments.id (NOT a billing_batch id), so we must hop through the
-        // adjustments table to reach the batch and its engagement.
-        .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
-        .innerJoin(billingBatches, eq(billingBatches.id, adjustments.billingBatchId))
-        .innerJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
-        .where(and(...conds));
-
-      const enginToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
-      // Service-line lookup map — populated for engagements that have an
-      // assigned type with a service line. Engagements without one stay
+      // Industry-standard billing realization: all billed WIP at standard
+      // value + net adjustments, windowed by WIP-relief (invoice) date.
+      const { rows: billedRows, engagementMeta } = await loadBilledRealization(
+        deps.db,
+        session.firmId,
+        { start: parsed.data.start ?? null, end: parsed.data.end ?? null },
+      );
+      // Service-line lookup map — engagements without a service line stay
       // absent, which naturally drops them from service-line filters and
-      // the service_line dimension.
+      // groups them under the unassigned sentinel in the dimension.
       const enginToServiceLine = new Map<string, { serviceLineId: string; category: string }>();
-      for (const e of firmEngagements) {
-        if (e.serviceLineId && e.serviceLineCategory) {
-          enginToServiceLine.set(e.id, {
-            serviceLineId: e.serviceLineId,
-            category: e.serviceLineCategory,
+      for (const [engId, meta] of engagementMeta) {
+        if (meta.serviceLineId && meta.serviceLineCategory) {
+          enginToServiceLine.set(engId, {
+            serviceLineId: meta.serviceLineId,
+            category: meta.serviceLineCategory,
           });
         }
       }
-      const allocationRows: AllocationRow[] = rows
-        .filter((r) => enginToClient.has(r.engagementId))
-        .filter(
-          (r) =>
-            !parsed.data.clientId || enginToClient.get(r.engagementId) === parsed.data.clientId,
-        )
+      const allocationRows: AllocationRow[] = billedRows
+        .filter((r) => !parsed.data.appUserId || r.appUserId === parsed.data.appUserId)
+        .filter((r) => !parsed.data.engagementId || r.engagementId === parsed.data.engagementId)
+        .filter((r) => !parsed.data.clientId || r.clientId === parsed.data.clientId)
         .filter((r) => {
           if (!parsed.data.serviceLineId) return true;
           return (
@@ -311,14 +614,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           return (
             enginToServiceLine.get(r.engagementId)?.category === parsed.data.serviceLineCategory
           );
-        })
-        .map((r) => ({
-          appUserId: r.appUserId,
-          engagementId: r.engagementId,
-          clientId: enginToClient.get(r.engagementId)!,
-          originalValueCents: r.originalValueCents,
-          adjustedValueCents: r.adjustedValueCents,
-        }));
+        });
 
       if (parsed.data.dimension === 'firm') {
         const summary = rollup(allocationRows);
@@ -445,62 +741,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: dStart, end: dEnd } = optionalRange(req);
-      // Group adjustment_allocations by engagement.partnerId.
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, session.firmId));
-      const cIds = firmClients.map((c) => c.id);
-      if (cIds.length === 0) {
-        res.json({ items: [] });
-        return;
-      }
-      const firmEngs = await deps.db
-        .select({ id: engagements.id, partnerId: engagements.partnerId })
-        .from(engagements)
-        .where(inArray(engagements.clientId, cIds));
-      const partnerByEng = new Map(firmEngs.map((e) => [e.id, e.partnerId]));
-      const batches = await deps.db
-        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
-        .from(billingBatches)
-        .where(inArray(billingBatches.engagementId, Array.from(partnerByEng.keys())));
-      const engByBatch = new Map(batches.map((b) => [b.id, b.engagementId]));
-      const batchIds = batches.map((b) => b.id);
-      const rows = batchIds.length
-        ? await deps.db
-            .select({
-              // The batch id lives on the adjustment, not the allocation — join
-              // through adjustments to recover it (adjustment_id ≠ billing_batch id).
-              batchId: adjustments.billingBatchId,
-              original: adjustmentAllocations.originalValueCents,
-              adjusted: adjustmentAllocations.adjustedValueCents,
-            })
-            .from(adjustmentAllocations)
-            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
-            // Left-join the originating time entry only to support the optional
-            // date window; without a bound the predicates are skipped and every
-            // allocation (incl. those with no time entry) is still counted.
-            .leftJoin(timeEntries, eq(timeEntries.id, adjustmentAllocations.timeEntryId))
-            // Scope to this firm's batches in SQL, and only realized (APPLIED)
-            // adjustments — mirrors /realization.
-            .where(
-              and(
-                inArray(adjustments.billingBatchId, batchIds),
-                eq(adjustments.status, 'APPLIED'),
-                dStart ? drz`${timeEntries.entryDate} >= ${dStart}::date` : undefined,
-                dEnd ? drz`${timeEntries.entryDate} <= ${dEnd}::date` : undefined,
-              ),
-            )
-        : [];
+      // Industry-standard billing realization grouped by engagement.partnerId
+      // (billed WIP at standard + net adjustments, windowed by relief date).
+      const { rows, engagementMeta } = await loadBilledRealization(deps.db, session.firmId, {
+        start: dStart,
+        end: dEnd,
+      });
       const byPartner = new Map<string, { originalCents: number; adjustedCents: number }>();
       for (const r of rows) {
-        const engId = engByBatch.get(r.batchId);
-        if (!engId) continue;
-        const partnerId = partnerByEng.get(engId);
+        const partnerId = engagementMeta.get(r.engagementId)?.partnerId;
         if (!partnerId) continue;
         const cur = byPartner.get(partnerId) ?? { originalCents: 0, adjustedCents: 0 };
-        cur.originalCents += Number(r.original);
-        cur.adjustedCents += Number(r.adjusted);
+        cur.originalCents += r.originalValueCents;
+        cur.adjustedCents += r.adjustedValueCents;
         byPartner.set(partnerId, cur);
       }
       const partnerNames = await namesByIds(deps.db, Array.from(byPartner.keys()), 'partner');
@@ -552,8 +805,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       }
       const engIdSet = new Set(engIds);
       const { start: dStart, end: dEnd } = optionalRange(req);
-      const [billedBy, cost] = await Promise.all([
+      const basis = parseBasis(req);
+      const [billedBy, collectedBy, cost] = await Promise.all([
         billedByEngagement(deps.db, session.firmId, engIdSet, { start: dStart, end: dEnd }),
+        // basis=cash: net cash received in the window, pro-rated to
+        // engagements by line-item share (replaces lifetime paidCents).
+        basis === 'cash'
+          ? cashByEngagement(deps.db, session.firmId, engIdSet, { start: dStart, end: dEnd })
+          : Promise.resolve(null),
         deps.db
           .select({
             engagementId: timeEntries.engagementId,
@@ -575,21 +834,28 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       for (const r of cost) {
         costBy.set(r.engagementId, Number(r.costCents));
       }
-      const allEngIds = new Set<string>([...billedBy.keys(), ...costBy.keys()]);
+      const allEngIds = new Set<string>([
+        ...billedBy.keys(),
+        ...costBy.keys(),
+        ...(collectedBy ? collectedBy.keys() : []),
+      ]);
       const items = Array.from(allEngIds).map((engId) => {
         const br = billedBy.get(engId) ?? { billed: 0, paid: 0 };
         const cc = costBy.get(engId) ?? 0;
-        const marginCents = br.billed - cc;
+        const paid = collectedBy ? (collectedBy.get(engId) ?? 0) : br.paid;
+        // Margin follows the basis: accrual = billed − cost, cash = collected − cost.
+        const revenue = basis === 'cash' ? paid : br.billed;
+        const marginCents = revenue - cc;
         return {
           engagementId: engId,
           billedCents: br.billed,
-          paidCents: br.paid,
+          paidCents: paid,
           costCents: cc,
           marginCents,
-          marginPct: br.billed > 0 ? (marginCents / br.billed) * 100 : null,
+          marginPct: revenue > 0 ? (marginCents / revenue) * 100 : null,
         };
       });
-      res.json({ items });
+      res.json({ basis, items });
     },
   );
 
@@ -605,6 +871,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const { invoices: inv } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
       const { start: dStart, end: dEnd } = optionalRange(req);
+      // basis=cash → months keyed by payment-receipt date with net cash
+      // collected, instead of invoice issue months with lifetime paidCents.
+      if (parseBasis(req) === 'cash') {
+        const months = await cashByMonth(deps.db, session.firmId, { start: dStart, end: dEnd });
+        res.json({
+          basis: 'cash',
+          items: months
+            .slice(-24)
+            .reverse()
+            .map((m) => ({ month: m.month, collectedCents: m.collectedCents, count: m.count })),
+        });
+        return;
+      }
       const rows = await deps.db
         .select({
           month: drz<string>`to_char(${inv.issueDate}, 'YYYY-MM')`.as('month'),
@@ -626,6 +905,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .orderBy(drz`to_char(${inv.issueDate}, 'YYYY-MM') DESC`)
         .limit(24);
       res.json({
+        basis: 'accrual',
         items: rows.map((r) => ({
           month: r.month,
           totalCents: Number(r.totalCents),
@@ -646,6 +926,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: since, end: until } = rangeFromQuery(req, 30);
+      const winDays = windowDaysOf(since, until);
       const { timeEntries: te, appUsers: au } = await import('@vibe/db/schema');
       const { sql: drz } = await import('drizzle-orm');
       const rows = await deps.db
@@ -670,13 +951,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .groupBy(te.appUserId, au.fullName, au.standardHoursPerWeek);
       res.json({
         asOf: new Date().toISOString().slice(0, 10),
-        windowDays: 30,
+        // Echo the ACTUAL window (was hardcoded 30 even when ?start/?end set).
+        windowDays: winDays,
         items: rows.map((r) => {
           const billable = Number(r.billableHours);
           const total = Number(r.totalHours);
-          // Capacity over the 30-day window = standard weekly hours × 30/7.
+          // Capacity over the queried window = standard weekly hours × days/7.
           const availableHours =
-            Math.round(((Number(r.standardHoursPerWeek) * 30) / 7) * 100) / 100;
+            Math.round(((Number(r.standardHoursPerWeek) * winDays) / 7) * 100) / 100;
           return {
             appUserId: r.appUserId,
             fullName: r.fullName,
@@ -827,52 +1109,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.send('appUserId,engagementId,clientId,original,adjusted,realizationPct\n');
         return;
       }
-      const firmClients = await deps.db
-        .select({ id: clients.id })
-        .from(clients)
-        .where(eq(clients.firmId, session.firmId));
-      const clientIds = firmClients.map((c) => c.id);
-      if (clientIds.length === 0) {
-        res.setHeader('Content-Type', 'text/csv');
-        res.send('appUserId,engagementId,clientId,originalCents,adjustedCents,realizationPct\n');
-        return;
-      }
-      const firmEngagements = await deps.db
-        .select({ id: engagements.id, clientId: engagements.clientId })
-        .from(engagements)
-        .where(inArray(engagements.clientId, clientIds));
-      const engIds = firmEngagements.map((e) => e.id);
-      if (engIds.length === 0) {
-        res.setHeader('Content-Type', 'text/csv');
-        res.send('appUserId,engagementId,clientId,originalCents,adjustedCents,realizationPct\n');
-        return;
-      }
-      const batches = await deps.db
-        .select({ id: billingBatches.id, engagementId: billingBatches.engagementId })
-        .from(billingBatches)
-        .where(inArray(billingBatches.engagementId, engIds));
-      const batchIds = batches.map((b) => b.id);
-      const batchToEng = new Map(batches.map((b) => [b.id, b.engagementId]));
-      const engToClient = new Map(firmEngagements.map((e) => [e.id, e.clientId]));
-      const rows = batchIds.length
-        ? await deps.db
-            .select({
-              appUserId: adjustmentAllocations.appUserId,
-              originalValueCents: adjustmentAllocations.originalValueCents,
-              adjustedValueCents: adjustmentAllocations.adjustedValueCents,
-              // Recover the batch id from the adjustment (adjustment_id ≠ batch id).
-              billingBatchId: adjustments.billingBatchId,
-            })
-            .from(adjustmentAllocations)
-            .innerJoin(adjustments, eq(adjustments.id, adjustmentAllocations.adjustmentId))
-            // SECURITY: scope to THIS firm's batches in SQL. Without this the
-            // query read every firm's allocations and emitted the unmatched
-            // ones (blank engagement/client but real appUserId + dollar
-            // amounts) — a cross-firm data leak. Also restrict to APPLIED.
-            .where(
-              and(inArray(adjustments.billingBatchId, batchIds), eq(adjustments.status, 'APPLIED')),
-            )
-        : [];
+      // Industry-standard billing realization at per-entry grain: all billed
+      // WIP at standard value + net adjustments (firm-scoped inside the
+      // loader), optional ?start/?end window on the WIP-relief date.
+      const { start: dStart, end: dEnd } = optionalRange(req);
+      const { rows } = await loadBilledRealization(deps.db, session.firmId, {
+        start: dStart,
+        end: dEnd,
+      });
       const header = [
         'appUserId',
         'engagementId',
@@ -883,18 +1127,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       ];
       const lines = [header.join(',')];
       for (const r of rows) {
-        const engId = batchToEng.get(r.billingBatchId);
-        // Defense-in-depth: skip any row whose batch isn't in this firm's set
-        // (the SQL scope above already guarantees this, but never emit a row
-        // we can't attribute to a firm engagement/client).
-        if (!engId) continue;
-        const cliId = engToClient.get(engId) ?? '';
-        const orig = Number(r.originalValueCents);
-        const adj = Number(r.adjustedValueCents);
+        const orig = r.originalValueCents;
+        const adj = r.adjustedValueCents;
         // 0–1 ratio to match the JSON /realization endpoint.
         const pct = orig > 0 ? (adj / orig).toFixed(4) : '0';
         lines.push(
-          [csvField(r.appUserId), csvField(engId), csvField(cliId), orig, adj, pct].join(','),
+          [
+            csvField(r.appUserId),
+            csvField(r.engagementId),
+            csvField(r.clientId),
+            orig,
+            adj,
+            pct,
+          ].join(','),
         );
       }
       res.setHeader('Content-Type', 'text/csv');
@@ -1036,6 +1281,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: since, end: until } = rangeFromQuery(req, 90);
+      const basis = parseBasis(req);
       const rows = await deps.db
         .select({
           partnerId: clients.partnerInChargeId,
@@ -1053,19 +1299,32 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           ),
         )
         .groupBy(clients.partnerInChargeId);
-      const crPartnerNames = await namesByIds(
-        deps.db,
-        rows.map((r) => r.partnerId),
-        'partner',
+      // basis=cash: "paid" = net cash RECEIVED in the window (receipt-dated),
+      // not lifetime paidCents of invoices issued in the window. Billings
+      // stay issue-dated, so the rate compares in-window collections to
+      // in-window billings.
+      const cashMap =
+        basis === 'cash'
+          ? await cashByPartner(deps.db, session.firmId, { start: since, end: until })
+          : null;
+      const partnerIds = new Set<string | null>(rows.map((r) => r.partnerId));
+      if (cashMap) for (const k of cashMap.keys()) partnerIds.add(k);
+      const billedBy = new Map<string | null, number>(
+        rows.map((r) => [r.partnerId, Number(r.billed)]),
       );
+      const accrualPaidBy = new Map<string | null, number>(
+        rows.map((r) => [r.partnerId, Number(r.paid)]),
+      );
+      const crPartnerNames = await namesByIds(deps.db, Array.from(partnerIds), 'partner');
       res.json({
-        windowDays: 90,
-        items: rows.map((r) => {
-          const b = Number(r.billed);
-          const p = Number(r.paid);
+        windowDays: windowDaysOf(since, until),
+        basis,
+        items: Array.from(partnerIds).map((partnerId) => {
+          const b = billedBy.get(partnerId) ?? 0;
+          const p = cashMap ? (cashMap.get(partnerId) ?? 0) : (accrualPaidBy.get(partnerId) ?? 0);
           return {
-            partnerId: r.partnerId,
-            partnerName: r.partnerId ? (crPartnerNames.get(r.partnerId) ?? null) : null,
+            partnerId,
+            partnerName: partnerId ? (crPartnerNames.get(partnerId) ?? null) : null,
             billedCents: b,
             paidCents: p,
             collectionRatePct: b > 0 ? (p / b) * 100 : null,
@@ -1087,7 +1346,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { start: since } = rangeFromQuery(req, 90);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
       // Billed (post-write-down) value per time entry: the APPLIED adjusted
       // value where the entry was adjusted, otherwise its standard amount. A
       // time entry belongs to a single billing batch/adjustment, so the SUM
@@ -1122,11 +1381,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             eq(appUsers.firmId, session.firmId),
             ne(timeEntries.status, 'ARCHIVED'),
             drz`${timeEntries.entryDate} >= ${since}::date`,
+            // ?end= was accepted but silently dropped before — apply it.
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
           ),
         )
         .groupBy(timeEntries.appUserId, appUsers.fullName);
       res.json({
-        windowDays: 90,
+        windowDays: windowDaysOf(since, until),
         items: rows.map((r) => {
           const h = Number(r.hours);
           // Billed (post-adjustment) value of billable work for this user.
@@ -1156,6 +1417,24 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: dStart, end: dEnd } = optionalRange(req);
+      // basis=cash → month-over-month net cash collected (receipt-dated).
+      if (parseBasis(req) === 'cash') {
+        const months = await cashByMonth(deps.db, session.firmId, { start: dStart, end: dEnd });
+        const items = months.map((m, i) => {
+          const prev = months[i - 1];
+          const pctChange =
+            prev && prev.collectedCents > 0
+              ? ((m.collectedCents - prev.collectedCents) / prev.collectedCents) * 100
+              : null;
+          return {
+            month: m.month,
+            collectedCents: m.collectedCents,
+            pctChangeCollected: pctChange,
+          };
+        });
+        res.json({ basis: 'cash', items });
+        return;
+      }
       const monthCol = drz<string>`to_char(date_trunc('month', ${invoices.issueDate})::date, 'YYYY-MM')`;
       const rows = await deps.db
         .select({
@@ -1187,7 +1466,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           pctChangeBilled: pctChange,
         };
       });
-      res.json({ items });
+      res.json({ basis: 'accrual', items });
     },
   );
 
@@ -1260,6 +1539,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const { start: since, end: until } = rangeFromQuery(req, 365);
+      const basis = parseBasis(req);
       const rows = await deps.db
         .select({
           partnerId: clients.partnerInChargeId,
@@ -1280,19 +1560,25 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // A partner's "book" is their ACTIVE clients — exclude archived.
         .where(and(eq(clients.firmId, session.firmId), ne(clients.status, 'ARCHIVED')))
         .groupBy(clients.partnerInChargeId);
+      // basis=cash: paid = net cash received in the window per partner.
+      const bobCash =
+        basis === 'cash'
+          ? await cashByPartner(deps.db, session.firmId, { start: since, end: until })
+          : null;
       const bobPartnerNames = await namesByIds(
         deps.db,
         rows.map((r) => r.partnerId),
         'partner',
       );
       res.json({
-        windowDays: 365,
+        windowDays: windowDaysOf(since, until),
+        basis,
         items: rows.map((r) => ({
           partnerId: r.partnerId,
           partnerName: r.partnerId ? (bobPartnerNames.get(r.partnerId) ?? null) : null,
           clientCount: Number(r.clientCount),
           billedCents: Number(r.billedCents),
-          paidCents: Number(r.paidCents),
+          paidCents: bobCash ? (bobCash.get(r.partnerId) ?? 0) : Number(r.paidCents),
         })),
       });
     },
@@ -1388,18 +1674,25 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .groupBy(engagements.id, engagements.name, clients.name);
       // Attribute revenue per engagement (consolidated invoices split by line
       // item; DRAFT/VOIDED excluded) — same helper as /profitability.
-      const billMap = await billedByEngagement(
-        deps.db,
-        session.firmId,
-        new Set(rows.map((r) => r.engagementId)),
-        { start: dStart, end: dEnd },
-      );
+      const basis = parseBasis(req);
+      const fpEngIds = new Set(rows.map((r) => r.engagementId));
+      const [billMap, fpCash] = await Promise.all([
+        billedByEngagement(deps.db, session.firmId, fpEngIds, { start: dStart, end: dEnd }),
+        basis === 'cash'
+          ? cashByEngagement(deps.db, session.firmId, fpEngIds, { start: dStart, end: dEnd })
+          : Promise.resolve(null),
+      ]);
       const items = rows
         .map((r) => {
           const inv = billMap.get(r.engagementId);
           const billedCents = inv ? inv.billed : 0;
-          const paidCents = inv ? inv.paid : 0;
+          const paidCents = fpCash ? (fpCash.get(r.engagementId) ?? 0) : inv ? inv.paid : 0;
           const costCents = Number(r.costCents);
+          // Margin follows the basis: accrual = billed − cost (aligned with
+          // /profitability — this report used paid−cost while its sibling
+          // used billed−cost, so the two disagreed on the same engagement);
+          // cash = collected-in-window − cost.
+          const revenue = basis === 'cash' ? paidCents : billedCents;
           return {
             engagementId: r.engagementId,
             engagementName: r.engagementName,
@@ -1407,11 +1700,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             costCents,
             billedCents,
             paidCents,
-            marginCents: paidCents - costCents,
-            marginPct: paidCents > 0 ? ((paidCents - costCents) / paidCents) * 100 : null,
+            marginCents: revenue - costCents,
+            marginPct: revenue > 0 ? ((revenue - costCents) / revenue) * 100 : null,
           };
         })
-        .filter((r) => r.costCents > 0 || r.billedCents > 0)
+        .filter((r) => r.costCents > 0 || r.billedCents > 0 || r.paidCents > 0)
         .sort((a, b) => b.marginCents - a.marginCents);
       const totals = items.reduce(
         (acc, r) => ({
@@ -1422,7 +1715,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         }),
         { costCents: 0, billedCents: 0, paidCents: 0, marginCents: 0 },
       );
-      res.json({ items, totals });
+      res.json({ basis, items, totals });
     },
   );
 
@@ -1441,7 +1734,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const weeklyTarget = parseFloat(String(req.query['weeklyTarget'] ?? '32')) || 32;
-      const { start: since } = rangeFromQuery(req, 90);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
+      // Weeks in the ACTUAL queried window (was a fixed ÷13 even when the
+      // caller narrowed ?start=, which skewed the weekly average).
+      const windowWeeks = windowDaysOf(since, until) / 7;
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -1457,16 +1753,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             // Exclude soft-deleted (ARCHIVED) entries.
             ne(timeEntries.status, 'ARCHIVED'),
             drz`${timeEntries.entryDate} >= ${since}::date`,
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
           ),
         )
         .groupBy(timeEntries.appUserId, appUsers.fullName, appUsers.standardHoursPerWeek);
-      // 90 days ≈ 13 weeks; weekly average × 4 weeks = projection.
+      // Weekly average over the queried window × 4 weeks = projection.
       res.json({
         weeklyTargetHours: weeklyTarget,
         projectionWeeks: 4,
+        windowDays: windowDaysOf(since, until),
         items: rows.map((r) => {
           const billable = Number(r.totalBillableHours);
-          const weeklyAvg = billable / 13;
+          const weeklyAvg = billable / windowWeeks;
           const projectedNext4Weeks = weeklyAvg * 4;
           // Per-user capacity basis (their standard work week) alongside the
           // flat firm-wide weeklyTarget — a more honest variance than a single
@@ -1700,6 +1998,9 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         365,
       );
       const since = new Date(Date.now() - days * 86_400_000);
+      // Firm-scope via the requester (NOT NULL) so unassigned requests
+      // (approverId null) still count — the old approver-side scope
+      // silently dropped them, understating the pending backlog.
       const rows = await deps.db
         .select({
           approverId: approvalRequests.approverId,
@@ -1711,10 +2012,20 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           avgResponseSeconds: drz<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${approvalRequests.respondedAt} - ${approvalRequests.requestedAt}))) FILTER (WHERE ${approvalRequests.respondedAt} IS NOT NULL), 0)`,
         })
         .from(approvalRequests)
+        // Approver join is only for the display name — the firm scope runs
+        // through the requester (NOT NULL) so unassigned requests
+        // (approverId null) still count; the old approver-side scope
+        // silently dropped them, understating the pending backlog.
         .leftJoin(appUsers, eq(appUsers.id, approvalRequests.approverId))
         .where(
           and(
-            eq(appUsers.firmId, session.firmId),
+            inArray(
+              approvalRequests.requesterId,
+              deps.db
+                .select({ id: appUsers.id })
+                .from(appUsers)
+                .where(eq(appUsers.firmId, session.firmId)),
+            ),
             drz`${approvalRequests.requestedAt} >= ${since.toISOString()}::timestamptz`,
           ),
         )
@@ -1755,7 +2066,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { start: since } = rangeFromQuery(req, 90);
+      const { start: since, end: until } = rangeFromQuery(req, 90);
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -1769,6 +2080,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           and(
             eq(clients.firmId, session.firmId),
             drz`${timeEntries.entryDate} >= ${since}::date`,
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
             drz`${timeEntries.status} <> 'ARCHIVED'`,
           ),
         )
@@ -1829,11 +2141,17 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const trailingDays = Math.min(
-        Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 30),
-        365,
-      );
-      const since = new Date(Date.now() - trailingDays * 86_400_000).toISOString().slice(0, 10);
+      // Window: either ?days=N (30–365) or an explicit ?start=YYYY-MM-DD —
+      // the report viewer sends `start`, which used to be silently ignored.
+      const startParam =
+        typeof req.query['start'] === 'string' && DATE_RE.test(req.query['start'])
+          ? req.query['start']
+          : null;
+      const trailingDays = startParam
+        ? Math.min(Math.max(windowDaysOf(startParam, null), 1), 365)
+        : Math.min(Math.max(parseInt(String(req.query['days'] ?? '90'), 10) || 90, 30), 365);
+      const since =
+        startParam ?? new Date(Date.now() - trailingDays * 86_400_000).toISOString().slice(0, 10);
 
       const plans = await deps.db
         .select({
@@ -1883,7 +2201,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           // outOfScopeOverride. The user veto was previously ignored, so
           // vetoed entries were mis-counted as in-scope retainer cost.
           inScopeHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN ${timeEntries.hours} ELSE 0 END), 0)`,
-          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN ${timeEntries.standardAmountCents} ELSE 0 END), 0)`,
+          // True cost-to-serve: hours × the timekeeper's locked cost-rate
+          // snapshot (same basis as /profitability). This used to sum
+          // standardAmountCents — the BILLING value — which overstated cost
+          // and understated every retainer's margin.
+          inScopeCostCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN (${timeEntries.hours}::numeric * COALESCE(${timeEntries.costRateSnapshotCents}, 0)) ELSE 0 END), 0)::bigint`,
           oosHours: drz<string>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN 0 ELSE ${timeEntries.hours} END), 0)`,
           oosBilledCents: drz<number>`COALESCE(SUM(CASE WHEN ${timeEntries.inScopeFlag} AND NOT ${timeEntries.outOfScopeOverride} THEN 0 ELSE ${timeEntries.standardAmountCents} END), 0)`,
         })
@@ -2131,24 +2453,63 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         status: r.status,
       }));
 
-      const summary = rows.reduce(
-        (acc, r) => ({ count: acc.count + 1, totalCents: acc.totalCents + r.totalCents }),
+      // Aggregate in SQL over the FULL filtered set — the detail rows above
+      // are capped at 2000, and summing the capped list silently understated
+      // the totals for busy windows.
+      const aggRows = await deps.db.execute(drz`
+        SELECT
+          COALESCE(pr.payment_method, p.provider)                 AS method,
+          c.office_id::text                                       AS office_id,
+          o.name                                                  AS office_name,
+          COUNT(*)::int                                           AS count,
+          SUM(p.amount_cents - COALESCE(p.refunded_amount_cents, 0))::bigint AS total_cents
+        FROM vibetb.payment p
+        INNER JOIN vibetb.invoice  i ON i.id = p.invoice_id
+        INNER JOIN vibetb.client   c ON c.id = i.client_id
+        LEFT  JOIN vibetb.office   o ON o.id = c.office_id
+        LEFT  JOIN vibetb.payment_receipt pr ON pr.id = p.receipt_id
+        WHERE c.firm_id = ${session.firmId}
+          AND p.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')
+          AND p.voided_at IS NULL
+          AND COALESCE(pr.payment_date, (p.received_at AT TIME ZONE 'UTC')::date)
+              BETWEEN ${from} AND ${to}
+          ${officeId ? drz`AND c.office_id = ${officeId}` : drz``}
+          ${paymentMethod ? drz`AND COALESCE(pr.payment_method, p.provider) ILIKE ${paymentMethod}` : drz``}
+        GROUP BY 1, 2, 3
+      `);
+      const aggList = (
+        ((aggRows as unknown as { rows: unknown[] }).rows ?? aggRows) as Array<{
+          method: string | null;
+          office_id: string | null;
+          office_name: string | null;
+          count: number;
+          total_cents: string | number;
+        }>
+      ).map((r) => ({
+        method: r.method ?? '—',
+        officeId: r.office_id,
+        officeName: r.office_name,
+        count: Number(r.count),
+        totalCents: Number(r.total_cents),
+      }));
+      const summary = aggList.reduce(
+        (acc, r) => ({ count: acc.count + r.count, totalCents: acc.totalCents + r.totalCents }),
         { count: 0, totalCents: 0 },
       );
       const byMethodMap = new Map<string, { count: number; totalCents: number }>();
       const byOfficeMap = new Map<string, { name: string; count: number; totalCents: number }>();
-      for (const r of rows) {
-        const m = byMethodMap.get(r.paymentMethod) ?? { count: 0, totalCents: 0 };
-        m.count += 1;
+      for (const r of aggList) {
+        const m = byMethodMap.get(r.method) ?? { count: 0, totalCents: 0 };
+        m.count += r.count;
         m.totalCents += r.totalCents;
-        byMethodMap.set(r.paymentMethod, m);
+        byMethodMap.set(r.method, m);
         const oKey = r.officeId ?? 'none';
         const o = byOfficeMap.get(oKey) ?? {
           name: r.officeName ?? '— no office —',
           count: 0,
           totalCents: 0,
         };
-        o.count += 1;
+        o.count += r.count;
         o.totalCents += r.totalCents;
         byOfficeMap.set(oKey, o);
       }
@@ -2185,6 +2546,9 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         from,
         to,
         rows,
+        // Detail rows are capped at 2000; summary/byMethod/byOffice above are
+        // computed over the full set, so flag when the list is incomplete.
+        rowsTruncated: summary.count > rows.length,
         summary,
         byMethod: Array.from(byMethodMap.entries()).map(([method, v]) => ({
           method,

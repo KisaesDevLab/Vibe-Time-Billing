@@ -32,7 +32,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { paymentMandates, stripeCustomers } from '@vibe/db/schema';
 
@@ -55,8 +55,10 @@ async function postForm(opts: StripeRequestOptions): Promise<Record<string, unkn
   const headers: Record<string, string> = {
     Authorization: `Bearer ${opts.secretKey}`,
     'Content-Type': 'application/x-www-form-urlencoded',
-    'Stripe-Account': opts.stripeAccountId,
   };
+  // Direct firm keys pass an empty accountId → omit the header (the key
+  // already scopes to the firm's account). Connect OAuth passes the id.
+  if (opts.stripeAccountId) headers['Stripe-Account'] = opts.stripeAccountId;
   if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
   const res = await fetchImpl(`${API_BASE}${opts.path}`, {
     method: 'POST',
@@ -82,6 +84,10 @@ export interface CreateSetupIntentInput {
   // Stripe accepts a list of payment_method_types; the addendum
   // requires Card + ACH + Link minimum.
   paymentMethodTypes?: string[];
+  // ACH verification: 'automatic' offers instant bank-login with a manual
+  // fallback; 'microdeposits' forces routing/account entry + micro-deposits;
+  // 'instant' requires Financial Connections. Applied to us_bank_account.
+  achVerificationMethod?: 'automatic' | 'instant' | 'microdeposits';
   fetchImpl?: typeof fetch;
 }
 
@@ -100,6 +106,10 @@ export async function createSetupIntent(input: CreateSetupIntentInput): Promise<
     params[`payment_method_types[${i}]`] = t;
   });
   if (input.customerId) params['customer'] = input.customerId;
+  if (input.achVerificationMethod && types.includes('us_bank_account')) {
+    params['payment_method_options[us_bank_account][verification_method]'] =
+      input.achVerificationMethod;
+  }
   const json = await postForm({
     secretKey: input.secretKey,
     stripeAccountId: input.stripeAccountId,
@@ -185,7 +195,9 @@ export async function getOrCreateCustomer(
   const [existing] = await input.db
     .select({ stripeCustomerId: stripeCustomers.stripeCustomerId })
     .from(stripeCustomers)
-    .where(eq(stripeCustomers.firmId, input.firmId))
+    .where(
+      and(eq(stripeCustomers.firmId, input.firmId), eq(stripeCustomers.clientId, input.clientId)),
+    )
     .limit(1);
   if (existing) {
     return { stripeCustomerId: existing.stripeCustomerId, created: false };

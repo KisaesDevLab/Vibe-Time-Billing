@@ -403,6 +403,7 @@ export function createBookingRouter(deps: BookingRoutesDeps): Router {
           startsAt: appointments.startsAt,
           endsAt: appointments.endsAt,
           status: appointments.status,
+          rollforwardInclude: appointments.rollforwardInclude,
           location: appointments.location,
           locationOptionId: appointments.locationOptionId,
           locationName: appointmentLocationOptions.name,

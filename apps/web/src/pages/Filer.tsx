@@ -28,11 +28,22 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Button, Card, ColumnFilter, Combobox, EmptyState, Pill, Tabs, tokens } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  ColumnFilter,
+  Combobox,
+  EmptyState,
+  PaginationBar,
+  Pill,
+  Tabs,
+  tokens,
+} from '@vibe/ui';
 
 import { api, getCsrfToken } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 
 // ── API contract types ──────────────────────────────────────────────────
 
@@ -411,6 +422,7 @@ function InboxTab(): JSX.Element {
     [items, view],
   );
 
+  const { paged: visiblePaged, pagination: inboxPagination } = useClientPage(visible);
   const visibleIds = useMemo(() => visible.map((r) => r.id), [visible]);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
 
@@ -729,7 +741,7 @@ function InboxTab(): JSX.Element {
                     </td>
                   </tr>
                 ) : (
-                  visible.map((r) => (
+                  visiblePaged.map((r) => (
                     <InboxRowView
                       key={r.id}
                       row={r}
@@ -745,6 +757,7 @@ function InboxTab(): JSX.Element {
                 )}
               </tbody>
             </table>
+            <PaginationBar {...inboxPagination} />
           </div>
         </>
       )}
@@ -1178,6 +1191,8 @@ function ImportTab(): JSX.Element {
     [clients],
   );
 
+  const { paged: impPaged, pagination: impPagination } = useClientPage(imports);
+
   return (
     <Card title="Import a document zip">
       {error && (
@@ -1363,7 +1378,7 @@ function ImportTab(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {imports.map((row) => {
+                {impPaged.map((row) => {
                   const open = expanded === row.id;
                   return (
                     <Fragment key={row.id}>
@@ -1432,6 +1447,7 @@ function ImportTab(): JSX.Element {
                 })}
               </tbody>
             </table>
+            <PaginationBar {...impPagination} />
           </div>
         )}
       </div>
@@ -2263,6 +2279,8 @@ function HistoryTab(): JSX.Element {
     }
   }
 
+  const { paged: batchPaged, pagination: batchPagination } = useClientPage(batches);
+
   return (
     <Card title="Routing history">
       {error && (
@@ -2299,7 +2317,7 @@ function HistoryTab(): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {batches.map((b) => {
+              {batchPaged.map((b) => {
                 const open = expanded === b.batchId;
                 const allReversed = b.total > 0 && b.reversed >= b.total;
                 return (
@@ -2345,6 +2363,7 @@ function HistoryTab(): JSX.Element {
               })}
             </tbody>
           </table>
+          <PaginationBar {...batchPagination} />
         </div>
       )}
     </Card>

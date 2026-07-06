@@ -16,6 +16,8 @@ import { ApiTokensPage } from './ApiTokens';
 import { AppointmentTypesPage } from './AppointmentTypes';
 import { AppointmentLocationsPage } from './AppointmentLocations';
 import { BackupPage } from './Backup';
+import { PrintingPage } from './Printing';
+import { SignaturePrintRulesPage } from './SignaturePrintRules';
 import { CloudflareTunnelPage } from './CloudflareTunnel';
 import { KnowledgeBaseAdminPage } from './KnowledgeBase';
 import { CompliancePage } from './Compliance';
@@ -172,6 +174,12 @@ const GROUPS: Group[] = [
       { key: 'storage-conflicts', label: 'Storage conflicts', href: '/admin/storage/conflicts' },
       { key: 'folder-templates', label: 'Folder templates', href: '/admin/folder-templates' },
       { key: 'cloudflare-tunnel', label: 'Cloudflare Tunnel', href: '/admin/cloudflare-tunnel' },
+      { key: 'printing', label: 'Printing', href: '/admin/printing' },
+      {
+        key: 'sig-print-rules',
+        label: 'Signature print rules',
+        href: '/admin/signature-print-rules',
+      },
     ],
   },
   {
@@ -374,6 +382,8 @@ export function AdminLayout(): JSX.Element {
         <Route path="storage/conflicts/:attemptId" element={<StorageConflictResolutionPage />} />
         <Route path="folder-templates" element={<FolderTemplatesPage />} />
         <Route path="cloudflare-tunnel" element={<CloudflareTunnelPage />} />
+        <Route path="printing" element={<PrintingPage />} />
+        <Route path="signature-print-rules" element={<SignaturePrintRulesPage />} />
         <Route path="signature-page-rules" element={<SignaturePageRulesPage />} />
         <Route path="signature-documents" element={<SignatureDocTemplatesPage />} />
         <Route path="kb" element={<KnowledgeBaseAdminPage />} />

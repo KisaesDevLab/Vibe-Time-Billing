@@ -23,9 +23,11 @@ type WorkflowState =
   | 'NOT_STARTED'
   | 'READY'
   | 'IN_PROGRESS'
+  | 'IN_REVIEW'
   | 'ON_HOLD'
   | 'NEEDS_REVIEW'
   | 'WITH_CLIENT'
+  | 'WAITING_ON_CLIENT'
   | 'COMPLETED'
   | 'CANCELED'
   | 'DRAFT';

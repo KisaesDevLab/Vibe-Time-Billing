@@ -19,6 +19,7 @@ import type { StorageClient } from '@vibe/storage';
 
 import { logger } from '../logger';
 import { markFileShareViewed, type ResolvedFileShare } from './file-share-helper';
+import { recordShareAccessNote } from './share-notes';
 import { watermarkPdf, recipientWatermarkText } from './watermark-pdf';
 
 export const PRESIGN_TTL_SECONDS = 5 * 60;
@@ -73,6 +74,30 @@ export interface ServableFile {
 }
 
 /**
+ * Drop a client-timeline note when the 3rd party accesses the file. Every
+ * download is noted; a plain view is noted only on the FIRST access
+ * (accessCount === 1) so a PDF viewer re-fetching doesn't spam the timeline.
+ */
+async function noteShareAccess(
+  db: Database,
+  share: ResolvedFileShare,
+  file: ServableFile,
+  disposition: 'inline' | 'attachment',
+  newAccessCount: number,
+): Promise<void> {
+  const isDownload = disposition === 'attachment';
+  if (!isDownload && newAccessCount !== 1) return;
+  await recordShareAccessNote(db, {
+    clientId: share.clientId,
+    authorAppUserId: share.createdByAppUserId,
+    fileLabel: file.originalFilename,
+    recipientName: share.recipientName,
+    recipientEmail: share.recipientEmail,
+    action: isDownload ? 'downloaded' : 'viewed',
+  });
+}
+
+/**
  * Serve the file for an authorized share access: logs the `allowed`
  * event, bumps view tracking, and either streams PDF bytes (watermarked
  * when flagged) or redirects to a presigned URL. The caller has already
@@ -107,7 +132,8 @@ export async function serveSharedFile(opts: {
           )
         : raw;
       await logShareEvent(db, share.id, 'allowed', ip, userAgent);
-      await markFileShareViewed(db, share.id);
+      const n = await markFileShareViewed(db, share.id);
+      await noteShareAccess(db, share, file, disposition, n);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader(
         'Content-Disposition',
@@ -119,7 +145,8 @@ export async function serveSharedFile(opts: {
 
     const url = await storage.presignGet(file.storageKey, PRESIGN_TTL_SECONDS);
     await logShareEvent(db, share.id, 'allowed', ip, userAgent);
-    await markFileShareViewed(db, share.id);
+    const n = await markFileShareViewed(db, share.id);
+    await noteShareAccess(db, share, file, disposition, n);
     if (!/^https?:\/\//.test(url)) {
       // Mock storage returns opaque URIs — surface via JSON for dev.
       res.json({

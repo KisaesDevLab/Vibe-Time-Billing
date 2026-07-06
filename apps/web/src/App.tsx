@@ -283,6 +283,10 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   };
   const [teamUnread, setTeamUnread] = useState(0);
   const [notifUnread, setNotifUnread] = useState(0);
+  // New/unhandled counts that drive the orange nav highlight for Requests
+  // (open) and Intake (received but not yet processed).
+  const [requestsNew, setRequestsNew] = useState(0);
+  const [intakeNew, setIntakeNew] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = (): void => {
@@ -296,6 +300,20 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           if (alive) setNotifUnread(r.count);
         })
         .catch(() => undefined);
+      if (can.requests) {
+        void api<{ count: number }>('/api/staff/requests/client-responses/unread-count')
+          .then((r) => {
+            if (alive) setRequestsNew(r.count ?? 0);
+          })
+          .catch(() => undefined);
+      }
+      if (can.intake) {
+        void api<{ sessions: unknown[] }>('/api/staff/intake/sessions?status=received')
+          .then((r) => {
+            if (alive) setIntakeNew(r.sessions?.length ?? 0);
+          })
+          .catch(() => undefined);
+      }
     };
     poll();
     const t = setInterval(poll, 30000);
@@ -303,7 +321,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       alive = false;
       clearInterval(t);
     };
-  }, [location.pathname, can.appointments]);
+  }, [location.pathname, can.appointments, can.requests, can.intake]);
   return (
     <AppShell
       brand={<BrandMark />}
@@ -384,6 +402,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active:
             location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
           show: can.messages,
+          hasUnread: teamUnread > 0,
         },
 
         // ---- Documents: outbound (proposals/e-sign) + inbound ----
@@ -410,6 +429,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: <FileQuestion size={16} />,
           active: location.pathname.startsWith('/requests'),
           show: can.requests,
+          hasUnread: requestsNew > 0,
         },
         {
           section: 'Documents',
@@ -418,6 +438,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           icon: <Inbox size={16} />,
           active: location.pathname.startsWith('/intake'),
           show: can.intake,
+          hasUnread: intakeNew > 0,
         },
         {
           section: 'Documents',
@@ -571,7 +592,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
       ]
         .filter((i) => i.show)
-        .map(({ label, href, icon, active, section }) => ({ label, href, icon, active, section }))}
+        .map((i) => ({
+          label: i.label,
+          href: i.href,
+          icon: i.icon,
+          active: i.active,
+          section: i.section,
+          hasUnread: (i as { hasUnread?: boolean }).hasUnread,
+        }))}
       trailing={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <FontSizeControl />

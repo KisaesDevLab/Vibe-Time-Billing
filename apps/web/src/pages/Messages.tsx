@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
-import { Card, Pill, tokens } from '@vibe/ui';
+import { Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -89,14 +89,19 @@ interface ThreadRow {
   threadId: string;
   engagementId: string | null;
   title: string | null;
+  clientName: string | null;
   status: string;
   updatedAt: string;
+  lastReplyBy: string | null;
+  lastReplyKind: 'staff' | 'client' | null;
+  lastReplyAt: string | null;
 }
 
 function ClientMessagesPanel(): JSX.Element {
   const [threads, setThreads] = useState<ThreadRow[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   async function loadThreads(): Promise<void> {
     try {
@@ -142,9 +147,27 @@ function ClientMessagesPanel(): JSX.Element {
 
   const activeThread = threads.find((t) => t.threadId === activeId) ?? null;
 
+  const q = search.trim().toLowerCase();
+  const visibleThreads = q
+    ? threads.filter(
+        (t) =>
+          (t.clientName ?? '').toLowerCase().includes(q) ||
+          (t.title ?? '').toLowerCase().includes(q),
+      )
+    : threads;
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: tokens.space.lg }}>
-      <Card title={`Threads (${threads.length})`}>
+      <Card title={`Threads (${visibleThreads.length})`}>
+        <div style={{ marginBottom: tokens.space.sm }}>
+          <Input
+            type="search"
+            placeholder="Search client or engagement…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search threads by client or engagement"
+          />
+        </div>
         <div
           style={{
             display: 'flex',
@@ -154,7 +177,12 @@ function ClientMessagesPanel(): JSX.Element {
             overflowY: 'auto',
           }}
         >
-          {threads.map((t) => {
+          {visibleThreads.length === 0 ? (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted, padding: '8px 4px' }}>
+              No threads match “{search}”.
+            </p>
+          ) : null}
+          {visibleThreads.map((t) => {
             const isActive = activeId === t.threadId;
             return (
               <button
@@ -174,7 +202,12 @@ function ClientMessagesPanel(): JSX.Element {
                   gap: 4,
                 }}
               >
-                <div style={{ fontWeight: 500 }}>{t.title ?? 'Engagement thread'}</div>
+                {/* Client name is the primary label; the engagement name
+                    (thread title) is the secondary line. */}
+                <div style={{ fontWeight: 600 }}>{t.clientName ?? 'Client'}</div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                  {t.title ?? 'Engagement thread'}
+                </div>
                 <div
                   style={{
                     fontSize: 11,
@@ -186,6 +219,11 @@ function ClientMessagesPanel(): JSX.Element {
                 >
                   {t.status === 'ARCHIVED' ? (
                     <Pill tone="neutral">Archived</Pill>
+                  ) : t.lastReplyBy ? (
+                    <span>
+                      {t.lastReplyKind === 'client' ? '↩ ' : ''}
+                      {t.lastReplyBy} · {new Date(t.lastReplyAt ?? t.updatedAt).toLocaleString()}
+                    </span>
                   ) : (
                     <span>Updated {new Date(t.updatedAt).toLocaleString()}</span>
                   )}
@@ -197,7 +235,12 @@ function ClientMessagesPanel(): JSX.Element {
       </Card>
 
       <Card
-        title={activeThread ? (activeThread.title ?? 'Engagement thread') : 'Pick a thread'}
+        title={
+          activeThread
+            ? [activeThread.clientName, activeThread.title].filter(Boolean).join(' — ') ||
+              'Engagement thread'
+            : 'Pick a thread'
+        }
         action={
           activeThread?.engagementId ? (
             <a

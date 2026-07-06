@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 import { Button, Card, Input, Pill, Table, Tabs, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { PrintButton } from '../components/PrintButton';
 import { BillingCard } from './clients/BillingCard';
 import { ClientInfoCard } from './clients/ClientInfoCard';
 import { PeopleCard } from './clients/PeopleCard';
@@ -218,6 +219,16 @@ export function ClientDetailPage(): JSX.Element {
             >
               ✉ Log email
             </Button>
+            {/* Direct-print the client's mailing address to a Vibe Print
+                gateway printer. Both self-hide when the gateway is off. */}
+            <PrintButton
+              endpoint={`/api/staff/clients/${client.id}/print-envelope`}
+              label="✉ Envelope"
+            />
+            <PrintButton
+              endpoint={`/api/staff/clients/${client.id}/print-label`}
+              label="🏷 Label"
+            />
             {client.active === false && <Pill tone="warning">Inactive</Pill>}
             {client.accessRestricted && <Pill tone="warning">Restricted — limited access</Pill>}
             {client.restricted && !client.accessRestricted && (
@@ -445,7 +456,9 @@ export function ClientDetailPage(): JSX.Element {
 
       {tab === 'appointments' && <ClientAppointmentsCard clientId={client.id} />}
 
-      {tab === 'billing' && <BillingCard clientId={client.id} />}
+      {tab === 'billing' && (
+        <BillingCard clientId={client.id} clientName={client.clientFacingName || client.name} />
+      )}
 
       {tab === 'tax' && (
         <>

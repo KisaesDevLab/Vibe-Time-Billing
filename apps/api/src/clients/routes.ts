@@ -28,7 +28,11 @@ import { asc, desc } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, userHasPermission, type RbacDeps } from '../auth/rbac-middleware';
-import { canAccessClient, requireFullClientAccessForSection } from './access';
+import {
+  canAccessClient,
+  getBlockedClientIdsCached,
+  requireFullClientAccessForSection,
+} from './access';
 import { createClientCredentialRouter } from '../vault/routes';
 import { firmScope } from '../notifications/templating';
 import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
@@ -42,6 +46,20 @@ import { mountPeopleRoutes } from './people';
 import { mountFileRoutes } from './files';
 import { mountClientImportRoutes } from './import';
 import { findOrCreatePerson } from './person-helpers';
+import { printClientMailing, type MailingKind } from './mailing-print';
+import {
+  buildLetterContext,
+  listLetterTemplates,
+  loadAppointmentLetterData,
+  loadClientLetterData,
+  loadEngagementLetterData,
+  loadLetterTemplateBody,
+  renderLetterHtml,
+  type ClientLetterData,
+} from './letter-merge';
+import { combineStatementsHtml } from '@vibe/core/invoicing';
+import { buildStorageClient } from '@vibe/storage';
+import { createFileInClientFolder } from './create-file';
 // Phase 9 — folder-rename / SSE-progress endpoints. v1 folder tree
 // was removed in Phase 0.
 import { mountFolderRoutes } from './folder';
@@ -176,14 +194,26 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       return;
     }
     const q = (req.query['q'] ?? '').toString().trim();
-    const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+    // Filters accept a comma-separated set (multi-select column headers) or a
+    // single value; both collapse to an IN(...) match.
+    const csv = (v: unknown): string[] =>
+      typeof v === 'string'
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
     const partnerId = typeof req.query['partnerId'] === 'string' ? req.query['partnerId'] : null;
     // 0050 — new filters
-    const clientOwnerId =
-      typeof req.query['clientOwnerId'] === 'string' ? req.query['clientOwnerId'] : null;
+    const clientOwnerIds = csv(req.query['clientOwnerId']);
     const externalId = typeof req.query['externalId'] === 'string' ? req.query['externalId'] : null;
-    const clientType = typeof req.query['clientType'] === 'string' ? req.query['clientType'] : null;
-    const officeId = typeof req.query['officeId'] === 'string' ? req.query['officeId'] : null;
+    const clientTypes = csv(req.query['clientType']).filter(
+      (t) => t === 'INDIVIDUAL' || t === 'BUSINESS',
+    );
+    const statuses = csv(req.query['status']).filter(
+      (s) => s === 'ACTIVE' || s === 'ARCHIVED' || s === 'PROSPECT' || s === 'INACTIVE',
+    );
+    const officeIds = csv(req.query['officeId']);
 
     const conds = [eq(clients.firmId, firmId)];
     if (q) {
@@ -208,23 +238,12 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       );
       if (expr) conds.push(expr);
     }
-    if (
-      status === 'ACTIVE' ||
-      status === 'ARCHIVED' ||
-      status === 'PROSPECT' ||
-      status === 'INACTIVE'
-    ) {
-      conds.push(eq(clients.status, status));
-    }
+    if (statuses.length > 0) conds.push(inArray(clients.status, statuses));
     if (partnerId) conds.push(eq(clients.partnerInChargeId, partnerId));
-    if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
+    if (clientOwnerIds.length > 0) conds.push(inArray(clients.partnerInChargeId, clientOwnerIds));
     if (externalId) conds.push(eq(clients.externalId, externalId));
-    if (clientType === 'INDIVIDUAL' || clientType === 'BUSINESS') {
-      conds.push(eq(clients.clientType, clientType));
-    }
-    if (officeId) {
-      conds.push(eq(clients.officeId, officeId));
-    }
+    if (clientTypes.length > 0) conds.push(inArray(clients.clientType, clientTypes));
+    if (officeIds.length > 0) conds.push(inArray(clients.officeId, officeIds));
 
     // Pagination + sort. If no `page` is supplied, we keep the legacy
     // shape (just `items`, limit 500) so existing callers don't break.
@@ -379,6 +398,532 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           accessRestricted,
           canManageRestriction,
           ...(designatedUserIds ? { designatedUserIds } : {}),
+        },
+      });
+    },
+  );
+
+  // ── Envelope / mailing-label direct print (Vibe Print gateway) ──────
+  // Reuses the gateway's pre-formatted "#10 Envelope" / "Mailing Label
+  // 4x3" templates; we only send the address data. Hidden in the UI when
+  // the gateway is off (PrintButton). Read-grade action (addressing an
+  // existing client), so gated on client:read like the other prints.
+  const MailingPrintSchema = z.object({
+    printerId: z.number().int().positive(),
+    copies: z.number().int().min(1).max(20).optional(),
+  });
+  const mailingPrintHandler =
+    (kind: MailingKind) =>
+    async (req: Request, res: Response): Promise<void> => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailingPrintSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const result = await printClientMailing({
+        db: deps.db,
+        firmId: req.staffSession!.firmId,
+        clientId: req.params['id']!,
+        kind,
+        printerId: parsed.data.printerId,
+        copies: parsed.data.copies,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      res.json({ ok: true, jobId: result.jobId });
+    };
+  router.post(
+    '/:id/print-envelope',
+    requirePermission(deps, 'client:read'),
+    mailingPrintHandler('envelope'),
+  );
+  router.post(
+    '/:id/print-label',
+    requirePermission(deps, 'client:read'),
+    mailingPrintHandler('label'),
+  );
+
+  // ── Mail merge: a firm letter template → personalized letters for many
+  // clients. Phase 1 output = one combined PDF (a page-run per client).
+  // Read-grade (generates a document from existing client data).
+  router.get(
+    '/mail-merge-templates',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await listLetterTemplates(deps.db, req.staffSession!.firmId);
+      res.json({ items });
+    },
+  );
+
+  // Resolve the per-letter rows for a merge run — one row per appointment
+  // (Appointments flow), per engagement (Engagements flow — pulls the
+  // engagement's drop-off date + its appointment in [apptFrom, apptTo]),
+  // else one per client (Clients flow). Rows for RESTRICTED clients the
+  // caller can't access (0165) are dropped, so no letter is rendered,
+  // saved, or emailed for them.
+  const resolveLetterRows = async (
+    req: Request,
+    firmId: string,
+    appUserId: string,
+    data: {
+      clientIds?: string[];
+      appointmentIds?: string[];
+      engagementIds?: string[];
+      apptFrom?: string;
+      apptTo?: string;
+    },
+  ): Promise<ClientLetterData[]> => {
+    let rows: ClientLetterData[];
+    if (data.appointmentIds && data.appointmentIds.length > 0) {
+      rows = await loadAppointmentLetterData(deps.db!, firmId, data.appointmentIds);
+    } else if (data.engagementIds && data.engagementIds.length > 0) {
+      rows = await loadEngagementLetterData(deps.db!, firmId, data.engagementIds, {
+        from: data.apptFrom,
+        to: data.apptTo,
+      });
+    } else {
+      rows = await loadClientLetterData(deps.db!, firmId, data.clientIds ?? []);
+    }
+    const blocked = await getBlockedClientIdsCached(deps, req, appUserId, firmId);
+    if (blocked.length === 0) return rows;
+    const blockedSet = new Set(blocked);
+    return rows.filter((r) => !blockedSet.has(r.id));
+  };
+
+  // Appointment/engagement flows expose that data — gate them behind the
+  // corresponding read permission (a firm may revoke appointment:read /
+  // engagement:read via the 0147 override while keeping client:read).
+  const modePermitted = async (
+    req: Request,
+    res: Response,
+    d: { appointmentIds?: string[]; engagementIds?: string[] },
+  ): Promise<boolean> => {
+    const appUserId = req.staffSession!.appUserId;
+    if (
+      d.appointmentIds?.length &&
+      !(await userHasPermission(deps, appUserId, 'appointment:read'))
+    ) {
+      res.status(403).json({ error: 'forbidden', required: 'appointment:read' });
+      return false;
+    }
+    if (d.engagementIds?.length && !(await userHasPermission(deps, appUserId, 'engagement:read'))) {
+      res.status(403).json({ error: 'forbidden', required: 'engagement:read' });
+      return false;
+    }
+    return true;
+  };
+
+  // Shared target fields for the pdf/save/email schemas — one of clientIds /
+  // appointmentIds / engagementIds, plus an optional appointment date range
+  // (engagements flow only). YMD must be a real calendar date (the regex
+  // alone would accept 2026-13-40 → Invalid Date → 500 downstream).
+  const isRealYmd = (s: string): boolean => {
+    const [y, m, d] = s.split('-').map(Number);
+    const dt = new Date(Date.UTC(y!, m! - 1, d!));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m! - 1 && dt.getUTCDate() === d;
+  };
+  const YMD = z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(isRealYmd, { message: 'invalid_date' });
+  const targetFields = {
+    clientIds: z.array(z.string().uuid()).max(200).optional(),
+    appointmentIds: z.array(z.string().uuid()).max(200).optional(),
+    engagementIds: z.array(z.string().uuid()).max(200).optional(),
+    apptFrom: YMD.optional(),
+    apptTo: YMD.optional(),
+  };
+  const hasTarget = (d: {
+    clientIds?: string[];
+    appointmentIds?: string[];
+    engagementIds?: string[];
+  }): boolean =>
+    (d.clientIds?.length ?? 0) + (d.appointmentIds?.length ?? 0) + (d.engagementIds?.length ?? 0) >
+    0;
+  // from must not be after to (string compare is chronological for YMD).
+  const rangeOk = (d: { apptFrom?: string; apptTo?: string }): boolean =>
+    !d.apptFrom || !d.apptTo || d.apptFrom <= d.apptTo;
+
+  const MailMergePreviewSchema = z
+    .object({
+      templateId: z.string().uuid(),
+      clientId: z.string().uuid().optional(),
+      appointmentId: z.string().uuid().optional(),
+      engagementId: z.string().uuid().optional(),
+      apptFrom: YMD.optional(),
+      apptTo: YMD.optional(),
+    })
+    .refine((d) => Boolean(d.clientId) || Boolean(d.appointmentId) || Boolean(d.engagementId), {
+      message: 'target_required',
+    })
+    .refine(rangeOk, { message: 'invalid_range' });
+  router.post(
+    '/mail-merge-preview',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailMergePreviewSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const target = {
+        clientIds: parsed.data.clientId ? [parsed.data.clientId] : undefined,
+        appointmentIds: parsed.data.appointmentId ? [parsed.data.appointmentId] : undefined,
+        engagementIds: parsed.data.engagementId ? [parsed.data.engagementId] : undefined,
+        apptFrom: parsed.data.apptFrom,
+        apptTo: parsed.data.apptTo,
+      };
+      if (!(await modePermitted(req, res, target))) return;
+      const firmId = req.staffSession!.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const [client] = await resolveLetterRows(req, firmId, req.staffSession!.appUserId, target);
+      if (!client) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const firm = await firmScope(deps.db, firmId);
+      res.json({ html: renderLetterHtml(tpl.bodyHtml, client, firm, new Date(), tpl.pageMargin) });
+    },
+  );
+
+  const MailMergePdfSchema = z
+    .object({ templateId: z.string().uuid(), ...targetFields })
+    .refine(hasTarget, { message: 'targets_required' })
+    .refine(rangeOk, { message: 'invalid_range' });
+  router.post(
+    '/mail-merge-pdf',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailMergePdfSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      if (!(await modePermitted(req, res, parsed.data))) return;
+      const firmId = req.staffSession!.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const clientData = await resolveLetterRows(
+        req,
+        firmId,
+        req.staffSession!.appUserId,
+        parsed.data,
+      );
+      if (clientData.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      const firm = await firmScope(deps.db, firmId);
+      const now = new Date();
+      const htmls = clientData.map((c) =>
+        renderLetterHtml(tpl.bodyHtml, c, firm, now, tpl.pageMargin),
+      );
+      const combined = combineStatementsHtml(htmls);
+      let pdf: Buffer;
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        // Page margins come from the letter template's `@page { margin }`
+        // rule (DEFAULT_LETTER_CSS = 1in), which Chromium honors.
+        pdf = await renderHtmlToPdf(combined);
+      } catch (err) {
+        logger.error({ err }, 'mail-merge pdf render failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'EXPORT',
+        entityType: 'client',
+        entityId: clientData[0]!.id,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: {
+          kind: 'mail_merge_letter',
+          templateId: parsed.data.templateId,
+          clientIds: clientData.map((c) => c.id),
+          count: clientData.length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'mail-merge audit failed'));
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="mail-merge-letters.pdf"');
+      res.send(pdf);
+    },
+  );
+
+  // Save one personalized letter PDF into each client's Files folder
+  // (Correspondence/). Renders per row (own PDF, not the combined one).
+  // Writes a `files` row per client via the shared create-file helper.
+  // Mutating → client:write (+ appointment/engagement:read per mode).
+  const MailMergeSaveSchema = z
+    .object({ templateId: z.string().uuid(), ...targetFields })
+    .refine(hasTarget, { message: 'targets_required' })
+    .refine(rangeOk, { message: 'invalid_range' });
+  router.post(
+    '/mail-merge-save-to-files',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const parsed = MailMergeSaveSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      if (!(await modePermitted(req, res, parsed.data))) return;
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const clientData = await resolveLetterRows(req, firmId, session.appUserId, parsed.data);
+      if (clientData.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      let renderMod;
+      try {
+        renderMod = await import('../pdf/render');
+      } catch (err) {
+        logger.error({ err }, 'mail-merge save render import failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const { renderHtmlToPdf } = renderMod;
+      const storage = buildStorageClient(process.env);
+      const firm = await firmScope(deps.db, firmId);
+      const now = new Date();
+      const stamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${now.getFullYear()}`;
+      const results: Array<{
+        clientId: string;
+        clientName: string;
+        saved: boolean;
+        reason: string | null;
+      }> = [];
+      for (const client of clientData) {
+        try {
+          const pdf = await renderHtmlToPdf(
+            renderLetterHtml(tpl.bodyHtml, client, firm, now, tpl.pageMargin),
+          );
+          const out = await createFileInClientFolder(deps.db, storage, {
+            firmId,
+            clientId: client.id,
+            actorId: session.appUserId,
+            category: 'correspondence',
+            originalFilename: `${tpl.name} - ${stamp}.pdf`,
+            body: pdf,
+            mimeType: 'application/pdf',
+            source: 'mail_merge',
+          });
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            saved: out.ok,
+            reason: out.ok ? null : out.code,
+          });
+        } catch (err) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            saved: false,
+            reason: err instanceof Error ? err.message : 'render_failed',
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'client',
+        entityId: clientData[0]!.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'mail_merge_save_to_files',
+          templateId: parsed.data.templateId,
+          clientIds: results.filter((r) => r.saved).map((r) => r.clientId),
+          savedCount: results.filter((r) => r.saved).length,
+          skippedCount: results.filter((r) => !r.saved).length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'mail-merge save audit failed'));
+      res.json({
+        results,
+        summary: {
+          requested: clientData.length,
+          saved: results.filter((r) => r.saved).length,
+          skipped: results.filter((r) => !r.saved).length,
+        },
+      });
+    },
+  );
+
+  // Email each client their letter as a PDF attachment. Per client:
+  // resolve recipient (primary→billing→first with an email) → render the
+  // letter → attach the PDF → sendStaffMail. Subject/body are merge-token
+  // resolved per client. Outbound → client:write (+ appointment/engagement:read
+  // per mode).
+  const MailMergeEmailSchema = z
+    .object({
+      templateId: z.string().uuid(),
+      ...targetFields,
+      subject: z.string().min(1).max(200),
+      body: z.string().max(20_000).optional(),
+    })
+    .refine(hasTarget, { message: 'targets_required' })
+    .refine(rangeOk, { message: 'invalid_range' });
+  router.post(
+    '/mail-merge-email',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail) {
+        res.status(503).json({ error: 'mailer_unavailable' });
+        return;
+      }
+      const sendStaffMail = deps.sendStaffMail;
+      const parsed = MailMergeEmailSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      if (!(await modePermitted(req, res, parsed.data))) return;
+      const session = req.staffSession!;
+      const firmId = session.firmId;
+      const tpl = await loadLetterTemplateBody(deps.db, firmId, parsed.data.templateId);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const clientData = await resolveLetterRows(req, firmId, session.appUserId, parsed.data);
+      if (clientData.length === 0) {
+        res.status(404).json({ error: 'no_clients_found' });
+        return;
+      }
+      let renderMod;
+      try {
+        renderMod = await import('../pdf/render');
+      } catch (err) {
+        logger.error({ err }, 'mail-merge email render import failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      const { renderHtmlToPdf } = renderMod;
+      const firm = await firmScope(deps.db, firmId);
+      const now = new Date();
+      const stamp = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${now.getFullYear()}`;
+      const results: Array<{
+        clientId: string;
+        clientName: string;
+        sent: boolean;
+        to: string | null;
+        reason: string | null;
+      }> = [];
+      for (const client of clientData) {
+        if (!client.recipientEmail) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: false,
+            to: null,
+            reason: 'no_contact_with_email',
+          });
+          continue;
+        }
+        try {
+          const ctx = buildLetterContext(client, firm, now) as MergeContext;
+          // Strip CR/LF so a token value can't inject email headers.
+          const subject = resolveMergeTokens(parsed.data.subject, ctx)
+            .output.replace(/[\r\n]+/g, ' ')
+            .trim();
+          const bodyText = resolveMergeTokens(
+            parsed.data.body?.trim() || 'Please see the attached letter.',
+            ctx,
+          ).output;
+          const pdf = await renderHtmlToPdf(
+            renderLetterHtml(tpl.bodyHtml, client, firm, now, tpl.pageMargin),
+          );
+          await sendStaffMail({
+            to: client.recipientEmail,
+            subject,
+            body: bodyText,
+            html: markdownToHtml(bodyText),
+            attachments: [
+              {
+                filename: `${tpl.name} - ${stamp}.pdf`,
+                content: pdf,
+                contentType: 'application/pdf',
+              },
+            ],
+          });
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: true,
+            to: client.recipientEmail,
+            reason: null,
+          });
+        } catch (err) {
+          results.push({
+            clientId: client.id,
+            clientName: client.name,
+            sent: false,
+            to: client.recipientEmail,
+            reason: err instanceof Error ? err.message : 'send_failed',
+          });
+        }
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client',
+        entityId: clientData[0]!.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          kind: 'mail_merge_email',
+          templateId: parsed.data.templateId,
+          subject: parsed.data.subject,
+          clientIds: results.filter((r) => r.sent).map((r) => r.clientId),
+          sentCount: results.filter((r) => r.sent).length,
+          skippedCount: results.filter((r) => !r.sent).length,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'mail-merge email audit failed'));
+      res.json({
+        results,
+        summary: {
+          requested: clientData.length,
+          sent: results.filter((r) => r.sent).length,
+          skipped: results.filter((r) => !r.sent).length,
         },
       });
     },
@@ -1311,11 +1856,19 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         return;
       }
 
-      // Pull every targeted client + their contacts in two queries.
-      const clientRows = await deps.db
-        .select({ id: clients.id, name: clients.name })
-        .from(clients)
-        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, parsed.data.clientIds)));
+      // Pull every targeted client + their contacts in two queries. Drop
+      // RESTRICTED clients the caller can't access (0165).
+      const blockedBulk = new Set(
+        await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId),
+      );
+      const clientRows = (
+        await deps.db
+          .select({ id: clients.id, name: clients.name })
+          .from(clients)
+          .where(
+            and(eq(clients.firmId, session.firmId), inArray(clients.id, parsed.data.clientIds)),
+          )
+      ).filter((c) => !blockedBulk.has(c.id));
       if (clientRows.length === 0) {
         res.status(404).json({ error: 'no_clients_found' });
         return;
@@ -1377,7 +1930,9 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
             firm: firmTokens,
             client: { name: client.name, primaryContact: pick.fullName ?? '' },
           };
-          const subject = resolveMergeTokens(parsed.data.subject, ctx).output;
+          const subject = resolveMergeTokens(parsed.data.subject, ctx)
+            .output.replace(/[\r\n]+/g, ' ')
+            .trim();
           const textBody = resolveMergeTokens(parsed.data.body, ctx).output;
           await deps.sendStaffMail({
             to: pick.email,

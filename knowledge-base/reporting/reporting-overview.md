@@ -22,18 +22,18 @@ The **Reports** workspace (left-nav **Reports**, at `/reports`) is the firm's an
 
 ## Fields
 
-- **Start** / **End** — date-range filter (note: these apply to realization; other cards use their own fixed windows).
+- **Start** / **End** — date-range filter on the **billed (invoice) date**, not the work date (note: these apply to realization; other cards use their own fixed windows).
 - Realization dimension buttons — **firm**, **timekeeper**, **engagement**, **client**, **service line**.
-- **Standard WIP** — original standard value; **After adjustments** — adjusted value; **Realization** — adjusted ÷ original, as a percent (green at ≥ 90%, otherwise amber).
+- **Billed WIP (standard)** — the standard-rate value of all time billed on posted invoices (unadjusted billed time counts at 100%); **Amount billed** — that value net of write-ups/write-downs; **Realization** — billed ÷ standard, as a percent (green at ≥ 90%, otherwise amber; write-ups can exceed 100%). This is the industry-standard billing-realization method (CCH Axcess / Practice CS / Canopy). Collection realization (invoiced → collected) is the separate **Collection realization** report.
 
 ## What you'll see
 
-- **Revenue operations (last 90 days)**: **Billed**, **Paid**, **DSO**, **Collection rate**, **MRR (N plans)**, with sparklines and prior-period deltas. DSO turns amber above 60 days; collection rate amber below 80%.
+- **Revenue operations (last 90 days)**: **Billed**, **Paid**, **DSO**, **Collection rate**, **MRR (N plans)**, with sparklines and prior-period deltas. DSO turns amber above 60 days; collection rate amber below 80%. An **Accrual / Cash** toggle switches the 12-month sparkline trend between billed-by-issue-month and net-cash-collected-by-receipt-month.
 - **Subscription profitability (trailing 90 days)**: per recurring plan, trailing revenue, in-scope/OOS hours, and a **Margin** pill (green ≥ 50%, amber ≥ 25%, else red).
 - **Billable-hour targets · current month**: per-timekeeper **Hours**, **Variance**, **Attainment** (firm target default 130h).
 - **Capacity forecast · next 4 weeks**: weekly average, projected 4-week hours, and a **Variance** pill vs the weekly target (default 32h).
 - **Realization**: firm summary stats or a drillable dimension table sorted worst-realization first.
-- Dedicated pages: **Payments Received** (`/reports/payments-received`) and **Engagement profitability** (`/reports/profitability`).
+- Dedicated pages: **Payments Received** (`/reports/payments-received`) and **Engagement profitability** (`/reports/profitability`). Engagement profitability has its own **Accrual / Cash** basis toggle plus **Start**/**End** dates: accrual margin = billed − cost; cash margin = collected-in-window − cost.
 
 ## Detailed reports (the report viewer)
 

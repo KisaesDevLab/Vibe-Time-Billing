@@ -34,6 +34,7 @@ import {
 } from './sms/provider';
 import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
 import { wrapMailWithBranding } from './notifications/branding-mail';
+import { wrapMailWithFirmConfig } from './messaging/mail-resolver';
 import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
@@ -139,8 +140,12 @@ const baseMailer: MailProvider = (() => {
   }
 })();
 
+// Firm-config resolution is innermost (picks DB emailit/postmark/resend/smtp
+// vs the env baseMailer), then audit logs every send, then branding injects
+// the firm logo/footer. Mirrors the SMS wrap below so the Admin → Messaging
+// email provider actually applies to real sends, not just the test button.
 const mailer: MailProvider = wrapMailWithBranding(
-  wrapMailWithAudit(baseMailer, { db, log: logger }),
+  wrapMailWithAudit(wrapMailWithFirmConfig(baseMailer, { db, log: logger }), { db, log: logger }),
   { db },
 );
 

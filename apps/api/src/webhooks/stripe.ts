@@ -6,13 +6,14 @@
 // at the (provider_charge_id, status) grain — re-deliveries are no-ops.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, isNotNull, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
   clients,
   creditMemos,
   dunningHistory,
+  firmSettings,
   invoicePayLinks,
   invoices,
   paymentMethod,
@@ -20,12 +21,16 @@ import {
   payments,
 } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
+import { formatMoneyCents } from '@vibe/core/invoicing';
+
+import type { PrintQueue } from '../print-gateway/queue';
 
 import { emitAudit } from '../auth/audit';
 import { getBillingContact } from '../clients/billing-contact';
 import { recordOutbound } from '../clients/communications';
 import { logger } from '../logger';
-import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from '../payments/routes';
+import { recomputeInvoicePaid, recomputeInvoicePaidReturnsFullyPaid } from '../payments/recompute';
+import { materializeReceiptIfPending } from '../payments/settle-receipt';
 import {
   promoteEscrowFilesForInvoice,
   revertEscrowFilesForInvoice,
@@ -33,6 +38,36 @@ import {
 } from '../files/promote-on-paid';
 import { publishWebhookEvent } from './publish';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { printNotificationChannel } from '../notifications/print-channel';
+import { createStripeProvider } from '../payments/stripe';
+import { loadFirmStripeConfig } from '../payments/stripe-resolver';
+
+// Verify against the firm's DB-stored webhook secret when the env one isn't
+// set (single-firm appliance) — so webhooks work from keys pasted in the UI.
+async function resolveWebhookVerifier(
+  deps: StripeWebhookDeps,
+): Promise<{ stripe: PaymentProvider | null; secret: string | null }> {
+  if (deps.stripe && deps.webhookSecret) {
+    return { stripe: deps.stripe, secret: deps.webhookSecret };
+  }
+  if (deps.db) {
+    const [fs] = await deps.db
+      .select({ firmId: firmSettings.firmId })
+      .from(firmSettings)
+      .where(isNotNull(firmSettings.stripeConfigEncrypted))
+      .limit(1);
+    if (fs) {
+      const cfg = await loadFirmStripeConfig(deps.db, fs.firmId);
+      if (cfg?.webhookSecret) {
+        return {
+          stripe: deps.stripe ?? createStripeProvider({ secretKey: cfg.secretKey ?? '' }),
+          secret: cfg.webhookSecret,
+        };
+      }
+    }
+  }
+  return { stripe: deps.stripe, secret: deps.webhookSecret };
+}
 
 export interface StripeWebhookDeps {
   db: Database | null;
@@ -41,6 +76,9 @@ export interface StripeWebhookDeps {
   // Phase 14 #15 + #20 — confirmation email + dunning re-route hooks.
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
+  // 0186 — enqueue terminal receipt auto-print on card-present completion.
+  // Injectable (default skip) so webhook tests run without Redis.
+  printQueue?: PrintQueue;
 }
 
 interface StripeEvent {
@@ -50,6 +88,10 @@ interface StripeEvent {
     object: {
       id: string;
       amount?: number;
+      // Cumulative amount refunded on the Charge (cents). Present on
+      // charge.refunded; this — NOT `amount` (the original charge total) —
+      // is the value to record as the refund.
+      amount_refunded?: number;
       // Checkout Session total (cents). Present on checkout.session.* events.
       amount_total?: number;
       payment_intent?: string;
@@ -106,7 +148,8 @@ export function createStripeWebhookRouter(deps: StripeWebhookDeps): Router {
   router.use(express.raw({ type: 'application/json', limit: '1mb' }));
 
   router.post('/', async (req: Request, res: Response) => {
-    if (!deps.stripe || !deps.webhookSecret) {
+    const { stripe: verifier, secret } = await resolveWebhookVerifier(deps);
+    if (!verifier || !secret) {
       res.status(503).json({ error: 'stripe_not_configured' });
       return;
     }
@@ -116,10 +159,10 @@ export function createStripeWebhookRouter(deps: StripeWebhookDeps): Router {
       return;
     }
     const payload = req.body instanceof Buffer ? req.body.toString('utf8') : String(req.body);
-    const ok = deps.stripe.verifyWebhookSignature({
+    const ok = verifier.verifyWebhookSignature({
       payload,
       signature,
-      secret: deps.webhookSecret,
+      secret,
     });
     if (!ok) {
       res.status(401).json({ error: 'invalid_signature' });
@@ -162,7 +205,7 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
       // from the stashed allocations. This is the single source of
       // truth for CHARGE-mode receipts; the frontend just polls
       // /payments/receive/:id until status leaves PENDING.
-      const materialized = await materializeReceiptIfPending(deps.db, intentId);
+      const materialized = await materializeReceiptIfPending(deps.db, intentId, deps.printQueue);
       if (materialized) return;
 
       // Find the payment row by provider_charge_id and mark succeeded.
@@ -242,10 +285,10 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
               const fallbackBody = [
                 `Hi ${client.name},`,
                 ``,
-                `We've received your payment of $${(pay.amountCents / 100).toFixed(2)} for invoice ${inv.invoiceNumber}.`,
+                `We've received your payment of ${formatMoneyCents(pay.amountCents)} for invoice ${inv.invoiceNumber}.`,
                 fullyPaid
                   ? `This invoice is now PAID. Thank you!`
-                  : `Remaining balance: $${((inv.totalCents - newPaidCents) / 100).toFixed(2)}.`,
+                  : `Remaining balance: ${formatMoneyCents(inv.totalCents - newPaidCents)}.`,
                 link ? `\nView receipt: ${link}` : '',
               ].join('\n');
               const rendered = await renderTemplate({
@@ -259,7 +302,7 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
                   firm: await firmScope(deps.db, inv.firmId),
                   invoice: {
                     number: inv.invoiceNumber,
-                    balance: '$' + ((inv.totalCents - newPaidCents) / 100).toFixed(2),
+                    balance: formatMoneyCents(inv.totalCents - newPaidCents),
                     portal_url: link,
                   },
                 },
@@ -282,6 +325,35 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
           } catch (err) {
             logger.warn({ err, invoiceId: inv.id }, 'payment confirmation email failed');
           }
+        }
+        // PRINT channel (0188) — auto-print a payment-received copy. Runs
+        // independently of the email branch (a firm may use PRINT-only
+        // receipts, or a client may have no billing email). Best-effort.
+        {
+          const link = deps.portalBaseUrl ? `${deps.portalBaseUrl}/invoices/${inv.id}` : '';
+          const [printClient] = await deps.db
+            .select({ name: clients.name })
+            .from(clients)
+            .where(eq(clients.id, inv.clientId))
+            .limit(1);
+          await printNotificationChannel({
+            db: deps.db,
+            firmId: inv.firmId,
+            kind: 'payment_received',
+            clientId: inv.clientId,
+            printableId: inv.id,
+            context: {
+              client: { name: printClient?.name ?? '' },
+              firm: await firmScope(deps.db, inv.firmId),
+              invoice: {
+                number: inv.invoiceNumber,
+                balance: formatMoneyCents(inv.totalCents - newPaidCents),
+                portal_url: link,
+              },
+            },
+          }).catch((err) =>
+            logger.warn({ err, invoiceId: inv.id }, 'payment print channel failed'),
+          );
         }
         if (fullyPaid) {
           await publishWebhookEvent(deps.db, inv.firmId, 'invoice.paid', {
@@ -459,32 +531,57 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         .where(eq(payments.providerChargeId, chargeId))
         .limit(1);
       if (!pay) return;
-      const refundedAmount = event.data.object.amount ?? pay.amountCents;
-      await deps.db
-        .update(payments)
-        .set({
-          status: 'REFUNDED',
-          refundedAt: new Date(),
-          refundedAmountCents: refundedAmount,
-        })
-        .where(eq(payments.id, pay.id));
+      // Idempotency: this one `case` fires for charge.refunded AND the two
+      // dispute events for the same charge, and Stripe re-delivers each.
+      // Skip once the payment is already in a refunded state so redeliveries
+      // never re-run the recompute or re-mint the excess credit.
+      if (pay.status === 'REFUNDED' || pay.status === 'PARTIALLY_REFUNDED') return;
+      // Cumulative refunded amount from the Charge (NOT `amount`, the
+      // original total). Falls back to the full payment for dispute events
+      // that don't carry amount_refunded (a dispute reverses the whole charge).
+      const refundedAmount = Number(event.data.object.amount_refunded ?? pay.amountCents);
+      const fullyRefunded = refundedAmount >= Number(pay.amountCents);
 
-      // 0056 — REFUND_EXCESS auto-credit. If the refund is greater than
-      // what was needed to bring the invoice back to a non-negative
-      // open balance (i.e., other payments had already covered some of
-      // this invoice), the surplus becomes a credit on the client's
-      // account so the firm doesn't owe untracked money.
-      const [inv] = await deps.db
-        .select({
-          id: invoices.id,
-          firmId: invoices.firmId,
-          clientId: invoices.clientId,
-          totalCents: invoices.totalCents,
-          paidCents: invoices.paidCents,
-        })
-        .from(invoices)
-        .where(eq(invoices.id, pay.invoiceId))
-        .limit(1);
+      // Reopen the invoice under a ROW LOCK, recomputing paid_cents from the
+      // net-of-refunds payment set (absolute value, lost-update-safe). An
+      // atomic status claim (WHERE status is a non-refunded state) makes the
+      // side effects below run exactly once across redeliveries.
+      const applied = await deps.db.transaction(async (tx) => {
+        const [lockedInv] = await tx
+          .select({
+            id: invoices.id,
+            firmId: invoices.firmId,
+            clientId: invoices.clientId,
+            totalCents: invoices.totalCents,
+            paidCents: invoices.paidCents,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, pay.invoiceId))
+          .for('update')
+          .limit(1);
+        const claim = await tx
+          .update(payments)
+          .set({
+            status: fullyRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+            refundedAt: new Date(),
+            refundedAmountCents: refundedAmount,
+          })
+          .where(
+            and(
+              eq(payments.id, pay.id),
+              ne(payments.status, 'REFUNDED'),
+              ne(payments.status, 'PARTIALLY_REFUNDED'),
+            ),
+          )
+          .returning({ id: payments.id });
+        if (claim.length === 0) return null; // concurrent delivery won the claim
+        // paid_cents captured BEFORE recompute drives the excess calc below.
+        const priorPaid = lockedInv ? Number(lockedInv.paidCents) : 0;
+        if (lockedInv) await recomputeInvoicePaid(tx, lockedInv.id);
+        return { inv: lockedInv, priorPaid };
+      });
+      if (!applied) return; // duplicate delivery — already refunded
+      const inv = applied.inv;
       if (inv) {
         // Stage 3 — revert any escrow files previously auto-promoted by
         // this invoice's payment. Best-effort.
@@ -496,38 +593,55 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
         } catch (err) {
           logger.error({ err, invoiceId: inv.id }, 'escrow revert failed');
         }
-        // After this refund clears, the invoice's effective recoverable
-        // need = totalCents - (otherPaid). If the refund > what this
-        // payment had actually applied to the invoice's needed amount,
-        // the excess is credit. Simple definition: if (paidCents - refundedAmount) < 0,
-        // those negative cents are the credit.
-        const postRefundPaid = Number(inv.paidCents) - Number(refundedAmount);
+        // 0056 — REFUND_EXCESS auto-credit. If we refunded more than this
+        // invoice's paid balance needed (other payments had already covered
+        // part of it), the surplus becomes client credit. Based on the
+        // pre-refund paid_cents captured under the lock.
+        const postRefundPaid = applied.priorPaid - refundedAmount;
         const excess = postRefundPaid < 0 ? -postRefundPaid : 0;
         if (excess > 0) {
           try {
-            const today = new Date().toISOString().slice(0, 10);
-            await deps.db.insert(creditMemos).values({
-              firmId: inv.firmId,
-              clientId: inv.clientId,
-              issuedDate: today,
-              originalAmountCents: excess,
-              source: 'REFUND_EXCESS',
-              reference: `Refund excess from payment ${pay.id}`,
-              status: 'OPEN',
-              sourcePaymentId: pay.id,
-            });
-            await emitAudit(deps.db, {
-              action: 'PAYMENT',
-              entityType: 'credit_memo',
-              after: {
-                kind: 'credit_auto_refund_excess',
+            // Dedup: one REFUND_EXCESS memo per source payment. (The atomic
+            // claim above already gates this; this is defense in depth in
+            // case of any pre-existing memo.)
+            const [existing] = await deps.db
+              .select({ id: creditMemos.id })
+              .from(creditMemos)
+              .where(
+                and(
+                  eq(creditMemos.sourcePaymentId, pay.id),
+                  eq(creditMemos.source, 'REFUND_EXCESS'),
+                ),
+              )
+              .limit(1);
+            if (!existing) {
+              const today = new Date().toISOString().slice(0, 10);
+              await deps.db.insert(creditMemos).values({
+                firmId: inv.firmId,
                 clientId: inv.clientId,
-                amountCents: excess,
+                issuedDate: today,
+                originalAmountCents: excess,
+                source: 'REFUND_EXCESS',
+                reference: `Refund excess from payment ${pay.id}`,
+                status: 'OPEN',
                 sourcePaymentId: pay.id,
-              },
-            }).catch((err: unknown) =>
-              logger.error({ err, payId: pay.id }, 'audit emit failed (credit_auto_refund_excess)'),
-            );
+              });
+              await emitAudit(deps.db, {
+                action: 'PAYMENT',
+                entityType: 'credit_memo',
+                after: {
+                  kind: 'credit_auto_refund_excess',
+                  clientId: inv.clientId,
+                  amountCents: excess,
+                  sourcePaymentId: pay.id,
+                },
+              }).catch((err: unknown) =>
+                logger.error(
+                  { err, payId: pay.id },
+                  'audit emit failed (credit_auto_refund_excess)',
+                ),
+              );
+            }
           } catch (err) {
             logger.warn({ err, payId: pay.id }, 'refund-excess credit creation failed');
           }
@@ -680,114 +794,4 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
     default:
       logger.debug({ type: event.type }, 'unhandled stripe event');
   }
-}
-
-/**
- * 0055 — when a Stripe payment_intent.succeeded event arrives for a
- * staff Receive Payment receipt that is still PENDING, materialize the
- * N child payment rows from the receipt's stashed allocations.
- *
- * Returns true when a receipt was processed (whether materialized or
- * already SUCCEEDED — both cases mean "this id belongs to a receipt, do
- * NOT fall through to the legacy per-payment branch").
- *
- * Idempotent on (provider_charge_id, status='SUCCEEDED'): a re-delivery
- * finds the receipt already SUCCEEDED and returns without re-writing.
- */
-async function materializeReceiptIfPending(db: Database, intentId: string): Promise<boolean> {
-  const [receipt] = await db
-    .select()
-    .from(paymentReceipts)
-    .where(eq(paymentReceipts.providerChargeId, intentId))
-    .limit(1);
-  if (!receipt) return false;
-  if (receipt.status === 'SUCCEEDED') {
-    // Re-delivery; nothing to do but signal that we owned the event.
-    return true;
-  }
-  if (receipt.status !== 'PENDING') return true;
-  const allocations = (receipt.allocationsPending ?? []) as {
-    invoiceId: string;
-    amountCents: number;
-  }[];
-  if (allocations.length === 0) {
-    await db
-      .update(paymentReceipts)
-      .set({ status: 'FAILED', updatedAt: new Date() })
-      .where(eq(paymentReceipts.id, receipt.id));
-    logger.warn({ receiptId: receipt.id }, 'pending receipt had no allocations');
-    return true;
-  }
-
-  await db.transaction(async (tx) => {
-    // Lock allocation invoices in firm scope, then re-validate balances.
-    const locked = await tx
-      .select({
-        id: invoices.id,
-        totalCents: invoices.totalCents,
-        paidCents: invoices.paidCents,
-      })
-      .from(invoices)
-      .where(
-        and(
-          inArray(
-            invoices.id,
-            allocations.map((a) => a.invoiceId),
-          ),
-          eq(invoices.firmId, receipt.firmId),
-        ),
-      )
-      .for('update');
-    const lockedById = new Map(locked.map((i) => [i.id, i]));
-    const receivedAt = new Date();
-    for (const a of allocations) {
-      const inv = lockedById.get(a.invoiceId);
-      if (!inv) {
-        // Invoice disappeared (voided?) between intent and confirmation —
-        // skip this row; the receipt total may not match the sum applied,
-        // which the reconciliation report will surface.
-        continue;
-      }
-      const open = Number(inv.totalCents) - Number(inv.paidCents);
-      // If someone else already paid the invoice down (e.g., portal pay
-      // between intent and webhook), apply only what fits. Excess gets
-      // dropped — better than violating the invoice CHECK constraint.
-      const apply = Math.min(a.amountCents, open);
-      if (apply <= 0) continue;
-      await tx.insert(payments).values({
-        invoiceId: inv.id,
-        amountCents: apply,
-        feeCents: 0,
-        provider: 'STRIPE',
-        providerChargeId: intentId,
-        status: 'SUCCEEDED',
-        receivedAt,
-        receiptId: receipt.id,
-      });
-      await recomputeInvoicePaid(tx, inv.id);
-    }
-    await tx
-      .update(paymentReceipts)
-      .set({
-        status: 'SUCCEEDED',
-        allocationsPending: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(paymentReceipts.id, receipt.id));
-  });
-
-  await emitAudit(db, {
-    action: 'PAYMENT',
-    entityType: 'payment_receipt',
-    entityId: receipt.id,
-    after: {
-      kind: 'receive_materialized',
-      providerChargeId: intentId,
-      allocationCount: allocations.length,
-    },
-  }).catch((err: unknown) =>
-    logger.error({ err, receiptId: receipt.id }, 'audit emit failed (receive_materialized)'),
-  );
-
-  return true;
 }

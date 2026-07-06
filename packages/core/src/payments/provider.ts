@@ -99,8 +99,16 @@ export interface PaymentProvider {
   id: PaymentProviderId;
   charge(req: ChargeRequest): Promise<ChargeResult>;
   refund(req: RefundRequest): Promise<RefundResult>;
-  /** Verify the webhook signature for incoming events. */
-  verifyWebhookSignature(args: { payload: string; signature: string; secret: string }): boolean;
+  /**
+   * Verify the webhook signature for incoming events. `nowMs` overrides the
+   * wall clock for replay-window checks (used by tests); defaults to Date.now().
+   */
+  verifyWebhookSignature(args: {
+    payload: string;
+    signature: string;
+    secret: string;
+    nowMs?: number;
+  }): boolean;
   /**
    * Optional: create an unconfirmed PaymentIntent so the client can
    * confirm with Stripe Elements / equivalent. Providers without an

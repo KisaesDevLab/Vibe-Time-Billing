@@ -10,7 +10,7 @@
 // editing/archiving leaves the originals intact (UI nicety; the API
 // allows editing them too).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button, Card, Combobox, Pill, Tabs, tokens } from '@vibe/ui';
 
@@ -22,11 +22,103 @@ const FEE_OPTIONS = [
   { value: 'RECURRING_SUBSCRIPTION', label: 'Recurring subscription' },
 ];
 
-import { api } from '../../api-client';
+import { api, getCsrfToken } from '../../api-client';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../../lib/money';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
+import {
+  RichTextEditor,
+  type RichTextApi,
+  type RichTextVariable,
+} from '../../proposal-editor/RichTextEditor';
 
-type Kind = 'engagement' | 'letter' | 'client' | 'request';
+// One-click letter building blocks inserted into the editor. Use only
+// nodes the WYSIWYG understands (h1/p/strong/br/hr) so they survive Visual
+// mode; the address block uses the raw {{{ }}} token for the multi-line
+// block. Kept in sync with the server LETTER_TEMPLATE_TOKENS / DEFAULT_LETTER_CSS.
+const LETTER_BLOCKS: Array<{ label: string; snippet: string }> = [
+  {
+    label: 'Letterhead',
+    snippet:
+      '<h1>{{ firm.name }}</h1><p>{{ firm.support_phone }} · {{ firm.support_email }} · {{ firm.support_web }}</p><hr>',
+  },
+  {
+    label: 'Date',
+    snippet: '<p>{{ today }}</p>',
+  },
+  {
+    label: 'Address block',
+    snippet:
+      '<p><strong>{{ client.display_name }}</strong><br>{{{ client.address_block_html }}}</p>',
+  },
+  {
+    label: 'Greeting',
+    snippet: '<p>Dear {{ client.primary_contact }},</p>',
+  },
+  {
+    label: 'Appointment',
+    snippet:
+      '<p>This confirms your appointment: <strong>{{ appointment.datetime }}</strong> ({{ appointment.location }}).</p>',
+  },
+  {
+    label: 'Drop-off',
+    snippet:
+      '<p>Please drop off your documents by <strong>{{ client.drop_off_date }}</strong>.</p>',
+  },
+  {
+    label: 'Closing',
+    snippet: '<p>Sincerely,</p><p>{{ firm.name }}</p>',
+  },
+];
+
+// Mirror of the server DEFAULT_LETTER_CSS (apps/api/src/clients/letter-merge.ts)
+// so the editor preview matches the merged output for fragment letters.
+const DEFAULT_LETTER_CSS = `
+@page { size: Letter; margin: 1in; }
+body { font: 12pt Georgia, "Times New Roman", serif; color: #1a1a1a; line-height: 1.5; }
+h1 { font-family: Arial, Helvetica, sans-serif; font-size: 20pt; margin: 0 0 4px; }
+h2 { font-size: 14pt; margin: 18px 0 6px; }
+h3 { font-size: 12pt; margin: 14px 0 6px; }
+p { margin: 0 0 12px; }
+hr { border: none; border-top: 2px solid #1a1a1a; margin: 8px 0 24px; }
+ul, ol { margin: 0 0 12px 22px; }
+`;
+
+// Merge tokens offered in the letter editor's variable picker. Mirrors the
+// server LETTER_TEMPLATE_TOKENS (apps/api/src/clients/letter-merge.ts) —
+// the ones that work well from the WYSIWYG (double-brace) editor. The raw
+// address-block token needs triple braces, so it's documented but omitted
+// from the picker; use the HTML source mode for that.
+const LETTER_VARIABLES: RichTextVariable[] = [
+  { token: 'client.display_name', label: 'Client display name' },
+  { token: 'client.name', label: 'Client legal name' },
+  { token: 'client.primary_contact', label: 'Primary contact name' },
+  { token: 'client.city_state_zip', label: 'City, State ZIP' },
+  { token: 'client.street1', label: 'Street line 1' },
+  { token: 'client.city', label: 'City' },
+  { token: 'client.state', label: 'State' },
+  { token: 'client.postal', label: 'ZIP / postal' },
+  { token: 'client.drop_off_date', label: 'Drop-off due date' },
+  { token: 'appointment.datetime', label: 'Appointment date & time' },
+  { token: 'appointment.date', label: 'Appointment date' },
+  { token: 'appointment.time', label: 'Appointment time' },
+  { token: 'appointment.title', label: 'Appointment title' },
+  { token: 'appointment.location', label: 'Appointment location' },
+  { token: 'engagement.name', label: 'Engagement name' },
+  { token: 'firm.name', label: 'Firm name' },
+  { token: 'firm.support_email', label: 'Firm email' },
+  { token: 'firm.support_phone', label: 'Firm phone' },
+  { token: 'firm.support_web', label: 'Firm website' },
+  { token: 'today', label: "Today's date" },
+];
+
+// A stored letter body is a "full document" (has its own letterhead
+// <style>/<head>) when it carries these markers — the WYSIWYG editor would
+// strip them, so we default such templates to HTML-source mode.
+function isFullHtmlDoc(html: string): boolean {
+  return /<!doctype|<html|<head|<style/i.test(html);
+}
+
+type Kind = 'engagement' | 'letter' | 'client' | 'request' | 'invoice' | 'statement';
 
 type SurchargeType = 'PERCENT' | 'FLAT_AMOUNT';
 type RecurrenceFrequency =
@@ -82,6 +174,7 @@ interface EngagementTpl {
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
   defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
   defaultRecurrenceStatus: EngagementStatus | null;
+  defaultEngagementStatus: EngagementStatus | null;
   isSystem: boolean;
   status: string;
 }
@@ -115,6 +208,7 @@ interface LetterTpl {
   name: string;
   bodyHtml: string;
   variablesJson: string[] | null;
+  pageMargin: string | null;
   isSystem: boolean;
   status: string;
 }
@@ -170,6 +264,7 @@ interface EngagementDraftFields {
   defaultRecurrenceFrequency: '' | RecurrenceFrequency;
   defaultRecurrenceTriggerMode: '' | RecurrenceTriggerMode;
   defaultRecurrenceStatus: '' | EngagementStatus;
+  defaultEngagementStatus: '' | EngagementStatus;
 }
 
 const EMPTY_DEFAULTS = {
@@ -187,6 +282,7 @@ const EMPTY_DEFAULTS = {
   defaultRecurrenceFrequency: '' as '' | RecurrenceFrequency,
   defaultRecurrenceTriggerMode: '' as '' | RecurrenceTriggerMode,
   defaultRecurrenceStatus: '' as '' | EngagementStatus,
+  defaultEngagementStatus: '' as '' | EngagementStatus,
 };
 
 // Translate a draft's new-defaults fields into the API payload shape
@@ -225,6 +321,9 @@ function draftDefaultsToPayload(d: EngagementDraftFields): Record<string, unknow
     defaultRecurrenceStatus: d.defaultRecurrenceFrequency
       ? d.defaultRecurrenceStatus || null
       : null,
+    // Default status for a NEW engagement created from this template (not
+    // gated on recurrence).
+    defaultEngagementStatus: d.defaultEngagementStatus || null,
   };
 }
 
@@ -238,6 +337,8 @@ export function TemplatesPage(): JSX.Element {
           { key: 'letter', label: 'Letter templates' },
           { key: 'client', label: 'Client templates' },
           { key: 'request', label: 'Request templates' },
+          { key: 'invoice', label: 'Invoice template' },
+          { key: 'statement', label: 'Statement template' },
         ]}
         active={kind}
         onChange={(k) => setKind(k as Kind)}
@@ -246,6 +347,8 @@ export function TemplatesPage(): JSX.Element {
       {kind === 'letter' && <LetterTab />}
       {kind === 'client' && <ClientTab />}
       {kind === 'request' && <RequestTab />}
+      {kind === 'invoice' && <InvoiceTab />}
+      {kind === 'statement' && <StatementTab />}
     </div>
   );
 }
@@ -394,6 +497,7 @@ function EngagementTab(): JSX.Element {
       defaultRecurrenceFrequency: t.defaultRecurrenceFrequency ?? '',
       defaultRecurrenceTriggerMode: t.defaultRecurrenceTriggerMode ?? '',
       defaultRecurrenceStatus: t.defaultRecurrenceStatus ?? '',
+      defaultEngagementStatus: t.defaultEngagementStatus ?? '',
     });
   }
 
@@ -655,6 +759,36 @@ function EngagementTab(): JSX.Element {
             />
           </div>
         )}
+
+        <div>
+          <label
+            htmlFor={`${idPrefix}-new-status`}
+            style={{
+              fontSize: 11,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Default status for new engagements
+          </label>
+          <select
+            id={`${idPrefix}-new-status`}
+            value={d.defaultEngagementStatus}
+            onChange={(e) =>
+              update({ defaultEngagementStatus: e.target.value as '' | EngagementStatus })
+            }
+            aria-label="Default status for new engagements"
+            style={{ ...fieldStyle, width: '100%' }}
+          >
+            <option value="">New status: Proposed (default)</option>
+            {STATUS_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                New status: {o}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div>
           <label
@@ -1083,7 +1217,40 @@ function LetterTab(): JSX.Element {
   const [items, setItems] = useState<LetterTpl[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState('');
+  const [editMargin, setEditMargin] = useState('');
+  const [editMode, setEditMode] = useState<'visual' | 'html'>('visual');
   const [error, setError] = useState<string | null>(null);
+  const insertApiRef = useRef<RichTextApi | null>(null);
+  const htmlRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // A valid CSS margin: 1–4 space-separated lengths (in/cm/mm/px/pt).
+  const marginValid =
+    editMargin.trim() === '' || /^(\d+(\.\d+)?(in|cm|mm|px|pt)\s*){1,4}$/i.test(editMargin.trim());
+
+  function startEdit(t: LetterTpl): void {
+    setEditingId(t.id);
+    setEditBody(t.bodyHtml);
+    setEditMargin(t.pageMargin ?? '');
+    // Protect letterhead docs — WYSIWYG would drop <style>/<head>.
+    setEditMode(isFullHtmlDoc(t.bodyHtml) ? 'html' : 'visual');
+  }
+
+  // Insert a building block at the cursor — via the editor API in Visual
+  // mode, or into the textarea selection in HTML mode.
+  function insertBlock(snippet: string): void {
+    if (editMode === 'visual') {
+      insertApiRef.current?.insertText(snippet);
+      return;
+    }
+    const ta = htmlRef.current;
+    if (!ta) {
+      setEditBody((b) => (b ? `${b}\n${snippet}` : snippet));
+      return;
+    }
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    setEditBody(editBody.slice(0, start) + snippet + editBody.slice(end));
+  }
 
   async function load(): Promise<void> {
     try {
@@ -1101,7 +1268,7 @@ function LetterTab(): JSX.Element {
     try {
       await api(`/api/staff/admin/templates/letter/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ bodyHtml: editBody }),
+        body: JSON.stringify({ bodyHtml: editBody, pageMargin: editMargin.trim() }),
       });
       setEditingId(null);
       await load();
@@ -1146,7 +1313,7 @@ function LetterTab(): JSX.Element {
                 <span style={{ marginLeft: 'auto' }}>
                   {editingId === t.id ? (
                     <>
-                      <Button size="sm" onClick={() => void save(t.id)}>
+                      <Button size="sm" disabled={!marginValid} onClick={() => void save(t.id)}>
                         Save
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
@@ -1154,30 +1321,119 @@ function LetterTab(): JSX.Element {
                       </Button>
                     </>
                   ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        setEditingId(t.id);
-                        setEditBody(t.bodyHtml);
-                      }}
-                    >
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(t)}>
                       Edit body
                     </Button>
                   )}
                 </span>
               </div>
               {editingId === t.id ? (
-                <textarea
-                  value={editBody}
-                  onChange={(e) => setEditBody(e.target.value)}
-                  rows={10}
-                  style={{
-                    ...fieldStyle,
-                    fontFamily: tokens.font.mono,
-                    resize: 'vertical',
-                  }}
-                />
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Editor:</span>
+                    <Button
+                      size="sm"
+                      variant={editMode === 'visual' ? 'secondary' : 'ghost'}
+                      disabled={isFullHtmlDoc(editBody)}
+                      title={
+                        isFullHtmlDoc(editBody)
+                          ? 'This letter has a letterhead/<style> block; the visual editor would strip it. Edit in HTML mode.'
+                          : undefined
+                      }
+                      onClick={() => setEditMode('visual')}
+                    >
+                      Visual
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={editMode === 'html' ? 'secondary' : 'ghost'}
+                      onClick={() => setEditMode('html')}
+                    >
+                      {'</> HTML'}
+                    </Button>
+                    {isFullHtmlDoc(editBody) && (
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        Letterhead/&lt;style&gt; letter — editing in HTML to preserve it.
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label
+                      htmlFor={`letter-margin-${t.id}`}
+                      style={{ fontSize: 11, color: tokens.color.textMuted }}
+                    >
+                      Page margin
+                    </label>
+                    <input
+                      id={`letter-margin-${t.id}`}
+                      value={editMargin}
+                      onChange={(e) => setEditMargin(e.target.value)}
+                      placeholder="1in (default)"
+                      style={{ ...fieldStyle, width: 140, fontFamily: tokens.font.mono }}
+                    />
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      CSS length — e.g. <code>1in</code>, <code>0.75in</code>, or per-side{' '}
+                      <code>1in 0.75in</code>. Blank = 1in.
+                    </span>
+                    {!marginValid && (
+                      <span style={{ fontSize: 11, color: tokens.color.danger }}>
+                        Enter a valid CSS length (in/cm/mm/px/pt).
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Insert:</span>
+                    {LETTER_BLOCKS.map((b) => (
+                      <Button
+                        key={b.label}
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => insertBlock(b.snippet)}
+                        title={`Insert a ${b.label.toLowerCase()} block`}
+                      >
+                        {b.label}
+                      </Button>
+                    ))}
+                  </div>
+                  {editMode === 'visual' ? (
+                    <RichTextEditor
+                      key={`${t.id}-visual`}
+                      format="html"
+                      value={editBody}
+                      onChange={setEditBody}
+                      onReady={(apiRef) => {
+                        insertApiRef.current = apiRef;
+                      }}
+                      variables={LETTER_VARIABLES}
+                      minHeight={260}
+                      placeholder="Write the letter. Use Insert for letterhead / address / variables."
+                    />
+                  ) : (
+                    <textarea
+                      ref={htmlRef}
+                      value={editBody}
+                      onChange={(e) => setEditBody(e.target.value)}
+                      rows={14}
+                      style={{ ...fieldStyle, fontFamily: tokens.font.mono, resize: 'vertical' }}
+                    />
+                  )}
+                  <div style={{ fontSize: 11, color: tokens.color.textMuted }}>Preview</div>
+                  <iframe
+                    title="Letter preview"
+                    srcDoc={
+                      isFullHtmlDoc(editBody)
+                        ? editBody
+                        : `<!doctype html><html><head><meta charset="utf-8" /><style>${DEFAULT_LETTER_CSS}</style></head><body>${editBody}</body></html>`
+                    }
+                    style={{
+                      width: '100%',
+                      height: 320,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      background: '#fff',
+                    }}
+                  />
+                </div>
               ) : (
                 <pre
                   style={{
@@ -1201,6 +1457,436 @@ function LetterTab(): JSX.Element {
         </div>
       </Card>
     </div>
+  );
+}
+
+interface DocToken {
+  token: string;
+  scope: string;
+  description: string;
+  raw?: boolean;
+}
+
+interface DocTemplateConfig {
+  /** API base, e.g. '/api/staff/admin/templates/invoice'. */
+  base: string;
+  cardTitle: string;
+  intro: JSX.Element;
+  /** Friendly labels per token scope; falls back to the raw scope name. */
+  scopeLabels: Record<string, string>;
+  /** Builtin render-mode <option>s ('' = custom). */
+  builtinOptions: Array<{ value: string; label: string }>;
+  resetLabel: string;
+  /** Quick block-insert buttons. */
+  blocks: Array<{ label: string; snippet: string }>;
+}
+
+// Generic document-template editor (HTML body / variables / CSS / live
+// PDF preview). Shared by the Invoice and Statement tabs.
+function DocumentTemplateTab({ cfg }: { cfg: DocTemplateConfig }): JSX.Element {
+  const [bodyHtml, setBodyHtml] = useState('');
+  const [css, setCss] = useState('');
+  const [builtinStyle, setBuiltinStyle] = useState('');
+  const [tokens_, setTokens] = useState<DocToken[]>([]);
+  const [defaults, setDefaults] = useState<{ bodyHtml: string; css: string }>({
+    bodyHtml: '',
+    css: '',
+  });
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+
+  async function load(): Promise<void> {
+    try {
+      const [tpl, vars] = await Promise.all([
+        api<{
+          template: { bodyHtml: string | null; css: string | null; builtinStyle: string | null };
+        }>(cfg.base),
+        api<{ tokens: DocToken[]; defaults: { bodyHtml: string; css: string } }>(
+          `${cfg.base}/variables`,
+        ),
+      ]);
+      setBodyHtml(tpl.template.bodyHtml ?? vars.defaults.bodyHtml);
+      setCss(tpl.template.css ?? vars.defaults.css);
+      setBuiltinStyle(tpl.template.builtinStyle ?? '');
+      setTokens(vars.tokens ?? []);
+      setDefaults(vars.defaults);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg.base]);
+
+  // Debounced live preview — renders the actual PDF (Puppeteer) so the
+  // editor is true WYSIWYG; the blob is shown via an object URL.
+  useEffect(() => {
+    if (!bodyHtml) return;
+    let cancelled = false;
+    setPreviewing(true);
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`${cfg.base}/preview?format=pdf`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() ?? '' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ bodyHtml, css }),
+          });
+          if (!res.ok) throw new Error('preview_failed');
+          const blob = await res.blob();
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          setPreviewUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
+          setPreviewError(false);
+        } catch {
+          if (!cancelled) setPreviewError(true);
+        } finally {
+          if (!cancelled) setPreviewing(false);
+        }
+      })();
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [bodyHtml, css, cfg.base]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function insertAtCursor(text: string): void {
+    const el = bodyRef.current;
+    if (!el) {
+      setBodyHtml((b) => b + text);
+      return;
+    }
+    const start = el.selectionStart ?? bodyHtml.length;
+    const end = el.selectionEnd ?? bodyHtml.length;
+    const next = bodyHtml.slice(0, start) + text + bodyHtml.slice(end);
+    setBodyHtml(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + text.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }
+
+  async function save(): Promise<void> {
+    try {
+      await api(cfg.base, {
+        method: 'PUT',
+        body: JSON.stringify({ bodyHtml, css, builtinStyle: builtinStyle || null }),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'save_failed');
+    }
+  }
+
+  const grouped = tokens_.reduce<Record<string, DocToken[]>>((acc, t) => {
+    (acc[t.scope] ??= []).push(t);
+    return acc;
+  }, {});
+
+  return (
+    <div style={{ display: 'grid', gap: tokens.space.lg }}>
+      <Card title={cfg.cardTitle}>
+        {error && (
+          <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
+            {error}
+          </p>
+        )}
+        <p style={{ fontSize: 12, color: tokens.color.textMuted }}>{cfg.intro}</p>
+
+        <div
+          style={{
+            display: 'flex',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            margin: '12px 0',
+          }}
+        >
+          <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}>
+            Render mode:
+            <select
+              value={builtinStyle}
+              onChange={(e) => setBuiltinStyle(e.target.value)}
+              style={fieldStyle}
+            >
+              <option value="">Custom template (HTML + CSS below)</option>
+              {cfg.builtinOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setBodyHtml(defaults.bodyHtml);
+              setCss(defaults.css);
+            }}
+          >
+            {cfg.resetLabel}
+          </Button>
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            {saved && <Pill tone="accent">saved</Pill>}
+            <Button size="sm" onClick={() => void save()}>
+              Save
+            </Button>
+          </span>
+        </div>
+
+        {builtinStyle && (
+          <p
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              padding: 8,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+              marginBottom: 12,
+            }}
+          >
+            This document will use the built-in <strong>{builtinStyle}</strong> layout. Switch back
+            to <em>Custom template</em> to use the HTML/CSS below.
+          </p>
+        )}
+
+        <div style={{ display: 'grid', gap: 16 }}>
+          {/* HTML body — full width, white */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>HTML body</div>
+            <textarea
+              ref={bodyRef}
+              value={bodyHtml}
+              onChange={(e) => setBodyHtml(e.target.value)}
+              rows={20}
+              spellCheck={false}
+              style={{
+                ...fieldStyle,
+                width: '100%',
+                background: '#fff',
+                color: '#111',
+                fontFamily: tokens.font.mono,
+                resize: 'vertical',
+              }}
+            />
+          </div>
+
+          {/* Variables — between HTML and CSS */}
+          <div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 4,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+              }}
+            >
+              <span>Variables (click to insert)</span>
+              <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {cfg.blocks.map((b) => (
+                  <Button
+                    key={b.label}
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => insertAtCursor(b.snippet)}
+                  >
+                    {b.label}
+                  </Button>
+                ))}
+              </span>
+            </div>
+            <div
+              style={{
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                padding: 8,
+                display: 'grid',
+                gap: 8,
+              }}
+            >
+              {Object.keys(grouped).map((scope) => (
+                <div key={scope}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: tokens.color.textMuted }}>
+                    {cfg.scopeLabels[scope] ?? scope}
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                    {grouped[scope]!.map((t) => (
+                      <button
+                        key={`${scope}-${t.token}`}
+                        type="button"
+                        title={t.description}
+                        onClick={() =>
+                          insertAtCursor(t.raw ? `{{{ ${t.token} }}}` : `{{ ${t.token} }}`)
+                        }
+                        style={{
+                          fontFamily: tokens.font.mono,
+                          fontSize: 11,
+                          padding: '2px 6px',
+                          border: `1px solid ${tokens.color.border}`,
+                          borderRadius: tokens.radius.sm,
+                          background: tokens.color.surface,
+                          color: tokens.color.text,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {t.token}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* CSS — full width, white */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>CSS</div>
+            <textarea
+              value={css}
+              onChange={(e) => setCss(e.target.value)}
+              rows={16}
+              spellCheck={false}
+              style={{
+                ...fieldStyle,
+                width: '100%',
+                background: '#fff',
+                color: '#111',
+                fontFamily: tokens.font.mono,
+                resize: 'vertical',
+              }}
+            />
+          </div>
+
+          {/* Live preview — full-width bottom row */}
+          <div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 4,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              Live preview — PDF, sample data
+              {previewing && (
+                <span style={{ fontWeight: 400, color: tokens.color.textMuted }}>rendering…</span>
+              )}
+              {previewError && (
+                <span style={{ fontWeight: 400, color: tokens.color.danger }}>render failed</span>
+              )}
+            </div>
+            <iframe
+              title={`${cfg.cardTitle}-preview`}
+              src={previewUrl || undefined}
+              style={{
+                width: '100%',
+                height: 760,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                background: '#fff',
+              }}
+            />
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function InvoiceTab(): JSX.Element {
+  return (
+    <DocumentTemplateTab
+      cfg={{
+        base: '/api/staff/admin/templates/invoice',
+        cardTitle: 'Invoice template',
+        resetLabel: 'Reset to default letterhead',
+        scopeLabels: {
+          firm: 'Firm',
+          client: 'Client',
+          invoice: 'Invoice',
+          line_items: 'Line items ({{#each line_items}})',
+          surcharges: 'Surcharges ({{#each surcharges}})',
+          safe_html: 'HTML blocks (raw)',
+        },
+        builtinOptions: [
+          { value: 'modern', label: 'Built-in · Modern' },
+          { value: 'classic', label: 'Built-in · Classic' },
+          { value: 'minimal', label: 'Built-in · Minimal' },
+        ],
+        blocks: [
+          { label: 'each line_items', snippet: '{{#each line_items}}\n  \n{{/each}}' },
+          { label: 'each surcharges', snippet: '{{#each surcharges}}\n  \n{{/each}}' },
+          { label: 'if … / else', snippet: '{{#if invoice.notes}}\n  \n{{/if}}' },
+        ],
+        intro: (
+          <>
+            Design the invoice your clients receive (staff PDF, portal view, pay-by-link and email
+            all use this). Tokens use <code>{'{{ scope.field }}'}</code>; loop line items with{' '}
+            <code>{'{{#each line_items}}…{{/each}}'}</code>; optional blocks with{' '}
+            <code>{'{{#if token}}…{{/if}}'}</code>; raw HTML with <code>{'{{{ token }}}'}</code>.
+          </>
+        ),
+      }}
+    />
+  );
+}
+
+function StatementTab(): JSX.Element {
+  return (
+    <DocumentTemplateTab
+      cfg={{
+        base: '/api/staff/admin/templates/statement',
+        cardTitle: 'Statement template',
+        resetLabel: 'Reset to default statement',
+        scopeLabels: {
+          firm: 'Firm',
+          client: 'Client',
+          statement: 'Statement',
+          aging: 'Aging buckets',
+          lines: 'Ledger rows ({{#each lines}})',
+          safe_html: 'HTML blocks (raw)',
+        },
+        builtinOptions: [{ value: 'classic', label: 'Built-in · Classic' }],
+        blocks: [
+          { label: 'each lines', snippet: '{{#each lines}}\n  \n{{/each}}' },
+          { label: 'if period', snippet: '{{#if statement.period_start}}\n  \n{{/if}}' },
+        ],
+        intro: (
+          <>
+            Design the statement of account clients receive (single PDF, bulk generate and email all
+            use this). Works for both outstanding-balance and date-range activity statements. Tokens
+            use <code>{'{{ scope.field }}'}</code>; loop ledger rows with{' '}
+            <code>{'{{#each lines}}…{{/each}}'}</code>; the activity-only opening/closing rows are
+            gated on <code>{'{{#if statement.period_start}}'}</code>.
+          </>
+        ),
+      }}
+    />
   );
 }
 

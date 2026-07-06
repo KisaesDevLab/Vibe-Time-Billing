@@ -47,6 +47,7 @@ import {
 import type { PaymentProvider } from '@vibe/core/payments';
 
 import { logger } from '../logger';
+import { pgErrorCode } from '../db-error';
 
 export interface StripeConnectWebhookDeps {
   db: Database | null;
@@ -109,8 +110,10 @@ export function createStripeConnectWebhookRouter(deps: StripeConnectWebhookDeps)
     // delivery of the same event collides on insert and we return 200
     // without reprocessing.
     const inserted = await tryInsertEvent(deps.db, event, payload).catch((err: unknown) => {
-      // Postgres unique-violation surfaces as a constraint error.
-      if (err instanceof Error && /unique|duplicate|primary/i.test(err.message)) {
+      // Postgres unique-violation (23505) on the stripe_event_id PK = a
+      // duplicate delivery. drizzle wraps the driver error, so match on the
+      // pg code via the cause chain rather than the (now wrapper) message.
+      if (pgErrorCode(err) === '23505') {
         return null;
       }
       throw err;

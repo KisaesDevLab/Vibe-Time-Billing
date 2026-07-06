@@ -18,6 +18,9 @@ export interface NavItem {
    *  string (use '' to fence off a trailing utility group). Items with no
    *  `section` continue the current group with no separator. */
   section?: string;
+  /** When true, the item gets an orange (warning-tone) background to signal
+   *  unread/new items in that area — matching the High-priority tone. */
+  hasUnread?: boolean;
 }
 
 export interface AppShellProps {
@@ -395,7 +398,13 @@ export function AppShell({
                       fontSize: 13,
                       padding: collapsed ? '8px 0' : '8px 12px',
                       borderRadius: tokens.radius.sm,
-                      background: n.active ? tokens.color.accentMuted : 'transparent',
+                      // Active wins; otherwise an unread area gets an orange
+                      // (warning-tone) tint matching the High-priority signal.
+                      background: n.active
+                        ? tokens.color.accentMuted
+                        : n.hasUnread
+                          ? 'color-mix(in srgb, var(--vibe-color-warning) 26%, transparent)'
+                          : 'transparent',
                       display: 'flex',
                       alignItems: 'center',
                       gap: 10,

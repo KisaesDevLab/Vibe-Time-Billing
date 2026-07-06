@@ -8,6 +8,9 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { StatementDialog } from './StatementDialog';
+import { SavedMethodsCard } from './SavedMethodsCard';
+import { PaymentPlanCard } from './PaymentPlanCard';
 
 type YearFilter = 'current' | 'prior' | 'all';
 
@@ -62,11 +65,14 @@ interface CreditMemo {
 
 interface Props {
   clientId: string;
+  clientName?: string;
 }
 
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
-export function BillingCard({ clientId }: Props): JSX.Element {
+export function BillingCard({ clientId, clientName }: Props): JSX.Element {
+  const [statementOpen, setStatementOpen] = useState(false);
+  const [methodsVersion, setMethodsVersion] = useState(0);
   const [items, setItems] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditMemo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -292,24 +298,59 @@ export function BillingCard({ clientId }: Props): JSX.Element {
     .filter((c) => c.status !== 'VOIDED' && c.status !== 'FULLY_APPLIED')
     .reduce((s, c) => s + c.remainingAmountCents, 0);
 
+  // Balance-weighted average days past the due date across outstanding
+  // invoices (not-yet-due count as 0). Mirrors the AR aging report.
+  const avgDaysPastDue = useMemo(() => {
+    const today = Date.now();
+    let weighted = 0;
+    let weight = 0;
+    for (const i of filteredItems) {
+      if (!['SENT', 'PARTIALLY_PAID', 'OVERDUE'].includes(i.status)) continue;
+      const balance = i.totalCents - i.paidCents;
+      if (balance <= 0) continue;
+      const days = Math.max(0, Math.floor((today - Date.parse(i.dueDate)) / 86_400_000));
+      weighted += days * balance;
+      weight += balance;
+    }
+    return weight > 0 ? Math.round(weighted / weight) : 0;
+  }, [filteredItems]);
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
+      {statementOpen && (
+        <StatementDialog
+          clientId={clientId}
+          clientName={clientName ?? 'Client'}
+          onClose={() => setStatementOpen(false)}
+        />
+      )}
       <Card
         title="Billing summary"
-        action={<YearFilterToggle value={yearFilter} onChange={setYearFilter} />}
+        action={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button size="sm" variant="ghost" onClick={() => setStatementOpen(true)}>
+              Generate statement
+            </Button>
+            <YearFilterToggle value={yearFilter} onChange={setYearFilter} />
+          </div>
+        }
       >
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
             {error}
           </p>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
           <Stat label={`Invoiced ${yearLabel(yearFilter)}`} value={formatCents(totals.invoiced)} />
           <Stat label="Paid" value={formatCents(totals.paid)} />
           <Stat label="Outstanding" value={formatCents(totals.balance)} />
           <Stat label="Open credits" value={formatCents(openCreditTotal)} />
+          <Stat label="Avg days past due" value={String(avgDaysPastDue)} />
         </div>
       </Card>
+
+      <SavedMethodsCard clientId={clientId} onChanged={() => setMethodsVersion((v) => v + 1)} />
+      <PaymentPlanCard clientId={clientId} reloadKey={methodsVersion} />
 
       <Card title={`Invoices (${filteredItems.length})`}>
         {notice && (

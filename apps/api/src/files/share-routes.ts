@@ -22,6 +22,7 @@ import {
   revokeFileShare,
   type ShareVerifyChannel,
 } from '../sharing/file-share-helper';
+import { recordShareCreatedNote } from '../sharing/share-notes';
 import { inArray } from 'drizzle-orm';
 
 export interface StaffFileShareDeps extends RbacDeps {
@@ -76,6 +77,7 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
           id: files.id,
           firmId: files.firmId,
           clientId: files.clientId,
+          originalFilename: files.originalFilename,
           deletedAt: files.deletedAt,
           pendingUpload: files.pendingUpload,
         })
@@ -163,6 +165,21 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
         userAgent: req.get('user-agent') ?? null,
       }).catch(() => undefined);
 
+      // Client-timeline note capturing the share form + file name.
+      await recordShareCreatedNote(deps.db, {
+        clientId: file.clientId,
+        authorAppUserId: session.appUserId,
+        fileLabel: file.originalFilename,
+        recipientName: d.recipientName ?? null,
+        recipientEmail: d.recipientEmail,
+        organization: d.organization ?? null,
+        accessLevel: d.accessLevel,
+        watermark: d.watermark,
+        verifyChannel: d.verifyChannel,
+        expiresAt: result.expiresAt,
+        personalMessage: d.personalMessage ?? null,
+      });
+
       res.status(201).json({
         ok: true,
         shareId: result.shareId,
@@ -193,6 +210,7 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
         .select({
           id: files.id,
           clientId: files.clientId,
+          originalFilename: files.originalFilename,
           deletedAt: files.deletedAt,
           pendingUpload: files.pendingUpload,
         })
@@ -284,6 +302,26 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch(() => undefined);
+
+      // Client-timeline note: label lists the bundled file names.
+      const names = usable.map((r) => r.originalFilename);
+      const fileLabel =
+        names.length <= 3
+          ? `${names.length} files: ${names.join(', ')}`
+          : `${names.length} files: ${names.slice(0, 3).join(', ')}, +${names.length - 3} more`;
+      await recordShareCreatedNote(deps.db, {
+        clientId,
+        authorAppUserId: session.appUserId,
+        fileLabel,
+        recipientName: d.recipientName ?? null,
+        recipientEmail: d.recipientEmail,
+        organization: d.organization ?? null,
+        accessLevel: d.accessLevel,
+        watermark: d.watermark,
+        verifyChannel: d.verifyChannel,
+        expiresAt: result.expiresAt,
+        personalMessage: d.personalMessage ?? null,
+      });
 
       res.status(201).json({
         ok: true,

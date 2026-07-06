@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, inArray, lte, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lte, notInArray, or, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
@@ -1268,6 +1268,18 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         if (q['outOfScope'] === 'true') conds.push(eq(timeEntries.outOfScopeOverride, true));
         if (q['outOfScope'] === 'false') conds.push(eq(timeEntries.outOfScopeOverride, false));
       }
+      // Free-text search over description / client / engagement (mirrors the
+      // old client-side TableSearch, now server-side).
+      const search = typeof q['q'] === 'string' ? q['q'].trim() : '';
+      if (search) {
+        const like = `%${search.replace(/[%_]/g, '\\$&')}%`;
+        const m = or(
+          ilike(timeEntries.description, like),
+          ilike(clients.name, like),
+          ilike(engagements.name, like),
+        );
+        if (m) conds.push(m);
+      }
       const page = Math.max(1, parseInt(String(q['page'] ?? '1'), 10) || 1);
       const pageSize = Math.min(
         500,
@@ -1286,13 +1298,21 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       };
       const orderExpr = sortMap[sortCol] ?? sortMap['entryDate']!;
 
-      const totalRows = await deps.db
-        .select({ total: sql<number>`COUNT(*)`.as('total') })
+      // COUNT + the hours/amount totals over the WHOLE filtered set (the UI
+      // footer must span every match, not just the page).
+      const [agg] = await deps.db
+        .select({
+          total: sql<number>`COUNT(*)`.as('total'),
+          sumHours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`.as('sum_hours'),
+          sumAmountCents: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as(
+            'sum_amount_cents',
+          ),
+        })
         .from(timeEntries)
         .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
         .innerJoin(clients, eq(clients.id, engagements.clientId))
         .where(and(...conds));
-      const total = totalRows[0]?.total ?? 0;
+      const total = agg?.total ?? 0;
 
       // Field names align with the existing TimeEntry interface
       // (standardAmountCents, billableFlag, inScopeFlag) so the same
@@ -1326,7 +1346,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .limit(pageSize)
         .offset((page - 1) * pageSize);
 
-      res.json({ rows, total: Number(total), page, pageSize });
+      res.json({
+        rows,
+        total: Number(total),
+        page,
+        pageSize,
+        sumHours: Number(agg?.sumHours ?? 0),
+        sumAmountCents: Number(agg?.sumAmountCents ?? 0),
+      });
     },
   );
 
@@ -1808,6 +1835,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(409).json({ error: 'locked' });
         return;
       }
+      // An entry already claimed by a billing batch cannot be split: the
+      // original would be archived while its hours re-entered open WIP as
+      // fresh unbatched children — the same time billed (and realized)
+      // twice. Remove it from the batch first.
+      if (prior.billingBatchId) {
+        res.status(409).json({ error: 'entry_in_billing_batch' });
+        return;
+      }
       const totalHours = splits.reduce((a, s) => a + s.hours, 0);
       if (Math.abs(totalHours - Number(prior.hours)) > 0.001) {
         res.status(400).json({
@@ -1959,6 +1994,14 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
       if (prior.lockedAt || prior.status === 'BILLED' || prior.status === 'LOCKED') {
         res.status(409).json({ error: 'locked' });
+        return;
+      }
+      // Mirrors the staff guarded-delete: an entry claimed by a billing
+      // batch can't be self-deleted — archiving it would leave the batch
+      // (and any realization/invoice math built on it) pointing at hours
+      // the owner made disappear.
+      if (prior.billingBatchId) {
+        res.status(409).json({ error: 'entry_in_billing_batch' });
         return;
       }
       const [maxVersion] = await deps.db

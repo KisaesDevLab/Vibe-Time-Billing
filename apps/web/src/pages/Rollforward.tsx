@@ -7,7 +7,8 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Input, Pill, Table, type TableColumn, tokens } from '@vibe/ui';
+import { useClientPage } from '../lib/use-paged-list';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -188,6 +189,95 @@ export function RollforwardPage(): JSX.Element {
   const approvedEngs = engs.filter((e) => e.status === 'APPROVED').length;
   const approvedAppts = appts.filter((a) => a.status === 'APPROVED').length;
 
+  const { paged: engPaged, pagination: engPagination } = useClientPage(engs);
+  const filteredAppts = appts.filter((a) => !onlyConflicts || a.conflict);
+  const { paged: apptPaged, pagination: apptPagination } = useClientPage(filteredAppts);
+
+  const engColumns: TableColumn<EngCandidate>[] = [
+    { key: 'client', header: 'Client', render: (e) => e.clientName },
+    { key: 'type', header: 'Type', render: (e) => e.returnType ?? '—' },
+    {
+      key: 'priorDropoff',
+      header: 'Prior drop-off',
+      render: (e) => dateOnly(e.sourceDropoffDate) || '—',
+    },
+    {
+      key: 'suggestedDropoff',
+      header: 'Suggested drop-off',
+      render: (e) => (
+        <input
+          type="date"
+          value={dateOnly(e.suggestedDropoffDate)}
+          onChange={(ev) => void patchEng(e.id, { suggestedDropoffDate: ev.target.value })}
+          style={cellInput}
+        />
+      ),
+    },
+    { key: 'priorFee', header: 'Prior fee', render: (e) => money(e.sourceFeeCents) },
+    {
+      key: 'suggestedFee',
+      header: 'Suggested fee',
+      render: (e) => (
+        <input
+          type="number"
+          value={e.suggestedFeeCents == null ? '' : String(e.suggestedFeeCents / 100)}
+          onChange={(ev) =>
+            void patchEng(e.id, { suggestedFeeCents: Math.round(Number(ev.target.value) * 100) })
+          }
+          style={{ ...cellInput, width: 90 }}
+        />
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (e) => (
+        <StatusCell
+          status={e.status}
+          onApprove={() => void bulkEng([e.id], 'APPROVE')}
+          onSkip={() => void bulkEng([e.id], 'SKIP')}
+        />
+      ),
+    },
+  ];
+
+  const apptColumns: TableColumn<ApptCandidate>[] = [
+    {
+      key: 'appointment',
+      header: 'Appointment',
+      render: (a) => (
+        <>
+          {a.title} {a.conflict && <Pill tone="danger">conflict</Pill>}
+        </>
+      ),
+    },
+    { key: 'original', header: 'Original', render: (a) => fmtDateTime(a.sourceStartsAt) },
+    {
+      key: 'suggested',
+      header: 'Suggested',
+      render: (a) => (
+        <input
+          type="datetime-local"
+          value={toLocalInput(a.suggestedStartsAt)}
+          onChange={(ev) => void patchAppt(a.id, ev.target.value)}
+          style={{ ...cellInput, width: 190 }}
+        />
+      ),
+    },
+    { key: 'min', header: 'Min', render: (a) => a.durationMinutes },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (a) => (
+        <StatusCell
+          status={a.status}
+          onApprove={() => void bulkAppt([a.id], 'APPROVE')}
+          onSkip={() => void bulkAppt([a.id], 'SKIP')}
+        />
+      ),
+    },
+  ];
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -305,58 +395,13 @@ export function RollforwardPage(): JSX.Element {
               No engagements for that staff person in the source window.
             </p>
           ) : (
-            <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: tokens.color.textMuted }}>
-                  <th style={th}>Client</th>
-                  <th style={th}>Type</th>
-                  <th style={th}>Prior drop-off</th>
-                  <th style={th}>Suggested drop-off</th>
-                  <th style={th}>Prior fee</th>
-                  <th style={th}>Suggested fee</th>
-                  <th style={th}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {engs.map((e) => (
-                  <tr key={e.id} style={{ opacity: e.status === 'SKIPPED' ? 0.5 : 1 }}>
-                    <td style={td}>{e.clientName}</td>
-                    <td style={td}>{e.returnType ?? '—'}</td>
-                    <td style={td}>{dateOnly(e.sourceDropoffDate) || '—'}</td>
-                    <td style={td}>
-                      <input
-                        type="date"
-                        value={dateOnly(e.suggestedDropoffDate)}
-                        onChange={(ev) =>
-                          void patchEng(e.id, { suggestedDropoffDate: ev.target.value })
-                        }
-                        style={cellInput}
-                      />
-                    </td>
-                    <td style={td}>{money(e.sourceFeeCents)}</td>
-                    <td style={td}>
-                      <input
-                        type="number"
-                        value={e.suggestedFeeCents == null ? '' : String(e.suggestedFeeCents / 100)}
-                        onChange={(ev) =>
-                          void patchEng(e.id, {
-                            suggestedFeeCents: Math.round(Number(ev.target.value) * 100),
-                          })
-                        }
-                        style={{ ...cellInput, width: 90 }}
-                      />
-                    </td>
-                    <td style={td}>
-                      <StatusCell
-                        status={e.status}
-                        onApprove={() => void bulkEng([e.id], 'APPROVE')}
-                        onSkip={() => void bulkEng([e.id], 'SKIP')}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Table<EngCandidate>
+              columns={engColumns}
+              rows={engPaged}
+              rowKey={(e) => e.id}
+              rowStyle={(e) => ({ opacity: e.status === 'SKIPPED' ? 0.5 : 1 })}
+              pagination={engPagination}
+            />
           )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <Button onClick={() => void toAppointments()} disabled={busy}>
@@ -391,51 +436,16 @@ export function RollforwardPage(): JSX.Element {
               No appointments tied to the approved engagements.
             </p>
           ) : (
-            <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: tokens.color.textMuted }}>
-                  <th style={th}>Appointment</th>
-                  <th style={th}>Original</th>
-                  <th style={th}>Suggested</th>
-                  <th style={th}>Min</th>
-                  <th style={th}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {appts
-                  .filter((a) => !onlyConflicts || a.conflict)
-                  .map((a) => (
-                    <tr
-                      key={a.id}
-                      style={{
-                        background: a.conflict ? 'rgba(220,38,38,0.12)' : undefined,
-                        opacity: a.status === 'SKIPPED' ? 0.5 : 1,
-                      }}
-                    >
-                      <td style={td}>
-                        {a.title} {a.conflict && <Pill tone="danger">conflict</Pill>}
-                      </td>
-                      <td style={td}>{fmtDateTime(a.sourceStartsAt)}</td>
-                      <td style={td}>
-                        <input
-                          type="datetime-local"
-                          value={toLocalInput(a.suggestedStartsAt)}
-                          onChange={(ev) => void patchAppt(a.id, ev.target.value)}
-                          style={{ ...cellInput, width: 190 }}
-                        />
-                      </td>
-                      <td style={td}>{a.durationMinutes}</td>
-                      <td style={td}>
-                        <StatusCell
-                          status={a.status}
-                          onApprove={() => void bulkAppt([a.id], 'APPROVE')}
-                          onSkip={() => void bulkAppt([a.id], 'SKIP')}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
+            <Table<ApptCandidate>
+              columns={apptColumns}
+              rows={apptPaged}
+              rowKey={(a) => a.id}
+              rowStyle={(a) => ({
+                background: a.conflict ? 'rgba(220,38,38,0.12)' : undefined,
+                opacity: a.status === 'SKIPPED' ? 0.5 : 1,
+              })}
+              pagination={apptPagination}
+            />
           )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <Button variant="secondary" onClick={() => setStep(2)}>
@@ -505,15 +515,6 @@ const fieldStyle: React.CSSProperties = {
   border: `1px solid ${tokens.color.border}`,
   background: tokens.color.surface,
   color: tokens.color.text,
-};
-const th: React.CSSProperties = {
-  padding: '6px 8px',
-  fontWeight: 600,
-  borderBottom: `1px solid ${tokens.color.border}`,
-};
-const td: React.CSSProperties = {
-  padding: '6px 8px',
-  borderBottom: `1px solid ${tokens.color.border}`,
 };
 const cellInput: React.CSSProperties = {
   padding: '4px 6px',

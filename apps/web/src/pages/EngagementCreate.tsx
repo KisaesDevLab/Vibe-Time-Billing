@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
-import { resolveEngagementName } from '@vibe/core/engagements';
+import { advancePeriod, resolveEngagementName } from '@vibe/core/engagements';
 
 import { api } from '../api-client';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../lib/money';
@@ -33,6 +33,15 @@ interface Client {
   // form defaults the Partner field to it when a client is selected.
   partnerInChargeId: string | null;
 }
+
+type EngagementStatusValue = 'PROPOSED' | 'ACTIVE' | 'PAUSED' | 'CLOSED' | 'ARCHIVED';
+const ENGAGEMENT_STATUS_OPTIONS: EngagementStatusValue[] = [
+  'PROPOSED',
+  'ACTIVE',
+  'PAUSED',
+  'CLOSED',
+  'ARCHIVED',
+];
 
 interface EngagementTpl {
   id: string;
@@ -67,6 +76,8 @@ interface EngagementTpl {
   defaultSurchargeLabel: string | null;
   defaultRecurrenceFrequency: RecurrenceFrequency | null;
   defaultRecurrenceTriggerMode: RecurrenceTriggerMode | null;
+  // 0195 — default lifecycle status for a new engagement from this template.
+  defaultEngagementStatus: EngagementStatusValue | null;
   isSystem: boolean;
   status: string;
 }
@@ -143,12 +154,18 @@ export function EngagementCreatePage(): JSX.Element {
 
   const [clientId, setClientId] = useState(initialClientId);
   const [name, setName] = useState('');
+  // While true, the Name field mirrors the template's rendered name pattern
+  // (and re-renders as the client/period changes). Set false once the user
+  // edits the field so we never clobber a manual name.
+  const [nameAutoFilled, setNameAutoFilled] = useState(true);
   // 0083 — period inputs. All optional; populated either by the
   // template's name_pattern requirements or because the firm wants to
   // tag this engagement with a (year, month, label) tuple regardless.
   const [periodYear, setPeriodYear] = useState<string>('');
   const [periodMonth, setPeriodMonth] = useState<string>('');
   const [periodLabel, setPeriodLabel] = useState<string>('');
+  // 0195 — initial status; '' means "use the server/template default".
+  const [status, setStatus] = useState<'' | EngagementStatusValue>('');
   const [rateCodes, setRateCodes] = useState<RateCode[]>([]);
   const [defaultRateCodeId, setDefaultRateCodeId] = useState<string>('');
   const [feeStructure, setFeeStructure] = useState<FeeStructure>('FIXED_FEE');
@@ -190,6 +207,55 @@ export function EngagementCreatePage(): JSX.Element {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Seed period (first spawn) tracks the entered Period year, not today —
+  // e.g. an Annual recurrence seeds Period year + 1. Re-derives when the
+  // period or frequency changes.
+  useEffect(() => {
+    if (!makeRecurring) return;
+    const y = periodYear.trim() ? Number(periodYear) : null;
+    if (y == null || !Number.isFinite(y)) return;
+    const m = periodMonth.trim() ? Number(periodMonth) : null;
+    const next = advancePeriod(
+      { year: y, month: m, label: periodLabel.trim() || null },
+      recurrenceDraft.frequency,
+    );
+    const sy = next.year == null ? '' : String(next.year);
+    const sm = next.month == null ? '' : String(next.month);
+    setRecurrenceDraft((d) =>
+      d.seedPeriodYear === sy && d.seedPeriodMonth === sm
+        ? d
+        : { ...d, seedPeriodYear: sy, seedPeriodMonth: sm },
+    );
+  }, [makeRecurring, periodYear, periodMonth, periodLabel, recurrenceDraft.frequency]);
+
+  // Keep the Name field showing the template's rendered name pattern until the
+  // user edits it (e.g. "2025 - 1040 Preparation" from {{period.year}} - …).
+  useEffect(() => {
+    if (!nameAutoFilled) return;
+    const tpl = templates.find((t) => t.id === pickedTemplateId);
+    if (!tpl?.namePattern) return;
+    const clientName = clients.find((c) => c.id === clientId)?.name ?? '';
+    const rendered = resolveEngagementName(tpl.namePattern, {
+      client: { name: clientName },
+      period: {
+        year: periodYear.trim() ? Number(periodYear) : null,
+        month: periodMonth.trim() ? Number(periodMonth) : null,
+        label: periodLabel.trim() || null,
+      },
+      today: new Date().toISOString().slice(0, 10),
+    }).output.trim();
+    if (rendered) setName(rendered);
+  }, [
+    nameAutoFilled,
+    pickedTemplateId,
+    templates,
+    clientId,
+    clients,
+    periodYear,
+    periodMonth,
+    periodLabel,
+  ]);
 
   useEffect(() => {
     void (async () => {
@@ -246,7 +312,13 @@ export function EngagementCreatePage(): JSX.Element {
       setMakeRecurring(false);
       return;
     }
-    if (!name.trim()) setName(tpl.name);
+    // Re-enable name auto-fill on (re)pick. Pattern templates are rendered by
+    // the effect above ("2025 - 1040 Preparation"); static-name templates
+    // prefill their plain name here.
+    setNameAutoFilled(true);
+    if (!tpl.namePattern) setName(tpl.name);
+    // Prefill the initial status from the template's default (if any).
+    setStatus(tpl.defaultEngagementStatus ?? '');
     setFeeStructure(tpl.defaultFeeStructure);
     setFeeAmountDollars(centsToDollarsInput(tpl.defaultFeeAmountCents));
     setBudgetHours(tpl.defaultBudgetHours ?? '');
@@ -323,6 +395,7 @@ export function EngagementCreatePage(): JSX.Element {
         feePassthroughEnabled,
       };
       if (name.trim()) body.name = name.trim();
+      if (status) body.status = status;
       if (pickedTemplateId) body.templateId = pickedTemplateId;
       if (periodPreview.year != null || periodPreview.month != null || periodPreview.label) {
         body.period = periodPreview;
@@ -373,6 +446,12 @@ export function EngagementCreatePage(): JSX.Element {
             body: JSON.stringify({
               clientId,
               templateId: pickedTemplateId,
+              // Anchor the recurrence to the engagement just created so it is
+              // treated as the current period: the NEXT period spawns when this
+              // one completes (or on schedule), rolling this engagement's
+              // appointment/drop-off forward. Without this the first spawn has
+              // no source engagement to roll anything from.
+              lastEngagementId: r.id,
               ...recurrenceDraftToPayload(recurrenceDraft),
             }),
           });
@@ -463,7 +542,10 @@ export function EngagementCreatePage(): JSX.Element {
             <Input
               label={pickedTpl?.namePattern ? 'Name (optional — template fills in)' : 'Name *'}
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameAutoFilled(false);
+              }}
               placeholder={pickedTpl?.namePattern ? '(blank uses template pattern)' : ''}
             />
             {namePreview && (
@@ -486,6 +568,39 @@ export function EngagementCreatePage(): JSX.Element {
                 )}
               </p>
             )}
+          </div>
+
+          {/* 0195 — initial lifecycle status. Blank uses the template's
+              default (or PROPOSED). Prefilled from the picked template. */}
+          <div>
+            <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 4 }}>
+              Status
+            </div>
+            <select
+              aria-label="Initial engagement status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as '' | EngagementStatusValue)}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                borderRadius: tokens.radius.sm,
+                border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+                fontSize: 14,
+              }}
+            >
+              <option value="">
+                {pickedTpl?.defaultEngagementStatus
+                  ? `Template default (${pickedTpl.defaultEngagementStatus})`
+                  : 'Default (Proposed)'}
+              </option>
+              {ENGAGEMENT_STATUS_OPTIONS.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* 0083 — period inputs. Render only when a template is

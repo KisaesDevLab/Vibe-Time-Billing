@@ -7,6 +7,7 @@ import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens, type SortDir
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { useClientPage } from '../lib/use-paged-list';
 
 interface WipRow {
   engagementId: string;
@@ -93,6 +94,8 @@ export function WipDashboardPage(): JSX.Element {
       }),
     [rows, view],
   );
+
+  const { paged, pagination } = useClientPage(visible);
 
   async function load(): Promise<void> {
     try {
@@ -384,7 +387,8 @@ export function WipDashboardPage(): JSX.Element {
               ),
             },
           ]}
-          rows={visible}
+          rows={paged}
+          pagination={pagination}
           rowKey={(r) => r.engagementId}
           empty="No unbilled time entries match the current filters."
         />

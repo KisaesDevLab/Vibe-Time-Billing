@@ -105,9 +105,15 @@ export function createStripeProvider(opts: StripeProviderOptions): PaymentProvid
       return { ok: true, providerRefundId: json.id, amountCents: json.amount };
     },
 
-    verifyWebhookSignature({ payload, signature, secret }) {
+    verifyWebhookSignature({ payload, signature, secret, nowMs }) {
       const match = /t=(\d+),v1=([0-9a-f]+)/.exec(signature);
       if (!match) return false;
+      // Replay window: reject events whose timestamp is more than 5 minutes
+      // from now (Stripe's recommended tolerance). Tests thread a fixed
+      // `nowMs`; production callers let it default to the wall clock.
+      const t = Number(match[1]);
+      const nowSeconds = Math.floor((nowMs ?? Date.now()) / 1000);
+      if (!Number.isFinite(t) || Math.abs(nowSeconds - t) > 300) return false;
       const expected = createHmac('sha256', secret).update(`${match[1]}.${payload}`).digest('hex');
       const a = Buffer.from(expected, 'hex');
       const b = Buffer.from(match[2]!, 'hex');

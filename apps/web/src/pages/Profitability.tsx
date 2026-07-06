@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -51,6 +52,18 @@ type SortCol = 'name' | 'cost' | 'billed' | 'paid' | 'margin' | 'pct';
 const formatCents = (c: number): string => `$${(c / 100).toLocaleString()}`;
 
 export function ProfitabilityPage(): JSX.Element {
+  // Window + revenue basis persist in the URL (shareable, and saved
+  // reports "Open" links land here with their params intact).
+  const [search, setSearch] = useSearchParams();
+  const basis = search.get('basis') === 'cash' ? 'cash' : 'accrual';
+  const start = search.get('start') ?? '';
+  const end = search.get('end') ?? '';
+  function setUrlParam(name: string, value: string): void {
+    const next = new URLSearchParams(search);
+    if (value) next.set(name, value);
+    else next.delete(name);
+    setSearch(next, { replace: true });
+  }
   const [rows, setRows] = useState<Array<{ eng: Eng; summary: Summary | null }>>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [clients, setClients] = useState<ClientLite[]>([]);
@@ -79,29 +92,20 @@ export function ProfitabilityPage(): JSX.Element {
       // metadata; /reports/profitability supplies cost/billed/paid per
       // engagement — firm-scoped, DRAFT/VOIDED excluded, ARCHIVED time
       // excluded, and consolidated invoices split across engagements.
+      const qs = new URLSearchParams({ basis });
+      if (start) qs.set('start', start);
+      if (end) qs.set('end', end);
       const [engRes, profRes] = await Promise.all([
         api<{ items: Eng[] }>('/api/staff/engagements?status=ACTIVE&limit=500'),
-        api<{ items: Summary[] }>('/api/staff/reports/profitability'),
+        api<{ items: Summary[] }>(`/api/staff/reports/profitability?${qs.toString()}`),
       ]);
       const byEng = new Map((profRes.items ?? []).map((s) => [s.engagementId, s]));
-      const results = (engRes.items ?? []).map((e) => {
-        const agg = byEng.get(e.id);
-        // Margin stays paid-based (collected revenue − cost) to match this
-        // page's "Revenue is the paid amount on invoices" framing; the
-        // aggregate's own marginCents is billed-based, so we recompute.
-        const summary: Summary | null = agg
-          ? {
-              engagementId: e.id,
-              costCents: agg.costCents,
-              billedCents: agg.billedCents,
-              paidCents: agg.paidCents,
-              marginCents: agg.paidCents - agg.costCents,
-              marginPct:
-                agg.paidCents > 0 ? ((agg.paidCents - agg.costCents) / agg.paidCents) * 100 : null,
-            }
-          : null;
-        return { eng: e, summary };
-      });
+      // Margin comes straight from the endpoint, which follows the selected
+      // basis: accrual = billed − cost, cash = collected-in-window − cost.
+      const results = (engRes.items ?? []).map((e) => ({
+        eng: e,
+        summary: byEng.get(e.id) ?? null,
+      }));
       setRows(results);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
@@ -111,7 +115,8 @@ export function ProfitabilityPage(): JSX.Element {
   }
   useEffect(() => {
     void loadAll();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basis, start, end]);
 
   useEffect(() => {
     void (async () => {
@@ -145,7 +150,8 @@ export function ProfitabilityPage(): JSX.Element {
   const filtered = useMemo(() => {
     return rows.filter((r) => {
       if (!r.summary) return false;
-      if (r.summary.billedCents === 0 && r.summary.costCents === 0) return false;
+      if (r.summary.billedCents === 0 && r.summary.costCents === 0 && r.summary.paidCents === 0)
+        return false;
       if (clientId && r.eng.clientId !== clientId) return false;
       if (engagementTypeId && r.eng.engagementTypeId !== engagementTypeId) return false;
       if (serviceLineId && r.eng.serviceLineId !== serviceLineId) return false;
@@ -227,9 +233,48 @@ export function ProfitabilityPage(): JSX.Element {
         }
       >
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
-          Cost is derived from each time entry&apos;s effective timekeeper cost rate. Revenue is the
-          paid amount on invoices where this engagement is the primary engagement.
+          Cost is derived from each time entry&apos;s effective timekeeper cost rate.{' '}
+          {basis === 'cash'
+            ? 'Cash basis: revenue is money actually collected in the window (payment receipt date), and margin = collected − cost.'
+            : 'Accrual basis: revenue is the amount billed (invoice issue date), and margin = billed − cost.'}
         </p>
+        <div
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'end',
+            flexWrap: 'wrap',
+            marginBottom: 12,
+          }}
+        >
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Basis</span>
+            <span style={{ display: 'inline-flex', gap: 4 }}>
+              {(['accrual', 'cash'] as const).map((b) => (
+                <Button
+                  key={b}
+                  size="sm"
+                  variant={basis === b ? 'primary' : 'secondary'}
+                  onClick={() => setUrlParam('basis', b === 'accrual' ? '' : b)}
+                >
+                  {b === 'accrual' ? 'Accrual' : 'Cash'}
+                </Button>
+              ))}
+            </span>
+          </div>
+          <Input
+            label="Start"
+            type="date"
+            value={start}
+            onChange={(e) => setUrlParam('start', e.target.value)}
+          />
+          <Input
+            label="End"
+            type="date"
+            value={end}
+            onChange={(e) => setUrlParam('end', e.target.value)}
+          />
+        </div>
         <div
           style={{
             display: 'grid',

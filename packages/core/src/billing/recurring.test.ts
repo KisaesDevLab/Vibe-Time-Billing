@@ -17,13 +17,22 @@ describe('nextRunDate', () => {
     expect(nextRunDate('2026-05-20', 'BIWEEKLY')).toBe('2026-06-03');
   });
   it('rolls monthly', () => {
-    expect(nextRunDate('2026-01-31', 'MONTHLY')).toBe('2026-03-03'); // Feb overflow
+    // Month-end anchors clamp to the target month's last day instead of
+    // overflowing (which would skip a period and drift the anchor).
+    expect(nextRunDate('2026-01-31', 'MONTHLY')).toBe('2026-02-28'); // clamp, not Mar 3
     expect(nextRunDate('2026-05-15', 'MONTHLY')).toBe('2026-06-15');
+    expect(nextRunDate('2026-01-30', 'MONTHLY')).toBe('2026-02-28');
+    // A clamped anchor does not "stick" short — the 31st recurs where it can.
+    expect(nextRunDate('2026-03-31', 'MONTHLY')).toBe('2026-04-30');
+  });
+  it('clamps month-end for leap February', () => {
+    expect(nextRunDate('2028-01-31', 'MONTHLY')).toBe('2028-02-29'); // 2028 is leap
   });
   it('rolls quarterly / semi-annual / annual', () => {
     expect(nextRunDate('2026-01-15', 'QUARTERLY')).toBe('2026-04-15');
     expect(nextRunDate('2026-01-15', 'SEMIANNUAL')).toBe('2026-07-15');
     expect(nextRunDate('2026-01-15', 'ANNUAL')).toBe('2027-01-15');
+    expect(nextRunDate('2026-11-30', 'QUARTERLY')).toBe('2027-02-28'); // month-end clamp
   });
 });
 

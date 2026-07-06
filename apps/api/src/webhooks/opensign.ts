@@ -46,6 +46,7 @@ import { type SendProposalEmail } from '../proposals/magic-links';
 import type { EsignProvider } from '../esign/provider';
 import type { OpenSignClient } from '../esign/opensign-client';
 import { reconcileSignatureRequestByDocument } from '../signatures/reconcile';
+import type { PrintQueue } from '../print-gateway/queue';
 
 export interface OpenSignWebhookDeps {
   db: Database | null;
@@ -62,6 +63,9 @@ export interface OpenSignWebhookDeps {
   // from proposal envelope ids, so this never collides with the proposal
   // completion path. Null when OpenSign isn't wired.
   openSignClient?: OpenSignClient | null;
+  // 0185 — enqueue signature-confirmation auto-print on completion.
+  // Optional/injectable so tests run without Redis (default = skip).
+  printQueue?: PrintQueue;
 }
 
 // Real OpenSign self-host webhook payload (Settings → Webhook).
@@ -86,6 +90,8 @@ function idempotencyKey(e: OpenSignWebhookEvent): string {
 }
 
 function verifyHmac(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
+  // TODO(security): no replay-window; the OpenSign signature covers only the
+  // raw body (no timestamp), so we rely on event-id idempotency instead.
   const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
   // Normalize an optional "sha256=" prefix some senders use.
   const claimed = signatureHeader.startsWith('sha256=')
@@ -223,6 +229,14 @@ async function dispatch(
             via: 'webhook',
           },
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+        // 0185 — auto-print a signature confirmation report on completion.
+        // The worker consumer no-ops unless this is a tax-return signature
+        // and the firm has the gateway + auto-print enabled.
+        if (r.status === 'completed' && deps.printQueue) {
+          await deps.printQueue
+            .signatureConfirmation({ requestId: r.requestId })
+            .catch((err: unknown) => logger.error({ err }, 'sig confirmation enqueue failed'));
+        }
         return 'PROCESSED';
       }
       if (r.reason !== 'unknown_document') {

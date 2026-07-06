@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Elastic-2.0
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
@@ -18,9 +18,10 @@ import {
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { filterStatuses } from '../status-filter';
-import { selectRows, useColumnView } from '../lib/column-view';
+import { useColumnView, viewToPagedQuery } from '../lib/column-view';
 import { aiUsable, useAiStatus } from '../hooks/useAiStatus';
 import { ProcessProjectDialog } from './clients/ProcessProjectDialog';
+import { ExpensesView } from './ExpensesView';
 
 interface Engagement {
   id: string;
@@ -80,6 +81,20 @@ interface DayTotal {
   amountCents: number;
 }
 
+type TaskStatus = 'OPEN' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' | 'CANCELED';
+interface EngagementTask {
+  id: string;
+  title: string;
+  status: TaskStatus;
+}
+const TASK_STATUS_OPTIONS: Array<{ value: TaskStatus; label: string }> = [
+  { value: 'OPEN', label: 'Open' },
+  { value: 'IN_PROGRESS', label: 'In progress' },
+  { value: 'BLOCKED', label: 'Blocked' },
+  { value: 'DONE', label: 'Done' },
+  { value: 'CANCELED', label: 'Canceled' },
+];
+
 interface MonthTotal {
   month: string;
   hours: number;
@@ -87,7 +102,7 @@ interface MonthTotal {
   count: number;
 }
 
-type ViewMode = 'log' | 'day' | 'week' | 'month';
+type ViewMode = 'log' | 'day' | 'week' | 'month' | 'expenses';
 
 const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -230,6 +245,7 @@ export function TimeEntryPage(): JSX.Element {
       {view === 'day' && <DayView engagements={engagements} clients={clients} />}
       {view === 'week' && <WeekView engagements={engagements} clients={clients} />}
       {view === 'month' && <MonthView />}
+      {view === 'expenses' && <ExpensesView engagements={engagements} clients={clients} />}
     </div>
   );
 }
@@ -252,6 +268,21 @@ const inlineInputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 
+// Date filters in the "My entries" toolbar. Fill their grid cell and match the
+// other controls' height so the full mm/dd/yyyy value + calendar icon show
+// (the shared inlineInputStyle is 80px — too narrow, it truncates to "mm/dd,").
+const dateFilterStyle: React.CSSProperties = {
+  padding: '7px 10px',
+  background: tokens.color.surface,
+  color: tokens.color.text,
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.sm,
+  fontSize: 13,
+  width: '100%',
+  boxSizing: 'border-box',
+  colorScheme: 'light dark',
+};
+
 // 0050 — sortable column-header button style. Looks like a plain header
 // label but is keyboard-focusable and triggers toggleSort.
 function ViewTabs({
@@ -266,6 +297,7 @@ function ViewTabs({
     { id: 'day', label: 'Day' },
     { id: 'week', label: 'Week' },
     { id: 'month', label: 'Month' },
+    { id: 'expenses', label: 'Expenses' },
   ];
   return (
     <div
@@ -363,18 +395,24 @@ function LogView({
   // Selected client's outstanding A/R (cents) — shown in the log-time box so
   // staff see the balance while working. Same figure as the client header.
   const [outstandingCents, setOutstandingCents] = useState<number | null>(null);
+  const [avgDaysPastDue, setAvgDaysPastDue] = useState<number | null>(null);
   useEffect(() => {
     if (!clientId) {
       setOutstandingCents(null);
+      setAvgDaysPastDue(null);
       return;
     }
     let alive = true;
     setOutstandingCents(null);
-    void api<{ summary: { outstandingCents: number } | null }>(
+    setAvgDaysPastDue(null);
+    void api<{ summary: { outstandingCents: number; avgDaysPastDue?: number } | null }>(
       `/api/staff/stats/client/${clientId}`,
     )
       .then((r) => {
-        if (alive) setOutstandingCents(r.summary?.outstandingCents ?? 0);
+        if (alive) {
+          setOutstandingCents(r.summary?.outstandingCents ?? 0);
+          setAvgDaysPastDue(r.summary?.avgDaysPastDue ?? 0);
+        }
       })
       .catch(() => {
         if (alive) setOutstandingCents(-1); // sentinel: unavailable → render "—"
@@ -402,6 +440,9 @@ function LogView({
   );
   // Progress status to set on save; preselected to the engagement's current.
   const [workflowState, setWorkflowState] = useState('');
+  // Open tasks on the selected engagement — their status can be changed inline
+  // as part of logging time.
+  const [engagementTasks, setEngagementTasks] = useState<EngagementTask[]>([]);
   // Process-project print dialog (opened from the green-box button).
   const [processOpen, setProcessOpen] = useState(false);
   const [entryDate, setEntryDate] = useState(
@@ -441,7 +482,14 @@ function LogView({
   const [filterEnd, setFilterEnd] = useState('');
   const [filterBillable, setFilterBillable] = useState<'' | 'true' | 'false'>('');
   const [filterOOS, setFilterOOS] = useState<'' | 'true' | 'false'>('');
-  const view = useColumnView('vibe.time.view', { sortCol: 'entryDate', sortDir: 'desc' });
+  // Search + sort run SERVER-side now (entries accumulate past the old 500
+  // cap); `.v2` drops stale pre-migration state.
+  const view = useColumnView('vibe.time.view.v2', { sortCol: 'entryDate', sortDir: 'desc' });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [sumHours, setSumHours] = useState(0);
+  const [sumAmountCents, setSumAmountCents] = useState(0);
 
   function beginEdit(e: TimeEntry): void {
     setEditingId(e.id);
@@ -526,6 +574,41 @@ function LogView({
     setWorkflowState(currentWorkflowState);
   }, [engagementId, currentWorkflowState]);
 
+  // Load the selected engagement's open tasks so their status can be updated
+  // while logging time. Cleared when no engagement is selected.
+  useEffect(() => {
+    if (!engagementId) {
+      setEngagementTasks([]);
+      return;
+    }
+    let alive = true;
+    void api<{ items: EngagementTask[] }>(
+      `/api/staff/tasks?engagementId=${engagementId}&scope=all&pageSize=100`,
+    )
+      .then((r) => {
+        if (alive) setEngagementTasks(r.items ?? []);
+      })
+      .catch(() => {
+        if (alive) setEngagementTasks([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [engagementId]);
+
+  async function setTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
+    const prev = engagementTasks;
+    setEngagementTasks((ts) => ts.map((t) => (t.id === taskId ? { ...t, status } : t)));
+    try {
+      await api(`/api/staff/tasks/${taskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+    } catch {
+      setEngagementTasks(prev); // revert on failure
+    }
+  }
+
   // Persist last-used client.
   useEffect(() => {
     if (clientId) {
@@ -537,31 +620,51 @@ function LogView({
     }
   }, [clientId]);
 
-  async function load(): Promise<void> {
+  // Broad pre-filters + the column view's search/sort, serialized once.
+  const listParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (filterClientId) params.set('clientId', filterClientId);
+    if (filterEngagementId) params.set('engagementId', filterEngagementId);
+    if (filterStart) params.set('startDate', filterStart);
+    if (filterEnd) params.set('endDate', filterEnd);
+    if (filterBillable) params.set('billable', filterBillable);
+    if (filterOOS) params.set('outOfScope', filterOOS);
+    const vq = viewToPagedQuery(view);
+    for (const [k, v] of Object.entries(vq)) if (v != null) params.set(k, v);
+    return params;
+  }, [filterClientId, filterEngagementId, filterStart, filterEnd, filterBillable, filterOOS, view]);
+
+  const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (filterClientId) params.set('clientId', filterClientId);
-      if (filterEngagementId) params.set('engagementId', filterEngagementId);
-      if (filterStart) params.set('startDate', filterStart);
-      if (filterEnd) params.set('endDate', filterEnd);
-      if (filterBillable) params.set('billable', filterBillable);
-      if (filterOOS) params.set('outOfScope', filterOOS);
-      params.set('pageSize', '500');
-      const t = await api<{ rows: TimeEntry[] }>(
-        `/api/staff/time-entries/list?${params.toString()}`,
-      );
+      const params = new URLSearchParams(listParams);
+      params.set('page', String(page));
+      params.set('pageSize', String(pageSize));
+      const t = await api<{
+        rows: TimeEntry[];
+        total: number;
+        sumHours: number;
+        sumAmountCents: number;
+      }>(`/api/staff/time-entries/list?${params.toString()}`);
       setEntries(t.rows ?? []);
+      setTotal(t.total ?? 0);
+      setSumHours(t.sumHours ?? 0);
+      setSumAmountCents(t.sumAmountCents ?? 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'load_failed');
     } finally {
       setLoading(false);
     }
-  }
+  }, [listParams, page, pageSize]);
+
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterClientId, filterEngagementId, filterStart, filterEnd, filterBillable, filterOOS]);
+  }, [load]);
+
+  // Any filter/search/sort change snaps back to page 1.
+  useEffect(() => {
+    setPage(1);
+  }, [listParams]);
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -604,25 +707,22 @@ function LogView({
     }
   }
 
-  const visible = useMemo(
-    () =>
-      selectRows(entries, view, {
-        searchText: (e) => `${e.description ?? ''} ${e.clientName ?? ''} ${e.engagementName ?? ''}`,
-        sortValues: {
-          entryDate: (e) => e.entryDate,
-          client: (e) => e.clientName ?? '',
-          engagement: (e) => e.engagementName ?? '',
-          hours: (e) => Number(e.hours),
-          amount: (e) => e.standardAmountCents,
-          billable: (e) => (e.billableFlag ? '1' : '0'),
-          description: (e) => e.description ?? '',
-        },
-        tieBreak: (a, b) => b.entryDate.localeCompare(a.entryDate),
-      }),
-    [entries, view],
+  const pagination = useMemo(
+    () => ({
+      page,
+      pageSize,
+      total,
+      onPageChange: setPage,
+      onPageSizeChange: (s: number) => {
+        setPageSize(s);
+        setPage(1);
+      },
+    }),
+    [page, pageSize, total],
   );
-  const totalHours = visible.reduce((s, e) => s + Number(e.hours), 0);
-  const totalAmount = visible.reduce((s, e) => s + e.standardAmountCents, 0);
+  // Totals span the whole filtered set (server aggregate), not just the page.
+  const totalHours = sumHours;
+  const totalAmount = sumAmountCents;
 
   const clientHasNoActive = clientId && filteredEngagements.length === 0;
   const activeClients = clients.filter((c) => c.status !== 'ARCHIVED');
@@ -766,6 +866,75 @@ function LogView({
                 />
               </div>
             )}
+            {engagementId && engagementTasks.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Tasks on this engagement
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 6,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.md,
+                    padding: '8px 10px',
+                    background: tokens.color.surface,
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {engagementTasks.map((t) => (
+                    <div
+                      key={t.id}
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: tokens.color.text,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          textDecoration:
+                            t.status === 'DONE' || t.status === 'CANCELED'
+                              ? 'line-through'
+                              : 'none',
+                          opacity: t.status === 'DONE' || t.status === 'CANCELED' ? 0.6 : 1,
+                        }}
+                        title={t.title}
+                      >
+                        {t.title}
+                      </span>
+                      <select
+                        value={t.status}
+                        onChange={(e) => void setTaskStatus(t.id, e.target.value as TaskStatus)}
+                        aria-label={`Status for ${t.title}`}
+                        style={{
+                          flexShrink: 0,
+                          padding: '3px 6px',
+                          fontSize: 12,
+                          borderRadius: tokens.radius.sm,
+                          border: `1px solid ${tokens.color.border}`,
+                          background: tokens.color.bg,
+                          color: tokens.color.text,
+                        }}
+                      >
+                        {TASK_STATUS_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <Input
               label="Description"
               value={description}
@@ -839,6 +1008,14 @@ function LogView({
                           minimumFractionDigits: 2,
                         })}`}
               </strong>
+              {clientId && outstandingCents != null && outstandingCents > 0 && (
+                <div
+                  style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 2 }}
+                  title="Balance-weighted average days past the due date across outstanding invoices"
+                >
+                  AVG Days: {avgDaysPastDue ?? '…'}
+                </div>
+              )}
             </div>
             <Button
               type="button"
@@ -927,11 +1104,9 @@ function LogView({
         title={
           <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <span>My entries</span>
-            {entries.length > 0 && (
+            {total > 0 && (
               <span style={{ fontSize: 13, color: tokens.color.textMuted, fontWeight: 400 }}>
-                {visible.length === entries.length
-                  ? `${entries.length}`
-                  : `${visible.length} of ${entries.length}`}
+                {view.anyFilterActive ? `${total} match${total === 1 ? '' : 'es'}` : `${total}`}
               </span>
             )}
           </span>
@@ -1000,7 +1175,7 @@ function LogView({
             onChange={(e) => {
               setFilterStart(e.target.value);
             }}
-            style={inlineInputStyle}
+            style={dateFilterStyle}
           />
           <input
             type="date"
@@ -1009,7 +1184,7 @@ function LogView({
             onChange={(e) => {
               setFilterEnd(e.target.value);
             }}
-            style={inlineInputStyle}
+            style={dateFilterStyle}
           />
           <Combobox
             ariaLabel="Filter billable"
@@ -1292,7 +1467,8 @@ function LogView({
                 },
               },
             ]}
-            rows={visible}
+            rows={entries}
+            pagination={pagination}
             rowKey={(e) => e.id}
             empty="No time logged yet."
           />

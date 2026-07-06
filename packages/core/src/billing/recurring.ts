@@ -14,6 +14,22 @@ export type RecurringFrequency =
   | 'SEMIANNUAL'
   | 'ANNUAL';
 
+/**
+ * Add `n` months in UTC, clamping the day to the target month's length so
+ * a day-29/30/31 anchor does NOT overflow into the following month. E.g.
+ * Jan 31 + 1 month → Feb 28/29 (not Mar 3), which would otherwise skip a
+ * period and permanently drift the recurrence anchor later.
+ */
+function addUtcMonthsClamped(d: Date, n: number): void {
+  const day = d.getUTCDate();
+  d.setUTCDate(1); // avoid the overflow while the month is changed
+  d.setUTCMonth(d.getUTCMonth() + n);
+  const lastDayOfMonth = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  d.setUTCDate(Math.min(day, lastDayOfMonth));
+}
+
 /** Roll a date forward by the given frequency. */
 export function nextRunDate(current: IsoDate, frequency: RecurringFrequency): IsoDate {
   const d = new Date(`${current}T00:00:00Z`);
@@ -25,13 +41,13 @@ export function nextRunDate(current: IsoDate, frequency: RecurringFrequency): Is
       d.setUTCDate(d.getUTCDate() + 14);
       break;
     case 'MONTHLY':
-      d.setUTCMonth(d.getUTCMonth() + 1);
+      addUtcMonthsClamped(d, 1);
       break;
     case 'QUARTERLY':
-      d.setUTCMonth(d.getUTCMonth() + 3);
+      addUtcMonthsClamped(d, 3);
       break;
     case 'SEMIANNUAL':
-      d.setUTCMonth(d.getUTCMonth() + 6);
+      addUtcMonthsClamped(d, 6);
       break;
     case 'ANNUAL':
       d.setUTCFullYear(d.getUTCFullYear() + 1);

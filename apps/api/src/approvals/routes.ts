@@ -18,13 +18,16 @@ import {
   approvalRules,
   appUsers,
   billingBatches,
+  engagementRecurrences,
   timeEntries,
 } from '@vibe/db/schema';
 
+import { nextRunDate } from '@vibe/core/billing';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { spawnNextEngagement } from '../engagements/recurrence-spawn';
 
 /**
  * 0182 — when a close-out true-up adjustment is REJECTED, its realization-only
@@ -222,6 +225,64 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
           await releaseRejectedCloseOutBatch(tx as unknown as Database, request.entityId);
         }
       });
+
+      // Q23 — engagement-renewal collision resolution. Runs post-commit
+      // (spawn opens its own transaction). Only on the terminal decision.
+      if (!advancing && request.entityType === 'ENGAGEMENT_RENEWAL') {
+        if (isApprove) {
+          // "Create new, leave old open" — bypass the collision check and
+          // actually spawn the next engagement.
+          try {
+            const result = await spawnNextEngagement({
+              db: deps.db,
+              recurrenceId: request.entityId,
+              firmId: session.firmId,
+              actorAppUserId: session.appUserId,
+              forceCollision: true,
+            });
+            if (result.kind !== 'spawned') {
+              logger.warn(
+                { recurrenceId: request.entityId, result },
+                'engagement-renewal approve did not spawn',
+              );
+            }
+          } catch (err) {
+            logger.error(
+              { err, recurrenceId: request.entityId },
+              'engagement-renewal spawn failed',
+            );
+          }
+        } else {
+          // "Defer rollover" — advance the recurrence one cycle so the daily
+          // worker stops re-queuing this collision; the old engagement stays.
+          try {
+            const [rec] = await deps.db
+              .select({
+                nextRunDate: engagementRecurrences.nextRunDate,
+                frequency: engagementRecurrences.frequency,
+                triggerMode: engagementRecurrences.triggerMode,
+              })
+              .from(engagementRecurrences)
+              .where(eq(engagementRecurrences.id, request.entityId))
+              .limit(1);
+            if (rec?.triggerMode === 'SCHEDULE' && rec.nextRunDate) {
+              const cur =
+                typeof rec.nextRunDate === 'string'
+                  ? rec.nextRunDate
+                  : new Date(rec.nextRunDate).toISOString().slice(0, 10);
+              await deps.db
+                .update(engagementRecurrences)
+                .set({ nextRunDate: nextRunDate(cur, rec.frequency) })
+                .where(eq(engagementRecurrences.id, request.entityId));
+            }
+          } catch (err) {
+            logger.error(
+              { err, recurrenceId: request.entityId },
+              'engagement-renewal defer failed',
+            );
+          }
+        }
+      }
 
       await emitAudit(deps.db, {
         action: 'UPDATE',

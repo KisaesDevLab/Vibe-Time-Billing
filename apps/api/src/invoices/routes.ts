@@ -7,6 +7,7 @@
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import QRCode from 'qrcode';
 
 import type { Database } from '@vibe/db';
 import {
@@ -14,9 +15,11 @@ import {
   adjustments,
   billingBatchEngagements,
   billingBatchEntries,
+  billingBatchExpenses,
   billingBatches,
   clients,
   dunningHistory,
+  engagementExpenses,
   engagements,
   firmRetainerSettings,
   firmSettings,
@@ -29,10 +32,13 @@ import {
 } from '@vibe/db/schema';
 import {
   computeTotals,
+  formatDateUS,
   formatInvoiceNumber,
-  renderInvoiceHtml,
+  formatMoneyCents,
+  renderInvoiceDocument,
   salesTaxLine,
   surchargeLine,
+  type InvoiceTemplateDef,
   type LineItem,
   type NumberingConfig,
 } from '@vibe/core/invoicing';
@@ -50,6 +56,10 @@ import { logger } from '../logger';
 import { excelTable } from '../reports/excel';
 import { publishWebhookEvent } from '../webhooks/publish';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { printNotificationChannel } from '../notifications/print-channel';
+
+import { loadInvoiceTemplateDef } from './template-loader';
+import { composeFirmMailingAddress } from '../firm/mailing-address';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -318,7 +328,18 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       return;
     }
     const q = String(req.query['q'] ?? '').trim();
-    const status = typeof req.query['status'] === 'string' ? req.query['status'] : null;
+    const csv = (v: unknown): string[] =>
+      typeof v === 'string'
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+    const statuses = csv(req.query['status']).filter(
+      (s): s is 'DRAFT' | 'SENT' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'VOIDED' =>
+        ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'VOIDED'].includes(s),
+    );
+    const engagementTypeNames = csv(req.query['engagementType']);
     const clientId = uuidQueryParam(req.query['clientId']);
     if (clientId === 'invalid') {
       res.status(400).json({ error: 'invalid_client_id' });
@@ -343,15 +364,23 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       );
       if (search) conds.push(search);
     }
-    if (
-      status === 'DRAFT' ||
-      status === 'SENT' ||
-      status === 'PARTIALLY_PAID' ||
-      status === 'PAID' ||
-      status === 'OVERDUE' ||
-      status === 'VOIDED'
-    ) {
-      conds.push(eq(invoices.status, status));
+    if (statuses.length > 0) conds.push(inArray(invoices.status, statuses));
+    if (engagementTypeNames.length > 0) {
+      // Invoices billing ANY of the named engagement types — via the primary
+      // engagement or a line-item-tagged engagement. Mirrors the projection.
+      conds.push(sql`EXISTS (
+        SELECT 1 FROM engagement e
+        JOIN engagement_type et ON et.id = e.engagement_type_id
+        WHERE (e.id = ${invoices.primaryEngagementId}
+           OR e.id IN (
+             SELECT ili.engagement_id FROM invoice_line_item ili
+             WHERE ili.invoice_id = ${invoices.id} AND ili.engagement_id IS NOT NULL
+           ))
+          AND et.name IN (${sql.join(
+            engagementTypeNames.map((n) => sql`${n}`),
+            sql`, `,
+          )})
+      )`);
     }
     if (clientId) conds.push(eq(invoices.clientId, clientId));
     if (clientOwnerId) conds.push(eq(clients.partnerInChargeId, clientOwnerId));
@@ -377,6 +406,16 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       total: sql`${invoices.totalCents}`,
       paid: sql`${invoices.paidCents}`,
       status: sql`${invoices.status}`,
+      engagementTypes: sql`(
+        SELECT string_agg(DISTINCT et.name, ', ')
+        FROM engagement e
+        JOIN engagement_type et ON et.id = e.engagement_type_id
+        WHERE e.id = ${invoices.primaryEngagementId}
+           OR e.id IN (
+             SELECT ili.engagement_id FROM invoice_line_item ili
+             WHERE ili.invoice_id = ${invoices.id} AND ili.engagement_id IS NOT NULL
+           )
+      )`,
     };
     const orderExpr = sortMap[sortCol] ?? sortMap['issueDate']!;
 
@@ -846,6 +885,44 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           lineEngagementIds.push(eng.id);
         }
       }
+
+      // 0199 — append one EXPENSE line per INCLUDE expense on the batch.
+      // Expenses are billed at their resolved cost+markup amount (set on the
+      // billing screen / by set-target) and are added ON TOP of the time
+      // composition — they carry no timekeeper and are outside the
+      // surcharge/tax base (which was computed from preExtrasTotals above),
+      // matching the "target = time + expenses" model.
+      const expenseLines = await deps.db
+        .select({
+          expenseId: billingBatchExpenses.expenseId,
+          description: engagementExpenses.description,
+          engagementId: engagementExpenses.engagementId,
+          billedAmountCents: billingBatchExpenses.billedAmountCents,
+          costCents: engagementExpenses.costCents,
+        })
+        .from(billingBatchExpenses)
+        .innerJoin(engagementExpenses, eq(engagementExpenses.id, billingBatchExpenses.expenseId))
+        .where(
+          and(
+            eq(billingBatchExpenses.billingBatchId, batch.id),
+            eq(billingBatchExpenses.action, 'INCLUDE'),
+          ),
+        );
+      for (const x of expenseLines) {
+        // Fall back to cost + 15% if a billed amount was never resolved.
+        const amountCents =
+          x.billedAmountCents != null
+            ? Number(x.billedAmountCents)
+            : Math.round(Number(x.costCents) * 1.15);
+        if (amountCents === 0) continue;
+        lines.push({
+          kind: 'EXPENSE',
+          description: x.description,
+          amountCents,
+        });
+        lineEngagementIds.push(isMultiEngagement ? x.engagementId : eng.id);
+      }
+
       const totals = computeTotals(lines);
 
       // Captured from the offer-creation hook so we can schedule
@@ -1039,6 +1116,12 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           // 0053 — A/R terms text overrides footerHtml when present.
           arTermsText: firmSettings.arTermsText,
           templateStyle: firmSettings.invoiceTemplateStyle,
+          mailingStreet1: firmSettings.mailingStreet1,
+          mailingStreet2: firmSettings.mailingStreet2,
+          mailingCity: firmSettings.mailingCity,
+          mailingState: firmSettings.mailingState,
+          mailingPostal: firmSettings.mailingPostal,
+          mailingCountry: firmSettings.mailingCountry,
         })
         .from(firmSettings)
         .where(eq(firmSettings.firmId, inv.firmId))
@@ -1100,12 +1183,20 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       } else if (mode === 'full-detail') {
         // Read time entries linked through batch_entry rows.
         const { sql: drz } = await import('drizzle-orm');
+        // Scope to the time entries in the batch(es) that produced THIS
+        // invoice — resolved via invoice_line_item.source_ref (billing_batch)
+        // — NOT every batch on the engagement (which would leak entries from
+        // other periods' invoices onto this one).
         const detail = await deps.db.execute(drz`
           SELECT te.entry_date::text AS d, te.hours, te.description, te.standard_amount_cents AS amt
           FROM time_entry te
           JOIN billing_batch_entry bbe ON bbe.time_entry_id = te.id
-          JOIN billing_batch bb ON bb.id = bbe.billing_batch_id
-          WHERE bb.engagement_id = ${inv.primaryEngagementId}
+          WHERE bbe.billing_batch_id IN (
+            SELECT ili.source_ref_id FROM invoice_line_item ili
+            WHERE ili.invoice_id = ${inv.id}
+              AND ili.source_ref_type = 'billing_batch'
+              AND ili.source_ref_id IS NOT NULL
+          )
           ORDER BY te.entry_date
           LIMIT 500
         `);
@@ -1113,79 +1204,127 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           (detail as unknown as { rows?: Array<Record<string, unknown>> }).rows ??
           (detail as unknown as Array<Record<string, unknown>>);
         if (rows && rows.length > 0) {
+          // Escape the staff-sourced date/description cells — this footer is
+          // injected raw (`{{{ time_detail_html }}}`) and the invoice is served
+          // as text/html for `?format=html`, so unescaped values would be a
+          // stored-HTML vector. Mirrors the shared renderer's escaping.
+          const escCell = (s: string): string =>
+            s
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
           detailFooter =
             '<h3 style="margin-top:24px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#666">Time entry detail</h3>' +
             '<table style="width:100%;border-collapse:collapse;font-size:11px"><tr><th style="text-align:left">Date</th><th style="text-align:left">Description</th><th style="text-align:right">Hours</th><th style="text-align:right">Amount</th></tr>' +
             rows
               .map(
                 (r) =>
-                  `<tr><td>${String(r['d'] ?? '')}</td><td>${String(r['description'] ?? '').slice(0, 80)}</td><td style="text-align:right">${Number(r['hours'] ?? 0).toFixed(2)}</td><td style="text-align:right">$${(Number(r['amt'] ?? 0) / 100).toFixed(2)}</td></tr>`,
+                  `<tr><td>${escCell(String(r['d'] ?? ''))}</td><td>${escCell(String(r['description'] ?? '').slice(0, 80))}</td><td style="text-align:right">${Number(r['hours'] ?? 0).toFixed(2)}</td><td style="text-align:right">$${(Number(r['amt'] ?? 0) / 100).toFixed(2)}</td></tr>`,
               )
               .join('') +
             '</table>';
         }
       }
 
-      const html = renderInvoiceHtml({
-        invoiceNumber: inv.invoiceNumber,
-        issueDate: inv.issueDate,
-        dueDate: inv.dueDate,
-        // Phase 13 #6 — firm picks the template style; ?style= override
-        // for preview ("preview as classic" without saving).
-        style: (() => {
-          const q = typeof req.query['style'] === 'string' ? req.query['style'] : null;
-          if (q === 'modern' || q === 'classic' || q === 'minimal') return q;
-          const s = branding?.templateStyle;
-          if (s === 'modern' || s === 'classic' || s === 'minimal') return s;
-          return 'modern';
-        })(),
-        firm: {
-          name: branding?.displayName || firm?.name || 'Firm',
-          logoUrl: branding?.logoUrl ?? null,
+      // Phase 13 #6 / 0183 — a ?style= override forces a legacy builtin
+      // renderer (preview "as classic" without saving). Otherwise the
+      // firm's editable invoice template is loaded (falling back to the
+      // shipped default letterhead when unsaved).
+      const styleOverride = (() => {
+        const q = typeof req.query['style'] === 'string' ? req.query['style'] : null;
+        return q === 'modern' || q === 'classic' || q === 'minimal' ? q : null;
+      })();
+      const templateDef: InvoiceTemplateDef = styleOverride
+        ? { bodyHtml: null, css: null, builtinStyle: styleOverride }
+        : await loadInvoiceTemplateDef(deps.db, inv.firmId);
+
+      // QR — mint a no-login pay-by-link and embed a QR code so the
+      // printed/mailed invoice can be paid by scanning. Best-effort; only
+      // when a public base URL is configured. (The plaintext token is
+      // unrecoverable once stored, so each render mints its own link;
+      // multiple ACTIVE links per invoice is by design.)
+      // Skip the mint for the `?format=html` page-preview iframe — that
+      // surface is viewed repeatedly in-app and a QR there would mint a
+      // fresh payable token on every load. The binary PDF (printed/mailed)
+      // is the only surface that needs a scannable link.
+      const wantsHtmlPreview = req.query['format'] === 'html';
+      let payExtras: { payUrl?: string; payQrDataUri?: string } = {};
+      if (deps.publicBaseUrl && !wantsHtmlPreview) {
+        try {
+          const payBase = deps.publicBaseUrl.replace(/\/$/, '');
+          const payLink = await createPayLink(deps.db, {
+            firmId: inv.firmId,
+            invoiceId: inv.id,
+            createdByAppUserId: session.appUserId,
+          });
+          const payUrl = `${payBase}/pay/${payLink.token}`;
+          const payQrDataUri = await QRCode.toDataURL(payUrl, { margin: 1, width: 240 });
+          payExtras = { payUrl, payQrDataUri };
+        } catch (err) {
+          logger.warn({ err, invoiceId: inv.id }, 'invoice pay QR generation failed');
+        }
+      }
+
+      const html = renderInvoiceDocument(
+        {
+          invoiceNumber: inv.invoiceNumber,
+          issueDate: inv.issueDate,
+          dueDate: inv.dueDate,
+          firm: {
+            name: branding?.displayName || firm?.name || 'Firm',
+            logoUrl: branding?.logoUrl ?? null,
+            address: composeFirmMailingAddress(branding),
+          },
+          branding: branding
+            ? {
+                accentColor: branding.accentColor ?? null,
+                supportEmail: branding.supportEmail ?? null,
+                supportPhone: branding.supportPhone ?? null,
+                supportFax: branding.supportFax ?? null,
+                supportWeb: branding.supportWeb ?? null,
+                // 0053 — A/R terms wins over generic footer when both set.
+                footerHtml: branding.arTermsText
+                  ? branding.arTermsText
+                      .replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;')
+                      .replace(/\n/g, '<br />')
+                  : (branding.footerHtml ?? null),
+              }
+            : null,
+          reference: inv.invoiceNumber,
+          engagementName,
+          client: {
+            name: client?.name ?? 'Client',
+            billingAddress: client?.billingAddress ?? null,
+            mailingStreet1: client?.mailingStreet1 ?? null,
+            mailingStreet2: client?.mailingStreet2 ?? null,
+            mailingCity: client?.mailingCity ?? null,
+            mailingState: client?.mailingState ?? null,
+            mailingPostal: client?.mailingPostal ?? null,
+            mailingCountry: client?.mailingCountry ?? null,
+            externalId: client?.externalId ?? null,
+          },
+          lines: lines.map((l) => ({
+            kind: l.kind,
+            description: l.description,
+            amountCents: Number(l.amountCents),
+          })),
+          subtotalCents: Number(inv.subtotalCents),
+          surchargeCents: Number(inv.surchargeCents ?? 0),
+          taxCents: Number(inv.taxCents ?? 0),
+          processingFeeCents: Number(inv.feeCents),
+          totalCents: Number(inv.totalCents),
+          paidCents: Number(inv.paidCents ?? 0),
+          status: inv.status,
+          notes: inv.notes ?? null,
         },
-        branding: branding
-          ? {
-              accentColor: branding.accentColor ?? null,
-              supportEmail: branding.supportEmail ?? null,
-              supportPhone: branding.supportPhone ?? null,
-              supportFax: branding.supportFax ?? null,
-              supportWeb: branding.supportWeb ?? null,
-              // 0053 — A/R terms wins over generic footer when both set.
-              footerHtml: branding.arTermsText
-                ? branding.arTermsText
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/\n/g, '<br />')
-                : (branding.footerHtml ?? null),
-            }
-          : null,
-        reference: inv.invoiceNumber,
-        engagementName,
-        client: {
-          name: client?.name ?? 'Client',
-          billingAddress: client?.billingAddress ?? null,
-          mailingStreet1: client?.mailingStreet1 ?? null,
-          mailingStreet2: client?.mailingStreet2 ?? null,
-          mailingCity: client?.mailingCity ?? null,
-          mailingState: client?.mailingState ?? null,
-          mailingPostal: client?.mailingPostal ?? null,
-          mailingCountry: client?.mailingCountry ?? null,
-          externalId: client?.externalId ?? null,
-        },
-        lines: lines.map((l) => ({
-          kind: l.kind,
-          description: l.description,
-          amountCents: Number(l.amountCents),
-        })),
-        subtotalCents: Number(inv.subtotalCents),
-        surchargeCents: Number(inv.surchargeCents ?? 0),
-        taxCents: Number(inv.taxCents ?? 0),
-        processingFeeCents: Number(inv.feeCents),
-        totalCents: Number(inv.totalCents),
-        notes: detailFooter ? `${inv.notes ?? ''}\n\n${detailFooter}` : (inv.notes ?? null),
-      });
+        templateDef,
+        { timeDetailHtml: detailFooter, ...payExtras },
+      );
 
       // Only an explicit `?format=html` (the in-app 8.5×11 page-preview iframe)
       // gets the letter-size HTML render. A plain navigation to /pdf — e.g.
@@ -2068,7 +2207,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         : '';
     const fallbackBody =
       `Friendly reminder: invoice ${inv.invoiceNumber} for ` +
-      `$${(balance / 100).toFixed(2)} was due ${inv.dueDate}.\n\n` +
+      `${formatMoneyCents(balance)} was due ${formatDateUS(inv.dueDate)}.\n\n` +
       payLine +
       `Please reach out if you have any questions.`;
     const fallbackSubject = `Reminder: invoice ${inv.invoiceNumber}`;
@@ -2088,9 +2227,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         firm: await firmScope(deps.db, session.firmId),
         invoice: {
           number: inv.invoiceNumber,
-          total: '$' + (Number(inv.totalCents) / 100).toFixed(2),
-          balance: '$' + (balance / 100).toFixed(2),
-          due_date: String(inv.dueDate),
+          total: formatMoneyCents(Number(inv.totalCents)),
+          balance: formatMoneyCents(balance),
+          due_date: formatDateUS(inv.dueDate),
           portal_url: link,
           pay_url: payUrl,
         },
@@ -2216,6 +2355,25 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         return Boolean(recent);
       };
 
+      // Don't mint a payable token when NO requested channel even has a
+      // destination — that link could never be delivered. (Cooldown still
+      // mints by design: re-sending keeps the prior link valid for a client
+      // who already holds it; see the "re-sending mints an independent link"
+      // test. The per-channel blocks below set the exact per-channel reason.)
+      const emailDeliverable = wantEmail && !!deps.sendEmail && !!billingContact?.email;
+      const smsDeliverable = wantSms && !!deps.sendSms && !!billingContact?.phone;
+      if (!emailDeliverable && !smsDeliverable) {
+        res.json({
+          ok: true,
+          payUrl: null,
+          results: {
+            email: wantEmail ? 'no_destination' : 'skipped',
+            sms: wantSms ? 'no_destination' : 'skipped',
+          },
+        });
+        return;
+      }
+
       // Mint one fresh link; the same token is delivered on every channel.
       const link = await createPayLink(deps.db, {
         firmId: session.firmId,
@@ -2231,14 +2389,14 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         .where(eq(clients.id, inv.clientId))
         .limit(1);
       const firmMerge = await firmScope(deps.db, session.firmId);
-      const dollars = '$' + (balance / 100).toFixed(2);
+      const dollars = formatMoneyCents(balance);
       const context = {
         client: { name: client?.name ?? '' },
         firm: firmMerge,
         invoice: {
           number: inv.invoiceNumber,
           balance: dollars,
-          due_date: String(inv.dueDate),
+          due_date: formatDateUS(inv.dueDate),
           pay_url: payUrl,
         },
       };
@@ -2777,11 +2935,11 @@ async function sendInvoiceEmail(
   }
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
-  const total = (Number(inv.totalCents) / 100).toFixed(2);
+  const total = formatMoneyCents(Number(inv.totalCents));
   const fallbackBody =
     `Dear ${client.name},\n\n` +
-    `Invoice ${inv.invoiceNumber} for $${total} is available. ` +
-    `It is due ${inv.dueDate}.\n\n` +
+    `Invoice ${inv.invoiceNumber} for ${total} is available. ` +
+    `It is due ${formatDateUS(inv.dueDate)}.\n\n` +
     (link ? `View and pay online: ${link}\n\n` : '') +
     `Thank you.`;
   const fallbackSubject = `Invoice ${inv.invoiceNumber}`;
@@ -2796,8 +2954,8 @@ async function sendInvoiceEmail(
       firm: await firmScope(deps.db, firmId),
       invoice: {
         number: inv.invoiceNumber,
-        total: '$' + total,
-        due_date: String(inv.dueDate),
+        total,
+        due_date: formatDateUS(inv.dueDate),
         portal_url: link,
       },
     },
@@ -2820,6 +2978,24 @@ async function sendInvoiceEmail(
     logger.error({ err, invoiceId: inv.id }, 'invoice email dispatch failed');
     return { ok: false, status: 502, error: 'email_dispatch_failed' };
   }
+  // PRINT channel (0188) — auto-print a copy if a PRINT template is configured.
+  await printNotificationChannel({
+    db: deps.db,
+    firmId,
+    kind: 'invoice_sent',
+    clientId: inv.clientId,
+    printableId: inv.id,
+    context: {
+      client: { name: client.name },
+      firm: await firmScope(deps.db, firmId),
+      invoice: {
+        number: inv.invoiceNumber,
+        total,
+        due_date: formatDateUS(inv.dueDate),
+        portal_url: link,
+      },
+    },
+  }).catch((err) => logger.warn({ err, invoiceId: inv.id }, 'invoice print channel failed'));
   return { ok: true, emailedTo: billingContact.email };
 }
 
@@ -2854,11 +3030,11 @@ async function sendInvoiceSms(
   }
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';
-  const total = (Number(inv.totalCents) / 100).toFixed(2);
+  const total = formatMoneyCents(Number(inv.totalCents));
   // Keep the body short — SMS limits + many providers truncate around
   // 160 chars per segment. ~140 leaves room for a short link rewrite.
   const body =
-    `${client.name}: invoice ${inv.invoiceNumber} for $${total} is ready (due ${inv.dueDate}).` +
+    `${client.name}: invoice ${inv.invoiceNumber} for ${total} is ready (due ${formatDateUS(inv.dueDate)}).` +
     (link ? ` View: ${link}` : '');
   try {
     await deps.sendSms({ to: billingContact.phone, body });

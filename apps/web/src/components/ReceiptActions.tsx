@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { Button, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { PrintButton } from './PrintButton';
 
 export function ReceiptActions({ receiptId }: { receiptId: string }): JSX.Element {
   const [sending, setSending] = useState(false);
@@ -48,6 +49,10 @@ export function ReceiptActions({ receiptId }: { receiptId: string }): JSX.Elemen
       >
         Print receipt
       </Button>
+      <PrintButton
+        endpoint={`/api/staff/payments/receipt/${receiptId}/print`}
+        label="Print to printer"
+      />
       <Button size="sm" variant="secondary" disabled={sending} onClick={() => void emailReceipt()}>
         {sending ? 'Emailing…' : 'Email receipt'}
       </Button>

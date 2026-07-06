@@ -30,6 +30,7 @@ import { requireStepUpWithLockout } from './auth/step-up-middleware';
 import { createEngagementMessagingRouter } from './engagement-messaging/routes';
 import { createInternalMessagingRouter } from './internal-messaging/routes';
 import { createRequestRouter } from './requests/routes';
+import { createFirmUsersRouter } from './staff/firm-users';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createTemplateRouter } from './admin/templates';
@@ -52,6 +53,7 @@ import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createInvoicePayPublicRouter } from './pay-public/invoice-pay';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
+import { createExpensesRouter } from './expenses/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
 import { portalAuthDeps } from './auth/portal-middleware';
@@ -174,11 +176,16 @@ import { createConflictsRouter } from './storage/conflicts';
 import { createImpersonationRouter } from './tax-returns/impersonation-routes';
 import { createStripeConnectRouter } from './stripe-connect/routes';
 import { createStripeKeysRouter } from './admin/stripe-keys';
+import { createPrintGatewayKeysRouter } from './admin/print-gateway-keys';
+import { createPrintRouter } from './print-gateway/routes';
+import { bullPrintQueue } from './print-gateway/queue';
 import { createWebhookKeysRouter } from './admin/webhook-keys';
 import { createTerminalRouter } from './terminal/routes';
 import { createRetainerRouter } from './retainers/routes';
 import { createTaxPaymentRouter } from './tax-payments/routes';
 import { createPaymentRouter } from './payments/routes';
+import { createSavedMethodsRouter } from './payments/saved-methods-routes';
+import { createClientPaymentPlansRouter } from './client-payment-plans/routes';
 import { createPaymentImportRouter } from './payments/import-routes';
 import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
@@ -237,6 +244,11 @@ export function createApp(deps: AppDeps): Express {
   app.disable('x-powered-by');
   app.set('trust proxy', true);
 
+  // Request logging first, before any body parser or webhook router, so every
+  // request — including the raw-body webhooks mounted below — is logged.
+  // pino-http only observes req/res; it never consumes the body stream.
+  app.use(pinoHttp({ logger }));
+
   // Q35 — OpenSign completion webhook. MUST be mounted before the global
   // express.json() so the raw request bytes survive for HMAC
   // verification (the global parser would otherwise consume the body).
@@ -285,16 +297,55 @@ export function createApp(deps: AppDeps): Express {
               })
           : undefined,
         portalBaseUrl: config.PORTAL_BASE_URL,
+        printQueue: bullPrintQueue,
       }),
     );
   }
+
+  // Stripe webhooks — MUST be mounted before the global express.json() below,
+  // exactly like the OpenSign webhook above. Each router installs its own
+  // express.raw() parser so the raw request bytes survive for HMAC signature
+  // verification; if the global JSON parser ran first it would consume the
+  // body and every event would fail signature checks (401 invalid_signature).
+  app.use(
+    '/api/webhooks/stripe',
+    createStripeWebhookRouter({
+      db: deps.db,
+      stripe: deps.stripeProvider ?? null,
+      webhookSecret: deps.stripeWebhookSecret ?? null,
+      sendEmail: deps.sendPortalEmail,
+      portalBaseUrl: config.PORTAL_BASE_URL,
+      printQueue: bullPrintQueue,
+    }),
+  );
+
+  // P12 — separate webhook channel for Stripe Connect events about
+  // connected accounts (subscription.*, invoice.*, mandate.updated,
+  // account.updated, …). Distinct secret from the BYO-key stripe
+  // webhook above.
+  app.use(
+    '/api/webhooks/stripe-connect',
+    createStripeConnectWebhookRouter({
+      db: deps.db,
+      stripe: deps.stripeProvider ?? null,
+      webhookSecret: config.STRIPE_CONNECT_WEBHOOK_SECRET ?? null,
+    }),
+  );
+
+  app.use(
+    '/api/webhooks/cpacharge',
+    createCpaChargeWebhookRouter({
+      db: deps.db,
+      provider: null,
+      webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
+    }),
+  );
 
   // Logo/icon uploads carry image bytes (base64) through the API; allow a
   // larger body on just that path. express.json no-ops once a body is parsed,
   // so the global 1mb parser below skips these already-parsed requests.
   app.use('/api/staff/admin/branding', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
-  app.use(pinoHttp({ logger }));
 
   // Liveness — used by Docker HEALTHCHECK. Cheap, no I/O.
   //
@@ -461,7 +512,7 @@ export function createApp(deps: AppDeps): Express {
   // appliance is locked (existing TLS termination shouldn't break
   // mid-incident). No auth: Caddy is a separate process; the route
   // is constrained by a `@internal` host matcher in the Caddy config.
-  const caddyRouter = createCaddyRouter({ db: deps.db });
+  const caddyRouter = createCaddyRouter({ db: deps.db, redis: deps.redis });
   app.use('/v1/internal', caddyRouter);
 
   // Stage 1B — lock middleware. Once mounted, every request below this
@@ -476,6 +527,9 @@ export function createApp(deps: AppDeps): Express {
     sendEmailOtp: deps.sendEmailOtp,
     sendSmsOtp: deps.sendSmsOtp,
     requireAuth: auth.requireAuth,
+    // CSRF for the authenticated mutating endpoints (factor enroll/disable,
+    // password change, logout). Public login endpoints skip it.
+    requireCsrf: auth.requireCsrf,
   });
   app.use('/api/auth', authRouter);
 
@@ -775,6 +829,10 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/requests', auth.requireAuth, auth.requireCsrf, requestRouter);
 
+  // Active-staff list for assignment pickers (was referenced by the frontend
+  // but never defined — assignee dropdowns came back empty).
+  app.use('/api/staff/firm-users', auth.requireAuth, createFirmUsersRouter({ db: deps.db }));
+
   const timeEntryRouter = createTimeEntryRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
@@ -782,6 +840,12 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendPortalEmail,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
+
+  const expensesRouter = createExpensesRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/expenses', auth.requireAuth, auth.requireCsrf, expensesRouter);
 
   const auditRouter = createAuditRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
   app.use('/api/staff/audit', auth.requireAuth, auth.requireCsrf, auditRouter);
@@ -1826,6 +1890,20 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/admin/stripe-keys', auth.requireAuth, auth.requireCsrf, stripeKeysRouter);
 
+  const printGatewayKeysRouter = createPrintGatewayKeysRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/admin/print-gateway',
+    auth.requireAuth,
+    auth.requireCsrf,
+    printGatewayKeysRouter,
+  );
+
+  const printRouter = createPrintRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  app.use('/api/staff/print', auth.requireAuth, auth.requireCsrf, printRouter);
+
   const webhookKeysRouter = createWebhookKeysRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
@@ -1842,6 +1920,26 @@ export function createApp(deps: AppDeps): Express {
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payments', auth.requireAuth, auth.requireCsrf, paymentRouter);
+
+  // 0191 — saved payment methods (card / ACH) per client, for off-session
+  // charging + recurring payment plans.
+  const savedMethodsRouter = createSavedMethodsRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/payment-methods', auth.requireAuth, auth.requireCsrf, savedMethodsRouter);
+
+  // 0192 — recurring installment payment plans (staff control surface).
+  const clientPaymentPlansRouter = createClientPaymentPlansRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use(
+    '/api/staff/client-payment-plans',
+    auth.requireAuth,
+    auth.requireCsrf,
+    clientPaymentPlansRouter,
+  );
 
   // 0158 — Payments → Import tab (payroll-charges CSV).
   const paymentImportRouter = createPaymentImportRouter({
@@ -1915,41 +2013,8 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/webhooks', auth.requireAuth, auth.requireCsrf, webhookRouter);
 
-  // Stripe webhook — mounted BEFORE the global JSON body parser would
-  // have run, so the raw body is preserved for signature verification.
-  // Express routes the call to this router's raw-body parser first.
-  app.use(
-    '/api/webhooks/stripe',
-    createStripeWebhookRouter({
-      db: deps.db,
-      stripe: deps.stripeProvider ?? null,
-      webhookSecret: deps.stripeWebhookSecret ?? null,
-      sendEmail: deps.sendPortalEmail,
-      portalBaseUrl: config.PORTAL_BASE_URL,
-    }),
-  );
-
-  // P12 — separate webhook channel for Stripe Connect events about
-  // connected accounts (subscription.*, invoice.*, mandate.updated,
-  // account.updated, …). Distinct secret from the BYO-key stripe
-  // webhook above.
-  app.use(
-    '/api/webhooks/stripe-connect',
-    createStripeConnectWebhookRouter({
-      db: deps.db,
-      stripe: deps.stripeProvider ?? null,
-      webhookSecret: config.STRIPE_CONNECT_WEBHOOK_SECRET ?? null,
-    }),
-  );
-
-  app.use(
-    '/api/webhooks/cpacharge',
-    createCpaChargeWebhookRouter({
-      db: deps.db,
-      provider: null,
-      webhookSecret: process.env['CPACHARGE_WEBHOOK_SECRET'] ?? null,
-    }),
-  );
+  // (Stripe / Stripe-Connect / CPACharge webhooks are mounted earlier, before
+  // the global express.json(), so their raw bodies survive for HMAC checks.)
 
   // H.8 follow-up — mail + SMS provider delivery callbacks update
   // notification_log.status. Each provider expects a separate sub-path

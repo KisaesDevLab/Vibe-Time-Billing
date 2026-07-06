@@ -168,6 +168,9 @@ export async function sendSignatureRequest(
     })),
     geometry: geometry!,
     sendInOrder: request.sendInOrder,
+    // Align OpenSign's own document expiry with our signatureRequests.expiresAt
+    // so the signing page and the Signatures page never disagree.
+    expiresInDays: deps.expiresInDays ?? DEFAULT_EXPIRY_DAYS,
   });
 
   const expiresAt = new Date(
@@ -378,6 +381,9 @@ export async function ensureInOfficeDocument(
     })),
     geometry: geometry!,
     sendInOrder: request.sendInOrder,
+    // Align OpenSign's own document expiry with our signatureRequests.expiresAt
+    // so the signing page and the Signatures page never disagree.
+    expiresInDays: deps.expiresInDays ?? DEFAULT_EXPIRY_DAYS,
   });
 
   const expiresAt = new Date(

@@ -25,6 +25,7 @@ import {
   expireSignatureRequestIfDue,
 } from '../../../api/src/signatures/reconcile';
 import type { CompletionMailer } from '../../../api/src/signatures/completion-notify';
+import type { PrintQueue } from '../../../api/src/print-gateway/queue';
 
 export interface SignaturesPollResult {
   scanned: number;
@@ -38,7 +39,7 @@ const BATCH = 50;
 export async function runSignaturesPollTick(
   db: Database,
   log: Logger,
-  args: { storage: StorageClient | null; sendEmail?: CompletionMailer },
+  args: { storage: StorageClient | null; sendEmail?: CompletionMailer; printQueue?: PrintQueue },
   now: Date = new Date(),
 ): Promise<SignaturesPollResult> {
   const result: SignaturesPollResult = { scanned: 0, updated: 0, expired: 0, errors: 0 };
@@ -78,6 +79,14 @@ export async function runSignaturesPollTick(
       );
       if (outcome.kind === 'updated') {
         result.updated += 1;
+        // 0185 — safety-net path for the signature-confirmation auto-print
+        // (the webhook is primary). Consumer no-ops unless it's a tax-return
+        // signature with the gateway + auto-print enabled.
+        if (outcome.status === 'completed' && args.printQueue) {
+          await args.printQueue
+            .signatureConfirmation({ requestId: outcome.requestId })
+            .catch((err: unknown) => log.warn({ err }, 'sig confirmation enqueue failed'));
+        }
         // If it didn't reach a terminal state, it may still expire.
         if (outcome.status === 'sent' || outcome.status === 'partially_signed') {
           if (await expireSignatureRequestIfDue(db, row.id, now)) result.expired += 1;

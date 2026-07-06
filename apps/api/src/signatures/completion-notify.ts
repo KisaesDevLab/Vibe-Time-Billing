@@ -19,6 +19,7 @@ import {
 
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
+import { printNotificationChannel } from '../notifications/print-channel';
 
 /** Minimal mailer the caller wires from its provider (audit-wrapped). */
 export type CompletionMailer = (args: {
@@ -121,4 +122,17 @@ export async function notifySignatureCompleted(
       logger.warn({ err, requestId: request.id }, 'signature completion: client email failed');
     }
   }
+
+  // 3. PRINT channel (0188) — auto-print a completion notice if configured.
+  await printNotificationChannel({
+    db,
+    firmId: request.firmId,
+    kind: 'signature_complete',
+    clientId: request.clientId,
+    printableId: request.id,
+    context: {
+      firm: await firmScope(db, request.firmId),
+      document: { name: request.title },
+    },
+  }).catch((err) => logger.warn({ err, requestId: request.id }, 'signature print channel failed'));
 }

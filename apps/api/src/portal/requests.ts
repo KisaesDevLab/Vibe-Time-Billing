@@ -15,7 +15,7 @@ import {
   engagements,
   files,
 } from '@vibe/db/schema';
-import { and, asc, sql } from 'drizzle-orm';
+import { and, asc, ne, sql } from 'drizzle-orm';
 
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
@@ -72,7 +72,9 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       })
       .from(clientRequests)
       .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
-      .where(eq(engagements.clientId, session.activeClientId))
+      .where(
+        and(eq(engagements.clientId, session.activeClientId), ne(clientRequests.status, 'PENDING')),
+      )
       .orderBy(desc(clientRequests.createdAt))
       .limit(200);
     res.json({ items: rows });
@@ -94,6 +96,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         and(
           eq(clientRequests.id, req.params['id']!),
           eq(engagements.clientId, session.activeClientId),
+          ne(clientRequests.status, 'PENDING'),
         ),
       )
       .limit(1);
@@ -143,6 +146,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         and(
           eq(clientRequests.id, req.params['id']!),
           eq(engagements.clientId, session.activeClientId),
+          ne(clientRequests.status, 'PENDING'),
         ),
       )
       .limit(1);
@@ -152,7 +156,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
     }
     await deps.db
       .update(clientRequests)
-      .set({ clientReplyText: parsed.data.text, updatedAt: new Date() })
+      .set({ clientReplyText: parsed.data.text, clientReplySeenAt: null, updatedAt: new Date() })
       .where(eq(clientRequests.id, scoped.id));
     await emitAudit(deps.db, {
       action: 'UPDATE',
@@ -188,6 +192,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         and(
           eq(clientRequests.id, req.params['id']!),
           eq(engagements.clientId, session.activeClientId),
+          ne(clientRequests.status, 'PENDING'),
         ),
       )
       .limit(1);
@@ -200,6 +205,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       .set({
         status: 'NEEDS_INFO',
         clientReplyText: parsed.data.text,
+        clientReplySeenAt: null,
         updatedAt: new Date(),
       })
       .where(eq(clientRequests.id, scoped.id));
@@ -237,6 +243,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         and(
           eq(clientRequests.id, req.params['id']!),
           eq(engagements.clientId, session.activeClientId),
+          ne(clientRequests.status, 'PENDING'),
         ),
       )
       .limit(1);
@@ -296,6 +303,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         and(
           eq(clientRequests.id, req.params['id']!),
           eq(engagements.clientId, session.activeClientId),
+          ne(clientRequests.status, 'PENDING'),
         ),
       )
       .limit(1);
@@ -372,7 +380,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       })
       .from(clientRequests)
       .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
-      .where(eq(clientRequests.id, req.params['id']!))
+      .where(and(eq(clientRequests.id, req.params['id']!), ne(clientRequests.status, 'PENDING')))
       .limit(1);
     if (!request || request.clientId !== session.activeClientId) {
       res.status(404).json({ error: 'not_found' });

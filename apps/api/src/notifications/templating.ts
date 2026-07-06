@@ -28,8 +28,9 @@ import {
   type RenderedNotification,
 } from '@vibe/core/notifications';
 import type { MergeContext } from '@vibe/core/proposals';
+import { composeFirmMailingAddress } from '../firm/mailing-address';
 
-export type TemplateChannel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL';
+export type TemplateChannel = 'EMAIL' | 'SMS' | 'CALL' | 'PORTAL' | 'PRINT';
 
 /** Firm's enabled template override for (kind, channel), or null. */
 export async function loadNotificationTemplate(
@@ -97,9 +98,19 @@ export async function firmScope(
       supportPhone: firmSettings.brandSupportPhone,
       supportFax: firmSettings.brandSupportFax,
       supportWeb: firmSettings.brandSupportWeb,
+      mailingStreet1: firmSettings.mailingStreet1,
+      mailingStreet2: firmSettings.mailingStreet2,
+      mailingCity: firmSettings.mailingCity,
+      mailingState: firmSettings.mailingState,
+      mailingPostal: firmSettings.mailingPostal,
+      mailingCountry: firmSettings.mailingCountry,
     })
     .from(firmSettings)
     .where(eq(firmSettings.firmId, firmId))
     .limit(1);
-  return buildFirmScope({ name: firm?.name ?? null, ...s });
+  return buildFirmScope({
+    name: firm?.name ?? null,
+    ...s,
+    address: composeFirmMailingAddress(s),
+  });
 }

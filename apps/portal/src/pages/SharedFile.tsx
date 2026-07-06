@@ -91,6 +91,20 @@ export function SharedFilePage(): JSX.Element {
     };
   }, []);
 
+  // This is a public landing page for external recipients, not a portal
+  // user browsing the dark-themed app. Force a clean light theme (all
+  // @vibe/ui tokens resolve from data-theme on <html>) so the shared
+  // document reads like a printable page. Restore on unmount.
+  useEffect(() => {
+    const el = document.documentElement;
+    const prev = el.dataset.theme;
+    el.dataset.theme = 'light';
+    return () => {
+      if (prev) el.dataset.theme = prev;
+      else delete el.dataset.theme;
+    };
+  }, []);
+
   function startCooldown(seconds: number): void {
     setCooldown(seconds);
     if (cooldownTimer.current) clearInterval(cooldownTimer.current);
@@ -314,30 +328,41 @@ export function SharedFilePage(): JSX.Element {
     // for legacy single shares, which default to the share's one file).
     const only = meta.files?.[0];
     const q = only ? `?fileId=${encodeURIComponent(only.fileId)}` : '';
+    const downloadHref = `${base}/download${q}`;
+    const contentHref = `${base}/content${q}`;
+    // Prominent, solid primary action at the TOP of the card so the
+    // recipient can't miss it. Shown whenever there's an explicit action:
+    // any download, or a non-PDF that has no inline viewer. A PDF that is
+    // view-only relies on the viewer below (no top button needed).
+    const showTopAction = canDownload || !meta.isPdf;
+    const topAction = showTopAction ? (
+      <div style={{ marginBottom: tokens.space.md }}>
+        <a
+          href={canDownload ? downloadHref : contentHref}
+          {...(canDownload
+            ? { download: meta.fileName ?? true }
+            : { target: '_blank', rel: 'noreferrer' })}
+          style={{ textDecoration: 'none' }}
+        >
+          <Button variant="primary" style={{ padding: '12px 24px', fontSize: 15, fontWeight: 600 }}>
+            {canDownload ? `⬇  Download ${meta.isPdf ? 'PDF' : 'file'}` : 'Open file'}
+          </Button>
+        </a>
+      </div>
+    ) : null;
     return shell(
       <div style={{ display: 'grid', gap: tokens.space.lg }}>
         <Card title={meta.fileName ?? 'Shared document'}>
           {header}
+          {topAction}
           {watermarkNote}
-          {meta.isPdf ? (
+          {meta.isPdf && (
             <ProtectedPdfViewer
-              url={`${base}/content${q}`}
-              downloadUrl={`${base}/download${q}`}
+              url={contentHref}
+              downloadUrl={downloadHref}
               canDownload={canDownload}
               filename={meta.fileName ?? 'document.pdf'}
             />
-          ) : (
-            <div style={{ display: 'flex', gap: 8 }}>
-              {canDownload ? (
-                <a href={`${base}/download${q}`}>
-                  <Button>Download file</Button>
-                </a>
-              ) : (
-                <a href={`${base}/content${q}`} target="_blank" rel="noreferrer">
-                  <Button>Open file</Button>
-                </a>
-              )}
-            </div>
           )}
         </Card>
       </div>,

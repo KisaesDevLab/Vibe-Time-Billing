@@ -6,7 +6,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, between, desc, eq, inArray, isNull, sql as drz } from 'drizzle-orm';
+import { and, between, desc, eq, inArray, isNull, ne, notInArray, sql as drz } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -181,7 +181,26 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
           standardAmountCents: timeEntries.standardAmountCents,
         })
         .from(timeEntries)
-        .where(eq(timeEntries.billingBatchId, batch.id));
+        .where(
+          and(
+            eq(timeEntries.billingBatchId, batch.id),
+            // Only INCLUDE entries participate in a write-up/down. DEFER and
+            // WRITE_OFF entries (billed 0 / released later) are excluded so the
+            // adjustment lands entirely on the entries that are actually billed.
+            notInArray(
+              timeEntries.id,
+              deps.db
+                .select({ id: billingBatchEntries.timeEntryId })
+                .from(billingBatchEntries)
+                .where(
+                  and(
+                    eq(billingBatchEntries.billingBatchId, batch.id),
+                    ne(billingBatchEntries.action, 'INCLUDE'),
+                  ),
+                ),
+            ),
+          ),
+        );
       if (rows.length === 0) {
         res.status(400).json({ error: 'no_time_entries_in_batch' });
         return;
@@ -763,7 +782,24 @@ export function createAdjustmentRouter(deps: AdjustmentRoutesDeps): Router {
           standardAmountCents: timeEntries.standardAmountCents,
         })
         .from(timeEntries)
-        .where(eq(timeEntries.billingBatchId, parsed.data.billingBatchId));
+        .where(
+          and(
+            eq(timeEntries.billingBatchId, parsed.data.billingBatchId),
+            // Preview mirrors create: INCLUDE-only base (exclude DEFER/WRITE_OFF).
+            notInArray(
+              timeEntries.id,
+              deps.db
+                .select({ id: billingBatchEntries.timeEntryId })
+                .from(billingBatchEntries)
+                .where(
+                  and(
+                    eq(billingBatchEntries.billingBatchId, parsed.data.billingBatchId),
+                    ne(billingBatchEntries.action, 'INCLUDE'),
+                  ),
+                ),
+            ),
+          ),
+        );
       const userIds = Array.from(new Set(rows.map((r) => r.appUserId)));
       const userRows =
         userIds.length === 0

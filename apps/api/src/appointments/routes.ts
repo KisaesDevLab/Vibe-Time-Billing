@@ -17,11 +17,11 @@
 //                                       to reschedule)
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, gte, isNull, lte, notInArray, or } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, gte, isNull, lte, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { appointments, clients, engagements } from '@vibe/db/schema';
+import { appointments, appointmentTypes, clients, engagements } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -119,8 +119,14 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         conds.push(lte(appointments.startsAt, new Date(to)));
       }
       const items = await deps.db
-        .select()
+        .select({
+          ...getTableColumns(appointments),
+          clientName: clients.name,
+          typeName: appointmentTypes.name,
+        })
         .from(appointments)
+        .leftJoin(clients, eq(clients.id, appointments.clientId))
+        .leftJoin(appointmentTypes, eq(appointmentTypes.id, appointments.appointmentTypeId))
         .where(and(...conds))
         .orderBy(desc(appointments.startsAt))
         .limit(500);
@@ -352,6 +358,45 @@ export function createAppointmentRouter(deps: AppointmentRoutesDeps): Router {
         actorAppUserId: session.appUserId,
         before: prior,
         after: patch,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
+  // 0201 — toggle whether this appointment is carried forward when its
+  // recurring engagement rolls to the next period. Dedicated endpoint (no
+  // calendar side effects); permitted while the appointment is SCHEDULED.
+  router.patch(
+    '/:id/rollforward-include',
+    requirePermission(deps, 'appointment:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const include = (req.body as { include?: unknown })?.include;
+      if (typeof include !== 'boolean') {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const updated = await deps.db
+        .update(appointments)
+        .set({ rollforwardInclude: include, updatedAt: new Date() })
+        .where(and(eq(appointments.id, req.params['id']!), eq(appointments.firmId, session.firmId)))
+        .returning({ id: appointments.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'appointment',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { rollforwardInclude: include },
         ip: req.ip ?? null,
         userAgent: req.get('user-agent') ?? null,
       }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));

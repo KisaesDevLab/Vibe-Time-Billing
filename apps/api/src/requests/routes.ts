@@ -20,9 +20,9 @@
 //   POST   /suggestions/:id/accept   accept (creates time entry)
 //   POST   /suggestions/:id/dismiss  dismiss
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -31,18 +31,21 @@ import {
   clientRequestTimeEntryLinks,
   clientRequests,
   clients,
+  engagementAssignments,
   engagements,
   firmConfig,
+  firmSettings,
   requestTemplateItems,
   requestTemplates,
   timeEntries,
 } from '@vibe/db/schema';
 
 import { spawnFromTemplate, type Priority } from './template-spawn';
+import { ReminderScheduleSchema } from '../appointments/reminders-validation';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { getBlockedClientIdsCached } from '../clients/access';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -78,8 +81,22 @@ const CreateSchema = z.object({
   priority: z.enum(PRIORITIES).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
+  // 0194 — drop-off multi-reminder schedule (offsetMinutes + channel steps).
+  reminderSchedule: ReminderScheduleSchema.nullable().optional(),
+  // 0198 — when set, the request is created PENDING (hidden) and the worker
+  // opens + submits it to the client on this date.
+  activationDate: z.string().regex(DATE_RE).nullable().optional(),
   items: z.array(ItemInputSchema).max(100).optional(),
 });
+
+const REQUEST_STATUSES = [
+  'OPEN',
+  'PENDING',
+  'NEEDS_INFO',
+  'FULFILLED',
+  'DISMISSED',
+  'EXPIRED',
+] as const;
 
 const PatchSchema = z.object({
   title: z.string().min(1).max(200).optional(),
@@ -88,6 +105,7 @@ const PatchSchema = z.object({
   dueDate: z.string().regex(DATE_RE).nullable().optional(),
   engagementId: z.string().uuid().optional(),
   priority: z.enum(PRIORITIES).optional(),
+  status: z.enum(REQUEST_STATUSES).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   reminderDaysBefore: z.number().int().min(0).max(365).nullable().optional(),
 });
@@ -153,9 +171,69 @@ async function getSuggestionExpirationDays(db: Database, firmId: string): Promis
   return row?.days ?? 7;
 }
 
+// 0204 — when a drop-off date is entered for an engagement that has no due date
+// yet, set the due date to firm_settings.dropoff_due_offset_days after the
+// drop-off. No-op when the offset is unset (feature disabled) or the engagement
+// already has a due date. Runs inside the caller's transaction.
+async function applyDropoffDueDate(
+  db: Database,
+  firmId: string,
+  engagementId: string,
+  dropDate: string,
+): Promise<void> {
+  const [settings] = await db
+    .select({ offset: firmSettings.dropoffDueOffsetDays })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firmId))
+    .limit(1);
+  const offset = settings?.offset;
+  if (offset == null) return; // feature disabled
+  const [eng] = await db
+    .select({ dueDate: engagements.dueDate })
+    .from(engagements)
+    .where(eq(engagements.id, engagementId))
+    .limit(1);
+  if (!eng || eng.dueDate) return; // no engagement, or it already has a due date
+  const d = new Date(`${dropDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return;
+  d.setUTCDate(d.getUTCDate() + offset);
+  await db
+    .update(engagements)
+    .set({ dueDate: d.toISOString().slice(0, 10) })
+    .where(eq(engagements.id, engagementId));
+}
+
 export function createRequestRouter(deps: RequestRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // 0165 — enforce client-access restriction on every single-request route
+  // (detail + all mutations: activate, needs-info, fulfill, items, delete).
+  // The list endpoint filters blocked clients itself; this closes the
+  // detail/mutation gap uniformly via the shared `:id` param. Runs after
+  // the UUID guard (which next('route')s non-UUIDs), so `id` is a valid
+  // UUID here. A request that doesn't resolve falls through to the
+  // handler's own 404.
+  router.param('id', (req: Request, res: Response, next: NextFunction, id: string) => {
+    if (!deps.db || !req.staffSession) {
+      next();
+      return;
+    }
+    void (async () => {
+      const [row] = await deps
+        .db!.select({ clientId: engagements.clientId })
+        .from(clientRequests)
+        .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+        .where(and(eq(clientRequests.id, id), eq(clientRequests.firmId, req.staffSession!.firmId)))
+        .limit(1);
+      if (!row) {
+        next();
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, row.clientId)) return;
+      next();
+    })().catch(next);
+  });
 
   router.get('/', requirePermission(deps, 'requests:read'), async (req: Request, res: Response) => {
     const session = req.staffSession!;
@@ -237,7 +315,10 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         );
       }
     }
+    // 0198 — PENDING (scheduled) requests are hidden from the default queue;
+    // the "Scheduled" view opts in with an explicit status=PENDING.
     if (status) conds.push(eq(clientRequests.status, status));
+    else conds.push(ne(clientRequests.status, 'PENDING'));
     if (engagementIdParam) conds.push(eq(clientRequests.engagementId, engagementIdParam));
     if (assignedParam) conds.push(eq(clientRequests.assignedAppUserId, assignedParam));
     if (priorityParam) conds.push(eq(clientRequests.priority, priorityParam));
@@ -339,6 +420,53 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
     res.json({ items: enriched, total });
   });
 
+  // 0197 — count of requests with an UNREAD client response (client replied,
+  // still open, staff hasn't opened it). Drives the Requests nav highlight.
+  router.get(
+    '/client-responses/unread-count',
+    requirePermission(deps, 'requests:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ count: 0 });
+        return;
+      }
+      // 0165 — exclude requests on clients this staffer is restricted from,
+      // so the nav badge never counts hidden clients' responses.
+      const countConds = [
+        eq(clientRequests.firmId, session.firmId),
+        sql`${clientRequests.clientReplyText} IS NOT NULL`,
+        isNull(clientRequests.clientReplySeenAt),
+        inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
+      ];
+      const blockedClientIds = await getBlockedClientIdsCached(
+        deps,
+        req,
+        session.appUserId,
+        session.firmId,
+      );
+      if (blockedClientIds.length) {
+        const blockedEngs = await deps.db
+          .select({ id: engagements.id })
+          .from(engagements)
+          .where(inArray(engagements.clientId, blockedClientIds));
+        if (blockedEngs.length) {
+          countConds.push(
+            notInArray(
+              clientRequests.engagementId,
+              blockedEngs.map((e) => e.id),
+            ),
+          );
+        }
+      }
+      const [row] = await deps.db
+        .select({ c: sql<number>`COUNT(*)::int` })
+        .from(clientRequests)
+        .where(and(...countConds));
+      res.json({ count: row?.c ?? 0 });
+    },
+  );
+
   router.get(
     '/:id',
     requirePermission(deps, 'requests:read'),
@@ -358,6 +486,14 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       if (!row) {
         res.status(404).json({ error: 'not_found' });
         return;
+      }
+      // 0197 — opening the detail marks an unread client reply as seen (clears
+      // the Requests nav highlight).
+      if (row.clientReplyText && !row.clientReplySeenAt) {
+        await deps.db
+          .update(clientRequests)
+          .set({ clientReplySeenAt: new Date() })
+          .where(eq(clientRequests.id, row.id));
       }
       // P2.3 — resolve the linked time entry (if any) for the request's
       // accepted suggestion. Surfaces in the staff request-detail UI as
@@ -389,7 +525,24 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             staffName: linkedRows[0].staffName,
           }
         : null;
-      res.json({ request: row, linkedTimeEntry });
+      // Which client this request relates to (via its engagement).
+      const [engRow] = await deps.db
+        .select({
+          engagementName: engagements.name,
+          clientId: engagements.clientId,
+          clientName: clients.name,
+        })
+        .from(engagements)
+        .leftJoin(clients, eq(clients.id, engagements.clientId))
+        .where(eq(engagements.id, row.engagementId))
+        .limit(1);
+      res.json({
+        request: row,
+        linkedTimeEntry,
+        engagementName: engRow?.engagementName ?? null,
+        clientId: engRow?.clientId ?? null,
+        clientName: engRow?.clientName ?? null,
+      });
     },
   );
 
@@ -520,14 +673,32 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       // (and a reminder lead) the worker sweep can never fire it, so the
       // request would be silently inert. Enforce server-side (the UI also
       // requires it, but MCP/bulk callers bypass the UI).
+      // A drop-off's reminder can be either the legacy single lead
+      // (reminderDaysBefore) or a multi-step schedule (reminderSchedule).
+      const resolvedSchedule =
+        parsed.data.reminderSchedule && parsed.data.reminderSchedule.length > 0
+          ? parsed.data.reminderSchedule
+          : null;
       if (parsed.data.kind === 'DROP_OFF') {
         if (!resolvedDueDate) {
           res.status(400).json({ error: 'due_date_required_for_drop_off' });
           return;
         }
-        if (resolvedReminder === null) {
+        if (resolvedReminder === null && !resolvedSchedule) {
           res.status(400).json({ error: 'reminder_required_for_drop_off' });
           return;
+        }
+        // Default the assignee to the engagement's first-listed assignee
+        // (earliest assignedAt — the order the engagement detail shows them)
+        // when the caller didn't set one explicitly / via template.
+        if (!resolvedAssignee) {
+          const [firstAssignee] = await deps.db
+            .select({ appUserId: engagementAssignments.appUserId })
+            .from(engagementAssignments)
+            .where(eq(engagementAssignments.engagementId, parsed.data.engagementId))
+            .orderBy(asc(engagementAssignments.assignedAt))
+            .limit(1);
+          if (firstAssignee) resolvedAssignee = firstAssignee.appUserId;
         }
       }
 
@@ -547,6 +718,11 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             tags: parsed.data.tags ?? [],
             templateId: parsed.data.templateId ?? null,
             reminderDaysBefore: resolvedReminder,
+            reminderSchedule: resolvedSchedule,
+            // 0198 — an activation date makes the request start hidden (PENDING).
+            ...(parsed.data.activationDate
+              ? { status: 'PENDING' as const, activationDate: parsed.data.activationDate }
+              : {}),
           })
           .returning({ id: clientRequests.id });
         if (!row) throw new Error('insert_failed');
@@ -561,6 +737,16 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
               required: it.required,
               dueDate: it.dueDate,
             })),
+          );
+        }
+        // 0204 — a drop-off's due date is the "drop date"; back-fill the
+        // engagement's due date from it when the engagement has none.
+        if (parsed.data.kind === 'DROP_OFF' && resolvedDueDate) {
+          await applyDropoffDueDate(
+            tx as unknown as Database,
+            session.firmId,
+            parsed.data.engagementId,
+            resolvedDueDate,
           );
         }
         return row.id;
@@ -607,6 +793,25 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
           return;
         }
       }
+      // Load the current row for firm-scope + PENDING activation math.
+      const [existing] = await deps.db
+        .select({
+          id: clientRequests.id,
+          status: clientRequests.status,
+          kind: clientRequests.kind,
+          engagementId: clientRequests.engagementId,
+          dueDate: clientRequests.dueDate,
+          reminderDaysBefore: clientRequests.reminderDaysBefore,
+        })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (parsed.data.title !== undefined) patch['title'] = parsed.data.title;
       if (parsed.data.body !== undefined) patch['body'] = parsed.data.body;
@@ -619,6 +824,36 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       if (parsed.data.tags !== undefined) patch['tags'] = parsed.data.tags;
       if (parsed.data.reminderDaysBefore !== undefined)
         patch['reminderDaysBefore'] = parsed.data.reminderDaysBefore;
+      // Status edit. PENDING = scheduled/hidden: compute an activation date
+      // (due date minus the reminder lead) so the worker later flips it OPEN;
+      // moving to any other status clears the schedule and stamps activation.
+      if (parsed.data.status !== undefined && parsed.data.status !== existing.status) {
+        patch['status'] = parsed.data.status;
+        if (parsed.data.status === 'PENDING') {
+          const effDue =
+            parsed.data.dueDate !== undefined
+              ? parsed.data.dueDate
+              : existing.dueDate
+                ? String(existing.dueDate)
+                : null;
+          const effReminder =
+            parsed.data.reminderDaysBefore !== undefined
+              ? parsed.data.reminderDaysBefore
+              : (existing.reminderDaysBefore ?? 0);
+          let activationDate: string | null = null;
+          if (effDue) {
+            const dueMs = Date.parse(`${effDue}T00:00:00Z`);
+            activationDate = Number.isFinite(dueMs)
+              ? new Date(dueMs - (effReminder ?? 0) * 86_400_000).toISOString().slice(0, 10)
+              : effDue;
+          }
+          patch['activationDate'] = activationDate;
+          patch['activatedAt'] = null;
+        } else {
+          patch['activationDate'] = null;
+          if (existing.status === 'PENDING') patch['activatedAt'] = new Date();
+        }
+      }
       const updated = await deps.db
         .update(clientRequests)
         .set(patch)
@@ -629,6 +864,16 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
       if (updated.length === 0) {
         res.status(404).json({ error: 'not_found' });
         return;
+      }
+      // 0204 — editing a drop-off's date back-fills the engagement due date
+      // when it has none (same rule as create).
+      if (existing.kind === 'DROP_OFF' && parsed.data.dueDate) {
+        const engId = parsed.data.engagementId ?? existing.engagementId;
+        if (engId) {
+          await applyDropoffDueDate(deps.db, session.firmId, engId, parsed.data.dueDate).catch(
+            (err: unknown) => logger.error({ err }, 'dropoff due-date backfill failed'),
+          );
+        }
       }
       await emitAudit(deps.db, {
         action: 'UPDATE',
@@ -812,6 +1057,52 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
     },
   );
 
+  // 0198 — activate a PENDING (scheduled) request now: make it visible/OPEN.
+  // The client then sees it in the portal and enters the reminder schedule;
+  // scheduled activation by the worker also emails a "new request" submit.
+  router.post(
+    '/:id/activate',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const updated = await deps.db
+        .update(clientRequests)
+        .set({
+          status: 'OPEN',
+          activatedAt: new Date(),
+          activationDate: today,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(clientRequests.id, req.params['id']!),
+            eq(clientRequests.firmId, session.firmId),
+            eq(clientRequests.status, 'PENDING'),
+          ),
+        )
+        .returning({ id: clientRequests.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found_or_not_pending' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client_request',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: { status: 'OPEN', activated: 'manual' },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      res.json({ ok: true });
+    },
+  );
+
   // -------------------------------------------------------------------
   // 0084 — needs-info status flip (staff side; the portal flips via
   // /api/portal/requests/:id/needs-info).
@@ -835,6 +1126,8 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         .set({
           status: 'NEEDS_INFO',
           clientReplyText: parsed.data.text,
+          // Staff authored this note, so it isn't an unread client response.
+          clientReplySeenAt: new Date(),
           updatedAt: new Date(),
         })
         .where(
@@ -1066,6 +1359,51 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
         res.status(404).json({ error: 'item_not_found' });
         return;
       }
+      res.json({ ok: true });
+    },
+  );
+
+  // Delete a checklist item from a request.
+  router.delete(
+    '/:id/items/:itemId',
+    requirePermission(deps, 'requests:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [parent] = await deps.db
+        .select({ id: clientRequests.id })
+        .from(clientRequests)
+        .where(
+          and(eq(clientRequests.id, req.params['id']!), eq(clientRequests.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!parent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const deleted = await deps.db
+        .delete(clientRequestItems)
+        .where(
+          and(
+            eq(clientRequestItems.id, req.params['itemId']!),
+            eq(clientRequestItems.clientRequestId, parent.id),
+          ),
+        )
+        .returning({ id: clientRequestItems.id });
+      if (deleted.length === 0) {
+        res.status(404).json({ error: 'item_not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'client_request',
+        entityId: parent.id,
+        actorAppUserId: session.appUserId,
+        after: { deletedItemId: req.params['itemId'] },
+      }).catch(() => undefined);
       res.json({ ok: true });
     },
   );

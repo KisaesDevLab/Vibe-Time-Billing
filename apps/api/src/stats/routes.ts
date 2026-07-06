@@ -183,6 +183,8 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           ),
         );
 
+      // "Needs attention" = requests with an UNREAD client response (client
+      // replied, still open, staff hasn't opened it) — not every open request.
       const requests = await deps.db
         .select({ c: sql<number>`count(*)::int` })
         .from(clientRequests)
@@ -190,6 +192,8 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           and(
             eq(clientRequests.firmId, firmId),
             inArray(clientRequests.status, ['OPEN', 'NEEDS_INFO']),
+            sql`${clientRequests.clientReplyText} IS NOT NULL`,
+            isNull(clientRequests.clientReplySeenAt),
           ),
         );
 
@@ -324,6 +328,14 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           outstandingCents: sql<number>`COALESCE(SUM(${invoices.totalCents} - ${invoices.paidCents}) FILTER (WHERE ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE')), 0)`,
           paidCents: sql<number>`COALESCE(SUM(${invoices.paidCents}), 0)`,
           totalCents: sql<number>`COALESCE(SUM(${invoices.totalCents}), 0)`,
+          // Balance-weighted average days past the due date across the
+          // outstanding set (not-yet-due invoices count as 0).
+          avgDaysPastDue: sql<number>`COALESCE(ROUND(
+            SUM(GREATEST(0, (CURRENT_DATE - ${invoices.dueDate})) * (${invoices.totalCents} - ${invoices.paidCents}))
+              FILTER (WHERE ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE') AND (${invoices.totalCents} - ${invoices.paidCents}) > 0)
+            / NULLIF(SUM(${invoices.totalCents} - ${invoices.paidCents})
+              FILTER (WHERE ${invoices.status} IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE') AND (${invoices.totalCents} - ${invoices.paidCents}) > 0), 0)
+          ), 0)`,
         })
         .from(invoices)
         .where(
@@ -355,6 +367,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
           invoicedCents: Number(inv?.totalCents ?? 0),
           paidCents: Number(inv?.paidCents ?? 0),
           outstandingCents: Number(inv?.outstandingCents ?? 0),
+          avgDaysPastDue: Number(inv?.avgDaysPastDue ?? 0),
           wipHours: Number(wip[0]?.h ?? 0),
           wipAmountCents: Number(wip[0]?.amount ?? 0),
         },

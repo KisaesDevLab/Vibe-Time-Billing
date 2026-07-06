@@ -11,13 +11,38 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
+import QRCode from 'qrcode';
 
 import type { Database } from '@vibe/db';
-import { clientTemplates, engagementLetterTemplates, engagementTemplates } from '@vibe/db/schema';
+import {
+  clientTemplates,
+  engagementLetterTemplates,
+  engagementTemplates,
+  invoiceTemplates,
+  statementTemplates,
+} from '@vibe/db/schema';
+import {
+  buildInvoiceTemplateContext,
+  buildStatementTemplateContext,
+  composeInvoiceHtml,
+  DEFAULT_INVOICE_BODY_HTML,
+  DEFAULT_INVOICE_CSS,
+  DEFAULT_INVOICE_TEMPLATE_VERSION,
+  DEFAULT_STATEMENT_BODY_HTML,
+  DEFAULT_STATEMENT_CSS,
+  DEFAULT_STATEMENT_TEMPLATE_VERSION,
+  INVOICE_TEMPLATE_TOKENS,
+  STATEMENT_TEMPLATE_TOKENS,
+  type InvoiceTemplateInput,
+  type StatementTemplateInput,
+} from '@vibe/core/invoicing';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { loadRandomInvoiceInput } from '../invoices/sample-render-input';
+import { loadRandomStatementInput } from '../statements/sample-render-input';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { logger } from '../logger';
 
 export interface TemplateRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -74,8 +99,17 @@ const EngagementSchema = z.object({
     .enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'])
     .nullable()
     .optional(),
+  // 0195 — default lifecycle status for a new engagement created from this
+  // template.
+  defaultEngagementStatus: z
+    .enum(['PROPOSED', 'ACTIVE', 'PAUSED', 'CLOSED', 'ARCHIVED'])
+    .nullable()
+    .optional(),
 });
 
+// Page margin: a safe CSS length (1–4 space-separated lengths), or '' to
+// clear back to the 1in default. Injected into `@page { margin }` at render.
+const CSS_MARGIN_RE = /^(\d+(\.\d+)?(in|cm|mm|px|pt)\s*){1,4}$/i;
 const LetterSchema = z.object({
   key: z
     .string()
@@ -85,6 +119,10 @@ const LetterSchema = z.object({
   name: z.string().min(1).max(200),
   engagementTypeId: z.string().uuid().nullable().optional(),
   bodyHtml: z.string().min(1),
+  pageMargin: z
+    .union([z.literal(''), z.string().trim().max(40).regex(CSS_MARGIN_RE)])
+    .nullable()
+    .optional(),
 });
 
 const ClientTemplateSchema = z.object({
@@ -98,6 +136,121 @@ const ClientTemplateSchema = z.object({
   defaultsJson: z.record(z.string(), z.unknown()).optional(),
   defaultEngagementTemplateIds: z.array(z.string().uuid()).optional(),
 });
+
+const InvoiceTemplateSchema = z.object({
+  bodyHtml: z.string().max(200_000).nullable().optional(),
+  css: z.string().max(100_000).nullable().optional(),
+  builtinStyle: z.enum(['modern', 'classic', 'minimal']).nullable().optional(),
+});
+
+// Representative invoice used to render the editor's live preview. Keeps
+// the preview deterministic and dependency-free (no DB read).
+const SAMPLE_INVOICE: InvoiceTemplateInput = {
+  invoiceNumber: 'INV-2025-0042',
+  issueDate: '2025-12-10',
+  dueDate: '2025-12-10',
+  firm: {
+    name: 'Northwind Tax & Advisory, PC',
+    logoUrl: null,
+    address:
+      '100 Commerce Plaza, Suite 200\nSpringfield, IL 62704\n(555) 555-0100  •  www.example.com',
+  },
+  branding: {
+    accentColor: '#1a1a1a',
+    supportEmail: 'billing@example.com',
+    supportPhone: '(555) 555-0100',
+    supportFax: null,
+    supportWeb: 'www.example.com',
+    footerHtml:
+      "<strong>PLEASE MAIL PAYMENTS TO:</strong> Northwind Tax & Advisory, PC, PO Box 100, Springfield, IL 62704<br>EIN: 00-0000000<br><span class='terms'>Payment is due upon presentation of this invoice.</span>",
+  },
+  client: {
+    name: 'Riverside Bakery & Co., LLC',
+    externalId: 'RIVB1042',
+    mailingStreet1: '128 Birchwood Lane',
+    mailingCity: 'Springfield',
+    mailingState: 'IL',
+    mailingPostal: '62704',
+  },
+  lines: [
+    {
+      kind: 'TIME_AGGREGATE',
+      description: 'For services provided in compilation of financial statements as of 11/30/2025',
+      amountCents: 35000,
+    },
+    { kind: 'SURCHARGE', description: 'Technology Surcharge', amountCents: 1400 },
+    { kind: 'SALES_TAX', description: 'Sales Tax', amountCents: 2871 },
+  ],
+  subtotalCents: 35000,
+  surchargeCents: 1400,
+  taxCents: 2871,
+  processingFeeCents: 0,
+  totalCents: 39271,
+  notes: 'Thank you for your business.',
+  paidCents: 0,
+  status: 'SENT',
+};
+
+const StatementTemplateSchema = z.object({
+  bodyHtml: z.string().max(200_000).nullable().optional(),
+  css: z.string().max(100_000).nullable().optional(),
+  builtinStyle: z.enum(['classic']).nullable().optional(),
+});
+
+// Representative statement used for the editor preview when the firm has
+// no invoices yet (otherwise a random real client's statement is used).
+const SAMPLE_STATEMENT: StatementTemplateInput = {
+  statementDate: '2025-12-31',
+  firm: {
+    name: 'Northwind Tax & Advisory, PC',
+    logoUrl: null,
+    address: '100 Commerce Plaza, Suite 200\nSpringfield, IL 62704',
+  },
+  branding: {
+    accentColor: '#1a1a1a',
+    supportEmail: 'billing@example.com',
+    supportPhone: '(555) 555-0100',
+    supportFax: null,
+    supportWeb: 'www.example.com',
+    footerHtml:
+      "<span class='terms'>Please remit payment to Northwind Tax & Advisory, PC, PO Box 100, Springfield, IL 62704.</span>",
+  },
+  client: {
+    name: 'Riverside Bakery & Co., LLC',
+    externalId: 'RIVB1042',
+    mailingStreet1: '128 Birchwood Lane',
+    mailingCity: 'Springfield',
+    mailingState: 'IL',
+    mailingPostal: '62704',
+  },
+  lines: [
+    {
+      date: '2025-11-10',
+      type: 'Invoice',
+      reference: 'INV-2025-0031',
+      debitCents: 35000,
+      balanceCents: 35000,
+    },
+    {
+      date: '2025-11-28',
+      type: 'Payment',
+      reference: 'a1b2c3d4',
+      creditCents: 20000,
+      balanceCents: 15000,
+    },
+    {
+      date: '2025-12-12',
+      type: 'Invoice',
+      reference: 'INV-2025-0042',
+      debitCents: 39271,
+      balanceCents: 54271,
+    },
+  ],
+  totalAmountDueCents: 54271,
+  aging: { d_0_30: 39271, d_31_60: 15000, d_61_90: 0, d_91_120: 0, d_121_plus: 0 },
+  policyNotice:
+    'Accounts with balances over 90 days past due will have all work suspended until payment is received.',
+};
 
 // Mine {{placeholder}} markers from a body for the variable picker.
 function extractVariables(text: string): string[] {
@@ -173,6 +326,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultRecurrenceFrequency: d.defaultRecurrenceFrequency ?? null,
           defaultRecurrenceTriggerMode: d.defaultRecurrenceTriggerMode ?? null,
           defaultRecurrenceStatus: d.defaultRecurrenceStatus ?? null,
+          defaultEngagementStatus: d.defaultEngagementStatus ?? null,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -241,6 +395,8 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.defaultRecurrenceTriggerMode = d.defaultRecurrenceTriggerMode;
       if (d.defaultRecurrenceStatus !== undefined)
         updates.defaultRecurrenceStatus = d.defaultRecurrenceStatus;
+      if (d.defaultEngagementStatus !== undefined)
+        updates.defaultEngagementStatus = d.defaultEngagementStatus;
       await deps.db
         .update(engagementTemplates)
         .set(updates)
@@ -341,6 +497,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           defaultRecurrenceFrequency: src.defaultRecurrenceFrequency,
           defaultRecurrenceTriggerMode: src.defaultRecurrenceTriggerMode,
           defaultRecurrenceStatus: src.defaultRecurrenceStatus,
+          defaultEngagementStatus: src.defaultEngagementStatus,
           isSystem: false,
         })
         .returning({ id: engagementTemplates.id });
@@ -396,6 +553,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
           name: d.name,
           engagementTypeId: d.engagementTypeId ?? null,
           bodyHtml: d.bodyHtml,
+          pageMargin: d.pageMargin?.trim() || null,
           variablesJson: extractVariables(d.bodyHtml),
           isSystem: false,
         })
@@ -434,6 +592,7 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
         updates.bodyHtml = d.bodyHtml;
         updates.variablesJson = extractVariables(d.bodyHtml);
       }
+      if (d.pageMargin !== undefined) updates.pageMargin = d.pageMargin?.trim() || null;
       await deps.db
         .update(engagementLetterTemplates)
         .set(updates)
@@ -597,6 +756,285 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
       res.json({ ok: true });
     },
   );
+
+  // ----- Invoice document template (single, firm-wide) -----
+
+  // The catalog of tokens the editor's variable picker offers, plus the
+  // shipped default body/css (so the editor can "reset to default").
+  router.get('/invoice/variables', requirePermission(deps, 'taxonomy:read'), (_req, res) => {
+    res.json({
+      tokens: INVOICE_TEMPLATE_TOKENS,
+      defaults: {
+        bodyHtml: DEFAULT_INVOICE_BODY_HTML,
+        css: DEFAULT_INVOICE_CSS,
+        version: DEFAULT_INVOICE_TEMPLATE_VERSION,
+      },
+      builtinStyles: ['modern', 'classic', 'minimal'],
+    });
+  });
+
+  router.get('/invoice', requirePermission(deps, 'taxonomy:read'), async (req, res) => {
+    const firmId = req.staffSession?.firmId;
+    if (!firmId || !deps.db) {
+      res.json({
+        template: {
+          bodyHtml: DEFAULT_INVOICE_BODY_HTML,
+          css: DEFAULT_INVOICE_CSS,
+          builtinStyle: null,
+        },
+        isDefault: true,
+      });
+      return;
+    }
+    const [row] = await deps.db
+      .select()
+      .from(invoiceTemplates)
+      .where(eq(invoiceTemplates.firmId, firmId))
+      .limit(1);
+    if (!row) {
+      res.json({
+        template: {
+          bodyHtml: DEFAULT_INVOICE_BODY_HTML,
+          css: DEFAULT_INVOICE_CSS,
+          builtinStyle: null,
+        },
+        isDefault: true,
+      });
+      return;
+    }
+    res.json({ template: row, isDefault: false });
+  });
+
+  router.put('/invoice', requirePermission(deps, 'taxonomy:write'), async (req, res) => {
+    const parsed = InvoiceTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+    const firmId = req.staffSession!.firmId;
+    if (!deps.db) {
+      res.json({ ok: true });
+      return;
+    }
+    const d = parsed.data;
+    const bodyHtml = d.bodyHtml ?? DEFAULT_INVOICE_BODY_HTML;
+    const css = d.css ?? DEFAULT_INVOICE_CSS;
+    const builtinStyle = d.builtinStyle ?? null;
+    await deps.db
+      .insert(invoiceTemplates)
+      .values({
+        firmId,
+        bodyHtml,
+        css,
+        builtinStyle,
+        variablesJson: extractVariables(bodyHtml),
+        updatedByAppUserId: req.staffSession!.appUserId,
+      })
+      .onConflictDoUpdate({
+        target: invoiceTemplates.firmId,
+        set: {
+          bodyHtml,
+          css,
+          builtinStyle,
+          variablesJson: extractVariables(bodyHtml),
+          updatedByAppUserId: req.staffSession!.appUserId,
+          updatedAt: new Date(),
+        },
+      });
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'invoice_template',
+      entityId: firmId,
+      actorAppUserId: req.staffSession!.appUserId,
+      after: { builtinStyle, variables: extractVariables(bodyHtml) },
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
+
+  // Render the (possibly unsaved) body+css against sample data for the
+  // live preview. No DB write. `?format=pdf` returns the actual
+  // Puppeteer-rendered PDF (true WYSIWYG, print media); otherwise HTML.
+  router.post('/invoice/preview', requirePermission(deps, 'taxonomy:read'), async (req, res) => {
+    const parsed = InvoiceTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+    const bodyHtml = parsed.data.bodyHtml ?? DEFAULT_INVOICE_BODY_HTML;
+    const css = parsed.data.css ?? DEFAULT_INVOICE_CSS;
+    // Preview against a RANDOM real invoice so the editor reflects the
+    // firm's actual data/branding; fall back to the built-in sample only
+    // when the firm has no invoices yet.
+    const firmId = req.staffSession?.firmId;
+    let sample = SAMPLE_INVOICE;
+    if (firmId && deps.db) {
+      try {
+        const real = await loadRandomInvoiceInput(deps.db, firmId);
+        if (real) sample = real;
+      } catch (err) {
+        logger.warn({ err }, 'invoice preview: random invoice load failed; using sample');
+      }
+    }
+    // Placeholder pay QR so the editor preview shows the layout.
+    let payUrl: string | undefined;
+    let payQrDataUri: string | undefined;
+    try {
+      payUrl = 'https://example.com/pay/SAMPLE-TOKEN';
+      payQrDataUri = await QRCode.toDataURL(payUrl, { margin: 1, width: 240 });
+    } catch {
+      /* preview QR is best-effort */
+    }
+    const ctx = buildInvoiceTemplateContext(sample, {
+      dunning:
+        'Your account is past due. A 1.5% monthly interest charge applies to balances over 30 days.',
+      payUrl,
+      payQrDataUri,
+    });
+    const html = composeInvoiceHtml(bodyHtml, css, ctx);
+    if (req.query['format'] === 'pdf') {
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        const pdf = await renderHtmlToPdf(html);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="invoice-preview.pdf"');
+        res.send(pdf);
+      } catch (err) {
+        logger.error({ err }, 'invoice template preview pdf render failed');
+        res.status(500).json({ error: 'pdf_render_failed' });
+      }
+      return;
+    }
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  });
+
+  // ----- Statement document template (single, firm-wide) -----
+
+  router.get('/statement/variables', requirePermission(deps, 'taxonomy:read'), (_req, res) => {
+    res.json({
+      tokens: STATEMENT_TEMPLATE_TOKENS,
+      defaults: {
+        bodyHtml: DEFAULT_STATEMENT_BODY_HTML,
+        css: DEFAULT_STATEMENT_CSS,
+        version: DEFAULT_STATEMENT_TEMPLATE_VERSION,
+      },
+      builtinStyles: ['classic'],
+    });
+  });
+
+  router.get('/statement', requirePermission(deps, 'taxonomy:read'), async (req, res) => {
+    const firmId = req.staffSession?.firmId;
+    if (!firmId || !deps.db) {
+      res.json({
+        template: {
+          bodyHtml: DEFAULT_STATEMENT_BODY_HTML,
+          css: DEFAULT_STATEMENT_CSS,
+          builtinStyle: null,
+        },
+        isDefault: true,
+      });
+      return;
+    }
+    const [row] = await deps.db
+      .select()
+      .from(statementTemplates)
+      .where(eq(statementTemplates.firmId, firmId))
+      .limit(1);
+    if (!row) {
+      res.json({
+        template: {
+          bodyHtml: DEFAULT_STATEMENT_BODY_HTML,
+          css: DEFAULT_STATEMENT_CSS,
+          builtinStyle: null,
+        },
+        isDefault: true,
+      });
+      return;
+    }
+    res.json({ template: row, isDefault: false });
+  });
+
+  router.put('/statement', requirePermission(deps, 'taxonomy:write'), async (req, res) => {
+    const parsed = StatementTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+    const firmId = req.staffSession!.firmId;
+    if (!deps.db) {
+      res.json({ ok: true });
+      return;
+    }
+    const d = parsed.data;
+    const bodyHtml = d.bodyHtml ?? DEFAULT_STATEMENT_BODY_HTML;
+    const css = d.css ?? DEFAULT_STATEMENT_CSS;
+    const builtinStyle = d.builtinStyle ?? null;
+    await deps.db
+      .insert(statementTemplates)
+      .values({
+        firmId,
+        bodyHtml,
+        css,
+        builtinStyle,
+        variablesJson: extractVariables(bodyHtml),
+        updatedByAppUserId: req.staffSession!.appUserId,
+      })
+      .onConflictDoUpdate({
+        target: statementTemplates.firmId,
+        set: {
+          bodyHtml,
+          css,
+          builtinStyle,
+          variablesJson: extractVariables(bodyHtml),
+          updatedByAppUserId: req.staffSession!.appUserId,
+          updatedAt: new Date(),
+        },
+      });
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'statement_template',
+      entityId: firmId,
+      actorAppUserId: req.staffSession!.appUserId,
+      after: { builtinStyle, variables: extractVariables(bodyHtml) },
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
+
+  router.post('/statement/preview', requirePermission(deps, 'taxonomy:read'), async (req, res) => {
+    const parsed = StatementTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+      return;
+    }
+    const bodyHtml = parsed.data.bodyHtml ?? DEFAULT_STATEMENT_BODY_HTML;
+    const css = parsed.data.css ?? DEFAULT_STATEMENT_CSS;
+    const firmId = req.staffSession?.firmId;
+    let sample = SAMPLE_STATEMENT;
+    if (firmId && deps.db) {
+      try {
+        const real = await loadRandomStatementInput(deps.db, firmId);
+        if (real && real.lines.length > 0) sample = real;
+      } catch (err) {
+        logger.warn({ err }, 'statement preview: random statement load failed; using sample');
+      }
+    }
+    const html = composeInvoiceHtml(bodyHtml, css, buildStatementTemplateContext(sample));
+    if (req.query['format'] === 'pdf') {
+      try {
+        const { renderHtmlToPdf } = await import('../pdf/render');
+        const pdf = await renderHtmlToPdf(html);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="statement-preview.pdf"');
+        res.send(pdf);
+      } catch (err) {
+        logger.error({ err }, 'statement template preview pdf render failed');
+        res.status(500).json({ error: 'pdf_render_failed' });
+      }
+      return;
+    }
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  });
 
   return router;
 }

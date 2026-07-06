@@ -14,7 +14,7 @@
 
 import express, { type Request, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -116,15 +116,58 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
         threadId: threads.id,
         engagementId: engagementThreadLinks.engagementId,
         title: threads.title,
+        clientName: clients.name,
         status: threads.status,
         updatedAt: threads.updatedAt,
       })
       .from(threadMembers)
       .innerJoin(threads, eq(threads.id, threadMembers.threadId))
       .leftJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
+      .leftJoin(clients, eq(clients.id, threads.clientId))
       .where(and(...conds))
       .orderBy(desc(threads.updatedAt));
-    res.json({ items: rows });
+
+    // Latest message per thread → who last replied (the person) + when, so
+    // the list can surface "the client responded" at a glance. One row per
+    // thread via DISTINCT ON, newest first.
+    const threadIds = rows.map((r) => r.threadId);
+    const lastByThread = new Map<
+      string,
+      { name: string | null; kind: 'staff' | 'client'; at: Date }
+    >();
+    if (threadIds.length) {
+      const last = await deps.db
+        .selectDistinctOn([messages.threadId], {
+          threadId: messages.threadId,
+          senderAppUserId: messages.senderAppUserId,
+          staffName: appUsers.fullName,
+          portalName: portalIdentity.fullName,
+          createdAt: messages.createdAt,
+        })
+        .from(messages)
+        .leftJoin(appUsers, eq(appUsers.id, messages.senderAppUserId))
+        .leftJoin(portalIdentity, eq(portalIdentity.id, messages.senderPortalIdentityId))
+        .where(and(inArray(messages.threadId, threadIds), isNull(messages.deletedAt)))
+        .orderBy(messages.threadId, desc(messages.createdAt));
+      for (const m of last) {
+        lastByThread.set(m.threadId, {
+          name: m.staffName ?? m.portalName ?? null,
+          kind: m.senderAppUserId ? 'staff' : 'client',
+          at: m.createdAt,
+        });
+      }
+    }
+
+    const items = rows.map((r) => {
+      const last = lastByThread.get(r.threadId);
+      return {
+        ...r,
+        lastReplyBy: last?.name ?? null,
+        lastReplyKind: last?.kind ?? null,
+        lastReplyAt: last?.at ?? null,
+      };
+    });
+    res.json({ items });
   });
 
   router.get('/threads/:id', requirePermission(deps, 'messaging:read'), async (req, res) => {
@@ -143,6 +186,7 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
         id: threads.id,
         firmId: threads.firmId,
         clientId: threads.clientId,
+        clientName: clients.name,
         engagementId: engagementThreadLinks.engagementId,
         title: threads.title,
         status: threads.status,
@@ -151,6 +195,7 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
       })
       .from(threads)
       .leftJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
+      .leftJoin(clients, eq(clients.id, threads.clientId))
       .where(eq(threads.id, threadId))
       .limit(1);
     if (!thread || thread.firmId !== session.firmId) {

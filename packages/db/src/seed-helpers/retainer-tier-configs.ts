@@ -12,7 +12,7 @@
 // unique index. Existing operator-tuned rows survive re-runs.
 
 import { sql } from 'drizzle-orm';
-import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
+import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { firmRetainerSettings, retainerTierConfigs } from '../schema/retainers';
 
@@ -136,7 +136,7 @@ const DEFAULTS: ReadonlyArray<TierDefault> = [
 // across call sites; widening to the base PgDatabase keeps the helper
 // usable from both seed scripts and the firm-creation transaction.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Tx = PgDatabase<QueryResultHKT, any, any>;
+type Tx = PgDatabase<PgQueryResultHKT, any, any>;
 
 /**
  * Seed default retainer tier configs for a firm + ensure a

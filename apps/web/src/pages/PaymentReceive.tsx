@@ -15,7 +15,7 @@
 // reachable from the same portal identity (the existing
 // client_portal_access graph). Staff can add more entities via search.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { loadStripe, type Stripe } from '@stripe/stripe-js';
@@ -36,6 +36,21 @@ interface TerminalReader {
   label: string;
   status: string;
 }
+
+interface SavedMethodLite {
+  id: string;
+  kind: 'CARD' | 'ACH';
+  displayLabel: string;
+  verificationStatus: 'PENDING_MICRODEPOSIT' | null;
+}
+
+const manualInputStyle: CSSProperties = {
+  width: '100%',
+  padding: '6px 10px',
+  borderRadius: 6,
+  border: '1px solid var(--vibe-border, #d0d0d0)',
+  fontSize: 13,
+};
 // Loosened from a closed union in 0089 — paymentMethod is now an
 // UPPER_SNAKE key sourced from /admin/payment-method-types. The two
 // synthetic protocol values (CARD_STRIPE, CREDIT_APPLY) are kept
@@ -201,6 +216,20 @@ function Inner({
     receiptId: string;
     clientSecret: string;
   } | null>(null);
+
+  // CHARGE source: a brand-new card (Elements), an existing saved method
+  // charged off-session, or a bank entered manually by routing/account.
+  const [chargeSource, setChargeSource] = useState<'new-card' | 'saved' | 'manual-bank'>(
+    'new-card',
+  );
+  const [savedMethods, setSavedMethods] = useState<SavedMethodLite[]>([]);
+  const [selectedMethodId, setSelectedMethodId] = useState('');
+  const [manualBank, setManualBank] = useState({
+    routingNumber: '',
+    accountNumber: '',
+    accountHolderName: '',
+    accountHolderType: 'individual' as 'individual' | 'company',
+  });
 
   // Post-record state. `banner` = recorded via "Record + New" (form is reset
   // and a confirmation banner with receipt actions stays on top); otherwise
@@ -370,6 +399,27 @@ function Inner({
       }
     })();
   }, [allSelectedIds]);
+
+  // Load the payer's saved methods (for the CHARGE "saved method" source).
+  useEffect(() => {
+    if (!/^[0-9a-f-]{36}$/i.test(payerClientId)) {
+      setSavedMethods([]);
+      setSelectedMethodId('');
+      return;
+    }
+    void (async () => {
+      try {
+        const r = await api<{ items: SavedMethodLite[] }>(
+          `/api/staff/payment-methods?clientId=${encodeURIComponent(payerClientId)}`,
+        );
+        setSavedMethods(r.items ?? []);
+        const firstChargeable = (r.items ?? []).find((m) => m.verificationStatus === null);
+        setSelectedMethodId(firstChargeable?.id ?? '');
+      } catch {
+        setSavedMethods([]);
+      }
+    })();
+  }, [payerClientId]);
 
   function toggleInvoice(invId: string): void {
     setDrafts((prev) => {
@@ -680,6 +730,128 @@ function Inner({
     }
   }
 
+  // Charge an existing saved method off-session. Card charges settle
+  // synchronously; ACH stays pending and settles in a few business days.
+  async function startChargeSaved(): Promise<void> {
+    setError(null);
+    const v = validate(false);
+    if (!v.ok) {
+      setError(v.reason);
+      return;
+    }
+    if (v.creditApplications.length > 0) {
+      setError('Credit applications are only available in Record mode.');
+      return;
+    }
+    if (!selectedMethodId) {
+      setError('Choose a saved method to charge.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api<{
+        ok: boolean;
+        receiptId: string;
+        status: string;
+        requiresAction: boolean;
+        settled: boolean;
+      }>('/api/staff/payments/receive/charge-saved', {
+        method: 'POST',
+        body: JSON.stringify({
+          payerClientId,
+          paymentMethodId: selectedMethodId,
+          paymentDate,
+          reference: reference.trim() || null,
+          amountReceivedCents: dollarsToCents(amountDollars),
+          allocations: v.allocations,
+        }),
+      });
+      if (r.requiresAction) {
+        setError(
+          'This card needs the client to authenticate. Send a pay-by-link instead of charging on file.',
+        );
+        return;
+      }
+      if (r.settled) {
+        setRecorded({
+          receiptId: r.receiptId,
+          clientName: payerName(),
+          amountCents: dollarsToCents(amountDollars),
+          banner: false,
+        });
+      } else {
+        // ACH — accepted but not yet settled.
+        setRecorded({
+          receiptId: r.receiptId,
+          clientName: payerName(),
+          amountCents: dollarsToCents(amountDollars),
+          banner: false,
+        });
+        setError(
+          'ACH payment initiated — it will settle in a few business days (the invoice updates when it clears).',
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'charge_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Save a bank from routing/account numbers. A brand-new bank must clear
+  // micro-deposit verification (1-2 business days) before it can be charged,
+  // so this saves it on file rather than charging immediately.
+  async function saveManualBank(): Promise<void> {
+    setError(null);
+    if (!/^[0-9a-f-]{36}$/i.test(payerClientId)) {
+      setError('Select the payer first.');
+      return;
+    }
+    if (manualBank.routingNumber.length !== 9 || manualBank.accountNumber.length < 4) {
+      setError('Enter a valid 9-digit routing number and account number.');
+      return;
+    }
+    if (!manualBank.accountHolderName.trim()) {
+      setError('Enter the account holder name.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api<{ paymentMethodId: string; verification: string }>(
+        '/api/staff/payment-methods/manual-ach',
+        {
+          method: 'POST',
+          body: JSON.stringify({ clientId: payerClientId, ...manualBank }),
+        },
+      );
+      // Refresh the saved-method list and switch to "saved" source.
+      const list = await api<{ items: SavedMethodLite[] }>(
+        `/api/staff/payment-methods?clientId=${encodeURIComponent(payerClientId)}`,
+      );
+      setSavedMethods(list.items ?? []);
+      setManualBank({
+        routingNumber: '',
+        accountNumber: '',
+        accountHolderName: '',
+        accountHolderType: 'individual',
+      });
+      if (r.verification === 'verified') {
+        setSelectedMethodId(r.paymentMethodId);
+        setChargeSource('saved');
+        setError('Bank saved and verified — select it below and charge.');
+      } else {
+        setChargeSource('saved');
+        setError(
+          'Bank saved. Two micro-deposits were sent — verify them under this client’s Billing tab (1-2 business days) before charging.',
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the bank.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ---- TERMINAL (in-person reader) ----
   function pollReceipt(receiptId: string): void {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -900,6 +1072,122 @@ function Inner({
                 label="In-person terminal"
                 hint="Tap or insert a card on a connected reader."
               />
+            )}
+
+            {mode === 'CHARGE' && (
+              <div
+                style={{
+                  marginTop: 4,
+                  paddingTop: 8,
+                  borderTop: `1px solid ${tokens.color.border}`,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ fontSize: 11, color: tokens.color.textMuted }}>Charge from</div>
+                <ModeRadio
+                  checked={chargeSource === 'new-card'}
+                  onChange={() => setChargeSource('new-card')}
+                  label="New card"
+                  hint="Enter a card now via Stripe."
+                />
+                <ModeRadio
+                  checked={chargeSource === 'saved'}
+                  onChange={() => setChargeSource('saved')}
+                  label="Saved method on file"
+                  hint={
+                    savedMethods.some((m) => m.verificationStatus === null)
+                      ? 'Charge a card or bank the client saved.'
+                      : 'No verified saved methods for this client yet.'
+                  }
+                />
+                <ModeRadio
+                  checked={chargeSource === 'manual-bank'}
+                  onChange={() => setChargeSource('manual-bank')}
+                  label="Enter bank manually"
+                  hint="Type routing + account number (no bank login)."
+                />
+
+                {chargeSource === 'saved' && (
+                  <div>
+                    <select
+                      value={selectedMethodId}
+                      onChange={(e) => setSelectedMethodId(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '6px 10px',
+                        borderRadius: tokens.radius.md,
+                        border: `1px solid ${tokens.color.border}`,
+                        background: tokens.color.surface,
+                        color: tokens.color.text,
+                      }}
+                    >
+                      <option value="">Select a saved method…</option>
+                      {savedMethods
+                        .filter((m) => m.verificationStatus === null)
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.kind === 'CARD' ? '💳' : '🏦'} {m.displayLabel}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
+
+                {chargeSource === 'manual-bank' && (
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <input
+                      placeholder="Account holder name"
+                      value={manualBank.accountHolderName}
+                      onChange={(e) =>
+                        setManualBank((b) => ({ ...b, accountHolderName: e.target.value }))
+                      }
+                      style={manualInputStyle}
+                    />
+                    <input
+                      placeholder="Routing number (9 digits)"
+                      inputMode="numeric"
+                      value={manualBank.routingNumber}
+                      onChange={(e) =>
+                        setManualBank((b) => ({
+                          ...b,
+                          routingNumber: e.target.value.replace(/\D/g, '').slice(0, 9),
+                        }))
+                      }
+                      style={manualInputStyle}
+                    />
+                    <input
+                      placeholder="Account number"
+                      inputMode="numeric"
+                      value={manualBank.accountNumber}
+                      onChange={(e) =>
+                        setManualBank((b) => ({
+                          ...b,
+                          accountNumber: e.target.value.replace(/\D/g, '').slice(0, 17),
+                        }))
+                      }
+                      style={manualInputStyle}
+                    />
+                    <select
+                      value={manualBank.accountHolderType}
+                      onChange={(e) =>
+                        setManualBank((b) => ({
+                          ...b,
+                          accountHolderType: e.target.value as 'individual' | 'company',
+                        }))
+                      }
+                      style={manualInputStyle}
+                    >
+                      <option value="individual">Individual</option>
+                      <option value="company">Company</option>
+                    </select>
+                    <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>
+                      A new bank is verified via micro-deposits (1-2 business days) before it can be
+                      charged. This saves it on file.
+                    </p>
+                  </div>
+                )}
+              </div>
             )}
 
             {mode === 'TERMINAL' && (
@@ -1410,9 +1698,30 @@ function Inner({
             </Button>
           </>
         )}
-        {mode === 'CHARGE' && !chargeReceipt && (
+        {mode === 'CHARGE' && !chargeReceipt && chargeSource === 'new-card' && (
           <Button onClick={() => void startCharge()} disabled={busy || !chargeAvailable}>
             {busy ? 'Preparing charge…' : `Charge ${dollars(totalEntered)}`}
+          </Button>
+        )}
+        {mode === 'CHARGE' && chargeSource === 'saved' && (
+          <Button
+            onClick={() => void startChargeSaved()}
+            disabled={busy || !chargeAvailable || !selectedMethodId}
+          >
+            {busy ? 'Charging…' : `Charge ${dollars(totalEntered)} to saved method`}
+          </Button>
+        )}
+        {mode === 'CHARGE' && chargeSource === 'manual-bank' && (
+          <Button
+            onClick={() => void saveManualBank()}
+            disabled={
+              busy ||
+              !chargeAvailable ||
+              manualBank.routingNumber.length !== 9 ||
+              manualBank.accountNumber.length < 4
+            }
+          >
+            {busy ? 'Saving…' : 'Save bank on file'}
           </Button>
         )}
         {mode === 'TERMINAL' && !terminalPending && (

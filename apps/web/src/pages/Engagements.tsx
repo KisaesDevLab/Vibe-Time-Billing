@@ -8,12 +8,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, ColumnFilter, Combobox, Pill, Tabs, tokens, type SortDir } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  ColumnFilter,
+  Combobox,
+  Pill,
+  Table,
+  type TableColumn,
+  Tabs,
+  tokens,
+  type SortDir,
+} from '@vibe/ui';
+import { useClientPage } from '../lib/use-paged-list';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { filterStatuses, filterStatusesForMany } from '../status-filter';
 import { EngagementsKanban, type StatusColumn } from './EngagementsKanban';
+import { MailMergeDialog } from './clients/MailMergeDialog';
 import { KanbanViewsMenu } from './engagements/KanbanViewsMenu';
 
 type WorkflowState =
@@ -21,9 +34,11 @@ type WorkflowState =
   | 'NOT_STARTED'
   | 'READY'
   | 'IN_PROGRESS'
+  | 'IN_REVIEW'
   | 'ON_HOLD'
   | 'NEEDS_REVIEW'
   | 'WITH_CLIENT'
+  | 'WAITING_ON_CLIENT'
   | 'COMPLETED'
   | 'CANCELED'
   | 'DRAFT';
@@ -75,9 +90,11 @@ const WORKFLOW_LABELS: Record<WorkflowState, string> = {
   NOT_STARTED: 'Not started',
   READY: 'Ready',
   IN_PROGRESS: 'In progress',
+  IN_REVIEW: 'In Review',
   ON_HOLD: 'On hold',
   NEEDS_REVIEW: 'Needs review',
   WITH_CLIENT: 'With client',
+  WAITING_ON_CLIENT: 'Waiting on Client',
   COMPLETED: 'Completed',
   CANCELED: 'Canceled',
   DRAFT: 'Draft',
@@ -91,13 +108,24 @@ const WORKFLOW_TONE: Record<
   NOT_STARTED: 'neutral',
   READY: 'accent',
   IN_PROGRESS: 'accent',
+  IN_REVIEW: 'warning',
   ON_HOLD: 'warning',
   NEEDS_REVIEW: 'warning',
   WITH_CLIENT: 'warning',
+  WAITING_ON_CLIENT: 'warning',
   COMPLETED: 'success',
   CANCELED: 'neutral',
   DRAFT: 'neutral',
 };
+
+// A light, readable row tint from a status hex color (#rrggbb → rgba). Falls
+// back to no tint on an unparseable color.
+function tintFromHex(hex: string, alpha = 0.14): string | undefined {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return undefined;
+  const n = parseInt(m[1]!, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
 
 const PRIORITY_TONE: Record<Priority, 'neutral' | 'accent' | 'warning' | 'danger'> = {
   LOW: 'neutral',
@@ -106,7 +134,14 @@ const PRIORITY_TONE: Record<Priority, 'neutral' | 'accent' | 'warning' | 'danger
   URGENT: 'danger',
 };
 
-const ACTIVE_WORK = new Set<WorkflowState>(['READY', 'IN_PROGRESS', 'NEEDS_REVIEW', 'WITH_CLIENT']);
+const ACTIVE_WORK = new Set<WorkflowState>([
+  'READY',
+  'IN_PROGRESS',
+  'IN_REVIEW',
+  'NEEDS_REVIEW',
+  'WITH_CLIENT',
+  'WAITING_ON_CLIENT',
+]);
 const QUEUED_WORK = new Set<WorkflowState>(['NO_STATUS', 'NOT_STARTED', 'DRAFT']);
 
 type Tab = 'active' | 'all' | 'mine' | 'queued';
@@ -151,6 +186,7 @@ export function EngagementsPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [nameQuery, setNameQuery] = useState('');
   const [users, setUsers] = useState<AppUser[]>([]);
   const [types, setTypes] = useState<EngagementType[]>([]);
   const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
@@ -170,6 +206,40 @@ export function EngagementsPage(): JSX.Element {
   // Show/hide DRAFT-workflow engagements (applies to both list + kanban via
   // the `visible` memo). Default true = no behavior change.
   const [showDrafts, setShowDrafts] = useState(true);
+  // "Active only" — hide COMPLETED / CANCELED engagements. Persisted; default
+  // off (no behavior change).
+  const [activeOnly, setActiveOnly] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('__vibe_eng_active_only') === 'on';
+    } catch {
+      return false;
+    }
+  });
+  function toggleActiveOnly(next: boolean): void {
+    setActiveOnly(next);
+    try {
+      localStorage.setItem('__vibe_eng_active_only', next ? 'on' : 'off');
+    } catch {
+      // Storage may be disabled — in-memory state still drives the session.
+    }
+  }
+  // Tint each list row by its status color. On by default; persisted so the
+  // preference survives reloads.
+  const [colorRows, setColorRows] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('__vibe_eng_row_color') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  function toggleColorRows(next: boolean): void {
+    setColorRows(next);
+    try {
+      localStorage.setItem('__vibe_eng_row_color', next ? 'on' : 'off');
+    } catch {
+      // Storage may be disabled — in-memory state still drives the session.
+    }
+  }
   // 0050 — filter by client owner (client.partnerInChargeId).
   const [clientOwnerId, setClientOwnerId] = useState<string>(saved.clientOwnerId ?? '');
   // 0050 — List | Kanban view toggle. Persisted in localStorage so users
@@ -238,6 +308,7 @@ export function EngagementsPage(): JSX.Element {
     saved.sortBy ?? { col: '', dir: null },
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mergeOpen, setMergeOpen] = useState(false);
 
   async function load(): Promise<void> {
     setLoading(true);
@@ -392,6 +463,13 @@ export function EngagementsPage(): JSX.Element {
     if (!showDrafts) {
       r = r.filter((row) => row.workflowState !== 'DRAFT');
     }
+    if (activeOnly) {
+      r = r.filter((row) => row.workflowState !== 'COMPLETED' && row.workflowState !== 'CANCELED');
+    }
+    if (nameQuery.trim()) {
+      const q = nameQuery.trim().toLowerCase();
+      r = r.filter((row) => row.name.toLowerCase().includes(q));
+    }
     if (typeFilter.size > 0) {
       r = r.filter((row) => row.engagementTypeId && typeFilter.has(row.engagementTypeId));
     }
@@ -451,7 +529,19 @@ export function EngagementsPage(): JSX.Element {
       });
     }
     return r;
-  }, [rows, showDrafts, typeFilter, assigneeFilter, serviceLineFilter, clientFilter, sortBy]);
+  }, [
+    rows,
+    showDrafts,
+    activeOnly,
+    nameQuery,
+    typeFilter,
+    assigneeFilter,
+    serviceLineFilter,
+    clientFilter,
+    sortBy,
+  ]);
+
+  const { paged, pagination } = useClientPage(visible);
 
   const clientOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -576,6 +666,220 @@ export function EngagementsPage(): JSX.Element {
     label: `${sl.name} (${sl.category})`,
   }));
 
+  // workflow_state → status color, from the firm's status catalog. Drives the
+  // per-row background tint in list view.
+  const statusColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of statuses) m.set(s.workflowState, s.color);
+    return m;
+  }, [statuses]);
+
+  const engagementColumns: TableColumn<EngagementRow>[] = [
+    {
+      key: 'select',
+      header: (
+        <input
+          type="checkbox"
+          checked={selectedIds.size > 0 && selectedIds.size === visible.length}
+          onChange={toggleAll}
+          aria-label="Select all"
+        />
+      ),
+      render: (r) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.has(r.id)}
+          onChange={() => toggleRow(r.id)}
+          aria-label={`Select ${r.name}`}
+        />
+      ),
+    },
+    {
+      key: 'workflowState',
+      header: (
+        <>
+          Status{' '}
+          <ColumnFilter
+            ariaLabel="Filter workflow state"
+            values={(Object.keys(WORKFLOW_LABELS) as WorkflowState[]).map((w) => ({
+              value: w,
+              label: WORKFLOW_LABELS[w],
+            }))}
+            selected={workflowFilter}
+            sort={sortBy.col === 'workflowState' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setWorkflowFilter(sel);
+              if (dir) setSortBy({ col: 'workflowState', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (
+        <InlineWorkflowEdit
+          value={r.workflowState}
+          options={statusOptionsFor(r.serviceLineId, r.workflowState)}
+          onChange={(v) => void setRowWorkflow(r.id, v)}
+        />
+      ),
+    },
+    {
+      key: 'name',
+      header: (
+        <>
+          Name{' '}
+          <ColumnFilter
+            ariaLabel="Sort by name"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortBy.col === 'name' ? sortBy.dir : null}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'name', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => <a href={`/engagements/${r.id}`}>{r.name}</a>,
+    },
+    {
+      key: 'client',
+      header: (
+        <>
+          Client{' '}
+          <ColumnFilter
+            ariaLabel="Filter client"
+            values={clientOptions}
+            selected={clientFilter}
+            sort={sortBy.col === 'client' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setClientFilter(sel);
+              if (dir) setSortBy({ col: 'client', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
+    },
+    {
+      key: 'type',
+      header: (
+        <>
+          Type{' '}
+          <ColumnFilter
+            ariaLabel="Filter type"
+            values={typeOptions}
+            selected={typeFilter}
+            sort={null}
+            onApply={(sel) => setTypeFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => types.find((t) => t.id === r.engagementTypeId)?.name ?? '—',
+    },
+    {
+      key: 'serviceLine',
+      header: (
+        <>
+          Service line{' '}
+          <ColumnFilter
+            ariaLabel="Filter service line"
+            values={serviceLineOptions}
+            selected={serviceLineFilter}
+            sort={null}
+            onApply={(sel) => setServiceLineFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => (
+        <span title={r.serviceLineCategory ?? undefined}>{r.serviceLineName ?? '—'}</span>
+      ),
+    },
+    {
+      key: 'assignee',
+      header: (
+        <>
+          Assignee(s){' '}
+          <ColumnFilter
+            ariaLabel="Filter assignee"
+            values={userOptions}
+            selected={assigneeFilter}
+            sort={null}
+            onApply={(sel) => setAssigneeFilter(sel)}
+          />
+        </>
+      ),
+      render: (r) => {
+        const assigneeNames = [
+          users.find((u) => u.id === r.partnerId)?.fullName,
+          users.find((u) => u.id === r.managerId)?.fullName,
+        ].filter(Boolean);
+        return assigneeNames.length > 0 ? assigneeNames.join(', ') : '—';
+      },
+    },
+    {
+      key: 'startDate',
+      header: (
+        <>
+          Start{' '}
+          <ColumnFilter
+            ariaLabel="Sort by start date"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortBy.col === 'startDate' ? sortBy.dir : null}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'startDate', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.startDate ?? '—',
+    },
+    {
+      key: 'dueDate',
+      header: (
+        <>
+          Due{' '}
+          <ColumnFilter
+            ariaLabel="Sort by due date"
+            values={[]}
+            selected={new Set()}
+            searchable={false}
+            sort={sortBy.col === 'dueDate' ? sortBy.dir : null}
+            onApply={(_, dir) => {
+              if (dir) setSortBy({ col: 'dueDate', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => r.dueDate ?? '—',
+    },
+    {
+      key: 'priority',
+      header: (
+        <>
+          Priority{' '}
+          <ColumnFilter
+            ariaLabel="Filter priority"
+            values={(['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as Priority[]).map((p) => ({
+              value: p,
+              label: p,
+            }))}
+            selected={priorityFilter}
+            sort={sortBy.col === 'priority' ? sortBy.dir : null}
+            onApply={(sel, dir) => {
+              setPriorityFilter(sel);
+              if (dir) setSortBy({ col: 'priority', dir });
+            }}
+          />
+        </>
+      ),
+      render: (r) => (
+        <InlinePriorityEdit value={r.priority} onChange={(v) => void setRowPriority(r.id, v)} />
+      ),
+    },
+  ];
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1400 }}>
       <Card
@@ -589,6 +893,22 @@ export function EngagementsPage(): JSX.Element {
         }
         action={
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="search"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="Search name…"
+              aria-label="Search engagements by name"
+              style={{
+                width: 180,
+                padding: '6px 8px',
+                fontSize: 13,
+                borderRadius: tokens.radius.sm,
+                border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+              }}
+            />
             <div style={{ width: 200 }}>
               <Combobox
                 ariaLabel="Client owner"
@@ -640,6 +960,41 @@ export function EngagementsPage(): JSX.Element {
               />
               Show drafts
             </label>
+            <label
+              style={{
+                fontSize: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                color: tokens.color.textMuted,
+              }}
+              title="Hide Completed and Canceled engagements"
+            >
+              <input
+                type="checkbox"
+                checked={activeOnly}
+                onChange={(e) => toggleActiveOnly(e.target.checked)}
+              />
+              Active only
+            </label>
+            {view === 'list' && (
+              <label
+                style={{
+                  fontSize: 12,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  color: tokens.color.textMuted,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={colorRows}
+                  onChange={(e) => toggleColorRows(e.target.checked)}
+                />
+                Color rows by status
+              </label>
+            )}
             {view === 'kanban' && (
               <KanbanViewsMenu
                 columns={statusCols}
@@ -788,11 +1143,28 @@ export function EngagementsPage(): JSX.Element {
                 onPick={(w) => void bulkSetWorkflow(w)}
               />
               <BulkPriorityButton onPick={(p) => void bulkSetPriority(p)} />
+              <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)}>
+                ✉ Mail merge letter
+              </Button>
               <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
                 Cancel
               </Button>
             </span>
           </div>
+        )}
+
+        {mergeOpen && (
+          <MailMergeDialog
+            mode="engagements"
+            targets={visible
+              .filter((r) => selectedIds.has(r.id))
+              .map((r) => ({ id: r.clientId, name: r.clientName, engagementId: r.id }))}
+            onClose={() => setMergeOpen(false)}
+            onDone={() => {
+              setMergeOpen(false);
+              setSelectedIds(new Set());
+            }}
+          />
         )}
 
         {loading ? (
@@ -814,240 +1186,31 @@ export function EngagementsPage(): JSX.Element {
           />
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table
-              style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: 13,
-                fontFamily: tokens.font.body,
+            <Table<EngagementRow>
+              columns={engagementColumns}
+              rows={paged}
+              rowKey={(r) => r.id}
+              rowStyle={(r) => {
+                if (selectedIds.has(r.id)) return { background: tokens.color.accentMuted };
+                if (!colorRows) return undefined;
+                const hex = statusColorMap.get(r.workflowState);
+                const bg = hex ? tintFromHex(hex) : undefined;
+                return bg ? { background: bg } : undefined;
               }}
-            >
-              <thead>
-                <tr style={{ background: tokens.color.surface }}>
-                  <th style={th()}>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.size > 0 && selectedIds.size === visible.length}
-                      onChange={toggleAll}
-                      aria-label="Select all"
-                    />
-                  </th>
-                  <th style={th()}>
-                    Status{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter workflow state"
-                      values={(Object.keys(WORKFLOW_LABELS) as WorkflowState[]).map((w) => ({
-                        value: w,
-                        label: WORKFLOW_LABELS[w],
-                      }))}
-                      selected={workflowFilter}
-                      sort={sortBy.col === 'workflowState' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setWorkflowFilter(sel);
-                        if (dir) setSortBy({ col: 'workflowState', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Name{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by name"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortBy.col === 'name' ? sortBy.dir : null}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'name', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Client{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter client"
-                      values={clientOptions}
-                      selected={clientFilter}
-                      sort={sortBy.col === 'client' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setClientFilter(sel);
-                        if (dir) setSortBy({ col: 'client', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Type{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter type"
-                      values={typeOptions}
-                      selected={typeFilter}
-                      sort={null}
-                      onApply={(sel) => setTypeFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Service line{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter service line"
-                      values={serviceLineOptions}
-                      selected={serviceLineFilter}
-                      sort={null}
-                      onApply={(sel) => setServiceLineFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Assignee(s){' '}
-                    <ColumnFilter
-                      ariaLabel="Filter assignee"
-                      values={userOptions}
-                      selected={assigneeFilter}
-                      sort={null}
-                      onApply={(sel) => setAssigneeFilter(sel)}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Start{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by start date"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortBy.col === 'startDate' ? sortBy.dir : null}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'startDate', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Due{' '}
-                    <ColumnFilter
-                      ariaLabel="Sort by due date"
-                      values={[]}
-                      selected={new Set()}
-                      searchable={false}
-                      sort={sortBy.col === 'dueDate' ? sortBy.dir : null}
-                      onApply={(_, dir) => {
-                        if (dir) setSortBy({ col: 'dueDate', dir });
-                      }}
-                    />
-                  </th>
-                  <th style={th()}>
-                    Priority{' '}
-                    <ColumnFilter
-                      ariaLabel="Filter priority"
-                      values={(['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as Priority[]).map((p) => ({
-                        value: p,
-                        label: p,
-                      }))}
-                      selected={priorityFilter}
-                      sort={sortBy.col === 'priority' ? sortBy.dir : null}
-                      onApply={(sel, dir) => {
-                        setPriorityFilter(sel);
-                        if (dir) setSortBy({ col: 'priority', dir });
-                      }}
-                    />
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={10}
-                      style={{
-                        textAlign: 'center',
-                        padding: 40,
-                        color: tokens.color.textMuted,
-                        fontSize: 13,
-                      }}
-                    >
-                      <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
-                      <strong>No Results</strong>
-                      <div>Please refine your filters.</div>
-                    </td>
-                  </tr>
-                ) : (
-                  visible.map((r) => {
-                    const assigneeNames = [
-                      users.find((u) => u.id === r.partnerId)?.fullName,
-                      users.find((u) => u.id === r.managerId)?.fullName,
-                    ].filter(Boolean);
-                    const typeName = types.find((t) => t.id === r.engagementTypeId)?.name;
-                    return (
-                      <tr
-                        key={r.id}
-                        style={{
-                          borderTop: `1px solid ${tokens.color.border}`,
-                          background: selectedIds.has(r.id) ? tokens.color.accentMuted : undefined,
-                        }}
-                      >
-                        <td style={td()}>
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(r.id)}
-                            onChange={() => toggleRow(r.id)}
-                            aria-label={`Select ${r.name}`}
-                          />
-                        </td>
-                        <td style={td()}>
-                          <InlineWorkflowEdit
-                            value={r.workflowState}
-                            options={statusOptionsFor(r.serviceLineId, r.workflowState)}
-                            onChange={(v) => void setRowWorkflow(r.id, v)}
-                          />
-                        </td>
-                        <td style={td()}>
-                          <a href={`/engagements/${r.id}`}>{r.name}</a>
-                        </td>
-                        <td style={td()}>
-                          <a href={`/clients/${r.clientId}`}>{r.clientName}</a>
-                        </td>
-                        <td style={td()}>{typeName ?? '—'}</td>
-                        <td style={td()} title={r.serviceLineCategory ?? undefined}>
-                          {r.serviceLineName ?? '—'}
-                        </td>
-                        <td style={td()}>
-                          {assigneeNames.length > 0 ? assigneeNames.join(', ') : '—'}
-                        </td>
-                        <td style={td()}>{r.startDate ?? '—'}</td>
-                        <td style={td()}>{r.dueDate ?? '—'}</td>
-                        <td style={td()}>
-                          <InlinePriorityEdit
-                            value={r.priority}
-                            onChange={(v) => void setRowPriority(r.id, v)}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+              empty={
+                <div style={{ padding: 40, textAlign: 'center' }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>▽</div>
+                  <strong>No Results</strong>
+                  <div>Please refine your filters.</div>
+                </div>
+              }
+              pagination={pagination}
+            />
           </div>
         )}
       </Card>
     </div>
   );
-}
-
-function th(): React.CSSProperties {
-  return {
-    textAlign: 'left',
-    padding: '10px 8px',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    color: tokens.color.textMuted,
-    fontWeight: 600,
-    borderBottom: `1px solid ${tokens.color.border}`,
-  };
-}
-
-function td(): React.CSSProperties {
-  return {
-    padding: '8px',
-    fontSize: 13,
-    verticalAlign: 'middle',
-  };
 }
 
 function InlineWorkflowEdit({
