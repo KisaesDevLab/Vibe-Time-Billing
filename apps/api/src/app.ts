@@ -120,6 +120,8 @@ import { createAttachmentRouter } from './attachments/routes';
 import { createRestV1Router } from './rest-v1/routes';
 import { createMcpRouter } from './mcp/routes';
 import { createAiRouter } from './ai/routes';
+import { createOcrRouter } from './ocr/routes';
+import type { OcrClient } from './ocr/glm-client';
 import { createPricingRouter } from './pricing/routes';
 import { createPortalAiRouter } from './ai/portal-routes';
 import { createPortalHelpRouter } from './help/portal-routes';
@@ -233,6 +235,8 @@ export interface AppDeps {
   }) => Promise<{ ok: boolean; providerChargeId?: string; errorMessage?: string }>;
   cloudAiProvider?: AiProvider | null;
   localAiProvider?: AiProvider | null;
+  /** Capture Client Info — local GLM-OCR client; null disables /api/staff/ocr. */
+  ocrClient?: OcrClient | null;
   stripeProvider?: PaymentProvider | null;
   stripeWebhookSecret?: string | null;
   fakeUserRoles?: Map<string, RoleSlug[]>;
@@ -630,6 +634,16 @@ export function createApp(deps: AppDeps): Express {
     sendStaffMail: deps.sendStaffMail,
   });
   app.use('/api/staff/clients', auth.requireAuth, auth.requireCsrf, clientRouter);
+
+  // Capture Client Info — OCR a tax-software screen into the client form.
+  // Read-only extraction (never writes a client); the review UI drives the
+  // clients router above to commit.
+  const ocrRouter = createOcrRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    ocr: deps.ocrClient ?? null,
+  });
+  app.use('/api/staff/ocr', auth.requireAuth, auth.requireCsrf, ocrRouter);
 
   // Firm-wide People directory (list / detail / edit). The per-client
   // People card stays on the clients router above; this is the global view.

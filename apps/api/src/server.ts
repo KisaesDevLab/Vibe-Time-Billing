@@ -18,6 +18,7 @@ import { createStripeProvider } from './payments/stripe';
 import { createAnthropicProvider } from './ai/anthropic';
 import { createOllamaProvider } from './ai/ollama';
 import { createOpenAiCompatibleProvider } from './ai/openai-compatible';
+import { createOcrClient, type OcrClient } from './ocr/glm-client';
 import {
   createConsoleMailProvider,
   createEmailItProvider,
@@ -92,6 +93,18 @@ const cloudAiProvider: AiProvider | null = config.AI_CLOUD_API_KEY
   ? createAnthropicProvider({
       apiKey: config.AI_CLOUD_API_KEY,
       model: config.AI_CLOUD_MODEL,
+    })
+  : null;
+
+// Capture Client Info — local GLM-OCR client, wired only when the firm has
+// set GLM_OCR_URL. Absent → the /api/staff/ocr surface returns 503 and the
+// desktop capture button stays hidden. OCR stays on the LAN.
+const ocrClient: OcrClient | null = config.GLM_OCR_URL
+  ? createOcrClient({
+      baseUrl: config.GLM_OCR_URL,
+      model: config.GLM_OCR_MODEL,
+      apiKey: config.GLM_OCR_API_KEY,
+      timeoutMs: config.GLM_OCR_TIMEOUT_MS,
     })
   : null;
 
@@ -350,6 +363,7 @@ const app = createApp({
   chargeInvoice,
   cloudAiProvider,
   localAiProvider,
+  ocrClient,
   stripeProvider: stripe,
   stripeWebhookSecret: config.STRIPE_WEBHOOK_SECRET ?? null,
   sendMagicLink,

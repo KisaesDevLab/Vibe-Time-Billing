@@ -88,6 +88,15 @@ const Schema = z.object({
   AI_OPENAI_MODEL: z.string().optional(),
   AI_OPENAI_COST_INPUT_CENTS: z.coerce.number().nonnegative().optional(),
   AI_OPENAI_COST_OUTPUT_CENTS: z.coerce.number().nonnegative().optional(),
+  // Capture Client Info — local GLM-OCR endpoint on the firm's on-prem
+  // workstation. Presence of GLM_OCR_URL is what enables the /api/staff/ocr
+  // client-intake surface (server.ts wires the client only when set). The
+  // reference llama-server is unauthenticated on the LAN, so the API key is
+  // optional. All OCR stays on the LAN — screenshots never leave the box.
+  GLM_OCR_URL: z.string().url().optional(),
+  GLM_OCR_MODEL: z.string().default('glm-ocr'),
+  GLM_OCR_API_KEY: z.string().optional(),
+  GLM_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   VIBE_CONNECT_URL: z.string().optional(),
   VIBE_CONNECT_API_KEY: z.string().optional(),
   // Q35 — OpenSign e-signature (AGPL; deployed standalone via
