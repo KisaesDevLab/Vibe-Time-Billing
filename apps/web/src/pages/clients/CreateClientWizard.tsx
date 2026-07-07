@@ -310,36 +310,39 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
       label: 'Client type',
       content: (
         <div style={{ display: 'grid', gap: 12 }}>
-          {isDesktop() && (
-            <button
-              type="button"
-              onClick={() => setCaptureOpen(true)}
+          <button
+            type="button"
+            onClick={() => setCaptureOpen(true)}
+            style={{
+              padding: 12,
+              border: `1px dashed ${tokens.color.accent}`,
+              borderRadius: tokens.radius.md,
+              background: tokens.color.accentMuted,
+              color: tokens.color.accent,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            📷{' '}
+            {isDesktop()
+              ? 'Capture client info from UltraTax CS →'
+              : 'Import client info from a screenshot / PDF →'}
+            <span
               style={{
-                padding: 12,
-                border: `1px dashed ${tokens.color.accent}`,
-                borderRadius: tokens.radius.md,
-                background: tokens.color.accentMuted,
-                color: tokens.color.accent,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-                textAlign: 'left',
+                display: 'block',
+                fontWeight: 400,
+                fontSize: 12,
+                color: tokens.color.textMuted,
+                marginTop: 2,
               }}
             >
-              📷 Capture client info from UltraTax CS →
-              <span
-                style={{
-                  display: 'block',
-                  fontWeight: 400,
-                  fontSize: 12,
-                  color: tokens.color.textMuted,
-                  marginTop: 2,
-                }}
-              >
-                Screenshot the General Information screen and pre-fill this form via local OCR.
-              </span>
-            </button>
-          )}
+              {isDesktop()
+                ? 'Screenshot the General Information screen and pre-fill this form via local OCR.'
+                : 'Upload the General Information screen and pre-fill this form via local OCR.'}
+            </span>
+          </button>
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
             Choose whether this client is an individual (1040 filer) or a business entity. Drives
             which fields the next step shows.

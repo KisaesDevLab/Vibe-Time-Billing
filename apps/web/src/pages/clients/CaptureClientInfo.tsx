@@ -13,10 +13,12 @@ import { Button, Pill, tokens } from '@vibe/ui';
 import { api, type ApiError } from '../../api-client';
 import {
   captureWindow,
+  isDesktop,
   listCapturableWindows,
   looksLikeUltraTax,
   type CapturableWindow,
 } from '../../lib/desktop';
+import { fileToPngBase64 } from '../../lib/rasterize';
 
 export interface MappedClient {
   name: string;
@@ -96,9 +98,26 @@ export function CaptureClientInfo({ open, onClose, onApply }: Props): JSX.Elemen
     setPngBase64(null);
     setIntake(null);
     setError(null);
-    void refreshWindows();
+    // Native window enumeration only exists in the desktop shell; in the
+    // browser the modal opens straight to the upload fallback.
+    if (isDesktop()) void refreshWindows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  async function onUpload(file: File | undefined): Promise<void> {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const png = await fileToPngBase64(file);
+      setPngBase64(png);
+      setPhase('preview');
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function refreshWindows(): Promise<void> {
     setBusy(true);
@@ -184,61 +203,95 @@ export function CaptureClientInfo({ open, onClose, onApply }: Props): JSX.Elemen
         {phase === 'pick' && (
           <>
             <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-              Pick the tax-software window showing the client&apos;s General Information screen. The
-              capture stays on this machine and is sent only to your local OCR server.
+              {isDesktop()
+                ? "Pick the tax-software window showing the client's General Information screen, or upload a screenshot/PDF. The capture stays on this machine and is sent only to your local OCR server."
+                : 'Upload a screenshot or a printed PDF of the client’s General Information screen. It is sent only to your local OCR server.'}
             </p>
-            <div style={{ display: 'grid', gap: 6, maxHeight: '46vh', overflow: 'auto' }}>
-              {windows.map((w) => (
-                <button
-                  key={w.id}
-                  type="button"
-                  onClick={() => setSelectedId(w.id)}
-                  style={{
-                    textAlign: 'left',
-                    padding: '10px 12px',
-                    border: `2px solid ${selectedId === w.id ? tokens.color.accent : tokens.color.border}`,
-                    borderRadius: tokens.radius.md,
-                    background: selectedId === w.id ? tokens.color.accentMuted : 'transparent',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                  }}
-                >
-                  <span style={{ display: 'grid', gap: 2, minWidth: 0 }}>
-                    <span
+            {isDesktop() && (
+              <>
+                <div style={{ display: 'grid', gap: 6, maxHeight: '46vh', overflow: 'auto' }}>
+                  {windows.map((w) => (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() => setSelectedId(w.id)}
                       style={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: tokens.color.text,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
+                        textAlign: 'left',
+                        padding: '10px 12px',
+                        border: `2px solid ${selectedId === w.id ? tokens.color.accent : tokens.color.border}`,
+                        borderRadius: tokens.radius.md,
+                        background: selectedId === w.id ? tokens.color.accentMuted : 'transparent',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: 8,
                       }}
                     >
-                      {w.title || '(untitled window)'}
-                    </span>
-                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                      {w.appName} · {w.width}×{w.height}
-                    </span>
-                  </span>
-                  {looksLikeUltraTax(w) && <Pill tone="accent">UltraTax</Pill>}
-                </button>
-              ))}
-              {!busy && windows.length === 0 && (
-                <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
-                  No capturable windows found.
-                </p>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
-              <Button variant="ghost" onClick={() => void refreshWindows()} disabled={busy}>
-                Refresh
-              </Button>
-              <Button onClick={() => void capture()} disabled={busy || selectedId == null}>
-                {busy ? 'Capturing…' : 'Capture'}
-              </Button>
-            </div>
+                      <span style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+                        <span
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: tokens.color.text,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {w.title || '(untitled window)'}
+                        </span>
+                        <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                          {w.appName} · {w.width}×{w.height}
+                        </span>
+                      </span>
+                      {looksLikeUltraTax(w) && <Pill tone="accent">UltraTax</Pill>}
+                    </button>
+                  ))}
+                  {!busy && windows.length === 0 && (
+                    <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                      No capturable windows found.
+                    </p>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                  <Button variant="ghost" onClick={() => void refreshWindows()} disabled={busy}>
+                    Refresh
+                  </Button>
+                  <Button onClick={() => void capture()} disabled={busy || selectedId == null}>
+                    {busy ? 'Capturing…' : 'Capture'}
+                  </Button>
+                </div>
+              </>
+            )}
+
+            <label
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'center',
+                padding: 12,
+                border: `1px dashed ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                cursor: busy ? 'default' : 'pointer',
+                fontSize: 13,
+                color: tokens.color.text,
+              }}
+            >
+              <span aria-hidden>📄</span>
+              <span style={{ flex: 1 }}>
+                {isDesktop() ? 'Or upload a screenshot / PDF' : 'Upload a screenshot or PDF'}
+                <span style={{ display: 'block', fontSize: 12, color: tokens.color.textMuted }}>
+                  PNG, JPG, or a printed PDF of the General Information screen.
+                </span>
+              </span>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,application/pdf"
+                disabled={busy}
+                onChange={(e) => void onUpload(e.target.files?.[0])}
+                style={{ display: 'none' }}
+              />
+            </label>
           </>
         )}
 
