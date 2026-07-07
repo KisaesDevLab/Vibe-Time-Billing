@@ -1,0 +1,24 @@
+[package]
+name = "vibe-desktop"
+version = "0.1.0"
+description = "Vibe Time & Billing desktop shell"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "vibe_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Cross-platform window/monitor capture. Confirm the exact version against
+# the API used in src/lib.rs when first building on the firm's workstation
+# (xcap's accessor return types have shifted across 0.x releases).
+xcap = "0.3"
+image = "0.25"
+base64 = "0.22"

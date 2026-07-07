@@ -1,0 +1,14 @@
+{
+  "name": "@vibe/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Elastic-2.0",
+  "description": "Tauri desktop shell wrapping the Vibe T&B staff web app, adding native window capture for Capture Client Info.",
+  "comment": "No 'dev'/'build' scripts on purpose: those names are picked up by the root's `pnpm -r` fan-out, and this package needs a Rust toolchain the web CI does not have. Drive it explicitly: `pnpm --filter @vibe/desktop tauri dev|build`.",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

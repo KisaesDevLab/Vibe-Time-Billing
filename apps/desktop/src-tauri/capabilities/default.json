@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core capability for the main window. The app-defined commands (list_capturable_windows, capture_window) are registered via invoke_handler and are not gated by the plugin ACL, so only core:default is needed here.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

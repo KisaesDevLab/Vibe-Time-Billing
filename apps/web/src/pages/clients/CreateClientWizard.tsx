@@ -23,6 +23,8 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { isDesktop } from '../../lib/desktop';
+import { CaptureClientInfo, type MappedIntake } from './CaptureClientInfo';
 
 interface AppUser {
   id: string;
@@ -109,6 +111,16 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
   const [roles, setRoles] = useState<TaxonomyEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Capture Client Info (desktop shell only). Mailing address has no wizard
+  // input today, so it's held here and sent straight through on create.
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const [mailing, setMailing] = useState<{
+    mailingStreet1?: string;
+    mailingCity?: string;
+    mailingState?: string;
+    mailingPostal?: string;
+    mailingCountry?: string;
+  }>({});
 
   useEffect(() => {
     if (!open) return;
@@ -152,7 +164,45 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
     setCustomFields([]);
     setTags([]);
     setTagDraft('');
+    setMailing({});
     setError(null);
+  }
+
+  // Prefill the wizard from an OCR capture. Nothing is saved — the user lands
+  // on the info step to review and can edit any field before creating.
+  function applyIntake(mapped: MappedIntake): void {
+    const { client, contact } = mapped;
+    setClientType(client.clientType);
+    if (client.name) setName(client.name);
+    setFilingStatus(
+      client.clientType === 'INDIVIDUAL' && client.filingStatus ? client.filingStatus : '',
+    );
+    setMailing({
+      mailingStreet1: client.mailingStreet1,
+      mailingCity: client.mailingCity,
+      mailingState: client.mailingState,
+      mailingPostal: client.mailingPostal,
+      mailingCountry: client.mailingCountry,
+    });
+    if (client.customFields) {
+      setCustomFields(Object.entries(client.customFields).map(([key, value]) => ({ key, value })));
+    }
+    if (contact) {
+      setContacts((prev) => {
+        const [first, ...rest] = prev;
+        const base = first ?? { ...emptyContact(), isPrimary: true, isBilling: true };
+        return [
+          {
+            ...base,
+            fullName: contact.name || base.fullName,
+            email: contact.email ?? base.email,
+            phone: contact.phone ?? base.phone,
+          },
+          ...rest,
+        ];
+      });
+    }
+    setStep('info');
   }
 
   const canSubmit = name.trim().length > 0 && partnerInChargeId.length > 0;
@@ -187,6 +237,9 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
           termsDays,
           tags: tags.slice(0, 20),
           customFields: customFieldsMap,
+          // Captured mailing address (Capture Client Info) — omitted keys are
+          // undefined and dropped by JSON.stringify.
+          ...mailing,
         }),
       });
 
@@ -257,6 +310,36 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
       label: 'Client type',
       content: (
         <div style={{ display: 'grid', gap: 12 }}>
+          {isDesktop() && (
+            <button
+              type="button"
+              onClick={() => setCaptureOpen(true)}
+              style={{
+                padding: 12,
+                border: `1px dashed ${tokens.color.accent}`,
+                borderRadius: tokens.radius.md,
+                background: tokens.color.accentMuted,
+                color: tokens.color.accent,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              📷 Capture client info from UltraTax CS →
+              <span
+                style={{
+                  display: 'block',
+                  fontWeight: 400,
+                  fontSize: 12,
+                  color: tokens.color.textMuted,
+                  marginTop: 2,
+                }}
+              >
+                Screenshot the General Information screen and pre-fill this form via local OCR.
+              </span>
+            </button>
+          )}
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
             Choose whether this client is an individual (1040 filer) or a business entity. Drives
             which fields the next step shows.
@@ -719,33 +802,40 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
   ];
 
   return (
-    <Wizard
-      open={open}
-      title="New client"
-      steps={steps}
-      currentStepKey={step}
-      onStepChange={setStep}
-      onClose={() => {
-        reset();
-        onClose();
-      }}
-      primaryAction={{
-        label: busy ? 'Creating…' : 'Create and manage',
-        onClick: () => void submit(true),
-        disabled: busy,
-      }}
-      secondaryAction={{
-        label: 'Create and close',
-        onClick: () => void submit(false),
-        disabled: busy,
-      }}
-      headerExtras={
-        error ? (
-          <Pill tone="danger">{error}</Pill>
-        ) : (
-          <Pill>{clientType === 'INDIVIDUAL' ? 'Individual' : 'Business'}</Pill>
-        )
-      }
-    />
+    <>
+      <CaptureClientInfo
+        open={captureOpen}
+        onClose={() => setCaptureOpen(false)}
+        onApply={applyIntake}
+      />
+      <Wizard
+        open={open}
+        title="New client"
+        steps={steps}
+        currentStepKey={step}
+        onStepChange={setStep}
+        onClose={() => {
+          reset();
+          onClose();
+        }}
+        primaryAction={{
+          label: busy ? 'Creating…' : 'Create and manage',
+          onClick: () => void submit(true),
+          disabled: busy,
+        }}
+        secondaryAction={{
+          label: 'Create and close',
+          onClick: () => void submit(false),
+          disabled: busy,
+        }}
+        headerExtras={
+          error ? (
+            <Pill tone="danger">{error}</Pill>
+          ) : (
+            <Pill>{clientType === 'INDIVIDUAL' ? 'Individual' : 'Business'}</Pill>
+          )
+        }
+      />
+    </>
   );
 }
