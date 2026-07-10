@@ -6,9 +6,17 @@
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type express from 'express';
+import { eq } from 'drizzle-orm';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { creditApplications, creditMemos, invoices, payments, timeEntries } from '@vibe/db/schema';
+import {
+  clients,
+  creditApplications,
+  creditMemos,
+  invoices,
+  payments,
+  timeEntries,
+} from '@vibe/db/schema';
 import { createReportRouter } from '../reports/routes';
 
 let harness: PgliteHarness;
@@ -238,6 +246,121 @@ describe('Reports — ?basis=cash', () => {
     // $800 net real payment + $50 overpayment-backed credit; the $150
     // courtesy write-off is not cash and must not inflate collections.
     expect(body.items.find((i) => i.month === '2026-05')?.collectedCents).toBe(85000);
+  });
+
+  it('cash excludes REFUND_EXCESS credit applications (outflow already netted)', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const invId = await seedMarchInvoicePaidInMay(seed);
+    // A refund overshot the invoice's paid balance; the excess became a
+    // REFUND_EXCESS memo. The refund dollars are already netted out of the
+    // source payment, so applying the memo must NOT count as new cash.
+    const [rePay] = await harness.db
+      .insert(payments)
+      .values({
+        invoiceId: invId,
+        provider: 'CREDIT',
+        amountCents: 12000,
+        status: 'SUCCEEDED',
+        receivedAt: new Date('2026-05-22T12:00:00Z'),
+      })
+      .returning({ id: payments.id });
+    const [reMemo] = await harness.db
+      .insert(creditMemos)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        issuedDate: '2026-05-20',
+        originalAmountCents: 12000,
+        source: 'REFUND_EXCESS',
+      })
+      .returning({ id: creditMemos.id });
+    await harness.db.insert(creditApplications).values({
+      creditMemoId: reMemo!.id,
+      invoiceId: invId,
+      paymentId: rePay!.id,
+      amountCents: 12000,
+    });
+
+    const router = createReportRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, '/revenue-by-month', {
+      body: {},
+      params: {},
+      query: { basis: 'cash' },
+      staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    const body = r.jsonBody as { items: Array<{ month: string; collectedCents: number }> };
+    // Still only the $800 net real receipt — the $120 refund-excess apply
+    // would double-count dollars the refund netting already removed.
+    expect(body.items.find((i) => i.month === '2026-05')?.collectedCents).toBe(80000);
+  });
+
+  it('book-of-business: cash basis excludes archived clients like the accrual side', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    await seedMarchInvoicePaidInMay(seed);
+    // Same partner, second client — archived. Its collections must not
+    // appear in a "book" that excludes the client itself.
+    const [seedClient] = await harness.db
+      .select({ officeId: clients.officeId })
+      .from(clients)
+      .where(eq(clients.id, seed.clientId))
+      .limit(1);
+    const [archived] = await harness.db
+      .insert(clients)
+      .values({
+        firmId: seed.firmId,
+        name: 'Archived Co',
+        partnerInChargeId: seed.appUserId,
+        officeId: seedClient!.officeId,
+        status: 'ARCHIVED',
+      })
+      .returning({ id: clients.id });
+    const [archInv] = await harness.db
+      .insert(invoices)
+      .values({
+        firmId: seed.firmId,
+        clientId: archived!.id,
+        invoiceNumber: 'INV-ARCH-1',
+        issueDate: '2026-05-01',
+        dueDate: '2026-06-01',
+        subtotalCents: 40000,
+        totalCents: 40000,
+        paidCents: 40000,
+        status: 'PAID',
+      })
+      .returning({ id: invoices.id });
+    await harness.db.insert(payments).values({
+      invoiceId: archInv!.id,
+      provider: 'MANUAL',
+      amountCents: 40000,
+      status: 'SUCCEEDED',
+      receivedAt: new Date('2026-05-15T12:00:00Z'),
+    });
+
+    const router = createReportRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, '/book-of-business', {
+      body: {},
+      params: {},
+      query: { basis: 'cash', start: '2026-01-01', end: '2026-12-31' },
+      staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
+      ip: '127.0.0.1',
+      get: () => undefined,
+    });
+    const body = r.jsonBody as {
+      items: Array<{ partnerId: string | null; clientCount: number; paidCents: number }>;
+    };
+    const row = body.items.find((i) => i.partnerId === seed.appUserId)!;
+    // One active client in the book; only its $800 net receipt counts —
+    // not the archived client's $400 payment.
+    expect(row.clientCount).toBe(1);
+    expect(row.paidCents).toBe(80000);
   });
 
   it('profitability: cash basis windows revenue by receipt date and drives margin', async () => {

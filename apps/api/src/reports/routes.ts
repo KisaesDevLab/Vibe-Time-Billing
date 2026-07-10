@@ -215,14 +215,19 @@ function cashConds(firmId: string, range: { start: string | null; end: string | 
     eq(invoices.firmId, firmId),
     inArray(payments.status, ['SUCCEEDED', 'PARTIALLY_REFUNDED']),
     isNull(payments.voidedAt),
-    // A credit application funded by a MANUAL credit memo (a courtesy
-    // write-off) is not cash — no money ever arrived. OVERPAYMENT /
-    // REFUND_EXCESS memos ARE cash-backed and stay in (dated at
+    // Credit applications whose funding memo brought no NEW money are not
+    // cash. MANUAL (courtesy write-off): no money ever arrived.
+    // REFUND_EXCESS: the refund outflow is already fully netted into the
+    // source payment (amount − refunded), so counting the application
+    // again would mint cash that never existed. OVERPAYMENT stays in: the
+    // surplus never got a payment row at receipt (only the memo), so the
+    // application is its first and only appearance in cash (dated at
     // application, the closest observable event).
     drz`NOT EXISTS (
       SELECT 1 FROM ${creditApplications}
       INNER JOIN ${creditMemos} ON ${creditMemos.id} = ${creditApplications.creditMemoId}
-      WHERE ${creditApplications.paymentId} = ${payments.id} AND ${creditMemos.source} = 'MANUAL'
+      WHERE ${creditApplications.paymentId} = ${payments.id}
+        AND ${creditMemos.source} IN ('MANUAL', 'REFUND_EXCESS')
     )`,
     range.start ? drz`${cashDateExpr()} >= ${range.start}::date` : undefined,
     range.end ? drz`${cashDateExpr()} <= ${range.end}::date` : undefined,
@@ -256,10 +261,15 @@ async function cashByMonth(
 }
 
 // Net cash grouped by the invoice's client partner-in-charge.
+// `activeClientsOnly` mirrors a caller whose accrual side excludes ARCHIVED
+// clients (book-of-business) so the basis toggle can't change the client
+// universe; leave it off where the accrual side has no such filter
+// (collection-realization).
 async function cashByPartner(
   db: Database,
   firmId: string,
   range: { start: string | null; end: string | null },
+  opts?: { activeClientsOnly?: boolean },
 ): Promise<Map<string | null, number>> {
   const rows = await db
     .select({
@@ -270,7 +280,12 @@ async function cashByPartner(
     .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
     .innerJoin(clients, eq(clients.id, invoices.clientId))
     .leftJoin(paymentReceipts, eq(paymentReceipts.id, payments.receiptId))
-    .where(and(...cashConds(firmId, range)))
+    .where(
+      and(
+        ...cashConds(firmId, range),
+        opts?.activeClientsOnly ? ne(clients.status, 'ARCHIVED') : undefined,
+      ),
+    )
     .groupBy(clients.partnerInChargeId);
   return new Map(rows.map((r) => [r.partnerId, Number(r.collected)]));
 }
@@ -1561,9 +1576,18 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .where(and(eq(clients.firmId, session.firmId), ne(clients.status, 'ARCHIVED')))
         .groupBy(clients.partnerInChargeId);
       // basis=cash: paid = net cash received in the window per partner.
+      // activeClientsOnly keeps the client universe identical to the accrual
+      // billed column above (which joins only non-ARCHIVED clients) — without
+      // it, flipping the basis silently pulled archived clients' collections
+      // into a "book" that excludes those clients.
       const bobCash =
         basis === 'cash'
-          ? await cashByPartner(deps.db, session.firmId, { start: since, end: until })
+          ? await cashByPartner(
+              deps.db,
+              session.firmId,
+              { start: since, end: until },
+              { activeClientsOnly: true },
+            )
           : null;
       const bobPartnerNames = await namesByIds(
         deps.db,
