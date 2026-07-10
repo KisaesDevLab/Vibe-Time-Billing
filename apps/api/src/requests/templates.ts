@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Request templates router — admin CRUD for the firm's
 // request_template rows + their item children. Mounted at

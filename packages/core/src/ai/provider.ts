@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // AI provider abstraction. Three implementations: Anthropic Claude API,
 // Ollama / llama.cpp (local), OpenAI-compatible. Routing prefers local

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0103 — Document Intake foundations. Proves (a) the MFK-envelope column
 // helpers round-trip a value through wrap→encrypt→decrypt→unwrap, (b)

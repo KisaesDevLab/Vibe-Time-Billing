@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Hour-bank expiration worker (Phase 10 #17). For each hour_bank whose
 // expiration_date has passed and which hasn't been forfeited yet, write

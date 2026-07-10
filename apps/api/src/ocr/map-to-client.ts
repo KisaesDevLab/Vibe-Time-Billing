@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Capture Client Info — the JSON contract we ask GLM-OCR to return for an
 // UltraTax CS "General Information" screen, plus the mapping from that

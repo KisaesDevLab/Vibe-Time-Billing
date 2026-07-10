@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-7 — appointment reminders. Each tick finds confirmed appointments
 // whose reminder offset has just elapsed and emails the client contacts a

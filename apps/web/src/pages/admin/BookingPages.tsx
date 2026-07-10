@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0168 — staff-side management of public booking pages. List of pages
 // (with copyable public URL), plus a master-detail create/edit form that

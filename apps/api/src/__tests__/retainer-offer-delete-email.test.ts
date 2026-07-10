@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff retainer offer actions: delete a PENDING offer (409 once it's no
 // longer pending) and email the proposal link to the client's primary

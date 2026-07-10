@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Bundle size budget guard. CI runs this after `pnpm build`. Fails the
 // build if any app's gzipped main bundle crosses the budget. Per

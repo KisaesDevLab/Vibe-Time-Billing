@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Printer → office assignments. Maps a Vibe Print gateway printer
 // (numeric id) to an office + label so the picker can group printers by

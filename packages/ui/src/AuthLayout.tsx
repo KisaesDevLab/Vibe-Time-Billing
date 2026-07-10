@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useEffect, type ReactNode } from 'react';
 
 import { tokens, THEME_STORAGE_KEY } from './tokens';

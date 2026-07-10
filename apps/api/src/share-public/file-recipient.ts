@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0150 — gated file-share recipient API (public internet surface),
 // backing the portal landing page at /shared/file/:token.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff API for a client's saved payment methods (card / ACH bank). The
 // browser drives the Stripe Payment Element with the client_secret returned

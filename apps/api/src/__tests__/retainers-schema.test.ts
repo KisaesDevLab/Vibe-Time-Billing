@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // R0.2 — Retainer addendum schema invariants. Belt-and-suspenders for
 // the DB-enforced rules listed as non-negotiable in the plan. Asserts

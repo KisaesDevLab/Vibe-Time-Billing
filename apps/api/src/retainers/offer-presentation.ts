@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Proposal-style presentation of a retainer offer (the "hybrid": proposal
 // look, retainer engine). Builds the data the portal page + printable PDF

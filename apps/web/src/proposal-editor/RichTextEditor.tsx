@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // WYSIWYG rich-text editor for the proposal "Text" block. Non-technical staff
 // get a formatting toolbar and never see raw Markdown — but it reads/writes

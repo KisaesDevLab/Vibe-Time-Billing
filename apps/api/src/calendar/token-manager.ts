@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-2/CAL-3 — keep a connection's access token fresh. If it expires
 // within 5 minutes, refresh it and persist the rotated tokens (re-wrapped

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Storage settings. UI for the provider + credentials that the
 // boot path folds into process.env. Saving does not hot-swap the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pay-to-unlock client-side gate (Phase 13 #24, 14 #13, 16 #20).
 //

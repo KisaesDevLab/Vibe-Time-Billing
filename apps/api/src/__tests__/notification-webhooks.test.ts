@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // H.8 follow-up — exercise the three notification delivery webhook
 // receivers (Postmark / Resend / Twilio) end-to-end via the in-process

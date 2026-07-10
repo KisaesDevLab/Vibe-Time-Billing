@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff Intake Inbox API (mounted at /api/staff/intake). Lists received
 // submissions, decrypts their PII on the fly (firm MFK), serves file

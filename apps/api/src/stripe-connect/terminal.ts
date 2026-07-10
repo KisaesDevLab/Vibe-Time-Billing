@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phases 15–17 — Stripe Terminal (server-driven, no client SDK, no connection
 // token). All objects live on the firm's connected account via Stripe-Account.

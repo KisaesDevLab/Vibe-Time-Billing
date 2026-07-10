@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Rollforward services. Phase 3 builds engagement candidates from prior-year
 // engagements (the spine): query a staff person's engagements in a source

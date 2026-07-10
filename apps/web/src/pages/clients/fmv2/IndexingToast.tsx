@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // FMv2 — success toast on link/create completion. Auto-dismisses
 // after 8 seconds; manually dismissable via the X.

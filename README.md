@@ -44,7 +44,7 @@ Vibe PM covers the engagement-to-cash workflow: time tracking, billing & realiza
 
 ## License
 
-Elastic License 2.0 — source-available. Firms may self-host, use, modify, and serve their own clients freely; providing the software to third parties as a hosted or managed service is not permitted, and license-key functionality may not be circumvented. Commercial license required to enable client portal access (separately licensed). See `LICENSE.md` for full terms.
+PolyForm Small Business License 1.0.0 — source-available. Companies with fewer than 100 total employees/contractors and under 1,000,000 USD (2019, inflation-adjusted) prior-year revenue may self-host, use, and modify the software freely; larger companies need a commercial license from Kisaes LLC. The client portal feature requires a separate commercial license token regardless of company size, and license-key functionality may not be circumvented. See `LICENSE.md` for full terms.
 
 ## Status
 

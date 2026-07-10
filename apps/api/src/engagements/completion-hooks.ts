@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Side effects fired when an engagement is "completed" — either by moving its
 // workflow status to COMPLETED or by the lifecycle Close/Archive action. Both

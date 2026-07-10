@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0184 — statement document template CRUD + preview + variables.
 // Direct-handler invocation (middleware skipped) like invoice-template.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // One funnel for every direct-print feature: forward a rendered PDF to
 // the firm's Vibe Print gateway and record a print_log row. Resolves the

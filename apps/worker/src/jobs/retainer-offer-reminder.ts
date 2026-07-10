@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // R4-followup — delayed retainer offer reminder. Triggered by jobs the
 // API enqueued at offer creation time (R2). Each job fires at the kind's

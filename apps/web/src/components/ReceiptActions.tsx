@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Print / email a payment receipt by receipt id. Shared by the
 // Receive-payment success screen and the Payments-list receipt drawer so a

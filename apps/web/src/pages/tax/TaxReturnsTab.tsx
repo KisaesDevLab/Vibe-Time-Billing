@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Tax Returns tab body. Extracted from TaxReturns.tsx so the parent
 // page can host both the Returns tab and the firm-wide Payments tab.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pure helpers for discovering backup destinations from the contents of
 // /proc/mounts. The API does the I/O (read the file, statfs each candidate);

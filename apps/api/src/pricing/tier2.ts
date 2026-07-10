@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Tier-2 sanity overlays (PS Phase 6). These do NOT pick the number — they
 // validate/flag the Tier-1 figure against what the firm has historically

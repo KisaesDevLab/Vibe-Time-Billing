@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0161 — portal Web Push subscription router. Proves: /key reflects config;
 // subscribe stores a row bound to the session identity; re-subscribing the same

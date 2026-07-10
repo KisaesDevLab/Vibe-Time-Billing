@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Rollforward Phase 3: a batch builds engagement candidates with suggested
 // next-year due + drop-off dates from the prior-year engagement.

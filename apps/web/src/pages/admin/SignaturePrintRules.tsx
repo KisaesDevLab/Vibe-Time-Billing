@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Signature print rules (0187). Prioritized rules that decide,
 // when a tax-return signature completes, what gets printed (built-in

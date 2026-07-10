@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // intake-process — the worker pipeline for a completed anonymous intake
 // session (enqueued by POST /api/public/intake/session/:id/complete):

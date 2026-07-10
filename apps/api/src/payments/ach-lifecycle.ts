@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 22 — ACH lifecycle reactions. When Stripe reports an ACH return
 // (during processing as a failure, or later as a final dispute), record it

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Client-scoped Tax Payments card. Same data the admin TaxPayments
 // page exposed; pre-filtered to the client we're looking at. Used

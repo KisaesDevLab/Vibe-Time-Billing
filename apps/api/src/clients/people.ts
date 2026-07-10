@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Unified "People" view for a client (0114). Reconciles the firm's
 // directory (client_contact) with portal logins (client_portal_access →

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Auto-rollover scanner (Phase 8 #22). Per QUESTIONS Q23, this job does
 // NOT auto-create the new engagement — it surfaces engagements with

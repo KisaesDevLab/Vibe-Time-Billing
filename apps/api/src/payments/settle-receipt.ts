@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Settlement of a PENDING charge receipt: insert one payment per allocation
 // under an invoice row-lock, recompute paid_cents, flip the receipt SUCCEEDED,

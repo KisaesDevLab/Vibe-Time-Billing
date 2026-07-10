@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Portal auth middleware. CLAUDE.md non-negotiable #2: zero cross-realm
 // share. Distinct cookie name, distinct JWT key, distinct session prefix.

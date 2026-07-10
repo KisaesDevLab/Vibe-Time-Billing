@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared logic for the configurable signature-confirmation auto-print:
 // load the print context for a completed signature, evaluate the firm's

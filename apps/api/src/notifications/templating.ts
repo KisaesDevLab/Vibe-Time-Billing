@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // DB-aware notification templating for the API realm. Wraps the pure
 // renderer in @vibe/core/notifications with a loader for the firm's

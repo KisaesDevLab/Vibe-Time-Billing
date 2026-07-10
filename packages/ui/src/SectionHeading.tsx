@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP0 — Section heading. UI plan §2 calls for an eyebrow (small
 // uppercase label) above the title, with an optional right-side

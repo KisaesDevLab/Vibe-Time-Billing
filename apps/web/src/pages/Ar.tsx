@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useEffect, useMemo, useState } from 'react';
 
 import { Button, Card, ColumnFilter, Combobox, Pill, Table, tokens } from '@vibe/ui';

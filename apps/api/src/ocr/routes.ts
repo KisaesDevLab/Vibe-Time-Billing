@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Capture Client Info — the intake endpoint. Accepts a base64 PNG of an
 // UltraTax General Information screen, OCRs it on the firm's local GLM-OCR

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0204 — entering a drop-off date back-fills the engagement's due date when it
 // has none: due = drop-off date + firm_settings.dropoff_due_offset_days. It is

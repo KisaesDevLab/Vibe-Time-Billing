@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase C — anonymous intake flow. Exercises the full public surface over
 // supertest against a pglite DB + in-memory storage: staff listing, the

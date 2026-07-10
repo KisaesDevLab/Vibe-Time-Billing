@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels wrap their controls inside grid forms; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Portal "add a saved payment method" panel. A client can save a card/bank via
 // the Stripe Payment Element, or enter a bank manually by routing/account

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Resolve a client's billing contact details. In v1 these lived on
 // client.billing_contact_*; v2 0027 moved them into one-to-many

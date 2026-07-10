@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-4 — multi-staff booking API: create (+ slot re-validation/409),
 // engagement note, participants, reschedule, cancel, and the public

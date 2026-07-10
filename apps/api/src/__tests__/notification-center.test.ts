@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-7 — staff notification center: list, unread-count, read, dismiss,
 // and per-recipient isolation.

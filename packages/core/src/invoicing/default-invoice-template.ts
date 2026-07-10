@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // The shipped default invoice document template — a CPA letterhead
 // layout (logo + business block, client/meta header, indented charge

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Approval auto-escalation (Phase 18 #7). For each PENDING approval_request
 // whose requested_at is older than the rule's auto_escalate_hours, clear

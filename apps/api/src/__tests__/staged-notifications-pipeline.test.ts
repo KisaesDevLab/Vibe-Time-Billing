@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0146 — staging pipeline for client notifications. Verifies: a STAGED
 // status transition snapshots a PENDING_APPROVAL row (recipients +

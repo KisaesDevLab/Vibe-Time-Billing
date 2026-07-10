@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared allocation orchestration for adjustments. Wraps the six
 // @vibe/core allocation methods behind one `runAllocation` entry point and

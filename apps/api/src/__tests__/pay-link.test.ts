@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0181 — pay-by-link (no portal login). Covers the public pay surface,
 // the staff send (email/SMS) + revoke endpoints, and the Stripe

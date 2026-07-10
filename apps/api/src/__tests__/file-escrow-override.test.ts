@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Connect F.7 — admin escrow override endpoint. Verifies that a
 // partner can flip a file escrow ↔ client_visible without an invoice

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP0 — Portal home shell. Per UI plan §3, the home page composes
 // sections rather than rendering one monolithic welcome card. Each

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP0 — Narrow-viewport detection. Pages that want a mobile card-list
 // fallback for their Table use this hook to pick the render path.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-1 — Per-staff booking configuration. Mounted at /api/staff/booking.
 // A staff member manages their OWN settings/availability; admins

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Saved payment methods (card / ACH bank) for a client, on the firm's Stripe
 // connected account. Flow:

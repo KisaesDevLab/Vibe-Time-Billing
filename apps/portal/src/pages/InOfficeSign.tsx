@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Public in-office signing landing. A printed QR points here with a per-signer
 // token. Step 1: verify the signer — for a KBA-gated 1040 the preparer records

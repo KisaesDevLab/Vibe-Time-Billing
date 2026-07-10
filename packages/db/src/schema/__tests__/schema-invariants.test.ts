@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Static schema invariant tests. These exercise Drizzle's table metadata
 // without requiring a running Postgres — they verify column nullability,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pure statistics for normalizing cohort hours. We use a normalized figure
 // (median / trimmed mean) rather than raw actuals so overruns aren't rewarded.

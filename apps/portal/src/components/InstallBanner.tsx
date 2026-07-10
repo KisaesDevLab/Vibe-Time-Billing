@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Subtle "Install app" banner shown on authenticated portal pages after a few
 // visits. Android/desktop Chromium get a one-tap install (beforeinstallprompt);

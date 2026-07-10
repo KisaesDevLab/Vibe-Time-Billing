@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0153 — Vibe Filer zip import. Staff uploaded a client document export
 // (.zip) and picked a client + destination folder; this job downloads

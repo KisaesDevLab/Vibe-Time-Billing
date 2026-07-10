@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-5 — "My Calendar" staff dashboard panel. Today/week appointments with
 // client chips (confirmed → client link; pending → amber "Review"; unmatched

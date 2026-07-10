@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Assembles a StatementTemplateInput from a RANDOM real client (one that
 // has invoices) for the statement-template editor's live preview, so it

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PATCH /requests/:id can change status. Setting PENDING schedules an
 // activation (due date minus reminder lead); moving off PENDING clears the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Branded HTML wrapper for transactional emails. Many call sites send a
 // plain-text body only; this turns that into a simple, email-client-safe HTML

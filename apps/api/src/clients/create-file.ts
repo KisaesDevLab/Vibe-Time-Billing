@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared "put bytes into a client's File Manager folder" helper. Factored
 // from POST /:id/files/generated so the intake disposition/move engine

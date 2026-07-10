@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Public-facing chrome for the intake surface. Soft light background with a
 // firm-branded sticky top bar (wordmark eyebrow + "Encrypted & secure" pill).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Web Push sender for the installable client-portal PWA (Phase 26). Reused by
 // the staged-notification worker job: whenever a portal_notification is

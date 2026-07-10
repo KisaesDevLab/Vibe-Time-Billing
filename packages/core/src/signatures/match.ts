@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Bookmark → signature-page matching. Given the parsed outline sections of a
 // tax-return PDF and the firm's ordered page rules, find every page whose

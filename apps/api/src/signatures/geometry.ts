@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 3 — per-page PDF geometry capture. Page dimensions in POINTS come
 // from each page's MediaBox (via pdf-lib), read at upload time. Pages can

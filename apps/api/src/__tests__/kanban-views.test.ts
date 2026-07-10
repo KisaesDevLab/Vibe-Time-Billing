@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Saved kanban column-view router (0122). Per-user named views: create,
 // list-own-only, patch (rename + columns), delete, owner scoping, and the

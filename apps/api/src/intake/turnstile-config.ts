@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Turnstile secret at-rest crypto + masking. The site key is public (stored
 // plaintext); the secret is kept as a KMS-encrypted envelope (same AES-GCM

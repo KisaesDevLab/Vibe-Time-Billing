@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-3 / BK-7 — the tabbed Appointments surface: a 4-step multi-staff
 // booking wizard, the appointments list with a detail drawer, the

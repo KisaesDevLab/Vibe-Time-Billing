@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared design language for the public intake surface (Send Documents +
 // public booking). Ported from the "VCPA intake form redesign" Claude Design

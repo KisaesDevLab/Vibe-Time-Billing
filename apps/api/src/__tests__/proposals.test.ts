@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PP4a — Proposal CRUD route tests (direct-handler invocation
 // against pglite-backed Drizzle harness). Block-tree validation is

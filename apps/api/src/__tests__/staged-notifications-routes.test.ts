@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0146 — staged-notification decision routes. Verifies: list scopes to
 // the firm and defaults to the active queue; send-now/schedule/cancel

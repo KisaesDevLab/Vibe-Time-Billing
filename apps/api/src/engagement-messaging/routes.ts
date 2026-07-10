@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Stage 2 — engagement-level messaging. Distinct from the legacy
 // /messaging/ provider config router (which manages SMTP/SMS provider

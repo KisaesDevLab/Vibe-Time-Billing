@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Audit anomaly detector (Phase 19 #15). Scans the last hour of
 // audit_log rows and emits one alert per actor whose event count

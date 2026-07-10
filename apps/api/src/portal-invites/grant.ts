@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared "grant or invite portal access" logic. Extracted from the
 // portal-invites POST route so the self-service access-request approval

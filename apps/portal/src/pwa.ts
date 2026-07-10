@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PWA glue for the client portal: service-worker registration, the
 // add-to-home-screen install prompt, and Web Push subscribe/unsubscribe.

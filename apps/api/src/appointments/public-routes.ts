@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-4/BK-6 — public appointment actions via signed token (no login).
 // Mounted at /api/public/appointments (outside the staff/portal auth

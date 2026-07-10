@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-wide task list router (top-level "Tasks" view). Exercises the real
 // /api/staff/tasks handlers: scope (mine/all), filters, joined names,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Bridge to the Tauri desktop shell (apps/desktop). The staff SPA also runs
 // in a plain browser, so we deliberately avoid a build-time dependency on

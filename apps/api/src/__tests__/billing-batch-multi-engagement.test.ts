@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0086 — multi-engagement billing batches. The single billing-batch
 // POST now accepts engagementIds[]; the join table holds the full set;

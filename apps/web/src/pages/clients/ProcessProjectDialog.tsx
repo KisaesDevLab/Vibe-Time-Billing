@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // "Process Project" dialog — opened from the Quick-log view. Staff pick a
 // tax year (defaulted from the engagement period), delivery / documents /

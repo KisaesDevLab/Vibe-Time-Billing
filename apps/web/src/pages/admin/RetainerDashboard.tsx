@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // R5 — Partner retainer dashboard. KPI strip + retainer table.
 // Tier-config + firm-settings live at /admin/retainer-tiers; this page

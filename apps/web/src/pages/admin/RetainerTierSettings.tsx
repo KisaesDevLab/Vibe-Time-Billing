@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // R1 — Retainer tier configuration page. Six return-type tabs, two
 // side-by-side editor cards per tab (TIER_1 + TIER_2). Firm-level

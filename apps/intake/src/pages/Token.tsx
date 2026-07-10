@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Tokenized "send-a-link" entry (/t/:token). Resolves the token to a bound
 // staff member, then renders the shared upload form (passing the token so

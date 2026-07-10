@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Rationale generation (PS Phase 7). The LLM writes prose ONLY — it is given the
 // figures and told not to change them. There is always a deterministic templated

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Server-side brochure hydration for the client portal: resolves service
 // names/prices, package tiers (with override precedence + description

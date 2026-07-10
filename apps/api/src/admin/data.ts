@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin "Data" endpoints — destructive operations gated on
 // firm:settings:write + step-up + typed confirmation.

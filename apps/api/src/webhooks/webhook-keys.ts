@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-configurable inbound webhook signing secrets for the notification
 // providers. Stored encrypted under KMS_KEY (same envelope as mail/sms/stripe

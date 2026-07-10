@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → ACH returns dashboard (Phase 22/26). Read-only view of ACH returns /
 // late-failure disputes with their NACHA classification and the side effects

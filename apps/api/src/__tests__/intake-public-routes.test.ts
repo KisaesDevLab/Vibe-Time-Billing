@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase B — public intake router shell. Verifies the health probe, the
 // credential-less CORS gate (incl. OPTIONS preflight), and the per-IP

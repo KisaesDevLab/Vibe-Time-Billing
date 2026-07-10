@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Unified People view (0114): reconciles client_contact with
 // client_portal_access. Verifies the merge (linked / contact_only /

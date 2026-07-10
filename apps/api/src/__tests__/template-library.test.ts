@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Template-library import: clones shipped system defaults into the firm
 // catalog with value mapping, idempotency, and per-tier package expansion.

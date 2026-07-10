@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0150 — shared serving core for externally shared files, used by both
 // the legacy direct endpoint (/api/shared/:token, share-public.ts) and

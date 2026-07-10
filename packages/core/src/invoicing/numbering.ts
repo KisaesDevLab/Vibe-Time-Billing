@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Invoice numbering. Atomic, gapless, per-firm. The actual atomicity is
 // at the DB layer (unique index on (firm_id, invoice_number) + a sequence

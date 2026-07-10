@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 3 item #8 — WebAuthn / passkey enrollment + assertion helpers.
 //

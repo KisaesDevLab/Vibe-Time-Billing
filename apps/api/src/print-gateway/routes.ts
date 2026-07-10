@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff print endpoints: list the gateway's printers for the picker,
 // report/remember the user's default printer. Mounted at /api/staff/print.

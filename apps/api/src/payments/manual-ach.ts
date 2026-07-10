@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Manual ACH bank capture — the client (or staff, from a paper authorization)
 // enters a routing + account number directly instead of logging into the bank.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-7 — in-app staff notification center. Each row is owned by its
 // recipient; a staff member only ever sees/acts on their own. Mounted at

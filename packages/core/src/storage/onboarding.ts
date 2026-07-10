@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Onboarding match scoring for the storage rebuild (Phase 4 of
 // FILE_MANAGER_ADDENDUM.md §4 Phase 4).

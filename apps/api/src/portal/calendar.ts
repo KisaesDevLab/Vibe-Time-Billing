@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-6 — portal Appointments tab data. Lists confirmed calendar
 // appointments (synced from staff calendars + matched to this client)

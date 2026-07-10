@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff-facing KB gap fill (batch B). New system articles covering the
 // Engagement Letters surfaces, the Payments list / ACH returns, AR aging by

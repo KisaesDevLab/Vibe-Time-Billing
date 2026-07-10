@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Engagement ↔ thread lifecycle. Called from the engagement router on
 // create and archive; idempotent so retries don't double-provision.

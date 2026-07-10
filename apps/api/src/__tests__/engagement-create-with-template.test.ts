@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0083 — POST /api/staff/engagements with templateId + period. Verifies
 // server-side name resolution from template.name_pattern, fallback to

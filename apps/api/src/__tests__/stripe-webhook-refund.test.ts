@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BYO Stripe webhook — refund / dispute branch. Locks in the QA fixes:
 //   1. a refund reopens the invoice (paid_cents recomputed net of refund)

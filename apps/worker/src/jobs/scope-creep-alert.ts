@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Scope-creep alert (Phase 19 #15, scope-creep variant of #16 detection).
 // Scans mixed-mode engagements with out-of-scope time entries in the last

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Server-side paginated list hook. Owns page/pageSize/total/rows and
 // refetches from a `{ rows|items, total }` endpoint whenever page, pageSize,

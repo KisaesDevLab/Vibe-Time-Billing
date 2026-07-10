@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Landing route: the visitor picks the staff member to send documents to.
 // Renders the visible staff-card grid (GET /staff); each card links to the

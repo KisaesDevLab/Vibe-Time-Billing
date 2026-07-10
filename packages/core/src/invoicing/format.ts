@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared money/date display formatting for client-facing invoice,
 // statement, payment and notification copy. Keeps the "$1,234.56" and

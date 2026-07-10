@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Reports — ?basis=cash toggle. Cash basis dates money by payment receipt
 // (net of refunds, voids excluded) instead of bucketing lifetime

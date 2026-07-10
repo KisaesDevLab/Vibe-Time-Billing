@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Q36 — CSV client import. A two-step flow: POST /import/preview runs a
 // dry-run (parse + validate, no writes) and reports per-row create/skip

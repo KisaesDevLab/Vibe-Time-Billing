@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared AI panel surface (Phase 23 #23). Consistent visual treatment
 // for every embedded AI feature — distinct from regular content via

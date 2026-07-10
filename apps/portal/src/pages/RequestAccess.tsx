@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Public self-service "request portal access" page. A visitor enters their
 // email/phone and a verification id (last-4 SSN or entity EIN); the firm

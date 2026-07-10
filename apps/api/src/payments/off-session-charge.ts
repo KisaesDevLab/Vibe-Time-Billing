@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Charge a client's saved payment method off-session (merchant-initiated) and
 // spread the amount across open invoices. Records a PENDING payment_receipt

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Attachment metadata endpoints. Bytes live on disk under /uploads — this
 // surface tracks owner+filename+size and returns a storage_path the

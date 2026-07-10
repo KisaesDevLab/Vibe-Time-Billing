@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Catalog → Tax payments. Two coordinated sections:
 //   1. Jurisdictions  (Federal, State - CA, Local - Oakland, …)

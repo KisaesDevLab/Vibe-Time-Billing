@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0146 — staged client-notification queue, rendered on /approvals for
 // staff with notification:approve. Filter pills (pending / scheduled /

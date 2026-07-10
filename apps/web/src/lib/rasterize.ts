@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Client-intake fallback: turn an uploaded image or PDF into a base64 PNG for
 // the GLM-OCR endpoint. Used when native window capture isn't available

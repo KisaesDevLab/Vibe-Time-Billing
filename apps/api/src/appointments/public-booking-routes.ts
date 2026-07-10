@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Public self-booking (0168). Unauthenticated surface mounted at
 // /api/public/book, served from the intake subdomain. A visitor resolves a

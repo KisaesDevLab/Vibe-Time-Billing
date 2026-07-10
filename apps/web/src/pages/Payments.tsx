@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Billing → Payments. Payment-grain listing of received payments with a derived
 // channel, status, fees, net, and drill-through to the invoice. Read-only;

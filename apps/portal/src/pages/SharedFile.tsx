@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0150 — Public recipient landing page for a shared file
 // (…/shared/file/:token). No portal auth — the token in the URL plus a

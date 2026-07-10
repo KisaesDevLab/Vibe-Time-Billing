@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0133 — new signature-request flow: associate a request with one of the
 // client's engagements, and capture signer provenance (person/contact) when a

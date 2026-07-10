@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin config for the bookmark-driven signing flow: per-return-type
 // signature page rules (which bookmark names are signature pages) and the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Unit tests for the pure state-machine planner in storage-sync.ts.
 // These exercise every branch of the addendum's §4 Phase 3 state

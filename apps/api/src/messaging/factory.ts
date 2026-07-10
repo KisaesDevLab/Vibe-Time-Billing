@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Build a live MailProvider / SmsProvider from a validated config object.
 // Used by both the dispatcher (when reading firm settings) and the

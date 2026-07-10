@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-6 — minimal RFC 5545 .ics builder for "Add to calendar". Hand-rolled
 // (no extra dependency); covers the fields a single appointment needs.

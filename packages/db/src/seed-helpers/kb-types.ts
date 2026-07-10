@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared types + helper for the knowledge-base seed content. Kept in their own
 // module so the per-area article files (kb-gap-*.ts) can import them without

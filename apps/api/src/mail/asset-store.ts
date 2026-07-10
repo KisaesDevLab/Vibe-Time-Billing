@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // In-memory store backing EmailIt URL attachments (opt-in via
 // MAIL_EMAILIT_ATTACHMENT_MODE=url). A send stashes the rendered PDF /

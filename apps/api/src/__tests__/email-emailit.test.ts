@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // EmailIt provider is wired through the config schema, masking, and factory.
 // Send path targets API v2 (v1 sunset Dec 2025): base64/URL attachments,

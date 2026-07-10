@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- date-range labels and inputs are siblings inside grid containers; matches PaymentsReceivedReport */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Signed forms report. A date-ranged, sortable/searchable list of
 // completed (or partially-signed) e-signature requests with direct

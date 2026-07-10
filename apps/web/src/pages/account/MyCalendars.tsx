@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-2 — staff "My Calendars" self-service card on the Account page.
 // Connect / disconnect Microsoft 365 + Google, then pick which calendars

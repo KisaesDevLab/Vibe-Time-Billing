@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Vibe Print LAN gateway config — firm-owned base URL + bearer key (and
 // default printer / auto-print toggle), stored encrypted at rest under

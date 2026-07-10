@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Message attachments (internal-messaging mount): upload encrypts under the
 // thread T-DEK and stores at a messages/attachments key; posting a message

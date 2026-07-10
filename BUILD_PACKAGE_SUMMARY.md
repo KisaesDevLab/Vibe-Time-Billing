@@ -41,10 +41,10 @@ This is the complete kickoff bundle. Five files at repo root, one seed file, and
    # Just keep portal-schema.ts handy as reference until Phase 2 creates the directory
    ```
 
-4. **Add the Elastic License 2.0 file:**
+4. **Add the PolyForm Small Business License 1.0.0 file:**
    ```sh
-   curl -o LICENSE.md https://polyformproject.org/wp-content/uploads/2020/05/Elastic-2.0.txt
-   # Or paste from polyformproject.org/licenses/internal-use/1.0.0/
+   curl -o LICENSE.md https://raw.githubusercontent.com/polyformproject/polyform-licenses/HEAD/PolyForm-Small-Business-1.0.0.md
+   # Or paste from polyformproject.org/licenses/small-business/1.0.0/
    ```
 
 5. **Initial commit:**

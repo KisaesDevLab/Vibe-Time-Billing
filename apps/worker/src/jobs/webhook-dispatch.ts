@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Outbound webhook dispatcher (Phase 21 #6). Scans PENDING/RETRYING
 // webhook_delivery rows whose next_attempt_at is due, POSTs them to the

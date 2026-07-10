@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0160 — recurring tasks. Proves: completing a task that carries a recurrence
 // cadence opens exactly one successor (OPEN, due advanced one cadence step,

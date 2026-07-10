@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Create-from-return: merge selected return pages + a default-doc template
 // into ONE draft signature package with auto-placed role-tagged fields,

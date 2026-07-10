@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-1 — firm admin OAuth app registration (mounted at
 // /api/staff/admin/calendar). Stores Microsoft 365 / Google client

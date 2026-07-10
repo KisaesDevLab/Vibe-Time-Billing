@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Routing-rule evaluation for the Vibe Filer inbox. Ordered list,
 // first-enabled-match wins. Pure — the DB/profile plumbing lives in the

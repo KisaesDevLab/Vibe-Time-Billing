@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff API for recurring installment payment plans (0192). A plan charges a
 // client's saved method a fixed installment each cycle, applied oldest-first

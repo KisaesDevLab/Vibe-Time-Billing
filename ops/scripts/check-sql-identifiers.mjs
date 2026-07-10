@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // SQL-identifier safety guard (security follow-up to the drizzle-orm
 // 0.45 upgrade / advisory GHSA-gpj5-g38j-94v9 / CVE-2026-39356).

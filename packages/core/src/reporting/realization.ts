@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Realization rollup. Aggregates `adjustment_allocation` rows up to
 // per-timekeeper, per-engagement, per-client, per-firm levels.

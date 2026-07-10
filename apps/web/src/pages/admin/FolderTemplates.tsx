@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin: client folder-structure templates. A template is a firm-level,
 // ordered list of virtual folders that the Files tab unions under every

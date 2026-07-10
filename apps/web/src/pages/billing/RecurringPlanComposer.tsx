@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Inline form for creating a recurring billing plan. Reused by:
 //   - Admin → Recurring plans (engagement picker exposed)

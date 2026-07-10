@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Knowledge-base query helpers shared by the Help routes and the AI
 // support chat (which retrieves articles to ground its answers).

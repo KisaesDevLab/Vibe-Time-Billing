@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Printable "Appointments" table, rendered to PDF by
 // apps/api/src/pdf/render.ts (Puppeteer). One row per appointment in the

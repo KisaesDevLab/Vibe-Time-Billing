@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Vibe Filer route + undo worker. Relocates an inbox object into a
 // client's folder tree (server-side copy → log → delete inbox original),

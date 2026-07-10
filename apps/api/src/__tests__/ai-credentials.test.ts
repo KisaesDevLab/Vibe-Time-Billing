@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0100 — Admin AI credentials router + direct egress mode.
 // Verifies: keys are encrypted at rest + returned only as a hint; updates

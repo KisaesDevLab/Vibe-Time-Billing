@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Template CRUD endpoints (v2 Sprint D). Three template types share the
 // same shape: list, get, create, clone, patch, archive. A small factory

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-5 — the dashboard data path: GET /events/my resolves each event's
 // confirmed-match client name; GET /unmatched/count badges pending events.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Default firm_folder_visibility_rules pack (Phase 6 of
 // FILE_MANAGER_ADDENDUM.md §3.6). Called from the firm-creation path

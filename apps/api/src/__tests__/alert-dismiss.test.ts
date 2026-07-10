@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Dismissing a worker alert removes it from the /alerts inbox (and therefore
 // the dashboard callout, which reads the same endpoint).

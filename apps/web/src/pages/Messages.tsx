@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff Messages — one place for all conversations, split into two tabs:
 //   • Clients — staff ↔ client engagement threads (visible in the portal).

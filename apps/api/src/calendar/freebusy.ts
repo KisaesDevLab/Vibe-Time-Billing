@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-2 — provider free/busy. For a staff member, query each connected
 // provider for busy intervals over a window:

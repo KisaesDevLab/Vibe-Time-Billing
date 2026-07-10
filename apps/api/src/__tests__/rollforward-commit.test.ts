@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Rollforward Phases 5/7 end-to-end: preview → approve → commit creates the
 // target engagement (DRAFT), its rolled drop-off, and the appointment; a

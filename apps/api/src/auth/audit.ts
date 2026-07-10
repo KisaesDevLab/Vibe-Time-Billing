@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Audit-log emitter. Every mutating endpoint and every auth event records
 // one row. The DB role enforces immutability (`0001_audit_log_immutability.sql`).

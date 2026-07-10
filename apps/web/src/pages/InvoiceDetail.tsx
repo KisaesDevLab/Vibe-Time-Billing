@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Invoice detail page — view / print / send only. Line items + the
 // engagement-derived totals breakdown (Subtotal / Surcharge / Tax /

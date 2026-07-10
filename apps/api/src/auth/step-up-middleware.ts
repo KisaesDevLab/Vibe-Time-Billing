@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Stage 1B — extended step-up. Layered on top of the existing
 // `requireStepUp` middleware in `middleware.ts`:

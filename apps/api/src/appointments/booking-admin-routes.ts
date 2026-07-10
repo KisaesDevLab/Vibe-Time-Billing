@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff-side management of public booking pages (0168): CRUD for the pages +
 // their own availability windows + approver/notify lists, and the booking-

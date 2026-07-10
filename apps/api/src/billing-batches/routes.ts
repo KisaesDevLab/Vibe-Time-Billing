@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Billing batch (pre-bill) endpoints — Phase 11. Creates a batch over
 // the engagement's unbilled time entries in a period, links each entry

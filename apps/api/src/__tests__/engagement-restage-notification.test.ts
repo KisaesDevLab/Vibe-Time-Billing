@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0166 — POST /api/staff/engagements/:id/restage-status-notification.
 // Verifies: re-staging the engagement's CURRENT status always queues a

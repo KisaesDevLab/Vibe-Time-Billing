@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Holiday + PTO calendar endpoints (Phase 4 #9-#10). Per-firm holidays
 // (app_user_id NULL) and per-user PTO blocks. The time-entry write path

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Knowledge-base articles covering admin pages that the main seed set didn't
 // document yet. Staff/admin audience (audience omitted = staff/internal).

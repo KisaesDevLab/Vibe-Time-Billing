@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0165 — cross-client + MCP enforcement for per-client restriction. The
 // global Tasks board and the MCP list_engagements tool must hide a

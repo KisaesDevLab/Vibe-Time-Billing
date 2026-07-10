@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-wide People directory list: server-side pagination envelope + the
 // portal/kind filters and sort (added so the 3000+ scale directory pages in

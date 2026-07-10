@@ -58,7 +58,7 @@ These features were considered and intentionally deferred. **Do not build them i
 These were noted during Q&A. Decide before P01 begins.
 
 1. **Multi-signer scope.** Partnership/S-corp/audit engagements often require ≥2 signers (engagement partner + officer; two partners; etc.). v1 single-signer-only is the locked decision, but: (a) schema must remain plural (`signatures` table, not a `signature_*` column on `proposals`); (b) acceptance portal hides the "add signer" UI but tolerates ≥1 row at the API layer; (c) document this so v1.5 only ships UI work.
-2. **OpenSign AGPL × T&B core license.** OpenSign runs as a separate sidecar container reached over the network. AGPL applies to the OpenSign binary only; the network boundary keeps T&B core's Elastic License 2.0 clean. Add a one-line note to `LICENSING.md`.
+2. **OpenSign AGPL × T&B core license.** OpenSign runs as a separate sidecar container reached over the network. AGPL applies to the OpenSign binary only; the network boundary keeps T&B core's PolyForm Small Business License 1.0.0 clean. Add a one-line note to `LICENSING.md`.
 3. **Manual client entry friction.** A firm with 200 clients cannot hand-enter all of them. Consider an emergency one-night CSV import sprint inside P02 (low cost, high adoption value). Locked decision is "no sync" — confirm whether minimal CSV is in or out before P02 begins.
 4. **No QBO sync means no GL export.** Firms running both Vibe T&B and Vibe MyBooks may expect proposal revenue to flow MyBooks → GL. Confirm whether MyBooks consumes T&B engagement data via a shared DB read, or whether QBO sync remains a v1.5 priority for non-MyBooks firms.
 

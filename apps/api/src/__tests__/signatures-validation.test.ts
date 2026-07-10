@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 4 — validatePlacements unit coverage: the authoritative coord +
 // page + per-signer-signature rules, independent of the HTTP layer.

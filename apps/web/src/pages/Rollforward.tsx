@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Tax-season rollforward wizard (4 steps): scope → engagements → appointments →
 // commit. Generates next-year engagements (the spine), rolls their drop-off

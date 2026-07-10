@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0165 — per-client visibility restriction access resolution. Single
 // source of truth reused by the clients router (per-client section guard),

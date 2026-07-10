@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Industry-standard billing realization (CCH/Practice CS/Canopy method):
 //   realization = (standard value of ALL billed WIP + net write-up/down)

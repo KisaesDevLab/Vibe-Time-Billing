@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared server-side pagination for list endpoints. Replaces the
 // copy-pasted `page`/`pageSize` clamp idiom scattered across routers so

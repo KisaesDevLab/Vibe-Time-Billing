@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // TR-2 renderer unit tests — the security-critical property is that the
 // output PDF contains ONLY the planned pages, never the withheld ones,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-7 — staff notification center. Lists this user's in-app
 // notifications (reschedule requests, client cancellations, calendar

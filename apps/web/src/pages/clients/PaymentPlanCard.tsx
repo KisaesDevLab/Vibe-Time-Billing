@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels wrap their controls inside grid forms; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Recurring installment payment plan for a client (staff view). A plan charges
 // a saved method a fixed installment each cycle, applied oldest-first across

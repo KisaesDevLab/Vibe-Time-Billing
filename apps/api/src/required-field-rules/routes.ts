@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Required-field rules (Phase 9 #11). Per-firm rules describing which
 // fields are required for a time-entry under certain conditions

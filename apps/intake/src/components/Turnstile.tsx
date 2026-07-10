@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Cloudflare Turnstile widget. Loads the script on demand and renders the
 // challenge explicitly; reports the token (or null on expiry/error) upward.

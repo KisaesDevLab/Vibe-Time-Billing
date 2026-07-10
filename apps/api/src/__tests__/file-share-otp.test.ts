@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0150 — OTP challenge/grant helper for gated file shares. Verifies:
 // codes are hashed at rest, resend cooldown + 24h quota, single live

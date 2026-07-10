@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Closing an engagement auto-fulfills its open DROP_OFF request(s) so they
 // stop showing outstanding / reminding. Non-drop-off requests are untouched.

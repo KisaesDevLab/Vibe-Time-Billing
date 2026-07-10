@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // P09 + P10 + P11 — Stripe Payment Element + Subscription helper tests.
 // All Stripe calls mocked via injected fetch.

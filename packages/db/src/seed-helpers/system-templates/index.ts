@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // System template library — the shipped CPA starter content (service
 // categories, services, packages, terms/engagement-letter scaffolds, and

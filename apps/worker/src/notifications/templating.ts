@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Worker-realm mirror of apps/api/src/notifications/templating.ts — loads a
 // firm's `notification_template` override and builds the shared firm-branding

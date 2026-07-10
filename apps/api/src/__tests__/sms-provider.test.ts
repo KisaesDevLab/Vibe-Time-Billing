@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // SMS providers normalize the destination to E.164 at the send boundary:
 // stored numbers usually omit the "+1" country code, so the provider

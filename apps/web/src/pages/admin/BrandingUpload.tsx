@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm branding asset uploader (wide logo or square app icon). Three-leg flow,
 // mirroring the client-file upload: ask the API for a presigned PUT URL, PUT

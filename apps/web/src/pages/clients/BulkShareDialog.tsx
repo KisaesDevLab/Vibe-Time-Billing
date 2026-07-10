@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0154 — staff "Share selected files" dialog. Creates ONE combined,
 // gated, expiring link whose landing page lists every selected file for

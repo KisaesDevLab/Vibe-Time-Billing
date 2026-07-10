@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Message view display fields — the staff thread list must surface the
 // CLIENT name (not just the engagement/title) and who last replied (the

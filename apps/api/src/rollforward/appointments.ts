@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Rollforward Phase 4: appointment candidates for the APPROVED engagement
 // candidates (cascade), with suggested next-year datetimes (date moved by the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Minimal typings for the slice of pdfjs-dist's legacy ESM build we use
 // in the tax-return parser (outline + per-page text). The package ships

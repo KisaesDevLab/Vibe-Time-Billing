@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // R4-followup — coverage for the delayed retainer notification job
 // handlers. The handlers are pure functions of `(db, log, args, payload)`

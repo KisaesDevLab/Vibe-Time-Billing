@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Stage 3 — pay-to-unlock file promotion. Called from both the Stripe
 // webhook (charge.succeeded) and POST /payments/receive (manual

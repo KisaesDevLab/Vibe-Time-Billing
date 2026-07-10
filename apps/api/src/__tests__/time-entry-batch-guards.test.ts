@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Batched-entry guards on split and self-delete. Both endpoints used to
 // archive entries checking only lockedAt/BILLED/LOCKED — an entry claimed

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Thin HTTP client for the Vibe Print gateway. The base URL is a
 // firm-configured trusted LAN address, so (unlike the Puppeteer asset

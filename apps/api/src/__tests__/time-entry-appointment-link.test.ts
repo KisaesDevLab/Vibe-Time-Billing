@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0179 — "Log time" from an appointment persists a durable back-link
 // (time_entry.appointment_id) and validates the appointment is the firm's.

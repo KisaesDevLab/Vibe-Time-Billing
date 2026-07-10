@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Mail wrapper that gives every outbound email a branded HTML body (firm logo
 // + name header, support footer) when the caller didn't supply its own HTML.

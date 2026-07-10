@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Process-wide FirmKeyManager singleton. Built lazily so unit tests
 // that don't need crypto don't pay the libsodium init cost (now via

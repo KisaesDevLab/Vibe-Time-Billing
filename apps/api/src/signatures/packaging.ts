@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Merged-package field placement. A signing package is assembled from ordered
 // parts (extracted return signature page(s), firm default-document templates,

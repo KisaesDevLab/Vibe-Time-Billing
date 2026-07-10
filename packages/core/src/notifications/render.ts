@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared notification rendering — the one place every outbound email/SMS
 // resolves its `{{ token }}` copy. Pure (no DB): callers load the firm's

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Client-initiated messaging: a portal client can start a thread with no
 // engagement (POST /threads). The thread auto-routes to the client's

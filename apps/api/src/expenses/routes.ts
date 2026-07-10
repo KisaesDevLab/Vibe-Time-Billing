@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Engagement expenses — out-of-pocket costs billed to the client at
 // cost + markup%. Expenses carry no timekeeper and never produce

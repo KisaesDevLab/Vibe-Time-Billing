@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Auto-matching a tax return to the client's engagement: formCode → returnType
 // mapping, and the single-unambiguous-match rule (0/2+ → null for manual link).

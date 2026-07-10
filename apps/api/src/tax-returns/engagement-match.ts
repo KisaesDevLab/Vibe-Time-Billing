@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Best-effort matching of a tax return to the client's engagement. A return
 // carries (clientId, formCode, taxYear); an engagement carries returnType

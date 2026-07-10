@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0161 — Web Push sender. Verifies: a live subscription is pushed and its
 // lastUsedAt refreshed; a gone endpoint (HTTP 410) is pruned; and with no

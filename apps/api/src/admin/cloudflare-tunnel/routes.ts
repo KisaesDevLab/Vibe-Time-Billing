@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Cloudflare Tunnel admin routes — in-app provisioning replaces the
 // cloudflared CLI dance documented in ops/docs/install.md Section 6.

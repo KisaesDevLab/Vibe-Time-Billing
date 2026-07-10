@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0168 — booking-request hold expiry sweep: PENDING holds past their
 // hold_expires_at flip to EXPIRED (and notify the visitor); future PENDING

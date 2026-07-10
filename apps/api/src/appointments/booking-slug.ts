@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Short, human-typeable slugs for public booking links (0168). Auto codes
 // use an unambiguous alphabet (no 0/1/I/L/O/U) so a slug pasted into a text

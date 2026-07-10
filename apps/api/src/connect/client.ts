@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Vibe Connect HTTP client implementation of @vibe/core/connect.ConnectClient.
 

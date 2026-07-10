@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // WIP age alert (Phase 11 #24). Scans engagements whose oldest unbilled
 // time entry is older than threshold (default 45 days). Emits one

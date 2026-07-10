@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Refresh the materialized views from 0003_materialized_views.sql.
 // Concurrent refresh means HTTP-side reads don't block during the

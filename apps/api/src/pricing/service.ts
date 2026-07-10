@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pricing-suggestion orchestration (PS Phase 8). Assembles cohort inputs →
 // resolves the economic factor → runs the deterministic engine (with any

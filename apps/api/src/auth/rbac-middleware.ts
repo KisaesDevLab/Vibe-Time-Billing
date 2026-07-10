@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // requirePermission middleware. Resolves the staff user's role
 // assignments from the database, applies the role templates plus the

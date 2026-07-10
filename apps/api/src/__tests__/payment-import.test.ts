@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0158 — Payments → Import tab API: CSV preview matching (client by
 // external_id→aws_id, ACTIVE engagement of the chosen type, unbilled

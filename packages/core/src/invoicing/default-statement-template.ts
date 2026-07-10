@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shipped default statement-of-account template. Ported from the legacy
 // renderStatementHtml design into the invoice template-engine syntax so

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Template library import API. Per-area endpoints let an admin seed the firm's
 // own catalog with the shipped system defaults:

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin: firm default documents appended to a signing package, per return type.
 // This is a library CRUD only — precise field placement is out of scope; absent

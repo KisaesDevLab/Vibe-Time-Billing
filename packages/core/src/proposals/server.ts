@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Server-only barrel for the proposals package. Pulls in Node-only
 // crypto modules (node:crypto) so it must NOT be imported from

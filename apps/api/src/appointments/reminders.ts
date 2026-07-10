@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0121 — appointment reminder schedules. A schedule is a list of steps
 // { offsetMinutes (before start), channel }. It can live on an appointment

@@ -89,7 +89,7 @@ KisaesDevLab/Vibe-Time-Billing/
 | `CLAUDE.md` | `CLAUDE.md` | |
 | `BUILD_PLAN.md` | `BUILD_PLAN.md` | |
 | `QUESTIONS.md` | `QUESTIONS.md` | |
-| `LICENSE.md` | `LICENSE.md` | Elastic License 2.0 |
+| `LICENSE.md` | `LICENSE.md` | PolyForm Small Business License 1.0.0 |
 | `AUTONOMOUS_EXECUTION_PROMPT.md` | `AUTONOMOUS_EXECUTION_PROMPT.md` | |
 | `BUILD_PACKAGE_SUMMARY.md` | `BUILD_PACKAGE_SUMMARY.md` | Reference doc; delete after bootstrap if you want |
 | `package.json` | `package.json` | |
@@ -251,7 +251,7 @@ echo "Bootstrap complete. Open Claude Code at this directory and paste the promp
 After bootstrap, before pasting the autonomous prompt:
 
 - [ ] `tree -L 3 -a -I 'node_modules|.git'` shows the structure above
-- [ ] `cat LICENSE.md | head -5` confirms Elastic License 2.0 header
+- [ ] `cat LICENSE.md | head -5` confirms PolyForm Small Business License 1.0.0 header
 - [ ] `cat .env.example` shows all required env vars
 - [ ] `ls ops/scripts/*.sh` and verify all are executable
 - [ ] `ls seed/engagement-letters/` shows 8 templates

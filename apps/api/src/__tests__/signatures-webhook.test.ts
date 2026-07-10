@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 7 (production) — the OpenSign webhook drives signature_requests
 // end-to-end. A `completed` event for a document we own reconciles the

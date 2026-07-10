@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Clean line-art paperclip icon (not the emoji). Used by the message
 // composers to attach files. Size + color are props.

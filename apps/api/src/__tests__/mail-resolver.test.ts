@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // The Admin → Messaging EMAIL provider config must actually drive real
 // sends (not just the test button). loadFirmMailProvider decrypts the

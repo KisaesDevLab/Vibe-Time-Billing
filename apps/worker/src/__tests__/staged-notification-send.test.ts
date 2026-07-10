@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0146 — staged-notification send job. Verifies: a SCHEDULED row fans
 // out EMAIL/SMS via the dispatchers and lands SENT with

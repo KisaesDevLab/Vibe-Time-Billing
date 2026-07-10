@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Regression guard for the drizzle-orm 0.31+ error-wrapping behavior.
 // A failed query is wrapped in a DrizzleQueryError whose `.cause` holds

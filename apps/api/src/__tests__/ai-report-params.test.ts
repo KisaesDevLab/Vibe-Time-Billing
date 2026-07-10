@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // The AI report-params registry validates and constrains anything the model
 // produces before it becomes a saved report's params. These pin the contract.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Economic factor service (PS Phase 4). The factor is the trailing-12-month %
 // change applied once, after the margin gross-up. Sources:

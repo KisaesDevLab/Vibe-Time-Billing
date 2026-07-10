@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff-readable list of the firm's engagement progress statuses, for
 // pickers (e.g. changing status while logging time). Distinct from the

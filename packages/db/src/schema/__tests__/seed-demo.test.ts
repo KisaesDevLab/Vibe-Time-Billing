@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Smoke-test that the demo seed actually lands a complete Vance scenario:
 // engagement, four entries, applied cascade adjustment with the exact

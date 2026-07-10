@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Assembles an InvoiceTemplateInput from a RANDOM real invoice in the
 // firm, for the invoice-template editor's live preview — so the preview

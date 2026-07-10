@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-wide People directory (0115 follow-up): GET /people list + search,
 // GET /people/:id detail with per-client portal status, PATCH /people/:id,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Recurring-billing handler. For each ACTIVE plan whose next_run_date
 // has arrived, in one transaction:

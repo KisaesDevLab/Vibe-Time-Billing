@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-wide People directory (0115 follow-up). The person directory is
 // firm-global — one row per human — but until now it could only be viewed

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin save-path regressions:
 //  - PATCH /firm-settings with a MIXED body (firm_settings fields + firm-table

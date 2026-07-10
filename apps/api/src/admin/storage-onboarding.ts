@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Storage onboarding endpoints (Phase 4 of FILE_MANAGER_ADDENDUM.md).
 // Surfaces every top-level folder in the firm's bucket area, classifies

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Team messages panel — staff-to-staff direct + group chat. Same Card-based
 // two-column layout as the Clients tab (thread list + ThreadView), with a

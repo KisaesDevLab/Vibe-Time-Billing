@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP0 — Mobile card-list fallback for the portal Files page. At <720px
 // the file table becomes a stacked card with icon + name + size +

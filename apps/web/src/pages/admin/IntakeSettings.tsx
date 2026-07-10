@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Document intake. Controls which staff appear on the public intake
 // page, their order/title, per-card notification prefs, and headshots.

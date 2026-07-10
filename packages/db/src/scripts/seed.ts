@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Seed orchestrator for the appliance. Produces a usable baseline for
 // development and the Phase 2 acceptance smoke test:

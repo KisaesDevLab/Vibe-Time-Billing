@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Engagement close-out true-up (realization-only). Verifies: pulls + claims
 // accumulated WIP, derives the target (explicit or summed RECURRING_FEE

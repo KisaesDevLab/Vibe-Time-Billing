@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Reset a staff user's password by app_user id. Companion to
 // create-admin.ts (which upserts by email and also grants roles); this

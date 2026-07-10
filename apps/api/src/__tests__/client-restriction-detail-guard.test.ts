@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0165 QA fix — the client access-restriction was enforced on LIST endpoints
 // but missing on single-resource detail/mutation handlers in the requests,

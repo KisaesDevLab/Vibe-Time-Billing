@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Client-portal service worker (installable PWA). Built by vite-plugin-pwa in
 // injectManifest mode, which replaces self.__WB_MANIFEST with the precache

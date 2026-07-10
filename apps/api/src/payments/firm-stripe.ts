@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Resolve the Stripe credentials to use for a firm's connected-account calls
 // (SetupIntents, off-session charges). Two supported configurations:

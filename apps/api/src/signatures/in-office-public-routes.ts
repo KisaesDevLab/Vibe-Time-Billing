@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Public (no-login) in-office signing surface. A printed QR encodes
 // `${PORTAL_BASE_URL}/in-office/<token>`; the portal page calls these
@@ -50,9 +50,7 @@ export function createInOfficePublicRouter(deps: InOfficePublicDeps): Router {
     return deps.openSignClient ?? openSignClientFromEnv();
   }
 
-  async function resolve(
-    token: string,
-  ): Promise<
+  async function resolve(token: string): Promise<
     | {
         ok: true;
         request: typeof signatureRequests.$inferSelect;

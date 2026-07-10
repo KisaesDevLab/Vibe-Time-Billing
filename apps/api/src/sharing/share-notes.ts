@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Client-timeline notes for file shares. When staff share a file with an
 // outside party — and when that party later opens or downloads it — we drop

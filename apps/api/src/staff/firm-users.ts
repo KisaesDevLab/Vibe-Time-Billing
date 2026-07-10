@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Lightweight active-staff list for assignment pickers (requests, etc.).
 // Any authenticated staff may list colleague names — assignment is a core

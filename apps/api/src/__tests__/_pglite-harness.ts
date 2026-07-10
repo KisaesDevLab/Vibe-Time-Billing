@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // In-process Postgres (PGlite) + Drizzle harness for DB-backed
 // integration tests in apps/api. The runtime API is identical to

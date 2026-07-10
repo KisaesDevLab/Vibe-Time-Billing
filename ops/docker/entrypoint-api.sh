@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: Elastic-2.0
+# SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 #
 # Production API entrypoint. Runs migrations once at boot, then starts the
 # Express server. Idempotent — `pnpm db:migrate` tracks applied filenames

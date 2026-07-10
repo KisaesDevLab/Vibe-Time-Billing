@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0115 — firm-global person directory helpers. findOrCreatePerson is the
 // single dedup chokepoint used by contacts CRUD, client import, and the

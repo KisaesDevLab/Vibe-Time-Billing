@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Approval queue endpoints (Phase 18). Lists pending approvals for the
 // current user and accepts approve / reject decisions. The actual

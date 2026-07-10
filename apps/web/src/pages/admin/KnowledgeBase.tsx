@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Knowledge Base. List, create, edit, and archive support
 // articles. Gated on the `kb:manage` permission.

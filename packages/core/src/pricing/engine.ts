@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Deterministic bottom-up pricing engine. The ENGINE picks the number (a range)
 // from structured inputs; the LLM only writes prose. Same inputs → same number.

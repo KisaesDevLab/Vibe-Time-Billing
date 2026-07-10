@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Request-reminder worker. Daily sweep that emails the client billing
 // contact when an OPEN / NEEDS_INFO request is within

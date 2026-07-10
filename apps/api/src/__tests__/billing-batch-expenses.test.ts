@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0199 — engagement expenses in the billing batch. A batch claims unbilled
 // expenses in its period, bills them at cost + markup, and applies the same

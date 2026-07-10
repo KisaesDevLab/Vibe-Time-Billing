@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0206 follow-up — staff-readable voice-call outcome log. Backs the
 // "Recent voice calls" card on Admin → Messaging and the per-client

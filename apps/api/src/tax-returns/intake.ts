@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // API-side tax-return intake: the parse-free core (intake-core.ts) plus a
 // best-effort PDF outline parse. The route and any API caller use this;

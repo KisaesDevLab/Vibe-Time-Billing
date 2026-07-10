@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Reports / MRR — regression for the recurring-frequency normalization.
 // The monthly() switch was missing a SEMIANNUAL case, so a plan billed every

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // When a signature request reaches 'completed' (reconcile), notify the firm
 // (in-app staff_notifications to the request creator + the engagement's

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PRINT channel for notifications. When a firm has an enabled
 // notification_template with channel='PRINT' for a given kind, this

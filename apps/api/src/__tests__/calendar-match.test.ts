@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-4 — matching: exact-email hit/miss, fuzzy hit/miss, multi-client
 // collision, the persisted runner (idempotent on confirmed), and the

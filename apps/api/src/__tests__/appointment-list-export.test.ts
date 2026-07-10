@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Appointments list: the named-location join on GET /list and the
 // POST /list/pdf table export (rendered from the rows the client sends).

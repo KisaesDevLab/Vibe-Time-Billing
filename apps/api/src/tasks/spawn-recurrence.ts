@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Recurring-task spawn helper. Shared by both task PATCH handlers (the
 // firm-wide /tasks router and the per-client /clients/:id/tasks router) so the

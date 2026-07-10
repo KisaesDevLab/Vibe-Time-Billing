@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Q36 — CSV client import. Preview is a dry-run (no writes); commit
 // inserts in one transaction with skip-existing dedupe (external_id then

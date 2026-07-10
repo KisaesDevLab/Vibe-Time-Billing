@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Loads the firm's editable statement template (mirrors the invoice
 // template loader). No saved row → shipped default statement template,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pure helper that turns a request template + a target (client +
 // engagement + optional overrides) into the row payload(s) needed to

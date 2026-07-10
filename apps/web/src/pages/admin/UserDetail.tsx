@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin user detail page. Three tabs match the CCH-style staff record:
 //   Main         — first/middle/last, title, salutation, hired/left, status

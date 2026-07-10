@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // AI pricing suggestion (migration 0178). Two tables:
 //   - economic_index: cached CPI/ECI figures (live source + as-of date) so the

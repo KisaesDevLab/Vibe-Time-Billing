@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Stripe Terminal (Phases 15–17). Provision a Location + Reader on the
 // firm's connected account, see reader status, and collect a payment in person

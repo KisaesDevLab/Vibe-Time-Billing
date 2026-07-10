@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // @vibe/storage public surface. The factory `buildStorageClient`
 // inspects the env vars and picks B2 (production) vs Mock

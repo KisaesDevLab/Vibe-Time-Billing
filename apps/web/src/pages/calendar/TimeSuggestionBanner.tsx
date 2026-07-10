@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-8 — "Did you just meet with X?" dashboard banner. Shows pending
 // post-appointment time-entry suggestions with Log time / Not now (snooze)

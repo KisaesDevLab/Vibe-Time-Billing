@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Compose the firm's mailing-address columns (firm_settings.mailing_*) into the
 // single multi-line `firm.address` string that invoice / statement / letter /

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Server-side hydration of a proposal brochure for the client portal. The
 // portal cannot call the staff catalog APIs, so we resolve each block into

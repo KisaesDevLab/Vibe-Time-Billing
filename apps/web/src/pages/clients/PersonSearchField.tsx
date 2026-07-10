@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Typeahead over the firm-wide person directory. As staff type a name or
 // email, matching firm people drop down — picking one links that EXISTING

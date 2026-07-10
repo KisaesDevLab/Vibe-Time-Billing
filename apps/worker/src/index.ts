@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BullMQ worker entrypoint. Registers the recurring scheduled jobs that
 // drive the appliance — recurring billing runs (Phase 10), nightly AR

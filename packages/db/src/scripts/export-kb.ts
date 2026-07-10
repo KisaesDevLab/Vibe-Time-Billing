@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Export the seeded knowledge base to /knowledge-base/*.md (a Markdown mirror
 // of the canonical content in seed-helpers/knowledge-base.ts) plus an index.

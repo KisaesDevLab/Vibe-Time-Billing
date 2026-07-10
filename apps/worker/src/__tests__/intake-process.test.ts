@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase D — intake-process worker pipeline. Exercises the clean path
 // (scan → assemble PNG pages into a PDF → mark received → notify), the

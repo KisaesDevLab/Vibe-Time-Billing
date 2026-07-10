@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Milestone date-trigger worker (Phase 10 #6-#7). For each PENDING
 // milestone whose trigger_type=DATE and trigger_date has arrived, mark

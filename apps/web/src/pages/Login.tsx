@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff sign-in. Three methods live side-by-side (0087 + passkey login):
 //   - Magic link → 2FA → session

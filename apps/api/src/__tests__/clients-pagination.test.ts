@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Server-side pagination + filtering on the clients list (GET /). At firm
 // scale (3000+ clients) the list must page in SQL, not slice a capped fetch:

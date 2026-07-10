@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0083 — Admin page for recurring engagements. Lists firm
 // recurrences + lets staff create / pause / resume / cancel / run-now.

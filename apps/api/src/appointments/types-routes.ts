@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-1 — Appointment Types admin API. Mounted at
 // /api/staff/admin/appointment-types. The firm-managed library of

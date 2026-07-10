@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-2 — per-staff calendar connect + management (mounted at
 // /api/staff/calendar, authed). Self-service: a staff member connects,

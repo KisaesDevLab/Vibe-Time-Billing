@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pure scheduling + retention logic for the configurable appliance backup
 // (Q12 revision — see QUESTIONS.md). The executor lives in

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0181 — public pay-by-link API (open internet surface). Lets a client
 // pay an invoice WITHOUT a portal session: the link token is the

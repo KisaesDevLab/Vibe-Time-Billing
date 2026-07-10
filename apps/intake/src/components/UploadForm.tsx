@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared intake upload flow used by both the per-staff route (/:staffId)
 // and the tokenized link (/t/:token). Collects recipient details + an

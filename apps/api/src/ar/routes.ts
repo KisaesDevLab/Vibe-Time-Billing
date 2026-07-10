@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // AR aging endpoints (Phase 15). Bucketizes outstanding invoices by days
 // past their due date, scoped to the firm. Uses the @vibe/core/billing

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Producer side of the Vibe Filer route pipeline. POST /filer/commit
 // enqueues one idempotent job per included inbox row (copy → log →

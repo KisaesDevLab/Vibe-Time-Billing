@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Top-level Engagements list view (v2 Part 2). Canopy "Tasks"-style:
 // four sub-tabs (Active Work / All Work / My Work / Queued Work),

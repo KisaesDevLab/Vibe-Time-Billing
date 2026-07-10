@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Direct-print control for the Vibe Print gateway. Renders nothing when
 // the gateway isn't enabled (so it's safe to drop next to any "Open PDF"

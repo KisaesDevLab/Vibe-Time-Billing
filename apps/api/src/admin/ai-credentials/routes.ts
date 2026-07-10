@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0100 — Admin → AI settings. Lets a firm enter its own AI provider keys
 // through the UI instead of env vars. API keys are MFK-wrapped at rest

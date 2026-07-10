@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Simple tab bar. Caller owns the active key + onChange. Each Tab has a
 // label and an optional badge. The component does not render the

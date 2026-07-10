@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Process Project printing: tax-year prefill, PDF render (no persistence,
 // merges the staff-chosen dropdowns + client/engagement data), permission

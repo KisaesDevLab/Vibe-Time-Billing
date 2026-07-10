@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels wrap their text + control as siblings inside grid cells; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Public self-service booking page (/book/:slug). A visitor opens a link the
 // firm pasted into a text/email and walks a short wizard: pick an appointment

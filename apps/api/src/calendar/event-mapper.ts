@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-3 — normalize a provider event (Microsoft Graph or Google Calendar)
 // into our calendar_events column shape. Pure + unit-tested; the network +

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PP4b — Proposal editor with dnd-kit drag/drop, debounced autosave,
 // validation pipeline, and undo/redo.

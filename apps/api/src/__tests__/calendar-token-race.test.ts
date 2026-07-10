@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Token-refresh concurrency: two callers (api + worker) refreshing the
 // same connection must not overwrite each other's rotated refresh token.

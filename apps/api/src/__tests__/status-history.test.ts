@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Progress-status change history: surfaces audit_log rows
 // (entity_type='engagement_workflow_state') as who/when/old→new, with

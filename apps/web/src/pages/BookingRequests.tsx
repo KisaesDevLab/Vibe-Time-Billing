@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0168 — the booking-request approval inbox. Each pending public-booking
 // request renders as a card with the requested time, the staff member,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0151 — firm-level staff second-factor policy (revises locked decision
 // #5). One question, asked from two places: the password sign-in flow

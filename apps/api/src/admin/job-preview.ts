@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Dry-run preview for background jobs: read-only "what would this job act on
 // right now" counts, so an operator can sanity-check before a manual run.

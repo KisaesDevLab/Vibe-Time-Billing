@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Per-staff upload route (/:staffId): resolves the chosen staff member from
 // the public card list, then renders the shared upload form.

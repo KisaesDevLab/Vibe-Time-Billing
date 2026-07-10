@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0200 — recurring-engagement rollforward. When a recurrence with the
 // rollforward toggles spawns the next annual period, the source engagement's

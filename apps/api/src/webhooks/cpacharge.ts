@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CPACharge webhook handler (Phase 14 #19). Stub — verifies the HMAC
 // signature, looks up the matching payment row, and updates status.

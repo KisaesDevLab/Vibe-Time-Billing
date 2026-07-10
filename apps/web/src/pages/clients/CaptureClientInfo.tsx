@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Capture Client Info — desktop-only modal. Lists on-screen windows, captures
 // the chosen one (silently, in-memory), sends the PNG to the local GLM-OCR

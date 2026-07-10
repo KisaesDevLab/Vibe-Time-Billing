@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Recurring-task date math. When a recurring task is completed the app opens
 // its successor with the next due date; this computes that date. Mirrors the

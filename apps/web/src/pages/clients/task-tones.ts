@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared pill tones + types for client tasks, used by both the per-client
 // TasksCard and the top-level Tasks list page.

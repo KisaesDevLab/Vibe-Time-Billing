@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Expanded MCP tool catalog — read/write/reporting/automation. Verifies the
 // new tools dispatch, are firm-scoped, and honor per-tool scope denial.

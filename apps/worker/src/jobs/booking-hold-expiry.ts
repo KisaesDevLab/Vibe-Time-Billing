@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0168 — expire stale public booking-request holds. A PENDING booking_request
 // reserves its slot until hold_expires_at; once that passes without a staff

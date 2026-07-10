@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Retention enforcement worker (Phase 19 #11). Deletes old AI request log
 // rows and old webhook_delivery rows past their retention window. The

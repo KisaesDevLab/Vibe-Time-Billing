@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Vibe Connect integration client. Optional secondary notification
 // channel + engagement-letter e-sign relay. The actual HTTP client lives

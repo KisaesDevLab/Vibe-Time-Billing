@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PS Phases 7-8 — end-to-end suggestion: cohort → engine → rationale, and the
 // AI-failure graceful degradation (PS-22: a number + templated rationale even

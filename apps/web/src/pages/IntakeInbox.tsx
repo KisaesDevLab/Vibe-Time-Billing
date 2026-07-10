@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff Intake Inbox. Lists received submissions, shows decrypted details +
 // files, and disposes a session into a client's File Manager folder (with

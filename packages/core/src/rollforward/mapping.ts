@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Rollforward date-mapping engine. Two modes:
 //   DEADLINE  — anchor to the filing deadline, preserving the signed whole-week

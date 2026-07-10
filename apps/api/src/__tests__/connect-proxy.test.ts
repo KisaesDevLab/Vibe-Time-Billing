@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Connect placeholder routes — verifies all four upstream-proxy
 // endpoints (enroll, subscriptions, destinations, events/dry-run)

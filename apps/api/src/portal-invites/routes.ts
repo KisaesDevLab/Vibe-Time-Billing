@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Portal-identity invitation flow (Phase 6 #12). Firm-side endpoints
 // for inviting a person to a client. Dedupes by (firm, email) and

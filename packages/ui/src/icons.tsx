@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Line-art icon set (Feather-style, 24x24, stroke=currentColor). Same
 // convention as Paperclip.tsx: size + color props, optional title that

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Pricing-suggestion API (PS Phases 8 + 10). Compute an on-demand suggestion for
 // an engagement (engine + Tier-2 + rationale), record the accept/edit/override

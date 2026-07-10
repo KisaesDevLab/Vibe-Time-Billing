@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Producers for auto-print jobs: signature-confirmation reports (on tax
 // return signing) and terminal payment receipts (on card-present

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Regression coverage for the three allocation methods the dialog was
 // failing to drive: SPECIFIC_ENTRIES, CUSTOM_WEIGHTED, PARTNER_ABSORBS.

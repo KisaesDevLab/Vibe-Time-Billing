@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // P03 — Packages CRUD + tier math tests. Direct-handler invocation
 // against a real pglite-backed Drizzle harness. Mirrors the test

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Drag-to-place field editor (P9). Renders the source PDF with pdf.js,
 // overlays per-signer field boxes positioned in NORMALIZED coordinates

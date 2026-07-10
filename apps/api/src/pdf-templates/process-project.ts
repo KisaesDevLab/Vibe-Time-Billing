@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Printable "Process Project" HTML, rendered to PDF by
 // apps/api/src/pdf/render.ts (Puppeteer). A faithful replica of the

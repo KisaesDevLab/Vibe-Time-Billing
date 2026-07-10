@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Webhook event publisher. Inserts webhook_delivery rows for every
 // matching subscribed endpoint. The dispatcher worker handles delivery,

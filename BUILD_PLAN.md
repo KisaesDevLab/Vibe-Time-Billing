@@ -2,7 +2,7 @@
 
 **Repository (planned):** `KisaesDevLab/Vibe-Time-Billing`
 **Brand:** Vibe Time & Billing
-**License:** Elastic License 2.0 (commercial license required for client-portal access)
+**License:** PolyForm Small Business License 1.0.0 (commercial license required for client-portal access)
 **Created:** May 19, 2026
 **Total phases:** 26
 **Total items:** ~513
@@ -46,7 +46,7 @@ Self-hosted Docker appliance for CPA practice time tracking, recurring billing, 
 5. **`adjustment_allocation` at per-timekeeper grain** — the realization attribution wedge
 6. **Immutable audit log** — edits create versioned records, never overwrite
 7. **Local AI sees firm data; cloud AI sees nothing without explicit toggle**
-8. **Elastic License 2.0** licensing, commercial license for client-portal features
+8. **PolyForm Small Business License 1.0.0** licensing, commercial license for client-portal features
 9. **Separate auth realms** — staff and client portal users have distinct session stores and trust models
 10. **Identity-based portal model** — `portal_identity` is the person; `client_portal_access` is the join to clients. Email and phone are contact methods on the identity, not the identity itself. One person who is responsible for three entities at the same firm gets one login and switches entities via the UI.
 
@@ -114,7 +114,7 @@ Build follows the established Vibe pattern:
 9. Dockerfile (multi-stage: build → runtime)
 10. `docker-compose.dev.yml` — postgres 16, redis 7, web, portal, api, worker
 11. ESLint + Prettier + lint-staged + husky pre-commit hooks
-12. `LICENSE.md` (Elastic License 2.0), `README.md`, `CLAUDE.md`, `QUESTIONS.md`
+12. `LICENSE.md` (PolyForm Small Business License 1.0.0), `README.md`, `CLAUDE.md`, `QUESTIONS.md`
 13. GitHub Actions workflow: lint, typecheck, test, docker build on PR
 14. Caddy config templates for two-host routing (staff + portal)
 15. Environment configuration pattern (`.env.example`, validated at startup)

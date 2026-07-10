@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 6 + 8 — verify the activated/exhausted notification helpers
 // resolve recipients correctly (client billing contact + partner +

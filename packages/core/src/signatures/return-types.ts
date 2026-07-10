@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Return-type vocabulary for signature page rules. A tax return's free-text
 // `formCode` (1040, 1040-SR, 1120-S, MO-1040, …) is normalized to a rule

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Passkey (WebAuthn) sign-in. The full WebAuthn signature verification
 // is library-internal and would need recorded fixtures from a real

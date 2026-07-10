@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { describe, it, expect } from 'vitest';
 
 import { evaluate, type ApprovalRule } from './rules';

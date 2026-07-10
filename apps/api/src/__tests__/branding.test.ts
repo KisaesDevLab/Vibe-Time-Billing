@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0162 — firm logo upload + public branding serving. Proves: icon generation
 // produces square PNGs; completing a logo upload points brand_logo_url at the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Payments → Import tab (0158). Upload a payroll-charges CSV, pick the
 // engagement type it bills, preview the per-client plan (matched client,

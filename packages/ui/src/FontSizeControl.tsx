@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // A−/A+ font-size control. Mirrors the ThemeToggle pattern: persists
 // the user's choice in localStorage, applies via `body { zoom: N }`

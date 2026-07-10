@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff-to-staff messaging: directory, DM create + dedupe, group create,
 // encrypted send round-trip, unread counts + mark-read, member add/remove,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Signature confirmation report — printed automatically when a tax-return
 // signature request completes. Pure function: given the request + signer

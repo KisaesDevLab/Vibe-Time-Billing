@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Stage 4 — portal-side messaging. Distinct from the staff router; uses
 // the portal session middleware and scopes every query to threads the

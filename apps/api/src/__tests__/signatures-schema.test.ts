@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Signatures module (0108) — schema applies + the request → signers →
 // placements → events chain round-trips, with the status/field CHECKs and

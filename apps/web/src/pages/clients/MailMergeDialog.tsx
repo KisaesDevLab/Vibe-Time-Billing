@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels sit next to their controls inside grid containers, matching the sibling Clients.tsx dialogs; revisit with htmlFor/id in a polish pass */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Mail merge — pick a firm letter template, preview it against the first
 // selected client, then deliver the personalized letters one of three

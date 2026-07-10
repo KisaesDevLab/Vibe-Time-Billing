@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // MCP server tool catalog. The actual MCP wiring lives in apps/api
 // (separate Express endpoint at MCP_PORT). This module defines the

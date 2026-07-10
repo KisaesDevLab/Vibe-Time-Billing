@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Vibe Connect interface (Phase 24). Connect is a future Kisaes-hosted
 // event-routing layer that lets firms wire one webhook destination and

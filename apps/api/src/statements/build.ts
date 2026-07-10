@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Statement-of-account data assembly. Extracted from routes.ts so the
 // admin template-preview can reuse it. Two modes:

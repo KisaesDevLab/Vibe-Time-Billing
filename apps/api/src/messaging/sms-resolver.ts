@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0121 — worker-safe loader for a firm's DB-backed SMS provider (configured
 // in Admin → Messaging, encrypted at rest under KMS_KEY). Deliberately avoids

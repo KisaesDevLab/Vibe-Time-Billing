@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Demo seed for the proposal-style tax-representation retainer offer.
 // Sets up the whole flow for one firm so you can click through the portal

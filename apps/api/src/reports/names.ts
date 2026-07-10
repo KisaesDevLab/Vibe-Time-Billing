@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Batch id→name resolution for report rows so the UI shows names rather than
 // raw UUIDs. One query per kind regardless of row count.

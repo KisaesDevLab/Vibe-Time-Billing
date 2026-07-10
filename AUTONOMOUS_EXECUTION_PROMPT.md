@@ -57,7 +57,7 @@ NON-NEGOTIABLES (these never relax, regardless of expedience):
 - Per-timekeeper allocation grain: adjustment_allocation rows at (adjustment_id, time_entry_id, app_user_id)
 - Customer-owned external resources: firm owns Stripe, Cloudflare, domain — Kisaes never holds customer credentials
 - License gate on portal: commercial license token check at boot and on critical portal routes
-- Elastic License 2.0 license header on every source file
+- PolyForm Small Business License 1.0.0 license header on every source file
 - Server-side decryption only for message bodies + escrow files: never expose plaintext on the wire to a portal client beyond the authenticated session's TLS connection (no client-side crypto material)
 - UUID guards on every router (`addUuidIdGuard`) AND every UUID-typed query param (`uuidQueryParam`) — bad-UUID inputs must return 400, never 500
 
@@ -90,7 +90,7 @@ Begin.
   - `BUILD_PLAN.md`
   - `QUESTIONS.md`
   - `README.md`
-  - `LICENSE.md` (Elastic License 2.0)
+  - `LICENSE.md` (PolyForm Small Business License 1.0.0)
   - `package.json` with `name: "vibe-time-billing"` and pnpm workspace config
 - **First session is the longest.** Phase 1 sets up the monorepo and CI; expect it to take the most context. Subsequent phases are smaller.
 - **Watch for STOPPED_BECAUSE.md.** If it appears at repo root between sessions, the autonomous build paused and needs your input. Answer the question in QUESTIONS.md, delete `STOPPED_BECAUSE.md`, and start a new session with the same prompt.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Stripe API keys. Lets the firm paste its own Stripe credentials
 // (Q7) instead of relying on env vars. Stored encrypted under KMS_KEY. A

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PS Phases 2-3 — cohort assembly + hours/cost by tier over the T&B data.
 

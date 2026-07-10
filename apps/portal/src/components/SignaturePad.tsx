@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP8 — Touch + mouse signature pad. Captures pointer events as a
 // series of SVG <path d="..."/> elements. Output is a small <svg>

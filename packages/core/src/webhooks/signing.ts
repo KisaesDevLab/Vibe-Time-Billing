@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Outbound webhook signing + verification. HMAC-SHA256 over the raw
 // payload, with a unix-second timestamp to defeat replay.

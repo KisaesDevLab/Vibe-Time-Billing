@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Invoice paid-amount recompute. Extracted from payments/routes.ts so the
 // webhook + off-session charge path (imported by the worker) does not drag the

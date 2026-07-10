@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0168 — public self-booking router: resolve a slug, list page-availability
 // slots, submit a request (creates a PENDING hold, NOT an appointment), and

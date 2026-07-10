@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Payment provider abstraction. Stripe + CPACharge implementations live
 // in apps/api/src/payments/{stripe,cpacharge}; this interface keeps the

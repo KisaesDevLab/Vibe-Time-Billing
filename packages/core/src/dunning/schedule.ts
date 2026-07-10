@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Dunning schedule. The default sequence sends reminders at day 7 (friendly),
 // day 21 (firm), day 45 (escalated), day 60 (partner notify), day 90

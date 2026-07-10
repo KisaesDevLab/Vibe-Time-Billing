@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 

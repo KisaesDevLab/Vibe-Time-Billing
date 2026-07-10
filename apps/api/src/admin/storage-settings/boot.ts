@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // applyStorageSettingsFromDb — boot-time helper. Reads the firm's
 // storage_settings row (single-firm appliance), decrypts the sealed

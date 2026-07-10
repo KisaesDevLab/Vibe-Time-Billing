@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0159 — MFK-envelope column crypto for the per-client credential vault. Each
 // credential carries a per-record DEK (random key) wrapped by the firm MFK;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // TR-2 renderer — turns an extraction plan into the scoped, watermarked
 // PDF a client or 3rd-party recipient is entitled to. This is the piece

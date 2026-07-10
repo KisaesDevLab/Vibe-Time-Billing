@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Time entry capture (Phase 9). Captures the rate snapshot at create time
 // using @vibe/core/rates resolver, then writes the canonical row.

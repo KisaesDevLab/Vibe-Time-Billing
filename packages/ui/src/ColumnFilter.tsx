@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Column-header filter popover for table views (engagements list,
 // future Files manager + Reports). Layout matches the Canopy reference:

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Scheduled saved-report email worker (Phase 17 #22). Reads saved_report
 // rows whose params_json contains a `schedule` block { recipients[],

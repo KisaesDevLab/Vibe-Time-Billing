@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Compliance helpers (Phase 19): firm snapshot export, SOC 2 evidence
 // sample, WISP template generator. All return small payloads — the

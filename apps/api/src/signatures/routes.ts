@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 4 — Signatures module staff API (mounted at /api/staff/signatures).
 // Request / signer / placement CRUD with authoritative server-side

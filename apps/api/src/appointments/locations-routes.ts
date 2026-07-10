@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0144 — Appointment Locations admin API. Mounted at
 // /api/staff/admin/appointment-locations. The firm-managed list of reusable

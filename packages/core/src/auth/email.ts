@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Email normalization for firm-global person dedup. Pairs with
 // normalizePhone (sms-otp.ts). Trim + lowercase + light validation; the

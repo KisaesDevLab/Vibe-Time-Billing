@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // PP4a — Proposal create page. Pick a client, set a title, POST the
 // header, redirect into the editor at /proposals/:id/edit.

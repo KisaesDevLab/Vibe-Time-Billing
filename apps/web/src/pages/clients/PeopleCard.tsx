@@ -1,5 +1,5 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels sit beside their Combobox controls inside grid cells; revisit with htmlFor/id pairs in a polish pass */
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Unified "People" card (0114) — replaces the separate Contacts and
 // Portal Access cards. Each person appears once with their directory role

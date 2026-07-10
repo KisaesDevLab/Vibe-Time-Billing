@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-wide bulk dialog for engagement recurrences. Opens from the
 // Clients list header. Fetches every ACTIVE recurrence flagged isDue

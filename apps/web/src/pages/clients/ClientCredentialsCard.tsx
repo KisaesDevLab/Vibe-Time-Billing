@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0159 — Per-client credential vault card. Secrets are encrypted at rest on
 // the server; the list shows metadata only. Revealing a secret calls the

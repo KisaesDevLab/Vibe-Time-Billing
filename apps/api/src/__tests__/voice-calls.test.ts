@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0206 — configurable voice calls. Covers the shared placement engine
 // (TwiML voice/language, press prompts, machine detection, gates, the

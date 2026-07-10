@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-2 — multi-staff slot availability engine. 14 named cases covering
 // single + multi-staff intersection, buffers, notice, increment, busy

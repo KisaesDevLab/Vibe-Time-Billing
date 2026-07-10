@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Printing. Firm pastes its Vibe Print gateway URL + bearer key
 // and picks a default printer / auto-print toggle. Stored encrypted under

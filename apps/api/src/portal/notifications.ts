@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0146 — portal in-app notifications. Read side of the PORTAL channel
 // of the staged-notification pipeline (rows are inserted by the worker

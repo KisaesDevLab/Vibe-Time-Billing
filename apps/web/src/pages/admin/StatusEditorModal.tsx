@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Create/edit popup for a single engagement progress status. One modal for
 // both create (status=null) and edit. Holds every per-status field today and

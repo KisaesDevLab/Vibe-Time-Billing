@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Sharing a file drops a client-timeline note (with the share-form details),
 // and a 3rd-party access drops another. The access note is skipped when the

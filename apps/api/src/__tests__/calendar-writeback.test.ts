@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-9 — calendar write-back. While FEATURE_CALENDAR_WRITE is off the
 // endpoints return 501 and the service refuses to run. When on, TB pushes

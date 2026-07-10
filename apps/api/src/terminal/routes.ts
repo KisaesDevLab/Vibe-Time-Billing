@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phases 15–17 — staff Terminal endpoints (server-driven). Provision a
 // Location + Reader on the firm's connected account, then collect in person:

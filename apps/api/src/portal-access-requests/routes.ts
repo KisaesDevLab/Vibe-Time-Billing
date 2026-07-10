@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Staff side of self-service portal access requests. Lists PENDING
 // requests (one per person+client) for review under Approvals, and lets a

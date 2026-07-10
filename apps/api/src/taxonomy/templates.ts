@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Engagement template starter-pack reader (Q24). Returns the JSON
 // shipped at `/seed/engagement-templates.json` so the admin UI can

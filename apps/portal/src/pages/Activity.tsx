@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP6 — Portal activity log page. Implements CLIENT_PORTAL_BUILD_PLAN
 // §2.14. Chronological feed of who-did-what affecting the active

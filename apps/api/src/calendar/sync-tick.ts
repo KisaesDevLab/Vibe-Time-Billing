@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-3 — the bulk sync tick (runs from the worker heartbeat). Picks every
 // enabled connection whose effective interval has elapsed and syncs it,

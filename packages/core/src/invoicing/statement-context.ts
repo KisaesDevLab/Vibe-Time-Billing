@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Builds the namespaced context the statement template-engine resolves
 // tokens against, plus the catalog for the admin variable picker / docs.

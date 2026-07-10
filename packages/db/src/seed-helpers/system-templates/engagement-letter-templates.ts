@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // System engagement-letter starter pack. Imported into
 // engagement_letter_template; bodyHtml supports {{ merge tokens }}.

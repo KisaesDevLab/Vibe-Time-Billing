@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Minimal Cloudflare REST client for in-app tunnel provisioning. We
 // only call the endpoints the admin wizard actually needs:

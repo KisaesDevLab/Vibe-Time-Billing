@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Web Push subscription endpoints for the installable portal PWA (Phase 26).
 // The portal SPA fetches the VAPID public key, subscribes the browser's

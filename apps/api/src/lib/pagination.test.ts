@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { describe, expect, it } from 'vitest';
 
 import { parsePageParams, pageEnvelope, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from './pagination';

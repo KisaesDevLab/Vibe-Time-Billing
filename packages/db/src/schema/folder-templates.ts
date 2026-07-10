@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0142 — client folder structure templates. A firm defines named folder
 // skeletons applied as a *virtual* structure under each client's root (the

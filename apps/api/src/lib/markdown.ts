@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Minimal, dependency-free Markdown → HTML for firm-authored snippets (ad-hoc
 // client emails, etc.). Supports headings, bold/italic, links, unordered/

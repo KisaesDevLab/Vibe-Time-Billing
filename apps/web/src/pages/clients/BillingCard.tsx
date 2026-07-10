@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Client billing tab. Lists invoices + open credits for this client.
 // 0056 added the Credits subsection.

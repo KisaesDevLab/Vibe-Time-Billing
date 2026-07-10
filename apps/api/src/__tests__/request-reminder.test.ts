@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0084 — runRequestReminderTick: emails the client billing contact
 // when an OPEN / NEEDS_INFO request is within reminder_days_before

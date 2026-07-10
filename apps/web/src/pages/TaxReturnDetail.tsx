@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // TR-staff detail — read the return + sections + active releases.
 // Lets staff create a new release (scope FULL or SELECTED with the

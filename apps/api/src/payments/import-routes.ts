@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Payments → Import tab. Ingests a payroll-charges CSV (client code,
 // client name, charge date, description, amount):

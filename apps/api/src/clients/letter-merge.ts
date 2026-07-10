@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Mail-merge: render a firm letter template personalized for one or more
 // clients. Phase 1 output is a single combined PDF (one page-run per

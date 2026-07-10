@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // SMS OTP for portal login. 6-digit codes, 5-minute expiry, single-use,
 // rate-limited by phone number (Q29).

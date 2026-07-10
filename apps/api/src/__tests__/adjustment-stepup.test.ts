@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Phase 3 item 6 + Phase 12 item 29: the adjustment-create endpoint
 // requires fresh step-up TOTP. A session without lastStepUpAt set

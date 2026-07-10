@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0181 — public pay-by-link landing page (…/pay/:token). No portal auth:
 // the token in the URL is the credential. Calls GET /api/pay/:token for a

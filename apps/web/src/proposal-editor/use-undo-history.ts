@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Hand-rolled undo/redo stack keyed off a deep-equality serializer.
 // The editor pushes every distinct tree state onto past; setting via

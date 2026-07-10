@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Engagement letter endpoints (Phase 8 #17, Phase 23 #28). Versioned per
 // engagement. The DRAFT->SENT->ACCEPTED lifecycle gives the firm a single

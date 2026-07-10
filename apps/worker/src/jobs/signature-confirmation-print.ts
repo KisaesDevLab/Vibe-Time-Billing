@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0185/0187 — auto-print when a tax-return signature completes. Enqueued
 // from the signature-completion paths (webhook + poll). Evaluates the

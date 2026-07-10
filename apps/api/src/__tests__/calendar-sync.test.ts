@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-3 — poll sync: event mapping, paginated fetch + upsert, soft-delete
 // of vanished events, new-event detection, the per-firm interval gate, and

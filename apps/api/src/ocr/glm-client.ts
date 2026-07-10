@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Thin HTTP client for the firm's local GLM-OCR endpoint (an
 // OpenAI-compatible /v1/chat/completions server on the on-prem workstation).

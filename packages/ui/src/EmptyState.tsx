@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CP0 — Empty state. UI plan §3 — centered icon-or-emoji + title +
 // body + optional CTA. The default icon slot is intentionally empty so

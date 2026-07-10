@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // API/MCP token middleware. Both the REST API (Phase 21) and the MCP
 // server (Phase 22) use the same `mcp_token` table with a JSON

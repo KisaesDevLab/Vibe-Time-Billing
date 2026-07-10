@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Signed-forms report. A date-ranged, filterable list of completed
 // (or partially-signed) e-signature requests with direct links to the

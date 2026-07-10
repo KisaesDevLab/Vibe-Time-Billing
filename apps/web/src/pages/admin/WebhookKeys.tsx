@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Webhook keys. Set the inbound webhook signing secret for each
 // notification provider. Each receiver expects the secret in the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Connect H.8 follow-up — receive delivery callbacks from mail + SMS
 // providers and update notification_log.status from 'sent' to

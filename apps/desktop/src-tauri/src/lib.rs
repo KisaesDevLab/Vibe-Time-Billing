@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Native window capture for "Capture Client Info". Two commands are exposed
 // to the wrapped web app:

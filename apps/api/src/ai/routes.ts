@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // AI-feature endpoints (Phase 23). Description suggestion + plain-English
 // realization narrative. Provider routing prefers local (Ollama) and

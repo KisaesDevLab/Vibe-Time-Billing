@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-1 — provider config admin API: save encrypts under the firm MFK and
 // never returns secrets; secret is preserved on edits when omitted; Test

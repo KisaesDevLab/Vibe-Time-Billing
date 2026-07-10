@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // System engagement-template starter pack (CLAUDE.md decision #24). Firms
 // import these into engagement_template and edit/rename freely afterward.

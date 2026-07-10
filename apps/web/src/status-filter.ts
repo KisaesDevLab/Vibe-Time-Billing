@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0167 — shared client-side filtering of engagement workflow statuses by
 // an engagement's service line. The catalog endpoints attach a

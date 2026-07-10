@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CAL-1 — MFK-envelope column crypto for calendar secrets. Provider client
 // secrets and per-staff OAuth access/refresh tokens are stored as bytea

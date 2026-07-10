@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // 0109 — Calendar Integration (CAL-1…CAL-9). Per-staff OAuth into Microsoft
 // 365 / Google Calendar, poll-only read ingest of appointments, two-tier

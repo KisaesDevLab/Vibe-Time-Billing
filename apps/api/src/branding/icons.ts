@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Server-side PWA icon generation for firm branding. Produces square PNGs at
 // the sizes the portal manifest / Apple touch icon / push badge need, either

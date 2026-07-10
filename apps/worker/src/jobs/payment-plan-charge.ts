@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Recurring installment payment plans (0192). Each ACTIVE plan due today is
 // charged a fixed installment (capped at the client's current open balance),

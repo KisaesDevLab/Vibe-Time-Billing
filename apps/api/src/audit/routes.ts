@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Audit-log viewer (Phase 19). Read-only; the audit_log table is
 // append-only at the DB role level.

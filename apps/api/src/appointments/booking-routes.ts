@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // BK-4 — multi-staff booking API. Mounted at /api/staff/appointments
 // BEFORE the legacy single-staff router so the new create/cancel/detail

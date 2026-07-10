@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Browser-safe barrel for the proposals package. Crypto helpers
 // (canonical-json, signature-hmac) import `node:crypto` and are

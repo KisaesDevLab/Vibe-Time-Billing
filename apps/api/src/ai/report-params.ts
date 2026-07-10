@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Per-report-kind parameter contracts. Used to (a) prompt the model with the
 // exact parameter shape it may emit for a saved report and (b) validate what

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // CPACharge provider stub. CPACharge is the IOLTA-friendly processor
 // many CPA firms already use. Their public API is REST + Basic-auth

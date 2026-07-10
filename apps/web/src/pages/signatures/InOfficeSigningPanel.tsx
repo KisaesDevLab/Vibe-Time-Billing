@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Shared in-office signing flow. Drives a single signature request through
 // the in-person path: set it up (suppress email; for a KBA-gated 1040 8879

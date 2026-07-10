@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Firm-owned Stripe credentials (Q7), entered in Admin → Stripe and stored
 // encrypted at rest under KMS_KEY — same envelope as mail/sms config. These

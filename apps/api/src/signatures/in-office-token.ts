@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Per-signer in-office token. A printed QR encodes a link to the public
 // in-office page carrying one of these tokens; scanning it opens the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Elastic-2.0
+// SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Admin → Storage settings. UI-driven configuration for STORAGE_PROVIDER
 // + B2 / MinIO credentials. Until now this was env-var only; admins
