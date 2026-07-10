@@ -122,7 +122,7 @@ describe('P26 — EmailIt provider', () => {
     });
     expect(result.ok).toBe(true);
     expect(result.messageId).toBe('msg-123');
-    expect(calledUrl).toBe('https://api.emailit.com/v1/emails');
+    expect(calledUrl).toBe('https://api.emailit.com/v2/emails');
     expect(calledBody).toContain('"from":"firm@example.com"');
     expect(calledBody).toContain('"to":["client@example.com"]');
     expect(calledBody).toContain('"subject":"Hello"');
@@ -130,9 +130,11 @@ describe('P26 — EmailIt provider', () => {
   });
 
   it('returns error on non-2xx', async () => {
+    // 500, not 429 — 429 now triggers the one-shot retry path, which is
+    // covered in email-emailit.test.ts.
     const fetchImpl: typeof fetch = (async () =>
       new Response(JSON.stringify({ message: 'over_quota' }), {
-        status: 429,
+        status: 500,
       })) as unknown as typeof fetch;
     const provider = createEmailItProvider({ apiKey: 'x', from: 'f@x.com', fetchImpl }, log);
     const result = await provider.send({ to: 't@x.com', subject: 's', body: 'b' });

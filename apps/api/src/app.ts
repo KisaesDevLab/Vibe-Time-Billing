@@ -194,6 +194,8 @@ import { createCreditRouter } from './credits/routes';
 import { createRateRouter } from './rates/routes';
 import { createHolidayRouter } from './holidays/routes';
 import { createMilestoneRouter } from './milestones/routes';
+import { createMailAssetRouter } from './mail/asset-routes';
+import type { MailAssetStore } from './mail/asset-store';
 import type { AiProvider } from '@vibe/core/ai';
 import type { PaymentProvider } from '@vibe/core/payments';
 import type { RoleSlug } from '@vibe/core/rbac';
@@ -215,6 +217,12 @@ export interface AppDeps {
     attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
   }) => Promise<void>;
   sendPortalSms?: PortalRoutesDeps['sendSms'];
+  /**
+   * EmailIt URL-attachment store (MAIL_EMAILIT_ATTACHMENT_MODE=url).
+   * When present, /api/mail-assets/:token serves stashed attachment
+   * bytes to EmailIt's fetcher — token-credentialed like /api/pay.
+   */
+  mailAssetStore?: MailAssetStore | null;
   /**
    * P4.6 — I.6 — fired when a portal step-up lockout trips. Notifies
    * firm admins (template `step_up_lockout`). Optional; if absent the
@@ -1178,6 +1186,13 @@ export function createApp(deps: AppDeps): Express {
     sendSms: deps.sendPortalSms,
   });
   app.use('/api/shared-file', fileRecipientRouter);
+
+  // EmailIt URL attachments — public, token-credentialed asset fetch
+  // (same trust model as /api/pay below). Mounted only when the operator
+  // opted into MAIL_EMAILIT_ATTACHMENT_MODE=url.
+  if (deps.mailAssetStore) {
+    app.use('/api/mail-assets', createMailAssetRouter(deps.mailAssetStore));
+  }
 
   // 0181 — public pay-by-link surface (no portal auth). The link token is
   // the credential; opens a Stripe Checkout Session. Settlement is recorded

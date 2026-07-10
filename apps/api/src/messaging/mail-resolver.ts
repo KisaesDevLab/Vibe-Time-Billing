@@ -25,6 +25,7 @@ import {
   createPostmarkProvider,
   createResendProvider,
   createSmtpMailProvider,
+  type MailAttachment,
   type MailMessage,
   type MailProvider,
 } from '../mail/provider';
@@ -45,6 +46,7 @@ export async function loadFirmMailProvider(
   db: Database,
   firmId: string,
   log: Logger,
+  opts?: { emailitStashAttachmentUrl?: (att: MailAttachment) => string },
 ): Promise<MailProvider | null> {
   const [row] = await db
     .select({ enc: firmSettings.mailConfigEncrypted })
@@ -85,7 +87,14 @@ export async function loadFirmMailProvider(
       return createResendProvider({ apiKey: cfg.apiKey, from: cfg.from }, log);
     }
     if (cfg.provider === 'emailit' && cfg.apiKey && cfg.from) {
-      return createEmailItProvider({ apiKey: cfg.apiKey, from: cfg.from }, log);
+      return createEmailItProvider(
+        {
+          apiKey: cfg.apiKey,
+          from: cfg.from,
+          stashAttachmentUrl: opts?.emailitStashAttachmentUrl,
+        },
+        log,
+      );
     }
     // SES has no provider helper yet; fall back to env rather than silently drop.
     log.warn({ firmId, provider: cfg.provider }, 'mail provider not usable; using env fallback');
@@ -109,7 +118,12 @@ const FIRM_MAIL_TTL_MS = 60_000;
  */
 export function wrapMailWithFirmConfig(
   base: MailProvider,
-  deps: { db: Database | null; log: Logger },
+  deps: {
+    db: Database | null;
+    log: Logger;
+    /** EmailIt URL-attachment stash (MAIL_EMAILIT_ATTACHMENT_MODE=url). */
+    emailitStashAttachmentUrl?: (att: MailAttachment) => string;
+  },
 ): MailProvider {
   let cached: MailProvider | null = null;
   let cachedAt = 0;
@@ -119,7 +133,11 @@ export function wrapMailWithFirmConfig(
     if (now - cachedAt < FIRM_MAIL_TTL_MS) return cached ?? base;
     try {
       const [firm] = await deps.db.select({ id: firms.id }).from(firms).limit(1);
-      cached = firm ? await loadFirmMailProvider(deps.db, firm.id, deps.log) : null;
+      cached = firm
+        ? await loadFirmMailProvider(deps.db, firm.id, deps.log, {
+            emailitStashAttachmentUrl: deps.emailitStashAttachmentUrl,
+          })
+        : null;
     } catch (err) {
       deps.log.warn({ err }, 'firm mail provider resolve failed; using env fallback');
       cached = null;

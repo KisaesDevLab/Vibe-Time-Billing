@@ -68,14 +68,18 @@ export function wrapMailWithBranding(
   return {
     id: inner.id,
     async send(msg) {
+      const b = await branding();
+      // Default Reply-To to the firm's support mailbox so replies to a
+      // no-reply sender still land somewhere staffed. Callers that set
+      // their own replyTo win.
+      const replyTo = msg.replyTo ?? (b.supportEmail || undefined);
       // Full HTML documents are already complete (e.g. invoice emails) — leave
       // them. Plain-text and HTML snippets get wrapped in the branded shell.
-      if (msg.html && isFullHtmlDocument(msg.html)) return inner.send(msg);
-      const b = await branding();
+      if (msg.html && isFullHtmlDocument(msg.html)) return inner.send({ ...msg, replyTo });
       const html = msg.html
         ? wrapHtmlSnippet({ html: msg.html, branding: b })
         : wrapPlainTextEmail({ text: msg.body, branding: b });
-      return inner.send({ ...msg, html });
+      return inner.send({ ...msg, html, replyTo });
     },
   };
 }

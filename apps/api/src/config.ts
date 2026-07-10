@@ -36,6 +36,12 @@ const Schema = z.object({
   SMS_OTP_TTL_MINUTES: z.coerce.number().int().positive().default(5),
 
   MAIL_PROVIDER: z.enum(['smtp', 'postmark', 'resend', 'ses', 'emailit']).default('smtp'),
+  // EmailIt v2 attachment delivery. 'inline' (default) embeds base64 bytes in
+  // the send payload; 'url' stashes bytes in the in-memory mail-asset store
+  // and hands EmailIt a short-lived public URL to fetch. 'url' requires the
+  // appliance to be reachable from the internet at PUBLIC_BASE_URL (or
+  // PORTAL_BASE_URL) — keep 'inline' on LAN-only deployments.
+  MAIL_EMAILIT_ATTACHMENT_MODE: z.enum(['inline', 'url']).default('inline'),
   SMS_PROVIDER: z.enum(['textlink', 'twilio', 'sns']).default('textlink'),
 
   // v2 Sprint A — at-rest encryption key for DB-backed messaging

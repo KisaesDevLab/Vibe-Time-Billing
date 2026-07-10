@@ -188,19 +188,40 @@ function dispatchFromConfig(cfg: WorkerMailConfig, log: Logger): MailDispatch | 
   if (provider === 'emailit' && cfg.emailitKey) {
     const key = cfg.emailitKey;
     return async (args) => {
-      // EmailIt takes `to` as an array; mirrors createEmailItProvider. ICS
-      // attachments are omitted (not part of the provider's send shape).
-      const r = await fetch('https://api.emailit.com/v1/emails', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from,
-          to: [args.to],
-          subject: args.subject,
-          text: args.body,
-          ...(args.html ? { html: args.html } : {}),
-        }),
-      });
+      // EmailIt API v2 (v1 sunset Dec 2025); `to` as an array, mirrors
+      // createEmailItProvider. ICS goes as a base64 inline attachment and
+      // tracking is forced off so link rewrites can't break invite URLs.
+      const post = () =>
+        fetch('https://api.emailit.com/v2/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from,
+            to: [args.to],
+            subject: args.subject,
+            text: args.body,
+            ...(args.html ? { html: args.html } : {}),
+            tracking: false,
+            ...(args.ics
+              ? {
+                  attachments: [
+                    {
+                      filename: ICS_FILENAME,
+                      content: Buffer.from(args.ics).toString('base64'),
+                      content_type: ICS_CONTENT_TYPE,
+                    },
+                  ],
+                }
+              : {}),
+          }),
+        });
+      let r = await post();
+      // Starter workspaces are capped at 2 msg/s — retry once so reminder
+      // sweeps don't drop sends on a burst.
+      if (r.status === 429) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        r = await post();
+      }
       if (!r.ok) throw new Error(`emailit_${r.status}`);
     };
   }

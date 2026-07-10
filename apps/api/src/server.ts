@@ -25,8 +25,10 @@ import {
   createPostmarkProvider,
   createResendProvider,
   createSmtpMailProvider,
+  type MailAttachment,
   type MailProvider,
 } from './mail/provider';
+import { createMailAssetStore, type MailAssetStore } from './mail/asset-store';
 import {
   createConsoleSmsProvider,
   createTextLinkSmsProvider,
@@ -108,6 +110,19 @@ const ocrClient: OcrClient | null = config.GLM_OCR_URL
     })
   : null;
 
+// EmailIt URL-attachment store — only materialized when the operator
+// opts in (MAIL_EMAILIT_ATTACHMENT_MODE=url); inline base64 needs none
+// of this. The store's route is mounted by createApp at
+// /api/mail-assets, publicly reachable at the same origin pay-by-link
+// uses (the appliance Caddyfile proxies all /api/* on both hosts).
+const mailAssetStore: MailAssetStore | null =
+  config.MAIL_EMAILIT_ATTACHMENT_MODE === 'url'
+    ? createMailAssetStore({ baseUrl: config.PUBLIC_BASE_URL ?? config.PORTAL_BASE_URL })
+    : null;
+const stashAttachmentUrl = mailAssetStore
+  ? (att: MailAttachment) => mailAssetStore.stash(att)
+  : undefined;
+
 // Mail provider — Q11 abstraction. Defaults to console (which logs the
 // link/body) so dev still surfaces magic links via stdout if MailHog is
 // down. SMTP path covers MailHog + on-prem mail servers. The base
@@ -132,7 +147,7 @@ const baseMailer: MailProvider = (() => {
     case 'emailit':
       return config.MAIL_EMAILIT_API_KEY
         ? createEmailItProvider(
-            { apiKey: config.MAIL_EMAILIT_API_KEY, from: config.MAIL_FROM },
+            { apiKey: config.MAIL_EMAILIT_API_KEY, from: config.MAIL_FROM, stashAttachmentUrl },
             logger,
           )
         : createConsoleMailProvider(logger);
@@ -158,7 +173,14 @@ const baseMailer: MailProvider = (() => {
 // the firm logo/footer. Mirrors the SMS wrap below so the Admin → Messaging
 // email provider actually applies to real sends, not just the test button.
 const mailer: MailProvider = wrapMailWithBranding(
-  wrapMailWithAudit(wrapMailWithFirmConfig(baseMailer, { db, log: logger }), { db, log: logger }),
+  wrapMailWithAudit(
+    wrapMailWithFirmConfig(baseMailer, {
+      db,
+      log: logger,
+      emailitStashAttachmentUrl: stashAttachmentUrl,
+    }),
+    { db, log: logger },
+  ),
   { db },
 );
 
@@ -373,6 +395,7 @@ const app = createApp({
   sendStaffMail,
   sendPortalSms,
   sendStepUpLockoutAlert,
+  mailAssetStore,
 });
 
 // QA fix — tsx watch's hot-restart races the dying listener: the new
