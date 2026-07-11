@@ -6,7 +6,6 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, asc, desc, eq, gte, ilike, inArray, lte, notInArray, or, sql } from 'drizzle-orm';
-import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
 import {
@@ -43,20 +42,14 @@ import { logger } from '../logger';
 
 export interface TimeEntryRoutesDeps extends RbacDeps {
   db: Database | null;
-  redis?: Redis;
   /** Phase 8 — staff/client mail dispatcher used to notify when a
    *  retainer is auto-split exhausted by a new time entry. Optional;
    *  when absent, no email fires. */
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
 }
 
-const TIMER_KEY_PREFIX = 'time-entry:timer:';
-function timerKey(appUserId: string): string {
-  return `${TIMER_KEY_PREFIX}${appUserId}`;
-}
-
 function clientIp(req: Request): string {
-  return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
+  return (req.headers?.['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
 }
 
 /**
@@ -113,13 +106,10 @@ export async function linkTimeEntryMessages(
   return inserted.length;
 }
 
-const TimerStartSchema = z.object({
-  engagementId: z.string().uuid(),
-  workCodeId: z.string().uuid().optional(),
-  description: z.string().max(2000).optional(),
-});
-
-const CreateSchema = z.object({
+// Exported for the timer save path (timers.ts), which re-validates its
+// constructed payload so createTimeEntryCore sees exactly what a manual
+// POST would.
+export const CreateSchema = z.object({
   engagementId: z.string().uuid(),
   workCodeId: z.string().uuid().optional(),
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -332,6 +322,460 @@ async function evaluateRequiredFieldRules(
   return { ok: true };
 }
 
+/**
+ * Core of POST / — validates, resolves the rate snapshot, writes the
+ * time_entry row and all side effects (workflow advance, hour-bank debit,
+ * retainer split, message links). Factored out of the route handler so the
+ * timer save path (timers.ts) creates entries through the exact same
+ * guards. Returns the HTTP status + body the route would have sent.
+ */
+export async function createTimeEntryCore(
+  deps: TimeEntryRoutesDeps,
+  args: {
+    session: NonNullable<Request['staffSession']>;
+    payload: z.infer<typeof CreateSchema>;
+    ip: string;
+    userAgent: string | null;
+  },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const { session } = args;
+  const parsed = { data: args.payload };
+  if (!deps.db) {
+    return { status: 201, body: { ok: true } };
+  }
+
+  // Resolve engagement → client → service line
+  const [eng] = await deps.db
+    .select()
+    .from(engagements)
+    .where(eq(engagements.id, parsed.data.engagementId))
+    .limit(1);
+  if (!eng) {
+    return { status: 404, body: { error: 'engagement_not_found' } };
+  }
+  // Lifecycle enforcement: PAUSED engagements cannot accept new time.
+  if (eng.status === 'PAUSED' || eng.status === 'CLOSED' || eng.status === 'ARCHIVED') {
+    return { status: 409, body: { error: 'engagement_not_writable', status: eng.status } };
+  }
+  // 0050 — retainer lock: when a retainer billing batch is locking
+  // the engagement, no new time may be logged against it.
+  if (eng.retainerLockedAt) {
+    return { status: 409, body: { error: 'retainer_locked', lockedAt: eng.retainerLockedAt } };
+  }
+  // Phase 9 #16 — late-entry lockout. firm_settings.lateEntryLockoutDays
+  // defines the back-dating window; entries older than (today - lockout)
+  // are refused with 409 unless the user has the bypass permission.
+  const [fsLock] = await deps.db
+    .select({ lockoutDays: firmSettings.lateEntryLockoutDays })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, session.firmId))
+    .limit(1);
+  const lockoutDays = fsLock?.lockoutDays ?? 14;
+  if (lockoutDays > 0) {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const cutoff = new Date(Date.now() - lockoutDays * 86_400_000).toISOString().slice(0, 10);
+    if (parsed.data.entryDate < cutoff && parsed.data.entryDate <= todayStr) {
+      return {
+        status: 409,
+        body: {
+          error: 'late_entry_locked',
+          entryDate: parsed.data.entryDate,
+          lockoutDays,
+          cutoff,
+        },
+      };
+    }
+  }
+  const [client] = await deps.db
+    .select()
+    .from(clients)
+    .where(eq(clients.id, eng.clientId))
+    .limit(1);
+  if (!client || client.firmId !== session.firmId) {
+    return { status: 404, body: { error: 'client_not_found' } };
+  }
+
+  // 0179 — validate the optional appointment back-link: it must exist
+  // and belong to the firm. We don't force it to match the engagement
+  // (an appointment may be client-only, or logged against a different
+  // engagement than it was booked under) — just that it's the firm's.
+  if (parsed.data.appointmentId) {
+    const [appt] = await deps.db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.id, parsed.data.appointmentId),
+          eq(appointments.firmId, session.firmId),
+        ),
+      )
+      .limit(1);
+    if (!appt) {
+      return { status: 404, body: { error: 'appointment_not_found' } };
+    }
+  }
+
+  // Optional progress-status change. Validate up-front (fail fast,
+  // nothing created on a bad status); applied after the entry inserts.
+  let statusChange: { from: string; to: string } | null = null;
+  if (parsed.data.workflowState && parsed.data.workflowState !== eng.workflowState) {
+    const [statusRow] = await deps.db
+      .select({ ws: engagementStatusConfig.workflowState })
+      .from(engagementStatusConfig)
+      .where(
+        and(
+          eq(engagementStatusConfig.firmId, session.firmId),
+          eq(engagementStatusConfig.workflowState, parsed.data.workflowState),
+        ),
+      )
+      .limit(1);
+    if (!statusRow) {
+      return { status: 400, body: { error: 'invalid_workflow_state' } };
+    }
+    statusChange = { from: eng.workflowState, to: parsed.data.workflowState };
+  }
+
+  let serviceLineId: string | null = null;
+  if (parsed.data.workCodeId) {
+    const [wc] = await deps.db
+      .select({ serviceLineId: workCodes.serviceLineId })
+      .from(workCodes)
+      .where(eq(workCodes.id, parsed.data.workCodeId))
+      .limit(1);
+    serviceLineId = wc?.serviceLineId ?? null;
+  }
+
+  const ruleCheck = await evaluateRequiredFieldRules(deps.db, session.firmId, {
+    engagementId: eng.id,
+    engagementTypeId: eng.engagementTypeId ?? null,
+    workCodeId: parsed.data.workCodeId ?? null,
+    serviceLineId,
+    description: parsed.data.description ?? null,
+    reasonCodeId: null,
+  });
+  if (!ruleCheck.ok) {
+    return {
+      status: 400,
+      body: {
+        error: 'required_fields_missing',
+        ruleId: ruleCheck.ruleId,
+        ruleName: ruleCheck.ruleName,
+        missing: ruleCheck.missing,
+      },
+    };
+  }
+
+  const candidates = await loadRateCandidates(deps.db, {
+    firmId: session.firmId,
+    appUserId: session.appUserId,
+    engagementId: eng.id,
+    clientId: client.id,
+    serviceLineId,
+  });
+
+  const [firm] = await deps.db
+    .select({ id: firms.id })
+    .from(firms)
+    .where(eq(firms.id, session.firmId))
+    .limit(1);
+  if (!firm) {
+    return { status: 500, body: { error: 'firm_not_found' } };
+  }
+  // Firm default bill rate isn't on the schema (deliberately — every
+  // staff has at least a StandardRate snapshot entry). We fall back
+  // to a sentinel 0 if nothing resolves; the API refuses the entry.
+  const resolved = resolveRate({
+    serviceDate: parsed.data.entryDate,
+    appUserId: session.appUserId,
+    engagementId: eng.id,
+    clientId: client.id,
+    serviceLineId,
+    rateCodeId: eng.defaultRateCodeId ?? null,
+    candidates,
+    firmDefaultBillRateCents: 0,
+  });
+  if (resolved.level === 'firm' && resolved.billRateCents === 0) {
+    return { status: 400, body: { error: 'no_rate_resolves', userId: session.appUserId } };
+  }
+  const snapshot = captureRateSnapshot({
+    rate: resolved,
+    hours: parsed.data.hours,
+    multiplierBps: eng.rateMultiplierBps ?? 10000,
+  });
+
+  // NTE cap (Phase 10 #19): if the engagement has nte_cap_cents set,
+  // reject when this entry would push the running standard-amount
+  // total past the cap. LIFETIME scope is enforced across all entries;
+  // PERIOD scope uses the calendar month containing entryDate.
+  if (eng.nteCapCents != null && Number(eng.nteCapCents) > 0) {
+    const monthStart = parsed.data.entryDate.slice(0, 7) + '-01';
+    const nextMonth = new Date(monthStart + 'T00:00:00Z');
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    const monthEnd = nextMonth.toISOString().slice(0, 10);
+    const conds = [
+      eq(timeEntries.engagementId, eng.id),
+      inArray(timeEntries.status, ['SUBMITTED', 'LOCKED', 'BILLED']),
+    ];
+    if (eng.nteCapScope === 'PERIOD') {
+      conds.push(gte(timeEntries.entryDate, monthStart));
+      conds.push(lte(timeEntries.entryDate, monthEnd));
+    }
+    const [accum] = await deps.db
+      .select({
+        total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as('total'),
+      })
+      .from(timeEntries)
+      .where(and(...conds));
+    const projected = Number(accum?.total ?? 0) + snapshot.amountCents;
+    if (projected > Number(eng.nteCapCents)) {
+      return {
+        status: 409,
+        body: {
+          error: 'nte_cap_exceeded',
+          capCents: Number(eng.nteCapCents),
+          projectedCents: projected,
+        },
+      };
+    }
+  }
+
+  // Q20 — in_scope flag set at write time from engagement's array
+  const inScope =
+    eng.mixedModeEnabled && parsed.data.workCodeId
+      ? eng.inScopeWorkCodeIds.includes(parsed.data.workCodeId)
+      : true;
+
+  const [row] = await deps.db
+    .insert(timeEntries)
+    .values({
+      engagementId: eng.id,
+      appUserId: session.appUserId,
+      workCodeId: parsed.data.workCodeId ?? null,
+      entryDate: parsed.data.entryDate,
+      hours: parsed.data.hours.toString(),
+      // 0208 — time on the firm-administrative engagement can never be
+      // billable, regardless of what the caller sent.
+      billableFlag: eng.firmAdmin ? false : (parsed.data.billableFlag ?? true),
+      inScopeFlag: inScope,
+      outOfScopeOverride: parsed.data.outOfScopeOverride ?? false,
+      description: parsed.data.description ?? '',
+      standardRateSnapshotCents: snapshot.rateCents,
+      standardAmountCents: snapshot.amountCents,
+      // 0063 — lock the cost rate at write time alongside the bill
+      // rate. snapshot.costRateCents is null when no
+      // staff_rate_snapshot exists for the user; downstream sums
+      // COALESCE to 0 in that case.
+      costRateSnapshotCents: snapshot.costRateCents,
+      // 0179 — durable back-link to the originating appointment.
+      appointmentId: parsed.data.appointmentId ?? null,
+    })
+    .returning({ id: timeEntries.id });
+
+  // Apply the optional progress-status change (validated above). Uses
+  // the same entity_type as the dedicated PATCH so it flows into the
+  // engagement Status history. Best-effort audit (logged, not swallowed).
+  if (statusChange) {
+    await deps.db
+      .update(engagements)
+      .set({ workflowState: statusChange.to, updatedAt: new Date() })
+      .where(eq(engagements.id, eng.id));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'engagement_workflow_state',
+      entityId: eng.id,
+      actorAppUserId: session.appUserId,
+      before: { workflowState: statusChange.from },
+      after: { workflowState: statusChange.to },
+      ip: args.ip,
+      userAgent: args.userAgent,
+    }).catch((err: unknown) =>
+      logger.error(
+        { err, engagementId: eng.id },
+        'audit emit failed (workflow_state via time entry)',
+      ),
+    );
+  }
+
+  // Phase 10 #13 — auto-debit hour bank if this engagement has one.
+  // Best-effort: don't fail the time entry if the bank can't be
+  // debited (out-of-balance or query error logs but doesn't roll
+  // back the entry; OOS hours legitimately can't reduce a depleted
+  // bank, the partner reviews these at pre-bill).
+  let hourBankDebit: {
+    bankId: string;
+    debitedHours: number;
+    balanceAfterHours: number;
+  } | null = null;
+  const debitableHours = inScope ? parsed.data.hours : 0;
+  if (row?.id && debitableHours > 0) {
+    try {
+      const [bank] = await deps.db
+        .select({
+          id: hourBanks.id,
+          openingHours: hourBanks.openingHours,
+          openingAmountCents: hourBanks.openingAmountCents,
+          forfeitedAt: hourBanks.forfeitedAt,
+        })
+        .from(hourBanks)
+        .where(eq(hourBanks.engagementId, eng.id))
+        .limit(1);
+      if (bank && !bank.forfeitedAt) {
+        const [agg] = await deps.db
+          .select({
+            debited:
+              sql<string>`COALESCE(SUM(CASE WHEN ${hourBankTransactions.type} IN ('DEBIT','EXPIRE','FORFEIT') THEN ${hourBankTransactions.hours} ELSE 0 END), 0)`.as(
+                'debited',
+              ),
+            purchased:
+              sql<string>`COALESCE(SUM(CASE WHEN ${hourBankTransactions.type} = 'PURCHASE' THEN ${hourBankTransactions.hours} ELSE 0 END), 0)`.as(
+                'purchased',
+              ),
+          })
+          .from(hourBankTransactions)
+          .where(eq(hourBankTransactions.hourBankId, bank.id));
+        const balanceBefore =
+          Number(bank.openingHours) + Number(agg?.purchased ?? 0) - Number(agg?.debited ?? 0);
+        // Debit only the portion that fits; the rest is unbanked
+        // overage (handled at billing time via the mixed-mode lane).
+        const toDebit = Math.min(debitableHours, Math.max(balanceBefore, 0));
+        if (toDebit > 0) {
+          const balanceAfter = balanceBefore - toDebit;
+          const proRataAmount = Math.round((toDebit / parsed.data.hours) * snapshot.amountCents);
+          const [tx] = await deps.db
+            .insert(hourBankTransactions)
+            .values({
+              hourBankId: bank.id,
+              type: 'DEBIT',
+              hours: toDebit.toFixed(2),
+              amountCents: proRataAmount,
+              sourceRefType: 'time_entry',
+              sourceRefId: row.id,
+              runningBalanceHours: balanceAfter.toFixed(2),
+              occurredAt: new Date(),
+            })
+            .returning({ id: hourBankTransactions.id });
+          hourBankDebit = {
+            bankId: bank.id,
+            debitedHours: toDebit,
+            balanceAfterHours: balanceAfter,
+          };
+          await emitAudit(deps.db, {
+            action: 'CREATE',
+            entityType: 'hour_bank_transaction',
+            entityId: tx?.id,
+            actorAppUserId: session.appUserId,
+            after: {
+              type: 'DEBIT',
+              source: 'time_entry_auto',
+              bankId: bank.id,
+              hours: toDebit,
+              amountCents: proRataAmount,
+              timeEntryId: row.id,
+            },
+            ip: args.ip,
+            userAgent: args.userAgent,
+          }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, engagementId: eng.id }, 'hour-bank auto-debit failed');
+    }
+  }
+
+  // R5 — Phase 8 — retainer auto-split. After the time_entry insert
+  // we run the consumption logic in its own short transaction
+  // (SELECT FOR UPDATE on the retainer row serializes concurrent
+  // inserts against the same retainer). When a retainer hit
+  // occurs, update the time_entry row with the split breakdown.
+  // Best-effort: failures route the entry to 100% billable WIP
+  // and log; the entry itself stays in the DB.
+  if (row?.id) {
+    try {
+      const { applyTimeEntryToRetainer } = await import('../retainers/consumption');
+      const split = await deps.db.transaction(async (tx) => {
+        return applyTimeEntryToRetainer(tx, {
+          engagementId: eng.id,
+          entryDate: parsed.data.entryDate,
+          hours: parsed.data.hours,
+          workCodeId: parsed.data.workCodeId ?? null,
+          actorAppUserId: session.appUserId,
+          timeEntryId: row.id,
+        });
+      });
+      if (split.retainerId) {
+        await deps.db
+          .update(timeEntries)
+          .set({
+            retainerId: split.retainerId,
+            retainerHours: String(split.retainerHours),
+            billableHours: String(split.billableHours),
+          })
+          .where(eq(timeEntries.id, row.id));
+        if (split.exhausted && deps.sendEmail) {
+          try {
+            const { notifyRetainerExhausted } = await import('../retainers/notifications');
+            await notifyRetainerExhausted(deps.db, split.retainerId, deps.sendEmail);
+          } catch (err) {
+            logger.warn(
+              { err, retainerId: split.retainerId },
+              'retainer.exhausted notification failed',
+            );
+          }
+        }
+      } else {
+        // Entry routed entirely to WIP — stamp billableHours for
+        // reporting parity.
+        await deps.db
+          .update(timeEntries)
+          .set({ billableHours: String(parsed.data.hours) })
+          .where(eq(timeEntries.id, row.id));
+      }
+    } catch (err) {
+      logger.error({ err, timeEntryId: row.id }, 'retainer auto-split failed');
+    }
+  }
+
+  // Stage 2 — wire any cited messages to this time entry. Validation
+  // failures bubble out as 403 so the caller knows the entry was
+  // created but links were rejected; the entry row stays in the DB
+  // (the partner can manually link via update later).
+  let linkedMessages = 0;
+  if (row?.id && parsed.data.linkedMessageIds && parsed.data.linkedMessageIds.length > 0) {
+    const n = await linkTimeEntryMessages(deps.db, {
+      engagementId: eng.id,
+      timeEntryId: row.id,
+      messageIds: parsed.data.linkedMessageIds,
+      appUserId: session.appUserId,
+    });
+    if (n === -1) {
+      return {
+        status: 403,
+        body: {
+          error: 'message_link_forbidden',
+          timeEntryId: row.id,
+          reason: 'not_a_thread_member_or_messages_out_of_thread',
+        },
+      };
+    }
+    linkedMessages = n;
+  }
+
+  return {
+    status: 201,
+    body: {
+      id: row?.id,
+      rateSnapshot: snapshot.rateCents,
+      amount: snapshot.amountCents,
+      resolutionLevel: resolved.level,
+      hourBankDebit,
+      linkedMessages,
+      // Effective progress status after this save (lets the form update
+      // its local copy without a full reload).
+      workflowState: statusChange?.to ?? eng.workflowState,
+    },
+  };
+}
+
 export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
@@ -366,439 +810,13 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload' });
         return;
       }
-      const session = req.staffSession!;
-      if (!deps.db) {
-        res.status(201).json({ ok: true });
-        return;
-      }
-
-      // Resolve engagement → client → service line
-      const [eng] = await deps.db
-        .select()
-        .from(engagements)
-        .where(eq(engagements.id, parsed.data.engagementId))
-        .limit(1);
-      if (!eng) {
-        res.status(404).json({ error: 'engagement_not_found' });
-        return;
-      }
-      // Lifecycle enforcement: PAUSED engagements cannot accept new time.
-      if (eng.status === 'PAUSED' || eng.status === 'CLOSED' || eng.status === 'ARCHIVED') {
-        res.status(409).json({ error: 'engagement_not_writable', status: eng.status });
-        return;
-      }
-      // 0050 — retainer lock: when a retainer billing batch is locking
-      // the engagement, no new time may be logged against it.
-      if (eng.retainerLockedAt) {
-        res.status(409).json({ error: 'retainer_locked', lockedAt: eng.retainerLockedAt });
-        return;
-      }
-      // Phase 9 #16 — late-entry lockout. firm_settings.lateEntryLockoutDays
-      // defines the back-dating window; entries older than (today - lockout)
-      // are refused with 409 unless the user has the bypass permission.
-      const [fsLock] = await deps.db
-        .select({ lockoutDays: firmSettings.lateEntryLockoutDays })
-        .from(firmSettings)
-        .where(eq(firmSettings.firmId, session.firmId))
-        .limit(1);
-      const lockoutDays = fsLock?.lockoutDays ?? 14;
-      if (lockoutDays > 0) {
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const cutoff = new Date(Date.now() - lockoutDays * 86_400_000).toISOString().slice(0, 10);
-        if (parsed.data.entryDate < cutoff && parsed.data.entryDate <= todayStr) {
-          res.status(409).json({
-            error: 'late_entry_locked',
-            entryDate: parsed.data.entryDate,
-            lockoutDays,
-            cutoff,
-          });
-          return;
-        }
-      }
-      const [client] = await deps.db
-        .select()
-        .from(clients)
-        .where(eq(clients.id, eng.clientId))
-        .limit(1);
-      if (!client || client.firmId !== session.firmId) {
-        res.status(404).json({ error: 'client_not_found' });
-        return;
-      }
-
-      // 0179 — validate the optional appointment back-link: it must exist
-      // and belong to the firm. We don't force it to match the engagement
-      // (an appointment may be client-only, or logged against a different
-      // engagement than it was booked under) — just that it's the firm's.
-      if (parsed.data.appointmentId) {
-        const [appt] = await deps.db
-          .select({ id: appointments.id })
-          .from(appointments)
-          .where(
-            and(
-              eq(appointments.id, parsed.data.appointmentId),
-              eq(appointments.firmId, session.firmId),
-            ),
-          )
-          .limit(1);
-        if (!appt) {
-          res.status(404).json({ error: 'appointment_not_found' });
-          return;
-        }
-      }
-
-      // Optional progress-status change. Validate up-front (fail fast,
-      // nothing created on a bad status); applied after the entry inserts.
-      let statusChange: { from: string; to: string } | null = null;
-      if (parsed.data.workflowState && parsed.data.workflowState !== eng.workflowState) {
-        const [statusRow] = await deps.db
-          .select({ ws: engagementStatusConfig.workflowState })
-          .from(engagementStatusConfig)
-          .where(
-            and(
-              eq(engagementStatusConfig.firmId, session.firmId),
-              eq(engagementStatusConfig.workflowState, parsed.data.workflowState),
-            ),
-          )
-          .limit(1);
-        if (!statusRow) {
-          res.status(400).json({ error: 'invalid_workflow_state' });
-          return;
-        }
-        statusChange = { from: eng.workflowState, to: parsed.data.workflowState };
-      }
-
-      let serviceLineId: string | null = null;
-      if (parsed.data.workCodeId) {
-        const [wc] = await deps.db
-          .select({ serviceLineId: workCodes.serviceLineId })
-          .from(workCodes)
-          .where(eq(workCodes.id, parsed.data.workCodeId))
-          .limit(1);
-        serviceLineId = wc?.serviceLineId ?? null;
-      }
-
-      const ruleCheck = await evaluateRequiredFieldRules(deps.db, session.firmId, {
-        engagementId: eng.id,
-        engagementTypeId: eng.engagementTypeId ?? null,
-        workCodeId: parsed.data.workCodeId ?? null,
-        serviceLineId,
-        description: parsed.data.description ?? null,
-        reasonCodeId: null,
+      const result = await createTimeEntryCore(deps, {
+        session: req.staffSession!,
+        payload: parsed.data,
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
       });
-      if (!ruleCheck.ok) {
-        res.status(400).json({
-          error: 'required_fields_missing',
-          ruleId: ruleCheck.ruleId,
-          ruleName: ruleCheck.ruleName,
-          missing: ruleCheck.missing,
-        });
-        return;
-      }
-
-      const candidates = await loadRateCandidates(deps.db, {
-        firmId: session.firmId,
-        appUserId: session.appUserId,
-        engagementId: eng.id,
-        clientId: client.id,
-        serviceLineId,
-      });
-
-      const [firm] = await deps.db
-        .select({ id: firms.id })
-        .from(firms)
-        .where(eq(firms.id, session.firmId))
-        .limit(1);
-      if (!firm) {
-        res.status(500).json({ error: 'firm_not_found' });
-        return;
-      }
-      // Firm default bill rate isn't on the schema (deliberately — every
-      // staff has at least a StandardRate snapshot entry). We fall back
-      // to a sentinel 0 if nothing resolves; the API refuses the entry.
-      const resolved = resolveRate({
-        serviceDate: parsed.data.entryDate,
-        appUserId: session.appUserId,
-        engagementId: eng.id,
-        clientId: client.id,
-        serviceLineId,
-        rateCodeId: eng.defaultRateCodeId ?? null,
-        candidates,
-        firmDefaultBillRateCents: 0,
-      });
-      if (resolved.level === 'firm' && resolved.billRateCents === 0) {
-        res.status(400).json({ error: 'no_rate_resolves', userId: session.appUserId });
-        return;
-      }
-      const snapshot = captureRateSnapshot({
-        rate: resolved,
-        hours: parsed.data.hours,
-        multiplierBps: eng.rateMultiplierBps ?? 10000,
-      });
-
-      // NTE cap (Phase 10 #19): if the engagement has nte_cap_cents set,
-      // reject when this entry would push the running standard-amount
-      // total past the cap. LIFETIME scope is enforced across all entries;
-      // PERIOD scope uses the calendar month containing entryDate.
-      if (eng.nteCapCents != null && Number(eng.nteCapCents) > 0) {
-        const monthStart = parsed.data.entryDate.slice(0, 7) + '-01';
-        const nextMonth = new Date(monthStart + 'T00:00:00Z');
-        nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
-        const monthEnd = nextMonth.toISOString().slice(0, 10);
-        const conds = [
-          eq(timeEntries.engagementId, eng.id),
-          inArray(timeEntries.status, ['SUBMITTED', 'LOCKED', 'BILLED']),
-        ];
-        if (eng.nteCapScope === 'PERIOD') {
-          conds.push(gte(timeEntries.entryDate, monthStart));
-          conds.push(lte(timeEntries.entryDate, monthEnd));
-        }
-        const [accum] = await deps.db
-          .select({
-            total: sql<number>`COALESCE(SUM(${timeEntries.standardAmountCents}), 0)`.as('total'),
-          })
-          .from(timeEntries)
-          .where(and(...conds));
-        const projected = Number(accum?.total ?? 0) + snapshot.amountCents;
-        if (projected > Number(eng.nteCapCents)) {
-          res.status(409).json({
-            error: 'nte_cap_exceeded',
-            capCents: Number(eng.nteCapCents),
-            projectedCents: projected,
-          });
-          return;
-        }
-      }
-
-      // Q20 — in_scope flag set at write time from engagement's array
-      const inScope =
-        eng.mixedModeEnabled && parsed.data.workCodeId
-          ? eng.inScopeWorkCodeIds.includes(parsed.data.workCodeId)
-          : true;
-
-      const [row] = await deps.db
-        .insert(timeEntries)
-        .values({
-          engagementId: eng.id,
-          appUserId: session.appUserId,
-          workCodeId: parsed.data.workCodeId ?? null,
-          entryDate: parsed.data.entryDate,
-          hours: parsed.data.hours.toString(),
-          billableFlag: parsed.data.billableFlag ?? true,
-          inScopeFlag: inScope,
-          outOfScopeOverride: parsed.data.outOfScopeOverride ?? false,
-          description: parsed.data.description ?? '',
-          standardRateSnapshotCents: snapshot.rateCents,
-          standardAmountCents: snapshot.amountCents,
-          // 0063 — lock the cost rate at write time alongside the bill
-          // rate. snapshot.costRateCents is null when no
-          // staff_rate_snapshot exists for the user; downstream sums
-          // COALESCE to 0 in that case.
-          costRateSnapshotCents: snapshot.costRateCents,
-          // 0179 — durable back-link to the originating appointment.
-          appointmentId: parsed.data.appointmentId ?? null,
-        })
-        .returning({ id: timeEntries.id });
-
-      // Apply the optional progress-status change (validated above). Uses
-      // the same entity_type as the dedicated PATCH so it flows into the
-      // engagement Status history. Best-effort audit (logged, not swallowed).
-      if (statusChange) {
-        await deps.db
-          .update(engagements)
-          .set({ workflowState: statusChange.to, updatedAt: new Date() })
-          .where(eq(engagements.id, eng.id));
-        await emitAudit(deps.db, {
-          action: 'UPDATE',
-          entityType: 'engagement_workflow_state',
-          entityId: eng.id,
-          actorAppUserId: session.appUserId,
-          before: { workflowState: statusChange.from },
-          after: { workflowState: statusChange.to },
-          ip: req.ip ?? null,
-          userAgent: req.header('user-agent') ?? null,
-        }).catch((err: unknown) =>
-          logger.error(
-            { err, engagementId: eng.id },
-            'audit emit failed (workflow_state via time entry)',
-          ),
-        );
-      }
-
-      // Phase 10 #13 — auto-debit hour bank if this engagement has one.
-      // Best-effort: don't fail the time entry if the bank can't be
-      // debited (out-of-balance or query error logs but doesn't roll
-      // back the entry; OOS hours legitimately can't reduce a depleted
-      // bank, the partner reviews these at pre-bill).
-      let hourBankDebit: {
-        bankId: string;
-        debitedHours: number;
-        balanceAfterHours: number;
-      } | null = null;
-      const debitableHours = inScope ? parsed.data.hours : 0;
-      if (row?.id && debitableHours > 0) {
-        try {
-          const [bank] = await deps.db
-            .select({
-              id: hourBanks.id,
-              openingHours: hourBanks.openingHours,
-              openingAmountCents: hourBanks.openingAmountCents,
-              forfeitedAt: hourBanks.forfeitedAt,
-            })
-            .from(hourBanks)
-            .where(eq(hourBanks.engagementId, eng.id))
-            .limit(1);
-          if (bank && !bank.forfeitedAt) {
-            const [agg] = await deps.db
-              .select({
-                debited:
-                  sql<string>`COALESCE(SUM(CASE WHEN ${hourBankTransactions.type} IN ('DEBIT','EXPIRE','FORFEIT') THEN ${hourBankTransactions.hours} ELSE 0 END), 0)`.as(
-                    'debited',
-                  ),
-                purchased:
-                  sql<string>`COALESCE(SUM(CASE WHEN ${hourBankTransactions.type} = 'PURCHASE' THEN ${hourBankTransactions.hours} ELSE 0 END), 0)`.as(
-                    'purchased',
-                  ),
-              })
-              .from(hourBankTransactions)
-              .where(eq(hourBankTransactions.hourBankId, bank.id));
-            const balanceBefore =
-              Number(bank.openingHours) + Number(agg?.purchased ?? 0) - Number(agg?.debited ?? 0);
-            // Debit only the portion that fits; the rest is unbanked
-            // overage (handled at billing time via the mixed-mode lane).
-            const toDebit = Math.min(debitableHours, Math.max(balanceBefore, 0));
-            if (toDebit > 0) {
-              const balanceAfter = balanceBefore - toDebit;
-              const proRataAmount = Math.round(
-                (toDebit / parsed.data.hours) * snapshot.amountCents,
-              );
-              const [tx] = await deps.db
-                .insert(hourBankTransactions)
-                .values({
-                  hourBankId: bank.id,
-                  type: 'DEBIT',
-                  hours: toDebit.toFixed(2),
-                  amountCents: proRataAmount,
-                  sourceRefType: 'time_entry',
-                  sourceRefId: row.id,
-                  runningBalanceHours: balanceAfter.toFixed(2),
-                  occurredAt: new Date(),
-                })
-                .returning({ id: hourBankTransactions.id });
-              hourBankDebit = {
-                bankId: bank.id,
-                debitedHours: toDebit,
-                balanceAfterHours: balanceAfter,
-              };
-              await emitAudit(deps.db, {
-                action: 'CREATE',
-                entityType: 'hour_bank_transaction',
-                entityId: tx?.id,
-                actorAppUserId: session.appUserId,
-                after: {
-                  type: 'DEBIT',
-                  source: 'time_entry_auto',
-                  bankId: bank.id,
-                  hours: toDebit,
-                  amountCents: proRataAmount,
-                  timeEntryId: row.id,
-                },
-                ip: clientIp(req),
-                userAgent: req.header('user-agent') ?? null,
-              }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
-            }
-          }
-        } catch (err) {
-          logger.warn({ err, engagementId: eng.id }, 'hour-bank auto-debit failed');
-        }
-      }
-
-      // R5 — Phase 8 — retainer auto-split. After the time_entry insert
-      // we run the consumption logic in its own short transaction
-      // (SELECT FOR UPDATE on the retainer row serializes concurrent
-      // inserts against the same retainer). When a retainer hit
-      // occurs, update the time_entry row with the split breakdown.
-      // Best-effort: failures route the entry to 100% billable WIP
-      // and log; the entry itself stays in the DB.
-      if (row?.id) {
-        try {
-          const { applyTimeEntryToRetainer } = await import('../retainers/consumption');
-          const split = await deps.db.transaction(async (tx) => {
-            return applyTimeEntryToRetainer(tx, {
-              engagementId: eng.id,
-              entryDate: parsed.data.entryDate,
-              hours: parsed.data.hours,
-              workCodeId: parsed.data.workCodeId ?? null,
-              actorAppUserId: session.appUserId,
-              timeEntryId: row.id,
-            });
-          });
-          if (split.retainerId) {
-            await deps.db
-              .update(timeEntries)
-              .set({
-                retainerId: split.retainerId,
-                retainerHours: String(split.retainerHours),
-                billableHours: String(split.billableHours),
-              })
-              .where(eq(timeEntries.id, row.id));
-            if (split.exhausted && deps.sendEmail) {
-              try {
-                const { notifyRetainerExhausted } = await import('../retainers/notifications');
-                await notifyRetainerExhausted(deps.db, split.retainerId, deps.sendEmail);
-              } catch (err) {
-                logger.warn(
-                  { err, retainerId: split.retainerId },
-                  'retainer.exhausted notification failed',
-                );
-              }
-            }
-          } else {
-            // Entry routed entirely to WIP — stamp billableHours for
-            // reporting parity.
-            await deps.db
-              .update(timeEntries)
-              .set({ billableHours: String(parsed.data.hours) })
-              .where(eq(timeEntries.id, row.id));
-          }
-        } catch (err) {
-          logger.error({ err, timeEntryId: row.id }, 'retainer auto-split failed');
-        }
-      }
-
-      // Stage 2 — wire any cited messages to this time entry. Validation
-      // failures bubble out as 403 so the caller knows the entry was
-      // created but links were rejected; the entry row stays in the DB
-      // (the partner can manually link via update later).
-      let linkedMessages = 0;
-      if (row?.id && parsed.data.linkedMessageIds && parsed.data.linkedMessageIds.length > 0) {
-        const n = await linkTimeEntryMessages(deps.db, {
-          engagementId: eng.id,
-          timeEntryId: row.id,
-          messageIds: parsed.data.linkedMessageIds,
-          appUserId: session.appUserId,
-        });
-        if (n === -1) {
-          res.status(403).json({
-            error: 'message_link_forbidden',
-            timeEntryId: row.id,
-            reason: 'not_a_thread_member_or_messages_out_of_thread',
-          });
-          return;
-        }
-        linkedMessages = n;
-      }
-
-      res.status(201).json({
-        id: row?.id,
-        rateSnapshot: snapshot.rateCents,
-        amount: snapshot.amountCents,
-        resolutionLevel: resolved.level,
-        hourBankDebit,
-        linkedMessages,
-        // Effective progress status after this save (lets the form update
-        // its local copy without a full reload).
-        workflowState: statusChange?.to ?? eng.workflowState,
-      });
+      res.status(result.status).json(result.body);
     },
   );
 
@@ -1394,6 +1412,19 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       if (prior.status === 'ARCHIVED') {
         res.status(409).json({ error: 'archived' });
         return;
+      }
+      // 0208 — entries on the firm-administrative engagement stay
+      // non-billable; refuse attempts to flip the flag back on.
+      if (parsed.data.billableFlag === true) {
+        const [eng] = await deps.db
+          .select({ firmAdmin: engagements.firmAdmin })
+          .from(engagements)
+          .where(eq(engagements.id, prior.engagementId))
+          .limit(1);
+        if (eng?.firmAdmin) {
+          res.status(409).json({ error: 'firm_admin_non_billable' });
+          return;
+        }
       }
 
       const [maxVersion] = await deps.db
@@ -2158,134 +2189,6 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .where(inArray(timeEntries.id, ids))
         .returning({ id: timeEntries.id });
       res.json({ ok: true, updated: updated.length });
-    },
-  );
-
-  router.post(
-    '/timer/start',
-    requirePermission(deps, 'time_entry:create'),
-    async (req: Request, res: Response) => {
-      const parsed = TimerStartSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload' });
-        return;
-      }
-      const session = req.staffSession!;
-      if (!deps.redis) {
-        res.status(503).json({ error: 'no_redis' });
-        return;
-      }
-      const existing = await deps.redis.get(timerKey(session.appUserId));
-      if (existing) {
-        res.status(409).json({ error: 'timer_already_running', state: JSON.parse(existing) });
-        return;
-      }
-      const state = {
-        engagementId: parsed.data.engagementId,
-        workCodeId: parsed.data.workCodeId ?? null,
-        description: parsed.data.description ?? '',
-        startedAt: new Date().toISOString(),
-      };
-      // 24h TTL guards against orphaned timers.
-      await deps.redis.set(timerKey(session.appUserId), JSON.stringify(state), 'EX', 24 * 3600);
-      res.status(201).json({ ok: true, state });
-    },
-  );
-
-  router.get(
-    '/timer/status',
-    requirePermission(deps, 'time_entry:read:own'),
-    async (req: Request, res: Response) => {
-      const session = req.staffSession!;
-      if (!deps.redis) {
-        res.json({ running: false });
-        return;
-      }
-      const v = await deps.redis.get(timerKey(session.appUserId));
-      if (!v) {
-        res.json({ running: false });
-        return;
-      }
-      const state = JSON.parse(v) as {
-        startedAt: string;
-        engagementId: string;
-        lastHeartbeatAt?: string;
-      };
-      const elapsedMs = Date.now() - Date.parse(state.startedAt);
-      // Idle detection (Phase 9 #5): if no heartbeat in the last 15 min,
-      // flag the timer as idle so the UI can prompt the user.
-      const idleThresholdMs = 15 * 60_000;
-      const lastHeartbeat = state.lastHeartbeatAt
-        ? Date.parse(state.lastHeartbeatAt)
-        : Date.parse(state.startedAt);
-      const idleMs = Date.now() - lastHeartbeat;
-      res.json({
-        running: true,
-        state,
-        elapsedMs,
-        idle: idleMs > idleThresholdMs,
-        idleMs,
-        idleThresholdMs,
-      });
-    },
-  );
-
-  // Heartbeat — frontend posts this every minute while the timer is
-  // visible so the server knows the user is still active.
-  router.post(
-    '/timer/heartbeat',
-    requirePermission(deps, 'time_entry:read:own'),
-    async (req: Request, res: Response) => {
-      const session = req.staffSession!;
-      if (!deps.redis) {
-        res.json({ ok: true });
-        return;
-      }
-      const v = await deps.redis.get(timerKey(session.appUserId));
-      if (!v) {
-        res.status(404).json({ error: 'no_timer' });
-        return;
-      }
-      const state = JSON.parse(v) as Record<string, unknown>;
-      state['lastHeartbeatAt'] = new Date().toISOString();
-      await deps.redis.set(timerKey(session.appUserId), JSON.stringify(state), 'EX', 6 * 3600);
-      res.json({ ok: true });
-    },
-  );
-
-  router.post(
-    '/timer/stop',
-    requirePermission(deps, 'time_entry:create'),
-    async (req: Request, res: Response) => {
-      const session = req.staffSession!;
-      if (!deps.redis) {
-        res.status(503).json({ error: 'no_redis' });
-        return;
-      }
-      const v = await deps.redis.get(timerKey(session.appUserId));
-      if (!v) {
-        res.status(404).json({ error: 'no_timer_running' });
-        return;
-      }
-      const state = JSON.parse(v) as {
-        engagementId: string;
-        workCodeId: string | null;
-        description: string;
-        startedAt: string;
-      };
-      const elapsedMs = Date.now() - Date.parse(state.startedAt);
-      const elapsedHours = elapsedMs / 3_600_000;
-      // Round to 0.25h per Q19 default.
-      const rounded = Math.max(0.25, Math.round(elapsedHours / 0.25) * 0.25);
-      await deps.redis.del(timerKey(session.appUserId));
-      res.json({
-        ok: true,
-        engagementId: state.engagementId,
-        workCodeId: state.workCodeId,
-        description: state.description,
-        elapsedHours: rounded,
-        startedAt: state.startedAt,
-      });
     },
   );
 

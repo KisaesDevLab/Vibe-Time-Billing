@@ -302,7 +302,7 @@ export function Combobox({
                 }}
               />
             </div>
-            <div style={{ overflowY: 'auto', flex: 1 }}>
+            <div style={{ overflowY: 'auto', flex: 1, overscrollBehavior: 'contain' }}>
               {filtered.length === 0 ? (
                 <p
                   style={{
@@ -320,6 +320,11 @@ export function Combobox({
                   const highlighted = i === highlightIndex;
                   const isSelected = opt.value === value;
                   return (
+                    // Keyboard interaction lives on the listbox (arrow keys +
+                    // Enter via onKey and aria-activedescendant) — the ARIA
+                    // listbox pattern where options are not individually
+                    // focusable, so the per-option a11y rules don't apply.
+                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus
                     <div
                       key={opt.value}
                       id={`${listboxId}-opt-${i}`}
@@ -327,10 +332,17 @@ export function Combobox({
                       aria-selected={isSelected}
                       aria-disabled={opt.disabled}
                       onPointerEnter={() => setHighlightIndex(i)}
+                      // Commit on click, not pointerdown: pointerdown fires
+                      // the instant a finger lands, so preventDefault+commit
+                      // there killed touch scrolling — on iPad the list
+                      // couldn't scroll and grazing a row selected it. For
+                      // mouse we still preventDefault on pointerdown so the
+                      // filter input keeps focus; click follows and commits.
+                      // A touch that turns into a scroll never emits click.
                       onPointerDown={(e) => {
-                        e.preventDefault();
-                        commit(opt);
+                        if (e.pointerType === 'mouse') e.preventDefault();
                       }}
+                      onClick={() => commit(opt)}
                       style={{
                         padding: '6px 10px',
                         cursor: opt.disabled ? 'not-allowed' : 'pointer',

@@ -35,9 +35,11 @@ import { eq } from 'drizzle-orm';
 
 import {
   appUsers,
+  clients,
   engagementLetterTemplates,
   engagementTemplates,
   engagementTypes,
+  engagements,
   firmSettings,
   firms,
   offices,
@@ -144,6 +146,60 @@ async function main(): Promise<void> {
         description: 'Default billing rate',
         sortOrder: 0,
         isSystem: true,
+      });
+
+      // 0208 — permanent home for firm-administrative time: an Internal
+      // service line, non-billable admin work codes, a visible internal
+      // client, and one always-ACTIVE engagement flagged firm_admin (API
+      // guards pin it ACTIVE and force its time entries non-billable).
+      // Mirrors migration 0208, which no-ops on fresh installs because it
+      // runs before this firm row exists.
+      const [internalSl] = await tx
+        .insert(serviceLines)
+        .values({ firmId, name: 'Internal', category: 'internal', color: '#64748b' })
+        .returning({ id: serviceLines.id });
+      if (!internalSl) throw new Error('internal service line insert failed');
+      await tx.insert(workCodes).values(
+        [
+          { key: 'admin_general', name: 'Administration' },
+          { key: 'admin_cpe', name: 'CPE / Training' },
+          { key: 'admin_meeting', name: 'Internal meeting' },
+          { key: 'admin_marketing', name: 'Marketing / Business development' },
+        ].map((wc) => ({
+          firmId,
+          serviceLineId: internalSl.id,
+          key: wc.key,
+          name: wc.name,
+          billableDefault: false,
+        })),
+      );
+      const [internalType] = await tx
+        .insert(engagementTypes)
+        .values({
+          firmId,
+          serviceLineId: internalSl.id,
+          key: 'internal_admin',
+          name: 'Internal — Administrative',
+          defaultFeeStructure: 'HOURLY',
+        })
+        .returning({ id: engagementTypes.id });
+      const [internalClient] = await tx
+        .insert(clients)
+        .values({
+          firmId,
+          name: '⚙ Firm — Internal',
+          partnerInChargeId: adminUser.id,
+          officeId: officeRow.id,
+        })
+        .returning({ id: clients.id });
+      if (!internalClient) throw new Error('internal client insert failed');
+      await tx.insert(engagements).values({
+        clientId: internalClient.id,
+        name: 'Administrative time',
+        feeStructure: 'HOURLY',
+        status: 'ACTIVE',
+        engagementTypeId: internalType?.id ?? null,
+        firmAdmin: true,
       });
 
       // Q24 starter pack — load the eight engagement templates from

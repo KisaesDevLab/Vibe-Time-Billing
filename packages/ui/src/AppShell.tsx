@@ -28,6 +28,11 @@ export interface AppShellProps {
   realmBadge?: ReactNode;
   nav: NavItem[];
   trailing?: ReactNode;
+  /** Rendered inside the nav immediately after the FIRST nav item (the
+   *  staff app puts the timer chip under Dashboard). Receives the
+   *  sidebar's collapsed state when passed as a function so it can render
+   *  an icon-only variant in the rail. */
+  navExtra?: ReactNode | ((collapsed: boolean) => ReactNode);
   children: ReactNode;
   /** localStorage key used to persist the collapsed/expanded state.
    *  Set per-realm so staff vs portal don't share preferences. */
@@ -88,6 +93,7 @@ export function AppShell({
   realmBadge,
   nav,
   trailing,
+  navExtra,
   children,
   collapseStorageKey = DEFAULT_COLLAPSE_KEY,
   collapsibleSections = false,
@@ -435,6 +441,9 @@ export function AppShell({
                     )}
                   </a>
                 )}
+                {i === 0 &&
+                  navExtra != null &&
+                  (typeof navExtra === 'function' ? navExtra(collapsed) : navExtra)}
               </Fragment>
             );
           })}

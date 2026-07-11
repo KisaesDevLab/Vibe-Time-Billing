@@ -1190,6 +1190,11 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(409).json({ error: 'legal_hold_active' });
         return;
       }
+      // 0208 — the internal admin client is permanent.
+      if (await ownsFirmAdminEngagement(deps.db, req.params['id']!)) {
+        res.status(409).json({ error: 'firm_admin_client' });
+        return;
+      }
       await deps.db
         .update(clients)
         .set({ status: 'ARCHIVED' })
@@ -1483,6 +1488,18 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   );
 
   // Phase 6 #8 — client merge / dedup tool.
+  // 0208 — the internal client that owns the firm-administrative
+  // engagement can never be archived (or merged away): admin time must
+  // always have a home.
+  async function ownsFirmAdminEngagement(db: Database, clientId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: engagements.id })
+      .from(engagements)
+      .where(and(eq(engagements.clientId, clientId), eq(engagements.firmAdmin, true)))
+      .limit(1);
+    return !!row;
+  }
+
   // POST /:targetId/merge with body { sourceId, reason? }.
   // Re-points every FK from source → target (engagements, invoices,
   // client_rate_overrides, client_notes, client_portal_access,
@@ -1507,6 +1524,11 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       }
       if (!deps.db) {
         res.json({ ok: true });
+        return;
+      }
+      // Merge archives the source — the internal admin client can't be one.
+      if (await ownsFirmAdminEngagement(deps.db, sourceId)) {
+        res.status(409).json({ error: 'firm_admin_client' });
         return;
       }
       const both = await deps.db
@@ -1643,10 +1665,24 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(400).json({ error: 'clientIds_and_status_required' });
         return;
       }
+      // 0208 — bulk archive silently skips the internal admin client.
+      let effectiveIds = ids;
+      if (status === 'ARCHIVED') {
+        const protectedRows = await deps.db
+          .select({ clientId: engagements.clientId })
+          .from(engagements)
+          .where(and(inArray(engagements.clientId, ids), eq(engagements.firmAdmin, true)));
+        const protectedIds = new Set(protectedRows.map((r) => r.clientId));
+        effectiveIds = ids.filter((id) => !protectedIds.has(id));
+        if (effectiveIds.length === 0) {
+          res.json({ updated: 0 });
+          return;
+        }
+      }
       const updated = await deps.db
         .update(clients)
         .set({ status })
-        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, ids)))
+        .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, effectiveIds)))
         .returning({ id: clients.id });
       res.json({ updated: updated.length });
     },

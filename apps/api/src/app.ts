@@ -53,6 +53,7 @@ import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createInvoicePayPublicRouter } from './pay-public/invoice-pay';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
+import { createTimerRouter } from './time-entries/timers';
 import { createExpensesRouter } from './expenses/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
@@ -863,10 +864,18 @@ export function createApp(deps: AppDeps): Express {
   const timeEntryRouter = createTimeEntryRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
-    redis: deps.redis,
     sendEmail: deps.sendPortalEmail,
   });
   app.use('/api/staff/time-entries', auth.requireAuth, auth.requireCsrf, timeEntryRouter);
+
+  // 0207 — pause-and-hold stopwatch timers (converts to time entries on
+  // save through the same create core as manual logging).
+  const timerRouter = createTimerRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+  });
+  app.use('/api/staff/timers', auth.requireAuth, auth.requireCsrf, timerRouter);
 
   const expensesRouter = createExpensesRouter({
     db: deps.db,

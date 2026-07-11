@@ -2025,6 +2025,10 @@ export const engagements = pgTable(
     scopeDefinition: text('scope_definition'),
 
     status: engagementStatus('status').notNull().default('PROPOSED'),
+    // 0208 — the firm's permanent administrative engagement. Exactly one
+    // per firm (seeded); API guards pin it ACTIVE and force all time
+    // logged to it non-billable.
+    firmAdmin: boolean('firm_admin').notNull().default(false),
     // v2 Part 2 — operational workflow + priority (distinct from
     // lifecycle status above).
     // 0101 — text key into engagement_status_config (firm-scoped catalog).
@@ -2317,6 +2321,48 @@ export const timeEntryVersions = pgTable(
   },
   (t) => ({
     entryVersionUnique: uniqueIndex('time_entry_version_entry_version_uk').on(t.timeEntryId, t.version),
+  }),
+);
+
+// 0207 — pause-and-hold stopwatch timers. Durable working state, not a
+// billing record: on save the timer converts to a time_entry through the
+// standard create path and this row is deleted. One RUNNING timer per
+// user (partial unique index); classification nullable until save.
+export const timeTimers = pgTable(
+  'time_timer',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    appUserId: uuid('app_user_id')
+      .notNull()
+      .references(() => appUsers.id),
+    // UI hint for the engagement picker before an engagement is chosen;
+    // backfilled from the engagement when one is set.
+    clientId: uuid('client_id').references(() => clients.id, { onDelete: 'set null' }),
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'set null',
+    }),
+    workCodeId: uuid('work_code_id').references(() => workCodes.id, { onDelete: 'set null' }),
+    description: text('description').notNull().default(''),
+    status: text('status').notNull().default('RUNNING'),
+    accumulatedSeconds: integer('accumulated_seconds').notNull().default(0),
+    // Set iff RUNNING; elapsed = accumulatedSeconds + (now - lastStartedAt).
+    lastStartedAt: timestamp('last_started_at', { withTimezone: true }),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    // Server auto-pause of a forgotten timer (8h cap); cleared on resume.
+    autoPausedAt: timestamp('auto_paused_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userIdx: index('time_timer_user_idx').on(t.appUserId),
+    oneRunning: uniqueIndex('time_timer_one_running_idx')
+      .on(t.appUserId)
+      .where(sql`status = 'RUNNING'`),
+    statusCk: check('time_timer_status_ck', sql`${t.status} IN ('RUNNING', 'PAUSED')`),
+    accumulatedNonNegative: check(
+      'time_timer_accumulated_nonneg_ck',
+      sql`${t.accumulatedSeconds} >= 0`,
+    ),
   }),
 );
 

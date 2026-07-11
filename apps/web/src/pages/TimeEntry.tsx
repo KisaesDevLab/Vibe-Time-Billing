@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
@@ -16,6 +16,7 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { elapsedToHours, formatHuman, useTimersOptional } from '../timer-context';
 import { TableSearch } from '../components/TableSearch';
 import { filterStatuses } from '../status-filter';
 import { useColumnView, viewToPagedQuery } from '../lib/column-view';
@@ -382,7 +383,7 @@ function LogView({
   // client has exactly one active engagement it auto-selects.
   // 0050 — read query params for dashboard "Time" button prefill. URL
   // params override the persisted last-used client on first render.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialClientId = searchParams.get('clientId') ?? '';
   const initialEngagementId = searchParams.get('engagementId') ?? '';
   // CONNECT_INTEGRATION D.6 — pre-fill flow from the untracked
@@ -473,6 +474,54 @@ function LogView({
   // 0050 — user-controlled out-of-scope override.
   const [outOfScope, setOutOfScope] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // 0207 — "Finish on Time page" timer handoff. With ?timerId= present the
+  // form prefills from the parked timer (client/engagement/work code/
+  // description + exact hours from elapsed) and submit converts it through
+  // the timer save endpoint — deleting the timer — instead of a plain
+  // create. Hours drop to free-decimal while finishing so an exact 0.31
+  // isn't blocked by the firm's rounding step.
+  const timerCtx = useTimersOptional();
+  const [finishingTimerId, setFinishingTimerId] = useState(searchParams.get('timerId') ?? '');
+  const finishingTimer =
+    (finishingTimerId && timerCtx?.timers.find((t) => t.id === finishingTimerId)) || null;
+  const timerPrefilled = useRef(false);
+  // Drop the handoff param from the URL so a refresh doesn't re-enter
+  // finish mode after the timer is gone.
+  const clearTimerParam = useCallback(() => {
+    if (searchParams.has('timerId')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('timerId');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+  // React to later navigations too ("Finish on Time page" clicked while
+  // already on /time) — the useState initializer only covers mount.
+  const urlTimerId = searchParams.get('timerId') ?? '';
+  useEffect(() => {
+    if (urlTimerId && urlTimerId !== finishingTimerId) {
+      timerPrefilled.current = false;
+      setFinishingTimerId(urlTimerId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTimerId]);
+  useEffect(() => {
+    if (!finishingTimerId || !timerCtx?.loaded) return;
+    if (!finishingTimer) {
+      // Saved or discarded elsewhere (another tab, the header popover).
+      setFinishingTimerId('');
+      clearTimerParam();
+      return;
+    }
+    if (timerPrefilled.current) return;
+    timerPrefilled.current = true;
+    if (finishingTimer.clientId) setClientId(finishingTimer.clientId);
+    if (finishingTimer.engagementId) setEngagementId(finishingTimer.engagementId);
+    if (finishingTimer.workCodeId) setWorkCodeId(finishingTimer.workCodeId);
+    if (finishingTimer.description) setDescription(finishingTimer.description);
+    setHours(elapsedToHours(timerCtx.elapsedSeconds(finishingTimer)).toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishingTimerId, finishingTimer, timerCtx?.loaded]);
 
   // 0050 — inline edit state for "My entries". Click Edit on a row to
   // populate the draft; Save PATCHes the entry; Cancel discards.
@@ -675,6 +724,14 @@ function LogView({
     void load();
   }, [load]);
 
+  // 0207 — refresh the entries table when a timer is quick-saved from the
+  // header popover while this page is open.
+  useEffect(() => {
+    const onTimerSaved = (): void => void load();
+    window.addEventListener('vibe:timer-saved', onTimerSaved);
+    return () => window.removeEventListener('vibe:timer-saved', onTimerSaved);
+  }, [load]);
+
   // Any filter/search/sort change snaps back to page 1.
   useEffect(() => {
     setPage(1);
@@ -691,22 +748,39 @@ function LogView({
     try {
       const statusToSet =
         workflowState && workflowState !== currentWorkflowState ? workflowState : undefined;
-      const res = await api<{ workflowState?: string }>('/api/staff/time-entries', {
-        method: 'POST',
-        body: JSON.stringify({
+      if (finishingTimerId && timerCtx) {
+        // 0207 — convert the parked timer into this entry (same create
+        // guards server-side; the timer row is deleted on success).
+        await timerCtx.saveTimer(finishingTimerId, {
           engagementId,
           workCodeId: workCodeId || undefined,
           entryDate,
           hours: Number(hours),
-          description,
-          outOfScopeOverride: outOfScope,
-          linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
+          description: description || undefined,
+          outOfScopeOverride: outOfScope || undefined,
           workflowState: statusToSet,
-          appointmentId: appointmentId || undefined,
-        }),
-      });
-      if (statusToSet) {
-        onEngagementStatusChanged(engagementId, res.workflowState ?? statusToSet);
+        });
+        if (statusToSet) onEngagementStatusChanged(engagementId, statusToSet);
+        setFinishingTimerId('');
+        clearTimerParam();
+      } else {
+        const res = await api<{ workflowState?: string }>('/api/staff/time-entries', {
+          method: 'POST',
+          body: JSON.stringify({
+            engagementId,
+            workCodeId: workCodeId || undefined,
+            entryDate,
+            hours: Number(hours),
+            description,
+            outOfScopeOverride: outOfScope,
+            linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
+            workflowState: statusToSet,
+            appointmentId: appointmentId || undefined,
+          }),
+        });
+        if (statusToSet) {
+          onEngagementStatusChanged(engagementId, res.workflowState ?? statusToSet);
+        }
       }
       setHours('1.00');
       setDescription('');
@@ -834,13 +908,16 @@ function LogView({
           <Input
             type="date"
             label="Date"
+            // iPad Safari: date inputs have an intrinsic min-width that
+            // overflows narrow grid columns unless appearance is reset.
+            style={{ minWidth: 0, WebkitAppearance: 'none', appearance: 'none' }}
             value={entryDate}
             onChange={(e) => setEntryDate(e.target.value)}
           />
           <Input
             type="number"
-            step={hoursStepMin(roundingHours).step}
-            min={hoursStepMin(roundingHours).min}
+            step={finishingTimerId ? 'any' : hoursStepMin(roundingHours).step}
+            min={finishingTimerId ? 0.01 : hoursStepMin(roundingHours).min}
             max={24}
             label="Hours"
             value={hours}
@@ -1044,10 +1121,46 @@ function LogView({
             >
               Process project
             </Button>
+            {timerCtx?.canUse && !finishingTimerId && (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={submitting}
+                title="Start a stopwatch with these details instead of logging manually"
+                onClick={() => {
+                  void timerCtx
+                    .startTimer({
+                      clientId: clientId || undefined,
+                      engagementId: engagementId || undefined,
+                      workCodeId: workCodeId || undefined,
+                      description: description || undefined,
+                    })
+                    .then(() => setDescription(''))
+                    .catch(() => setError('timer_start_failed'));
+                }}
+              >
+                ▶ Start timer
+              </Button>
+            )}
             <Button type="submit" disabled={submitting || !engagementId}>
-              {submitting ? 'Saving…' : 'Log'}
+              {submitting ? 'Saving…' : finishingTimerId ? 'Save timer entry' : 'Log'}
             </Button>
           </div>
+          {finishingTimer && (
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                padding: '6px 10px',
+                fontSize: 12,
+                border: `1px solid ${tokens.color.accent}`,
+                borderRadius: tokens.radius.sm,
+              }}
+            >
+              ⏱ Finishing timer — {formatHuman(timerCtx?.elapsedSeconds(finishingTimer) ?? 0)}{' '}
+              tracked{finishingTimer.status === 'RUNNING' ? ' (still running)' : ''}. Saving
+              converts it into this time entry.
+            </div>
+          )}
           {linkMessageId && (
             <div
               style={{
@@ -1433,7 +1546,29 @@ function LogView({
                 align: 'right',
                 render: (e) => {
                   const editable = !e.lockedAt && !e.billingBatchId;
-                  if (!editable) return null;
+                  // 0207 — Toggl-style "continue": a NEW timer prefilled
+                  // from this row (fresh entry on save; the original is
+                  // untouched). Available on locked/billed rows too.
+                  const continueBtn = timerCtx?.canUse ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title="Start a timer from this entry"
+                      onClick={() => {
+                        void timerCtx
+                          .startTimer({
+                            clientId: e.clientId,
+                            engagementId: e.engagementId,
+                            workCodeId: e.workCodeId ?? undefined,
+                            description: e.description || undefined,
+                          })
+                          .catch(() => setError('timer_start_failed'));
+                      }}
+                    >
+                      ▶
+                    </Button>
+                  ) : null;
+                  if (!editable) return continueBtn;
                   if (editingId === e.id) {
                     return (
                       <span style={{ display: 'inline-flex', gap: 4 }}>
@@ -1453,6 +1588,7 @@ function LogView({
                   }
                   return (
                     <span style={{ display: 'inline-flex', gap: 4 }}>
+                      {continueBtn}
                       <Button
                         size="sm"
                         variant="ghost"

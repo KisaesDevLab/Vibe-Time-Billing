@@ -723,7 +723,15 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       const updated = await deps.db
         .update(engagements)
         .set(patch)
-        .where(and(inArray(engagements.id, ids), inArray(engagements.clientId, clientIds)))
+        .where(
+          and(
+            inArray(engagements.id, ids),
+            inArray(engagements.clientId, clientIds),
+            // 0208 — the firm-administrative engagement is permanent;
+            // bulk moves silently skip it (it can only ever be ACTIVE).
+            ...(targetStatus === 'ACTIVE' ? [] : [eq(engagements.firmAdmin, false)]),
+          ),
+        )
         .returning({ id: engagements.id });
       // Stage 2 — archive associated threads when engagements close or
       // archive. Best-effort; failures don't fail the status change.
@@ -1221,6 +1229,19 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         return;
       }
       const session = req.staffSession!;
+      // 0208 — the firm-administrative engagement is permanent: it can
+      // never leave ACTIVE (admin time must always have a home).
+      if (parsed.data.status !== 'ACTIVE') {
+        const [target] = await deps.db
+          .select({ firmAdmin: engagements.firmAdmin })
+          .from(engagements)
+          .where(eq(engagements.id, req.params['id']!))
+          .limit(1);
+        if (target?.firmAdmin) {
+          res.status(409).json({ error: 'firm_admin_protected' });
+          return;
+        }
+      }
       // CLOSED transition: refuse if WIP remains (SUBMITTED time entries
       // not yet attached to a billing batch).
       if (parsed.data.status === 'CLOSED') {

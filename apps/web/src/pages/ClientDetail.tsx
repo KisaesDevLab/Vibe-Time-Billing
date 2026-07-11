@@ -12,6 +12,7 @@ import { PeopleCard } from './clients/PeopleCard';
 import { TaxPaymentsCard } from './clients/TaxPaymentsCard';
 import { ClientCredentialsCard } from './clients/ClientCredentialsCard';
 import { usePermission } from '../auth-context';
+import { useTimersOptional } from '../timer-context';
 import { ClientMessagesCard } from './messaging/ClientMessagesCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
@@ -107,6 +108,8 @@ export function ClientDetailPage(): JSX.Element {
   const [allClients, setAllClients] = useState<ClientLite[]>([]);
   const [tab, setTab] = useState<Tab>('home');
   const canViewCredentials = usePermission('client:credential:read');
+  // 0207 — header "▶ Timer" context-aware start (client pre-filled).
+  const timers = useTimersOptional();
   const [staff, setStaff] = useState<StaffUser[]>([]);
 
   // 0165 — if the client is restricted for this caller, the only visible
@@ -193,6 +196,22 @@ export function ClientDetailPage(): JSX.Element {
         }
         action={
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {timers?.canUse && (
+              <Button
+                size="sm"
+                variant="ghost"
+                title="Start a stopwatch for this client (auto-picks the engagement when there's exactly one active)"
+                onClick={() => {
+                  const active = engagements.filter((e) => e.status === 'ACTIVE');
+                  void timers.startTimer({
+                    clientId: client.id,
+                    engagementId: active.length === 1 ? active[0]!.id : undefined,
+                  });
+                }}
+              >
+                ▶ Timer
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"

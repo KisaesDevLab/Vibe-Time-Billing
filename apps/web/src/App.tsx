@@ -68,6 +68,8 @@ function BrandMark(): JSX.Element {
 }
 
 import { QuickFind } from './QuickFind';
+import { TimerProvider } from './timer-context';
+import { TimerChip } from './timer/TimerChip';
 
 import { AuthProvider, useAuth, usePermission } from './auth-context';
 
@@ -390,296 +392,300 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     };
   }, [location.pathname, can.appointments, can.requests, can.intake]);
   return (
-    <AppShell
-      brand={<BrandMark />}
-      collapseStorageKey="__vibe_staff_sidebar_collapsed"
-      collapsibleSections
-      realmBadge={<Pill tone="accent">staff</Pill>}
-      nav={[
-        {
-          label: 'Dashboard',
-          href: '/',
-          icon: <LayoutDashboard size={16} />,
-          active: location.pathname === '/',
-          show: true,
-        },
+    <TimerProvider>
+      <AppShell
+        brand={<BrandMark />}
+        collapseStorageKey="__vibe_staff_sidebar_collapsed"
+        collapsibleSections
+        realmBadge={<Pill tone="accent">staff</Pill>}
+        nav={[
+          {
+            label: 'Dashboard',
+            href: '/',
+            icon: <LayoutDashboard size={16} />,
+            active: location.pathname === '/',
+            show: true,
+          },
 
-        // ---- Work: who you serve, the work, your time + schedule ----
-        {
-          section: 'Work',
-          label: 'Clients',
-          href: '/clients',
-          icon: <Briefcase size={16} />,
-          active: location.pathname.startsWith('/clients'),
-          show: can.clients,
-        },
-        {
-          section: 'Work',
-          label: 'People',
-          href: '/people',
-          icon: <Users size={16} />,
-          active: location.pathname.startsWith('/people'),
-          show: can.clients,
-        },
-        {
-          section: 'Work',
-          label: 'Engagements',
-          href: '/engagements',
-          icon: <Layers size={16} />,
-          active: location.pathname.startsWith('/engagements'),
-          show: can.engagements,
-        },
-        {
-          section: 'Work',
-          label: 'Time',
-          href: '/time',
-          icon: <Clock size={16} />,
-          active: location.pathname.startsWith('/time'),
-          show: can.time,
-        },
-        {
-          section: 'Work',
-          label: 'Tasks',
-          href: '/tasks',
-          icon: <ListTodo size={16} />,
-          active: location.pathname.startsWith('/tasks'),
-          show: can.tasks,
-        },
-        {
-          section: 'Work',
-          label: 'Appointments',
-          href: '/appointments',
-          icon: <CalendarCheck size={16} />,
-          active: location.pathname.startsWith('/appointments'),
-          show: can.appointments,
-        },
-        {
-          section: 'Work',
-          label: 'My calendar',
-          href: '/calendar/mine',
-          icon: <CalendarDays size={16} />,
-          active: location.pathname.startsWith('/calendar/mine'),
-          show: can.appointments,
-        },
-        {
-          section: 'Work',
-          label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
-          href: '/messages',
-          icon: <MessageSquare size={16} />,
-          active:
-            location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
-          show: can.messages,
-          hasUnread: teamUnread > 0,
-        },
+          // ---- Work: who you serve, the work, your time + schedule ----
+          {
+            section: 'Work',
+            label: 'Clients',
+            href: '/clients',
+            icon: <Briefcase size={16} />,
+            active: location.pathname.startsWith('/clients'),
+            show: can.clients,
+          },
+          {
+            section: 'Work',
+            label: 'People',
+            href: '/people',
+            icon: <Users size={16} />,
+            active: location.pathname.startsWith('/people'),
+            show: can.clients,
+          },
+          {
+            section: 'Work',
+            label: 'Engagements',
+            href: '/engagements',
+            icon: <Layers size={16} />,
+            active: location.pathname.startsWith('/engagements'),
+            show: can.engagements,
+          },
+          {
+            section: 'Work',
+            label: 'Time',
+            href: '/time',
+            icon: <Clock size={16} />,
+            active: location.pathname.startsWith('/time'),
+            show: can.time,
+          },
+          {
+            section: 'Work',
+            label: 'Tasks',
+            href: '/tasks',
+            icon: <ListTodo size={16} />,
+            active: location.pathname.startsWith('/tasks'),
+            show: can.tasks,
+          },
+          {
+            section: 'Work',
+            label: 'Appointments',
+            href: '/appointments',
+            icon: <CalendarCheck size={16} />,
+            active: location.pathname.startsWith('/appointments'),
+            show: can.appointments,
+          },
+          {
+            section: 'Work',
+            label: 'My calendar',
+            href: '/calendar/mine',
+            icon: <CalendarDays size={16} />,
+            active: location.pathname.startsWith('/calendar/mine'),
+            show: can.appointments,
+          },
+          {
+            section: 'Work',
+            label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
+            href: '/messages',
+            icon: <MessageSquare size={16} />,
+            active:
+              location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
+            show: can.messages,
+            hasUnread: teamUnread > 0,
+          },
 
-        // ---- Documents: outbound (proposals/e-sign) + inbound ----
-        {
-          section: 'Documents',
-          label: 'Proposals',
-          href: '/proposals',
-          icon: <FileText size={16} />,
-          active: location.pathname.startsWith('/proposals'),
-          show: can.proposals,
-        },
-        {
-          section: 'Documents',
-          label: 'Signatures',
-          href: '/signatures',
-          icon: <Signature size={16} />,
-          active: location.pathname.startsWith('/signatures'),
-          show: can.signatures,
-        },
-        {
-          section: 'Documents',
-          label: 'Requests',
-          href: '/requests',
-          icon: <FileQuestion size={16} />,
-          active: location.pathname.startsWith('/requests'),
-          show: can.requests,
-          hasUnread: requestsNew > 0,
-        },
-        {
-          section: 'Documents',
-          label: 'Intake',
-          href: '/intake',
-          icon: <Inbox size={16} />,
-          active: location.pathname.startsWith('/intake'),
-          show: can.intake,
-          hasUnread: intakeNew > 0,
-        },
-        {
-          section: 'Documents',
-          label: 'Document Inbox',
-          href: '/filer',
-          icon: <FolderInput size={16} />,
-          active: location.pathname.startsWith('/filer'),
-          show: can.filer,
-        },
-        {
-          section: 'Documents',
-          label: 'Tax returns',
-          href: '/tax/returns',
-          icon: <Landmark size={16} />,
-          active: location.pathname.startsWith('/tax/returns'),
-          show: can.tax,
-        },
+          // ---- Documents: outbound (proposals/e-sign) + inbound ----
+          {
+            section: 'Documents',
+            label: 'Proposals',
+            href: '/proposals',
+            icon: <FileText size={16} />,
+            active: location.pathname.startsWith('/proposals'),
+            show: can.proposals,
+          },
+          {
+            section: 'Documents',
+            label: 'Signatures',
+            href: '/signatures',
+            icon: <Signature size={16} />,
+            active: location.pathname.startsWith('/signatures'),
+            show: can.signatures,
+          },
+          {
+            section: 'Documents',
+            label: 'Requests',
+            href: '/requests',
+            icon: <FileQuestion size={16} />,
+            active: location.pathname.startsWith('/requests'),
+            show: can.requests,
+            hasUnread: requestsNew > 0,
+          },
+          {
+            section: 'Documents',
+            label: 'Intake',
+            href: '/intake',
+            icon: <Inbox size={16} />,
+            active: location.pathname.startsWith('/intake'),
+            show: can.intake,
+            hasUnread: intakeNew > 0,
+          },
+          {
+            section: 'Documents',
+            label: 'Document Inbox',
+            href: '/filer',
+            icon: <FolderInput size={16} />,
+            active: location.pathname.startsWith('/filer'),
+            show: can.filer,
+          },
+          {
+            section: 'Documents',
+            label: 'Tax returns',
+            href: '/tax/returns',
+            icon: <Landmark size={16} />,
+            active: location.pathname.startsWith('/tax/returns'),
+            show: can.tax,
+          },
 
-        // ---- Billing: WIP → pre-bills → invoices → retainers → A/R ----
-        {
-          section: 'Billing',
-          label: 'WIP',
-          href: '/wip',
-          icon: <Hourglass size={16} />,
-          active: location.pathname.startsWith('/wip'),
-          show: can.wip,
-        },
-        {
-          section: 'Billing',
-          label: 'Billing',
-          href: '/billing',
-          icon: <Calculator size={16} />,
-          active: location.pathname.startsWith('/billing'),
-          show: can.billing,
-        },
-        {
-          section: 'Billing',
-          label: 'Invoices',
-          href: '/invoices',
-          icon: <Receipt size={16} />,
-          active: location.pathname.startsWith('/invoices'),
-          show: can.invoices,
-        },
-        {
-          section: 'Billing',
-          label: 'Payments',
-          href: '/payments',
-          icon: <CreditCard size={16} />,
-          active: location.pathname === '/payments',
-          show: can.payments,
-        },
-        {
-          section: 'Billing',
-          label: 'Retainers',
-          href: '/retainers',
-          icon: <Wallet size={16} />,
-          active: location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
-          show: canViewRetainers,
-        },
-        {
-          section: 'Billing',
-          label: 'A / R',
-          href: '/ar',
-          icon: <Banknote size={16} />,
-          active: location.pathname.startsWith('/ar'),
-          show: can.ar,
-        },
-        {
-          section: 'Billing',
-          label: 'Recurring plans',
-          href: '/recurring-plans',
-          icon: <Repeat size={16} />,
-          active: location.pathname.startsWith('/recurring-plans'),
-          show: can.engagements,
-        },
+          // ---- Billing: WIP → pre-bills → invoices → retainers → A/R ----
+          {
+            section: 'Billing',
+            label: 'WIP',
+            href: '/wip',
+            icon: <Hourglass size={16} />,
+            active: location.pathname.startsWith('/wip'),
+            show: can.wip,
+          },
+          {
+            section: 'Billing',
+            label: 'Billing',
+            href: '/billing',
+            icon: <Calculator size={16} />,
+            active: location.pathname.startsWith('/billing'),
+            show: can.billing,
+          },
+          {
+            section: 'Billing',
+            label: 'Invoices',
+            href: '/invoices',
+            icon: <Receipt size={16} />,
+            active: location.pathname.startsWith('/invoices'),
+            show: can.invoices,
+          },
+          {
+            section: 'Billing',
+            label: 'Payments',
+            href: '/payments',
+            icon: <CreditCard size={16} />,
+            active: location.pathname === '/payments',
+            show: can.payments,
+          },
+          {
+            section: 'Billing',
+            label: 'Retainers',
+            href: '/retainers',
+            icon: <Wallet size={16} />,
+            active:
+              location.pathname === '/retainers' || location.pathname.startsWith('/retainers/'),
+            show: canViewRetainers,
+          },
+          {
+            section: 'Billing',
+            label: 'A / R',
+            href: '/ar',
+            icon: <Banknote size={16} />,
+            active: location.pathname.startsWith('/ar'),
+            show: can.ar,
+          },
+          {
+            section: 'Billing',
+            label: 'Recurring plans',
+            href: '/recurring-plans',
+            icon: <Repeat size={16} />,
+            active: location.pathname.startsWith('/recurring-plans'),
+            show: can.engagements,
+          },
 
-        // ---- Oversight: review + insight ----
-        {
-          section: 'Oversight',
-          label: 'Approvals',
-          href: '/approvals',
-          icon: <BadgeCheck size={16} />,
-          active: location.pathname.startsWith('/approvals'),
-          show: can.approvals,
-        },
-        {
-          section: 'Oversight',
-          label: 'Reports',
-          href: '/reports',
-          icon: <ChartColumn size={16} />,
-          active: location.pathname.startsWith('/reports'),
-          show: can.reports,
-        },
-        {
-          section: 'Oversight',
-          label: 'Alerts',
-          href: '/alerts',
-          icon: <TriangleAlert size={16} />,
-          active: location.pathname.startsWith('/alerts'),
-          show: can.audit,
-        },
-        {
-          section: 'Oversight',
-          label: 'Audit',
-          href: '/audit',
-          icon: <ScrollText size={16} />,
-          active: location.pathname.startsWith('/audit'),
-          show: can.audit,
-        },
-        {
-          section: 'Oversight',
-          label: 'Engagement letters',
-          href: '/engagement-letters',
-          icon: <FileText size={16} />,
-          active: location.pathname.startsWith('/engagement-letters'),
-          show: can.engagements,
-        },
+          // ---- Oversight: review + insight ----
+          {
+            section: 'Oversight',
+            label: 'Approvals',
+            href: '/approvals',
+            icon: <BadgeCheck size={16} />,
+            active: location.pathname.startsWith('/approvals'),
+            show: can.approvals,
+          },
+          {
+            section: 'Oversight',
+            label: 'Reports',
+            href: '/reports',
+            icon: <ChartColumn size={16} />,
+            active: location.pathname.startsWith('/reports'),
+            show: can.reports,
+          },
+          {
+            section: 'Oversight',
+            label: 'Alerts',
+            href: '/alerts',
+            icon: <TriangleAlert size={16} />,
+            active: location.pathname.startsWith('/alerts'),
+            show: can.audit,
+          },
+          {
+            section: 'Oversight',
+            label: 'Audit',
+            href: '/audit',
+            icon: <ScrollText size={16} />,
+            active: location.pathname.startsWith('/audit'),
+            show: can.audit,
+          },
+          {
+            section: 'Oversight',
+            label: 'Engagement letters',
+            href: '/engagement-letters',
+            icon: <FileText size={16} />,
+            active: location.pathname.startsWith('/engagement-letters'),
+            show: can.engagements,
+          },
 
-        // ---- Utility footer (divider, no header) ----
-        {
-          section: '',
-          label: notifUnread > 0 ? `Notifications (${notifUnread})` : 'Notifications',
-          href: '/notifications',
-          icon: <Bell size={16} />,
-          active: location.pathname.startsWith('/notifications'),
-          show: true,
-        },
-        {
-          section: '',
-          label: 'Admin',
-          href: '/admin',
-          icon: <Settings size={16} />,
-          active: location.pathname.startsWith('/admin'),
-          show: can.admin,
-        },
-        {
-          section: '',
-          label: 'Help',
-          href: '/help',
-          icon: <CircleHelp size={16} />,
-          active: location.pathname.startsWith('/help'),
-          show: true,
-        },
-        {
-          section: '',
-          label: 'Account',
-          href: '/account',
-          icon: <CircleUser size={16} />,
-          active: location.pathname.startsWith('/account'),
-          show: true,
-        },
-      ]
-        .filter((i) => i.show)
-        .map((i) => ({
-          label: i.label,
-          href: i.href,
-          icon: i.icon,
-          active: i.active,
-          section: i.section,
-          hasUnread: (i as { hasUnread?: boolean }).hasUnread,
-        }))}
-      trailing={
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <FontSizeControl />
-          <ThemeToggle />
-          <Button variant="secondary" size="sm" onClick={() => void logout()}>
-            Sign out
-          </Button>
-        </div>
-      }
-    >
-      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
-      <QuickFind />
-    </AppShell>
+          // ---- Utility footer (divider, no header) ----
+          {
+            section: '',
+            label: notifUnread > 0 ? `Notifications (${notifUnread})` : 'Notifications',
+            href: '/notifications',
+            icon: <Bell size={16} />,
+            active: location.pathname.startsWith('/notifications'),
+            show: true,
+          },
+          {
+            section: '',
+            label: 'Admin',
+            href: '/admin',
+            icon: <Settings size={16} />,
+            active: location.pathname.startsWith('/admin'),
+            show: can.admin,
+          },
+          {
+            section: '',
+            label: 'Help',
+            href: '/help',
+            icon: <CircleHelp size={16} />,
+            active: location.pathname.startsWith('/help'),
+            show: true,
+          },
+          {
+            section: '',
+            label: 'Account',
+            href: '/account',
+            icon: <CircleUser size={16} />,
+            active: location.pathname.startsWith('/account'),
+            show: true,
+          },
+        ]
+          .filter((i) => i.show)
+          .map((i) => ({
+            label: i.label,
+            href: i.href,
+            icon: i.icon,
+            active: i.active,
+            section: i.section,
+            hasUnread: (i as { hasUnread?: boolean }).hasUnread,
+          }))}
+        navExtra={(collapsed: boolean) => <TimerChip collapsed={collapsed} />}
+        trailing={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <FontSizeControl />
+            <ThemeToggle />
+            <Button variant="secondary" size="sm" onClick={() => void logout()}>
+              Sign out
+            </Button>
+          </div>
+        }
+      >
+        <Suspense fallback={<RouteFallback />}>{children}</Suspense>
+        <QuickFind />
+      </AppShell>
+    </TimerProvider>
   );
 }
 

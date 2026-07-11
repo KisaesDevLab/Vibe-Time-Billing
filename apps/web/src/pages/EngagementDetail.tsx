@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { useTimersOptional } from '../timer-context';
 import {
   bpsToPercentInput,
   centsToDollarsInput,
@@ -46,6 +47,9 @@ interface Engagement {
   clientId: string;
   name: string;
   status: string;
+  // 0208 — the firm's permanent administrative engagement (always ACTIVE,
+  // all time non-billable). The status picker is replaced by a pill.
+  firmAdmin?: boolean;
   workflowState: string | null;
   feeStructure: string;
   feeAmountCents: number | null;
@@ -211,6 +215,8 @@ function emptyDraftFrom(e: Engagement): EditDraft {
 
 export function EngagementDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
+  // 0207 — header "▶ Timer" context-aware start (engagement pre-filled).
+  const timers = useTimersOptional();
   const [engagement, setEngagement] = useState<Engagement | null>(null);
   const [client, setClient] = useState<{ id: string; name: string } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -470,18 +476,39 @@ export function EngagementDetailPage(): JSX.Element {
                 />
               </div>
             )}
-            <div style={{ width: 160 }}>
-              <Combobox
-                ariaLabel="Engagement status"
-                value={engagement.status}
-                onChange={(v) => void changeStatus(v as EngagementStatusKind)}
-                disabled={savingStatus || editing}
-                options={STATUSES.map<ComboboxOption>((s) => ({ value: s, label: s }))}
-                size="sm"
-              />
-            </div>
+            {engagement.firmAdmin ? (
+              <span title="Permanent firm-administrative engagement — always active; all time logged here is non-billable">
+                <Pill tone="accent">⚙ Firm admin — always active</Pill>
+              </span>
+            ) : (
+              <div style={{ width: 160 }}>
+                <Combobox
+                  ariaLabel="Engagement status"
+                  value={engagement.status}
+                  onChange={(v) => void changeStatus(v as EngagementStatusKind)}
+                  disabled={savingStatus || editing}
+                  options={STATUSES.map<ComboboxOption>((s) => ({ value: s, label: s }))}
+                  size="sm"
+                />
+              </div>
+            )}
             <Pill tone="accent">{engagement.feeStructure}</Pill>
             {engagement.retainerLockedAt && <Pill tone="warning">retainer locked</Pill>}
+            {timers?.canUse && engagement.status === 'ACTIVE' && (
+              <Button
+                size="sm"
+                variant="ghost"
+                title="Start a stopwatch on this engagement"
+                onClick={() =>
+                  void timers.startTimer({
+                    engagementId: engagement.id,
+                    clientId: engagement.clientId,
+                  })
+                }
+              >
+                ▶ Timer
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
