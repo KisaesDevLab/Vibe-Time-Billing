@@ -40,7 +40,14 @@ for (const app of Object.keys(BUDGETS_KB)) {
     failed = true;
     continue;
   }
-  const mainJs = entries.find((f) => f.startsWith('index-') && f.endsWith('.js'));
+  // Vite emits the entry chunk as `entry-*.js` (configured via
+  // build.rollupOptions.output.entryFileNames). Fall back to `index-*.js`
+  // for any app not yet on the renamed entry. Route chunks are code-split
+  // and can also hash to `index-*`, so the explicit entry name keeps this
+  // measuring the real initial payload, not a lazily-loaded page chunk.
+  const jsFiles = entries.filter((f) => f.endsWith('.js'));
+  const mainJs =
+    jsFiles.find((f) => f.startsWith('entry-')) ?? jsFiles.find((f) => f.startsWith('index-'));
   if (!mainJs) {
     console.error(`size: ${app} no main bundle found in ${distDir}`);
     failed = true;

@@ -32,5 +32,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // Distinct name for the entry chunk so the bundle-size budget guard
+        // (ops/scripts/check-bundle-size.mjs) measures the true entry and is
+        // not confused by route chunks that also hash to `index-*`. Route
+        // chunks keep the default `[name]-[hash]` naming.
+        entryFileNames: 'assets/entry-[hash].js',
+      },
+    },
   },
 });

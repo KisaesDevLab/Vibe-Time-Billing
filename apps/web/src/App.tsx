@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
-import { useEffect, useState, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ComponentType,
+  type LazyExoticComponent,
+  type ReactNode,
+} from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
@@ -61,161 +69,218 @@ function BrandMark(): JSX.Element {
 
 import { QuickFind } from './QuickFind';
 
-import { AccountPage } from './pages/Account';
-import { AdminLayout } from './pages/admin';
-import { AlertsPage } from './pages/Alerts';
-import { ApprovalsPage } from './pages/Approvals';
-import { ArPage } from './pages/Ar';
-import { ArByServiceLinePage } from './pages/ArByServiceLine';
-import { ArSnapshotsPage } from './pages/ArSnapshots';
-import { AuditPage } from './pages/Audit';
 import { AuthProvider, useAuth, usePermission } from './auth-context';
-import { BillingBatchesPage } from './pages/Billing';
-import { ClientDetailPage } from './pages/ClientDetail';
-import { ClientsPage } from './pages/Clients';
-import { PeopleDirectoryPage } from './pages/People';
-import { PersonDetailPage } from './pages/PersonDetail';
-import { DashboardPage } from './pages/Dashboard';
-import { EngagementCreatePage } from './pages/EngagementCreate';
-import { EngagementDetailPage } from './pages/EngagementDetail';
-import { EngagementsPage } from './pages/Engagements';
-import { FilerPage } from './pages/Filer';
-import { ProposalsListPage } from './pages/Proposals';
-import { ProposalCreatePage } from './pages/ProposalCreate';
-import { ProposalEditorPage } from './pages/ProposalEditor';
-import { ProposalPreviewPage } from './pages/ProposalPreview';
-import { SignaturesPage } from './pages/Signatures';
-import { SignatureDetailPage } from './pages/SignatureDetail';
-import { MyCalendarPage } from './pages/MyCalendar';
+
+// Route components are code-split: each page loads as its own async chunk
+// on first navigation, keeping the initial (entry) bundle to the shell +
+// router only. Heavy page-only deps (tiptap editor, dnd-kit, Stripe,
+// pdf.js, charts) ride along in their route's chunk instead of the entry.
+// `lazyPage` adapts a named page export to the default-export shape
+// React.lazy expects.
+// reason: dynamic-import modules expose many exports of varying types;
+// pick the page by name and adapt it to a props-less component.
+function lazyPage(
+  loader: () => Promise<Record<string, unknown>>,
+  exportName: string,
+): LazyExoticComponent<ComponentType> {
+  return lazy(() => loader().then((m) => ({ default: m[exportName] as ComponentType })));
+}
+
+const AccountPage = lazyPage(() => import('./pages/Account'), 'AccountPage');
+const AdminLayout = lazyPage(() => import('./pages/admin'), 'AdminLayout');
+const AlertsPage = lazyPage(() => import('./pages/Alerts'), 'AlertsPage');
+const ApprovalsPage = lazyPage(() => import('./pages/Approvals'), 'ApprovalsPage');
+const ArPage = lazyPage(() => import('./pages/Ar'), 'ArPage');
+const ArByServiceLinePage = lazyPage(
+  () => import('./pages/ArByServiceLine'),
+  'ArByServiceLinePage',
+);
+const ArSnapshotsPage = lazyPage(() => import('./pages/ArSnapshots'), 'ArSnapshotsPage');
+const AuditPage = lazyPage(() => import('./pages/Audit'), 'AuditPage');
+const BillingBatchesPage = lazyPage(() => import('./pages/Billing'), 'BillingBatchesPage');
+const ClientDetailPage = lazyPage(() => import('./pages/ClientDetail'), 'ClientDetailPage');
+const ClientsPage = lazyPage(() => import('./pages/Clients'), 'ClientsPage');
+const PeopleDirectoryPage = lazyPage(() => import('./pages/People'), 'PeopleDirectoryPage');
+const PersonDetailPage = lazyPage(() => import('./pages/PersonDetail'), 'PersonDetailPage');
+const DashboardPage = lazyPage(() => import('./pages/Dashboard'), 'DashboardPage');
+const EngagementCreatePage = lazyPage(
+  () => import('./pages/EngagementCreate'),
+  'EngagementCreatePage',
+);
+const EngagementDetailPage = lazyPage(
+  () => import('./pages/EngagementDetail'),
+  'EngagementDetailPage',
+);
+const EngagementsPage = lazyPage(() => import('./pages/Engagements'), 'EngagementsPage');
+const FilerPage = lazyPage(() => import('./pages/Filer'), 'FilerPage');
+const ProposalsListPage = lazyPage(() => import('./pages/Proposals'), 'ProposalsListPage');
+const ProposalCreatePage = lazyPage(() => import('./pages/ProposalCreate'), 'ProposalCreatePage');
+const ProposalEditorPage = lazyPage(() => import('./pages/ProposalEditor'), 'ProposalEditorPage');
+const ProposalPreviewPage = lazyPage(
+  () => import('./pages/ProposalPreview'),
+  'ProposalPreviewPage',
+);
+const SignaturesPage = lazyPage(() => import('./pages/Signatures'), 'SignaturesPage');
+const SignatureDetailPage = lazyPage(
+  () => import('./pages/SignatureDetail'),
+  'SignatureDetailPage',
+);
+const MyCalendarPage = lazyPage(() => import('./pages/MyCalendar'), 'MyCalendarPage');
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
-import { InvoiceDetailPage } from './pages/InvoiceDetail';
-import { InvoicesPage } from './pages/Invoices';
-import { PaymentsPage } from './pages/Payments';
-import { LoginPage } from './pages/Login';
-import { MessagesPage } from './pages/Messages';
-import { OnboardingPage } from './pages/Onboarding';
-import { HelpPage } from './pages/Help';
-import { IntakeInboxPage } from './pages/IntakeInbox';
-import { PaymentReceivePage } from './pages/PaymentReceive';
-import { ProfitabilityPage } from './pages/Profitability';
-import { ReportsPage } from './pages/Reports';
-import { PaymentsReceivedReportPage } from './pages/reports/PaymentsReceivedReport';
-import { SignedFormsReportPage } from './pages/reports/SignedFormsReport';
-import { ReportViewerPage } from './pages/reports/ReportViewer';
-import { EngagementLettersPage } from './pages/admin/EngagementLetters';
-import { RecurringPlansPage } from './pages/admin/RecurringPlans';
-import { RetainerDashboardPage } from './pages/admin/RetainerDashboard';
-import { RetainerDetailPage } from './pages/admin/RetainerDetail';
-import { StaffRetainerDashboardPage } from './pages/StaffRetainerDashboard';
-import { RequestsPage } from './pages/Requests';
-import { RequestDetailPage } from './pages/RequestDetail';
-import { TaxReturnDetailPage } from './pages/TaxReturnDetail';
-import { TaxReturnsStaffPage } from './pages/TaxReturns';
-import { AppointmentsPage } from './pages/Appointments';
-import { NotificationsPage as StaffNotificationsPage } from './pages/Notifications';
-import { TasksPage } from './pages/Tasks';
-import { TimeEntryPage } from './pages/TimeEntry';
-import { TotpEnrollPage } from './pages/TotpEnroll';
-import { WipDashboardPage } from './pages/Wip';
+const InvoiceDetailPage = lazyPage(() => import('./pages/InvoiceDetail'), 'InvoiceDetailPage');
+const InvoicesPage = lazyPage(() => import('./pages/Invoices'), 'InvoicesPage');
+const PaymentsPage = lazyPage(() => import('./pages/Payments'), 'PaymentsPage');
+const LoginPage = lazyPage(() => import('./pages/Login'), 'LoginPage');
+const MessagesPage = lazyPage(() => import('./pages/Messages'), 'MessagesPage');
+const OnboardingPage = lazyPage(() => import('./pages/Onboarding'), 'OnboardingPage');
+const HelpPage = lazyPage(() => import('./pages/Help'), 'HelpPage');
+const IntakeInboxPage = lazyPage(() => import('./pages/IntakeInbox'), 'IntakeInboxPage');
+const PaymentReceivePage = lazyPage(() => import('./pages/PaymentReceive'), 'PaymentReceivePage');
+const ProfitabilityPage = lazyPage(() => import('./pages/Profitability'), 'ProfitabilityPage');
+const ReportsPage = lazyPage(() => import('./pages/Reports'), 'ReportsPage');
+const PaymentsReceivedReportPage = lazyPage(
+  () => import('./pages/reports/PaymentsReceivedReport'),
+  'PaymentsReceivedReportPage',
+);
+const SignedFormsReportPage = lazyPage(
+  () => import('./pages/reports/SignedFormsReport'),
+  'SignedFormsReportPage',
+);
+const ReportViewerPage = lazyPage(() => import('./pages/reports/ReportViewer'), 'ReportViewerPage');
+const EngagementLettersPage = lazyPage(
+  () => import('./pages/admin/EngagementLetters'),
+  'EngagementLettersPage',
+);
+const RecurringPlansPage = lazyPage(
+  () => import('./pages/admin/RecurringPlans'),
+  'RecurringPlansPage',
+);
+const RetainerDashboardPage = lazyPage(
+  () => import('./pages/admin/RetainerDashboard'),
+  'RetainerDashboardPage',
+);
+const RetainerDetailPage = lazyPage(
+  () => import('./pages/admin/RetainerDetail'),
+  'RetainerDetailPage',
+);
+const StaffRetainerDashboardPage = lazyPage(
+  () => import('./pages/StaffRetainerDashboard'),
+  'StaffRetainerDashboardPage',
+);
+const RequestsPage = lazyPage(() => import('./pages/Requests'), 'RequestsPage');
+const RequestDetailPage = lazyPage(() => import('./pages/RequestDetail'), 'RequestDetailPage');
+const TaxReturnDetailPage = lazyPage(
+  () => import('./pages/TaxReturnDetail'),
+  'TaxReturnDetailPage',
+);
+const TaxReturnsStaffPage = lazyPage(() => import('./pages/TaxReturns'), 'TaxReturnsStaffPage');
+const AppointmentsPage = lazyPage(() => import('./pages/Appointments'), 'AppointmentsPage');
+const StaffNotificationsPage = lazyPage(() => import('./pages/Notifications'), 'NotificationsPage');
+const TasksPage = lazyPage(() => import('./pages/Tasks'), 'TasksPage');
+const TimeEntryPage = lazyPage(() => import('./pages/TimeEntry'), 'TimeEntryPage');
+const TotpEnrollPage = lazyPage(() => import('./pages/TotpEnroll'), 'TotpEnrollPage');
+const WipDashboardPage = lazyPage(() => import('./pages/Wip'), 'WipDashboardPage');
 
 export function App(): JSX.Element {
   return (
     <AuthProvider>
-      <Routes>
-        <Route path="/auth/login" element={<LoginPage />} />
-        <Route path="/auth/verify" element={<LoginPage />} />
-        <Route
-          path="/auth/totp"
-          element={
-            <RequireAuth>
-              <TotpEnrollPage />
-            </RequireAuth>
-          }
-        />
-        {/* Chrome-less client preview (popout) — authed staff, no AppShell nav. */}
-        <Route
-          path="/proposals/:id/preview"
-          element={
-            <RequireAuth>
-              <ProposalPreviewPage />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="*"
-          element={
-            <RequireAuth>
-              <Shell>
-                <Routes>
-                  <Route path="/" element={<DashboardPage />} />
-                  <Route path="/clients" element={<ClientsPage />} />
-                  <Route path="/clients/:id" element={<ClientDetailPage />} />
-                  <Route path="/people" element={<PeopleDirectoryPage />} />
-                  <Route path="/people/:id" element={<PersonDetailPage />} />
-                  <Route path="/engagements" element={<EngagementsPage />} />
-                  <Route path="/engagements/new" element={<EngagementCreatePage />} />
-                  <Route path="/engagements/:id" element={<EngagementDetailPage />} />
-                  <Route path="/proposals" element={<ProposalsListPage />} />
-                  <Route path="/proposals/new" element={<ProposalCreatePage />} />
-                  <Route path="/proposals/:id/edit" element={<ProposalEditorPage />} />
-                  <Route path="/signatures" element={<SignaturesPage />} />
-                  <Route path="/signatures/:id" element={<SignatureDetailPage />} />
-                  <Route path="/calendar/mine" element={<MyCalendarPage />} />
-                  <Route
-                    path="/calendar/unmatched"
-                    element={<Navigate to="/appointments#review" replace />}
-                  />
-                  <Route path="/time" element={<TimeEntryPage />} />
-                  <Route path="/tasks" element={<TasksPage />} />
-                  <Route path="/billing/*" element={<BillingBatchesPage />} />
-                  <Route path="/wip" element={<WipDashboardPage />} />
-                  <Route path="/invoices" element={<InvoicesPage />} />
-                  <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
-                  <Route path="/ar" element={<ArPage />} />
-                  <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
-                  <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
-                  <Route path="/payments" element={<PaymentsPage />} />
-                  <Route path="/payments/new" element={<PaymentReceivePage />} />
-                  <Route path="/approvals" element={<ApprovalsPage />} />
-                  <Route path="/requests" element={<RequestsPage />} />
-                  <Route path="/requests/:id" element={<RequestDetailPage />} />
-                  <Route path="/messages" element={<MessagesPage />} />
-                  <Route path="/audit" element={<AuditPage />} />
-                  <Route path="/alerts" element={<AlertsPage />} />
-                  <Route path="/reports" element={<ReportsPage />} />
-                  <Route
-                    path="/reports/payments-received"
-                    element={<PaymentsReceivedReportPage />}
-                  />
-                  <Route path="/reports/signed-forms" element={<SignedFormsReportPage />} />
-                  <Route path="/reports/profitability" element={<ProfitabilityPage />} />
-                  <Route path="/reports/view/:kind" element={<ReportViewerPage />} />
-                  <Route path="/engagement-letters" element={<EngagementLettersPage />} />
-                  <Route path="/recurring-plans" element={<RecurringPlansPage />} />
-                  <Route path="/retainers" element={<RetainersGate />} />
-                  <Route path="/retainers/:id" element={<RetainerDetailPage />} />
-                  <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
-                  <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
-                  <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
-                  <Route path="/appointments" element={<AppointmentsPage />} />
-                  <Route path="/notifications" element={<StaffNotificationsPage />} />
-                  <Route path="/intake" element={<IntakeInboxPage />} />
-                  <Route path="/filer" element={<FilerPage />} />
-                  {/* Team chat is now the "Team" tab of /messages; keep the
+      <Suspense fallback={<FullPageMsg>Loading…</FullPageMsg>}>
+        <Routes>
+          <Route path="/auth/login" element={<LoginPage />} />
+          <Route path="/auth/verify" element={<LoginPage />} />
+          <Route
+            path="/auth/totp"
+            element={
+              <RequireAuth>
+                <TotpEnrollPage />
+              </RequireAuth>
+            }
+          />
+          {/* Chrome-less client preview (popout) — authed staff, no AppShell nav. */}
+          <Route
+            path="/proposals/:id/preview"
+            element={
+              <RequireAuth>
+                <ProposalPreviewPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="*"
+            element={
+              <RequireAuth>
+                <Shell>
+                  <Routes>
+                    <Route path="/" element={<DashboardPage />} />
+                    <Route path="/clients" element={<ClientsPage />} />
+                    <Route path="/clients/:id" element={<ClientDetailPage />} />
+                    <Route path="/people" element={<PeopleDirectoryPage />} />
+                    <Route path="/people/:id" element={<PersonDetailPage />} />
+                    <Route path="/engagements" element={<EngagementsPage />} />
+                    <Route path="/engagements/new" element={<EngagementCreatePage />} />
+                    <Route path="/engagements/:id" element={<EngagementDetailPage />} />
+                    <Route path="/proposals" element={<ProposalsListPage />} />
+                    <Route path="/proposals/new" element={<ProposalCreatePage />} />
+                    <Route path="/proposals/:id/edit" element={<ProposalEditorPage />} />
+                    <Route path="/signatures" element={<SignaturesPage />} />
+                    <Route path="/signatures/:id" element={<SignatureDetailPage />} />
+                    <Route path="/calendar/mine" element={<MyCalendarPage />} />
+                    <Route
+                      path="/calendar/unmatched"
+                      element={<Navigate to="/appointments#review" replace />}
+                    />
+                    <Route path="/time" element={<TimeEntryPage />} />
+                    <Route path="/tasks" element={<TasksPage />} />
+                    <Route path="/billing/*" element={<BillingBatchesPage />} />
+                    <Route path="/wip" element={<WipDashboardPage />} />
+                    <Route path="/invoices" element={<InvoicesPage />} />
+                    <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+                    <Route path="/ar" element={<ArPage />} />
+                    <Route path="/ar/by-service-line" element={<ArByServiceLinePage />} />
+                    <Route path="/ar/snapshots" element={<ArSnapshotsPage />} />
+                    <Route path="/payments" element={<PaymentsPage />} />
+                    <Route path="/payments/new" element={<PaymentReceivePage />} />
+                    <Route path="/approvals" element={<ApprovalsPage />} />
+                    <Route path="/requests" element={<RequestsPage />} />
+                    <Route path="/requests/:id" element={<RequestDetailPage />} />
+                    <Route path="/messages" element={<MessagesPage />} />
+                    <Route path="/audit" element={<AuditPage />} />
+                    <Route path="/alerts" element={<AlertsPage />} />
+                    <Route path="/reports" element={<ReportsPage />} />
+                    <Route
+                      path="/reports/payments-received"
+                      element={<PaymentsReceivedReportPage />}
+                    />
+                    <Route path="/reports/signed-forms" element={<SignedFormsReportPage />} />
+                    <Route path="/reports/profitability" element={<ProfitabilityPage />} />
+                    <Route path="/reports/view/:kind" element={<ReportViewerPage />} />
+                    <Route path="/engagement-letters" element={<EngagementLettersPage />} />
+                    <Route path="/recurring-plans" element={<RecurringPlansPage />} />
+                    <Route path="/retainers" element={<RetainersGate />} />
+                    <Route path="/retainers/:id" element={<RetainerDetailPage />} />
+                    <Route path="/my/retainers" element={<StaffRetainerDashboardPage />} />
+                    <Route path="/tax/returns" element={<TaxReturnsStaffPage />} />
+                    <Route path="/tax/returns/:returnId" element={<TaxReturnDetailPage />} />
+                    <Route path="/appointments" element={<AppointmentsPage />} />
+                    <Route path="/notifications" element={<StaffNotificationsPage />} />
+                    <Route path="/intake" element={<IntakeInboxPage />} />
+                    <Route path="/filer" element={<FilerPage />} />
+                    {/* Team chat is now the "Team" tab of /messages; keep the
                       old path (and notification email links) working. */}
-                  <Route path="/team" element={<Navigate to="/messages?tab=team" replace />} />
-                  {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
-                  <Route path="/account" element={<AccountPage />} />
-                  <Route path="/help" element={<HelpPage />} />
-                  <Route path="/onboarding" element={<OnboardingPage />} />
-                  <Route path="/admin/*" element={<AdminLayout />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
-              </Shell>
-            </RequireAuth>
-          }
-        />
-      </Routes>
+                    <Route path="/team" element={<Navigate to="/messages?tab=team" replace />} />
+                    {/* /files removed in Phase 0; v2 lands as a per-client tab in Phase 10. */}
+                    <Route path="/account" element={<AccountPage />} />
+                    <Route path="/help" element={<HelpPage />} />
+                    <Route path="/onboarding" element={<OnboardingPage />} />
+                    <Route path="/admin/*" element={<AdminLayout />} />
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </Shell>
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </Suspense>
     </AuthProvider>
   );
 }
@@ -612,9 +677,24 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         </div>
       }
     >
-      {children}
+      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
       <QuickFind />
     </AppShell>
+  );
+}
+
+function RouteFallback(): JSX.Element {
+  return (
+    <div
+      style={{
+        padding: tokens.space.xl,
+        color: tokens.color.textMuted,
+        fontFamily: tokens.font.body,
+        fontSize: 13,
+      }}
+    >
+      Loading…
+    </div>
   );
 }
 
