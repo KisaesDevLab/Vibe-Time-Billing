@@ -20,6 +20,7 @@ import {
 import { useClientPage } from '../lib/use-paged-list';
 
 import { api } from '../api-client';
+import { usePermission } from '../auth-context';
 
 interface Engagement {
   id: string;
@@ -91,7 +92,10 @@ export function ExpensesView({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 0210 — managed category picklist (+ inline "add new").
+  // 0210 — managed category picklist (+ inline "add new"). Managing the
+  // firm-wide list is admin territory (same as work codes: taxonomy:write);
+  // everyone can pick from it.
+  const canManageCategories = usePermission('taxonomy:write');
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
@@ -222,24 +226,40 @@ export function ExpensesView({
   function cancelEdit(): void {
     setEditingId(null);
   }
+  const [rowError, setRowError] = useState<string | null>(null);
   async function saveEdit(id: string): Promise<void> {
     const costCents = Math.round(Number(editCost) * 100);
     if (!Number.isFinite(costCents) || costCents < 0) return;
-    await api(`/api/staff/expenses/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        expenseDate: editDate,
-        description: editDesc.trim() || 'Expense',
-        costCents,
-        category: editCategory.trim() || null,
-      }),
-    });
-    setEditingId(null);
-    await load();
+    setRowError(null);
+    try {
+      await api(`/api/staff/expenses/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          expenseDate: editDate,
+          description: editDesc.trim() || 'Expense',
+          costCents,
+          category: editCategory.trim() || null,
+        }),
+      });
+      setEditingId(null);
+      await load();
+    } catch (err) {
+      // e.g. another user pulled the expense into a billing batch mid-edit.
+      setRowError(
+        err instanceof Error && err.message === 'expense_in_batch'
+          ? 'This expense was just claimed by a billing batch — it can no longer be edited.'
+          : 'Could not save the change.',
+      );
+    }
   }
   async function remove(id: string): Promise<void> {
-    await api(`/api/staff/expenses/${id}`, { method: 'DELETE' });
-    await load();
+    setRowError(null);
+    try {
+      await api(`/api/staff/expenses/${id}`, { method: 'DELETE' });
+      await load();
+    } catch {
+      setRowError('Could not delete the expense.');
+    }
   }
 
   const { paged, pagination } = useClientPage(rows);
@@ -425,20 +445,22 @@ export function ExpensesView({
             <label style={{ display: 'grid', gap: 4, fontSize: 13 }}>
               <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                 Category
-                <button
-                  type="button"
-                  onClick={() => setAddingCategory((v) => !v)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    color: tokens.color.accent,
-                    fontSize: 12,
-                  }}
-                >
-                  {addingCategory ? 'cancel' : '+ new'}
-                </button>
+                {canManageCategories && (
+                  <button
+                    type="button"
+                    onClick={() => setAddingCategory((v) => !v)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      cursor: 'pointer',
+                      color: tokens.color.accent,
+                      fontSize: 12,
+                    }}
+                  >
+                    {addingCategory ? 'cancel' : '+ new'}
+                  </button>
+                )}
               </span>
               {addingCategory ? (
                 <span style={{ display: 'flex', gap: 4 }}>
@@ -538,6 +560,9 @@ export function ExpensesView({
           </label>
         </div>
 
+        {rowError && (
+          <p style={{ color: tokens.color.danger, fontSize: 13, marginTop: 0 }}>{rowError}</p>
+        )}
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : rows.length === 0 ? (

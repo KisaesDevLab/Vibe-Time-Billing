@@ -38,6 +38,13 @@ function clientIp(req: Request): string {
 export function createOcrRouter(deps: OcrRoutesDeps): Router {
   const router = express.Router();
 
+  // Availability probe — the New Client wizard only offers the capture /
+  // import banner when a local OCR model is actually configured
+  // (GLM_OCR_URL set at boot). Same permission as the intake itself.
+  router.get('/status', requirePermission(deps, 'client:write'), (_req: Request, res: Response) => {
+    res.json({ available: deps.ocr != null, model: deps.ocr?.model ?? null });
+  });
+
   router.post(
     '/client-intake',
     requirePermission(deps, 'client:write'),

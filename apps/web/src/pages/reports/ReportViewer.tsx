@@ -284,9 +284,17 @@ export function ReportViewerPage(): JSX.Element {
 
   function downloadCsv(): void {
     if (!items || columns.length === 0) return;
+    // CSV is a DATA export: include the id columns hidden from the table so
+    // two same-named rows (e.g. "1040 Prep" for different clients) stay
+    // distinguishable downstream.
+    const keys = new Set<string>();
+    for (const row of items.slice(0, 50))
+      for (const k of Object.keys(row)) if (!k.startsWith('__')) keys.add(k);
+    const exportColumns = Array.from(keys);
     const esc = (s: string): string => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-    const lines = [columns.map(esc).join(',')];
-    for (const row of items) lines.push(columns.map((c) => esc(String(row[c] ?? ''))).join(','));
+    const lines = [exportColumns.map(esc).join(',')];
+    for (const row of items)
+      lines.push(exportColumns.map((c) => esc(String(row[c] ?? ''))).join(','));
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

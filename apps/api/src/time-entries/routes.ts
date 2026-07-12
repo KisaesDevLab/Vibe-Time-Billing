@@ -5,7 +5,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, ilike, inArray, lte, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, lt, lte, notInArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -886,7 +886,9 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
           and(
             eq(appointments.firmId, session.firmId),
             gte(appointments.startsAt, from),
-            lte(appointments.startsAt, to),
+            // Exclusive end: `to` is the next day's local midnight, so a
+            // midnight appointment belongs to exactly one day.
+            lt(appointments.startsAt, to),
             sql`${appointments.status} <> 'CANCELLED'`,
           ),
         )

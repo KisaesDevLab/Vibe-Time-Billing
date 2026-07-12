@@ -114,6 +114,10 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
   // Capture Client Info (desktop shell only). Mailing address has no wizard
   // input today, so it's held here and sent straight through on create.
   const [captureOpen, setCaptureOpen] = useState(false);
+  // Only offer the capture/import banner when the appliance actually has a
+  // local OCR model configured (GLM_OCR_URL) — otherwise the flow dead-ends
+  // in a 503.
+  const [ocrAvailable, setOcrAvailable] = useState(false);
   const [mailing, setMailing] = useState<{
     mailingStreet1?: string;
     mailingCity?: string;
@@ -145,6 +149,9 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
         // Non-fatal: dropdowns just stay empty.
       }
     })();
+    void api<{ available: boolean }>('/api/staff/ocr/status')
+      .then((r) => setOcrAvailable(r.available === true))
+      .catch(() => setOcrAvailable(false));
   }, [open]);
 
   function reset(): void {
@@ -310,39 +317,41 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
       label: 'Client type',
       content: (
         <div style={{ display: 'grid', gap: 12 }}>
-          <button
-            type="button"
-            onClick={() => setCaptureOpen(true)}
-            style={{
-              padding: 12,
-              border: `1px dashed ${tokens.color.accent}`,
-              borderRadius: tokens.radius.md,
-              background: tokens.color.accentMuted,
-              color: tokens.color.accent,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: 'pointer',
-              textAlign: 'left',
-            }}
-          >
-            📷{' '}
-            {isDesktop()
-              ? 'Capture client info from UltraTax CS →'
-              : 'Import client info from a screenshot / PDF →'}
-            <span
+          {ocrAvailable && (
+            <button
+              type="button"
+              onClick={() => setCaptureOpen(true)}
               style={{
-                display: 'block',
-                fontWeight: 400,
-                fontSize: 12,
-                color: tokens.color.textMuted,
-                marginTop: 2,
+                padding: 12,
+                border: `1px dashed ${tokens.color.accent}`,
+                borderRadius: tokens.radius.md,
+                background: tokens.color.accentMuted,
+                color: tokens.color.accent,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'left',
               }}
             >
+              📷{' '}
               {isDesktop()
-                ? 'Screenshot the General Information screen and pre-fill this form via local OCR.'
-                : 'Upload the General Information screen and pre-fill this form via local OCR.'}
-            </span>
-          </button>
+                ? 'Capture client info from UltraTax CS →'
+                : 'Import client info from a screenshot / PDF →'}
+              <span
+                style={{
+                  display: 'block',
+                  fontWeight: 400,
+                  fontSize: 12,
+                  color: tokens.color.textMuted,
+                  marginTop: 2,
+                }}
+              >
+                {isDesktop()
+                  ? 'Screenshot the General Information screen and pre-fill this form via local OCR.'
+                  : 'Upload the General Information screen and pre-fill this form via local OCR.'}
+              </span>
+            </button>
+          )}
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
             Choose whether this client is an individual (1040 filer) or a business entity. Drives
             which fields the next step shows.

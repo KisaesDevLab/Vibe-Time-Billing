@@ -13,7 +13,13 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Combobox, Input, tokens } from '@vibe/ui';
 
 import type { ApiError } from '../api-client';
-import { elapsedToHours, formatHuman, useTimers, type TimerDto } from '../timer-context';
+import {
+  elapsedToHours,
+  formatHuman,
+  localDateIso,
+  useTimers,
+  type TimerDto,
+} from '../timer-context';
 import type { EngagementOptions } from './useEngagementOptions';
 
 const ERROR_LABELS: Record<string, string> = {
@@ -43,7 +49,8 @@ export function TimerSaveForm({
 
   const [engagementId, setEngagementId] = useState(timer.engagementId ?? '');
   const [workCodeId, setWorkCodeId] = useState(timer.workCodeId ?? '');
-  const [entryDate, setEntryDate] = useState(new Date().toISOString().slice(0, 10));
+  // LOCAL date — the UTC slice logs evening saves under tomorrow's date.
+  const [entryDate, setEntryDate] = useState(localDateIso());
   const [hours, setHours] = useState(String(elapsedToHours(elapsed)));
   const [description, setDescription] = useState(timer.description);
   const [saving, setSaving] = useState(false);

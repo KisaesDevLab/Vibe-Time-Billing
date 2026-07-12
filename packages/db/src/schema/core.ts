@@ -2347,6 +2347,10 @@ export const timeTimers = pgTable(
     sourceTimeEntryId: uuid('source_time_entry_id').references(() => timeEntries.id, {
       onDelete: 'set null',
     }),
+    // 0211 — carried from the source entry on ▶ continue so a save can't
+    // silently flip non-billable/OOS work to billable. Null = unspecified.
+    billableFlag: boolean('billable_flag'),
+    outOfScopeOverride: boolean('out_of_scope_override'),
     description: text('description').notNull().default(''),
     status: text('status').notNull().default('RUNNING'),
     accumulatedSeconds: integer('accumulated_seconds').notNull().default(0),

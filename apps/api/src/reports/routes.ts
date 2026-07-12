@@ -1080,7 +1080,17 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
-      const { start: since, end: until } = rangeFromQuery(req, 56);
+      const { start: rawSince, end: until } = rangeFromQuery(req, 56);
+      // Snap the window start DOWN to its Monday: a mid-week start would
+      // render the oldest row as a labeled full week silently missing its
+      // first days.
+      const sinceMonday = ((): string => {
+        const d = new Date(`${rawSince}T00:00:00Z`);
+        const dow = d.getUTCDay();
+        d.setUTCDate(d.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
+        return d.toISOString().slice(0, 10);
+      })();
+      const since = sinceMonday;
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
@@ -2513,7 +2523,15 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           hasLinkedTimeEntry: Boolean(r.hasLink),
         })),
       );
-      res.json({ measure, windowStart: q.data.start ?? null, windowEnd: q.data.end ?? null });
+      // Scalars at the top level too — the generic viewer renders top-level
+      // scalars as meta chips but drops nested objects, so `measure` alone
+      // displayed literally nothing.
+      res.json({
+        ...measure,
+        measure,
+        windowStart: q.data.start ?? null,
+        windowEnd: q.data.end ?? null,
+      });
     },
   );
 

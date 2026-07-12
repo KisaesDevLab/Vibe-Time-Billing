@@ -88,9 +88,10 @@ function req(body: unknown = {}, params: Record<string, string> = {}): Record<st
   };
 }
 function router() {
+  // Category management is taxonomy:write (admin), like work codes.
   return createExpensesRouter({
     db: h.db,
-    fakeUserRoles: new Map([[seed.appUserId, ['staff']]]),
+    fakeUserRoles: new Map([[seed.appUserId, ['admin']]]),
   });
 }
 
@@ -122,13 +123,31 @@ describe('expense categories', () => {
     items = (r.jsonBody as { items: { id: string; name: string }[] }).items;
     expect(items.map((i) => i.name)).toEqual(['Filing fees']);
 
-    // Re-adding the same name revives (upsert), same row id.
-    r = await invoke(router(), 'post', '/categories', req({ name: 'Courier' }));
+    // Re-adding the same name — even differently cased — revives the
+    // archived row instead of minting a near-duplicate.
+    r = await invoke(router(), 'post', '/categories', req({ name: 'courier' }));
     expect(r.statusCode).toBe(201);
     expect((r.jsonBody as { item: { id: string } }).item.id).toBe(courier.id);
     r = await invoke(router(), 'get', '/categories', req());
     items = (r.jsonBody as { items: { id: string; name: string }[] }).items;
     expect(items.map((i) => i.name)).toEqual(['Courier', 'Filing fees']);
+
+    // No-op re-add of an active category: 200, same row, list unchanged.
+    r = await invoke(router(), 'post', '/categories', req({ name: 'COURIER' }));
+    expect(r.statusCode).toBe(200);
+    expect((r.jsonBody as { item: { id: string } }).item.id).toBe(courier.id);
+  });
+
+  it('refuses category management without taxonomy:write', async () => {
+    const staffRouter = createExpensesRouter({
+      db: h.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['staff']]]),
+    });
+    const r = await invoke(staffRouter, 'post', '/categories', req({ name: 'Junk' }));
+    expect(r.statusCode).toBe(403);
+    // Reading the picklist stays open to anyone who logs expenses.
+    const list = await invoke(staffRouter, 'get', '/categories', req());
+    expect(list.statusCode).toBe(200);
   });
 
   it('rejects an empty name and archives nothing cross-firm', async () => {

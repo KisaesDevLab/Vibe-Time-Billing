@@ -40,6 +40,10 @@ const TimerStartSchema = z.object({
   // 0209 — the logged entry a ▶ continue was pressed on; the time views
   // use it to mark that row as running.
   sourceTimeEntryId: z.string().uuid().optional(),
+  // 0211 — carried from the source entry so save defaults match the row
+  // the timer was continued from (non-billable stays non-billable).
+  billableFlag: z.boolean().optional(),
+  outOfScopeOverride: z.boolean().optional(),
 });
 
 const TimerPatchSchema = z.object({
@@ -163,6 +167,8 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
         engagementId: r.timer.engagementId,
         workCodeId: r.timer.workCodeId,
         sourceTimeEntryId: r.timer.sourceTimeEntryId,
+        billableFlag: r.timer.billableFlag,
+        outOfScopeOverride: r.timer.outOfScopeOverride,
         clientName: r.clientName,
         engagementName: r.engagementName,
         workCodeName: r.workCodeName,
@@ -361,6 +367,8 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
               engagementId: parsed.data.engagementId ?? null,
               workCodeId: parsed.data.workCodeId ?? null,
               sourceTimeEntryId: parsed.data.sourceTimeEntryId ?? null,
+              billableFlag: parsed.data.billableFlag ?? null,
+              outOfScopeOverride: parsed.data.outOfScopeOverride ?? null,
               description: parsed.data.description ?? '',
               status: 'RUNNING',
               accumulatedSeconds: 0,
@@ -558,76 +566,110 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
         return;
       }
       const db = deps.db;
-      const row = await ownTimer(db, session.appUserId, req.params['id']!);
-      if (!row) {
-        res.status(404).json({ error: 'timer_not_found' });
-        return;
-      }
 
-      // Park the timer first (persists even if the create below is
-      // rejected — the time survives as a PAUSED timer).
+      // The whole save runs in ONE transaction with the timer row locked
+      // (FOR UPDATE): two tabs clicking ✓ at once serialize, the loser sees
+      // the row gone and 404s instead of double-logging the time; a
+      // concurrent discard can't slip between create and delete either.
       const now = new Date();
-      if (row.status === 'RUNNING') await pauseRow(db, row, now, false);
-      const elapsedSeconds = elapsedSecondsOf(row, now);
+      const outcome = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Database;
+        const [row] = await tx
+          .select()
+          .from(timeTimers)
+          .where(
+            and(eq(timeTimers.id, req.params['id']!), eq(timeTimers.appUserId, session.appUserId)),
+          )
+          .for('update')
+          .limit(1);
+        if (!row) {
+          return { status: 404, body: { error: 'timer_not_found' } as Record<string, unknown> };
+        }
 
-      const engagementId = parsed.data.engagementId ?? row.engagementId;
-      if (!engagementId) {
-        res.status(400).json({ error: 'engagement_required' });
-        return;
-      }
-      if (
-        parsed.data.workCodeId &&
-        !(await workCodeExists(db, session.firmId, parsed.data.workCodeId))
-      ) {
-        res.status(404).json({ error: 'work_code_not_found' });
-        return;
-      }
+        // Park the timer first (persists even if the create below is
+        // rejected — the time survives as a PAUSED timer).
+        if (row.status === 'RUNNING') await pauseRow(tx, row, now, false);
+        const elapsedSeconds = elapsedSecondsOf(row, now);
 
-      const payload = {
-        engagementId,
-        workCodeId: parsed.data.workCodeId ?? row.workCodeId ?? undefined,
-        entryDate: parsed.data.entryDate ?? now.toISOString().slice(0, 10),
-        hours: parsed.data.hours ?? elapsedToHours(elapsedSeconds),
-        description: parsed.data.description ?? (row.description || undefined),
-        billableFlag: parsed.data.billableFlag,
-        outOfScopeOverride: parsed.data.outOfScopeOverride,
-        workflowState: parsed.data.workflowState,
-      };
-      // Re-validate through the create schema so the core sees exactly
-      // what a manual POST would (e.g. hours ≤ 24 on a marathon timer).
-      const createParsed = CreateSchema.safeParse(payload);
-      if (!createParsed.success) {
-        res.status(400).json({ error: 'invalid_payload', detail: createParsed.error.flatten() });
-        return;
-      }
+        const engagementId = parsed.data.engagementId ?? row.engagementId;
+        if (!engagementId) {
+          return { status: 400, body: { error: 'engagement_required' }, elapsedSeconds };
+        }
+        if (
+          parsed.data.workCodeId &&
+          !(await workCodeExists(txDb, session.firmId, parsed.data.workCodeId))
+        ) {
+          return { status: 404, body: { error: 'work_code_not_found' }, elapsedSeconds };
+        }
 
-      const result = await createTimeEntryCore(deps, {
-        session,
-        payload: createParsed.data,
-        ip: clientIp(req),
-        userAgent: req.header('user-agent') ?? null,
+        const payload = {
+          engagementId,
+          workCodeId: parsed.data.workCodeId ?? row.workCodeId ?? undefined,
+          entryDate: parsed.data.entryDate ?? now.toISOString().slice(0, 10),
+          hours: parsed.data.hours ?? elapsedToHours(elapsedSeconds),
+          description: parsed.data.description ?? (row.description || undefined),
+          // 0211 — the timer's carried flags fill in when the save payload
+          // doesn't say (a ▶-continued non-billable row stays non-billable).
+          billableFlag: parsed.data.billableFlag ?? row.billableFlag ?? undefined,
+          outOfScopeOverride: parsed.data.outOfScopeOverride ?? row.outOfScopeOverride ?? undefined,
+          workflowState: parsed.data.workflowState,
+        };
+        // Re-validate through the create schema so the core sees exactly
+        // what a manual POST would (e.g. hours ≤ 24 on a marathon timer).
+        const createParsed = CreateSchema.safeParse(payload);
+        if (!createParsed.success) {
+          return {
+            status: 400,
+            body: {
+              error: 'invalid_payload',
+              detail: createParsed.error.flatten(),
+            } as Record<string, unknown>,
+            elapsedSeconds,
+          };
+        }
+
+        const result = await createTimeEntryCore(
+          { ...deps, db: txDb },
+          {
+            session,
+            payload: createParsed.data,
+            ip: clientIp(req),
+            userAgent: req.header('user-agent') ?? null,
+          },
+        );
+        if (result.status !== 201) {
+          // Timer already parked above; nothing is lost.
+          return { ...result, elapsedSeconds };
+        }
+
+        await tx.delete(timeTimers).where(eq(timeTimers.id, row.id));
+        return {
+          status: 201,
+          body: result.body,
+          elapsedSeconds,
+          savedTimerId: row.id,
+          savedHours: createParsed.data.hours,
+        };
       });
-      if (result.status !== 201) {
-        // Timer already parked above; nothing is lost.
-        res.status(result.status).json(result.body);
+
+      if (outcome.status !== 201 || !('savedTimerId' in outcome)) {
+        res.status(outcome.status).json(outcome.body);
         return;
       }
-
-      await db.delete(timeTimers).where(eq(timeTimers.id, row.id));
       await auditTimer(req, {
         action: 'ARCHIVE',
-        id: row.id,
+        id: outcome.savedTimerId!,
         after: {
           disposition: 'saved',
-          timeEntryId: result.body['id'],
-          elapsedSeconds,
-          hours: createParsed.data.hours,
+          timeEntryId: outcome.body['id'],
+          elapsedSeconds: outcome.elapsedSeconds,
+          hours: outcome.savedHours,
         },
       });
       res.status(201).json({
-        ...result.body,
-        timerId: row.id,
-        elapsedSeconds,
+        ...outcome.body,
+        timerId: outcome.savedTimerId,
+        elapsedSeconds: outcome.elapsedSeconds,
         ...(await listPayload(db, session.appUserId)),
       });
     },

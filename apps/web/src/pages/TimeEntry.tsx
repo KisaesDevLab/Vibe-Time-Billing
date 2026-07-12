@@ -20,6 +20,7 @@ import {
   elapsedToHours,
   formatClock,
   formatHuman,
+  localDateIso,
   useTimersOptional,
   useTimerTick,
   type TimerStartPrefill,
@@ -112,7 +113,15 @@ interface MonthTotal {
 
 type ViewMode = 'log' | 'day' | 'week' | 'month' | 'expenses';
 
-const today = (): string => new Date().toISOString().slice(0, 10);
+// The user's LOCAL calendar date — toISOString() is UTC and rolls to
+// tomorrow at 6-7 PM US Central, landing the Day view (and the appointment
+// dry-run) on the wrong day every evening.
+const today = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate(),
+  ).padStart(2, '0')}`;
+};
 
 function addDays(iso: string, n: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -129,16 +138,21 @@ function startOfWeek(iso: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Date-only strings are parsed at UTC midnight, so they must also be
+// FORMATTED in UTC — otherwise every label west of Greenwich renders the
+// previous day ("Sun Jul 12" on the column holding Monday's data).
 function shortDate(iso: string): string {
   return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
+    timeZone: 'UTC',
   });
 }
 
 function dayLabel(iso: string): string {
   return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
     weekday: 'short',
+    timeZone: 'UTC',
   });
 }
 
@@ -146,6 +160,7 @@ function monthLabel(iso: string): string {
   return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
     month: 'short',
     year: 'numeric',
+    timeZone: 'UTC',
   });
 }
 
@@ -159,6 +174,13 @@ function hoursStepMin(roundingHours: string): { step: number | 'any'; min: numbe
 
 export function TimeEntryPage(): JSX.Element {
   const [view, setView] = useState<ViewMode>('log');
+  // "Finish on Time page" navigates to /time?timerId=… — the finish form
+  // lives in the Quick log view, so force that tab when the param arrives
+  // (the page may already be mounted on Day/Week/Month).
+  const [pageSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (pageSearchParams.get('timerId')) setView('log');
+  }, [pageSearchParams]);
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [workCodes, setWorkCodes] = useState<WorkCode[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -529,6 +551,15 @@ function LogView({
     }
     if (timerPrefilled.current) return;
     timerPrefilled.current = true;
+    // Stop the clock while the form is being filled in — the hours field
+    // freezes at this instant, and a still-running timer would silently
+    // lose everything ticked after it. The pause banks the time; a save
+    // rejection leaves the timer parked, nothing lost.
+    if (finishingTimer.status === 'RUNNING') {
+      void timerCtx.pause(finishingTimer.id).catch(() => {
+        /* resynced by context; hours below still reflect this instant */
+      });
+    }
     if (finishingTimer.clientId) setClientId(finishingTimer.clientId);
     if (finishingTimer.engagementId) setEngagementId(finishingTimer.engagementId);
     if (finishingTimer.workCodeId) setWorkCodeId(finishingTimer.workCodeId);
@@ -1571,6 +1602,8 @@ function LogView({
                         engagementId: e.engagementId,
                         workCodeId: e.workCodeId ?? undefined,
                         description: e.description || undefined,
+                        billableFlag: e.billableFlag,
+                        outOfScopeOverride: e.outOfScopeOverride,
                       }}
                       label="Start a timer from this entry"
                       entryId={e.id}
@@ -1832,10 +1865,19 @@ function StartTimerButton({
               : 'Stop and log this time'
           }
           style={failed ? { color: tokens.color.danger } : undefined}
-          onClick={() => run(() => timers.saveTimer(match.id, {}))}
+          onClick={() => run(() => timers.saveTimer(match.id, { entryDate: localDateIso() }))}
         >
           ✓
         </Button>
+        {failed && (
+          <span
+            role="alert"
+            title="Could not log this timer — open the Timer panel for details"
+            style={{ color: tokens.color.danger, fontSize: 11 }}
+          >
+            ⚠
+          </span>
+        )}
       </span>
     );
   }
@@ -2040,6 +2082,8 @@ function EditableEntryRow({
                 engagementId: entry.engagementId,
                 workCodeId: entry.workCodeId ?? undefined,
                 description: entry.description || undefined,
+                billableFlag: entry.billableFlag,
+                outOfScopeOverride: entry.outOfScopeOverride,
               }}
               label="Start a timer from this entry"
               entryId={entry.id}
@@ -2054,6 +2098,8 @@ function EditableEntryRow({
                 engagementId: entry.engagementId,
                 workCodeId: entry.workCodeId ?? undefined,
                 description: entry.description || undefined,
+                billableFlag: entry.billableFlag,
+                outOfScopeOverride: entry.outOfScopeOverride,
               }}
               label="Start a timer from this entry"
               entryId={entry.id}
@@ -2101,9 +2147,12 @@ function DayView({
   const [apptResult, setApptResult] = useState<string | null>(null);
 
   // Local-day bounds as ISO instants — the server has no user timezone.
+  // The end bound is the NEXT calendar day's local midnight (not start+24h,
+  // which is wrong on the two 23/25-hour DST days); the server treats it as
+  // exclusive so a midnight appointment belongs to exactly one day.
   const apptBody = useCallback((d: string) => {
     const start = new Date(`${d}T00:00:00`);
-    const end = new Date(start.getTime() + 24 * 3600_000);
+    const end = new Date(`${addDays(d, 1)}T00:00:00`);
     return { entryDate: d, from: start.toISOString(), to: end.toISOString() };
   }, []);
 
@@ -2742,13 +2791,19 @@ function MonthView(): JSX.Element {
       api<{ items: TimeEntry[] }>(
         `/api/staff/time-entries/mine?start=${monthStart}&end=${monthEnd}`,
       ),
-    ]).then(([m, d, e]) => {
-      if (cancelled) return;
-      setMonths(m.items ?? []);
-      setDays(d.items ?? []);
-      setMonthEntries(e.items ?? []);
-      setLoading(false);
-    });
+    ])
+      .then(([m, d, e]) => {
+        if (cancelled) return;
+        setMonths(m.items ?? []);
+        setDays(d.items ?? []);
+        setMonthEntries(e.items ?? []);
+        setLoading(false);
+      })
+      .catch(() => {
+        // Transient fetch failure: show the empty state, not eternal
+        // "Loading…".
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };

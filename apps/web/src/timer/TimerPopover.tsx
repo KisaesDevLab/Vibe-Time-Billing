@@ -104,7 +104,10 @@ export function TimerPopover({
   useTimerTick(running != null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
-  const [editingTime, setEditingTime] = useState(false);
+  // Keyed to the timer being edited — a background resync can swap which
+  // timer is `running`, and an unkeyed flag would write the draft onto the
+  // wrong timer.
+  const [editingTimeId, setEditingTimeId] = useState<string | null>(null);
   const [timeDraft, setTimeDraft] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -136,16 +139,30 @@ export function TimerPopover({
     setTimeDraft(
       `${String(Math.floor(e / 3600)).padStart(2, '0')}:${String(Math.floor((e % 3600) / 60)).padStart(2, '0')}`,
     );
-    setEditingTime(true);
+    setEditingTimeId(t.id);
   }
 
-  async function commitEditTime(t: TimerDto): Promise<void> {
+  async function commitEditTime(): Promise<void> {
+    const id = editingTimeId;
+    if (!id) return;
     const m = /^(\d{1,2}):([0-5]\d)$/.exec(timeDraft.trim());
     if (m) {
       const secs = Number(m[1]) * 3600 + Number(m[2]) * 60;
-      await run(() => patchTimer(t.id, { elapsedSeconds: secs }));
+      await run(() => patchTimer(id, { elapsedSeconds: secs }));
+    } else {
+      setActionError('Time must be h:mm (e.g. 1:25).');
     }
-    setEditingTime(false);
+    setEditingTimeId(null);
+  }
+
+  // 0211 QA — "Stop & save" must actually STOP: the save form freezes hours
+  // at open, so a still-running timer silently loses every minute spent
+  // filling in the form. Pause first, then open the form.
+  async function beginSave(t: TimerDto): Promise<void> {
+    if (t.status === 'RUNNING') {
+      await run(() => pause(t.id));
+    }
+    setSavingId(t.id);
   }
 
   const row: React.CSSProperties = {
@@ -280,15 +297,15 @@ export function TimerPopover({
                     ≈ {elapsedToHours(elapsedSeconds(running)).toFixed(2)} hr
                   </span>
                 </div>
-                {editingTime ? (
+                {editingTimeId === running.id ? (
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
                     <span>Tracked (h:mm)</span>
                     <input
                       value={timeDraft}
                       onChange={(e) => setTimeDraft(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') void commitEditTime(running);
-                        if (e.key === 'Escape') setEditingTime(false);
+                        if (e.key === 'Enter') void commitEditTime();
+                        if (e.key === 'Escape') setEditingTimeId(null);
                       }}
                       style={{
                         width: 64,
@@ -300,7 +317,7 @@ export function TimerPopover({
                         ...mono,
                       }}
                     />
-                    <Button size="sm" variant="ghost" onClick={() => void commitEditTime(running)}>
+                    <Button size="sm" variant="ghost" onClick={() => void commitEditTime()}>
                       Set
                     </Button>
                   </div>
@@ -332,7 +349,7 @@ export function TimerPopover({
                   >
                     ⏸ Pause
                   </Button>
-                  <Button size="sm" disabled={busy} onClick={() => setSavingId(running.id)}>
+                  <Button size="sm" disabled={busy} onClick={() => void beginSave(running)}>
                     ■ Stop &amp; save
                   </Button>
                   {confirmDiscardId === running.id ? (
@@ -410,7 +427,7 @@ export function TimerPopover({
                         variant="ghost"
                         disabled={busy}
                         title="Save as time entry"
-                        onClick={() => setSavingId(t.id)}
+                        onClick={() => void beginSave(t)}
                       >
                         ✓
                       </Button>

@@ -187,6 +187,25 @@ describe('POST / — start', () => {
     expect(items(r)[0]!.sourceTimeEntryId).toBe(entry!.id);
   });
 
+  it('carries the source row billable flag through to save (0211)', async () => {
+    // ▶ continue from a NON-BILLABLE entry: the saved entry must stay
+    // non-billable even though the ✓ quick-save sends no billableFlag.
+    const start = await invoke(
+      router(),
+      'post',
+      '/',
+      req({ engagementId: seed.engagementId, billableFlag: false, outOfScopeOverride: false }),
+    );
+    const timerId = items(start)[0]!.id;
+    const saved = await invoke(router(), 'post', '/:id/save', req({}, { id: timerId }));
+    expect(saved.statusCode).toBe(201);
+    const [entry] = await h.db
+      .select()
+      .from(timeEntries)
+      .where(eq(timeEntries.id, (saved.jsonBody as { id: string }).id));
+    expect(entry!.billableFlag).toBe(false);
+  });
+
   it('rejects a source entry that does not exist', async () => {
     const r = await invoke(
       router(),

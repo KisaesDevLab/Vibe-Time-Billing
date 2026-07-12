@@ -28,6 +28,8 @@ export interface TimerDto {
   engagementId: string | null;
   workCodeId: string | null;
   sourceTimeEntryId: string | null;
+  billableFlag: boolean | null;
+  outOfScopeOverride: boolean | null;
   clientName: string | null;
   engagementName: string | null;
   workCodeName: string | null;
@@ -52,6 +54,9 @@ export interface TimerStartPrefill {
   description?: string;
   // 0209 — the logged entry a ▶ continue was pressed on (row indicator).
   sourceTimeEntryId?: string;
+  // 0211 — carried from the source entry; save defaults follow them.
+  billableFlag?: boolean;
+  outOfScopeOverride?: boolean;
 }
 
 export interface TimerSaveFields {
@@ -131,6 +136,16 @@ export function formatHuman(totalSeconds: number): string {
   return `${m}m ${String(s % 60).padStart(2, '0')}s`;
 }
 
+/** The user's LOCAL calendar date for a timestamp (default: now). UTC
+ *  slicing rolls to tomorrow at 6-7 PM US Central — wrong for "did this
+ *  start yesterday?" checks and for defaulting entry dates. */
+export function localDateIso(at?: string | number | Date): string {
+  const d = at != null ? new Date(at) : new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate(),
+  ).padStart(2, '0')}`;
+}
+
 const STALE_ACK_KEY = '__vibe_timer_stale_acked';
 
 export function TimerProvider({ children }: { children: ReactNode }): JSX.Element {
@@ -140,10 +155,18 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
   // When the list snapshot was taken, so RUNNING elapsed can advance
   // locally between syncs without clock-skew math.
   const fetchedAtMs = useRef<number>(Date.now());
-  const [, setTick] = useState(0);
+  // Newest server snapshot applied so far. A slow poll response resolving
+  // AFTER a mutation response must not overwrite the newer list (it would
+  // hide a just-started timer for up to 60s).
+  const appliedServerMs = useRef<number>(0);
   const [staleAcked, setStaleAcked] = useState(() => sessionStorage.getItem(STALE_ACK_KEY) === '1');
 
   const applyList = useCallback((r: TimerListResponse) => {
+    const serverMs = Date.parse(r.serverTime);
+    if (Number.isFinite(serverMs)) {
+      if (serverMs < appliedServerMs.current) return; // stale response
+      appliedServerMs.current = serverMs;
+    }
     fetchedAtMs.current = Date.now();
     setTimers(r.items ?? []);
     setLoaded(true);
@@ -178,12 +201,8 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
 
   const running = useMemo(() => timers.find((t) => t.status === 'RUNNING') ?? null, [timers]);
 
-  // 1s display tick, only while something is actually running.
-  useEffect(() => {
-    if (!running) return;
-    const iv = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(iv);
-  }, [running]);
+  // Live 1s clocks are per-COMPONENT via useTimerTick — the provider itself
+  // stays tick-free so a running timer never re-renders the whole tree.
 
   const elapsedSeconds = useCallback((t: TimerDto): number => {
     if (t.status !== 'RUNNING') return t.elapsedSeconds;
@@ -215,42 +234,53 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
     };
   }, [running, elapsedSeconds]);
 
+  // Every mutation resyncs on failure: a 409 (concurrent tab paused it
+  // first, timer_conflict, …) means our snapshot is stale — pull the truth
+  // before rethrowing so the UI never keeps ticking on a dead timer.
+  const mutate = useCallback(
+    async (path: string, init?: { method: string; body?: string }) => {
+      try {
+        applyList(await api<TimerListResponse>(path, init));
+      } catch (err) {
+        void refresh();
+        throw err;
+      }
+    },
+    [applyList, refresh],
+  );
+
   const startTimer = useCallback(
     async (prefill?: TimerStartPrefill) => {
-      applyList(
-        await api<TimerListResponse>('/api/staff/timers', {
-          method: 'POST',
-          body: JSON.stringify(prefill ?? {}),
-        }),
-      );
+      await mutate('/api/staff/timers', {
+        method: 'POST',
+        body: JSON.stringify(prefill ?? {}),
+      });
     },
-    [applyList],
+    [mutate],
   );
 
   const pause = useCallback(
     async (id: string) => {
-      applyList(await api<TimerListResponse>(`/api/staff/timers/${id}/pause`, { method: 'POST' }));
+      await mutate(`/api/staff/timers/${id}/pause`, { method: 'POST' });
     },
-    [applyList],
+    [mutate],
   );
 
   const resume = useCallback(
     async (id: string) => {
-      applyList(await api<TimerListResponse>(`/api/staff/timers/${id}/resume`, { method: 'POST' }));
+      await mutate(`/api/staff/timers/${id}/resume`, { method: 'POST' });
     },
-    [applyList],
+    [mutate],
   );
 
   const patchTimer = useCallback(
     async (id: string, fields: Partial<TimerStartPrefill> & { elapsedSeconds?: number }) => {
-      applyList(
-        await api<TimerListResponse>(`/api/staff/timers/${id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(fields),
-        }),
-      );
+      await mutate(`/api/staff/timers/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(fields),
+      });
     },
-    [applyList],
+    [mutate],
   );
 
   const saveTimer = useCallback(
@@ -284,17 +314,18 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
 
   const staleTimer = useMemo(() => {
     if (staleAcked || !loaded) return null;
-    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayIso = localDateIso();
     return (
       timers.find(
         (t) =>
           t.autoPausedAt != null ||
           // "Left running overnight" — judge by the current running
           // segment (lastStartedAt), NOT startedAt: a parked timer
-          // resumed daily is old by startedAt but not forgotten.
+          // resumed daily is old by startedAt but not forgotten. Compare
+          // LOCAL dates — UTC slicing false-alarms every US evening.
           (t.status === 'RUNNING' &&
             t.lastStartedAt != null &&
-            t.lastStartedAt.slice(0, 10) < todayIso),
+            localDateIso(t.lastStartedAt) < todayIso),
       ) ?? null
     );
   }, [timers, staleAcked, loaded]);

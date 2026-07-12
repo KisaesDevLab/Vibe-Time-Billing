@@ -102,9 +102,11 @@ export function createExpensesRouter(deps: ExpenseRoutesDeps): Router {
     },
   );
 
+  // Managing the firm-wide picklist is admin territory, same as work codes
+  // (taxonomy:write); anyone who can log expenses may READ it.
   router.post(
     '/categories',
-    requirePermission(deps, 'time_entry:create'),
+    requirePermission(deps, 'taxonomy:write'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
       const parsed = z.object({ name: z.string().trim().min(1).max(120) }).safeParse(req.body);
@@ -116,14 +118,44 @@ export function createExpensesRouter(deps: ExpenseRoutesDeps): Router {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
-      // Upsert: re-adding an archived category revives it.
+      // Case-insensitive match so "courier" revives an archived "Courier"
+      // instead of minting a near-duplicate.
+      const [existing] = await deps.db
+        .select()
+        .from(expenseCategories)
+        .where(
+          and(
+            eq(expenseCategories.firmId, session.firmId),
+            sql`lower(${expenseCategories.name}) = lower(${parsed.data.name})`,
+          ),
+        )
+        .limit(1);
+      if (existing && !existing.archived) {
+        // No-op re-add of an active category: nothing changed, no audit row.
+        res.status(200).json({ item: { id: existing.id, name: existing.name } });
+        return;
+      }
+      if (existing) {
+        await deps.db
+          .update(expenseCategories)
+          .set({ archived: false, updatedAt: new Date() })
+          .where(eq(expenseCategories.id, existing.id));
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'expense_category',
+          entityId: existing.id,
+          actorAppUserId: session.appUserId,
+          before: { name: existing.name, archived: true },
+          after: { name: existing.name, archived: false },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        });
+        res.status(201).json({ item: { id: existing.id, name: existing.name } });
+        return;
+      }
       const [row] = await deps.db
         .insert(expenseCategories)
         .values({ firmId: session.firmId, name: parsed.data.name })
-        .onConflictDoUpdate({
-          target: [expenseCategories.firmId, expenseCategories.name],
-          set: { archived: false, updatedAt: new Date() },
-        })
         .returning({ id: expenseCategories.id, name: expenseCategories.name });
       await emitAudit(deps.db, {
         action: 'CREATE',
@@ -140,7 +172,7 @@ export function createExpensesRouter(deps: ExpenseRoutesDeps): Router {
 
   router.delete(
     '/categories/:categoryId',
-    requirePermission(deps, 'time_entry:create'),
+    requirePermission(deps, 'taxonomy:write'),
     async (req: Request, res: Response) => {
       const session = req.staffSession!;
       if (!deps.db) {
