@@ -24,11 +24,15 @@ import type { Database } from '@vibe/db';
 import {
   alertDismissals,
   appUsers,
+  appointments,
   auditLog,
   clients,
   engagements,
   invoices,
   mcpTokens,
+  timeEntries,
+  timeTimers,
+  workCodes,
 } from '@vibe/db/schema';
 
 // Worker-emitted alert kinds surfaced by the Alerts inbox.
@@ -107,6 +111,10 @@ async function enrichWithNames<T extends AuditRowLike>(
   const engIds = new Set<string>();
   const clientIds = new Set<string>();
   const invoiceIds = new Set<string>();
+  const entryIds = new Set<string>();
+  const timerIds = new Set<string>();
+  const apptIds = new Set<string>();
+  const workCodeIds = new Set<string>();
   for (const r of rows) {
     if (r.actorAppUserId) appUserIds.add(r.actorAppUserId);
     if (r.actorMcpTokenId) tokenIds.add(r.actorMcpTokenId);
@@ -116,12 +124,16 @@ async function enrichWithNames<T extends AuditRowLike>(
       else if (r.entityType === 'invoice') invoiceIds.add(r.entityId);
       else if (r.entityType === 'app_user' || r.entityType === 'staff_user')
         appUserIds.add(r.entityId);
+      else if (r.entityType === 'time_entry') entryIds.add(r.entityId);
+      else if (r.entityType === 'time_timer') timerIds.add(r.entityId);
+      else if (r.entityType === 'appointment') apptIds.add(r.entityId);
+      else if (r.entityType === 'work_code') workCodeIds.add(r.entityId);
     }
   }
   const toMap = (rs: Array<{ id: string; name: string | null }>): Map<string, string | null> =>
     new Map(rs.map((x) => [x.id, x.name]));
   const empty = (): Map<string, string | null> => new Map();
-  const [users, tokens, engs, clis, invs] = await Promise.all([
+  const [users, tokens, engs, clis, invs, entries, timers, appts, wcs] = await Promise.all([
     appUserIds.size
       ? db
           .select({ id: appUsers.id, name: appUsers.fullName })
@@ -157,6 +169,48 @@ async function enrichWithNames<T extends AuditRowLike>(
           .where(inArray(invoices.id, [...invoiceIds]))
           .then(toMap)
       : empty(),
+    // time_entry → "Client · 2026-07-12 · 1.50h". Archived entries still
+    // resolve (soft delete); rows for hard-deleted ids fall back to the
+    // short-id stub in the UI.
+    entryIds.size
+      ? db
+          .select({
+            id: timeEntries.id,
+            name: sql<string>`${clients.name} || ' · ' || ${timeEntries.entryDate}::text || ' · ' || ${timeEntries.hours}::text || 'h'`,
+          })
+          .from(timeEntries)
+          .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+          .innerJoin(clients, eq(clients.id, engagements.clientId))
+          .where(inArray(timeEntries.id, [...entryIds]))
+          .then(toMap)
+      : empty(),
+    // time_timer rows are deleted on save/discard, so most historical
+    // timer events won't resolve — live ones show their classification.
+    timerIds.size
+      ? db
+          .select({
+            id: timeTimers.id,
+            name: sql<string>`'Timer — ' || COALESCE(NULLIF(${timeTimers.description}, ''), ${clients.name}, 'unclassified')`,
+          })
+          .from(timeTimers)
+          .leftJoin(clients, eq(clients.id, timeTimers.clientId))
+          .where(inArray(timeTimers.id, [...timerIds]))
+          .then(toMap)
+      : empty(),
+    apptIds.size
+      ? db
+          .select({ id: appointments.id, name: appointments.title })
+          .from(appointments)
+          .where(inArray(appointments.id, [...apptIds]))
+          .then(toMap)
+      : empty(),
+    workCodeIds.size
+      ? db
+          .select({ id: workCodes.id, name: workCodes.name })
+          .from(workCodes)
+          .where(inArray(workCodes.id, [...workCodeIds]))
+          .then(toMap)
+      : empty(),
   ]);
   return rows.map((r) => {
     let actorName: string | null = null;
@@ -170,6 +224,10 @@ async function enrichWithNames<T extends AuditRowLike>(
       else if (r.entityType === 'invoice') entityName = invs.get(r.entityId) ?? null;
       else if (r.entityType === 'app_user' || r.entityType === 'staff_user')
         entityName = users.get(r.entityId) ?? null;
+      else if (r.entityType === 'time_entry') entityName = entries.get(r.entityId) ?? null;
+      else if (r.entityType === 'time_timer') entityName = timers.get(r.entityId) ?? null;
+      else if (r.entityType === 'appointment') entityName = appts.get(r.entityId) ?? null;
+      else if (r.entityType === 'work_code') entityName = wcs.get(r.entityId) ?? null;
     }
     return { ...r, actorName, entityName };
   });

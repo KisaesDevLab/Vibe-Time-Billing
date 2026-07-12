@@ -2371,6 +2371,26 @@ export const timeTimers = pgTable(
   }),
 );
 
+// 0210 — managed expense-category picklist. Governs entry on the Expenses
+// tab; engagement_expense.category stays text (the name), so archiving or
+// renaming a category never touches historical rows.
+export const expenseCategories = pgTable(
+  'expense_category',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    archived: boolean('archived').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmNameUk: uniqueIndex('expense_category_firm_id_name_key').on(t.firmId, t.name),
+  }),
+);
+
 // =====================================================================
 // RECURRING BILLING
 // =====================================================================

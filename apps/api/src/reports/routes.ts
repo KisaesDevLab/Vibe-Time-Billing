@@ -810,9 +810,10 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       const firmEngs = await deps.db
-        .select({ id: engagements.id, clientId: engagements.clientId })
+        .select({ id: engagements.id, clientId: engagements.clientId, name: engagements.name })
         .from(engagements)
         .where(inArray(engagements.clientId, firmClientIds));
+      const engNameById = new Map(firmEngs.map((e) => [e.id, e.name]));
       const engIds = firmEngs.map((e) => e.id);
       if (engIds.length === 0) {
         res.json({ items: [] });
@@ -863,6 +864,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         const marginCents = revenue - cc;
         return {
           engagementId: engId,
+          engagementName: engNameById.get(engId) ?? engId,
           billedCents: br.billed,
           paidCents: paid,
           costCents: cc,
@@ -1061,6 +1063,101 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           })
           .sort((a, b) => b.hours - a.hours),
       });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // Time by staff, weekly grid. One row per timekeeper × ISO week
+  // (Monday-anchored, matching the Week view): Mon..Sun day totals plus
+  // the week total. Default window 8 weeks; start/end override.
+  // -------------------------------------------------------------------
+  router.get(
+    '/time-by-staff-week',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const { start: since, end: until } = rangeFromQuery(req, 56);
+      const rows = await deps.db
+        .select({
+          appUserId: timeEntries.appUserId,
+          staff: appUsers.fullName,
+          entryDate: timeEntries.entryDate,
+          hours: drz<string>`SUM(${timeEntries.hours})`,
+        })
+        .from(timeEntries)
+        .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+        .where(
+          and(
+            eq(appUsers.firmId, session.firmId),
+            ne(timeEntries.status, 'ARCHIVED'),
+            drz`${timeEntries.entryDate} >= ${since}::date`,
+            until ? drz`${timeEntries.entryDate} <= ${until}::date` : undefined,
+          ),
+        )
+        .groupBy(timeEntries.appUserId, appUsers.fullName, timeEntries.entryDate);
+
+      // Monday of the ISO week containing the date (UTC math on the
+      // date-only string, same anchor as the Week view).
+      const mondayOf = (iso: string): string => {
+        const d = new Date(`${iso}T00:00:00Z`);
+        const dow = d.getUTCDay();
+        d.setUTCDate(d.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
+        return d.toISOString().slice(0, 10);
+      };
+      const addDays = (iso: string, n: number): string => {
+        const d = new Date(`${iso}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+      };
+      const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+      const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+      const byStaffWeek = new Map<
+        string,
+        { appUserId: string; staff: string; weekStart: string; days: number[] }
+      >();
+      for (const r of rows) {
+        const weekStart = mondayOf(r.entryDate);
+        const key = `${r.appUserId}|${weekStart}`;
+        let bucket = byStaffWeek.get(key);
+        if (!bucket) {
+          bucket = {
+            appUserId: r.appUserId,
+            staff: r.staff,
+            weekStart,
+            days: [0, 0, 0, 0, 0, 0, 0],
+          };
+          byStaffWeek.set(key, bucket);
+        }
+        const dow = new Date(`${r.entryDate}T00:00:00Z`).getUTCDay();
+        const idx = dow === 0 ? 6 : dow - 1;
+        bucket.days[idx] = (bucket.days[idx] ?? 0) + Number(r.hours);
+      }
+
+      const items = Array.from(byStaffWeek.values())
+        .map((b) => ({
+          appUserId: b.appUserId,
+          staff: b.staff,
+          weekStart: b.weekStart,
+          weekEnd: addDays(b.weekStart, 6),
+          ...(Object.fromEntries(DAY_KEYS.map((k, i) => [k, round2(b.days[i]!)])) as Record<
+            (typeof DAY_KEYS)[number],
+            number
+          >),
+          totalHours: round2(b.days.reduce((s, v) => s + v, 0)),
+        }))
+        // Staff A–Z, then most recent week first — reads as one weekly
+        // block per person.
+        .sort((a, b) =>
+          a.staff === b.staff
+            ? b.weekStart.localeCompare(a.weekStart)
+            : a.staff.localeCompare(b.staff),
+        );
+      res.json({ windowStart: since, windowEnd: until, items });
     },
   );
 
@@ -1574,6 +1671,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         .select({
           id: recurringBillingPlans.id,
           engagementId: recurringBillingPlans.engagementId,
+          engagementName: engagements.name,
+          clientName: clients.name,
           frequency: recurringBillingPlans.frequency,
           amountCents: recurringBillingPlans.amountCents,
         })
@@ -1605,6 +1704,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const items = rows.map((r) => ({
         id: r.id,
         engagementId: r.engagementId,
+        engagementName: r.engagementName,
+        clientName: r.clientName,
         frequency: r.frequency,
         amountCents: Number(r.amountCents),
         monthlyAmountCents: monthly(r.frequency, Number(r.amountCents)),
@@ -2038,6 +2139,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const rows = await deps.db
         .select({
           engagementId: engagements.id,
+          engagementName: engagements.name,
+          clientName: clients.name,
           totalHours: drz<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
           // Effective out-of-scope (schema rule) = NOT(inScopeFlag AND NOT
           // outOfScopeOverride) = NOT inScopeFlag OR outOfScopeOverride. The
@@ -2057,7 +2160,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           ),
         )
         .where(and(eq(clients.firmId, session.firmId), eq(engagements.mixedModeEnabled, true)))
-        .groupBy(engagements.id);
+        .groupBy(engagements.id, clients.id);
       res.json({
         items: rows
           .map((r) => {
@@ -2065,6 +2168,8 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             const out = Number(r.outOfScopeHours);
             return {
               engagementId: r.engagementId,
+              engagementName: r.engagementName,
+              clientName: r.clientName,
               totalHours: total,
               outOfScopeHours: out,
               creepPct: total > 0 ? (out / total) * 100 : 0,
@@ -2167,12 +2272,14 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       const rows = await deps.db
         .select({
           appUserId: timeEntries.appUserId,
+          timekeeper: appUsers.fullName,
           entryDate: timeEntries.entryDate,
           hours: drz<string>`SUM(${timeEntries.hours})`,
         })
         .from(timeEntries)
         .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
         .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
         .where(
           and(
             eq(clients.firmId, session.firmId),
@@ -2181,16 +2288,19 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
             drz`${timeEntries.status} <> 'ARCHIVED'`,
           ),
         )
-        .groupBy(timeEntries.appUserId, timeEntries.entryDate);
+        .groupBy(timeEntries.appUserId, appUsers.fullName, timeEntries.entryDate);
 
       const byUser = new Map<string, Array<{ entryDate: string; hours: number }>>();
+      const nameByUser = new Map<string, string>();
       for (const r of rows) {
         const arr = byUser.get(r.appUserId) ?? [];
         arr.push({ entryDate: r.entryDate, hours: Number(r.hours) });
         byUser.set(r.appUserId, arr);
+        nameByUser.set(r.appUserId, r.timekeeper);
       }
       const items: Array<{
         appUserId: string;
+        timekeeper: string;
         entryDate: string;
         hours: number;
         mean: number;
@@ -2208,6 +2318,7 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           if (Math.abs(z) >= 2.5) {
             items.push({
               appUserId,
+              timekeeper: nameByUser.get(appUserId) ?? appUserId,
               entryDate: d.entryDate,
               hours: d.hours,
               mean: Number(mean.toFixed(2)),

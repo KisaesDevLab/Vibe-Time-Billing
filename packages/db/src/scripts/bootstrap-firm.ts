@@ -40,6 +40,7 @@ import {
   engagementTemplates,
   engagementTypes,
   engagements,
+  expenseCategories,
   firmSettings,
   firms,
   offices,
@@ -201,6 +202,24 @@ async function main(): Promise<void> {
         engagementTypeId: internalType?.id ?? null,
         firmAdmin: true,
       });
+
+      // 0210 — expense-category picklist (mirrors the migration's per-firm
+      // seed, which no-ops on fresh installs because it runs pre-firm).
+      await tx
+        .insert(expenseCategories)
+        .values(
+          [
+            'Filing fees',
+            'Postage & shipping',
+            'Courier',
+            'Software',
+            'Travel',
+            'Mileage',
+            'Meals',
+            'Printing & supplies',
+            'Other',
+          ].map((name) => ({ firmId, name })),
+        );
 
       // Q24 starter pack — load the eight engagement templates from
       // seed/engagement-templates.json + their matching letter MDs.

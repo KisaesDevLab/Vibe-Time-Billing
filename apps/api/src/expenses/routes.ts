@@ -12,7 +12,7 @@ import { and, desc, eq, gte, isNull, lte, notInArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { clients, engagementExpenses, engagements } from '@vibe/db/schema';
+import { clients, engagementExpenses, engagements, expenseCategories } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -78,6 +78,101 @@ export function createExpensesRouter(deps: ExpenseRoutesDeps): Router {
       next();
     })().catch(next);
   });
+
+  // ---- Categories (0210) ----------------------------------------------
+  // Managed picklist for the Category field. Expense rows store the NAME
+  // (text), not the id — archiving a category never rewrites history.
+  router.get(
+    '/categories',
+    requirePermission(deps, 'time_entry:read:own'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const items = await deps.db
+        .select({ id: expenseCategories.id, name: expenseCategories.name })
+        .from(expenseCategories)
+        .where(
+          and(eq(expenseCategories.firmId, session.firmId), eq(expenseCategories.archived, false)),
+        )
+        .orderBy(expenseCategories.name);
+      res.json({ items });
+    },
+  );
+
+  router.post(
+    '/categories',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const parsed = z.object({ name: z.string().trim().min(1).max(120) }).safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      // Upsert: re-adding an archived category revives it.
+      const [row] = await deps.db
+        .insert(expenseCategories)
+        .values({ firmId: session.firmId, name: parsed.data.name })
+        .onConflictDoUpdate({
+          target: [expenseCategories.firmId, expenseCategories.name],
+          set: { archived: false, updatedAt: new Date() },
+        })
+        .returning({ id: expenseCategories.id, name: expenseCategories.name });
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'expense_category',
+        entityId: row!.id,
+        actorAppUserId: session.appUserId,
+        after: { name: row!.name },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      });
+      res.status(201).json({ item: row });
+    },
+  );
+
+  router.delete(
+    '/categories/:categoryId',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const id = z.string().uuid().safeParse(req.params['categoryId']);
+      if (!id.success) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      const [row] = await deps.db
+        .update(expenseCategories)
+        .set({ archived: true, updatedAt: new Date() })
+        .where(and(eq(expenseCategories.id, id.data), eq(expenseCategories.firmId, session.firmId)))
+        .returning({ id: expenseCategories.id, name: expenseCategories.name });
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'expense_category',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        before: { name: row.name },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      });
+      res.status(204).send();
+    },
+  );
 
   // ---- List ----------------------------------------------------------
   router.get(

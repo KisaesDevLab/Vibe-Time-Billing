@@ -91,6 +91,48 @@ export function ExpensesView({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 0210 — managed category picklist (+ inline "add new").
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
+  const loadCategories = useCallback(async () => {
+    try {
+      const r = await api<{ items: { id: string; name: string }[] }>(
+        '/api/staff/expenses/categories',
+      );
+      setCategories(r.items ?? []);
+    } catch {
+      // Picklist stays empty; the field still works as a plain dropdown.
+    }
+  }, []);
+  useEffect(() => {
+    void loadCategories();
+  }, [loadCategories]);
+  async function saveNewCategory(): Promise<void> {
+    const name = newCategory.trim();
+    if (!name) return;
+    try {
+      await api('/api/staff/expenses/categories', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      setNewCategory('');
+      setAddingCategory(false);
+      await loadCategories();
+      setCategory(name);
+    } catch {
+      setError('Could not add the category.');
+    }
+  }
+  const categoryOptions = useMemo<ComboboxOption[]>(() => {
+    const opts = categories.map((c) => ({ value: c.name, label: c.name }));
+    // Keep a historical value selectable even if it's not in the list.
+    if (category && !categories.some((c) => c.name === category)) {
+      opts.push({ value: category, label: category });
+    }
+    return opts;
+  }, [categories, category]);
+
   const [rows, setRows] = useState<ExpenseRow[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -247,10 +289,20 @@ export function ExpensesView({
       header: 'Category',
       render: (r) =>
         editingId === r.id ? (
-          <input
+          <Combobox
+            size="sm"
             value={editCategory}
-            onChange={(e) => setEditCategory(e.target.value)}
-            style={inlineInputStyle}
+            onChange={setEditCategory}
+            options={
+              editCategory && !categories.some((c) => c.name === editCategory)
+                ? [
+                    ...categories.map((c) => ({ value: c.name, label: c.name })),
+                    { value: editCategory, label: editCategory },
+                  ]
+                : categories.map((c) => ({ value: c.name, label: c.name }))
+            }
+            clearable
+            placeholder="Category"
           />
         ) : (
           (r.category ?? '—')
@@ -371,12 +423,49 @@ export function ExpensesView({
               />
             </label>
             <label style={{ display: 'grid', gap: 4, fontSize: 13 }}>
-              <span>Category</span>
-              <Input
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                placeholder="e.g. Filing fee"
-              />
+              <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                Category
+                <button
+                  type="button"
+                  onClick={() => setAddingCategory((v) => !v)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    color: tokens.color.accent,
+                    fontSize: 12,
+                  }}
+                >
+                  {addingCategory ? 'cancel' : '+ new'}
+                </button>
+              </span>
+              {addingCategory ? (
+                <span style={{ display: 'flex', gap: 4 }}>
+                  <Input
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                    placeholder="New category name"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void saveNewCategory();
+                      }
+                    }}
+                  />
+                  <Button type="button" size="sm" onClick={() => void saveNewCategory()}>
+                    Add
+                  </Button>
+                </span>
+              ) : (
+                <Combobox
+                  value={category}
+                  onChange={setCategory}
+                  options={categoryOptions}
+                  clearable
+                  placeholder="Select category"
+                />
+              )}
             </label>
             <label style={{ display: 'grid', gap: 4, fontSize: 13, gridColumn: '1 / -1' }}>
               <span>Description</span>

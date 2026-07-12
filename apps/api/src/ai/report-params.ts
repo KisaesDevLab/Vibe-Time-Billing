@@ -161,6 +161,9 @@ REPORT_PARAM_SPECS['non-billable-breakdown'] = dateWindowSpec(
 REPORT_PARAM_SPECS['effective-rate'] = dateWindowSpec('Billed value per billable hour.');
 REPORT_PARAM_SPECS['scope-creep'] = dateWindowSpec('Out-of-scope hours on mixed engagements.');
 REPORT_PARAM_SPECS['realization-by-partner'] = dateWindowSpec('Realization per partner.');
+REPORT_PARAM_SPECS['time-by-staff-week'] = dateWindowSpec(
+  'Weekly Mon–Sun hours grid per staff member.',
+);
 REPORT_PARAM_SPECS['time-by-engagement'] = dateWindowSpec('Hours + value per engagement.');
 REPORT_PARAM_SPECS['time-by-client'] = dateWindowSpec('Hours + value per client.');
 REPORT_PARAM_SPECS['time-anomalies'] = dateWindowSpec('Outlier daily-hours detection.');

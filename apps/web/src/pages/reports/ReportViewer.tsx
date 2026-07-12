@@ -80,6 +80,13 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     params: DATE_PARAMS,
   },
   {
+    kind: 'time-by-staff-week',
+    label: 'Time by staff (weekly)',
+    description:
+      'One row per staff member per week: Mon–Sun day hours and the week total (default 8 weeks).',
+    params: DATE_PARAMS,
+  },
+  {
     kind: 'time-by-engagement',
     label: 'Time by engagement',
     description: 'Hours + standard value per engagement.',
@@ -257,11 +264,14 @@ export function ReportViewerPage(): JSX.Element {
     const keys = new Set<string>();
     for (const row of items.slice(0, 50))
       for (const k of Object.keys(row)) if (!k.startsWith('__')) keys.add(k);
-    // Prefer resolved names over raw ids: when both `xId` and `xName` are
-    // present, drop the raw id column (e.g. partnerId → partnerName).
+    // Raw uuids are meaningless to the reader — hide id columns outright
+    // (every report endpoint returns a human-readable name field; ids stay
+    // in the payload for drill-through, they just don't render). `key` is
+    // the realization rollup's id twin and hides whenever `label` exists.
     for (const k of [...keys]) {
-      if (/Id$/.test(k) && keys.has(k.replace(/Id$/, 'Name'))) keys.delete(k);
+      if (k === 'id' || /Id$/.test(k)) keys.delete(k);
     }
+    if (keys.has('key') && keys.has('label')) keys.delete('key');
     return Array.from(keys);
   }, [items]);
 

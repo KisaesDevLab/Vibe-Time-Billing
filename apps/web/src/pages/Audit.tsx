@@ -152,13 +152,17 @@ export function AuditPage(): JSX.Element {
             {
               key: 'eid',
               header: 'Entity',
+              // Name when resolvable; otherwise a short id stub. The full
+              // uuid lives in the title tooltip (and the entity-id filter /
+              // CSV export) — it means nothing to a reader in the table.
               render: (r) =>
                 r.entityId ? (
-                  <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
-                    {r.entityName && <span>{r.entityName}</span>}
-                    <code style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                      {r.entityId}
-                    </code>
+                  <span title={r.entityId}>
+                    {r.entityName ?? (
+                      <code style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {r.entityId.slice(0, 8)}…
+                      </code>
+                    )}
                   </span>
                 ) : (
                   '—'
@@ -179,11 +183,13 @@ export function AuditPage(): JSX.Element {
                   <Pill tone="success">portal</Pill>
                 );
                 return (
-                  <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
-                    <span>
-                      {pill} {r.actorName ?? ''}
-                    </span>
-                    <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{actorId}</code>
+                  <span title={actorId}>
+                    {pill}{' '}
+                    {r.actorName ?? (
+                      <code style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {actorId.slice(0, 8)}…
+                      </code>
+                    )}
                   </span>
                 );
               },
