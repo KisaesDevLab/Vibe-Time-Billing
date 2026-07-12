@@ -7,6 +7,7 @@
 // click-away layer (QuickFind pattern) so it works above any page.
 
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { Button, Combobox, tokens } from '@vibe/ui';
 
@@ -156,7 +157,11 @@ export function TimerPopover({
     fontVariantNumeric: 'tabular-nums',
   };
 
-  return (
+  // Portaled to <body>: the chip lives inside the sidebar <aside>, which is
+  // position:sticky and therefore its own stacking context — a fixed panel
+  // rendered in place would paint UNDER later-DOM main content regardless of
+  // z-index.
+  return createPortal(
     <>
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
@@ -446,6 +451,7 @@ export function TimerPopover({
           </>
         )}
       </div>
-    </>
+    </>,
+    document.body,
   );
 }

@@ -16,7 +16,12 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../api-client';
-import { elapsedToHours, formatHuman, useTimersOptional } from '../timer-context';
+import {
+  elapsedToHours,
+  formatHuman,
+  useTimersOptional,
+  type TimerStartPrefill,
+} from '../timer-context';
 import { TableSearch } from '../components/TableSearch';
 import { filterStatuses } from '../status-filter';
 import { useColumnView, viewToPagedQuery } from '../lib/column-view';
@@ -1737,6 +1742,36 @@ interface RowEditDraft {
   workCodeId: string;
 }
 
+// 0207 follow-up — ▶ start-timer button for the Day/Week views. Same
+// "continue" semantics as the Quick log rows: starts a NEW prefilled timer;
+// nothing on the source entry changes. Owns its failure state so callers
+// need no error plumbing. Renders nothing without time_entry:create.
+function StartTimerButton({
+  prefill,
+  label,
+}: {
+  prefill: TimerStartPrefill;
+  label: string;
+}): JSX.Element | null {
+  const timers = useTimersOptional();
+  const [failed, setFailed] = useState(false);
+  if (!timers?.canUse) return null;
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      title={failed ? 'Could not start timer — try again' : label}
+      style={failed ? { color: tokens.color.danger } : undefined}
+      onClick={() => {
+        setFailed(false);
+        void timers.startTimer(prefill).catch(() => setFailed(true));
+      }}
+    >
+      ▶
+    </Button>
+  );
+}
+
 function EditableEntryRow({
   entry,
   workCodes,
@@ -1916,9 +1951,29 @@ function EditableEntryRow({
         )}
         {!entry.inScopeFlag && <Pill tone="warning">OOS</Pill>}
         {locked ? (
-          <Pill tone="neutral">{entry.billingBatchId ? 'billed' : 'locked'}</Pill>
+          <span style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+            <StartTimerButton
+              prefill={{
+                clientId: entry.clientId,
+                engagementId: entry.engagementId,
+                workCodeId: entry.workCodeId ?? undefined,
+                description: entry.description || undefined,
+              }}
+              label="Start a timer from this entry"
+            />
+            <Pill tone="neutral">{entry.billingBatchId ? 'billed' : 'locked'}</Pill>
+          </span>
         ) : (
           <span style={{ display: 'flex', gap: 2 }}>
+            <StartTimerButton
+              prefill={{
+                clientId: entry.clientId,
+                engagementId: entry.engagementId,
+                workCodeId: entry.workCodeId ?? undefined,
+                description: entry.description || undefined,
+              }}
+              label="Start a timer from this entry"
+            />
             <Button size="sm" variant="ghost" onClick={begin} disabled={busy}>
               Edit
             </Button>
@@ -2000,6 +2055,7 @@ function DayView({
         return {
           engagementId: id,
           engagementName: eng?.name ?? id.slice(0, 8),
+          clientId: eng?.clientId,
           clientName: cli?.name ?? null,
           items,
           hours: items.reduce((s, e) => s + Number(e.hours), 0),
@@ -2093,14 +2149,20 @@ function DayView({
                   )}
                   <strong style={{ fontSize: 14 }}>{g.engagementName}</strong>
                 </span>
-                <span
-                  style={{
-                    fontSize: 13,
-                    color: tokens.color.textMuted,
-                    fontVariantNumeric: 'tabular-nums',
-                  }}
-                >
-                  {g.hours.toFixed(2)}h
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <StartTimerButton
+                    prefill={{ clientId: g.clientId, engagementId: g.engagementId }}
+                    label={`Start a timer on ${g.engagementName}`}
+                  />
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: tokens.color.textMuted,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {g.hours.toFixed(2)}h
+                  </span>
                 </span>
               </div>
               {g.items.map((e) => (
@@ -2186,6 +2248,7 @@ function WeekView({
       return {
         engagementId: id,
         engagementName: eng?.name ?? id.slice(0, 8),
+        clientId: eng?.clientId,
         clientName: cli?.name ?? null,
         cells: days.map((d) => dayMap.get(d) ?? 0),
         total: Array.from(dayMap.values()).reduce((s, v) => s + v, 0),
@@ -2316,15 +2379,30 @@ function WeekView({
                   grid.map((r) => (
                     <tr key={r.engagementId}>
                       <td style={td('left')}>
-                        {r.clientName && (
-                          <span style={{ color: tokens.color.accent, fontWeight: 600 }}>
-                            {r.clientName}
-                            <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>
-                              ·
-                            </span>
+                        <span
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <span>
+                            {r.clientName && (
+                              <span style={{ color: tokens.color.accent, fontWeight: 600 }}>
+                                {r.clientName}
+                                <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>
+                                  ·
+                                </span>
+                              </span>
+                            )}
+                            {r.engagementName}
                           </span>
-                        )}
-                        {r.engagementName}
+                          <StartTimerButton
+                            prefill={{ clientId: r.clientId, engagementId: r.engagementId }}
+                            label={`Start a timer on ${r.engagementName}`}
+                          />
+                        </span>
                       </td>
                       {r.cells.map((h, i) => {
                         // reason: r.cells is days.map(...), so index i is always in-bounds.
