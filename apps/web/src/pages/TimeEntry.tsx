@@ -242,8 +242,22 @@ export function TimeEntryPage(): JSX.Element {
           }
         />
       )}
-      {view === 'day' && <DayView engagements={engagements} clients={clients} />}
-      {view === 'week' && <WeekView engagements={engagements} clients={clients} />}
+      {view === 'day' && (
+        <DayView
+          engagements={engagements}
+          clients={clients}
+          workCodes={workCodes}
+          roundingHours={roundingHours}
+        />
+      )}
+      {view === 'week' && (
+        <WeekView
+          engagements={engagements}
+          clients={clients}
+          workCodes={workCodes}
+          roundingHours={roundingHours}
+        />
+      )}
       {view === 'month' && <MonthView />}
       {view === 'expenses' && <ExpensesView engagements={engagements} clients={clients} />}
     </div>
@@ -1478,12 +1492,329 @@ function LogView({
   );
 }
 
+// ── Shared time-view building blocks ──────────────────────────────────
+//
+// Day + Week both render individual entries that the timekeeper can edit
+// in place (hours / work code / description / billable / scope) or delete.
+// The editor PATCHes/DELETEs `/api/staff/time-entries/:id` — the same
+// mutable-field set the "My entries" inline editor uses — and calls
+// `onChanged` so the parent view refetches. Locked/billed rows are
+// read-only (the API rejects those edits anyway).
+
+function isEntryLocked(e: TimeEntry): boolean {
+  return Boolean(e.lockedAt) || Boolean(e.billingBatchId);
+}
+
+function money(cents: number): string {
+  return `$${(cents / 100).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+// Small labelled metric tiles shown above the Day/Week detail. Gives the
+// billable/non-billable split the numeric prominence competing timesheets
+// (Harvest, Toggl) put front-and-center.
+function SummaryTiles({
+  items,
+}: {
+  items: { label: string; value: string; tone?: 'success' | 'warning' | 'danger' }[];
+}): JSX.Element {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: tokens.space.sm,
+        marginBottom: tokens.space.md,
+      }}
+    >
+      {items.map((it) => (
+        <div
+          key={it.label}
+          style={{
+            flex: '1 1 110px',
+            minWidth: 100,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            padding: '8px 12px',
+            background: tokens.color.bg,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              color: tokens.color.textMuted,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
+            }}
+          >
+            {it.label}
+          </div>
+          <div
+            style={{
+              fontSize: 18,
+              fontWeight: 700,
+              fontVariantNumeric: 'tabular-nums',
+              color:
+                it.tone === 'success'
+                  ? tokens.color.success
+                  : it.tone === 'warning'
+                    ? tokens.color.warning
+                    : it.tone === 'danger'
+                      ? tokens.color.danger
+                      : tokens.color.text,
+            }}
+          >
+            {it.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const entryRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '7px 2px',
+  fontSize: 13,
+  borderTop: `1px solid ${tokens.color.border}`,
+};
+
+const checkboxLabelStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 12,
+  color: tokens.color.textMuted,
+  whiteSpace: 'nowrap',
+  cursor: 'pointer',
+};
+
+interface RowEditDraft {
+  hours: string;
+  description: string;
+  billableFlag: boolean;
+  outOfScopeOverride: boolean;
+  workCodeId: string;
+}
+
+function EditableEntryRow({
+  entry,
+  workCodes,
+  roundingHours,
+  onChanged,
+}: {
+  entry: TimeEntry;
+  workCodes: WorkCode[];
+  roundingHours: string;
+  onChanged: () => void | Promise<void>;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<RowEditDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const locked = isEntryLocked(entry);
+  const { step, min } = hoursStepMin(roundingHours);
+  const wcName = workCodes.find((w) => w.id === entry.workCodeId)?.name;
+  const wcOptions: ComboboxOption[] = useMemo(
+    () => workCodes.map((w) => ({ value: w.id, label: w.name })),
+    [workCodes],
+  );
+
+  function begin(): void {
+    setDraft({
+      hours: String(entry.hours),
+      description: entry.description ?? '',
+      billableFlag: entry.billableFlag,
+      outOfScopeOverride: Boolean(entry.outOfScopeOverride),
+      workCodeId: entry.workCodeId ?? '',
+    });
+    setError(null);
+    setEditing(true);
+  }
+
+  function cancel(): void {
+    setEditing(false);
+    setDraft(null);
+    setError(null);
+  }
+
+  async function save(): Promise<void> {
+    if (!draft) return;
+    const hours = Number(draft.hours);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
+      setError('Hours must be a positive number ≤ 24.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/api/staff/time-entries/${entry.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          hours,
+          description: draft.description,
+          billableFlag: draft.billableFlag,
+          outOfScopeOverride: draft.outOfScopeOverride,
+          workCodeId: draft.workCodeId || null,
+        }),
+      });
+      setEditing(false);
+      setDraft(null);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'save_failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(): Promise<void> {
+    if (!window.confirm('Delete this time entry? It will be archived.')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/time-entries/${entry.id}`, { method: 'DELETE' });
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'delete_failed');
+      setBusy(false);
+    }
+  }
+
+  if (editing && draft) {
+    return (
+      <div style={{ ...entryRowStyle, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <input
+          type="number"
+          value={draft.hours}
+          step={step}
+          min={min}
+          max={24}
+          onChange={(e) => setDraft({ ...draft, hours: e.target.value })}
+          style={{ ...inlineInputStyle, width: 72 }}
+          aria-label="Hours"
+        />
+        {workCodes.length > 0 && (
+          <Combobox
+            size="sm"
+            width={160}
+            clearable
+            options={wcOptions}
+            value={draft.workCodeId}
+            onChange={(v) => setDraft({ ...draft, workCodeId: v })}
+            placeholder="Work code"
+          />
+        )}
+        <input
+          type="text"
+          value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+          placeholder="Description"
+          style={{ ...inlineInputStyle, width: 'auto', flex: 1, minWidth: 160 }}
+          aria-label="Description"
+        />
+        <label style={checkboxLabelStyle}>
+          <input
+            type="checkbox"
+            checked={draft.billableFlag}
+            onChange={(e) => setDraft({ ...draft, billableFlag: e.target.checked })}
+          />
+          Billable
+        </label>
+        <label style={checkboxLabelStyle}>
+          <input
+            type="checkbox"
+            checked={draft.outOfScopeOverride}
+            onChange={(e) => setDraft({ ...draft, outOfScopeOverride: e.target.checked })}
+          />
+          Out of scope
+        </label>
+        <span style={{ display: 'flex', gap: 4 }}>
+          <Button size="sm" disabled={saving} onClick={() => void save()}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+          <Button size="sm" variant="secondary" disabled={saving} onClick={cancel}>
+            Cancel
+          </Button>
+        </span>
+        {error && (
+          <div style={{ width: '100%', color: tokens.color.danger, fontSize: 12 }}>{error}</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={entryRowStyle}>
+      <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 52 }}>
+        {Number(entry.hours).toFixed(2)}h
+      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ color: entry.description ? tokens.color.text : tokens.color.textMuted }}>
+          {entry.description || <em>(no description)</em>}
+        </span>
+        {wcName && <span style={{ color: tokens.color.textMuted }}> · {wcName}</span>}
+      </span>
+      <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {entry.billableFlag && entry.standardAmountCents > 0 && (
+          <span
+            style={{
+              color: tokens.color.textMuted,
+              fontVariantNumeric: 'tabular-nums',
+              fontSize: 12,
+            }}
+          >
+            {money(entry.standardAmountCents)}
+          </span>
+        )}
+        {entry.billableFlag ? (
+          <Pill tone="success">billable</Pill>
+        ) : (
+          <Pill tone="neutral">non-bill</Pill>
+        )}
+        {!entry.inScopeFlag && <Pill tone="warning">OOS</Pill>}
+        {locked ? (
+          <Pill tone="neutral">{entry.billingBatchId ? 'billed' : 'locked'}</Pill>
+        ) : (
+          <span style={{ display: 'flex', gap: 2 }}>
+            <Button size="sm" variant="ghost" onClick={begin} disabled={busy}>
+              Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void remove()}
+              disabled={busy}
+              style={{ color: tokens.color.danger }}
+            >
+              {busy ? '…' : 'Delete'}
+            </Button>
+          </span>
+        )}
+      </span>
+      {error && (
+        <span style={{ color: tokens.color.danger, fontSize: 12, width: '100%' }}>{error}</span>
+      )}
+    </div>
+  );
+}
+
 function DayView({
   engagements,
   clients,
+  workCodes,
+  roundingHours,
 }: {
   engagements: Engagement[];
   clients: Client[];
+  workCodes: WorkCode[];
+  roundingHours: string;
 }): JSX.Element {
   const [date, setDate] = useState(today());
   const [entries, setEntries] = useState<TimeEntry[]>([]);
@@ -1492,20 +1823,33 @@ function DayView({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void api<{ items: TimeEntry[] }>(`/api/staff/time-entries/mine?start=${date}&end=${date}`).then(
-      (r) => {
+    void api<{ items: TimeEntry[] }>(`/api/staff/time-entries/mine?start=${date}&end=${date}`)
+      .then((r) => {
         if (cancelled) return;
         setEntries(r.items ?? []);
         setLoading(false);
-      },
-    );
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
   }, [date]);
 
+  const reload = useCallback(async () => {
+    const r = await api<{ items: TimeEntry[] }>(
+      `/api/staff/time-entries/mine?start=${date}&end=${date}`,
+    );
+    setEntries(r.items ?? []);
+  }, [date]);
+
   const total = entries.reduce((s, e) => s + Number(e.hours), 0);
   const billable = entries.filter((e) => e.billableFlag).reduce((s, e) => s + Number(e.hours), 0);
+  const nonBillable = total - billable;
+  const billablePct = total > 0 ? Math.round((billable / total) * 100) : 0;
+  const isToday = date === today();
+
   const byEngagement = useMemo(() => {
     const m = new Map<string, TimeEntry[]>();
     for (const e of entries) {
@@ -1513,24 +1857,31 @@ function DayView({
       arr.push(e);
       m.set(e.engagementId, arr);
     }
-    return Array.from(m.entries()).map(([id, items]) => {
-      const eng = engagements.find((e) => e.id === id);
-      const cli = clients.find((c) => c.id === eng?.clientId);
-      return {
-        engagementId: id,
-        engagementName: eng?.name ?? id.slice(0, 8),
-        clientName: cli?.name ?? null,
-        items,
-        hours: items.reduce((s, e) => s + Number(e.hours), 0),
-      };
-    });
+    return Array.from(m.entries())
+      .map(([id, items]) => {
+        const eng = engagements.find((e) => e.id === id);
+        const cli = clients.find((c) => c.id === eng?.clientId);
+        return {
+          engagementId: id,
+          engagementName: eng?.name ?? id.slice(0, 8),
+          clientName: cli?.name ?? null,
+          items,
+          hours: items.reduce((s, e) => s + Number(e.hours), 0),
+        };
+      })
+      .sort((a, b) => {
+        const ca = (a.clientName ?? '').toLowerCase();
+        const cb = (b.clientName ?? '').toLowerCase();
+        if (ca !== cb) return ca.localeCompare(cb);
+        return b.hours - a.hours;
+      });
   }, [entries, engagements, clients]);
 
   return (
     <Card
       title="Day"
       action={
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <Button
             size="sm"
             variant="secondary"
@@ -1544,6 +1895,7 @@ function DayView({
             value={date}
             onChange={(e) => setDate(e.target.value)}
             style={inputStyle}
+            aria-label="Date"
           />
           <Button
             size="sm"
@@ -1553,16 +1905,30 @@ function DayView({
           >
             ›
           </Button>
-          <Pill tone={total >= 7 ? 'success' : total >= 4 ? 'warning' : 'danger'}>
-            {total.toFixed(2)}h ({billable.toFixed(2)} billable)
-          </Pill>
+          <Button size="sm" variant="secondary" onClick={() => setDate(today())} disabled={isToday}>
+            Today
+          </Button>
         </div>
       }
     >
+      <SummaryTiles
+        items={[
+          {
+            label: 'Total',
+            value: `${total.toFixed(2)}h`,
+            tone: total >= 7 ? 'success' : total >= 4 ? 'warning' : 'danger',
+          },
+          { label: 'Billable', value: `${billable.toFixed(2)}h` },
+          { label: 'Non-billable', value: `${nonBillable.toFixed(2)}h` },
+          { label: 'Billable %', value: `${billablePct}%` },
+        ]}
+      />
       {loading ? (
         <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
       ) : byEngagement.length === 0 ? (
-        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>No time logged on {date}.</p>
+        <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>
+          No time logged on {shortDate(date)}. Use <strong>Quick log</strong> to add an entry.
+        </p>
       ) : (
         <div style={{ display: 'grid', gap: tokens.space.md }}>
           {byEngagement.map((g) => (
@@ -1571,7 +1937,7 @@ function DayView({
               style={{
                 border: `1px solid ${tokens.color.border}`,
                 borderRadius: tokens.radius.md,
-                padding: 12,
+                padding: '10px 12px',
               }}
             >
               <div
@@ -1579,7 +1945,7 @@ function DayView({
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'baseline',
-                  marginBottom: 8,
+                  gap: 8,
                 }}
               >
                 <span>
@@ -1591,35 +1957,24 @@ function DayView({
                   )}
                   <strong style={{ fontSize: 14 }}>{g.engagementName}</strong>
                 </span>
-                <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                <span
+                  style={{
+                    fontSize: 13,
+                    color: tokens.color.textMuted,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
                   {g.hours.toFixed(2)}h
                 </span>
               </div>
               {g.items.map((e) => (
-                <div
+                <EditableEntryRow
                   key={e.id}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '60px 1fr auto',
-                    gap: 8,
-                    padding: '4px 0',
-                    fontSize: 13,
-                    borderTop: `1px solid ${tokens.color.border}`,
-                  }}
-                >
-                  <span style={{ fontWeight: 500 }}>{Number(e.hours).toFixed(2)}h</span>
-                  <span style={{ color: tokens.color.textMuted }}>
-                    {e.description || <em>(no description)</em>}
-                  </span>
-                  <span style={{ display: 'flex', gap: 4 }}>
-                    {e.billableFlag ? (
-                      <Pill tone="success">billable</Pill>
-                    ) : (
-                      <Pill tone="neutral">non-bill</Pill>
-                    )}
-                    {!e.inScopeFlag && <Pill tone="warning">OOS</Pill>}
-                  </span>
-                </div>
+                  entry={e}
+                  workCodes={workCodes}
+                  roundingHours={roundingHours}
+                  onChanged={reload}
+                />
               ))}
             </div>
           ))}
@@ -1632,13 +1987,21 @@ function DayView({
 function WeekView({
   engagements,
   clients,
+  workCodes,
+  roundingHours,
 }: {
   engagements: Engagement[];
   clients: Client[];
+  workCodes: WorkCode[];
+  roundingHours: string;
 }): JSX.Element {
   const [weekAnchor, setWeekAnchor] = useState(startOfWeek(today()));
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // Clicking a populated grid cell opens that engagement×day's entries for
+  // inline editing below the grid — the grid stays a clean at-a-glance
+  // rollup while edits happen at the true (per-entry) grain.
+  const [selected, setSelected] = useState<{ engagementId: string; date: string } | null>(null);
 
   const weekEnd = useMemo(() => addDays(weekAnchor, 6), [weekAnchor]);
   const days = useMemo(
@@ -1649,16 +2012,28 @@ function WeekView({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setSelected(null);
     void api<{ items: TimeEntry[] }>(
       `/api/staff/time-entries/mine?start=${weekAnchor}&end=${weekEnd}`,
-    ).then((r) => {
-      if (cancelled) return;
-      setEntries(r.items ?? []);
-      setLoading(false);
-    });
+    )
+      .then((r) => {
+        if (cancelled) return;
+        setEntries(r.items ?? []);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
+  }, [weekAnchor, weekEnd]);
+
+  const reload = useCallback(async () => {
+    const r = await api<{ items: TimeEntry[] }>(
+      `/api/staff/time-entries/mine?start=${weekAnchor}&end=${weekEnd}`,
+    );
+    setEntries(r.items ?? []);
   }, [weekAnchor, weekEnd]);
 
   // Build grid: rows = engagementId, columns = day → hours sum
@@ -1699,12 +2074,34 @@ function WeekView({
     [entries, days],
   );
   const weekTotal = dailyTotals.reduce((s, v) => s + v, 0);
+  const billableTotal = entries
+    .filter((e) => e.billableFlag)
+    .reduce((s, e) => s + Number(e.hours), 0);
+  const daysLogged = dailyTotals.filter((h) => h > 0).length;
+  const avgPerLoggedDay = daysLogged > 0 ? weekTotal / daysLogged : 0;
+
+  // Entries backing the currently-selected cell (engagement × day).
+  const selectedEntries = useMemo(
+    () =>
+      selected
+        ? entries.filter(
+            (e) => e.engagementId === selected.engagementId && e.entryDate === selected.date,
+          )
+        : [],
+    [selected, entries],
+  );
+  const selectedEng = selected
+    ? engagements.find((e) => e.id === selected.engagementId)
+    : undefined;
+  const selectedClient = selectedEng
+    ? clients.find((c) => c.id === selectedEng.clientId)
+    : undefined;
 
   return (
     <Card
       title="Week"
       action={
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <Button
             size="sm"
             variant="secondary"
@@ -1727,92 +2124,203 @@ function WeekView({
           <Button size="sm" variant="secondary" onClick={() => setWeekAnchor(startOfWeek(today()))}>
             This week
           </Button>
-          <Pill tone={weekTotal >= 35 ? 'success' : weekTotal >= 20 ? 'warning' : 'danger'}>
-            {weekTotal.toFixed(2)}h
-          </Pill>
         </div>
       }
     >
+      <SummaryTiles
+        items={[
+          {
+            label: 'Week total',
+            value: `${weekTotal.toFixed(2)}h`,
+            tone: weekTotal >= 35 ? 'success' : weekTotal >= 20 ? 'warning' : 'danger',
+          },
+          { label: 'Billable', value: `${billableTotal.toFixed(2)}h` },
+          { label: 'Days logged', value: `${daysLogged}/7` },
+          { label: 'Avg / day', value: `${avgPerLoggedDay.toFixed(2)}h` },
+        ]}
+      />
       {loading ? (
         <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table
-            style={{
-              width: '100%',
-              borderCollapse: 'collapse',
-              fontSize: 13,
-              minWidth: 700,
-            }}
-          >
-            <thead>
-              <tr>
-                <th style={th('left')}>Engagement</th>
-                {days.map((d) => (
-                  <th key={d} style={th('right')}>
-                    <div style={{ fontWeight: 600 }}>{dayLabel(d)}</div>
-                    <div style={{ fontSize: 11, color: tokens.color.textMuted, fontWeight: 400 }}>
-                      {shortDate(d)}
-                    </div>
-                  </th>
-                ))}
-                <th style={th('right')}>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {grid.length === 0 ? (
+        <>
+          <div style={{ overflowX: 'auto' }}>
+            <table
+              style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                fontSize: 13,
+                minWidth: 700,
+              }}
+            >
+              <thead>
                 <tr>
-                  <td
-                    colSpan={9}
-                    style={{ padding: 16, textAlign: 'center', color: tokens.color.textMuted }}
-                  >
-                    No time logged this week.
-                  </td>
+                  <th style={th('left')}>Engagement</th>
+                  {days.map((d) => (
+                    <th key={d} style={th('right')}>
+                      <div style={{ fontWeight: 600 }}>{dayLabel(d)}</div>
+                      <div style={{ fontSize: 11, color: tokens.color.textMuted, fontWeight: 400 }}>
+                        {shortDate(d)}
+                      </div>
+                    </th>
+                  ))}
+                  <th style={th('right')}>Total</th>
                 </tr>
-              ) : (
-                grid.map((r) => (
-                  <tr key={r.engagementId}>
-                    <td style={td('left')}>
-                      {r.clientName && (
-                        <span style={{ color: tokens.color.accent, fontWeight: 600 }}>
-                          {r.clientName}
-                          <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>·</span>
-                        </span>
-                      )}
-                      {r.engagementName}
+              </thead>
+              <tbody>
+                {grid.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={9}
+                      style={{ padding: 16, textAlign: 'center', color: tokens.color.textMuted }}
+                    >
+                      No time logged this week.
                     </td>
-                    {r.cells.map((h, i) => (
-                      <td key={i} style={td('right', h > 0)}>
-                        {h > 0 ? h.toFixed(2) : '–'}
-                      </td>
-                    ))}
-                    <td style={{ ...td('right'), fontWeight: 600 }}>{r.total.toFixed(2)}</td>
                   </tr>
+                ) : (
+                  grid.map((r) => (
+                    <tr key={r.engagementId}>
+                      <td style={td('left')}>
+                        {r.clientName && (
+                          <span style={{ color: tokens.color.accent, fontWeight: 600 }}>
+                            {r.clientName}
+                            <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>
+                              ·
+                            </span>
+                          </span>
+                        )}
+                        {r.engagementName}
+                      </td>
+                      {r.cells.map((h, i) => {
+                        // reason: r.cells is days.map(...), so index i is always in-bounds.
+                        const cellDate = days[i] as string;
+                        const isSel =
+                          selected?.engagementId === r.engagementId && selected?.date === cellDate;
+                        return (
+                          <td key={i} style={{ ...td('right', h > 0), padding: 0 }}>
+                            {h > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSelected(
+                                    isSel ? null : { engagementId: r.engagementId, date: cellDate },
+                                  )
+                                }
+                                aria-label={`Edit ${r.engagementName} on ${shortDate(cellDate)}, ${h.toFixed(2)} hours`}
+                                aria-pressed={isSel}
+                                style={{
+                                  width: '100%',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  background: isSel ? tokens.color.accentMuted : 'transparent',
+                                  color: tokens.color.text,
+                                  font: 'inherit',
+                                  fontWeight: isSel ? 700 : 500,
+                                  fontVariantNumeric: 'tabular-nums',
+                                  padding: '6px 8px',
+                                  textAlign: 'right',
+                                }}
+                              >
+                                {h.toFixed(2)}
+                              </button>
+                            ) : (
+                              <span
+                                style={{
+                                  display: 'block',
+                                  padding: '6px 8px',
+                                  color: tokens.color.textMuted,
+                                }}
+                              >
+                                –
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...td('right'), fontWeight: 600 }}>{r.total.toFixed(2)}</td>
+                    </tr>
+                  ))
+                )}
+                <tr style={{ background: tokens.color.surface, fontWeight: 600 }}>
+                  <td style={td('left')}>Daily total</td>
+                  {dailyTotals.map((h, i) => (
+                    <td
+                      key={i}
+                      style={{
+                        ...td('right'),
+                        color:
+                          h >= 7
+                            ? tokens.color.success
+                            : h >= 4
+                              ? tokens.color.warning
+                              : tokens.color.textMuted,
+                      }}
+                    >
+                      {h > 0 ? h.toFixed(2) : '–'}
+                    </td>
+                  ))}
+                  <td style={td('right')}>{weekTotal.toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {grid.length > 0 && !selected && (
+            <p style={{ marginTop: tokens.space.sm, fontSize: 12, color: tokens.color.textMuted }}>
+              Tip: click any cell with hours to edit that day&rsquo;s entries.
+            </p>
+          )}
+          {selected && (
+            <div
+              style={{
+                marginTop: tokens.space.lg,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                padding: '10px 12px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'baseline',
+                  gap: 8,
+                }}
+              >
+                <span>
+                  {selectedClient && (
+                    <span style={{ color: tokens.color.accent, fontSize: 14, fontWeight: 600 }}>
+                      {selectedClient.name}
+                      <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>·</span>
+                    </span>
+                  )}
+                  <strong style={{ fontSize: 14 }}>
+                    {selectedEng?.name ?? selected.engagementId.slice(0, 8)}
+                  </strong>
+                  <span style={{ color: tokens.color.textMuted, marginLeft: 6, fontSize: 13 }}>
+                    — {dayLabel(selected.date)} {shortDate(selected.date)}
+                  </span>
+                </span>
+                <Button size="sm" variant="ghost" onClick={() => setSelected(null)}>
+                  Close
+                </Button>
+              </div>
+              {selectedEntries.length === 0 ? (
+                <p style={{ color: tokens.color.textMuted, fontSize: 13, marginBottom: 0 }}>
+                  No entries remain for this day.
+                </p>
+              ) : (
+                selectedEntries.map((e) => (
+                  <EditableEntryRow
+                    key={e.id}
+                    entry={e}
+                    workCodes={workCodes}
+                    roundingHours={roundingHours}
+                    onChanged={reload}
+                  />
                 ))
               )}
-              <tr style={{ background: tokens.color.surface, fontWeight: 600 }}>
-                <td style={td('left')}>Daily total</td>
-                {dailyTotals.map((h, i) => (
-                  <td
-                    key={i}
-                    style={{
-                      ...td('right'),
-                      color:
-                        h >= 7
-                          ? tokens.color.success
-                          : h >= 4
-                            ? tokens.color.warning
-                            : tokens.color.textMuted,
-                    }}
-                  >
-                    {h > 0 ? h.toFixed(2) : '–'}
-                  </td>
-                ))}
-                <td style={td('right')}>{weekTotal.toFixed(2)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+            </div>
+          )}
+        </>
       )}
     </Card>
   );
