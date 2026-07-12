@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { tokens } from '@vibe/ui';
 
-import { formatClock, useTimers } from '../timer-context';
+import { formatClock, useTimers, useTimerTick } from '../timer-context';
 import { TimerPopover, type PopoverAnchor } from './TimerPopover';
 
 export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.Element | null {
@@ -21,6 +21,7 @@ export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.E
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<PopoverAnchor | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
+  useTimerTick(running != null);
 
   function openPanel(): void {
     const r = btnRef.current?.getBoundingClientRect();

@@ -2342,6 +2342,11 @@ export const timeTimers = pgTable(
       onDelete: 'set null',
     }),
     workCodeId: uuid('work_code_id').references(() => workCodes.id, { onDelete: 'set null' }),
+    // 0209 — which logged entry a ▶ continue spawned this timer from; lets
+    // the time views mark that row as running. Null for blank/page starts.
+    sourceTimeEntryId: uuid('source_time_entry_id').references(() => timeEntries.id, {
+      onDelete: 'set null',
+    }),
     description: text('description').notNull().default(''),
     status: text('status').notNull().default('RUNNING'),
     accumulatedSeconds: integer('accumulated_seconds').notNull().default(0),

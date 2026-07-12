@@ -119,6 +119,7 @@ interface TimerDto {
   id: string;
   clientId: string | null;
   engagementId: string | null;
+  sourceTimeEntryId: string | null;
   status: 'RUNNING' | 'PAUSED';
   elapsedSeconds: number;
   autoPausedAt: string | null;
@@ -162,6 +163,38 @@ describe('POST / — start', () => {
   it('derives clientId from the engagement', async () => {
     const r = await invoke(router(), 'post', '/', req({ engagementId: seed.engagementId }));
     expect(items(r)[0]!.clientId).toBe(seed.clientId);
+  });
+
+  it('records and returns the source entry of a ▶ continue (0209)', async () => {
+    const [entry] = await h.db
+      .insert(timeEntries)
+      .values({
+        engagementId: seed.engagementId,
+        appUserId: seed.appUserId,
+        entryDate: '2026-07-01',
+        hours: '1.00',
+        standardRateSnapshotCents: 30000,
+        standardAmountCents: 30000,
+      })
+      .returning({ id: timeEntries.id });
+    const r = await invoke(
+      router(),
+      'post',
+      '/',
+      req({ engagementId: seed.engagementId, sourceTimeEntryId: entry!.id }),
+    );
+    expect(r.statusCode).toBe(201);
+    expect(items(r)[0]!.sourceTimeEntryId).toBe(entry!.id);
+  });
+
+  it('rejects a source entry that does not exist', async () => {
+    const r = await invoke(
+      router(),
+      'post',
+      '/',
+      req({ sourceTimeEntryId: '00000000-0000-4000-8000-000000000000' }),
+    );
+    expect(r.statusCode).toBe(404);
   });
 
   it('rejects an engagement from another firm', async () => {

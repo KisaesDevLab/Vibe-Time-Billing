@@ -18,8 +18,10 @@ import {
 import { api } from '../api-client';
 import {
   elapsedToHours,
+  formatClock,
   formatHuman,
   useTimersOptional,
+  useTimerTick,
   type TimerStartPrefill,
 } from '../timer-context';
 import { TableSearch } from '../components/TableSearch';
@@ -1553,26 +1555,20 @@ function LogView({
                   const editable = !e.lockedAt && !e.billingBatchId;
                   // 0207 — Toggl-style "continue": a NEW timer prefilled
                   // from this row (fresh entry on save; the original is
-                  // untouched). Available on locked/billed rows too.
-                  const continueBtn = timerCtx?.canUse ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      title="Start a timer from this entry"
-                      onClick={() => {
-                        void timerCtx
-                          .startTimer({
-                            clientId: e.clientId,
-                            engagementId: e.engagementId,
-                            workCodeId: e.workCodeId ?? undefined,
-                            description: e.description || undefined,
-                          })
-                          .catch(() => setError('timer_start_failed'));
+                  // untouched). Available on locked/billed rows too. Shows
+                  // the live clock + pause/✓ when that timer exists (0209).
+                  const continueBtn = (
+                    <StartTimerButton
+                      prefill={{
+                        clientId: e.clientId,
+                        engagementId: e.engagementId,
+                        workCodeId: e.workCodeId ?? undefined,
+                        description: e.description || undefined,
                       }}
-                    >
-                      ▶
-                    </Button>
-                  ) : null;
+                      label="Start a timer from this entry"
+                      entryId={e.id}
+                    />
+                  );
                   if (!editable) return continueBtn;
                   if (editingId === e.id) {
                     return (
@@ -1742,30 +1738,109 @@ interface RowEditDraft {
   workCodeId: string;
 }
 
-// 0207 follow-up — ▶ start-timer button for the Day/Week views. Same
-// "continue" semantics as the Quick log rows: starts a NEW prefilled timer;
-// nothing on the source entry changes. Owns its failure state so callers
-// need no error plumbing. Renders nothing without time_entry:create.
+// 0207/0209 — per-row timer controls for the time views. Idle: a ▶ that
+// starts a NEW prefilled timer ("continue" — the source entry is never
+// touched). When a timer spawned from this entry exists (matched by
+// sourceTimeEntryId, or by engagement for header-level placements), it
+// shows the live clock instead, with pause/resume and ✓ stop-and-log.
+// Owns its failure state so callers need no error plumbing. Renders
+// nothing without time_entry:create.
 function StartTimerButton({
   prefill,
   label,
+  entryId,
 }: {
   prefill: TimerStartPrefill;
   label: string;
+  /** Match a timer continued from this exact entry (RUNNING or PAUSED).
+   *  Without it, matches only a RUNNING timer on prefill.engagementId. */
+  entryId?: string;
 }): JSX.Element | null {
   const timers = useTimersOptional();
   const [failed, setFailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const match = entryId
+    ? timers?.timers.find((t) => t.sourceTimeEntryId === entryId)
+    : timers?.timers.find(
+        (t) =>
+          t.status === 'RUNNING' &&
+          !!prefill.engagementId &&
+          t.engagementId === prefill.engagementId,
+      );
+  useTimerTick(match?.status === 'RUNNING');
   if (!timers?.canUse) return null;
+
+  const run = (fn: () => Promise<unknown>): void => {
+    setFailed(false);
+    setBusy(true);
+    void fn()
+      .catch(() => setFailed(true))
+      .finally(() => setBusy(false));
+  };
+
+  if (match) {
+    const live = match.status === 'RUNNING';
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+        <span
+          style={{
+            fontFamily: tokens.font.mono,
+            fontVariantNumeric: 'tabular-nums',
+            fontSize: 12,
+            fontWeight: 600,
+            color: live ? tokens.color.accent : tokens.color.textMuted,
+          }}
+          title={live ? 'Timer running on this row' : 'Paused timer from this row'}
+        >
+          {formatClock(timers.elapsedSeconds(match))}
+        </span>
+        {live ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            title="Pause this timer"
+            onClick={() => run(() => timers.pause(match.id))}
+          >
+            ⏸
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            title="Resume this timer"
+            onClick={() => run(() => timers.resume(match.id))}
+          >
+            ▶
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          title={
+            failed
+              ? 'Could not log this timer — open the Timer panel for details'
+              : 'Stop and log this time'
+          }
+          style={failed ? { color: tokens.color.danger } : undefined}
+          onClick={() => run(() => timers.saveTimer(match.id, {}))}
+        >
+          ✓
+        </Button>
+      </span>
+    );
+  }
+
   return (
     <Button
       size="sm"
       variant="ghost"
+      disabled={busy}
       title={failed ? 'Could not start timer — try again' : label}
       style={failed ? { color: tokens.color.danger } : undefined}
-      onClick={() => {
-        setFailed(false);
-        void timers.startTimer(prefill).catch(() => setFailed(true));
-      }}
+      onClick={() => run(() => timers.startTimer({ ...prefill, sourceTimeEntryId: entryId }))}
     >
       ▶
     </Button>
@@ -1960,6 +2035,7 @@ function EditableEntryRow({
                 description: entry.description || undefined,
               }}
               label="Start a timer from this entry"
+              entryId={entry.id}
             />
             <Pill tone="neutral">{entry.billingBatchId ? 'billed' : 'locked'}</Pill>
           </span>
@@ -1973,6 +2049,7 @@ function EditableEntryRow({
                 description: entry.description || undefined,
               }}
               label="Start a timer from this entry"
+              entryId={entry.id}
             />
             <Button size="sm" variant="ghost" onClick={begin} disabled={busy}>
               Edit
@@ -2010,6 +2087,62 @@ function DayView({
   const [date, setDate] = useState(today());
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // 0210 — "Add appointments": how many of my appointments on this day
+  // could become entries (dry-run of the same endpoint the button posts).
+  const [apptCandidates, setApptCandidates] = useState(0);
+  const [addingAppts, setAddingAppts] = useState(false);
+  const [apptResult, setApptResult] = useState<string | null>(null);
+
+  // Local-day bounds as ISO instants — the server has no user timezone.
+  const apptBody = useCallback((d: string) => {
+    const start = new Date(`${d}T00:00:00`);
+    const end = new Date(start.getTime() + 24 * 3600_000);
+    return { entryDate: d, from: start.toISOString(), to: end.toISOString() };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setApptCandidates(0);
+    setApptResult(null);
+    void api<{ candidates: unknown[] }>('/api/staff/time-entries/from-appointments', {
+      method: 'POST',
+      body: JSON.stringify({ ...apptBody(date), dryRun: true }),
+    })
+      .then((r) => {
+        if (!cancelled) setApptCandidates(r.candidates?.length ?? 0);
+      })
+      .catch(() => {
+        // Non-fatal — the button just stays hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [date, apptBody]);
+
+  async function addAppointments(): Promise<void> {
+    setAddingAppts(true);
+    setApptResult(null);
+    try {
+      const r = await api<{
+        created: unknown[];
+        skipped: { reason: string }[];
+      }>('/api/staff/time-entries/from-appointments', {
+        method: 'POST',
+        body: JSON.stringify(apptBody(date)),
+      });
+      const n = r.created?.length ?? 0;
+      const failed = (r.skipped ?? []).filter((s) => s.reason !== 'already_logged').length;
+      setApptResult(
+        `${n} ${n === 1 ? 'entry' : 'entries'} added${failed ? `, ${failed} skipped` : ''}`,
+      );
+      setApptCandidates(0);
+      await reload();
+    } catch {
+      setApptResult('Could not add appointment entries.');
+    } finally {
+      setAddingAppts(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -2034,6 +2167,14 @@ function DayView({
     );
     setEntries(r.items ?? []);
   }, [date]);
+
+  // A ✓ stop-and-log on a row (or a popover quick-save) creates an entry
+  // this view should show immediately.
+  useEffect(() => {
+    const onSaved = (): void => void reload();
+    window.addEventListener('vibe:timer-saved', onSaved);
+    return () => window.removeEventListener('vibe:timer-saved', onSaved);
+  }, [reload]);
 
   const total = entries.reduce((s, e) => s + Number(e.hours), 0);
   const billable = entries.filter((e) => e.billableFlag).reduce((s, e) => s + Number(e.hours), 0);
@@ -2100,6 +2241,21 @@ function DayView({
           <Button size="sm" variant="secondary" onClick={() => setDate(today())} disabled={isToday}>
             Today
           </Button>
+          {apptCandidates > 0 && (
+            <Button
+              size="sm"
+              disabled={addingAppts}
+              title="Log one entry per appointment you attend this day — hours default to the appointment length"
+              onClick={() => void addAppointments()}
+            >
+              {addingAppts
+                ? 'Adding…'
+                : `Add appointment${apptCandidates === 1 ? '' : 's'} (${apptCandidates})`}
+            </Button>
+          )}
+          {apptResult && (
+            <span style={{ fontSize: 12, color: tokens.color.textMuted }}>{apptResult}</span>
+          )}
         </div>
       }
     >
@@ -2233,6 +2389,12 @@ function WeekView({
     );
     setEntries(r.items ?? []);
   }, [weekAnchor, weekEnd]);
+
+  useEffect(() => {
+    const onSaved = (): void => void reload();
+    window.addEventListener('vibe:timer-saved', onSaved);
+    return () => window.removeEventListener('vibe:timer-saved', onSaved);
+  }, [reload]);
 
   // Build grid: rows = engagementId, columns = day → hours sum
   const grid = useMemo(() => {

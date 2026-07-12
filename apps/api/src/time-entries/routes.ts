@@ -10,6 +10,7 @@ import { and, asc, desc, eq, gte, ilike, inArray, lte, notInArray, or, sql } fro
 import type { Database } from '@vibe/db';
 import {
   clientRateOverrides,
+  appointmentStaff,
   appointments,
   clients,
   engagementRateOverrides,
@@ -139,6 +140,16 @@ const UpdateSchema = z.object({
   billableFlag: z.boolean().optional(),
   outOfScopeOverride: z.boolean().optional(),
   linkedMessageIds: z.array(z.string().uuid()).max(50).optional(),
+});
+
+// 0210 — Day view "Add appointments". from/to are ISO instants bounding
+// the user's local calendar day (the server has no user timezone);
+// entryDate is the local date those entries should carry.
+const FromAppointmentsSchema = z.object({
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  from: z.string().min(10).max(40),
+  to: z.string().min(10).max(40),
+  dryRun: z.boolean().optional(),
 });
 
 const BulkFromTemplateSchema = z.object({
@@ -817,6 +828,199 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         userAgent: req.header('user-agent') ?? null,
       });
       res.status(result.status).json(result.body);
+    },
+  );
+
+  // ============================================================
+  // 0210 — Day view "Add appointments": one time entry per appointment
+  // the caller attends (lead or appointment_staff) in the given window,
+  // hours defaulting to the appointment's length. The client sends the
+  // local-day bounds as ISO instants so day boundaries follow the
+  // user's timezone, plus the entry_date to stamp. Appointments already
+  // logged by the caller (time_entry.appointment_id back-link, 0179)
+  // are skipped, as are cancelled ones. dryRun previews the candidate
+  // list without creating anything — the UI uses it for the button
+  // badge. Engagement resolution: the appointment's engagement, else
+  // the client's sole ACTIVE engagement, else (client-less internal
+  // meetings) the firm-admin engagement with the admin_meeting code.
+  // ============================================================
+  router.post(
+    '/from-appointments',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const parsed = FromAppointmentsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const from = new Date(parsed.data.from);
+      const to = new Date(parsed.data.to);
+      if (
+        !Number.isFinite(from.getTime()) ||
+        !Number.isFinite(to.getTime()) ||
+        to.getTime() <= from.getTime() ||
+        to.getTime() - from.getTime() > 48 * 3600_000
+      ) {
+        res.status(400).json({ error: 'invalid_window' });
+        return;
+      }
+
+      const inWindow = await db
+        .select({
+          id: appointments.id,
+          title: appointments.title,
+          clientId: appointments.clientId,
+          engagementId: appointments.engagementId,
+          leadAppUserId: appointments.leadAppUserId,
+          startsAt: appointments.startsAt,
+          endsAt: appointments.endsAt,
+        })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.firmId, session.firmId),
+            gte(appointments.startsAt, from),
+            lte(appointments.startsAt, to),
+            sql`${appointments.status} <> 'CANCELLED'`,
+          ),
+        )
+        .orderBy(asc(appointments.startsAt));
+
+      // Mine = lead, or listed in appointment_staff (multi-staff bookings).
+      const staffRows = inWindow.length
+        ? await db
+            .select({ appointmentId: appointmentStaff.appointmentId })
+            .from(appointmentStaff)
+            .where(
+              and(
+                eq(appointmentStaff.staffId, session.appUserId),
+                inArray(
+                  appointmentStaff.appointmentId,
+                  inWindow.map((a) => a.id),
+                ),
+              ),
+            )
+        : [];
+      const staffApptIds = new Set(staffRows.map((r) => r.appointmentId));
+      const mine = inWindow.filter(
+        (a) => a.leadAppUserId === session.appUserId || staffApptIds.has(a.id),
+      );
+
+      const loggedRows = mine.length
+        ? await db
+            .select({ appointmentId: timeEntries.appointmentId })
+            .from(timeEntries)
+            .where(
+              and(
+                eq(timeEntries.appUserId, session.appUserId),
+                inArray(
+                  timeEntries.appointmentId,
+                  mine.map((a) => a.id),
+                ),
+                sql`${timeEntries.status} <> 'ARCHIVED'`,
+              ),
+            )
+        : [];
+      const loggedIds = new Set(loggedRows.map((r) => r.appointmentId));
+
+      // Firm-admin fallback for client-less internal meetings (0208).
+      const [firmAdminEng] = await db
+        .select({ id: engagements.id })
+        .from(engagements)
+        .innerJoin(clients, eq(engagements.clientId, clients.id))
+        .where(and(eq(clients.firmId, session.firmId), eq(engagements.firmAdmin, true)))
+        .limit(1);
+      const [meetingCode] = firmAdminEng
+        ? await db
+            .select({ id: workCodes.id })
+            .from(workCodes)
+            .where(and(eq(workCodes.firmId, session.firmId), eq(workCodes.key, 'admin_meeting')))
+            .limit(1)
+        : [];
+
+      const skipped: { appointmentId: string; title: string; reason: string }[] = [];
+      const candidates: {
+        appointmentId: string;
+        title: string;
+        hours: number;
+        engagementId: string;
+        workCodeId?: string;
+      }[] = [];
+
+      for (const a of mine) {
+        if (loggedIds.has(a.id)) {
+          skipped.push({ appointmentId: a.id, title: a.title, reason: 'already_logged' });
+          continue;
+        }
+        let engagementId = a.engagementId;
+        let workCodeId: string | undefined;
+        if (!engagementId && a.clientId) {
+          const active = await db
+            .select({ id: engagements.id })
+            .from(engagements)
+            .where(and(eq(engagements.clientId, a.clientId), eq(engagements.status, 'ACTIVE')))
+            .limit(2);
+          if (active.length === 1) engagementId = active[0]!.id;
+        }
+        if (!engagementId && !a.clientId && firmAdminEng) {
+          engagementId = firmAdminEng.id;
+          workCodeId = meetingCode?.id;
+        }
+        if (!engagementId) {
+          skipped.push({ appointmentId: a.id, title: a.title, reason: 'no_engagement' });
+          continue;
+        }
+        const hours = Math.min(
+          24,
+          Math.max(
+            0.01,
+            Math.round(((a.endsAt.getTime() - a.startsAt.getTime()) / 3600_000) * 100) / 100,
+          ),
+        );
+        candidates.push({ appointmentId: a.id, title: a.title, hours, engagementId, workCodeId });
+      }
+
+      if (parsed.data.dryRun) {
+        res.json({ candidates, skipped });
+        return;
+      }
+
+      const created: { id: string; appointmentId: string }[] = [];
+      for (const c of candidates) {
+        const result = await createTimeEntryCore(deps, {
+          session,
+          payload: {
+            engagementId: c.engagementId,
+            workCodeId: c.workCodeId,
+            entryDate: parsed.data.entryDate,
+            hours: c.hours,
+            description: c.title,
+            appointmentId: c.appointmentId,
+          },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        });
+        if (result.status === 201) {
+          created.push({
+            id: (result.body as { id: string }).id,
+            appointmentId: c.appointmentId,
+          });
+        } else {
+          const title = mine.find((a) => a.id === c.appointmentId)?.title ?? '';
+          skipped.push({
+            appointmentId: c.appointmentId,
+            title,
+            reason: (result.body as { error?: string }).error ?? `status_${result.status}`,
+          });
+        }
+      }
+      res.status(created.length ? 201 : 200).json({ created, skipped });
     },
   );
 

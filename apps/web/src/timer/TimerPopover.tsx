@@ -16,6 +16,7 @@ import {
   formatClock,
   formatHuman,
   useTimers,
+  useTimerTick,
   type TimerDto,
 } from '../timer-context';
 import { TimerSaveForm } from './TimerSaveForm';
@@ -100,6 +101,7 @@ export function TimerPopover({
     acknowledgeStale,
   } = useTimers();
   const options = useEngagementOptions(true);
+  useTimerTick(running != null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
   const [editingTime, setEditingTime] = useState(false);

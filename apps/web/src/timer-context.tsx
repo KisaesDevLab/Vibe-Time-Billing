@@ -27,6 +27,7 @@ export interface TimerDto {
   clientId: string | null;
   engagementId: string | null;
   workCodeId: string | null;
+  sourceTimeEntryId: string | null;
   clientName: string | null;
   engagementName: string | null;
   workCodeName: string | null;
@@ -49,6 +50,8 @@ export interface TimerStartPrefill {
   engagementId?: string;
   workCodeId?: string;
   description?: string;
+  // 0209 — the logged entry a ▶ continue was pressed on (row indicator).
+  sourceTimeEntryId?: string;
 }
 
 export interface TimerSaveFields {
@@ -95,6 +98,19 @@ const TimerContext = createContext<TimerContextValue | null>(null);
  *  floor 0.01 — free-decimal capture, no billing-increment rounding). */
 export function elapsedToHours(elapsedSeconds: number): number {
   return Math.max(0.01, Math.round((elapsedSeconds / 3600) * 100) / 100);
+}
+
+/** Local 1s re-render while `active` — keeps a live clock ticking in ONE
+ *  component. The provider's context value is deliberately tick-stable so
+ *  a running timer doesn't re-render every consumer (whole tables) each
+ *  second; anything displaying elapsedSeconds() live must call this. */
+export function useTimerTick(active: boolean): void {
+  const [, setLocalTick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const iv = setInterval(() => setLocalTick((n) => n + 1), 1000);
+    return () => clearInterval(iv);
+  }, [active]);
 }
 
 export function formatClock(totalSeconds: number): string {

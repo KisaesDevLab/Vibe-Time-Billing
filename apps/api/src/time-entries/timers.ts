@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clients, engagements, timeTimers, workCodes } from '@vibe/db/schema';
+import { clients, engagements, timeEntries, timeTimers, workCodes } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission } from '../auth/rbac-middleware';
@@ -37,6 +37,9 @@ const TimerStartSchema = z.object({
   engagementId: z.string().uuid().optional(),
   workCodeId: z.string().uuid().optional(),
   description: z.string().max(2000).optional(),
+  // 0209 — the logged entry a ▶ continue was pressed on; the time views
+  // use it to mark that row as running.
+  sourceTimeEntryId: z.string().uuid().optional(),
 });
 
 const TimerPatchSchema = z.object({
@@ -159,6 +162,7 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
         clientId: r.timer.clientId,
         engagementId: r.timer.engagementId,
         workCodeId: r.timer.workCodeId,
+        sourceTimeEntryId: r.timer.sourceTimeEntryId,
         clientName: r.clientName,
         engagementName: r.engagementName,
         workCodeName: r.workCodeName,
@@ -222,6 +226,22 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
       .select({ firmId: workCodes.firmId })
       .from(workCodes)
       .where(eq(workCodes.id, workCodeId))
+      .limit(1);
+    return !!row && row.firmId === firmId;
+  }
+
+  /** Source entry must exist and belong to the firm (same rationale). */
+  async function timeEntryExists(
+    db: Database,
+    firmId: string,
+    timeEntryId: string,
+  ): Promise<boolean> {
+    const [row] = await db
+      .select({ firmId: clients.firmId })
+      .from(timeEntries)
+      .innerJoin(engagements, eq(timeEntries.engagementId, engagements.id))
+      .innerJoin(clients, eq(engagements.clientId, clients.id))
+      .where(eq(timeEntries.id, timeEntryId))
       .limit(1);
     return !!row && row.firmId === firmId;
   }
@@ -311,6 +331,13 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(404).json({ error: 'work_code_not_found' });
         return;
       }
+      if (
+        parsed.data.sourceTimeEntryId &&
+        !(await timeEntryExists(db, session.firmId, parsed.data.sourceTimeEntryId))
+      ) {
+        res.status(404).json({ error: 'time_entry_not_found' });
+        return;
+      }
 
       const existing = await db
         .select({ id: timeTimers.id })
@@ -333,6 +360,7 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
               clientId,
               engagementId: parsed.data.engagementId ?? null,
               workCodeId: parsed.data.workCodeId ?? null,
+              sourceTimeEntryId: parsed.data.sourceTimeEntryId ?? null,
               description: parsed.data.description ?? '',
               status: 'RUNNING',
               accumulatedSeconds: 0,
