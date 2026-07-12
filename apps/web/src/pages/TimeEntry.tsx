@@ -142,6 +142,13 @@ function dayLabel(iso: string): string {
   });
 }
 
+function monthLabel(iso: string): string {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 // Map the firm rounding setting ('0.10' | '0.25' | '0.00' = free decimal)
 // to the Hours number-input step/min. Free decimal allows any positive value.
 function hoursStepMin(roundingHours: string): { step: number | 'any'; min: number } {
@@ -2706,7 +2713,15 @@ function MonthView(): JSX.Element {
   const [monthsBack, setMonthsBack] = useState(6);
   const [days, setDays] = useState<DayTotal[]>([]);
   const [months, setMonths] = useState<MonthTotal[]>([]);
+  const [monthEntries, setMonthEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Current calendar month bounds for the summary tiles.
+  const monthStart = `${today().slice(0, 7)}-01`;
+  const monthEnd = (() => {
+    const [y, m] = today().split('-').map(Number);
+    return `${y}-${String(m).padStart(2, '0')}-${String(new Date(y!, m!, 0).getDate()).padStart(2, '0')}`;
+  })();
 
   useEffect(() => {
     let cancelled = false;
@@ -2723,16 +2738,29 @@ function MonthView(): JSX.Element {
           `/api/staff/time-entries/totals/by-day?start=${start}&end=${end}`,
         );
       })(),
-    ]).then(([m, d]) => {
+      // current month's entries for the billable/non-billable tiles
+      api<{ items: TimeEntry[] }>(
+        `/api/staff/time-entries/mine?start=${monthStart}&end=${monthEnd}`,
+      ),
+    ]).then(([m, d, e]) => {
       if (cancelled) return;
       setMonths(m.items ?? []);
       setDays(d.items ?? []);
+      setMonthEntries(e.items ?? []);
       setLoading(false);
     });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monthsBack]);
+
+  const monthTotal = monthEntries.reduce((s, e) => s + Number(e.hours), 0);
+  const monthBillable = monthEntries
+    .filter((e) => e.billableFlag)
+    .reduce((s, e) => s + Number(e.hours), 0);
+  const monthNonBillable = monthTotal - monthBillable;
+  const monthBillablePct = monthTotal > 0 ? Math.round((monthBillable / monthTotal) * 100) : 0;
 
   const dayMap = useMemo(() => new Map(days.map((d) => [d.entryDate, d])), [days]);
   const heatmapDays = useMemo(() => {
@@ -2803,6 +2831,20 @@ function MonthView(): JSX.Element {
           </select>
         }
       >
+        {!loading && (
+          <SummaryTiles
+            items={[
+              {
+                label: `Total (${monthLabel(monthStart)})`,
+                value: `${monthTotal.toFixed(2)}h`,
+                tone: monthTotal >= 140 ? 'success' : monthTotal >= 80 ? 'warning' : 'danger',
+              },
+              { label: 'Billable', value: `${monthBillable.toFixed(2)}h` },
+              { label: 'Non-billable', value: `${monthNonBillable.toFixed(2)}h` },
+              { label: 'Billable %', value: `${monthBillablePct}%` },
+            ]}
+          />
+        )}
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : months.length === 0 ? (
