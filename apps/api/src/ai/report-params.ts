@@ -155,6 +155,9 @@ REPORT_PARAM_SPECS['book-of-business'] = dateWindowSpec('Partner book of busines
   basis: true,
 });
 REPORT_PARAM_SPECS['utilization'] = dateWindowSpec('Billable vs total hours per timekeeper.');
+REPORT_PARAM_SPECS['non-billable-breakdown'] = dateWindowSpec(
+  'Non-billable hours by work code (CPE, meetings, marketing …).',
+);
 REPORT_PARAM_SPECS['effective-rate'] = dateWindowSpec('Billed value per billable hour.');
 REPORT_PARAM_SPECS['scope-creep'] = dateWindowSpec('Out-of-scope hours on mixed engagements.');
 REPORT_PARAM_SPECS['realization-by-partner'] = dateWindowSpec('Realization per partner.');

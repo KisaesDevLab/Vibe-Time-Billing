@@ -991,6 +991,79 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
     },
   );
 
+  // 0208 follow-up — what KIND of non-billable time (CPE vs meetings vs
+  // marketing …): one row per work code across all non-billable entries in
+  // the window, with the firm-admin vs client-engagement split. Complements
+  // /utilization, which shows the billable/non-billable ratio per
+  // timekeeper but not where the non-billable time went.
+  router.get(
+    '/non-billable-breakdown',
+    requirePermission(deps, 'report:utilization:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const { start: since, end: until } = rangeFromQuery(req, 30);
+      const {
+        timeEntries: te,
+        appUsers: au,
+        workCodes: wc,
+        engagements: eng,
+      } = await import('@vibe/db/schema');
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          workCodeId: te.workCodeId,
+          workCodeName: wc.name,
+          hours: drz<string>`COALESCE(SUM(${te.hours}), 0)`,
+          entries: drz<number>`COUNT(*)`,
+          firmAdminHours: drz<string>`COALESCE(SUM(${te.hours}) FILTER (WHERE ${eng.firmAdmin}), 0)`,
+        })
+        .from(te)
+        .innerJoin(au, eq(au.id, te.appUserId))
+        .innerJoin(eng, eq(eng.id, te.engagementId))
+        .leftJoin(wc, eq(wc.id, te.workCodeId))
+        .where(
+          and(
+            eq(au.firmId, session.firmId),
+            eq(te.billableFlag, false),
+            // Exclude soft-deleted (ARCHIVED) entries.
+            ne(te.status, 'ARCHIVED'),
+            drz`${te.entryDate} >= ${since}::date`,
+            until ? drz`${te.entryDate} <= ${until}::date` : undefined,
+          ),
+        )
+        .groupBy(te.workCodeId, wc.name);
+      const round2 = (n: number): number => Math.round(n * 100) / 100;
+      const total = rows.reduce((s, r) => s + Number(r.hours), 0);
+      res.json({
+        windowStart: since,
+        windowEnd: until,
+        totalNonBillableHours: round2(total),
+        items: rows
+          .map((r) => {
+            const hours = Number(r.hours);
+            const adminHours = Number(r.firmAdminHours);
+            return {
+              workCodeId: r.workCodeId,
+              workCode: r.workCodeName ?? '(no work code)',
+              hours: round2(hours),
+              entries: Number(r.entries),
+              // Share of all non-billable time in the window.
+              pctOfNonBillable: total > 0 ? Math.round((hours / total) * 1000) / 10 : 0,
+              // Split: logged to the firm-admin engagement vs non-billable
+              // time sitting on client engagements (courtesy work etc.).
+              firmAdminHours: round2(adminHours),
+              clientHours: round2(hours - adminHours),
+            };
+          })
+          .sort((a, b) => b.hours - a.hours),
+      });
+    },
+  );
+
   router.get(
     '/time-by-engagement',
     requirePermission(deps, 'report:realization:read'),

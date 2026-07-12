@@ -67,6 +67,13 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     params: DATE_PARAMS,
   },
   {
+    kind: 'non-billable-breakdown',
+    label: 'Non-billable breakdown',
+    description:
+      'Where non-billable time went, by work code (CPE, meetings, marketing …), split firm-admin vs client engagements (default 30 days).',
+    params: DATE_PARAMS,
+  },
+  {
     kind: 'effective-rate',
     label: 'Effective rate',
     description: 'Billed value ÷ billable hours per timekeeper (default 90 days).',
