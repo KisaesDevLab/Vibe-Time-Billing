@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
-import { useEffect, useState, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ComponentType,
+  type LazyExoticComponent,
+  type ReactNode,
+} from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { api } from './api-client';
@@ -29,40 +37,64 @@ import {
 import { AuthProvider, useAuth } from './auth-context';
 import { ScopeProvider, useScope } from './scope-context';
 import { StepUpModal } from './components/StepUpModal';
-import { ActivityPage } from './pages/Activity';
-import { AltContactsPage } from './pages/AltContacts';
-import { AppointmentsPage } from './pages/Appointments';
-import { EngagementsPage } from './pages/Engagements';
-import { FilePreviewPage } from './pages/FilePreview';
-import { FilesPage } from './pages/Files';
-import { AcceptInvitationPage } from './pages/AcceptInvitation';
-import { HelpPage } from './pages/Help';
-import { HomePage } from './pages/Home';
-import { ImpersonatePage } from './pages/Impersonate';
-import { PortalInvoicesPage } from './pages/Invoices';
-import { LettersPage } from './pages/Letters';
-import { LoginPage } from './pages/Login';
-import { RequestAccessPage } from './pages/RequestAccess';
-import { MessagesPage } from './pages/Messages';
-import { NotificationPrefsPage } from './pages/NotificationPrefs';
 import { InstallBanner } from './components/InstallBanner';
-import { UpdatesPage } from './pages/Updates';
-import { PaymentMethodsPage } from './pages/PaymentMethods';
-import { ProfilePage } from './pages/Profile';
-import { ProposalPage } from './pages/Proposal';
-import { RequestsPage } from './pages/Requests';
-import { RequestDetailPage } from './pages/RequestDetail';
-import { PortalRetainersPage } from './pages/Retainers';
-import { RetainerOfferPage } from './pages/RetainerOffer';
-import { StatementPage } from './pages/Statement';
-import { SwitchEntityPage } from './pages/Switch';
-import { TaxPaymentsPage } from './pages/TaxPayments';
-import { TaxReturnsPage } from './pages/TaxReturns';
-import { TaxReturnViewPage } from './pages/TaxReturnView';
-import { SharedTaxReturnPage } from './pages/SharedTaxReturn';
-import { SharedFilePage } from './pages/SharedFile';
-import { PayPage } from './pages/PayPage';
-import { InOfficeSignPage } from './pages/InOfficeSign';
+
+// Route components are code-split: each page loads as its own async chunk
+// on first navigation, keeping the initial (entry) bundle to the shell +
+// router only. Clients on 4G need a fast first paint (CLAUDE.md), so the
+// portal entry stays especially tight. `lazyPage` adapts a named page
+// export to the default-export shape React.lazy expects.
+// reason: dynamic-import modules expose many exports of varying types;
+// pick the page by name and adapt it to a props-less component.
+function lazyPage(
+  loader: () => Promise<Record<string, unknown>>,
+  exportName: string,
+): LazyExoticComponent<ComponentType> {
+  return lazy(() => loader().then((m) => ({ default: m[exportName] as ComponentType })));
+}
+
+const ActivityPage = lazyPage(() => import('./pages/Activity'), 'ActivityPage');
+const AltContactsPage = lazyPage(() => import('./pages/AltContacts'), 'AltContactsPage');
+const AppointmentsPage = lazyPage(() => import('./pages/Appointments'), 'AppointmentsPage');
+const EngagementsPage = lazyPage(() => import('./pages/Engagements'), 'EngagementsPage');
+const FilePreviewPage = lazyPage(() => import('./pages/FilePreview'), 'FilePreviewPage');
+const FilesPage = lazyPage(() => import('./pages/Files'), 'FilesPage');
+const AcceptInvitationPage = lazyPage(
+  () => import('./pages/AcceptInvitation'),
+  'AcceptInvitationPage',
+);
+const HelpPage = lazyPage(() => import('./pages/Help'), 'HelpPage');
+const HomePage = lazyPage(() => import('./pages/Home'), 'HomePage');
+const ImpersonatePage = lazyPage(() => import('./pages/Impersonate'), 'ImpersonatePage');
+const PortalInvoicesPage = lazyPage(() => import('./pages/Invoices'), 'PortalInvoicesPage');
+const LettersPage = lazyPage(() => import('./pages/Letters'), 'LettersPage');
+const LoginPage = lazyPage(() => import('./pages/Login'), 'LoginPage');
+const RequestAccessPage = lazyPage(() => import('./pages/RequestAccess'), 'RequestAccessPage');
+const MessagesPage = lazyPage(() => import('./pages/Messages'), 'MessagesPage');
+const NotificationPrefsPage = lazyPage(
+  () => import('./pages/NotificationPrefs'),
+  'NotificationPrefsPage',
+);
+const UpdatesPage = lazyPage(() => import('./pages/Updates'), 'UpdatesPage');
+const PaymentMethodsPage = lazyPage(() => import('./pages/PaymentMethods'), 'PaymentMethodsPage');
+const ProfilePage = lazyPage(() => import('./pages/Profile'), 'ProfilePage');
+const ProposalPage = lazyPage(() => import('./pages/Proposal'), 'ProposalPage');
+const RequestsPage = lazyPage(() => import('./pages/Requests'), 'RequestsPage');
+const RequestDetailPage = lazyPage(() => import('./pages/RequestDetail'), 'RequestDetailPage');
+const PortalRetainersPage = lazyPage(() => import('./pages/Retainers'), 'PortalRetainersPage');
+const RetainerOfferPage = lazyPage(() => import('./pages/RetainerOffer'), 'RetainerOfferPage');
+const StatementPage = lazyPage(() => import('./pages/Statement'), 'StatementPage');
+const SwitchEntityPage = lazyPage(() => import('./pages/Switch'), 'SwitchEntityPage');
+const TaxPaymentsPage = lazyPage(() => import('./pages/TaxPayments'), 'TaxPaymentsPage');
+const TaxReturnsPage = lazyPage(() => import('./pages/TaxReturns'), 'TaxReturnsPage');
+const TaxReturnViewPage = lazyPage(() => import('./pages/TaxReturnView'), 'TaxReturnViewPage');
+const SharedTaxReturnPage = lazyPage(
+  () => import('./pages/SharedTaxReturn'),
+  'SharedTaxReturnPage',
+);
+const SharedFilePage = lazyPage(() => import('./pages/SharedFile'), 'SharedFilePage');
+const PayPage = lazyPage(() => import('./pages/PayPage'), 'PayPage');
+const InOfficeSignPage = lazyPage(() => import('./pages/InOfficeSign'), 'InOfficeSignPage');
 
 export function App(): JSX.Element {
   // Phase 16 #27 — license + firm-toggle gate. Block all routes (login
@@ -101,7 +133,7 @@ export function App(): JSX.Element {
 
 function PortalRoutes(): JSX.Element {
   return (
-    <>
+    <Suspense fallback={<FullPageMsg>Loading…</FullPageMsg>}>
       <Routes>
         <Route path="/auth/login" element={<LoginPage />} />
         <Route path="/auth/verify" element={<LoginPage />} />
@@ -155,7 +187,7 @@ function PortalRoutes(): JSX.Element {
           }
         />
       </Routes>
-    </>
+    </Suspense>
   );
 }
 
@@ -409,8 +441,23 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     >
       {me?.isImpersonation && <ImpersonationBanner email={me.impersonatedByEmail} />}
       <InstallBanner />
-      {children}
+      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
     </AppShell>
+  );
+}
+
+function RouteFallback(): JSX.Element {
+  return (
+    <div
+      style={{
+        padding: tokens.space.xl,
+        color: tokens.color.textMuted,
+        fontFamily: tokens.font.body,
+        fontSize: 13,
+      }}
+    >
+      Loading…
+    </div>
   );
 }
 
