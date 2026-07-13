@@ -324,7 +324,9 @@ function renderBlock(block: BrochureBlock, key: string, sel?: SelectContext): JS
             style={{
               display: 'grid',
               gap: 12,
-              gridTemplateColumns: `repeat(${Math.min(tiers.length, 3)}, 1fr)`,
+              // min(240px, 100%) collapses the pricing tiers to one column
+              // on phones instead of three unreadable slivers.
+              gridTemplateColumns: `repeat(auto-fit, minmax(min(240px, 100%), 1fr))`,
             }}
           >
             {tiers.map((t) => {

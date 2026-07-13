@@ -85,3 +85,43 @@ textarea:focus-visible,
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* CP-mobile — touch ergonomics (phones + tablets; desktop unaffected). */
+@media (pointer: coarse) {
+  /* iOS Safari auto-zooms the whole page when a focused input's font is
+     under 16px — and never zooms back out. Inline styles set 13-14px, so
+     this needs !important. */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+  /* Row-action buttons ("sm" = ~27px) are well under the ~44px touch
+     minimum. Floor their hit area without exploding dense layouts. */
+  button {
+    min-height: 38px;
+    min-width: 32px;
+  }
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* Long unbroken strings (filenames, emails) must wrap instead of
+   horizontal-scrolling the page. */
+h1,
+h2,
+h3 {
+  overflow-wrap: anywhere;
+}
+
+/* Installed-PWA (Add to Home Screen): keep content out from under the
+   iPhone notch / home indicator. */
+@media (display-mode: standalone) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

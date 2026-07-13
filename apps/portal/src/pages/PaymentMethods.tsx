@@ -251,7 +251,11 @@ export function PaymentMethodsPage(): JSX.Element {
                       borderRadius: tokens.radius.sm,
                       background: tokens.color.surface,
                       color: tokens.color.text,
-                      minWidth: 220,
+                      // Fill the cell but never force it wider than the
+                      // phone screen (220px fixed guaranteed page scroll).
+                      width: '100%',
+                      minWidth: 140,
+                      maxWidth: 260,
                     }}
                   >
                     <option value="">Off (manual pay)</option>

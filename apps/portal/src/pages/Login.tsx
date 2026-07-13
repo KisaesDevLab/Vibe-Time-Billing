@@ -155,6 +155,7 @@ function SmsOtpForm({ phone }: { phone: string }): JSX.Element {
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
           inputMode="numeric"
+          autoComplete="one-time-code"
           required
           maxLength={6}
         />
@@ -263,6 +264,7 @@ function DeviceOtpForm({
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
           inputMode="numeric"
+          autoComplete="one-time-code"
           required
           maxLength={6}
         />

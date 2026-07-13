@@ -235,10 +235,17 @@ export function Table<T>({
     </table>
   );
 
-  if (!pagination) return table;
+  // The scroll container keeps a wide table from horizontal-scrolling the
+  // WHOLE page on phones — overflow stays inside the card. Interactive
+  // cell content is safe: Combobox/ColumnFilter portal their popovers to
+  // <body>, so nothing gets clipped.
+  const scrollable = (
+    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>{table}</div>
+  );
+  if (!pagination) return scrollable;
   return (
     <div>
-      {table}
+      {scrollable}
       <PaginationBar {...pagination} />
     </div>
   );

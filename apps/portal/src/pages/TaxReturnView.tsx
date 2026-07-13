@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api, type ApiError } from '../api-client';
 import { ProtectedPdfViewer } from '../components/ProtectedPdfViewer';
@@ -75,6 +75,7 @@ interface AccessLogItem {
 
 export function TaxReturnViewPage(): JSX.Element {
   const { returnId } = useParams<{ returnId: string }>();
+  const narrow = useIsNarrow();
   const [meta, setMeta] = useState<ReturnMeta | null>(null);
   const [log, setLog] = useState<AccessLogItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -226,11 +227,14 @@ export function TaxReturnViewPage(): JSX.Element {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(220px, 280px) 1fr',
+          // Phone: single column with the DOCUMENT first — the desktop
+          // two-column layout squeezed the return into an unreadable
+          // ~150px thumbnail strip.
+          gridTemplateColumns: narrow ? '1fr' : 'minmax(220px, 280px) 1fr',
           gap: tokens.space.lg,
         }}
       >
-        <Card title="Sections">
+        <Card title="Sections" style={narrow ? { order: 2 } : undefined}>
           {sortedSections.length === 0 ? (
             <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No sections available.</p>
           ) : (
@@ -261,7 +265,7 @@ export function TaxReturnViewPage(): JSX.Element {
           )}
         </Card>
 
-        <Card title="Document">
+        <Card title="Document" style={narrow ? { order: 1 } : undefined}>
           {/* Rendered to <canvas> via pdf.js (not the native PDF viewer) so
               there's no download/print toolbar, the right-click menu is
               suppressed, and printing is blocked. The bytes are still the
@@ -448,11 +452,14 @@ function ShareWithThirdPartyDialog({
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
-        paddingTop: 56,
+        paddingTop: 16,
         zIndex: 300,
       }}
     >
-      <div style={{ width: 'min(560px, 94vw)' }}>
+      {/* Internal scroller: with the phone keyboard open the visual viewport
+          shrinks and a fixed overlay can't scroll — the submit button must
+          stay reachable. */}
+      <div style={{ width: 'min(560px, 94vw)', maxHeight: '90vh', overflowY: 'auto' }}>
         <Card title="Share with a 3rd party">
           {shareUrl ? (
             <div style={{ display: 'grid', gap: 10 }}>
@@ -499,7 +506,13 @@ function ShareWithThirdPartyDialog({
             </div>
           ) : (
             <div style={{ display: 'grid', gap: 10 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: 8,
+                }}
+              >
                 <input
                   style={field}
                   placeholder="Recipient name *"

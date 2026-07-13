@@ -272,7 +272,7 @@ function InvoiceDetailPage(): JSX.Element {
         title={`Invoice ${inv.invoiceNumber}`}
         action={<Pill tone={statusTone(inv.status)}>{inv.status}</Pill>}
       >
-        <div style={{ display: 'flex', gap: 32, fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: '12px 32px', fontSize: 13, flexWrap: 'wrap' }}>
           <div>
             <div
               style={{ fontSize: 11, color: tokens.color.textMuted, textTransform: 'uppercase' }}
@@ -376,7 +376,7 @@ function InvoiceDetailPage(): JSX.Element {
         </Card>
       )}
 
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
         <Button variant="secondary" onClick={() => navigate('/invoices')}>
           Back
         </Button>

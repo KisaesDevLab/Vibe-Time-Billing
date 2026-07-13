@@ -47,12 +47,13 @@ export function CalendarAppointments(): JSX.Element | null {
                 gap: 12,
                 padding: '8px 4px',
                 borderBottom: `1px solid ${tokens.color.border}`,
+                flexWrap: 'wrap',
               }}
             >
-              <div style={{ minWidth: 160, fontSize: 13 }}>
+              <div style={{ fontSize: 13 }}>
                 {a.startAt ? new Date(a.startAt).toLocaleString() : ''}
               </div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: '1 1 160px', minWidth: 0 }}>
                 <div style={{ fontWeight: 500, fontSize: 14 }}>{a.subject ?? 'Appointment'}</div>
                 <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
                   {a.staffName ? `With ${a.staffName}` : ''}

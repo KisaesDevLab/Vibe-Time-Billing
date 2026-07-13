@@ -111,7 +111,13 @@ export function MessagesPage(): JSX.Element {
     try {
       const r = await api<{ items: ThreadRow[] }>('/api/portal/messaging/threads');
       setThreads(r.items ?? []);
-      if (!activeThreadId && r.items?.[0]) setActiveThreadId(r.items[0].threadId);
+      // Desktop: auto-open the newest thread beside the list. Phones show
+      // ONE pane at a time — auto-selecting would land the user inside a
+      // conversation with the inbox hidden. (Checked live, not via the
+      // narrow state: this closure is created before hydration flips it.)
+      const phone =
+        typeof window !== 'undefined' && window.matchMedia?.('(max-width: 720px)').matches;
+      if (!phone && !activeThreadId && r.items?.[0]) setActiveThreadId(r.items[0].threadId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     }

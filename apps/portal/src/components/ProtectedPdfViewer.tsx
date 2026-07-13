@@ -6,10 +6,16 @@
 // Used by the client portal tax-return viewer and the 3rd-party
 // recipient page. Note: this stops casual save/print, not a determined
 // screenshot.
+//
+// Pages render LAZILY: each page starts as a fixed-aspect placeholder and
+// gets its canvas only when scrolled near; canvases far off-screen are
+// released again. Eager rendering held 40+ full-size canvases alive at
+// once (~hundreds of MB), which blanked pages or reloaded the tab on iOS
+// Safari — the exact device tax-return clients read on.
 
 import { useEffect, useRef, useState } from 'react';
 
-import { Button, tokens } from '@vibe/ui';
+import { Button, tokens, useIsNarrow } from '@vibe/ui';
 
 // Lazy pdf.js loader (worker wired once). Same pattern as the staff
 // FieldEditor so the worker asset is bundled by Vite.
@@ -25,6 +31,19 @@ function loadPdfjs(): ReturnType<typeof importPdfjs> {
     })();
   }
   return pdfjsPromise;
+}
+
+interface PdfPageLike {
+  getViewport(opts: { scale: number }): { width: number; height: number };
+  render(opts: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: { width: number; height: number };
+  }): { promise: Promise<unknown> };
+}
+interface PdfDocLike {
+  numPages: number;
+  getPage(n: number): Promise<PdfPageLike>;
+  destroy(): Promise<unknown>;
 }
 
 export function ProtectedPdfViewer({
@@ -43,9 +62,92 @@ export function ProtectedPdfViewer({
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const narrow = useIsNarrow();
 
   useEffect(() => {
     let cancelled = false;
+    let observer: IntersectionObserver | null = null;
+    let pdf: PdfDocLike | null = null;
+    const wrappers: HTMLDivElement[] = []; // index = pageNumber - 1
+    const canvases = new Map<number, HTMLCanvasElement>();
+    const ratios = new Map<number, number>(); // pageNumber -> height/width
+    const wanted = new Set<number>();
+    const queue: number[] = [];
+    let pumping = false;
+    let defaultRatio = 11 / 8.5;
+
+    function placeholder(w: HTMLDivElement, n: number): void {
+      const r = ratios.get(n) ?? defaultRatio;
+      w.style.aspectRatio = `1 / ${r}`;
+      w.replaceChildren();
+    }
+
+    function release(n: number): void {
+      const c = canvases.get(n);
+      if (!c) return;
+      canvases.delete(n);
+      const w = wrappers[n - 1];
+      if (w) placeholder(w, n);
+      // Free the backing store immediately (Safari holds it otherwise).
+      c.width = 0;
+      c.height = 0;
+    }
+
+    async function renderPage(n: number): Promise<void> {
+      if (!pdf || cancelled || canvases.has(n)) return;
+      const page = await pdf.getPage(n);
+      if (cancelled || !wanted.has(n)) return;
+      const base = page.getViewport({ scale: 1 });
+      const host = hostRef.current;
+      // Cap the raster to what this screen can actually show — a 3x phone
+      // needs ~1170px, a laptop 1100; never more than 2x the PDF's own size.
+      const targetW = Math.min(
+        1100,
+        Math.max(640, (host?.clientWidth ?? 800) * (window.devicePixelRatio || 1)),
+      );
+      const scale = Math.min(2, targetW / base.width);
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      canvas.style.display = 'block';
+      canvas.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)';
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      if (cancelled || !wanted.has(n)) {
+        canvas.width = 0;
+        canvas.height = 0;
+        return;
+      }
+      ratios.set(n, viewport.height / viewport.width);
+      const w = wrappers[n - 1];
+      if (w) {
+        w.style.aspectRatio = '';
+        w.replaceChildren(canvas);
+        canvases.set(n, canvas);
+      }
+    }
+
+    function pump(): void {
+      if (pumping) return;
+      pumping = true;
+      void (async () => {
+        while (queue.length > 0 && !cancelled) {
+          const n = queue.shift()!;
+          if (!wanted.has(n) || canvases.has(n)) continue;
+          try {
+            await renderPage(n);
+          } catch {
+            // Skip a page that fails to rasterize; the rest still render.
+          }
+        }
+        pumping = false;
+      })();
+    }
+
     void (async () => {
       setStatus('loading');
       setErrMsg(null);
@@ -66,33 +168,45 @@ export function ProtectedPdfViewer({
         }
         const data = new Uint8Array(await res.arrayBuffer());
         const pdfjs = await loadPdfjs();
-        const pdf = await pdfjs.getDocument({ data }).promise;
+        pdf = (await pdfjs.getDocument({ data }).promise) as unknown as PdfDocLike;
         if (cancelled) return;
         const host = hostRef.current;
         if (!host) return;
+        const first = await pdf.getPage(1);
+        const fv = first.getViewport({ scale: 1 });
+        defaultRatio = fv.height / fv.width;
+
         host.innerHTML = '';
-        const RENDER_W = 1100;
+        observer = new IntersectionObserver(
+          (entries) => {
+            for (const e of entries) {
+              const n = Number((e.target as HTMLElement).dataset['page']);
+              if (!Number.isFinite(n)) continue;
+              if (e.isIntersecting) {
+                wanted.add(n);
+                if (!canvases.has(n)) queue.push(n);
+              } else {
+                wanted.delete(n);
+                release(n);
+              }
+            }
+            pump();
+          },
+          // Render ~2 viewports ahead/behind; release beyond that.
+          { rootMargin: '200% 0px' },
+        );
         for (let n = 1; n <= pdf.numPages; n++) {
-          const page = await pdf.getPage(n);
-          if (cancelled) return;
-          const base = page.getViewport({ scale: 1 });
-          const scale = Math.min(2, RENDER_W / base.width);
-          const viewport = page.getViewport({ scale });
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.ceil(viewport.width);
-          canvas.height = Math.ceil(viewport.height);
-          canvas.style.width = '100%';
-          canvas.style.height = 'auto';
-          canvas.style.display = 'block';
-          canvas.style.margin = '0 auto 12px';
-          canvas.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)';
-          const ctx = canvas.getContext('2d');
-          if (!ctx) continue;
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          if (cancelled) return;
-          host.appendChild(canvas);
+          const w = document.createElement('div');
+          w.dataset['page'] = String(n);
+          w.style.width = '100%';
+          w.style.margin = '0 auto 12px';
+          w.style.background = 'rgba(255,255,255,0.85)';
+          placeholder(w, n);
+          host.appendChild(w);
+          wrappers.push(w);
+          observer.observe(w);
         }
-        if (!cancelled) setStatus('ready');
+        setStatus('ready');
       } catch (e) {
         if (!cancelled) {
           setErrMsg(e instanceof Error ? e.message : 'render_failed');
@@ -102,6 +216,9 @@ export function ProtectedPdfViewer({
     })();
     return () => {
       cancelled = true;
+      observer?.disconnect();
+      for (const n of [...canvases.keys()]) release(n);
+      void pdf?.destroy();
     };
   }, [url]);
 
@@ -135,8 +252,10 @@ export function ProtectedPdfViewer({
         className="vibe-pdf-protected"
         onContextMenu={(e) => e.preventDefault()}
         style={{
-          maxHeight: '80vh',
-          overflowY: 'auto',
+          // Desktop: an inner scroll pane keeps the sections list in view.
+          // Phones: let the PAGE scroll — a nested scroller fights pinch
+          // zoom and swipe momentum on touch.
+          ...(narrow ? {} : { maxHeight: '80vh', overflowY: 'auto' }),
           background: '#525659',
           padding: 12,
           borderRadius: tokens.radius.sm,

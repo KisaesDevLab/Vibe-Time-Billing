@@ -84,10 +84,12 @@ export function AltContactsPage(): JSX.Element {
         <form
           onSubmit={add}
           style={{
-            display: 'grid',
-            gridTemplateColumns: 'auto 1fr auto',
+            // Wraps on phones — the fixed 3-column grid crushed the
+            // email/phone input to ~70px between the select and button.
+            display: 'flex',
+            flexWrap: 'wrap',
             gap: 12,
-            alignItems: 'end',
+            alignItems: 'flex-end',
           }}
         >
           <label style={{ display: 'block', fontFamily: tokens.font.body }}>
@@ -110,12 +112,14 @@ export function AltContactsPage(): JSX.Element {
               <option value="SMS">SMS</option>
             </select>
           </label>
-          <Input
-            label={channel === 'EMAIL' ? 'Email address' : 'Phone (E.164)'}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={channel === 'EMAIL' ? 'name@example.com' : '+13125550148'}
-          />
+          <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+            <Input
+              label={channel === 'EMAIL' ? 'Email address' : 'Phone (E.164)'}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={channel === 'EMAIL' ? 'name@example.com' : '+13125550148'}
+            />
+          </div>
           <Button type="submit" disabled={!value}>
             Send code
           </Button>

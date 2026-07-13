@@ -158,17 +158,23 @@ export function RequestsPage(): JSX.Element {
                 key: 'title',
                 header: 'Request',
                 render: (r) => (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => navigate(`/requests/${r.id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') navigate(`/requests/${r.id}`);
+                  // A real link: visible affordance + a full-height touch
+                  // target (the bare span was ~16px tall with no styling).
+                  <a
+                    href={`/requests/${r.id}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      navigate(`/requests/${r.id}`);
+                    }}
+                    style={{
+                      color: tokens.color.accent,
+                      textDecoration: 'none',
+                      display: 'inline-block',
+                      padding: '6px 0',
                     }}
                   >
                     {r.title}
-                  </span>
+                  </a>
                 ),
               },
               {

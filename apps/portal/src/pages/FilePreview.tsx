@@ -180,17 +180,29 @@ export function FilePreviewPage(): JSX.Element {
         {!url ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Resolving link…</p>
         ) : previewKind === 'pdf' ? (
-          <iframe
-            src={url}
-            title={file.originalFilename}
-            style={{
-              width: '100%',
-              height: '80vh',
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.sm,
-              background: tokens.color.surface,
-            }}
-          />
+          <div style={{ display: 'grid', gap: 8 }}>
+            {/* iOS Safari renders an inline PDF iframe as page 1 only, with
+                no scrolling — a full-screen tab uses the native viewer with
+                proper paging and pinch zoom. */}
+            <div>
+              <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+                <Button size="sm" variant="secondary">
+                  ⤢ Open full screen
+                </Button>
+              </a>
+            </div>
+            <iframe
+              src={url}
+              title={file.originalFilename}
+              style={{
+                width: '100%',
+                height: '80vh',
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+                background: tokens.color.surface,
+              }}
+            />
+          </div>
         ) : previewKind === 'image' ? (
           <div
             style={{
@@ -367,6 +379,11 @@ function ShareLinkModal({
           padding: tokens.space.lg,
           maxWidth: 520,
           width: '100%',
+          // Keyboard-open phones: the visual viewport shrinks to ~450px —
+          // without an internal scroller the action buttons fall below the
+          // fold of an unscrollable fixed overlay.
+          maxHeight: '90vh',
+          overflowY: 'auto',
         }}
       >
         <h2 id="share-modal-title" style={{ margin: 0, fontSize: 18 }}>

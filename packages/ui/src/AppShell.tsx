@@ -114,12 +114,15 @@ export function AppShell({
   }, [sectionStorageKey]);
 
   // Auto-collapse to the icon rail on phones/narrow viewports so the
-  // sidebar doesn't eat the screen. The user can still expand it; this only
-  // sets the default when the viewport is (or becomes) narrow.
+  // sidebar doesn't eat the screen. The user can still expand it — on
+  // narrow screens the expansion overlays the content as a drawer instead
+  // of squeezing it (an in-flow 220px column left ~170px for the page).
+  const [narrow, setNarrow] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
     const mq = window.matchMedia('(max-width: 720px)');
     const apply = (matches: boolean): void => {
+      setNarrow(matches);
       if (matches) setCollapsed(true);
     };
     apply(mq.matches);
@@ -127,6 +130,7 @@ export function AppShell({
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
+  const drawerOpen = narrow && !collapsed;
 
   const toggle = (): void => {
     setCollapsed((prev) => {
@@ -204,6 +208,19 @@ export function AppShell({
         Skip to main content
       </a>
 
+      {/* Drawer backdrop — tapping outside closes the overlaid sidebar. */}
+      {drawerOpen && (
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
+        <div
+          onClick={toggle}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.4)',
+            zIndex: 1299,
+          }}
+        />
+      )}
       <aside
         aria-label="Sidebar"
         style={{
@@ -213,7 +230,15 @@ export function AppShell({
           borderRight: `1px solid ${tokens.color.border}`,
           display: 'flex',
           flexDirection: 'column',
-          position: 'sticky',
+          ...(drawerOpen
+            ? {
+                position: 'fixed',
+                left: 0,
+                bottom: 0,
+                zIndex: 1300,
+                boxShadow: '4px 0 24px rgba(0,0,0,0.3)',
+              }
+            : { position: 'sticky' }),
           top: 0,
           // FontSizeControl applies `body { zoom: N }`, which scales every
           // descendant uniformly. Viewport units inside a zoomed parent
@@ -300,6 +325,11 @@ export function AppShell({
         {/* Nav links */}
         <nav
           aria-label="Primary"
+          onClickCapture={(e) => {
+            // Tapping a nav link inside the phone drawer should close it —
+            // otherwise the drawer sits over the page it just navigated to.
+            if (drawerOpen && (e.target as HTMLElement).closest('a')) toggle();
+          }}
           style={{
             display: 'flex',
             flexDirection: 'column',
@@ -449,8 +479,11 @@ export function AppShell({
           })}
         </nav>
 
-        {/* Trailing — ThemeToggle / Sign out / etc. */}
-        {trailing && (
+        {/* Trailing — ThemeToggle / Sign out / etc. Hidden on the phone
+            icon rail: 56px can't hold account name + buttons (they wrapped
+            into a clipped word-per-line stack) — expand the drawer to reach
+            them. */}
+        {trailing && !(narrow && collapsed) && (
           <div
             style={{
               padding: `${tokens.space.sm}px ${collapsed ? 8 : tokens.space.sm}px`,
@@ -471,7 +504,9 @@ export function AppShell({
       <main
         id="main-content"
         style={{
-          padding: tokens.space.xl,
+          // Phones: 24px each side of a ~390px screen is a fifth of the
+          // width — tighten so content keeps ~360px.
+          padding: narrow ? `${tokens.space.md}px ${tokens.space.sm}px` : tokens.space.xl,
           flex: 1,
           minWidth: 0, // allow inner overflow to scroll independently
         }}
