@@ -34,6 +34,7 @@ import { HolidaysPage } from './Holidays';
 import { HourBanksPage } from './HourBanks';
 import { HourBankTxPage } from './HourBankTx';
 import { JobsPage } from './Jobs';
+import { SystemInfoPage } from './SystemInfo';
 import { MilestonesPage } from './Milestones';
 import { MessagingPage } from './Messaging';
 import { WebhookKeysPage } from './WebhookKeys';
@@ -165,6 +166,7 @@ const GROUPS: Group[] = [
     key: 'ops',
     label: 'Operations',
     tabs: [
+      { key: 'system', label: 'System', href: '/admin/system' },
       { key: 'jobs', label: 'Jobs', href: '/admin/jobs' },
       { key: 'data', label: 'Data', href: '/admin/data' },
       { key: 'backup', label: 'Backup', href: '/admin/backup' },
@@ -371,6 +373,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="webhook-keys" element={<WebhookKeysPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="notification-templates" element={<NotificationTemplatesPage />} />
+        <Route path="system" element={<SystemInfoPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="data" element={<DataPage />} />
         <Route path="backup" element={<BackupPage />} />

@@ -107,6 +107,7 @@ import { createPortalFileRouter } from './portal/files';
 import { createPortalMessagingRouter } from './portal/messaging';
 import { createPortalRequestsRouter } from './portal/requests';
 import { createAdminJobRouter } from './admin/jobs';
+import { createSystemInfoRouter } from './admin/system-info';
 import { createComplianceRouter } from './admin/compliance';
 import { createStorageOnboardingRouter } from './admin/storage-onboarding';
 import { createStorageMockUploadRouter } from './admin/storage-mock-upload';
@@ -1443,6 +1444,12 @@ export function createApp(deps: AppDeps): Express {
     redisUrl: config.REDIS_URL,
   });
   app.use('/api/staff/admin/jobs', auth.requireAuth, auth.requireCsrf, adminJobRouter);
+
+  const systemInfoRouter = createSystemInfoRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/admin/system-info', auth.requireAuth, auth.requireCsrf, systemInfoRouter);
 
   // Destructive data ops — load demo dataset / reset firm to blank.
   // Gated on firm:settings:write + fresh step-up + (for reset) typed
