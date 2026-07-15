@@ -23,8 +23,13 @@
 #   backup.sh             alias for --once (back-compat with the old cron).
 #
 # Output:
-#   <dest>/vibe-tb-YYYY-MM-DD-HHMMSS.sql.gz          (database dump)
+#   <dest>/vibe-tb-YYYY-MM-DD-HHMMSS.sql.gz.gpg      (database dump, encrypted
+#                                                     when BACKUP_KEYS_PASSPHRASE
+#                                                     is set; plain .sql.gz else)
 #   <dest>/vibe-tb-keys-YYYY-MM-DD-HHMMSS.tar.gz.gpg (encrypted key bundle)
+#
+# Restore with ops/scripts/restore.sh (guided) — or by hand per
+# ops/docs/restore.md.
 # =============================================================================
 
 set -euo pipefail
@@ -168,6 +173,27 @@ sql_str() {
   if [[ -z "${1:-}" ]]; then echo "NULL"; else echo "'${1//\'/\'\'}'"; fi
 }
 
+# When the destination sits on a removable drive (/mnt/* or /media/*) and the
+# drive is NOT actually mounted, the path is just an empty directory on the
+# internal disk — writing there silently defeats the point of an external
+# backup. Fail loudly instead so the run shows up as FAILED in the Backup tab.
+require_mounted_destination() {
+  [[ "${BACKUP_ALLOW_UNMOUNTED:-}" == "1" ]] && return 0
+  local root=""
+  case "${CFG_DEST}" in
+    /mnt/*)   root="/mnt/$(echo "${CFG_DEST}" | cut -d/ -f3)" ;;
+    /media/*) root="/media/$(echo "${CFG_DEST}" | cut -d/ -f3)" ;;
+    *) return 0 ;;
+  esac
+  [[ -d "${root}" ]] || abort "backup drive ${root} not found — is the external drive plugged in?"
+  local dev parent_dev
+  dev="$(stat -c %d "${root}" 2>/dev/null || echo same)"
+  parent_dev="$(stat -c %d "$(dirname "${root}")" 2>/dev/null || echo same)"
+  if [[ "${dev}" == "${parent_dev}" ]]; then
+    abort "backup drive ${root} is not mounted — plug the external drive back in (or set BACKUP_ALLOW_UNMOUNTED=1 to allow writing to the internal disk)"
+  fi
+}
+
 abort() {
   log "ERROR: $*"
   run_fail "$*"
@@ -258,12 +284,13 @@ prune_key_bundles() {
 # -----------------------------------------------------------------------------
 do_backup() {
   local kind="${1:-manual}"
-  mkdir -p "${CFG_DEST}"
   local ts backup_file size_bytes pruned_count
   ts="$(date +%Y-%m-%d-%H%M%S)"
   backup_file="${CFG_DEST}/vibe-tb-${ts}.sql.gz"
 
   run_begin "${kind}"
+  require_mounted_destination
+  mkdir -p "${CFG_DEST}"
   log "Starting ${kind} backup → ${backup_file} (retention ${CFG_RETENTION}d, dest ${CFG_DEST})"
 
   pg_isready -d "${DATABASE_URL}" >/dev/null 2>&1 || abort "Postgres not reachable at DATABASE_URL"
@@ -277,12 +304,30 @@ do_backup() {
   gunzip -t "${backup_file}" 2>/dev/null || abort "Backup file failed gzip integrity check"
   log "DB backup verified — ${backup_file} (${size_bytes} bytes)"
 
+  # Encrypt the dump at rest. Backup drives travel — a lost or stolen drive
+  # must not leak the practice database. Uses the same operator passphrase as
+  # the key bundle; when it isn't set the dump stays plain (and we say so).
+  if [[ -n "${BACKUP_KEYS_PASSPHRASE:-}" ]] && command -v gpg >/dev/null 2>&1; then
+    if gpg --batch --yes --symmetric --cipher-algo AES256 \
+         --passphrase "${BACKUP_KEYS_PASSPHRASE}" -o "${backup_file}.gpg" "${backup_file}" 2>>"${LOG_FILE}"; then
+      rm -f "${backup_file}"
+      backup_file="${backup_file}.gpg"
+      chmod 600 "${backup_file}" || true
+      size_bytes=$(stat -c%s "${backup_file}" 2>/dev/null || stat -f%z "${backup_file}" 2>/dev/null || echo 0)
+      log "DB backup encrypted at rest → ${backup_file} (${size_bytes} bytes, AES-256)"
+    else
+      log "warning: DB dump encryption failed — keeping UNENCRYPTED ${backup_file}"
+    fi
+  else
+    log "note: BACKUP_KEYS_PASSPHRASE not set — DB dump is stored UNENCRYPTED"
+  fi
+
   # Optional encrypted app-key bundle.
   make_key_bundle "${ts}"
 
-  # Prune by retention.
+  # Prune by retention (both encrypted .sql.gz.gpg and legacy plain .sql.gz).
   log "Pruning DB backups older than ${CFG_RETENTION} days…"
-  pruned_count=$(find "${CFG_DEST}" -name 'vibe-tb-*.sql.gz' -mtime "+${CFG_RETENTION}" -delete -print | wc -l)
+  pruned_count=$(find "${CFG_DEST}" \( -name 'vibe-tb-*.sql.gz' -o -name 'vibe-tb-*.sql.gz.gpg' \) -mtime "+${CFG_RETENTION}" -delete -print | wc -l)
   log "Pruned ${pruned_count} old backup(s)"
   prune_key_bundles
 

@@ -1,165 +1,141 @@
-# Database restore procedure
+# Database restore — technical reference
 
-This document describes how to restore the Vibe Practice Management database from a `pg_dump` backup. See `ops/scripts/backup.sh` for how backups are created.
+**Start here instead:** `ops/scripts/restore.sh` is the supported restore
+path (guided, handles encrypted dumps, snapshots first, fixes DB settings,
+restarts the app). `ops/docs/DISASTER-RECOVERY.md` is the owner-facing
+guide with the full-machine-rebuild procedure. This document is the
+reference for what those automate, plus the manual equivalents.
 
-## Schedule, destination & retention (configurable)
+## What a backup run produces
 
-The backup **schedule, destination path, retention, and "include app keys"** are configured in the app at **Admin → Operations → Backup** and stored in `vibetb.backup_config` (a single appliance-global row). The `backup` sidecar (the only container with both `pg_dump` and the `/backups` volume) polls that row every `BACKUP_POLL_SECONDS` (default 300) and runs when a scheduled run is due or a manual run was requested, recording each run in `vibetb.backup_run`.
+See `ops/scripts/backup.sh` (the executor; schedule/destination/retention
+are configured in Admin → Operations → Backup, stored in
+`vibetb.backup_config`, run history in `vibetb.backup_run`):
 
-Defaults (recommended): **daily** at **02:00 UTC**, **30-day** retention, written to `/backups`. To copy off-appliance, **mount an external drive on the host under `/mnt` or `/media`** (e.g. `/mnt/backup-drive`) — the api binds `/mnt`+`/media` read-only (to enumerate them) and the `backup` sidecar binds them read-write (to write), so the drive appears in the **Backup tab's destination dropdown**. Pick it there and save. Drives hot-plugged after the stack starts propagate in via `rshared`; if a drive doesn't appear, click **Rescan** (or, on hosts without mount propagation, mount it before starting the appliance).
+- `vibe-tb-YYYY-MM-DD-HHMMSS.sql.gz.gpg` — full `pg_dump` of the
+  appliance database, gzip + **AES-256 encrypted** under
+  `BACKUP_KEYS_PASSPHRASE`. (Plain `.sql.gz` when no passphrase is set —
+  the log says so loudly.)
+- `vibe-tb-keys-YYYY-MM-DD-HHMMSS.tar.gz.gpg` — encrypted app-key bundle:
+  `keys.env` (KMS_KEY, both JWT secrets, POSTGRES_PASSWORD, VAPID pair,
+  OpenSign master key…), `firm-key.seal` (the sealed-on-disk KEK), and a
+  verbatim copy of every `*.env` in the mounted `/secrets` dir (set
+  `APPLIANCE_SECRETS_DIR` on the backup sidecar — this captures the
+  complete `vibe-build.env`, which is the authoritative secret set).
+- If the destination is under `/mnt` or `/media` and that drive is **not
+  mounted**, the run **fails loudly** (visible in the Backup tab) rather
+  than silently writing to the internal disk. Override:
+  `BACKUP_ALLOW_UNMOUNTED=1`.
 
-## App keys — REQUIRED for a working restore
+## Why the key bundle is REQUIRED for a working restore
 
-A database dump alone is **not** restorable to a functioning appliance. Stripe, email, SMS and webhook credentials are stored **encrypted in the DB under the appliance master key `KMS_KEY`**; staff/portal sessions are signed with `STAFF_JWT_SECRET` / `PORTAL_JWT_SECRET`. Without these keys, the restored DB's encrypted columns are unreadable and no one can sign in.
+A database dump alone is **not** restorable to a functioning appliance:
 
-When **include app keys** is enabled, the sidecar also writes an **encrypted** bundle `vibe-tb-keys-YYYY-MM-DD-HHMMSS.tar.gz.gpg` (gpg symmetric, AES-256) containing `KMS_KEY`, the JWT secrets, `POSTGRES_PASSWORD`, the proposal HMAC seed, VAPID keys, the sealed-on-disk master key (if present), and any operator-mounted `/secrets/*.env`. It is encrypted with `BACKUP_KEYS_PASSPHRASE` — a passphrase **the operator holds and stores off-appliance** (never on the box; it protects the very secrets inside). The last `key_bundle_keep` (default 14) bundles are retained.
+- The firm's Master Firm Key envelope is *in* the DB, but unwrapping it
+  needs `firm-key.seal` (sealed-on-disk mode) or the admin passphrase.
+  Without the MFK, the B2/MinIO file-storage credentials, Cloudflare
+  tunnel token, and calendar secrets in the DB are unreadable.
+- `KMS_KEY` (env) encrypts the other DB-stored secrets: Stripe keys,
+  mail/SMS provider config, TOTP secrets.
+- `STAFF_JWT_SECRET` / `PORTAL_JWT_SECRET` sign sessions;
+  `COMMERCIAL_LICENSE_TOKEN` gates the portal;
+  `PROPOSAL_SIGNATURE_HMAC_SEED` verifies existing proposal signatures.
 
-To recover the keys before restoring data:
+All of these are in the key bundle (given a `/secrets` mount). Recover
+them on a fresh machine with:
 
 ```sh
-# Decrypt and inspect the most recent key bundle (needs BACKUP_KEYS_PASSPHRASE)
-gpg --batch --decrypt --passphrase "$BACKUP_KEYS_PASSPHRASE" \
-  /backups/vibe-tb-keys-2026-05-18-020000.tar.gz.gpg | tar -tzf -
-
-# Extract keys.env and restore each value into the new appliance's env file
-# (KMS_KEY, STAFF_JWT_SECRET, PORTAL_JWT_SECRET, POSTGRES_PASSWORD, …) BEFORE
-# starting the api/worker — the api exits at boot if KMS_KEY is missing, and a
-# mismatched KMS_KEY cannot decrypt the restored DB's secret columns.
+ops/scripts/restore.sh --keys /backups/vibe-tb-keys-<ts>.tar.gz.gpg
 ```
 
-## When to restore
+The seal must land at `/data/firm-key/.firm-key.seal` (mode 0400) inside
+the `firm-key` volume **before** first app start; the env values become
+the compose `--env-file`.
 
-- Data corruption discovered after a failed migration
-- Accidental bulk delete or destructive admin action
-- Disaster recovery on a fresh appliance
-- Migrating to new hardware
-
-## What restore does NOT recover
-
-A nightly `pg_dump` means **up to 24 hours of data may be lost** between the last backup and the failure point. Time entries created after the most recent backup must be re-entered manually. There is no point-in-time recovery in v1.
-
-If the firm needs zero data loss, document the upgrade path to WAL archiving or streaming replication in a future appliance version.
-
-## Pre-restore checklist
-
-1. **Stop all writes.** Bring the appliance into maintenance mode:
-   ```sh
-   docker compose -f ops/docker/docker-compose.prod.yml stop api worker
-   ```
-2. **Notify users.** Email or call partners that the system is in read-only recovery mode.
-3. **Snapshot the current (broken) database.** Even if it's corrupted, preserve a forensic copy:
-   ```sh
-   pg_dump -U vibe -d vibe_tb > /backups/pre-restore-snapshot-$(date +%F).sql
-   ```
-4. **Identify the backup to restore.** Backups in the destination dir are named `vibe-tb-YYYY-MM-DD-HHMMSS.sql.gz` (the run history in Admin → Operations → Backup lists each with its size). Pick the most recent one before the corruption window.
-
-## Restore procedure
+## Standard restore (same appliance)
 
 ```sh
-# 1. Ensure postgres container is running, but app containers are stopped
-docker compose -f ops/docker/docker-compose.prod.yml ps
+ops/scripts/restore.sh              # newest backup, guided
+ops/scripts/restore.sh --file <f>   # a specific backup
+ops/scripts/restore.sh --check      # NON-destructive verify (scratch DB)
+```
 
-# 2. Drop the live database
-docker exec -i vibe-tb-postgres psql -U vibe -d postgres -c "DROP DATABASE IF EXISTS vibe_tb;"
-docker exec -i vibe-tb-postgres psql -U vibe -d postgres -c "CREATE DATABASE vibe_tb OWNER vibe;"
+`--check` is also run automatically every night by the appliance staging
+cron; look for `RESTORE TEST PASSED` in the staging/backup logs.
 
-# 3. Restore from backup
-gunzip -c /backups/vibe-tb-2026-05-18.sql.gz | \
-  docker exec -i vibe-tb-postgres psql -U vibe -d vibe_tb
+## Manual restore (what the script does)
 
-# 4. Verify row counts in critical tables
-docker exec -i vibe-tb-postgres psql -U vibe -d vibe_tb -c "
-  SELECT 'time_entry' AS t, count(*) FROM time_entry
-  UNION ALL SELECT 'invoice', count(*) FROM invoice
-  UNION ALL SELECT 'adjustment', count(*) FROM adjustment
-  UNION ALL SELECT 'audit_log', count(*) FROM audit_log;
-"
+```sh
+# 0. Decrypt if needed (passphrase = BACKUP_KEYS_PASSPHRASE)
+gpg --batch --decrypt --passphrase "$P" vibe-tb-<ts>.sql.gz.gpg > /tmp/r.sql.gz
 
-# 5. Refresh materialized views
-docker exec -i vibe-tb-postgres psql -U vibe -d vibe_tb -c "
-  REFRESH MATERIALIZED VIEW CONCURRENTLY realization_view;
-  REFRESH MATERIALIZED VIEW CONCURRENTLY utilization_view;
-  REFRESH MATERIALIZED VIEW CONCURRENTLY profitability_view;
-  REFRESH MATERIALIZED VIEW CONCURRENTLY ar_aging_snapshot;
-"
+# 1. Safety snapshot of current state
+docker exec vibe-tb-postgres pg_dump -U vibe -d vibe_tb --no-owner --no-acl \
+  --clean --if-exists --quote-all-identifiers | gzip > pre-restore-snapshot.sql.gz
 
-# 6. Restart app and worker
-docker compose -f ops/docker/docker-compose.prod.yml up -d api worker
+# 2. Stop the app (NOT the database); kill lingering connections
+docker stop vibe-tb-api vibe-tb-worker
+docker exec vibe-tb-postgres psql -U vibe -d postgres -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='vibe_tb' AND pid<>pg_backend_pid();"
 
-# 7. Sanity check
+# 3. Recreate and load
+docker exec vibe-tb-postgres psql -U vibe -d postgres -c "DROP DATABASE IF EXISTS vibe_tb;"
+docker exec vibe-tb-postgres psql -U vibe -d postgres -c "CREATE DATABASE vibe_tb OWNER vibe;"
+gunzip -c /tmp/r.sql.gz | docker exec -i vibe-tb-postgres psql -U vibe -d vibe_tb -q
+
+# 4. Reapply the database-level setting pg_dump does NOT carry
+docker exec vibe-tb-postgres psql -U vibe -d postgres -c \
+  "ALTER DATABASE vibe_tb SET search_path = vibetb, public;"
+
+# 5. Clear stale queue state, restart, verify
+docker exec vibe-tb-redis redis-cli FLUSHDB
+docker start vibe-tb-api vibe-tb-worker
 curl -fsS http://localhost:3001/health
 ```
 
-## Post-restore tasks
+Notes:
 
-1. **Audit the gap.** Compare the audit log timestamps with the backup time. Any events between backup and failure are lost.
-2. **Notify users.** Email staff and (if applicable) clients that data has been restored to a specific point. Be explicit about the gap window.
-3. **Re-trigger background jobs.** The BullMQ queue state is in Redis and may have stale entries pointing to restored data. Best practice:
-   ```sh
-   docker exec -i vibe-tb-redis redis-cli FLUSHDB
-   docker compose restart worker
-   ```
-4. **Re-run today's billing batch generation** if the restore happened during a billing period.
-5. **Check pending payments.** Stripe webhooks delivered during the gap will not have updated the database. Reconcile manually using Stripe dashboard.
+- **Do not** `REFRESH MATERIALIZED VIEW` by hand — the dump repopulates
+  `vibetb.realization_view` / `utilization_view` / `profitability_view`
+  itself (they restore with `ispopulated = t`).
+- All application tables are in the **`vibetb` schema**. Until step 4 is
+  applied, unqualified names (`SELECT … FROM time_entry`) fail — that's
+  the missing `search_path`, not a bad restore.
+- Migrations bookkeeping (`vibetb.schema_migrations`) is inside the dump;
+  the api entrypoint will apply only migrations newer than the dump.
 
-## Verification queries
-
-After restore, run these queries to confirm data integrity:
+## Verification queries (post-restore)
 
 ```sql
--- Audit log is append-only and intact
-SELECT MAX(occurred_at) FROM audit_log;
-
--- No orphaned time entries (referencing missing engagements)
-SELECT te.id FROM time_entry te LEFT JOIN engagement e ON e.id = te.engagement_id
+-- run in: docker exec -it vibe-tb-postgres psql -U vibe -d vibe_tb
+SELECT max(occurred_at) FROM vibetb.audit_log;             -- ≤ backup time
+SELECT count(*) FROM vibetb.firm_key_envelope;             -- = 1
+SELECT te.id FROM vibetb.time_entry te                     -- 0 rows
+  LEFT JOIN vibetb.engagement e ON e.id = te.engagement_id
   WHERE e.id IS NULL LIMIT 10;
-
--- adjustment_allocation sum constraint holds
-SELECT a.id, a.total_amount, SUM(aa.adjustment_amount) AS allocated_sum
-  FROM adjustment a
-  JOIN adjustment_allocation aa ON aa.adjustment_id = a.id
-  GROUP BY a.id
-  HAVING a.total_amount <> SUM(aa.adjustment_amount);
-
--- No portal sessions for inactive identities
-SELECT ps.id FROM portal_session ps
-  JOIN portal_identity pi ON pi.id = ps.portal_identity_id
-  WHERE pi.status <> 'ACTIVE' AND ps.revoked_at IS NULL LIMIT 10;
 ```
 
-All three queries should return zero rows.
+## Data-loss window & follow-ups
 
-## If restore fails
+Nightly dumps mean up to 24h of entries can be lost; there is no
+point-in-time recovery in v1 (upgrade path: WAL archiving). After any
+restore: notify staff of the cutoff, re-run the day's billing batch if
+applicable, and reconcile Stripe dashboard payments received during the
+gap (webhooks delivered meanwhile are not in the restored DB).
 
-If the restore itself errors out:
+## If the restore fails
 
-1. **Capture the error output.** Save to `/backups/restore-error-$(date +%F-%H%M).log`.
-2. **Try the prior backup.** Restore the next-oldest backup; some corruption may have made it into recent backups.
-3. **Forensic recovery.** If all recent backups are bad, the pre-restore snapshot from step 3 of the checklist is the last known state. Engage with maintainer support before attempting field repair.
+1. Keep the error output.
+2. Try the previous night's file (`restore.sh --file …`) — corruption can
+   make it into the newest backup.
+3. The pre-restore snapshot from step 1 is the last-known state; engage
+   maintainer support before field surgery.
 
-## Backup verification (run monthly)
+## Related state NOT covered by the DB dump
 
-To make sure backups are restorable before you actually need them:
-
-```sh
-# Spin up a sandbox postgres
-docker run --rm -d --name vibe-restore-test \
-  -e POSTGRES_USER=vibe -e POSTGRES_PASSWORD=vibe -e POSTGRES_DB=vibe_tb \
-  -p 5433:5432 postgres:16-alpine
-
-sleep 5
-
-# Restore the most recent backup
-gunzip -c /backups/$(ls -t /backups/vibe-tb-*.sql.gz | head -1) | \
-  docker exec -i vibe-restore-test psql -U vibe -d vibe_tb
-
-# Verify
-docker exec -i vibe-restore-test psql -U vibe -d vibe_tb -c "
-  SELECT count(*) FROM time_entry;
-"
-
-# Tear down
-docker stop vibe-restore-test
-```
-
-This should be on the firm's IT calendar monthly.
+| State | Where it's backed up |
+|---|---|
+| Client documents | Live in B2 (`storage_settings`); credentials restore with DB + seal |
+| OpenSign (e-sign) Mongo + files + signing cert env | Appliance staging cron + off-site (Duplicati); see DISASTER-RECOVERY.md §5.6 |
+| Redis/BullMQ queues | Deliberately not backed up — flush on restore |
+| Caddy internal CA | Regenerates; browsers re-trust on next visit |

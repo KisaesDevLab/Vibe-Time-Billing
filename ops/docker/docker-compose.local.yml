@@ -343,6 +343,13 @@ services:
       - ../scripts:/scripts:ro
       # Read-only seal so the encrypted key bundle can capture it.
       - firm-key:/data/firm-key:ro
+      # Mount the deployment's secret env files (read-only) so the raw *.env
+      # are captured verbatim into the encrypted key bundle — the hand-picked
+      # env vars above drift as the appliance grows (license token, HMAC
+      # seeds, SMS/voice creds, OpenSign login…); the raw file doesn't. Set
+      # APPLIANCE_SECRETS_DIR to the persistent secrets dir; the default (the
+      # compose dir) resolves but contains no root-level *.env, so it's inert.
+      - ${APPLIANCE_SECRETS_DIR:-.}:/secrets:ro
       # External drives: any host drive mounted under /mnt or /media is
       # writable here and selectable as the destination in the Backup tab
       # (the api mounts the same paths read-only to enumerate them).
