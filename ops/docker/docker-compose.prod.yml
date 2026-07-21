@@ -134,6 +134,11 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@example.com}
     volumes:
       - cloudflared-run:/run/cloudflared
+      # Recovery Packet — read-only view of the operator secrets dir so Admin →
+      # Operations → Backup → Download Recovery Packet can read RECOVERY-KIT.txt
+      # (assembled host-side by ops/scripts/generate-recovery-kit.sh) and render
+      # it into the downloadable PDF. Same dir the backup sidecar mounts.
+      - ${APPLIANCE_SECRETS_DIR:-.}:/secrets:ro
       # Read-only view of host mounts so Admin → Operations → Backup can
       # enumerate destination drives. The backup sidecar mounts the same paths
       # read-write to actually write. rshared lets drives hot-plugged on the

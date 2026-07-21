@@ -559,6 +559,8 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
     // Q35 — gate the admin 'opensign' provider option on configuration.
     openSignAvailable: Boolean(config.OPENSIGN_URL),
+    // Recovery Packet download is step-up-gated (needs Redis for lockout).
+    redis: deps.redis,
   });
   app.use('/api/staff/admin', auth.requireAuth, auth.requireCsrf, adminRouter);
 

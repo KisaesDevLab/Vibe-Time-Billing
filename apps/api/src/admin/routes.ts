@@ -6,7 +6,7 @@
 import { access, readFile, statfs } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 
-import express, { type Request, type Response, type Router } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 
@@ -59,10 +59,15 @@ import {
 } from '@vibe/core/backup';
 import { seedNotificationTemplates, NOTIFICATION_TEMPLATE_DEFAULTS } from '@vibe/db/seed-helpers';
 
+import type { Redis } from 'ioredis';
+
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { requireStepUpWithLockout } from '../auth/step-up-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { encryptTurnstileSecret } from '../intake/turnstile-config';
+import { renderHtmlToPdf } from '../pdf/render';
+import { composeRecoveryPacketHtml } from '../backup/recovery-packet';
 
 export interface AdminRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -70,6 +75,12 @@ export interface AdminRoutesDeps extends RbacDeps {
   // 'opensign' e-sign provider option in the admin UI; when false the UI
   // hides it and the server rejects selecting it.
   openSignAvailable?: boolean;
+  // Redis — used to gate the Recovery Packet download behind step-up TOTP
+  // (with lockout). Optional so tests can build the router without it; the
+  // packet route returns 503 when it's absent.
+  redis?: Redis | null;
+  // Override the PDF renderer in tests; defaults to the Puppeteer renderer.
+  renderPdf?: (html: string) => Promise<Buffer>;
 }
 
 const InviteSchema = z.object({
@@ -995,6 +1006,63 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         }).catch(() => undefined);
       }
       res.json({ ok: true, kind: 'manual', requestedBy: session.appUserId, marker });
+    },
+  );
+
+  // Recovery Packet — render the operator's kit sheet (all recovery secrets)
+  // plus the recovery guide into a single downloadable PDF. This is the most
+  // sensitive download in the app, so it is gated by BOTH admin:backup:manage
+  // AND fresh step-up TOTP (with Redis lockout), and every download is audited.
+  // The secret VALUES come from RECOVERY-KIT.txt, assembled host-side by
+  // ops/scripts/generate-recovery-kit.sh and mounted read-only at
+  // RECOVERY_KIT_PATH (default /secrets/RECOVERY-KIT.txt) — the API never
+  // reaches the off-site Duplicati/Backblaze creds directly.
+  const packetStepUp = deps.redis ? requireStepUpWithLockout(deps.redis, deps.db) : null;
+  router.get(
+    '/backup/recovery-packet',
+    requirePermission(deps, 'admin:backup:manage'),
+    (req: Request, res: Response, next: NextFunction) => {
+      if (!packetStepUp) {
+        res.status(503).json({ error: 'step_up_unavailable' });
+        return;
+      }
+      packetStepUp(req, res, next);
+    },
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const kitPath = process.env['RECOVERY_KIT_PATH'] ?? '/secrets/RECOVERY-KIT.txt';
+      let kitText: string;
+      try {
+        kitText = await readFile(kitPath, 'utf8');
+      } catch {
+        res.status(503).json({
+          error: 'recovery_kit_unavailable',
+          detail:
+            'RECOVERY-KIT.txt is not mounted. Run ops/scripts/generate-recovery-kit.sh on the appliance.',
+        });
+        return;
+      }
+      const render = deps.renderPdf ?? renderHtmlToPdf;
+      let pdf: Buffer;
+      try {
+        pdf = await render(composeRecoveryPacketHtml(kitText));
+      } catch {
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'EXPORT',
+        entityType: 'recovery_packet',
+        entityId: 'default',
+        actorAppUserId: session.appUserId,
+        after: { downloaded: true, bytes: pdf.length },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="Recovery-Packet.pdf"');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(pdf);
     },
   );
 

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
-import { api } from '../../api-client';
+import { api, getCsrfToken } from '../../api-client';
 
 type Frequency = 'daily' | 'every_2_days' | 'weekly';
 
@@ -97,6 +97,9 @@ export function BackupPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [packetBusy, setPacketBusy] = useState(false);
+  const [packetErr, setPacketErr] = useState<string | null>(null);
+  const [packetMsg, setPacketMsg] = useState<string | null>(null);
 
   const loadDestinations = useCallback(async (): Promise<Destination[]> => {
     const d = await api<{ destinations: Destination[] }>('/api/staff/admin/backup/destinations');
@@ -184,6 +187,57 @@ export function BackupPage(): JSX.Element {
       setError(e instanceof Error ? e.message : 'trigger_failed');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function downloadPacket(): Promise<void> {
+    setPacketBusy(true);
+    setPacketErr(null);
+    setPacketMsg(null);
+    try {
+      const csrf = getCsrfToken();
+      const res = await fetch('/api/staff/admin/backup/recovery-packet', {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+      });
+      if (!res.ok) {
+        let code = String(res.status);
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) code = body.error;
+        } catch {
+          /* non-JSON body */
+        }
+        const messages: Record<string, string> = {
+          step_up_required:
+            'Two-factor re-verification required. Go to Account → Two-factor, verify a code, then return here and try again within 30 minutes.',
+          step_up_locked_out:
+            'Too many two-factor attempts — temporarily locked out. Try again later.',
+          step_up_unavailable: 'Step-up verification is unavailable right now. Contact support.',
+          recovery_kit_unavailable:
+            'The Recovery Kit is not available on the appliance yet. Run ops/scripts/generate-recovery-kit.sh on the appliance, then retry.',
+          render_failed: 'Could not render the packet PDF. Check the API logs.',
+        };
+        setPacketErr(messages[code] ?? `Download failed (${code}).`);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Recovery-Packet.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setPacketMsg(
+        'Recovery Packet downloaded. Print it, store it in a safe, then delete the file.',
+      );
+    } catch (e) {
+      setPacketErr(e instanceof Error ? e.message : 'download_failed');
+    } finally {
+      setPacketBusy(false);
     }
   }
 
@@ -357,6 +411,40 @@ export function BackupPage(): JSX.Element {
           <p style={{ color: tokens.color.success, fontSize: 12, marginTop: 8 }}>{notice}</p>
         )}
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
+      </Card>
+
+      <Card title="Recovery Packet">
+        <div
+          style={{
+            fontSize: 13,
+            color: tokens.color.text,
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            padding: 12,
+            marginBottom: tokens.space.md,
+          }}
+        >
+          A single printable PDF that contains <strong>everything needed to recover</strong>: the
+          three backup credentials (drive passphrase, off-site passphrase, and Backblaze keys) on
+          page 1, followed by the full step-by-step recovery guide.{' '}
+          <strong>Print it and store it in a fireproof safe or safe-deposit box</strong> — off this
+          computer. Reprint it after any passphrase change.
+          <br />
+          <br />
+          Because it contains every secret, downloading requires a fresh two-factor code (verify in
+          Account → Two-factor within the last 30 minutes), and each download is recorded in the
+          audit log.
+        </div>
+        <Button variant="secondary" onClick={() => void downloadPacket()} disabled={packetBusy}>
+          {packetBusy ? 'Preparing…' : 'Download Recovery Packet'}
+        </Button>
+        {packetMsg && (
+          <p style={{ color: tokens.color.success, fontSize: 12, marginTop: 8 }}>{packetMsg}</p>
+        )}
+        {packetErr && (
+          <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{packetErr}</p>
+        )}
       </Card>
 
       {config && (

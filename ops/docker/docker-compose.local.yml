@@ -117,6 +117,11 @@ services:
       # data already in the DB.
       - firm-key:/data/firm-key
       - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+      # Recovery Packet — read-only view of the operator secrets dir so Admin →
+      # Operations → Backup → Download Recovery Packet can read RECOVERY-KIT.txt
+      # (assembled host-side by ops/scripts/generate-recovery-kit.sh) and render
+      # it into the downloadable PDF. Same dir the backup sidecar mounts.
+      - ${APPLIANCE_SECRETS_DIR:-.}:/secrets:ro
       # Read-only view of host mounts so Admin → Operations → Backup can
       # enumerate destination drives mounted under /mnt or /media. rshared
       # surfaces drives hot-plugged after the container starts.
