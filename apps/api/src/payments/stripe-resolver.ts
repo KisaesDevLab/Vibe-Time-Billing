@@ -4,11 +4,12 @@
 // encrypted at rest under KMS_KEY — same envelope as mail/sms config. These
 // helpers load/encrypt the config and produce a masked view for the UI.
 //
-// NOTE: the live payment provider + webhook-secret are still built from env at
-// boot (apps/api/src/server.ts). Routing charges/webhooks through these
-// DB-stored keys is a follow-up that needs the boot provider construction to
-// become DB-aware. The "Test" endpoint here validates the keys against Stripe
-// immediately regardless.
+// The live payment provider + webhook-secret are resolved from this stored
+// config at api boot (apps/api/src/server.ts, via resolveFirmStripe), ahead
+// of the appliance env vars. Single-firm appliance, so this is resolved once
+// per process start — saving a new key here takes effect on the next api
+// restart. The "Test" endpoint validates the keys against Stripe immediately
+// regardless of when the boot-time value was resolved.
 
 import { eq } from 'drizzle-orm';
 

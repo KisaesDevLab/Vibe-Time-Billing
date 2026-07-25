@@ -249,6 +249,11 @@ export interface AppDeps {
   ocrClient?: OcrClient | null;
   stripeProvider?: PaymentProvider | null;
   stripeWebhookSecret?: string | null;
+  /** Resolved firm-owned secret/publishable key (see server.ts) — used by
+   *  routers that need the raw key rather than a PaymentProvider instance
+   *  (e.g. Stripe Terminal, Stripe.js Elements on the staff payment page). */
+  stripeSecretKey?: string | null;
+  stripePublishableKey?: string | null;
   fakeUserRoles?: Map<string, RoleSlug[]>;
 }
 
@@ -1965,7 +1970,7 @@ export function createApp(deps: AppDeps): Express {
   const paymentRouter = createPaymentRouter({
     db: deps.db,
     stripe: deps.stripeProvider ?? null,
-    stripePublishableKey: config.STRIPE_PUBLISHABLE_KEY ?? null,
+    stripePublishableKey: deps.stripePublishableKey ?? config.STRIPE_PUBLISHABLE_KEY ?? null,
     fakeUserRoles: deps.fakeUserRoles,
     sendEmail: deps.sendPortalEmail,
     sendStaffMail: deps.sendStaffMail,
@@ -2003,7 +2008,7 @@ export function createApp(deps: AppDeps): Express {
   // Phases 15–17 — Stripe Terminal (in-person card readers).
   const terminalRouter = createTerminalRouter({
     db: deps.db,
-    secretKey: config.STRIPE_SECRET_KEY ?? null,
+    secretKey: deps.stripeSecretKey ?? config.STRIPE_SECRET_KEY ?? null,
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/terminal', auth.requireAuth, auth.requireCsrf, terminalRouter);

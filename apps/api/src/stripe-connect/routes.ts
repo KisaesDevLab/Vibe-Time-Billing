@@ -31,6 +31,7 @@ import { firmSettingsProposals } from '@vibe/db/schema';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
+import { resolveFirmStripe } from '../payments/firm-stripe';
 
 import {
   buildAuthorizeUrl,
@@ -270,9 +271,11 @@ export function createStripeConnectRouter(deps: StripeConnectRoutesDeps): Router
         .where(eq(firmSettingsProposals.firmId, session.firmId))
         .limit(1);
       if (!row || !row.stripeAccountId) {
+        const firmCreds = await resolveFirmStripe(deps.db, session.firmId);
         res.json({
           connected: false,
           configured: deps.config.clientId != null && deps.config.secretKey != null,
+          firmKeyConfigured: firmCreds != null,
         });
         return;
       }

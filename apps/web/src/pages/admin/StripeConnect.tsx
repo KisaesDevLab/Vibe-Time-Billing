@@ -20,6 +20,10 @@ import { api } from '../../api-client';
 interface AccountStatus {
   connected: boolean;
   configured?: boolean;
+  /** True when a working Stripe key is resolvable for real charges — either
+   *  a firm-owned key saved below or the appliance env fallback. Independent
+   *  of `configured`, which is only about the (optional) Connect OAuth path. */
+  firmKeyConfigured?: boolean;
   stripeAccountId?: string;
   stripePublishableKey?: string;
   capabilities?: Record<string, string>;
@@ -125,25 +129,6 @@ export function StripeConnectPage(): JSX.Element {
     );
   }
 
-  if (!status.connected && status.configured === false) {
-    return (
-      <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
-        <SectionHeading
-          title="Stripe Connect"
-          description="Process payments for accepted proposals via Stripe Connect Standard."
-        />
-        <Card>
-          <p style={{ fontSize: 13, marginTop: 0 }}>
-            <Pill tone="warning">Not configured</Pill> The operator hasn&apos;t set the
-            platform-level Stripe credentials yet. Set <code>STRIPE_CONNECT_CLIENT_ID</code> and{' '}
-            <code>STRIPE_SECRET_KEY</code> on the appliance and restart the API.
-          </p>
-        </Card>
-        <StripeApiKeysCard />
-      </div>
-    );
-  }
-
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
       <SectionHeading
@@ -156,13 +141,32 @@ export function StripeConnectPage(): JSX.Element {
 
       {!status.connected ? (
         <Card>
-          <p style={{ fontSize: 14, marginTop: 0 }}>
-            Your firm hasn&apos;t connected a Stripe account yet. Connect to enable card and ACH
-            payments on accepted proposals and recurring engagements.
-          </p>
-          <Button onClick={() => void startConnect()} disabled={busy}>
-            {busy ? 'Redirecting…' : 'Connect Stripe'}
-          </Button>
+          {status.configured ? (
+            <>
+              <p style={{ fontSize: 14, marginTop: 0 }}>
+                Your firm hasn&apos;t connected a Stripe account yet. Connect to enable card and ACH
+                payments on accepted proposals and recurring engagements.
+              </p>
+              <Button onClick={() => void startConnect()} disabled={busy}>
+                {busy ? 'Redirecting…' : 'Connect Stripe'}
+              </Button>
+            </>
+          ) : status.firmKeyConfigured ? (
+            <p style={{ fontSize: 13, marginTop: 0 }}>
+              <Pill tone="success">Using firm-owned key</Pill> Charges and payments use the
+              firm-owned Stripe key above. Stripe Connect (OAuth) is a separate, optional feature
+              the operator hasn&apos;t enabled — it lets a firm link its own account via OAuth
+              instead of pasting keys, and powers proposal-payment collection and Stripe Terminal.
+              To enable it, set <code>STRIPE_CONNECT_CLIENT_ID</code> on the appliance and restart
+              the API.
+            </p>
+          ) : (
+            <p style={{ fontSize: 13, marginTop: 0 }}>
+              <Pill tone="warning">No Stripe key configured</Pill> Add a secret key above to enable
+              payments, or ask the operator to set <code>STRIPE_CONNECT_CLIENT_ID</code> to allow
+              connecting via OAuth instead.
+            </p>
+          )}
         </Card>
       ) : (
         <>
@@ -403,8 +407,8 @@ function StripeApiKeysCard(): JSX.Element {
           )}
         </div>
         <p style={{ fontSize: 11, color: tokens.color.textMuted }}>
-          Note: charges + inbound webhooks currently use the appliance env keys; wiring the live
-          payment path to these stored keys is a follow-up.
+          Note: charges and inbound webhooks use this saved key automatically, ahead of any
+          appliance env vars. Restart the API after saving a new key for it to take effect.
         </p>
       </div>
     </Card>

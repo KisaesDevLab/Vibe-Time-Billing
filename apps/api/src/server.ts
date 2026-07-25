@@ -15,6 +15,8 @@ import { firms } from '@vibe/db/schema';
 import { bootCrypto } from './crypto/boot';
 
 import { createStripeProvider } from './payments/stripe';
+import { resolveFirmStripe } from './payments/firm-stripe';
+import { loadFirmStripeConfig } from './payments/stripe-resolver';
 import { createAnthropicProvider } from './ai/anthropic';
 import { createOllamaProvider } from './ai/ollama';
 import { createOpenAiCompatibleProvider } from './ai/openai-compatible';
@@ -47,10 +49,24 @@ const redis = getRedis();
 const { db } = createDb({ connectionString: config.DATABASE_URL });
 const sessionStore = createSessionStore(redis);
 
-// Stripe — firm-owned keys per Q7.
-const stripe = config.STRIPE_SECRET_KEY
-  ? createStripeProvider({ secretKey: config.STRIPE_SECRET_KEY })
+// Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
+// in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
+// env var, via the same resolveFirmStripe priority the saved-method/off-
+// session/manual-ACH charge paths already use (Connect OAuth > direct firm
+// key > env fallback). Resolved once at boot — single-firm appliance — so
+// saving a new key in the UI needs an api restart to take effect.
+const [bootFirm] = db ? await db.select({ id: firms.id }).from(firms).limit(1) : [];
+const bootFirmId = bootFirm?.id ?? null;
+const firmStripeCreds =
+  bootFirmId && db ? await resolveFirmStripe(db, bootFirmId, process.env) : null;
+const firmStripeConfig = bootFirmId && db ? await loadFirmStripeConfig(db, bootFirmId) : null;
+const stripe = firmStripeCreds
+  ? createStripeProvider({ secretKey: firmStripeCreds.secretKey })
   : null;
+const stripeSecretKey = firmStripeCreds?.secretKey ?? config.STRIPE_SECRET_KEY ?? null;
+const stripePublishableKey =
+  firmStripeCreds?.publishableKey ?? config.STRIPE_PUBLISHABLE_KEY ?? null;
+const stripeWebhookSecret = firmStripeConfig?.webhookSecret ?? config.STRIPE_WEBHOOK_SECRET ?? null;
 
 const chargeInvoice = stripe
   ? async (args: { invoiceId: string; amountCents: number; metadata: Record<string, string> }) => {
@@ -387,7 +403,9 @@ const app = createApp({
   localAiProvider,
   ocrClient,
   stripeProvider: stripe,
-  stripeWebhookSecret: config.STRIPE_WEBHOOK_SECRET ?? null,
+  stripeWebhookSecret,
+  stripeSecretKey,
+  stripePublishableKey,
   sendMagicLink,
   sendEmailOtp,
   sendSmsOtp,
