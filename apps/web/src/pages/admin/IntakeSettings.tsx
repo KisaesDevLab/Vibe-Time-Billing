@@ -4,6 +4,7 @@
 // page, their order/title, per-card notification prefs, and headshots.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button, tokens } from '@vibe/ui';
 
@@ -26,6 +27,7 @@ interface Card {
 const cell: React.CSSProperties = { padding: '8px 10px', fontSize: 13, verticalAlign: 'middle' };
 
 export function IntakeSettingsPage(): JSX.Element {
+  const navigate = useNavigate();
   const [cards, setCards] = useState<Card[]>([]);
   const [enabled, setEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -147,7 +149,24 @@ export function IntakeSettingsPage(): JSX.Element {
                 opacity: c.active ? 1 : 0.5,
               }}
             >
-              <td style={cell}>{c.name}</td>
+              <td style={cell}>
+                <button
+                  onClick={() => navigate(`/admin/users/${c.userId}?tab=rates`)}
+                  title="Open profile & edit billing rates"
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: tokens.color.accent,
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: 0,
+                    textAlign: 'left',
+                  }}
+                >
+                  {c.name}
+                </button>
+              </td>
               <td style={cell}>
                 <input
                   type="checkbox"

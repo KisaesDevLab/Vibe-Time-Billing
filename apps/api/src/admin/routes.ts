@@ -19,6 +19,7 @@ import {
   engagementStatusServiceLine,
   firms,
   firmSettings,
+  intakeStaffCards,
   notificationTemplates,
   officeSettings,
   offices,
@@ -446,12 +447,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     requirePermission(deps, 'office:write'),
     async (req: Request, res: Response) => {
       const firmId = req.staffSession?.firmId;
+      const session = req.staffSession!;
       if (!firmId || !deps.db) {
         res.json({ ok: true });
         return;
       }
       const parsed = OfficeSchema.partial().safeParse(req.body);
-      if (!parsed.success) {
+      if (!parsed.success || Object.keys(parsed.data).length === 0) {
         res.status(400).json({ error: 'invalid_payload' });
         return;
       }
@@ -459,6 +461,15 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         .update(offices)
         .set(parsed.data)
         .where(and(eq(offices.id, req.params['id']!), eq(offices.firmId, firmId)));
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'office',
+        entityId: req.params['id']!,
+        actorAppUserId: session.appUserId,
+        after: parsed.data,
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
       res.json({ ok: true });
     },
   );
@@ -758,15 +769,25 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         res.status(201).json({ ok: true });
         return;
       }
-      const [row] = await deps.db
-        .insert(appUsers)
-        .values({
-          firmId,
-          email: parsed.data.email,
-          fullName: parsed.data.fullName,
-          defaultOfficeId: parsed.data.defaultOfficeId ?? null,
-        })
-        .returning({ id: appUsers.id });
+      const row = await deps.db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(appUsers)
+          .values({
+            firmId,
+            email: parsed.data.email,
+            fullName: parsed.data.fullName,
+            defaultOfficeId: parsed.data.defaultOfficeId ?? null,
+          })
+          .returning({ id: appUsers.id });
+        if (inserted) {
+          // Every staff member needs an intake card row to appear in
+          // admin intake settings (GET /api/staff/admin/intake self-heals
+          // via LEFT JOIN too, but provisioning here keeps PATCH working
+          // immediately instead of 404ing on a row that doesn't exist yet).
+          await tx.insert(intakeStaffCards).values({ firmId, userId: inserted.id });
+        }
+        return inserted;
+      });
       res.status(201).json({ id: row?.id });
     },
   );

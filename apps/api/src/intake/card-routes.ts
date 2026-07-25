@@ -105,9 +105,13 @@ export function createIntakeCardRouter(deps: IntakeCardDeps): Router {
         res.json({ cards: [] });
         return;
       }
+      // LEFT JOIN from appUsers: a staff member with no intake_staff_cards
+      // row yet (e.g. created before this code existed, or via a path that
+      // doesn't provision one) must still show up here with card defaults,
+      // not silently disappear from the admin view.
       const rows = await deps.db
         .select({
-          userId: intakeStaffCards.userId,
+          userId: appUsers.id,
           name: appUsers.fullName,
           status: appUsers.status,
           isVisible: intakeStaffCards.isVisible,
@@ -119,22 +123,25 @@ export function createIntakeCardRouter(deps: IntakeCardDeps): Router {
           notifyInApp: intakeStaffCards.notifyInApp,
           headshotObjectKey: intakeStaffCards.headshotObjectKey,
         })
-        .from(intakeStaffCards)
-        .innerJoin(appUsers, eq(appUsers.id, intakeStaffCards.userId))
-        .where(eq(intakeStaffCards.firmId, firmId))
+        .from(appUsers)
+        .leftJoin(
+          intakeStaffCards,
+          and(eq(intakeStaffCards.userId, appUsers.id), eq(intakeStaffCards.firmId, firmId)),
+        )
+        .where(eq(appUsers.firmId, firmId))
         .orderBy(asc(intakeStaffCards.displayOrder), asc(appUsers.fullName));
       res.json({
         cards: rows.map((r) => ({
           userId: r.userId,
           name: r.name,
           active: r.status === 'ACTIVE',
-          isVisible: r.isVisible,
-          acceptingUploads: r.acceptingUploads,
-          displayOrder: r.displayOrder,
-          displayTitle: r.displayTitle,
-          notifyEmail: r.notifyEmail,
-          notifySms: r.notifySms,
-          notifyInApp: r.notifyInApp,
+          isVisible: r.isVisible ?? false,
+          acceptingUploads: r.acceptingUploads ?? true,
+          displayOrder: r.displayOrder ?? 0,
+          displayTitle: r.displayTitle ?? null,
+          notifyEmail: r.notifyEmail ?? true,
+          notifySms: r.notifySms ?? false,
+          notifyInApp: r.notifyInApp ?? true,
           hasHeadshot: Boolean(r.headshotObjectKey),
         })),
       });
@@ -157,16 +164,27 @@ export function createIntakeCardRouter(deps: IntakeCardDeps): Router {
         res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
+      const userId = req.params['userId']!;
+      const [owned] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, userId), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!owned) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const updates = { ...parsed.data, updatedAt: new Date() };
+      // Upsert: the card row may not exist yet for staff created before a
+      // card was provisioned for them, so PATCH must not depend on one
+      // already being there.
       const [row] = await deps.db
-        .update(intakeStaffCards)
-        .set(updates)
-        .where(
-          and(
-            eq(intakeStaffCards.firmId, firmId),
-            eq(intakeStaffCards.userId, req.params['userId']!),
-          ),
-        )
+        .insert(intakeStaffCards)
+        .values({ firmId, userId, ...updates })
+        .onConflictDoUpdate({
+          target: [intakeStaffCards.firmId, intakeStaffCards.userId],
+          set: updates,
+        })
         .returning({ userId: intakeStaffCards.userId });
       if (!row) {
         res.status(404).json({ error: 'not_found' });
@@ -210,6 +228,15 @@ export function createIntakeCardRouter(deps: IntakeCardDeps): Router {
         return;
       }
       const userId = req.params['userId']!;
+      const [owned] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, userId), eq(appUsers.firmId, firmId)))
+        .limit(1);
+      if (!owned) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const key = `intake/headshots/${firmId}/${userId}`;
       try {
         await storage.put(key, body, { contentType: mimeType });
@@ -218,9 +245,12 @@ export function createIntakeCardRouter(deps: IntakeCardDeps): Router {
         return;
       }
       const [row] = await deps.db
-        .update(intakeStaffCards)
-        .set({ headshotObjectKey: key, updatedAt: new Date() })
-        .where(and(eq(intakeStaffCards.firmId, firmId), eq(intakeStaffCards.userId, userId)))
+        .insert(intakeStaffCards)
+        .values({ firmId, userId, headshotObjectKey: key })
+        .onConflictDoUpdate({
+          target: [intakeStaffCards.firmId, intakeStaffCards.userId],
+          set: { headshotObjectKey: key, updatedAt: new Date() },
+        })
         .returning({ userId: intakeStaffCards.userId });
       if (!row) {
         res.status(404).json({ error: 'not_found' });

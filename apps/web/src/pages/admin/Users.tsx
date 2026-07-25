@@ -160,6 +160,20 @@ export function UsersPage(): JSX.Element {
                   />
                 ),
               },
+              {
+                key: 'rates',
+                header: '',
+                align: 'right',
+                render: (u) => (
+                  <Button
+                    variant="ghost"
+                    onClick={() => navigate(`/admin/users/${u.id}?tab=rates`)}
+                    title="Edit billing rates"
+                  >
+                    Edit rates
+                  </Button>
+                ),
+              },
             ]}
             rows={users}
             rowKey={(u) => u.id}

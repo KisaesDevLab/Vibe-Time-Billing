@@ -10,7 +10,7 @@
 // orthogonal to the tab content.
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 
 import { Button, Card, Combobox, Input, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
@@ -149,7 +149,12 @@ function dollars(cents: number | null | undefined): string {
 
 export function UserDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<Tab>('main');
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const VALID_TABS: Tab[] = ['main', 'contact', 'rates', 'skills', 'targets', 'notes', 'booking'];
+  const [tab, setTab] = useState<Tab>(
+    VALID_TABS.includes(requestedTab as Tab) ? (requestedTab as Tab) : 'main',
+  );
   const [user, setUser] = useState<User | null>(null);
   const [roles, setRoles] = useState<RoleAssignment[]>([]);
   const [allRoles, setAllRoles] = useState<RoleOption[]>([]);
