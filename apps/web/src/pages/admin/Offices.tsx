@@ -63,6 +63,14 @@ export function OfficesPage(): JSX.Element {
     }
   }
 
+  async function rename(officeId: string, newName: string): Promise<void> {
+    await api(`/api/staff/admin/offices/${officeId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: newName }),
+    });
+    await load();
+  }
+
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
       <Card title="Add office">
@@ -88,7 +96,11 @@ export function OfficesPage(): JSX.Element {
         ) : (
           <Table<Office>
             columns={[
-              { key: 'name', header: 'Name', render: (o) => o.name },
+              {
+                key: 'name',
+                header: 'Name',
+                render: (o) => <OfficeNameCell office={o} onRename={rename} />,
+              },
               { key: 'tz', header: 'Timezone', render: (o) => o.timezone },
               {
                 key: 'default',
@@ -117,6 +129,87 @@ export function OfficesPage(): JSX.Element {
       </Card>
 
       {activeId && <OfficeSettingsPanel officeId={activeId} />}
+    </div>
+  );
+}
+
+function OfficeNameCell({
+  office,
+  onRename,
+}: {
+  office: Office;
+  onRename: (officeId: string, newName: string) => Promise<void>;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(office.name);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!editing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>{office.name}</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setDraft(office.name);
+            setError(null);
+            setEditing(true);
+          }}
+        >
+          Rename
+        </Button>
+      </div>
+    );
+  }
+
+  async function save(): Promise<void> {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      setError('Name is required');
+      return;
+    }
+    setPending(true);
+    setError(null);
+    try {
+      await onRename(office.id, trimmed);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to save');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          aria-label="Office name"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void save();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          style={{
+            padding: '6px 8px',
+            background: tokens.color.surface,
+            color: tokens.color.text,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            fontSize: 13,
+          }}
+        />
+        <Button size="sm" disabled={pending} onClick={() => void save()}>
+          {pending ? 'Saving…' : 'Save'}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={pending} onClick={() => setEditing(false)}>
+          Cancel
+        </Button>
+      </div>
+      {error && <span style={{ color: tokens.color.danger, fontSize: 11 }}>{error}</span>}
     </div>
   );
 }
