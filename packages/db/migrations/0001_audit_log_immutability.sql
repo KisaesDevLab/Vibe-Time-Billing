@@ -48,19 +48,19 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER audit_log_no_update
+CREATE OR REPLACE TRIGGER audit_log_no_update
   BEFORE UPDATE ON audit_log
   FOR EACH ROW EXECUTE FUNCTION audit_log_block_mutation();
 
-CREATE TRIGGER audit_log_no_delete
+CREATE OR REPLACE TRIGGER audit_log_no_delete
   BEFORE DELETE ON audit_log
   FOR EACH ROW EXECUTE FUNCTION audit_log_block_mutation();
 
-CREATE TRIGGER time_entry_version_no_update
+CREATE OR REPLACE TRIGGER time_entry_version_no_update
   BEFORE UPDATE ON time_entry_version
   FOR EACH ROW EXECUTE FUNCTION audit_log_block_mutation();
 
-CREATE TRIGGER time_entry_version_no_delete
+CREATE OR REPLACE TRIGGER time_entry_version_no_delete
   BEFORE DELETE ON time_entry_version
   FOR EACH ROW EXECUTE FUNCTION audit_log_block_mutation();
 
