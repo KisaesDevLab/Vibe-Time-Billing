@@ -63,10 +63,13 @@ export function OfficesPage(): JSX.Element {
     }
   }
 
-  async function rename(officeId: string, newName: string): Promise<void> {
+  async function patchOffice(
+    officeId: string,
+    patch: Partial<Pick<Office, 'name' | 'timezone'>>,
+  ): Promise<void> {
     await api(`/api/staff/admin/offices/${officeId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: newName }),
+      body: JSON.stringify(patch),
     });
     await load();
   }
@@ -99,9 +102,20 @@ export function OfficesPage(): JSX.Element {
               {
                 key: 'name',
                 header: 'Name',
-                render: (o) => <OfficeNameCell office={o} onRename={rename} />,
+                render: (o) => (
+                  <OfficeNameCell office={o} onRename={(id, name) => patchOffice(id, { name })} />
+                ),
               },
-              { key: 'tz', header: 'Timezone', render: (o) => o.timezone },
+              {
+                key: 'tz',
+                header: 'Timezone',
+                render: (o) => (
+                  <OfficeTimezoneCell
+                    office={o}
+                    onSave={(id, timezone) => patchOffice(id, { timezone })}
+                  />
+                ),
+              },
               {
                 key: 'default',
                 header: 'Default',
@@ -202,6 +216,110 @@ function OfficeNameCell({
             fontSize: 13,
           }}
         />
+        <Button size="sm" disabled={pending} onClick={() => void save()}>
+          {pending ? 'Saving…' : 'Save'}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={pending} onClick={() => setEditing(false)}>
+          Cancel
+        </Button>
+      </div>
+      {error && <span style={{ color: tokens.color.danger, fontSize: 11 }}>{error}</span>}
+    </div>
+  );
+}
+
+const FALLBACK_TIMEZONES = [
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Los_Angeles',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'UTC',
+];
+
+function listTimezones(): string[] {
+  try {
+    // Intl.supportedValuesOf is Node 24 / evergreen-browser only; fall back
+    // to a short US-centric list (matches the Offices form's own default)
+    // rather than crashing on an older client.
+    const fn = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+      .supportedValuesOf;
+    return fn ? fn('timeZone') : FALLBACK_TIMEZONES;
+  } catch {
+    return FALLBACK_TIMEZONES;
+  }
+}
+
+function OfficeTimezoneCell({
+  office,
+  onSave,
+}: {
+  office: Office;
+  onSave: (officeId: string, timezone: string) => Promise<void>;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(office.timezone);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [zones] = useState(listTimezones);
+
+  if (!editing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>{office.timezone}</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setDraft(office.timezone);
+            setError(null);
+            setEditing(true);
+          }}
+        >
+          Edit
+        </Button>
+      </div>
+    );
+  }
+
+  async function save(): Promise<void> {
+    setPending(true);
+    setError(null);
+    try {
+      await onSave(office.id, draft);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to save');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <select
+          aria-label="Office timezone"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          style={{
+            padding: '6px 8px',
+            background: tokens.color.surface,
+            color: tokens.color.text,
+            border: `1px solid ${tokens.color.border}`,
+            borderRadius: tokens.radius.md,
+            fontSize: 13,
+          }}
+        >
+          {!zones.includes(draft) && <option value={draft}>{draft}</option>}
+          {zones.map((z) => (
+            <option key={z} value={z}>
+              {z}
+            </option>
+          ))}
+        </select>
         <Button size="sm" disabled={pending} onClick={() => void save()}>
           {pending ? 'Saving…' : 'Save'}
         </Button>

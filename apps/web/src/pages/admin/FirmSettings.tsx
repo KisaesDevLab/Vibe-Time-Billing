@@ -235,6 +235,7 @@ export function FirmSettingsPage(): JSX.Element {
           pricingBurdenedCostPerTier: s.pricingBurdenedCostPerTier,
           pricingAllowLlmAdjust: s.pricingAllowLlmAdjust,
           // Firm-table fields — server splits the body across tables.
+          name: f.name,
           defaultAllocationMethod: f.defaultAllocationMethod,
           fiscalYearStartMonth: f.fiscalYearStartMonth,
           defaultTermsDays: f.defaultTermsDays,
@@ -274,6 +275,12 @@ export function FirmSettingsPage(): JSX.Element {
     <form onSubmit={save} style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 720 }}>
       <Card title="Firm">
         <div style={{ display: 'grid', gap: 16, maxWidth: 480 }}>
+          <Input
+            label="Firm name"
+            value={f.name}
+            onChange={(e) => setF({ ...f, name: e.target.value })}
+            required
+          />
           <Select
             label="Default allocation method (Phase 12 fallback)"
             value={f.defaultAllocationMethod}
