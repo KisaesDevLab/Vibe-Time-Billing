@@ -6,7 +6,7 @@
 // user in localStorage.
 
 import { useState } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { tokens } from '@vibe/ui';
 
@@ -305,9 +305,9 @@ export function AdminLayout(): JSX.Element {
                   {g.tabs.map((t) => {
                     const active = location.pathname.startsWith(t.href);
                     return (
-                      <a
+                      <Link
                         key={t.key}
-                        href={t.href}
+                        to={t.href}
                         style={{
                           fontSize: 13,
                           padding: '6px 14px',
@@ -318,7 +318,7 @@ export function AdminLayout(): JSX.Element {
                         }}
                       >
                         {t.label}
-                      </a>
+                      </Link>
                     );
                   })}
                 </div>

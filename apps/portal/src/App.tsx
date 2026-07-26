@@ -8,7 +8,7 @@ import {
   type LazyExoticComponent,
   type ReactNode,
 } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 import { api } from './api-client';
 
@@ -230,6 +230,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { me, logout } = useAuth();
   const { clientNames } = useScope();
   const location = useLocation();
+  const navigate = useNavigate();
   const [branding, setBranding] = useState<Branding | null>(null);
   // 0146 — unread in-app notification count for the Updates nav badge.
   // Polled every 60s; also refreshed on route change so reading items
@@ -275,6 +276,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   return (
     <AppShell
       collapseStorageKey="__vibe_portal_sidebar_collapsed"
+      onNavigate={(href) => navigate(href)}
       brand={
         branding?.logoUrl ? (
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

@@ -45,6 +45,14 @@ export interface AppShellProps {
    *  `${collapseStorageKey}__sections`. Ignored while the sidebar is in
    *  icon-rail mode (everything shows so the rail stays navigable). */
   collapsibleSections?: boolean;
+  /** Called instead of a full document navigation when a nav item is
+   *  left-clicked with no modifier keys. Host apps pass their router's
+   *  navigate function (e.g. `useNavigate()`) so sidebar clicks become
+   *  client-side transitions instead of full page reloads. Ctrl/Cmd/
+   *  Shift/middle-clicks still fall through to the plain `<a href>` so
+   *  "open in new tab" keeps working. Omit to keep default anchor
+   *  navigation (e.g. outside a router context). */
+  onNavigate?: (href: string) => void;
 }
 
 const SIDEBAR_WIDTH_EXPANDED = 220;
@@ -97,6 +105,7 @@ export function AppShell({
   children,
   collapseStorageKey = DEFAULT_COLLAPSE_KEY,
   collapsibleSections = false,
+  onNavigate,
 }: AppShellProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
@@ -428,6 +437,16 @@ export function AppShell({
                     href={n.href}
                     aria-current={n.active ? 'page' : undefined}
                     title={collapsed ? n.label : undefined}
+                    onClick={
+                      onNavigate
+                        ? (e) => {
+                            if (e.defaultPrevented || e.button !== 0) return;
+                            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                            e.preventDefault();
+                            onNavigate(n.href);
+                          }
+                        : undefined
+                    }
                     style={{
                       color: n.active ? tokens.color.accent : tokens.color.text,
                       textDecoration: 'none',

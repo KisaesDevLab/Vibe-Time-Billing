@@ -8,7 +8,7 @@ import {
   type LazyExoticComponent,
   type ReactNode,
 } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 import { AppShell, Button, FontSizeControl, Pill, ThemeToggle, tokens } from '@vibe/ui';
 import {
@@ -301,6 +301,7 @@ function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
 function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   // RBAC-gated nav items. retainer:read covers partner + manager today
   // and surfaces firm-wide retainer dashboards. Staff without it still
   // get the personal /my/retainers view but no top-level entry.
@@ -397,6 +398,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         brand={<BrandMark />}
         collapseStorageKey="__vibe_staff_sidebar_collapsed"
         collapsibleSections
+        onNavigate={(href) => navigate(href)}
         realmBadge={<Pill tone="accent">staff</Pill>}
         nav={[
           {
