@@ -102,6 +102,14 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
   }
 
   async function save(): Promise<void> {
+    // 0212 — entity type is required for business clients. Effective values:
+    // draft wins over the loaded row so switching type mid-edit is caught.
+    const effType = draft.clientType !== undefined ? draft.clientType : client.clientType;
+    const effEntity = draft.entityType !== undefined ? draft.entityType : client.entityType;
+    if ((effType ?? 'BUSINESS') === 'BUSINESS' && !effEntity) {
+      setError('Entity type is required for business clients.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -234,14 +242,14 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
             />
           </Field>
           {(v('clientType') ?? 'BUSINESS') === 'BUSINESS' && (
-            <Field label="Entity type">
+            <Field label="Entity type *">
               <Combobox
                 ariaLabel="Entity type"
-                clearable
+                required
                 value={(v('entityType') as string) ?? ''}
                 onChange={(val) => setDraft({ ...draft, entityType: (val as EntityType) || null })}
                 options={ENTITY_TYPE_OPTIONS}
-                placeholder="—"
+                placeholder="— select —"
               />
             </Field>
           )}

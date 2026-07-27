@@ -216,11 +216,19 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
     setStep('info');
   }
 
-  const canSubmit = name.trim().length > 0 && partnerInChargeId.length > 0;
+  // 0212 — entity type is a required classification for business clients.
+  const canSubmit =
+    name.trim().length > 0 &&
+    partnerInChargeId.length > 0 &&
+    (clientType !== 'BUSINESS' || entityType !== '');
 
   async function submit(thenOpen: boolean): Promise<void> {
     if (!canSubmit) {
-      setError('Name and Client owner are required.');
+      setError(
+        clientType === 'BUSINESS' && entityType === ''
+          ? 'Name, Client owner, and Entity type are required.'
+          : 'Name and Client owner are required.',
+      );
       setStep('info');
       return;
     }
@@ -465,10 +473,10 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             {clientType === 'BUSINESS' && (
               <div>
-                <span style={labelStyle}>Entity type</span>
+                <span style={labelStyle}>Entity type *</span>
                 <Combobox
                   ariaLabel="Entity type"
-                  clearable
+                  required
                   value={entityType}
                   onChange={(v) => setEntityType(v as EntityType | '')}
                   options={ENTITY_TYPE_OPTIONS}

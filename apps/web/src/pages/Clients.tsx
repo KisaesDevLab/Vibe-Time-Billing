@@ -6,6 +6,7 @@ import { Button, Card, ColumnFilter, Pill, Printer, Table, tokens } from '@vibe/
 
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
+import { ENTITY_TYPE_LABELS, ENTITY_TYPE_OPTIONS, type EntityType } from '../lib/entity-types';
 import { useColumnView, viewToPagedQuery } from '../lib/column-view';
 import { usePagedList } from '../lib/use-paged-list';
 import { formatCents } from '../lib/money';
@@ -32,6 +33,7 @@ interface ClientRow {
   name: string;
   status: string;
   clientType: string;
+  entityType: EntityType | null;
   externalId: string | null;
   partnerInChargeId: string | null;
   partnerName: string | null;
@@ -88,14 +90,16 @@ export function ClientsPage(): JSX.Element {
         sortMap: {
           owner: 'partnerName',
           type: 'clientType',
+          entity: 'entityType',
           outstanding: 'outstandingBalanceCents',
           office: 'officeName',
         },
         // column key → server filter param (values are ids for owner/office,
-        // enum strings for type/status — see the ColumnFilter `values` below)
+        // enum strings for type/entity/status — see the ColumnFilter `values` below)
         filterMap: {
           owner: 'clientOwnerId',
           type: 'clientType',
+          entity: 'entityType',
           office: 'officeId',
           status: 'status',
         },
@@ -420,6 +424,22 @@ export function ClientsPage(): JSX.Element {
                   </span>
                 ) as unknown as string,
                 render: (c) => <Pill>{c.clientType}</Pill>,
+              },
+              {
+                key: 'entity',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Entity{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter / sort entity type"
+                      values={ENTITY_TYPE_OPTIONS}
+                      selected={view.filterFor('entity')}
+                      sort={view.sortFor('entity')}
+                      onApply={(sel, dir) => view.apply('entity', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (c) => (c.entityType ? ENTITY_TYPE_LABELS[c.entityType] : '—'),
               },
               {
                 key: 'outstanding',

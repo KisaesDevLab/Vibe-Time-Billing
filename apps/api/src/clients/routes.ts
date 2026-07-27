@@ -88,6 +88,21 @@ export interface ClientRoutesDeps extends RbacDeps {
   }) => Promise<void>;
 }
 
+// 0212 — client business-entity classification, mirrors the
+// client_entity_type pgEnum.
+const ENTITY_TYPES = [
+  'SOLE_PROPRIETOR',
+  'JOINT_VENTURE',
+  'PARTNERSHIP_1065',
+  'S_CORP_1120S',
+  'C_CORP_1120',
+  'EXEMPT_ORG_990',
+  'TRUST_1041',
+  'ESTATE_706',
+  'GIFT_709',
+  'OTHER',
+] as const;
+
 const ClientSchema = z.object({
   name: z.string().min(1).max(200),
   partnerInChargeId: z.string().uuid(),
@@ -106,21 +121,7 @@ const ClientSchema = z.object({
   clientType: z.enum(['INDIVIDUAL', 'BUSINESS']).optional(),
   // 0212 — business-side counterpart to filingStatus: which legal/tax
   // entity a BUSINESS client is.
-  entityType: z
-    .enum([
-      'SOLE_PROPRIETOR',
-      'JOINT_VENTURE',
-      'PARTNERSHIP_1065',
-      'S_CORP_1120S',
-      'C_CORP_1120',
-      'EXEMPT_ORG_990',
-      'TRUST_1041',
-      'ESTATE_706',
-      'GIFT_709',
-      'OTHER',
-    ])
-    .nullable()
-    .optional(),
+  entityType: z.enum(ENTITY_TYPES).nullable().optional(),
   clientFacingName: z.string().max(200).nullable().optional(),
   externalId: z.string().max(120).nullable().optional(),
   // 0152 — second identifier for the Vibe Filer document mapper.
@@ -227,6 +228,10 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     const clientTypes = csv(req.query['clientType']).filter(
       (t) => t === 'INDIVIDUAL' || t === 'BUSINESS',
     );
+    // 0212 — entity-type column filter.
+    const entityTypes = csv(req.query['entityType']).filter((t) =>
+      (ENTITY_TYPES as readonly string[]).includes(t),
+    );
     const statuses = csv(req.query['status']).filter(
       (s) => s === 'ACTIVE' || s === 'ARCHIVED' || s === 'PROSPECT' || s === 'INACTIVE',
     );
@@ -260,6 +265,8 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     if (clientOwnerIds.length > 0) conds.push(inArray(clients.partnerInChargeId, clientOwnerIds));
     if (externalId) conds.push(eq(clients.externalId, externalId));
     if (clientTypes.length > 0) conds.push(inArray(clients.clientType, clientTypes));
+    if (entityTypes.length > 0)
+      conds.push(inArray(clients.entityType, entityTypes as (typeof ENTITY_TYPES)[number][]));
     if (officeIds.length > 0) conds.push(inArray(clients.officeId, officeIds));
 
     // Pagination + sort. If no `page` is supplied, we keep the legacy
@@ -276,6 +283,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       name: sql`${clients.name}`,
       externalId: sql`${clients.externalId}`,
       clientType: sql`${clients.clientType}`,
+      entityType: sql`${clients.entityType}`,
       status: sql`${clients.status}`,
       createdAt: sql`${clients.createdAt}`,
       partnerName: sql`${appUsers.fullName}`,
@@ -319,6 +327,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         name: clients.name,
         status: clients.status,
         clientType: clients.clientType,
+        entityType: clients.entityType,
         externalId: clients.externalId,
         awsId: clients.awsId,
         partnerInChargeId: clients.partnerInChargeId,
