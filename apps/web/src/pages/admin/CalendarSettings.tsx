@@ -334,6 +334,30 @@ function ProviderCard({
     }
   }
 
+  async function clearStored(): Promise<void> {
+    if (
+      !window.confirm(
+        `Clear the stored ${title} app registration? Staff connections stay, but new connections and sync will fail until credentials are re-entered.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api(`/api/staff/admin/calendar/providers/${provider}`, { method: 'DELETE' });
+      setClientId('');
+      setClientSecret('');
+      setTenantId('');
+      setEnabled(false);
+      setMsg({ ok: true, text: 'Stored credentials cleared.' });
+      onSaved();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : 'clear_failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function test(): Promise<void> {
     setBusy(true);
     setMsg(null);
@@ -419,6 +443,16 @@ function ProviderCard({
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          {status?.configured && (
+            <Button
+              variant="ghost"
+              onClick={() => void clearStored()}
+              disabled={busy}
+              style={{ marginRight: 'auto' }}
+            >
+              Clear stored credentials
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => void test()} disabled={busy}>
             Test connection
           </Button>

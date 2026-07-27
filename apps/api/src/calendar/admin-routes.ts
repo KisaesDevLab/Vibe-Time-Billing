@@ -212,6 +212,50 @@ export function createCalendarAdminRouter(deps: CalendarAdminDeps): Router {
     },
   );
 
+  // DELETE /providers/:provider — clear the stored app registration so the
+  // firm can start over (e.g. a mangled client id was saved and the masked
+  // form gives no way to see or blank it).
+  router.delete(
+    '/providers/:provider',
+    requirePermission(deps, 'firm:settings:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      const provider = req.params['provider']!;
+      if (!isProvider(provider)) {
+        res.status(400).json({ error: 'unknown_provider' });
+        return;
+      }
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .delete(calendarProviderConfig)
+        .where(
+          and(
+            eq(calendarProviderConfig.firmId, firmId),
+            eq(calendarProviderConfig.provider, provider),
+          ),
+        )
+        .returning({ provider: calendarProviderConfig.provider });
+      if (!row) {
+        res.status(404).json({ error: 'not_configured' });
+        return;
+      }
+      // 'ARCHIVE' is the closest audit action to a config removal (the
+      // audit enum has no DELETE — rows are normally soft-deleted).
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'calendar_provider_config',
+        entityId: firmId,
+        actorAppUserId: actor,
+        after: { provider, cleared: true },
+      });
+      res.json({ ok: true });
+    },
+  );
+
   // POST /providers/:provider/test — verify credentials (submitted or stored).
   router.post(
     '/providers/:provider/test',
