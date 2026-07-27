@@ -14,6 +14,8 @@ import { api, setCsrfToken } from './api-client';
 interface Me {
   appUserId: string;
   firmId: string;
+  fullName?: string | null;
+  email?: string | null;
   lastStepUpAt: number | null;
   csrfToken: string;
   /** Effective permission keys for this user. Loaded once per session

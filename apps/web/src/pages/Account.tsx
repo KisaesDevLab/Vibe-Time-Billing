@@ -121,6 +121,12 @@ export function AccountPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 700 }}>
       <Card title="Identity">
+        {me?.fullName && (
+          <p style={{ fontSize: 15, fontWeight: 600, margin: '0 0 2px' }}>{me.fullName}</p>
+        )}
+        {me?.email && (
+          <p style={{ fontSize: 13, color: tokens.color.textMuted, marginTop: 0 }}>{me.email}</p>
+        )}
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
           App user <code style={{ color: tokens.color.text }}>{me?.appUserId}</code>
         </p>

@@ -1522,6 +1522,8 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
     res.json({
       appUserId: session.appUserId,
       firmId: session.firmId,
+      fullName: user?.fullName ?? null,
+      email: user?.email ?? null,
       lastStepUpAt: session.lastStepUpAt,
       csrfToken: session.csrfToken,
       permissions,
@@ -1566,6 +1568,7 @@ async function tryRecoveryCode(
 interface StaffUserShape {
   id: string;
   email: string;
+  fullName: string;
   firmId: string;
   totpEnrolledAt: Date | null;
   totpSecretEncrypted: string | null;
@@ -1580,6 +1583,7 @@ interface StaffUserShape {
 const STAFF_USER_SELECT = {
   id: appUsers.id,
   email: appUsers.email,
+  fullName: appUsers.fullName,
   firmId: appUsers.firmId,
   totpEnrolledAt: appUsers.totpEnrolledAt,
   totpSecretEncrypted: appUsers.totpSecretEncrypted,
