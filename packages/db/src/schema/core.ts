@@ -65,6 +65,20 @@ export const entityStatus = pgEnum('entity_status', [
 
 // v2 0026 — CRM-class client model expansion.
 export const clientType = pgEnum('client_type', ['INDIVIDUAL', 'BUSINESS']);
+// 0212 — what kind of legal/tax entity a BUSINESS client is, keyed to the
+// IRS return it files. OTHER covers anything outside the closed list.
+export const clientEntityType = pgEnum('client_entity_type', [
+  'SOLE_PROPRIETOR',
+  'JOINT_VENTURE',
+  'PARTNERSHIP_1065',
+  'S_CORP_1120S',
+  'C_CORP_1120',
+  'EXEMPT_ORG_990',
+  'TRUST_1041',
+  'ESTATE_706',
+  'GIFT_709',
+  'OTHER',
+]);
 export const filingStatus = pgEnum('filing_status', [
   'SINGLE',
   'MFJ',
@@ -1070,6 +1084,9 @@ export const clients = pgTable(
 
     // v2 0026 — CRM expansion
     clientType: clientType('client_type').notNull().default('BUSINESS'),
+    // 0212 — business-side counterpart to filingStatus: which legal/tax
+    // entity a BUSINESS client is. NULL for individuals / unclassified.
+    entityType: clientEntityType('entity_type'),
     clientFacingName: text('client_facing_name'),
     externalId: text('external_id'),
     // 0152 — second identifier for the Vibe Filer document mapper; some

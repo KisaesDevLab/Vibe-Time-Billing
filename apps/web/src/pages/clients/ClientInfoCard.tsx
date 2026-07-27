@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Combobox, MultiCombobox, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { ENTITY_TYPE_LABELS, ENTITY_TYPE_OPTIONS, type EntityType } from '../../lib/entity-types';
 
 interface Client {
   id: string;
@@ -22,6 +23,8 @@ interface Client {
   officeName?: string | null;
   createdAt: string;
   clientType?: 'INDIVIDUAL' | 'BUSINESS';
+  // 0212 — business-side counterpart to filingStatus.
+  entityType?: EntityType | null;
   clientFacingName?: string | null;
   externalId?: string | null;
   // 0152 — second identifier for the Vibe Filer document mapper.
@@ -230,6 +233,18 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
               ]}
             />
           </Field>
+          {(v('clientType') ?? 'BUSINESS') === 'BUSINESS' && (
+            <Field label="Entity type">
+              <Combobox
+                ariaLabel="Entity type"
+                clearable
+                value={(v('entityType') as string) ?? ''}
+                onChange={(val) => setDraft({ ...draft, entityType: (val as EntityType) || null })}
+                options={ENTITY_TYPE_OPTIONS}
+                placeholder="—"
+              />
+            </Field>
+          )}
           {(v('clientType') ?? 'BUSINESS') === 'INDIVIDUAL' && (
             <Field label="Filing status">
               <Combobox
@@ -391,6 +406,12 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
             <>
               <dt style={{ color: tokens.color.textMuted }}>AWS ID</dt>
               <dd style={{ margin: 0 }}>{client.awsId}</dd>
+            </>
+          )}
+          {client.entityType && (
+            <>
+              <dt style={{ color: tokens.color.textMuted }}>Entity type</dt>
+              <dd style={{ margin: 0 }}>{ENTITY_TYPE_LABELS[client.entityType]}</dd>
             </>
           )}
           {client.filingStatus && (

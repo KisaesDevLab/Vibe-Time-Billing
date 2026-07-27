@@ -24,6 +24,7 @@ import {
 
 import { api } from '../../api-client';
 import { isDesktop } from '../../lib/desktop';
+import { ENTITY_TYPE_OPTIONS, type EntityType } from '../../lib/entity-types';
 import { CaptureClientInfo, type MappedIntake } from './CaptureClientInfo';
 
 interface AppUser {
@@ -90,6 +91,8 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
   const [externalId, setExternalId] = useState('');
   const [awsId, setAwsId] = useState('');
   const [filingStatus, setFilingStatus] = useState<FilingStatus>('');
+  // 0212 — business-side counterpart to filing status.
+  const [entityType, setEntityType] = useState<EntityType | ''>('');
   const [sourceId, setSourceId] = useState('');
   const [partnerInChargeId, setPartnerInChargeId] = useState('');
   // 0092 — every client belongs to one office. Defaults to the firm's
@@ -162,6 +165,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
     setUseFacingName(false);
     setExternalId('');
     setFilingStatus('');
+    setEntityType('');
     setSourceId('');
     setPartnerInChargeId('');
     setPipelineStage('CLIENT');
@@ -264,6 +268,7 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
             externalId: externalId.trim() || null,
             awsId: awsId.trim() || null,
             filingStatus: clientType === 'INDIVIDUAL' && filingStatus ? filingStatus : null,
+            entityType: clientType === 'BUSINESS' && entityType ? entityType : null,
             sourceId: sourceId || null,
             pipelineStage,
             active,
@@ -458,6 +463,19 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {clientType === 'BUSINESS' && (
+              <div>
+                <span style={labelStyle}>Entity type</span>
+                <Combobox
+                  ariaLabel="Entity type"
+                  clearable
+                  value={entityType}
+                  onChange={(v) => setEntityType(v as EntityType | '')}
+                  options={ENTITY_TYPE_OPTIONS}
+                  placeholder="— select —"
+                />
+              </div>
+            )}
             {clientType === 'INDIVIDUAL' && (
               <div>
                 <span style={labelStyle}>Filing status</span>

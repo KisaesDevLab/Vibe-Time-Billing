@@ -104,6 +104,23 @@ const ClientSchema = z.object({
   customFields: z.record(z.string(), z.unknown()).optional(),
   // v2 Sprint B (0026) — CRM expansion fields.
   clientType: z.enum(['INDIVIDUAL', 'BUSINESS']).optional(),
+  // 0212 — business-side counterpart to filingStatus: which legal/tax
+  // entity a BUSINESS client is.
+  entityType: z
+    .enum([
+      'SOLE_PROPRIETOR',
+      'JOINT_VENTURE',
+      'PARTNERSHIP_1065',
+      'S_CORP_1120S',
+      'C_CORP_1120',
+      'EXEMPT_ORG_990',
+      'TRUST_1041',
+      'ESTATE_706',
+      'GIFT_709',
+      'OTHER',
+    ])
+    .nullable()
+    .optional(),
   clientFacingName: z.string().max(200).nullable().optional(),
   externalId: z.string().max(120).nullable().optional(),
   // 0152 — second identifier for the Vibe Filer document mapper.
