@@ -13,6 +13,7 @@ import { eq } from 'drizzle-orm';
 import {
   appointments,
   engagements,
+  firmSettings,
   staffRateSnapshotEntries,
   staffRateSnapshots,
   timeEntries,
@@ -27,6 +28,20 @@ let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 beforeEach(async () => {
   h = await buildPgliteHarness();
   seed = await seedMinimalFirm(h.db);
+  // DAY is a fixed past date, so the default 14-day late-entry lockout would
+  // reject every entry once the wall clock drifts past it (createTimeEntryCore
+  // → 409 late_entry_locked, leaving the route with nothing created). This
+  // suite is about appointment → time-entry conversion, not back-dating
+  // policy, so switch the lockout off and keep the test deterministic.
+  // seedMinimalFirm creates no firm_settings row, so this must upsert — an
+  // UPDATE would match nothing and leave the 14-day default in force.
+  await h.db
+    .insert(firmSettings)
+    .values({ firmId: seed.firmId, lateEntryLockoutDays: 0 })
+    .onConflictDoUpdate({
+      target: firmSettings.firmId,
+      set: { lateEntryLockoutDays: 0 },
+    });
   const [snap] = await h.db
     .insert(staffRateSnapshots)
     .values({ appUserId: seed.appUserId, effectiveDate: '2026-01-01', costRateCents: 12000 })
