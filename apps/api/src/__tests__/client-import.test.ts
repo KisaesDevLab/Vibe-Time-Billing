@@ -14,7 +14,7 @@ import type { RoleSlug } from '@vibe/core/rbac';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { createClientRouter } from '../clients/routes';
-import { parseCsv } from '../clients/import';
+import { buildImportTemplateCsv, parseCsv } from '../clients/import';
 
 let harness: PgliteHarness;
 
@@ -28,19 +28,33 @@ afterEach(async () => {
 interface FakeRes {
   statusCode: number;
   jsonBody: unknown;
+  textBody: string | undefined;
+  headers: Record<string, string>;
   status(c: number): FakeRes;
   json(b: unknown): FakeRes;
+  setHeader(name: string, value: string): FakeRes;
+  send(b: string): FakeRes;
 }
 function makeRes(): FakeRes {
   return {
     statusCode: 200,
     jsonBody: undefined,
+    textBody: undefined,
+    headers: {},
     status(c) {
       this.statusCode = c;
       return this;
     },
     json(b) {
       this.jsonBody = b;
+      return this;
+    },
+    setHeader(name, value) {
+      this.headers[name] = value;
+      return this;
+    },
+    send(b) {
+      this.textBody = b;
       return this;
     },
   };
@@ -110,6 +124,112 @@ describe('parseCsv', () => {
   it('handles CRLF and a trailing row without newline', () => {
     const { rows } = parseCsv('name\r\nAcme\r\nBeta');
     expect(rows).toEqual([['Acme'], ['Beta']]);
+  });
+  it('keeps every data row, including comment rows, so line numbers stay honest', () => {
+    const { rows } = parseCsv('name,note\n#Client display name,ignored\nAcme,plain\n');
+    expect(rows).toEqual([
+      ['#Client display name', 'ignored'],
+      ['Acme', 'plain'],
+    ]);
+  });
+});
+
+describe('client import template', () => {
+  it('produces a header, a notes row, and two parseable sample rows', () => {
+    const csv = buildImportTemplateCsv();
+    const { header, rows } = parseCsv(csv);
+    expect(header[0]).toBe('name');
+    expect(header).toContain('taxpayer_name');
+    expect(header).toContain('billing_contact_email');
+    // Notes row + two worked examples, all retained by the parser.
+    expect(rows).toHaveLength(3);
+    expect(rows[0]![0]).toMatch(/^#/);
+    expect(rows[1]![header.indexOf('name')]).toBe('Doe, John & Jane');
+    expect(rows[2]![header.indexOf('name')]).toBe('Acme Manufacturing LLC');
+  });
+
+  it('every template column is a header the importer actually recognizes', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = buildImportTemplateCsv();
+    const res = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, { csv, defaultOwnerId: seed.appUserId }),
+    );
+    expect(res.statusCode).toBe(200);
+    const body = res.jsonBody as { columns: string[]; mappedColumns: string[] };
+    // Client-level columns must all auto-map; the rest are contact-slot
+    // columns, which map through mapContactColumns instead.
+    const contactCols = body.columns.filter((c) =>
+      /^(taxpayer|spouse|contact3|billing_contact)_/.test(c),
+    );
+    const unmapped = body.columns.filter(
+      (c) => !body.mappedColumns.includes(c) && !contactCols.includes(c),
+    );
+    expect(unmapped).toEqual([]);
+  });
+
+  it('the unedited template imports cleanly: notes row skipped, examples created', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = buildImportTemplateCsv();
+    const res = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, { csv, defaultOwnerId: seed.appUserId }),
+    );
+    const body = res.jsonBody as {
+      total: number;
+      willCreate: number;
+      willSkip: number;
+      rows: Array<{ row: number; action: string; reason?: string }>;
+    };
+    expect(body.total).toBe(3);
+    expect(body.willSkip).toBe(1);
+    expect(body.rows[0]!.reason).toBe('template_notes_row');
+    // Both example rows validate — every enum/terms value in the template is
+    // legal, so a user editing in place never hits a bogus skip.
+    expect(body.willCreate).toBe(2);
+    // Row numbers are the real spreadsheet lines (index + 2), unshifted by
+    // the skipped notes row.
+    expect(body.rows.map((x) => x.row)).toEqual([0, 1, 2]);
+  });
+
+  it('a client whose name starts with # still imports below the first row', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = ['name', 'Regular Co', '#1 Auto Repair'].join('\n');
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, { csv, defaultOwnerId: seed.appUserId }),
+    );
+    const body = res.jsonBody as { created: number; skipped: unknown[] };
+    expect(body.created).toBe(2);
+    expect(body.skipped).toHaveLength(0);
+  });
+
+  it('GET /import/template requires client:write and streams the CSV', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const res = await invoke(r, 'get', '/import/template', req(seed.firmId, seed.appUserId, {}));
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toContain('text/csv');
+    expect(res.headers['Content-Disposition']).toContain('client-import-template.csv');
+    expect(res.textBody).toContain('taxpayer_name');
+
+    const staffRouter = router(harness.db, seed.appUserId, ['staff']);
+    const denied = await invoke(
+      staffRouter,
+      'get',
+      '/import/template',
+      req(seed.firmId, seed.appUserId, {}),
+    );
+    expect(denied.statusCode).toBe(403);
   });
 });
 

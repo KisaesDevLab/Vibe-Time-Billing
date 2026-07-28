@@ -49,12 +49,6 @@ interface PreviewResult {
   rows: RowOutcome[];
 }
 
-// Client columns + multiple contacts. Each contact slot (taxpayer / spouse /
-// contactN, plus the legacy billing_contact) accepts _name/_email/_phone/_mobile
-// and _role. The taxpayer is the primary contact; billing_contact is billing.
-const TEMPLATE_HEADER =
-  'name,client_owner_email,office,client_type,external_id,filing_status,pipeline_stage,terms_days,invoice_consolidation_preference,tags,mailing_street1,mailing_city,mailing_state,mailing_postal,taxpayer_name,taxpayer_email,taxpayer_phone,taxpayer_mobile,spouse_name,spouse_email,spouse_mobile,contact3_name,contact3_email,contact3_role,billing_contact_name,billing_contact_email';
-
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
   color: tokens.color.textMuted,
@@ -108,16 +102,6 @@ export function ImportClientsWizard({
     const reader = new FileReader();
     reader.onload = () => setCsvText(String(reader.result ?? ''));
     reader.readAsText(file);
-  }
-
-  function downloadTemplate(): void {
-    const blob = new Blob([`${TEMPLATE_HEADER}\n`], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'client-import-template.csv';
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
   async function runPreview(): Promise<void> {
@@ -181,21 +165,20 @@ export function ImportClientsWizard({
           <strong>adds any new contacts to it</strong> rather than being skipped.
         </p>
         <div>
-          <button
-            type="button"
-            onClick={downloadTemplate}
+          <a
+            href="/api/staff/clients/import/template"
             style={{
-              background: 'none',
-              border: 'none',
-              padding: 0,
               color: tokens.color.accent,
-              cursor: 'pointer',
               fontSize: 13,
               textDecoration: 'underline',
             }}
           >
             Download CSV template
-          </button>
+          </a>
+          <span style={{ marginLeft: 8, fontSize: 12, color: tokens.color.textMuted }}>
+            Includes a column-notes row (safe to leave in) and two worked examples — delete the
+            example rows before importing your own.
+          </span>
         </div>
         <div>
           <span style={labelStyle}>CSV file</span>

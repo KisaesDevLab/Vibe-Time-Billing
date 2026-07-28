@@ -19,6 +19,7 @@ import { appUsers, clientContacts, clients, contactRoles, offices } from '@vibe/
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { csvField } from '../lib/csv';
 import { logger } from '../logger';
 import { findOrCreatePerson } from './person-helpers';
 
@@ -80,6 +81,156 @@ export function parseCsv(text: string): { header: string[]; rows: string[][] } {
   const cleaned = records.filter((r) => !(r.length === 1 && r[0]!.trim() === ''));
   const header = (cleaned.shift() ?? []).map((h) => h.trim());
   return { header, rows: cleaned };
+}
+
+/**
+ * True for the `#`-prefixed column-notes row the template download ships as
+ * its first data row. Recognized (and skipped) rather than dropped from the
+ * row list, so every row keeps its real spreadsheet line number in the
+ * preview. Restricted to the first data row so a client whose name genuinely
+ * starts with '#' further down the file still imports.
+ */
+export function isTemplateNotesRow(row: string[], rowIndex: number): boolean {
+  return rowIndex === 0 && (row[0] ?? '').trim().startsWith('#');
+}
+
+// ---------------------------------------------------------------- template
+//
+// GET /import/template — a starter CSV for the upload step. Row 1 is the
+// header; row 2 is a `#`-prefixed column-notes row (recognized by
+// isTemplateNotesRow and reported as a skip, so leaving it in on re-upload
+// is harmless); rows 3-4 are worked examples (an individual with a spouse, a
+// business with an officer contact) showing the multi-contact-slot shape.
+// client_owner_email/office are left blank in the examples since real values
+// must match this firm's data — and the examples are ordinary rows, so the
+// preview step shows them as creates unless the user deletes them.
+const TEMPLATE_COLUMNS = [
+  'name',
+  'client_owner_email',
+  'office',
+  'client_type',
+  'external_id',
+  'filing_status',
+  'pipeline_stage',
+  'terms_days',
+  'invoice_consolidation_preference',
+  'tags',
+  'mailing_street1',
+  'mailing_city',
+  'mailing_state',
+  'mailing_postal',
+  'taxpayer_name',
+  'taxpayer_email',
+  'taxpayer_phone',
+  'taxpayer_mobile',
+  'spouse_name',
+  'spouse_email',
+  'spouse_mobile',
+  'contact3_name',
+  'contact3_email',
+  'contact3_role',
+  'billing_contact_name',
+  'billing_contact_email',
+] as const;
+type TemplateColumn = (typeof TEMPLATE_COLUMNS)[number];
+
+const TEMPLATE_NOTES: Record<TemplateColumn, string> = {
+  name: 'Client display name (required)',
+  client_owner_email: "Existing staff owner's email; blank uses the import default",
+  office: 'Office name, exact match; blank uses the import default',
+  client_type: 'INDIVIDUAL or BUSINESS',
+  external_id: 'Your own record id; matches an existing client to update it',
+  filing_status: 'SINGLE, MFJ, MFS, HOH, or QW',
+  pipeline_stage: 'PROSPECT, CLIENT, or OTHER',
+  terms_days: 'Invoice due terms in days, 0-365',
+  invoice_consolidation_preference: 'CONSOLIDATED or SEPARATE',
+  tags: 'Semicolon- or pipe-separated list',
+  mailing_street1: 'Mailing address line 1',
+  mailing_city: 'Mailing city',
+  mailing_state: 'Mailing state or province',
+  mailing_postal: 'Mailing ZIP or postal code',
+  taxpayer_name: 'Primary contact full name',
+  taxpayer_email: 'Primary contact email',
+  taxpayer_phone: 'Primary contact phone',
+  taxpayer_mobile: 'Primary contact mobile',
+  spouse_name: 'Secondary contact full name',
+  spouse_email: 'Secondary contact email',
+  spouse_mobile: 'Secondary contact mobile',
+  contact3_name: 'Extra contact full name',
+  contact3_email: 'Extra contact email',
+  contact3_role: "Extra contact's role, e.g. Officer",
+  billing_contact_name: 'Billing contact name; defaults to the primary contact',
+  billing_contact_email: 'Billing contact email',
+};
+
+const TEMPLATE_SAMPLE_ROWS: Record<TemplateColumn, string>[] = [
+  {
+    name: 'Doe, John & Jane',
+    client_owner_email: '',
+    office: '',
+    client_type: 'INDIVIDUAL',
+    external_id: '1040-DOE-2026',
+    filing_status: 'MFJ',
+    pipeline_stage: 'CLIENT',
+    terms_days: '30',
+    invoice_consolidation_preference: 'CONSOLIDATED',
+    tags: '1040;VIP',
+    mailing_street1: '123 Main St',
+    mailing_city: 'Springfield',
+    mailing_state: 'IL',
+    mailing_postal: '62704',
+    taxpayer_name: 'John Doe',
+    taxpayer_email: 'john.doe@example.com',
+    taxpayer_phone: '217-555-0101',
+    taxpayer_mobile: '217-555-0102',
+    spouse_name: 'Jane Doe',
+    spouse_email: 'jane.doe@example.com',
+    spouse_mobile: '217-555-0103',
+    contact3_name: '',
+    contact3_email: '',
+    contact3_role: '',
+    billing_contact_name: '',
+    billing_contact_email: '',
+  },
+  {
+    name: 'Acme Manufacturing LLC',
+    client_owner_email: '',
+    office: '',
+    client_type: 'BUSINESS',
+    external_id: 'ACME-01',
+    filing_status: '',
+    pipeline_stage: 'CLIENT',
+    terms_days: '15',
+    invoice_consolidation_preference: 'SEPARATE',
+    tags: '1120-S;monthly-bookkeeping',
+    mailing_street1: '500 Industrial Pkwy',
+    mailing_city: 'Springfield',
+    mailing_state: 'IL',
+    mailing_postal: '62711',
+    taxpayer_name: 'Alex Owner',
+    taxpayer_email: 'alex@acme.example',
+    taxpayer_phone: '217-555-0201',
+    taxpayer_mobile: '',
+    spouse_name: '',
+    spouse_email: '',
+    spouse_mobile: '',
+    contact3_name: 'Morgan Officer',
+    contact3_email: 'morgan@acme.example',
+    contact3_role: 'Officer',
+    billing_contact_name: 'AP Department',
+    billing_contact_email: 'ap@acme.example',
+  },
+];
+
+export function buildImportTemplateCsv(): string {
+  const lines = [
+    TEMPLATE_COLUMNS.join(','),
+    TEMPLATE_COLUMNS.map((c, i) =>
+      csvField(i === 0 ? `#${TEMPLATE_NOTES[c]}` : TEMPLATE_NOTES[c]),
+    ).join(','),
+    ...TEMPLATE_SAMPLE_ROWS.map((row) => TEMPLATE_COLUMNS.map((c) => csvField(row[c])).join(',')),
+  ];
+  return lines.join('\r\n') + '\r\n';
 }
 
 // ---------------------------------------------------------------- columns
@@ -387,6 +538,14 @@ export function validateImportRows(
   let willSkip = 0;
 
   rows.forEach((row, i) => {
+    // The template's column-notes row, left in place by a user who didn't
+    // delete it. Reported as a skip (not silently dropped) so the preview
+    // accounts for every line in the file.
+    if (isTemplateNotesRow(row, i)) {
+      outcomes.push({ row: i, action: 'skip', name: '', reason: 'template_notes_row' });
+      willSkip++;
+      return;
+    }
     const name = cell(row, mapping.name);
     if (!name) {
       outcomes.push({ row: i, action: 'skip', name: '', reason: 'missing_name' });
@@ -634,6 +793,16 @@ function ip(req: Request): string {
 }
 
 export function mountClientImportRoutes(router: Router, deps: ClientImportDeps): void {
+  router.get(
+    '/import/template',
+    requirePermission(deps, 'client:write'),
+    (_req: Request, res: Response) => {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="client-import-template.csv"');
+      res.send(buildImportTemplateCsv());
+    },
+  );
+
   router.post(
     '/import/preview',
     requirePermission(deps, 'client:write'),
