@@ -43,6 +43,7 @@ import { wrapMailWithFirmConfig } from './messaging/mail-resolver';
 import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
+import { registerTimeBillingTaskClasses } from './ai/vibe-router';
 
 const config = loadConfig();
 const redis = getRedis();
@@ -437,6 +438,11 @@ const server = app.listen(config.PORT, () => {
     },
     'vibe-tb-api listening',
   );
+  // MIG-8: router mode only; non-blocking with retry — AI features fail
+  // closed at the router until registration lands, which is correct.
+  registerTimeBillingTaskClasses({
+    log: (level, msg) => logger[level]({}, `vibe-router: ${msg}`),
+  });
 });
 
 // Stage 1B — boot-time crypto unseal. Fire-and-forget; the lock

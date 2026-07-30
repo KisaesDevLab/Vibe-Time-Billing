@@ -4,13 +4,20 @@
 // Ollama / llama.cpp (local), OpenAI-compatible. Routing prefers local
 // per Q15; cloud fallback per-feature toggle.
 
-export type AiProviderId = 'anthropic' | 'ollama' | 'openai_compatible';
+export type AiProviderId = 'anthropic' | 'ollama' | 'openai_compatible' | 'vibe_router';
 
 export interface AiCompletionRequest {
   systemPrompt?: string;
   userPrompt: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Router-mode attribution (MIG-8): ledger dimensions for the Vibe AI
+   * Router. Direct providers ignore both. userId is the staff app_user id;
+   * clientRef ties spend to a client for cost recovery.
+   */
+  userId?: string | null;
+  clientRef?: string | null;
 }
 
 export interface AiCompletionResult {
@@ -18,6 +25,8 @@ export interface AiCompletionResult {
   usage: { inputTokens: number; outputTokens: number };
   providerId: AiProviderId;
   costEstimateCents: number;
+  /** Model that actually served — router mode, where policy picks it. */
+  model?: string;
 }
 
 export interface AiProvider {

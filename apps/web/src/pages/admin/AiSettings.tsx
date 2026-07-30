@@ -44,6 +44,8 @@ interface SettingsResp {
   providers: ProviderRow[];
   egress: EgressState | null;
   budget: { monthlyBudgetCents: number; warnThresholdPct: number } | null;
+  /** MIG-8: 'router' → all AI traffic goes through the Vibe AI Router */
+  aiMode?: 'direct' | 'router';
 }
 
 interface ProviderMeta {
@@ -277,6 +279,25 @@ export function AiSettingsPage(): JSX.Element {
         </p>
       </div>
 
+      {/* MIG-8: provider credentials, egress, and budget are inert in router mode */}
+      {data?.aiMode === 'router' && (
+        <div
+          style={{
+            padding: tokens.space.md,
+            borderRadius: tokens.radius.sm,
+            border: '1px solid #7dd3fc',
+            background: '#f0f9ff',
+            fontSize: 13,
+          }}
+        >
+          <strong>Managed by Vibe AI Router.</strong> This installation sends all AI requests
+          through the appliance&apos;s Vibe AI Router (VIBE_AI_MODE=router). Model choice,
+          data-boundary policy, budgets, and cost tracking are configured per task class in the
+          router console — the provider, egress, and budget settings below are inactive and kept
+          only for standalone (direct) deployments.
+        </div>
+      )}
+
       {msg && (
         <div
           style={{
@@ -291,185 +312,198 @@ export function AiSettingsPage(): JSX.Element {
         </div>
       )}
 
-      {/* Cloud egress */}
-      <Card>
-        <div style={{ display: 'grid', gap: tokens.space.md, padding: tokens.space.md }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>Cloud egress</strong>
-            <Pill tone={egress.enabled ? 'success' : 'neutral'}>
-              {egress.enabled ? `Enabled · ${egress.mode}` : 'Disabled (local-only)'}
-            </Pill>
-          </div>
-          <p style={{ color: tokens.color.textMuted, fontSize: 13, margin: 0 }}>
-            Cloud providers (Anthropic, OpenAI-compatible) only run when cloud egress is enabled.
-            <strong> Direct</strong> calls the provider API straight from the appliance.{' '}
-            <strong>Shield</strong> requires a reachable Vibe Shield proxy.
-          </p>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={egress.enabled}
-              onChange={(e) => setEgress({ ...egress, enabled: e.target.checked })}
-            />
-            Enable cloud AI
-          </label>
-          <div>
-            <span style={labelStyle}>Mode</span>
-            <select
-              style={{ ...inputStyle, width: 200 }}
-              value={egress.mode}
-              onChange={(e) =>
-                setEgress({ ...egress, mode: e.target.value as 'shield' | 'direct' })
-              }
-            >
-              <option value="direct">Direct (no shield)</option>
-              <option value="shield">Shield (proxy)</option>
-            </select>
-          </div>
-          {egress.mode === 'shield' && (
-            <div>
-              <span style={labelStyle}>
-                Vibe Shield endpoint{' '}
-                <Pill tone={egress.shieldReachable ? 'success' : 'danger'}>
-                  {egress.shieldReachable ? 'reachable' : 'unreachable'}
-                </Pill>
-              </span>
-              <input
-                style={inputStyle}
-                placeholder="https://shield.example.com"
-                value={egress.shieldEndpoint ?? ''}
-                onChange={(e) => setEgress({ ...egress, shieldEndpoint: e.target.value })}
-              />
+      <div
+        style={
+          data?.aiMode === 'router'
+            ? { pointerEvents: 'none', opacity: 0.5, display: 'grid', gap: tokens.space.lg }
+            : { display: 'grid', gap: tokens.space.lg }
+        }
+      >
+        {/* Cloud egress */}
+        <Card>
+          <div style={{ display: 'grid', gap: tokens.space.md, padding: tokens.space.md }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>Cloud egress</strong>
+              <Pill tone={egress.enabled ? 'success' : 'neutral'}>
+                {egress.enabled ? `Enabled · ${egress.mode}` : 'Disabled (local-only)'}
+              </Pill>
             </div>
-          )}
-          {data.budget && (
-            <p style={{ color: tokens.color.textMuted, fontSize: 12, margin: 0 }}>
-              Monthly budget cap: ${(data.budget.monthlyBudgetCents / 100).toFixed(2)} (warn at{' '}
-              {data.budget.warnThresholdPct}%). Edit under Firm settings.
+            <p style={{ color: tokens.color.textMuted, fontSize: 13, margin: 0 }}>
+              Cloud providers (Anthropic, OpenAI-compatible) only run when cloud egress is enabled.
+              <strong> Direct</strong> calls the provider API straight from the appliance.{' '}
+              <strong>Shield</strong> requires a reachable Vibe Shield proxy.
             </p>
-          )}
-          <div>
-            <Button onClick={() => void saveEgress()} disabled={busy === 'egress'}>
-              {busy === 'egress' ? 'Saving…' : 'Save egress'}
-            </Button>
-          </div>
-        </div>
-      </Card>
-
-      {/* Provider cards */}
-      {PROVIDER_META.map((m) => {
-        const row = rowFor(m.id);
-        const d = drafts[m.id];
-        return (
-          <Card key={m.id}>
-            <div style={{ display: 'grid', gap: tokens.space.sm, padding: tokens.space.md }}>
-              <div
-                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={egress.enabled}
+                onChange={(e) => setEgress({ ...egress, enabled: e.target.checked })}
+              />
+              Enable cloud AI
+            </label>
+            <div>
+              <span style={labelStyle}>Mode</span>
+              <select
+                style={{ ...inputStyle, width: 200 }}
+                value={egress.mode}
+                onChange={(e) =>
+                  setEgress({ ...egress, mode: e.target.value as 'shield' | 'direct' })
+                }
               >
-                <strong>{m.label}</strong>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <Pill tone={m.kind === 'local' ? 'neutral' : 'accent'}>{m.kind}</Pill>
-                  {row && <Pill tone={statusTone(row.status)}>{row.status}</Pill>}
-                </div>
-              </div>
-              <p style={{ color: tokens.color.textMuted, fontSize: 12, margin: 0 }}>{m.blurb}</p>
-              {row?.lastError && (
-                <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>
-                  Last error: {row.lastError}
-                </p>
-              )}
-
-              {(m.needsKey || m.id === 'openai_compatible') && (
-                <div>
-                  <span style={labelStyle}>
-                    API key {row?.hasKey ? `(stored: ${row.keyHint})` : ''}
-                  </span>
-                  <input
-                    style={inputStyle}
-                    type="password"
-                    autoComplete="off"
-                    placeholder={row?.hasKey ? 'Leave blank to keep current key' : 'Paste API key'}
-                    value={d.apiKey}
-                    onChange={(e) => setDraft(m.id, { apiKey: e.target.value })}
-                  />
-                </div>
-              )}
-
-              {(m.needsBaseUrl || m.id === 'ollama') && (
-                <div>
-                  <span style={labelStyle}>Base URL</span>
-                  <input
-                    style={inputStyle}
-                    placeholder={m.baseUrlPlaceholder}
-                    value={d.baseUrl}
-                    onChange={(e) => setDraft(m.id, { baseUrl: e.target.value })}
-                  />
-                </div>
-              )}
-
+                <option value="direct">Direct (no shield)</option>
+                <option value="shield">Shield (proxy)</option>
+              </select>
+            </div>
+            {egress.mode === 'shield' && (
               <div>
-                <span style={labelStyle}>Model</span>
+                <span style={labelStyle}>
+                  Vibe Shield endpoint{' '}
+                  <Pill tone={egress.shieldReachable ? 'success' : 'danger'}>
+                    {egress.shieldReachable ? 'reachable' : 'unreachable'}
+                  </Pill>
+                </span>
                 <input
                   style={inputStyle}
-                  placeholder={m.modelPlaceholder}
-                  value={d.model}
-                  onChange={(e) => setDraft(m.id, { model: e.target.value })}
+                  placeholder="https://shield.example.com"
+                  value={egress.shieldEndpoint ?? ''}
+                  onChange={(e) => setEgress({ ...egress, shieldEndpoint: e.target.value })}
                 />
               </div>
+            )}
+            {data.budget && (
+              <p style={{ color: tokens.color.textMuted, fontSize: 12, margin: 0 }}>
+                Monthly budget cap: ${(data.budget.monthlyBudgetCents / 100).toFixed(2)} (warn at{' '}
+                {data.budget.warnThresholdPct}%). Edit under Firm settings.
+              </p>
+            )}
+            <div>
+              <Button onClick={() => void saveEgress()} disabled={busy === 'egress'}>
+                {busy === 'egress' ? 'Saving…' : 'Save egress'}
+              </Button>
+            </div>
+          </div>
+        </Card>
 
-              {m.kind === 'cloud' && (
-                <div style={{ display: 'flex', gap: tokens.space.sm }}>
-                  <div style={{ flex: 1 }}>
-                    <span style={labelStyle}>Input ¢ / 1M tok (optional)</span>
-                    <input
-                      style={inputStyle}
-                      inputMode="numeric"
-                      value={d.inputCents}
-                      onChange={(e) => setDraft(m.id, { inputCents: e.target.value })}
-                    />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <span style={labelStyle}>Output ¢ / 1M tok (optional)</span>
-                    <input
-                      style={inputStyle}
-                      inputMode="numeric"
-                      value={d.outputCents}
-                      onChange={(e) => setDraft(m.id, { outputCents: e.target.value })}
-                    />
+        {/* Provider cards */}
+        {PROVIDER_META.map((m) => {
+          const row = rowFor(m.id);
+          const d = drafts[m.id];
+          return (
+            <Card key={m.id}>
+              <div style={{ display: 'grid', gap: tokens.space.sm, padding: tokens.space.md }}>
+                <div
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                >
+                  <strong>{m.label}</strong>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <Pill tone={m.kind === 'local' ? 'neutral' : 'accent'}>{m.kind}</Pill>
+                    {row && <Pill tone={statusTone(row.status)}>{row.status}</Pill>}
                   </div>
                 </div>
-              )}
+                <p style={{ color: tokens.color.textMuted, fontSize: 12, margin: 0 }}>{m.blurb}</p>
+                {row?.lastError && (
+                  <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>
+                    Last error: {row.lastError}
+                  </p>
+                )}
 
-              <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
-                <Button onClick={() => void saveProvider(m.id)} disabled={busy === `save:${m.id}`}>
-                  {busy === `save:${m.id}` ? 'Saving…' : 'Save'}
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => void testProvider(m.id)}
-                  disabled={busy === `test:${m.id}`}
-                >
-                  {busy === `test:${m.id}` ? 'Testing…' : 'Test connection'}
-                </Button>
-                {row && (
+                {(m.needsKey || m.id === 'openai_compatible') && (
+                  <div>
+                    <span style={labelStyle}>
+                      API key {row?.hasKey ? `(stored: ${row.keyHint})` : ''}
+                    </span>
+                    <input
+                      style={inputStyle}
+                      type="password"
+                      autoComplete="off"
+                      placeholder={
+                        row?.hasKey ? 'Leave blank to keep current key' : 'Paste API key'
+                      }
+                      value={d.apiKey}
+                      onChange={(e) => setDraft(m.id, { apiKey: e.target.value })}
+                    />
+                  </div>
+                )}
+
+                {(m.needsBaseUrl || m.id === 'ollama') && (
+                  <div>
+                    <span style={labelStyle}>Base URL</span>
+                    <input
+                      style={inputStyle}
+                      placeholder={m.baseUrlPlaceholder}
+                      value={d.baseUrl}
+                      onChange={(e) => setDraft(m.id, { baseUrl: e.target.value })}
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <span style={labelStyle}>Model</span>
+                  <input
+                    style={inputStyle}
+                    placeholder={m.modelPlaceholder}
+                    value={d.model}
+                    onChange={(e) => setDraft(m.id, { model: e.target.value })}
+                  />
+                </div>
+
+                {m.kind === 'cloud' && (
+                  <div style={{ display: 'flex', gap: tokens.space.sm }}>
+                    <div style={{ flex: 1 }}>
+                      <span style={labelStyle}>Input ¢ / 1M tok (optional)</span>
+                      <input
+                        style={inputStyle}
+                        inputMode="numeric"
+                        value={d.inputCents}
+                        onChange={(e) => setDraft(m.id, { inputCents: e.target.value })}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <span style={labelStyle}>Output ¢ / 1M tok (optional)</span>
+                      <input
+                        style={inputStyle}
+                        inputMode="numeric"
+                        value={d.outputCents}
+                        onChange={(e) => setDraft(m.id, { outputCents: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
                   <Button
-                    variant="ghost"
-                    onClick={() => void removeProvider(m.id)}
-                    disabled={busy === `del:${m.id}`}
+                    onClick={() => void saveProvider(m.id)}
+                    disabled={busy === `save:${m.id}`}
                   >
-                    Remove
+                    {busy === `save:${m.id}` ? 'Saving…' : 'Save'}
                   </Button>
-                )}
-                {row?.lastTestedAt && (
-                  <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
-                    Last tested {new Date(row.lastTestedAt).toLocaleString()}
-                  </span>
-                )}
+                  <Button
+                    variant="secondary"
+                    onClick={() => void testProvider(m.id)}
+                    disabled={busy === `test:${m.id}`}
+                  >
+                    {busy === `test:${m.id}` ? 'Testing…' : 'Test connection'}
+                  </Button>
+                  {row && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => void removeProvider(m.id)}
+                      disabled={busy === `del:${m.id}`}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                  {row?.lastTestedAt && (
+                    <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+                      Last tested {new Date(row.lastTestedAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-          </Card>
-        );
-      })}
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

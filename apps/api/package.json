@@ -39,7 +39,8 @@
     "pino-http": "^10.1.0",
     "puppeteer": "^23.0.0",
     "qrcode": "^1.5.3",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "@kisaes/vibe-ai-client": "github:KisaesDevLab/Vibe-AI-Router#sdk-v0.2.0&path:packages/sdk"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

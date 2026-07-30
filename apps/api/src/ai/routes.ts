@@ -17,6 +17,7 @@ import { checkBudget, type AiProvider } from '@vibe/core/ai';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { aiMode, routerProviderForFeature } from './vibe-router';
 import { resolveEgressPolicy, type EgressDecision } from './egress';
 import {
   resolveFirmProviders as defaultResolveFirmProviders,
@@ -122,6 +123,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       let result;
       try {
         result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You write concise, professional CPA time entry descriptions. ' +
             'Output exactly one sentence under 20 words. No quotes, no preface.',
@@ -195,6 +197,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const pct = (parsed.data.realizationPct * 100).toFixed(1);
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You are a CPA partner reviewing firm realization. ' +
             'Output a tight 3-sentence narrative. Plain text, no headers, no quotes.',
@@ -261,6 +264,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You translate plain-English questions about a CPA practice into a brief plan ' +
             'describing which reports or queries to run. Output 2-4 short bullet points. ' +
@@ -335,6 +339,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You are a CPA practice consultant. Given an engagement type, suggest a ' +
             'fixed-fee range and a typical effort range. Output 3 short lines: ' +
@@ -414,6 +419,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You analyze CPA write-down patterns. Given a sample of recent adjustments, ' +
             'identify 2-4 short patterns (theme + frequency). No headers, no preface.',
@@ -478,6 +484,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You pick the best-matching reason code for a CPA write-down/up. Output exactly ' +
             'one of the supplied options, verbatim. No explanation, no quotes.',
@@ -552,6 +559,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You write 2-3 sentence pre-bill summaries for CPA partners. Output plain text, no headers.',
           userPrompt: [
@@ -632,6 +640,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You explain CPA practice anomalies to a partner. Output 2-3 short bullet ' +
             'points listing the most concerning patterns and a one-line suggested action ' +
@@ -699,6 +708,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You translate plain-English questions about a CPA practice into a JSON object describing ' +
             'which report endpoint to query and which filter parameters. Output ONLY valid JSON with ' +
@@ -777,6 +787,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You are a CPA practice consultant. Given a list of mixed-mode engagements where ' +
             'out-of-scope hours have spiked, write a 2-sentence partner-facing summary plus one ' +
@@ -849,6 +860,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
       const started = Date.now();
       try {
         const result = await provider.complete({
+          userId: session.appUserId ?? null,
           systemPrompt:
             'You are a CPA practice consultant. Given a list of timekeepers with their 4-week ' +
             'projected hours and variance vs target, write a 2-sentence partner-facing summary ' +
@@ -1110,6 +1122,14 @@ async function pickProvider(
   feature?: string,
   firmId?: string,
 ): Promise<AiProvider | null> {
+  // MIG-8: router mode short-circuits everything below — firm credentials,
+  // the egress gate, and local-vs-cloud preference are all the router
+  // console's job now (task classes carry the data boundary). This never
+  // falls through to a direct provider: a router outage must surface as a
+  // failed call, not silently ship prompts around the scrubber and ledger.
+  if (aiMode() === 'router') {
+    return routerProviderForFeature(feature ?? 'status-probe');
+  }
   const override = featureOverride(feature);
 
   // 0100 — prefer the firm's UI-entered (DB) providers; fall back to the
@@ -1207,8 +1227,9 @@ async function logAiRequest(deps: AiRoutesDeps, args: LogArgs): Promise<void> {
       anthropic: 'ANTHROPIC',
       ollama: 'LOCAL_OLLAMA',
       openai_compatible: 'OPENAI_COMPATIBLE',
+      vibe_router: 'VIBE_ROUTER',
     } as const
-  )[args.providerId as 'anthropic' | 'ollama' | 'openai_compatible'];
+  )[args.providerId as 'anthropic' | 'ollama' | 'openai_compatible' | 'vibe_router'];
   await deps.db
     .insert(aiRequestLog)
     .values({
@@ -1252,6 +1273,7 @@ export async function runAiCompletion(
   const started = Date.now();
   try {
     const result = await provider.complete({
+      userId: args.appUserId ?? null,
       systemPrompt: args.systemPrompt,
       userPrompt: args.userPrompt,
       maxTokens: args.maxTokens ?? 220,

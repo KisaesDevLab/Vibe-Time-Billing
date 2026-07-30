@@ -309,7 +309,7 @@ export const webhookDeliveryStatus = pgEnum('webhook_delivery_status', [
   'GAVE_UP',
 ]);
 
-export const aiProvider = pgEnum('ai_provider', ['LOCAL_OLLAMA', 'LOCAL_LLAMACPP', 'ANTHROPIC', 'OPENAI_COMPATIBLE']);
+export const aiProvider = pgEnum('ai_provider', ['LOCAL_OLLAMA', 'LOCAL_LLAMACPP', 'ANTHROPIC', 'OPENAI_COMPATIBLE', 'VIBE_ROUTER']);
 
 // 0050 — retainer billing batch kind.
 export const billingBatchKind = pgEnum('billing_batch_kind', ['STANDARD', 'RETAINER']);

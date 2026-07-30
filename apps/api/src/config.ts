@@ -94,6 +94,14 @@ const Schema = z.object({
   AI_OPENAI_MODEL: z.string().optional(),
   AI_OPENAI_COST_INPUT_CENTS: z.coerce.number().nonnegative().optional(),
   AI_OPENAI_COST_OUTPUT_CENTS: z.coerce.number().nonnegative().optional(),
+  // MIG-8 — Vibe AI Router dual-mode. "router" sends every AI feature through
+  // the appliance's Vibe AI Router (task classes + router policy pick the
+  // model; the provider settings above and the firm credential/egress/budget
+  // machinery become inert). Requires both URL and token — loadConfig refuses
+  // to boot otherwise — and never silently falls back to direct.
+  VIBE_AI_MODE: z.enum(['direct', 'router']).default('direct'),
+  VIBE_AI_ROUTER_URL: z.string().optional(),
+  VIBE_AI_TOKEN: z.string().optional(),
   // Capture Client Info — local GLM-OCR endpoint on the firm's on-prem
   // workstation. Presence of GLM_OCR_URL is what enables the /api/staff/ocr
   // client-intake surface (server.ts wires the client only when set). The
@@ -215,6 +223,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   if (isProd && !parsed.data.KMS_KEY) {
     throw new Error('KMS_KEY is required in production (32 bytes, base64 or hex)');
+  }
+
+  // MIG-8: refuse to boot on a half-configured router mode — limping to
+  // request time produces a worse error for every AI feature.
+  if (
+    parsed.data.VIBE_AI_MODE === 'router' &&
+    (!parsed.data.VIBE_AI_ROUTER_URL || !parsed.data.VIBE_AI_TOKEN)
+  ) {
+    throw new Error(
+      'VIBE_AI_MODE=router requires both VIBE_AI_ROUTER_URL and VIBE_AI_TOKEN ' +
+        '(the appliance mints the token during "vibe enable"), or set VIBE_AI_MODE=direct.',
+    );
   }
 
   cached = parsed.data;

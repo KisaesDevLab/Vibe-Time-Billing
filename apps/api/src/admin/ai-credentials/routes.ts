@@ -29,6 +29,7 @@ import { getFirmKeyManager } from '../../crypto/manager';
 import { SHIELD_REACHABLE_KEY } from '../../ai/egress';
 import { invalidateFirmProviders } from '../../ai/resolve-providers';
 import { createAnthropicProvider } from '../../ai/anthropic';
+import { aiMode } from '../../ai/vibe-router';
 import { createOllamaProvider } from '../../ai/ollama';
 import { createOpenAiCompatibleProvider } from '../../ai/openai-compatible';
 
@@ -106,7 +107,7 @@ export function createAiCredentialsRouter(deps: AiCredentialsRoutesDeps): Router
   router.get('/', requirePermission(deps, 'firm:settings:read'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
-      res.json({ providers: [], egress: null, budget: null });
+      res.json({ providers: [], egress: null, budget: null, aiMode: aiMode() });
       return;
     }
     const rows = await deps.db
@@ -135,6 +136,7 @@ export function createAiCredentialsRouter(deps: AiCredentialsRoutesDeps): Router
       : false;
 
     res.json({
+      aiMode: aiMode(),
       providers: rows.map((r) => ({
         providerId: r.providerId,
         hasKey: Boolean(r.apiKeyEncrypted),

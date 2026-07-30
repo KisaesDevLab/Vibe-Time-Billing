@@ -47,6 +47,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@kisaes/vibe-ai-client':
+        specifier: github:KisaesDevLab/Vibe-AI-Router#sdk-v0.2.0&path:packages/sdk
+        version: https://codeload.github.com/KisaesDevLab/Vibe-AI-Router/tar.gz/68d3e4be867eea5f12856ed2a1132911e5de1ac9#path:packages/sdk
       '@napi-rs/canvas':
         specifier: ^0.1.100
         version: 0.1.100
@@ -1309,11 +1312,11 @@ packages:
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
-    deprecated: 'Merged into tsx: https://tsx.is'
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild-kit/esm-loader@2.6.5':
     resolution: {integrity: sha512-FxEMIkJKnodyA1OaCUoEvbYRkoZlLZ4d/eXFu9Fh8CbBBgP5EmZxrfTRyN0qpXZ4vOvqnE5YdRdcrmUUXuU+dA==}
-    deprecated: 'Merged into tsx: https://tsx.is'
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -1972,6 +1975,11 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@kisaes/vibe-ai-client@https://codeload.github.com/KisaesDevLab/Vibe-AI-Router/tar.gz/68d3e4be867eea5f12856ed2a1132911e5de1ac9#path:packages/sdk':
+    resolution: {path: packages/sdk, tarball: https://codeload.github.com/KisaesDevLab/Vibe-AI-Router/tar.gz/68d3e4be867eea5f12856ed2a1132911e5de1ac9}
+    version: 0.2.0
+    engines: {node: '>=20'}
 
   '@levischuck/tiny-cbor@0.2.11':
     resolution: {integrity: sha512-llBRm4dT4Z89aRsm6u2oEZ8tfwL/2l6BwpZ7JcyieouniDECM5AqNgr/y08zalEIvW3RSK4upYyybDcmjXqAow==}
@@ -7457,6 +7465,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@kisaes/vibe-ai-client@https://codeload.github.com/KisaesDevLab/Vibe-AI-Router/tar.gz/68d3e4be867eea5f12856ed2a1132911e5de1ac9#path:packages/sdk': {}
 
   '@levischuck/tiny-cbor@0.2.11': {}
 
